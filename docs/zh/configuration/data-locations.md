@@ -131,6 +131,8 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 `Grep` 工具第一次需要 ripgrep 时，CLI 可自动下载 `rg` 并缓存到 `bin/rg`（Windows 为 `bin/rg.exe`）。终端界面的文件引用补全使用 `fd`；需要时 CLI 会在后台自动下载并缓存到 `bin/fd`（Windows 为 `bin/fd.exe`）。之后的运行会直接复用缓存的二进制。`rg` 优先使用系统 `PATH`，再使用缓存；`fd` 优先检查托管缓存，再回退到系统 `fd` / `fdfind`。删除 `bin/` 目录会在下次需要时触发重新下载。
 
+文件数达到 1,500 的已注册本地工作区还会使用派生内容索引 `cache/workspace-trigram-v1/<root-hash>.sqlite`。Kiki 在后台工作线程中构建索引；索引尚不可用或正在更新时，继续使用普通文件系统搜索。需要重建时，先停止 Kiki，再仅移除 `cache/workspace-trigram-v1/`；工作区文件保持不变。
+
 ## 日志
 
 - **`logs/kimi-code.log`**（全局）：记录启动、登录、导出等跨会话事件。

@@ -1,6 +1,7 @@
 import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, type TranscriptTurn } from '@kiki/transcript';
 import { historyDirectoryWindowGuard } from './historyDirectoryWindow';
 import { openLogicalWire, streamLogicalWireRecords } from './logicalWireRead';
+import { historyBoundaryCandidate } from './historyWirePrefilter';
 
 const TAIL_BYTES = 2 << 20;
 const TAIL_RECORDS = 50_000;
@@ -17,6 +18,23 @@ export async function readHistoryColdTailTurn(wirePath: string, agent: string, t
       const boundary = bytes.indexOf(10);
       if (boundary < 0) return undefined;
       start += boundary;
+      let cursor = boundary + 1;
+      let opening: number | undefined;
+      while (cursor < bytes.length) {
+        const next = bytes.indexOf(10, cursor);
+        if (next < 0) break;
+        const line = bytes.subarray(cursor, next);
+        if (historyBoundaryCandidate(line)) {
+          const record = JSON.parse(line.toString('utf8')) as Record<string, unknown>;
+          if (record['type'] === 'turn.prompt' && `t${String(record['turnId'])}` === turnId) {
+            opening = end - bytes.length + cursor;
+            break;
+          }
+        }
+        cursor = next + 1;
+      }
+      if (opening === undefined) return undefined;
+      start = opening;
     }
   } finally { wire.close(); }
   const draft = new AgentTranscriptDraft(agent);

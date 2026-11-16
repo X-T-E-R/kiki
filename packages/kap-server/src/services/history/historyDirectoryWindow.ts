@@ -2,12 +2,14 @@ import type { ColumnPageQuery, IQueryStore, WriteOp } from '@kiki/agent-core-v2/
 import type { HistoryNavigationProof } from './historyNavigationProof';
 import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
 import { openLogicalWire } from './logicalWireRead';
+import { historyBoundaryCandidate } from './historyWirePrefilter';
 
 export interface HistoryDirectoryWindow {
   readonly start: number;
   readonly end: number;
   readonly proof: HistoryNavigationProof;
   readonly mode?: 'prefix';
+  readonly watermark?: number;
 }
 
 export interface HistoryDirectoryTail {
@@ -42,8 +44,9 @@ export async function discoverHistoryDirectoryTail(path: string, limit: number, 
       const line = bytes.subarray(previous + 1, position);
       position = previous;
       if (line.length === 0) continue;
-      const record = JSON.parse(line.toString('utf8')) as Record<string, unknown>;
       records++;
+      if (!historyBoundaryCandidate(line)) continue;
+      const record = JSON.parse(line.toString('utf8')) as Record<string, unknown>;
       if (record['type'] === 'context.undo' || record['type'] === 'context.clear' || record['type'] === 'branch.base' || record['type'] === 'turn_begin') return undefined;
       if (record['type'] !== 'turn.prompt') continue;
       const id = record['turnId'];
@@ -60,20 +63,25 @@ export async function discoverHistoryDirectoryTail(path: string, limit: number, 
 }
 
 export async function validateHistoryDirectoryWindow(path: string, window: HistoryDirectoryWindow, signal?: AbortSignal): Promise<boolean> {
-  const current = await historyNavigationProof(path, window.end, signal);
+  const watermark = window.watermark ?? window.end;
+  const current = await historyNavigationProof(path, watermark, signal);
   if (!matchesNavigationProof(window.proof, current)) return false;
-  if (current.size === window.end) return true;
-  if (current.size - window.end > DISCOVERY_BYTES * 2) return false;
+  if (current.size === watermark) return true;
+  if (current.size - watermark > DISCOVERY_BYTES * 2) return false;
   const opened = await openLogicalWire(path, signal);
   if (opened === undefined) return false;
   try {
-    const bytes = Buffer.from(await opened.readAt(window.end, current.size - window.end));
+    const bytes = Buffer.from(await opened.readAt(watermark, current.size - watermark));
     const end = bytes.lastIndexOf(10);
     if (end < 0) return true;
-    for (const line of bytes.subarray(0, end).toString('utf8').split('\n')) {
+    let start = 0;
+    while (start < end) {
       signal?.throwIfAborted();
-      if (!line) continue;
-      const record = JSON.parse(line) as Record<string, unknown>;
+      const next = bytes.indexOf(10, start);
+      const line = bytes.subarray(start, next);
+      start = next + 1;
+      if (!historyBoundaryCandidate(line)) continue;
+      const record = JSON.parse(line.toString('utf8')) as Record<string, unknown>;
       if (record['type'] === 'context.undo' || record['type'] === 'context.clear' || record['type'] === 'branch.base') return false;
     }
     return true;

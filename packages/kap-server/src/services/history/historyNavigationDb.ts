@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { ColumnPageQuery, IQueryStore, Page, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 import type { NavigationAdapterCursor, NavigationScalarState } from '@kiki/transcript/navigationWireAdapter';
 import type { HistoryNavigationProof } from './historyNavigationProof';
+import type { HistoryTurnBoundaries, HistoryTurnBoundary } from './historyTurnBoundaries';
 import { HISTORY_NAV_COLLECTION, type HistoryNavRow } from './historyLocatorStore';
 import { navigationStatement, navigationScope, clearNavigationScopes, SqliteNavigationAnchorSequence,
   SqliteNavigationMap, SqliteNavigationSet, SqliteNavigationTurnSequence } from './historyNavigationState';
@@ -16,7 +17,7 @@ const CONVERSATION_SEARCH_PARTS = "('prompt','text','output')";
 const SELECT_ROW = 'r.*,s.workspace,s.session,s.agent';
 const COLUMNS = new Set(['turn', 'position', 'time']);
 const FILTERS = new Set(['workspace', 'session', 'agent', 'kind', 'turn', 'active', 'step']);
-const TABLES = ['rows', 'state', 'turn_sequence', 'anchor_sequence', 'manifest', 'canonical_spans'];
+const TABLES = ['rows', 'state', 'turn_sequence', 'anchor_sequence', 'manifest', 'canonical_spans', 'turn_boundaries', 'boundary_manifest'];
 
 export interface HistoryNavManifest {
   readonly v: 2;
@@ -143,6 +144,13 @@ export class HistoryNavigationDb implements NavigationStore {
         CREATE TABLE IF NOT EXISTS manifest (
           scope INTEGER PRIMARY KEY REFERENCES scopes(id) ON DELETE CASCADE, value TEXT NOT NULL
         ) STRICT;
+        CREATE TABLE IF NOT EXISTS turn_boundaries (
+          scope INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE, turn_id INTEGER NOT NULL,
+          start_byte INTEGER NOT NULL, end_byte INTEGER NOT NULL, PRIMARY KEY(scope,turn_id)
+        ) STRICT, WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS boundary_manifest (
+          scope INTEGER PRIMARY KEY REFERENCES scopes(id) ON DELETE CASCADE, watermark INTEGER NOT NULL, proof TEXT NOT NULL
+        ) STRICT;
         CREATE TABLE IF NOT EXISTS directory_views (id TEXT PRIMARY KEY, used INTEGER NOT NULL) STRICT, WITHOUT ROWID;
         PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}; COMMIT;`);
       const free = (db.prepare('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count;
@@ -156,6 +164,33 @@ export class HistoryNavigationDb implements NavigationStore {
   private scope(name: string, create = false): number { return navigationScope(this.db, name, create); }
   private sourceScope(workspace: string, session: string, agent: string, create = false): number {
     return this.scope(`${this.projectionPrefix}${workspace}\0${session}\0${agent}`, create);
+  }
+
+  readBoundaryManifest(scope: string): { watermark: number; proof: HistoryNavigationProof } | undefined {
+    const row = navigationStatement(this.db, 'SELECT watermark,proof FROM boundary_manifest WHERE scope=?')
+      .get(this.scope(scope)) as { watermark: number; proof: string } | undefined;
+    return row === undefined ? undefined : { watermark: row.watermark, proof: JSON.parse(row.proof) as HistoryNavigationProof };
+  }
+
+  readTurnBoundary(scope: string, turn: number): HistoryTurnBoundary | undefined {
+    const row = navigationStatement(this.db, 'SELECT start_byte,end_byte FROM turn_boundaries WHERE scope=? AND turn_id=?')
+      .get(this.scope(scope), turn) as { start_byte: number; end_byte: number } | undefined;
+    return row === undefined ? undefined : { turn, start: row.start_byte, end: row.end_byte };
+  }
+
+  writeTurnBoundaries(scope: string, boundaries: HistoryTurnBoundaries): void {
+    const id = this.scope(scope, true);
+    this.beginSlice();
+    try {
+      navigationStatement(this.db, 'DELETE FROM turn_boundaries WHERE scope=?').run(id);
+      const insert = navigationStatement(this.db, 'INSERT INTO turn_boundaries(scope,turn_id,start_byte,end_byte) VALUES(?,?,?,?)');
+      for (const turn of boundaries.turns) insert.run(id, turn.turn, turn.start, turn.end);
+      navigationStatement(this.db, `INSERT INTO boundary_manifest(scope,watermark,proof) VALUES(?,?,?)
+        ON CONFLICT(scope) DO UPDATE SET watermark=excluded.watermark,proof=excluded.proof`)
+        .run(id, boundaries.watermark, JSON.stringify(boundaries.proof));
+      this.db.exec('COMMIT');
+      this.transaction.open = false;
+    } catch (error) { this.rollbackSlice(); throw error; }
   }
 
   readManifest(scope: string): HistoryNavManifest | undefined {

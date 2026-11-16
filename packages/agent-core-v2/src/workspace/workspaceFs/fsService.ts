@@ -36,6 +36,7 @@ const FsWireErrorCode = {
   INTERNAL_ERROR: 50001,
 } as const;
 import ignore, { type Ignore } from 'ignore';
+import type { WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
 
 import { classifyTextSample, decodeUtfText } from '#/_base/text/encoding';
 import {
@@ -91,6 +92,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
   declare readonly _serviceBrand: undefined;
 
   private readonly gitignoreCache = new Map<string, Ignore>();
+  private readonly indexedSuggestCache = new Map<string, { readonly revision: number; readonly response: FsSuggestResponse }>();
   private rgResolution: RgResolution | null | undefined = undefined;
   private realRootsCache: { readonly key: string; readonly roots: readonly string[] } | undefined =
     undefined;
@@ -443,8 +445,44 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     };
   }
 
+  private pathIndex(): WorkspacePathIndex | undefined {
+    return this.resolver.inspect({ workspaceId: this.workspaceId, runtimeId: this.runtimeId }).pathIndex;
+  }
+
+  private async indexedSearch(req: FsSearchRequest, signal?: AbortSignal): Promise<FsSearchResponse | undefined> {
+    if (!req.follow_gitignore || req.query === '' || req.cursor !== undefined && !req.cursor.startsWith('pi1_')) return undefined;
+    await this.searchDirectory('', req.cursor !== undefined, signal);
+    const index = this.pathIndex();
+    const snapshot = index?.snapshot();
+    if (index === undefined || snapshot === undefined) {
+      if (req.cursor?.startsWith('pi1_')) throw invalidSearchCursor();
+      return undefined;
+    }
+    const binding = JSON.stringify([this.workDir, req.query, req.limit, req.include_globs, req.exclude_globs]);
+    let offset = 0;
+    if (req.cursor !== undefined) {
+      let cursor: { revision: number; binding: string; offset: number };
+      try { cursor = JSON.parse(Buffer.from(req.cursor.slice(4), 'base64url').toString('utf8')) as typeof cursor; }
+      catch { throw invalidSearchCursor(); }
+      if (cursor.revision !== snapshot.revision || cursor.binding !== binding || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw invalidSearchCursor();
+      offset = cursor.offset;
+    }
+    const candidates = index.fuzzy(req.query, false)!.filter(entry =>
+      (req.include_globs === undefined || matchesAnyGlob(entry.path, req.include_globs)) &&
+      (req.exclude_globs === undefined || !matchesAnyGlob(entry.path, req.exclude_globs)));
+    const items = candidates.slice(offset, offset + req.limit).map(entry => ({ path: entry.path, name: entry.name,
+      kind: entry.kind, score: computeFuzzyScore(entry.name, req.query.toLowerCase()),
+      match_positions: computeMatchPositions(entry.path, req.query.toLowerCase()) }));
+    const next = offset + items.length;
+    const next_cursor = next < candidates.length ? `pi1_${Buffer.from(JSON.stringify({ revision: snapshot.revision, binding, offset: next })).toString('base64url')}` : undefined;
+    signal?.throwIfAborted();
+    return { items, truncated: next_cursor !== undefined, next_cursor, sort_scope: 'page' };
+  }
+
   async search(req: FsSearchRequest, signal?: AbortSignal): Promise<FsSearchResponse> {
     signal?.throwIfAborted();
+    const indexed = await this.indexedSearch(req, signal);
+    if (indexed !== undefined) return indexed;
     const query = req.query.toLowerCase();
     const rules = req.follow_gitignore ? await this.hostFs.readText(this.path.join(this.workDir, '.gitignore')).catch(() => '') : '';
     signal?.throwIfAborted();
@@ -593,6 +631,27 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       excludeGlobs: req.exclude_globs,
     };
     const cap = req.limit;
+    const index = req.follow_gitignore ? this.pathIndex() : undefined;
+    const revision = index?.snapshot()?.revision;
+    const cacheKey = JSON.stringify(req);
+    const cached = this.indexedSuggestCache.get(cacheKey);
+    if (revision !== undefined && cached?.revision === revision) return cached.response;
+    const candidates = index?.fuzzy(pathSegments.length > 0 ? pathSegments.join('/') : queryLower, pathSegments.length > 0);
+    if (candidates !== undefined) {
+      const top = new SuggestTopHeap(cap);
+      let matched = 0;
+      for (const entry of candidates) {
+        const candidate = evaluateSuggestCandidate(entry.path, entry.kind, query);
+        if (candidate === null) continue;
+        matched++;
+        top.push(candidate);
+      }
+      const response = { items: top.drain().map(candidate => ({ path: candidate.path, name: candidate.name,
+        kind: candidate.kind, score: candidate.score, match_positions: [...candidate.positions] })), truncated: matched > cap };
+      if (this.indexedSuggestCache.size >= 32) this.indexedSuggestCache.delete(this.indexedSuggestCache.keys().next().value!);
+      this.indexedSuggestCache.set(cacheKey, { revision: revision!, response });
+      return response;
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUGGEST_TIMEOUT_MS);
@@ -816,8 +875,14 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       for (const g of req.exclude_globs) args.push('--glob', `!${g}`);
     }
     args.push('--max-count', String(req.max_matches_per_file));
-    args.push(req.pattern);
-    args.push('.');
+    const index = this.pathIndex();
+    const snapshot = index?.snapshot();
+    let candidates = req.follow_gitignore && req.include_globs === undefined && req.exclude_globs === undefined && snapshot !== undefined
+      ? await index?.trigram?.candidates(snapshot, req.pattern, !req.regex, !req.case_sensitive) : undefined;
+    candidates = candidates?.filter(path => !path.split('/').some(segment => segment.startsWith('.')));
+    if (candidates !== undefined && candidates.reduce((length, path) => length + path.length + 3, 0) > 16_000) candidates = undefined;
+    if (candidates?.length === 0) return { files: [], files_scanned: 0, truncated: false, elapsed_ms: Date.now() - startedAt };
+    args.push('--', req.pattern, ...(candidates ?? ['.']));
 
     const lease = this.resolver.acquire({ workspaceId: this.workspaceId, runtimeId: this.runtimeId }, ['process']);
     const proc = await lease.runtime.process!.spawn(rgPath, args, { cwd: this.workDir });

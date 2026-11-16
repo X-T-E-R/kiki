@@ -358,22 +358,23 @@ describe('GlobTool', () => {
     expect(result.output).toContain('Continue with the same search arguments and offset=100.');
   });
 
-  it('passes a brace pattern through to a single rg --glob', async () => {
-    const exec = execReturning('/workspace/a.ts\n/workspace/shared.ts\n/workspace/shared.tsx\n');
+  it('matches brace patterns locally without overriding ripgrep ignore rules', async () => {
+    const exec = execReturning('/workspace/a.ts\n/workspace/shared.ts\n/workspace/shared.tsx\n/workspace/a.js\n');
     const { tool, withCwd } = makeTool(workspace, { exec });
 
     const result = await execute(tool, { pattern: '*.{ts,tsx}' });
 
     expect(result.isError).toBeFalsy();
     withCwd.toHaveBeenCalledWith('/workspace');
-    expect(execArgs(exec)).toContain('*.{ts,tsx}');
+    expect(execArgs(exec)).not.toContain('*.{ts,tsx}');
     const output = toolContentString(result);
     expect(output).toContain('a.ts');
     expect(output).toContain('shared.ts');
     expect(output).toContain('shared.tsx');
+    expect(output).not.toContain('a.js');
   });
 
-  it('passes an escaped-brace pattern through unchanged so literal-brace files stay matchable', async () => {
+  it('matches escaped literal braces without overriding ignore rules', async () => {
     const exec = execReturning('/workspace/{a,b}.ts\n');
     const { tool, withCwd } = makeTool(workspace, { exec });
 
@@ -381,7 +382,7 @@ describe('GlobTool', () => {
 
     expect(result.isError).toBeFalsy();
     withCwd.toHaveBeenCalledWith('/workspace');
-    expect(execArgs(exec)).toContain('\\{a,b\\}.ts');
+    expect(execArgs(exec)).not.toContain('\\{a,b\\}.ts');
     expect(result.output).toContain('{a,b}.ts');
   });
 
@@ -752,7 +753,7 @@ describe('GlobTool', () => {
 
     expect(result.isError).toBeFalsy();
     withCwd.toHaveBeenCalledWith('/workspace');
-    expect(execArgs(exec)).toContain('**/*.py');
+    expect(execArgs(exec)).not.toContain('**/*.py');
     expect(result.output).toContain('a.py');
     expect(result.output).toContain('sub/b.py');
   });
@@ -868,7 +869,7 @@ describe('GlobTool', () => {
 
     expect(result.isError).toBeFalsy();
     withCwd.toHaveBeenCalledWith('/workspace');
-    expect(execArgs(exec)).toContain('**/main/*.py');
+    expect(execArgs(exec)).not.toContain('**/main/*.py');
     expect(result.output).toContain('src/main/app.py');
   });
 

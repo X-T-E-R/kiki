@@ -25,9 +25,9 @@ describe('history source refs', () => {
       const cancelled = new AbortController();
       cancelled.abort(new Error('cancel historical source'));
       await expect(verifyHistorySource(wire, decodeHistoryRef(ref), cancelled.signal)).rejects.toThrow('cancel historical source');
-      expect(await verifyHistorySource(wire, decodeHistoryRef(ref))).toEqual({ status: 'ok' });
+      expect(await verifyHistorySource(wire, decodeHistoryRef(ref))).toEqual({ status: 'ok', bytes: first });
       await appendFile(wire, '{"type":"context.append_loop_event"}\n');
-      expect(await verifyHistorySource(wire, decodeHistoryRef(ref))).toEqual({ status: 'ok' });
+      expect(await verifyHistorySource(wire, decodeHistoryRef(ref))).toEqual({ status: 'ok', bytes: first });
       await writeFile(wire, Buffer.concat([Buffer.from(first.toString().replace('原文', '别文')), Buffer.from('{}\n')]));
       expect(await verifyHistorySource(wire, decodeHistoryRef(ref))).toEqual({ status: 'stale_ref' });
       await rm(wire);

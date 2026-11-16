@@ -131,6 +131,8 @@ Search is available by default. `[search] enabled = false`, `KIKI_SEARCH_DISABLE
 
 The first time the `Grep` tool needs ripgrep, the CLI can automatically download `rg` and cache it at `bin/rg` (`bin/rg.exe` on Windows). File-reference completion in the terminal UI uses `fd`; the CLI downloads and caches it at `bin/fd` (`bin/fd.exe` on Windows) in the background when needed. Subsequent runs reuse the cached binaries. `rg` prefers the system `PATH` before the cache, while `fd` checks the managed cache before falling back to system `fd` / `fdfind`. Deleting the `bin/` directory triggers a fresh download on the next use.
 
+Registered local workspaces with at least 1,500 files also use a derived content index at `cache/workspace-trigram-v1/<root-hash>.sqlite`. Kiki builds it in background workers and uses ordinary filesystem search while it is unavailable or updating. To rebuild it, stop Kiki and remove only `cache/workspace-trigram-v1/`; the workspace files are unchanged.
+
 ## Logs
 
 - **`logs/kimi-code.log`** (global): records startup, login, export, and other cross-session events.

@@ -2,6 +2,9 @@ import * as posixPath from 'node:path/posix';
 import * as win32Path from 'node:path/win32';
 
 import { Emitter } from '#/_base/event';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
@@ -35,6 +38,7 @@ export class LocalRuntime implements Runtime {
     process: IHostProcessService | undefined,
     watch: IHostFsWatchService | undefined,
     terminal: IHostTerminalService | undefined,
+    readonly pathIndex?: WorkspacePathIndex,
   ) {
     this.identity = { workspaceId, runtimeId: 'local', generation: `local-${nextGeneration++}` };
     const capabilities = new Set<RuntimeCapability>();
@@ -81,6 +85,7 @@ export class LocalRuntime implements Runtime {
   }
 
   dispose(): void {
+    this.pathIndex?.dispose();
     this.currentStatus = 'disposed';
     this.statusEmitter.fire('disposed');
     this.statusEmitter.dispose();
@@ -96,6 +101,8 @@ export class LocalRuntimeProviderFactory implements RuntimeProviderFactory {
       IHostProcessService,
       IHostFsWatchService,
       IHostTerminalService,
+      ICpuWorkerService,
+      IBootstrapService,
     ],
     imports: [],
     local: [],
@@ -109,6 +116,7 @@ export class LocalRuntimeProviderFactory implements RuntimeProviderFactory {
       host.get(IHostProcessService),
       host.get(IHostFsWatchService),
       host.get(IHostTerminalService),
+      new WorkspacePathIndex(context.root, host.get(ICpuWorkerService), host.get(IBootstrapService).cacheDir),
     ));
     return { dispose: () => handle.remove() };
   }

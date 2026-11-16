@@ -1,4 +1,5 @@
 import { normalize, resolve } from 'pathe';
+import type { WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
 
 import { ToolOutputAccumulator } from '#/tool/output-accumulator';
 import {
@@ -78,6 +79,7 @@ interface RgSearchPlan {
   readonly cwd?: string;
   readonly pathClass: PathClass;
   readonly escapeLiteral: boolean;
+  readonly candidates?: readonly string[];
 }
 
 export class GrepTool implements IGrepTool {
@@ -162,7 +164,7 @@ export class GrepTool implements IGrepTool {
               return { isError: true, output: error instanceof Error ? error.message : String(error) };
             }
           }
-          return tagSshResult(await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchRoot, toolCallId), inspected);
+          return tagSshResult(await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchRoot, toolCallId, lease.runtime.pathIndex), inspected);
         } finally {
           lease.dispose();
         }
@@ -179,6 +181,7 @@ export class GrepTool implements IGrepTool {
     signal: AbortSignal,
     searchRoot: string,
     toolCallId: string,
+    pathIndex?: WorkspacePathIndex,
   ): Promise<ExecutableToolResult> {
     if (signal.aborted) {
       return { isError: true, output: 'Aborted before search started' };
@@ -186,11 +189,18 @@ export class GrepTool implements IGrepTool {
 
     const pathClass = env.pathClass;
     const searchesDirectory = args.path === undefined || await isDirectoryPath(fs, searchRoot);
+    const snapshot = pathIndex?.snapshot();
+    let candidates = searchesDirectory && args.include_ignored !== true && args.glob === undefined && args.type === undefined &&
+      normalize(searchRoot) === normalize(pathIndex?.root ?? '') && snapshot !== undefined
+      ? await pathIndex?.trigram?.candidates(snapshot, args.pattern, args.literal === true, args['-i'] === true) : undefined;
+    if (candidates !== undefined && candidates.reduce((length, path) => length + path.length + 3, 0) > 16_000) candidates = undefined;
+    if (candidates?.length === 0) return { output: 'No matches found' };
     const plan: RgSearchPlan = {
       target: searchesDirectory ? '.' : searchRoot,
       cwd: searchesDirectory ? searchRoot : undefined,
       pathClass,
       escapeLiteral: processService instanceof SshHostProcessService && pathClass === 'win32',
+      candidates,
     };
     let rgPath: string;
     try {
@@ -293,7 +303,7 @@ export class GrepTool implements IGrepTool {
         try {
           orderedLines =
             mode === 'files_with_matches' && !timedOut
-              ? await this.sortFilesWithMatchesByMtime(fs, keptLines, signal)
+              ? await this.sortFilesWithMatchesByMtime(fs, keptLines, signal, pathIndex)
               : keptLines;
         } catch (error) {
           if (error instanceof GrepAbortedError) {
@@ -422,6 +432,7 @@ export class GrepTool implements IGrepTool {
     fs: IHostFileSystem,
     lines: readonly ParsedGrepLine[],
     signal: AbortSignal,
+    pathIndex?: WorkspacePathIndex,
   ): Promise<ParsedGrepLine[]> {
     const entries = await mapWithConcurrency(
       lines,
@@ -433,7 +444,7 @@ export class GrepTool implements IGrepTool {
         let mtime = 0;
         if (path !== undefined) {
           try {
-            const mtimeMs = (await fs.stat(path)).mtimeMs ?? 0;
+            const mtimeMs = pathIndex?.mtime(path) ?? (await fs.stat(path)).mtimeMs ?? 0;
             mtime = Math.trunc(mtimeMs / 1000);
           } catch {
           }
@@ -598,7 +609,7 @@ function buildRgArgs(
   }
 
   const pattern = args.literal === true && plan.escapeLiteral ? escapeRegexLiteral(args.pattern) : args.pattern;
-  cmd.push('--', pattern, plan.target);
+  cmd.push('--', pattern, ...(plan.candidates ?? [plan.target]));
   return cmd;
 }
 

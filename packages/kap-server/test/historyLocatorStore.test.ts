@@ -68,6 +68,36 @@ const lines = [
 ];
 
 describe('history navigation source rows', () => {
+  it('jumps to a cold distant turn and step using persisted source-proved byte boundaries', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-sparse-turn-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const path = join(dir, 'navigation.sqlite');
+    let db = HistoryNavigationDb.lazy(path);
+    const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+    try {
+      const prefix = line({ type: 'llm.request', systemPrompt: 'neutral '.repeat(1 << 17) }).repeat(12);
+      await writeFile(wirePath, prefix + lines.join('') + line({ type: 'turn.prompt', turnId: 5, input: [{ type: 'text', text: 'later' }] }));
+      const nav = new HistoryLocatorStore(db, transcript);
+      const lookup = await nav.lookupDirectory('ws', 's', 'main', 4, 't4.1');
+      expect(lookup.status).toBe('ok');
+      if (lookup.status !== 'ok') throw new Error('expected indexed step');
+      expect(await nav.readBlocks(lookup.ref, 16000)).toMatchObject({ status: 'ok', complete: true,
+        blocks: [{ part: 'input' }, { part: 'output', text: 'needle 𠮷 suffix' }] });
+      expect((await db.ready()).readManifest('ws\0s\0main')).toBeUndefined();
+      expect((await db.ready()).readBoundaryManifest('ws\0s\0main')?.watermark).toBeGreaterThan(8 << 20);
+      await db.close();
+      db = HistoryNavigationDb.lazy(path);
+      const reopened = new HistoryLocatorStore(db, transcript);
+      expect((await reopened.lookupDirectory('ws', 's', 'main', 4)).status).toBe('ok');
+      expect(await reopened.readBlocks(lookup.ref, 16000)).toMatchObject({ status: 'ok', complete: true });
+      await appendFile(wirePath, line({ type: 'context.clear' }));
+      expect(await reopened.readBlocks(lookup.ref, 16000)).toEqual({ status: 'stale_ref' });
+      let cleared = await reopened.lookupDirectory('ws', 's', 'main', 4);
+      while (cleared.status === 'navigation_building') cleared = await reopened.lookupDirectory('ws', 's', 'main', 4, undefined, cleared.next);
+      expect(cleared.status).toBe('not_found');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it.each(['delivery', 'event'])('validates scalar turn identities in directory %s records', (kind) => {
     const record = (turnId: unknown): Record<string, unknown> => kind === 'delivery'
       ? { type: 'context.append_message', message: { role: 'user', id: 'delivered' }, delivery: { turnId } }
@@ -1163,7 +1193,7 @@ describe('history navigation source rows', () => {
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
-  it('recovers a distant step through preparation cursors and distinguishes absent and missing sources', async () => {
+  it('recovers a distant cross-turn step through preparation cursors and distinguishes absent and missing sources', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-read-preparation-'));
     const wirePath = join(dir, 'wire.jsonl');
     const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
@@ -1174,7 +1204,9 @@ describe('history navigation source rows', () => {
         record.includes('context.append_loop_event') ? '"turnId":"782"' : '"turnId":782').replaceAll('"step":1', '"step":14')).join('');
       await writeFile(wirePath, Array.from({ length: 9 }, (_, turnId) => line({ type: 'turn.prompt', turnId,
         input: [{ type: 'text', text: filler }], origin: { kind: 'user' } })).join('') +
-        line({ type: 'context.apply_compaction', history: [] }) + target);
+        line({ type: 'context.apply_compaction', history: [] }) + target +
+        line({ type: 'turn.prompt', turnId: 783, input: [] }) +
+        line({ type: 'context.append_loop_event', event: { type: 'step.end', turnId: 782, uuid: 'uuid-1', step: 14 } }));
       const transcript = {
         historyWireLocation: async (_session: string, agent: string) =>
           agent === 'missing' ? undefined : { workspaceId: 'ws', wirePath },

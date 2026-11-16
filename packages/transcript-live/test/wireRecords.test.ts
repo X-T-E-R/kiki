@@ -19,6 +19,33 @@ import {
 } from '../src';
 
 describe('readWireRecords', () => {
+  it.each([streamWireRecords, streamWireRecordsAwaited])('keeps raw bytes, ordinals and budgets with a selective record decoder', async stream => {
+    const home = await mkdtemp(join(tmpdir(), 'wire-prefilter-'));
+    const path = join(home, 'wire.jsonl');
+    const bytes = Buffer.from('\r\n' + JSON.stringify({ type: 'opaque', body: 'neutral 𠮷'.repeat(100) }) + '\r\n' +
+      JSON.stringify({ type: 'turn.prompt', turnId: 14 }) + '\n' + JSON.stringify({ type: 'opaque', body: 'last' }));
+    try {
+      await writeFile(path, bytes);
+      const records: ContextRecord[] = [];
+      const ordinals: number[] = [];
+      const options = { chunkBytes: 13, includeRawRecord: true, decodeRecord: (line: Buffer) =>
+        line.subarray(0, 16).toString('utf8').startsWith('{"type":"opaque"') ? { type: 'opaque' } : undefined,
+        onRecord: (record: ContextRecord, span: { startByteOffset: number; endByteOffset: number; ordinal: number }, raw?: Uint8Array) => {
+          records.push(record);
+          ordinals.push(span.ordinal);
+          expect(Buffer.from(raw!).equals(bytes.subarray(span.startByteOffset, span.endByteOffset))).toBe(true);
+        } };
+      const first = await stream(path, { ...options, maxRecords: 2 });
+      expect(first.complete).toBe(false);
+      expect(first.recordCount).toBe(2);
+      expect(records).toEqual([{ type: 'opaque' }, { type: 'turn.prompt', turnId: 14 }]);
+      const next = await stream(path, { ...options, startByteOffset: first.nextByteOffset, startRecordOrdinal: 2 });
+      expect(next.complete).toBe(true);
+      expect(records.at(-1)).toEqual({ type: 'opaque', body: 'last' });
+      expect(ordinals).toEqual([0, 1, 2]);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it.each([
     { raw: '{"type":"turn.started"}\n{"type":', records: [{ type: 'turn.started' }], complete: false },
     { raw: '{"type":', records: [], complete: false },

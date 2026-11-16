@@ -3,7 +3,7 @@ import type { Stats } from 'node:fs';
 import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/decodeText';
 import { toHostFsError } from '#/os/interface/hostFsErrors';
 
-const READ_CHUNK_SIZE = 64 * 1024;
+const READ_CHUNK_SIZE = 256 * 1024;
 const LINE_INDEX_CHUNK_SIZE = 1024 * 1024;
 const MAX_EXACT_LINE_LOCATIONS = 128;
 const LINE_CHECKPOINT_INTERVAL = 256;

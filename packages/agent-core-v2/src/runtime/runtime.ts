@@ -1,4 +1,5 @@
 import type { Event } from '#/_base/event';
+import type { WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IHostFsWatchService } from '#/os/interface/hostFsWatch';
@@ -46,6 +47,7 @@ export interface Runtime {
   readonly path: RuntimePath;
   readonly workspace: RuntimeWorkspaceMapper;
   readonly fs?: IHostFileSystem;
+  readonly pathIndex?: WorkspacePathIndex;
   readonly process?: IHostProcessService;
   readonly watch?: IHostFsWatchService;
   readonly terminal?: IHostTerminalService;

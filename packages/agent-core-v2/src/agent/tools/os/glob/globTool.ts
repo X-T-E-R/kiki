@@ -1,4 +1,7 @@
-import { normalize, resolve } from 'pathe';
+import { normalize, relative, resolve } from 'pathe';
+import picomatch from 'picomatch';
+import { win32 } from 'node:path';
+import type { WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
 
 import { ensureRgPath, rgUnavailableMessage, type EnsureRgPathOptions, type RgProbe } from '#/os/backends/node-local/tools/rgLocator';
 import {
@@ -170,6 +173,7 @@ export class GlobTool implements IGlobTool {
             args,
             signal,
             searchRoots,
+            lease.runtime.pathIndex,
           ), inspected);
         } finally {
           lease.dispose();
@@ -186,6 +190,7 @@ export class GlobTool implements IGlobTool {
     args: GlobInput,
     signal: AbortSignal,
     searchRoots: readonly string[],
+    pathIndex?: WorkspacePathIndex,
   ): Promise<ExecutableToolResult> {
     const searchRoot = searchRoots[0] ?? workspace.workspaceDir;
 
@@ -205,79 +210,91 @@ export class GlobTool implements IGlobTool {
       return { isError: true, output: 'Glob aborted' };
     }
 
-    let rgPath: string;
-    try {
-      if (processService instanceof SshHostProcessService) {
-        rgPath = 'rg';
-      } else {
-        const resolution = await ensureRgPath(createRgProbe(processService), {
-          signal,
-          allowCachedFallback: true,
-          ...this.rgShareOptions(),
-        });
-        rgPath = resolution.path;
-        if (resolution.source !== 'system-path') {
-          this.telemetry.track2('glob_tool_rg_fallback', {
-            source: resolution.source,
-            outcome: 'resolved',
-          });
-        }
-      }
-    } catch (error) {
-      if (signal.aborted) {
-        return { isError: true, output: 'Glob aborted' };
-      }
-      this.telemetry.track2('glob_tool_rg_fallback', { outcome: 'failed' });
-      return { isError: true, output: rgUnavailableMessage(error) };
-    }
-
-    let run;
-    try {
-      run = await runRgOnce(processService, buildRgArgs(rgPath, args), signal, { cwd: searchRoot });
-    } catch (error) {
-      return { isError: true, output: formatSpawnError(error) };
-    }
-    if (run.kind === 'aborted') {
-      return { isError: true, output: 'Glob aborted' };
-    }
-
-    if (shouldRetryRipgrepEagain(run)) {
+    let rawPaths = args.include_ignored === true || processService instanceof SshHostProcessService
+      ? undefined : pathIndex?.glob(searchRoot, args.pattern);
+    const indexed = rawPaths !== undefined;
+    let bufferTruncated = false;
+    let timedOut = false;
+    let traversalWarning: string | undefined;
+    let matches: ((path: string) => boolean) | undefined;
+    if (rawPaths === undefined) {
+      let rgPath: string;
       try {
-        run = await runRgOnce(processService, buildRgArgs(rgPath, args, true), signal, { cwd: searchRoot });
+        if (processService instanceof SshHostProcessService) {
+          rgPath = 'rg';
+        } else {
+          const resolution = await ensureRgPath(createRgProbe(processService), {
+            signal,
+            allowCachedFallback: true,
+            ...this.rgShareOptions(),
+          });
+          rgPath = resolution.path;
+          if (resolution.source !== 'system-path') {
+            this.telemetry.track2('glob_tool_rg_fallback', {
+              source: resolution.source,
+              outcome: 'resolved',
+            });
+          }
+        }
+      } catch (error) {
+        if (signal.aborted) {
+          return { isError: true, output: 'Glob aborted' };
+        }
+        this.telemetry.track2('glob_tool_rg_fallback', { outcome: 'failed' });
+        return { isError: true, output: rgUnavailableMessage(error) };
+      }
+
+      let run;
+      try {
+        run = await runRgOnce(processService, buildRgArgs(rgPath, args), signal, { cwd: searchRoot });
       } catch (error) {
         return { isError: true, output: formatSpawnError(error) };
       }
       if (run.kind === 'aborted') {
         return { isError: true, output: 'Glob aborted' };
       }
-    }
 
-    const { exitCode, stdoutText, stderrText, bufferTruncated, timedOut } = run;
-
-    let traversalWarning: string | undefined;
-    if (!timedOut && (exitCode !== 0 && exitCode !== 1 || exitCode === 1 && stderrText.trim() !== '')) {
-      const rawPathsBeforeError = splitCompletePaths(stdoutText, true);
-      if (rawPathsBeforeError.length === 0) {
-        return { isError: true, output: formatGlobError(searchRoot, stderrText) };
+      if (shouldRetryRipgrepEagain(run)) {
+        try {
+          run = await runRgOnce(processService, buildRgArgs(rgPath, args, true), signal, { cwd: searchRoot });
+        } catch (error) {
+          return { isError: true, output: formatSpawnError(error) };
+        }
+        if (run.kind === 'aborted') {
+          return { isError: true, output: 'Glob aborted' };
+        }
       }
-      traversalWarning = formatGlobWarning(stderrText);
-    }
-    if (signal.aborted) {
-      return { isError: true, output: 'Glob aborted' };
+
+      const { exitCode, stdoutText, stderrText } = run;
+      bufferTruncated = run.bufferTruncated;
+      timedOut = run.timedOut;
+      if (!timedOut && (exitCode !== 0 && exitCode !== 1 || exitCode === 1 && stderrText.trim() !== '')) {
+        const rawPathsBeforeError = splitCompletePaths(stdoutText, true);
+        if (rawPathsBeforeError.length === 0) {
+          return { isError: true, output: formatGlobError(searchRoot, stderrText) };
+        }
+        traversalWarning = formatGlobWarning(stderrText);
+      }
+      if (signal.aborted) {
+        return { isError: true, output: 'Glob aborted' };
+      }
+
+      const pattern = args.pattern.replace(/^\//u, '');
+      const matcher = picomatch(pattern, { dot: true, basename: !pattern.includes('/') && pattern !== '*' });
+      matches = path => matcher(env.pathClass === 'win32'
+        ? win32.relative(searchRoot, path).replaceAll('\\', '/') : relative(searchRoot, path));
+      rawPaths = splitCompletePaths(stdoutText, bufferTruncated || timedOut).map(path => resolve(searchRoot, path));
     }
 
-    const rawPaths = splitCompletePaths(stdoutText, bufferTruncated || timedOut).map((p) =>
-      resolve(searchRoot, p),
-    );
-
-    const kept: string[] = [];
+    let kept: readonly string[] = rawPaths;
     let filteredSensitive = 0;
-    for (const p of rawPaths) {
-      if (isSensitiveFile(p)) {
-        filteredSensitive++;
-      } else {
-        kept.push(p);
+    if (!indexed) {
+      const filtered: string[] = [];
+      for (const path of rawPaths) {
+        if (isSensitiveFile(path)) filteredSensitive++;
+        else if (matches === undefined || matches(path)) filtered.push(path);
       }
+      kept = filtered;
     }
 
     const offset = args.offset ?? 0;
@@ -287,9 +304,7 @@ export class GlobTool implements IGlobTool {
 
     const pathClass = env.pathClass;
     const shouldRelativize = !(processService instanceof SshHostProcessService);
-    const candidates = limited.map((p) =>
-      shouldRelativize ? relativizeIfUnder(p, workspace.workspaceDir, pathClass) : p,
-    );
+    const candidates = limited;
 
     const warnings: string[] = [];
     if (timedOut) {
@@ -360,7 +375,8 @@ export class GlobTool implements IGlobTool {
     );
     let remaining = DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS - noticeChars;
     const displayLines: string[] = [];
-    for (const p of candidates) {
+    for (const path of candidates) {
+      const p = shouldRelativize ? relativizeIfUnder(path, workspace.workspaceDir, pathClass) : path;
       if (p.length + 1 > remaining) break;
       displayLines.push(p);
       remaining -= p.length + 1;
@@ -416,7 +432,6 @@ function buildRgArgs(rgPath: string, args: GlobInput, singleThreaded = false): s
   for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) {
     cmd.push('--glob', `!${dir}`);
   }
-  cmd.push('--glob', args.pattern);
   for (const glob of SENSITIVE_GLOBS_TO_EXCLUDE) {
     cmd.push('--glob', `!${glob}`);
   }

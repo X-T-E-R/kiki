@@ -42,6 +42,7 @@ export interface WireRecordsStreamOptions {
   readonly signal?: AbortSignal;
   readonly onRecord: (record: ContextRecord, span: WireRecordSpan, raw?: Uint8Array) => unknown;
   readonly includeRawRecord?: boolean;
+  readonly decodeRecord?: (line: Buffer) => ContextRecord | undefined;
   readonly byteSource?: WireByteSource;
 }
 
@@ -148,7 +149,7 @@ export async function streamWireRecords(
     lineBytes = 0;
   };
 
-  const consume = (line: Buffer, terminated: boolean): void => {
+  const consume = (line: Buffer, terminated: boolean, raw?: Buffer): void => {
     const normalized = line.length > 0 && line.at(-1) === 0x0d ? line.subarray(0, -1) : line;
     if (normalized.length === 0) {
       nextByteOffset += line.length + (terminated ? 1 : 0);
@@ -160,7 +161,7 @@ export async function streamWireRecords(
     }
     let record: unknown;
     try {
-      record = JSON.parse(normalized.toString('utf8'));
+      record = (terminated ? options.decodeRecord?.(normalized) : undefined) ?? JSON.parse(normalized.toString('utf8'));
     } catch (parseError) {
       if (!terminated) {
         stop('partial_tail');
@@ -177,7 +178,7 @@ export async function streamWireRecords(
     const endByteOffset = nextByteOffset + line.length + (terminated ? 1 : 0);
     const keepReading = options.onRecord(record as ContextRecord, {
       startByteOffset: nextByteOffset, endByteOffset, ordinal: startRecordOrdinal + recordCount,
-    }, options.includeRawRecord ? terminated ? Buffer.concat([line, Buffer.from('\n')]) : line : undefined);
+    }, options.includeRawRecord ? raw ?? (terminated ? Buffer.concat([line, Buffer.from('\n')]) : line) : undefined);
     recordCount += 1;
     nextByteOffset = endByteOffset;
     if (keepReading === false) stop('record_budget');
@@ -204,6 +205,7 @@ export async function streamWireRecords(
         lineBytes += rest.length;
         return;
       }
+      const raw = lineChunks.length === 0 ? rest.subarray(0, newline + 1) : undefined;
       if (newline > 0) {
         lineChunks.push(rest.subarray(0, newline));
         lineBytes += newline;
@@ -213,7 +215,7 @@ export async function streamWireRecords(
         return;
       }
       lineNumber += 1;
-      consume(mergeLine(), true);
+      consume(mergeLine(), true, raw);
       if (stopped) return;
       rest = rest.subarray(newline + 1);
     }
@@ -319,6 +321,7 @@ export async function streamWireRecordsAwaited(
       startRecordOrdinal: (optionalLimit(options.startRecordOrdinal) ?? 0) + recordCount,
       signal: options.signal,
       includeRawRecord: options.includeRawRecord,
+      decodeRecord: options.decodeRecord,
       byteSource: options.byteSource,
       retainIncompleteRecord: options.retainIncompleteRecord,
       continuation: nextByteOffset === (options.startByteOffset ?? 0) ? options.continuation : undefined,

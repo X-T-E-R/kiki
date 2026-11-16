@@ -24,7 +24,7 @@ export interface HistorySourceAnchor {
   readonly window?: HistoryDirectoryWindow;
 }
 
-export type HistorySourceResult = { readonly status: 'ok' } |
+export type HistorySourceResult = { readonly status: 'ok'; readonly bytes: Uint8Array } |
   { readonly status: 'stale_ref' | 'source_missing' };
 
 const MAX_RECORD_BYTES = 64 << 20;
@@ -71,6 +71,7 @@ export function decodeHistoryRef(value: string): HistorySourceAnchor {
   if (window !== undefined && (typeof window !== 'object' || window === null ||
       !Number.isSafeInteger(window.start) || window.start < 0 || window.start > a.start! ||
       !Number.isSafeInteger(window.end) || window.end < a.end! ||
+      (window.watermark !== undefined && (!Number.isSafeInteger(window.watermark) || window.watermark < window.end || window.watermark > window.proof?.size)) ||
       (window.mode === undefined ? window.end - window.start > (4 << 20) : window.mode !== 'prefix' || window.start !== 0) ||
       window.proof === null || typeof window.proof !== 'object' ||
       window.proof.identity !== a.incarnation || !Number.isSafeInteger(window.proof.size) || window.proof.size < window.end ||
@@ -93,7 +94,7 @@ export async function verifyHistorySource(wirePath: string, anchor: HistorySourc
   if (bytes === undefined) return { status: 'source_missing' };
   if (bytes.byteLength !== size || hashHistoryRecord(bytes) !== anchor.digest) return { status: 'stale_ref' };
   return await historySourceIncarnation(wirePath) === anchor.incarnation
-    ? { status: 'ok' } : { status: 'stale_ref' };
+    ? { status: 'ok', bytes } : { status: 'stale_ref' };
 }
 
 export function hashHistoryRecord(bytes: Uint8Array): string {
