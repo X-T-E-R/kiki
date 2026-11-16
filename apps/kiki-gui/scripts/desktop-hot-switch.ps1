@@ -19,6 +19,7 @@ $entryScript = $PSCommandPath
 $statePath = Join-Path $runtime 'hot-switch.json'
 $instances = Join-Path $homePath 'server\instances'
 $releases = Join-Path $runtime 'releases'
+[System.Net.WebRequest]::DefaultWebProxy = $null
 
 function Call-Local([object]$Server, [string]$Path, [object]$Body, [int]$TimeoutSeconds = 60) {
     $headers = @{ Authorization = 'Bearer ' + $ownerToken }
