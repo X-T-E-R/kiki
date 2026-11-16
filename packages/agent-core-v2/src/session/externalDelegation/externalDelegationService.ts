@@ -760,6 +760,7 @@ export class SessionExternalDelegationService
         snapshot: this.profiles.snapshot?.(),
         message,
         name: taskName,
+        userLabel: optionalNonblank(request.title, 'title'),
         modelAlias,
         thinkingEffort,
         permissionMode: constrainPermissionMode(

@@ -177,6 +177,8 @@ export interface ExternalDispatchRequest {
   readonly modelAlias?: string;
   /** Exact thinking binding for a newly-created named child. */
   readonly thinkingEffort?: string;
+  /** Display title for a newly-created named child (its label in session views); an existing child keeps its own. */
+  readonly title?: string;
 }
 
 export interface ExternalContinueRequest {

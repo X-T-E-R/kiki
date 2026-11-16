@@ -39,6 +39,7 @@ const seatCreateSchema = z.object({
   workspace: z.string().min(1),
   principal: z.string().min(1),
   mode: modeSchema.optional(),
+  profile: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   thinking: z.string().min(1).optional(),
 }).strict();
@@ -49,6 +50,7 @@ const seatViewSchema = z.object({
   principal: z.string().min(1),
   workspace: z.string().min(1),
   mode: modeSchema,
+  profile: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   thinking: z.string().min(1).optional(),
   createdAt: z.number().int().nonnegative(),

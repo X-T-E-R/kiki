@@ -398,6 +398,12 @@ kiki seat revoke <seatId>
 
 Daemon 为每组 workspace 和 principal 创建或复用一个席位。Delegation token 只由 `seat create` 返回；`seat list` 仅包含非敏感身份与配置字段。
 
+`--agent <profile>` 把席位的 main agent 绑定到指定 profile，而不是默认的 `agent`，例如为无人值守的集成换上一个收紧了工具的 profile。profile 在席位首次创建时固定；之后请求另一个 profile 会被拒绝，要更换就先撤销席位再重新创建。经席位派发的具名子 Agent 仍受这个 main profile 的 `allowed_subagents`、`deny_subagents` 和 `can_spawn_subagents` 约束。
+
+派发具名子 Agent 时（委派过程 `dispatch`，或 MCP 的 `kiki_dispatch`）可以带一个可选的 `title`，最长 120 个字符。它会成为新建子 Agent 在会话视图（例如 Agent 树）里的显示名，集成方可以显示一个看得懂的名字（比如这个子 Agent 负责的聊天），而不是 `task_name`。已经存在的子 Agent 保留原来的显示名；`title` 不计入派发键的指纹。
+
+席位不会超过本机为外部委派设定的权限上限：除非 daemon 以 `KIKI_EXTERNAL_PERMISSION_CEILING=auto`（或 `review`、`yolo`）启动，上限都是 `manual`。模式从低到高是 `manual` < `auto` < `review` < `yolo`，席位按自身模式和上限中较低的一个运行。所以在保持默认上限的主机上，用 `--mode auto` 创建的席位仍会把审批作为 `interactions` 交给调用方；`--mode review`（「替我审批」：先交给配置的权限审查者）的席位需要 `review` 或 `yolo` 上限。
+
 #### 安装 MCP 配置
 
 为支持的客户端安装 stdio MCP 配置：

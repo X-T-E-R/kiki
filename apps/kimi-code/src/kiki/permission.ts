@@ -69,15 +69,7 @@ async function runPermissionTest(pattern: string, options: PermissionTestOptions
   const deny = matches.filter((rule) => rule.decision === 'deny');
   const ask = matches.filter((rule) => rule.decision === 'ask');
   const allow = matches.filter((rule) => rule.decision === 'allow');
-  const result = deny.length > 0
-    ? 'deny'
-    : ask.length > 0
-      ? 'deny'
-      : mode === 'auto' || mode === 'yolo'
-        ? 'approve'
-        : allow.length > 0
-          ? 'approve'
-          : 'deny';
+  const result = permissionTestResult(mode, deny.length, ask.length, allow.length);
   const payload = {
     pattern,
     command,
@@ -95,7 +87,7 @@ async function runPermissionTest(pattern: string, options: PermissionTestOptions
       segments,
     })),
     reason: result === 'deny'
-      ? deny[0]?.reason ?? (ask.length > 0 || (allow.length === 0 && mode !== 'auto' && mode !== 'yolo')
+      ? deny[0]?.reason ?? (ask.length > 0 || (allow.length === 0 && !approvesByMode(mode))
         ? 'requires approval; non-interactive run denied (use an allow rule or --permission-mode auto)'
         : undefined)
       : undefined,
@@ -120,6 +112,17 @@ async function runPermissionTest(pattern: string, options: PermissionTestOptions
     }
   }
   if (payload.reason !== undefined) process.stdout.write(`reason: ${payload.reason}\n`);
+}
+
+// Review mode approves what auto mode approves; the reviewer only sees what would otherwise ask a person, and
+// user-configured ask rules still go to a person. So a dry run treats review like auto.
+function approvesByMode(mode: PermissionMode): boolean {
+  return mode === 'auto' || mode === 'review' || mode === 'yolo';
+}
+
+export function permissionTestResult(mode: PermissionMode, deny: number, ask: number, allow: number): 'approve' | 'deny' {
+  if (deny > 0 || ask > 0) return 'deny';
+  return approvesByMode(mode) || allow > 0 ? 'approve' : 'deny';
 }
 
 function parseBashPatternSubject(pattern: string): string {

@@ -131,6 +131,7 @@ const dispatchInputSchema = z
     profileName: z.string().trim().min(1).optional(),
     modelAlias: z.string().trim().min(1).optional(),
     thinkingEffort: z.string().trim().min(1).optional(),
+    title: z.string().trim().min(1).max(120).optional(),
     dispatchKey: z.string().trim().min(1).optional(),
     message: z.string().trim().min(1).max(1_000_000),
   })
@@ -140,7 +141,8 @@ const dispatchInputSchema = z
       (value.taskName !== undefined ||
         value.profileName !== undefined ||
         value.modelAlias !== undefined ||
-        value.thinkingEffort !== undefined)
+        value.thinkingEffort !== undefined ||
+        value.title !== undefined)
     ) {
       ctx.addIssue({ code: 'custom', message: 'Named-child fields require target named.' });
     }
@@ -591,6 +593,7 @@ const dispatchMcpInput = z
     profile_name: z.string().trim().min(1).optional(),
     model_alias: z.string().trim().min(1).optional(),
     thinking_effort: z.string().trim().min(1).optional(),
+    title: z.string().trim().min(1).max(120).optional(),
     dispatch_key: z.string().trim().min(1).optional(),
     message: z.string().trim().min(1).max(1_000_000),
   })
@@ -600,7 +603,8 @@ const dispatchMcpInput = z
       (value.task_name !== undefined ||
         value.profile_name !== undefined ||
         value.model_alias !== undefined ||
-        value.thinking_effort !== undefined)
+        value.thinking_effort !== undefined ||
+        value.title !== undefined)
     ) {
       ctx.addIssue({ code: 'custom', message: 'Named-child fields require target named.' });
     }
@@ -766,6 +770,7 @@ const dispatch = defineDelegationProcedure({
         profileName: value.profile_name,
         modelAlias: value.model_alias,
         thinkingEffort: value.thinking_effort,
+        title: value.title,
         dispatchKey: value.dispatch_key ?? randomKey(),
         message: value.message,
       }),
@@ -775,6 +780,7 @@ const dispatch = defineDelegationProcedure({
         profile_name: value.profileName,
         model_alias: value.modelAlias,
         thinking_effort: value.thinkingEffort,
+        title: value.title,
         dispatch_key: value.dispatchKey,
         message: value.message,
       }),
@@ -790,6 +796,7 @@ const dispatch = defineDelegationProcedure({
         profileName: value.profile_name,
         modelAlias: value.model_alias,
         thinkingEffort: value.thinking_effort,
+        title: value.title,
         dispatchKey: value.dispatch_key,
         message: value.message,
       }),
@@ -799,6 +806,7 @@ const dispatch = defineDelegationProcedure({
         profile_name: value.profileName,
         model_alias: value.modelAlias,
         thinking_effort: value.thinkingEffort,
+        title: value.title,
         dispatch_key: value.dispatchKey,
         message: value.message,
       }),

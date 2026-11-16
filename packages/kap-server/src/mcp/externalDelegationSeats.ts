@@ -4,6 +4,7 @@ import { platform } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 
 import {
+  DEFAULT_AGENT_PROFILE_NAME,
   ISessionExternalDelegationProvisionStore,
   type PermissionMode,
   type Scope,
@@ -21,6 +22,7 @@ const seatSchema = z.object({
   principal: z.string().min(1),
   workspace: z.string().min(1),
   mode: z.enum(['manual', 'auto', 'review', 'yolo']),
+  profile: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   thinking: z.string().min(1).optional(),
   createdAt: z.number().int().nonnegative(),
@@ -64,6 +66,7 @@ export class ExternalDelegationSeatManager {
     readonly workspace: string;
     readonly principal: string;
     readonly mode?: PermissionMode;
+    readonly profile?: string;
     readonly model?: string;
     readonly thinking?: string;
   }): Promise<ExternalDelegationSeat> {
@@ -81,11 +84,15 @@ export class ExternalDelegationSeatManager {
         principal: input.principal,
         workspace,
         mode: input.mode ?? 'manual',
+        profile: input.profile,
         model: input.model,
         thinking: input.thinking,
         createdAt: now,
         updatedAt: now,
       };
+      if (existing !== undefined && input.profile !== undefined && input.profile !== (existing.profile ?? DEFAULT_AGENT_PROFILE_NAME)) {
+        throw new Error('External delegation seat main agent profile cannot change.');
+      }
       const existingProvision = existing === undefined
         ? undefined
         : await this.readSeatProvision(seat.sessionId);
@@ -102,6 +109,7 @@ export class ExternalDelegationSeatManager {
         workspacePath: workspace,
         principalId: seat.principal,
         delegationToken,
+        profileName: input.profile ?? seat.profile,
         modelAlias: input.model ?? seat.model,
         thinkingEffort: input.thinking ?? seat.thinking,
         permissionMode: input.mode ?? seat.mode,
@@ -111,6 +119,7 @@ export class ExternalDelegationSeatManager {
         ...seat,
         workspace: provisioned.workspacePath,
         mode: provisioned.permissionMode,
+        profile: provisioned.profileName ?? seat.profile,
         model: provisioned.modelAlias,
         thinking: provisioned.thinkingEffort,
         updatedAt: now,
@@ -246,6 +255,7 @@ function toView(seat: ExternalDelegationSeatRecord): ExternalDelegationSeatView 
     principal: seat.principal,
     workspace: seat.workspace,
     mode: seat.mode,
+    profile: seat.profile,
     model: seat.model,
     thinking: seat.thinking,
     createdAt: seat.createdAt,
