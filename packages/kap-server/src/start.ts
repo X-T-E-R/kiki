@@ -6,6 +6,7 @@ import {
   drainLogCloses,
   ConfigWarning,
   CapabilityChanged,
+  Event2,
   IAgentLifecycleService,
   IAgentLoopService,
   IAppendLogStore,
@@ -40,6 +41,7 @@ import {
   type ScopeSeed,
 } from '@kiki/agent-core-v2';
 import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
+import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
 import { panelBoardSeeds } from './transport/klient/panelBoardSeeds';
 import { historyArchiveSeed } from './services/historyArchive';
 import { historyDirectorySeed } from './services/history/historyDirectory';
@@ -898,6 +900,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => core.accessor.get(IThreadMailboxStore).close() },
       { run: () => core.accessor.get(IHomeRuntimeService).close() },
       { run: () => roomChangeSubscription.dispose() },
+      { run: () => personaChangeSubscription.dispose() },
       { run: () => configWarningSubscription.dispose() },
       { run: () => pluginChangeSubscription.dispose() },
       { run: () => pluginUsageChangeSubscription.dispose() },
@@ -1008,6 +1011,18 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   });
   const roomChangeSubscription = core.accessor.get(IRoomService).onDidChange((change) => {
     broadcaster.publishRoomChanged(change);
+  });
+  class PersonaChanged extends Event2<{ readonly payload: Record<string, never> }> {
+    static override readonly type = 'event.persona.changed';
+  }
+  let personaPublishScheduled = false;
+  const personaChangeSubscription = core.accessor.get(IPersonaStore).onDidChange(() => {
+    if (personaPublishScheduled) return;
+    personaPublishScheduled = true;
+    queueMicrotask(() => {
+      personaPublishScheduled = false;
+      core.accessor.get(IEventService).publish(new PersonaChanged({ payload: {} }));
+    });
   });
   const fsWatchBridge = new FsWatchBridge({ core, logger });
 

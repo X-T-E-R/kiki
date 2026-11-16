@@ -23,6 +23,23 @@ export function isBotOrRoomSession(
   return typeof session.metadata?.['bot_persona_id'] === 'string';
 }
 
+/**
+ * Single-address filter for the sidebar's plain `Sessions` list.
+ *
+ * While the persona directory is still loading (`directory === undefined`), only
+ * room-member sessions are hidden so a newly created or cold persona thread is
+ * never black-holed out of both sections. Once the raw directory resolves
+ * (including `hidden: true` entries), only active persona homes and room members
+ * are suppressed; replaced old homes and unmatched sessions remain in `Sessions`.
+ */
+export function shouldHideFromSessionGroups(
+  session: Session,
+  directory: readonly Pick<PersonaSummary, 'id' | 'homeSessionId'>[] | undefined,
+): boolean {
+  if (session.archived === true) return false;
+  return isBotOrRoomSession(session, directory ?? []);
+}
+
 export function sessionBelongsToPersona(session: Session, personaId: string): boolean {
   return personaId !== '' && sessionPersonaId(session) === personaId;
 }

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import {
   IAppendLogStore,
   IAtomicDocumentStore,
@@ -331,14 +331,55 @@ async function remotePreviewAdmissionFixture() {
   const identity = { homeId: randomUUID(), hostId: randomUUID(), protocol: 1 as const };
   const target = { homeId: randomUUID(), hostId: randomUUID(), protocol: 1 as const };
   let response = () => Response.json({ code: 40301, msg: 'html_preview_target_owner_grant_required', data: null }, { status: 403 });
-  let handshakeStatus = 200; let handshakeReason = 'invalid_owner_credential'; let requiredGrant = 'fixture-grant';
+  let handshakeStatus = 200; let handshakeReason = 'revoked'; let requiredGrant = 'fixture-grant';
+  const signProof = (secret: string, domain: string, suffix: string) =>
+    createHmac('sha256', createHash('sha256').update(secret).digest('hex')).update(`kiki-handshake-${domain}-v1:${suffix}`).digest('hex');
   const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
-    if (url.pathname.endsWith('/handshake')) return handshakeStatus === 200
-      ? Response.json({ code: 0, data: { identity: target, serverId: 'fixture', inboundEnabled: true } })
-      : Response.json({ code: 40301, msg: handshakeReason, data: null }, { status: handshakeStatus });
+    const reqHeaders = new Headers(init?.headers);
+    if (url.pathname.endsWith('/handshake')) {
+      const nonce = reqHeaders.get('x-kiki-handshake-nonce') ?? '';
+      const reqProof = reqHeaders.get('x-kiki-handshake-proof') ?? '';
+      const suffix = `${nonce}:${target.homeId}:${target.hostId}`;
+      const matchesSecret = (secret: string) => reqProof === signProof(secret, 'req', nonce);
+      if (matchesSecret('fixture-invitation') && handshakeStatus === 200) {
+        return Response.json(
+          { code: 0, data: { identity: target, serverId: 'fixture', inboundEnabled: true } },
+          { headers: { 'x-kiki-handshake-status': 'invited', 'x-kiki-handshake-proof': signProof('fixture-invitation', 'invited', suffix) } },
+        );
+      }
+      const callerGrant = matchesSecret(requiredGrant) ? requiredGrant : matchesSecret('fixture-grant') ? 'fixture-grant' : undefined;
+      if (handshakeStatus !== 200) {
+        if (handshakeReason === 'inbound_disabled' && callerGrant !== undefined) {
+          return Response.json(
+            { code: 0, data: { identity: target, serverId: 'fixture', inboundEnabled: false } },
+            { headers: { 'x-kiki-handshake-status': 'inbound_disabled', 'x-kiki-handshake-proof': signProof(callerGrant, 'disabled', suffix) } },
+          );
+        }
+        if (handshakeReason === 'revoked' && callerGrant !== undefined) {
+          return Response.json(
+            { code: 0, data: { identity: target, serverId: 'fixture', inboundEnabled: true } },
+            { headers: { 'x-kiki-handshake-status': 'revoked', 'x-kiki-handshake-proof': signProof(callerGrant, 'revoked', suffix) } },
+          );
+        }
+        return Response.json({ code: 40301, msg: handshakeReason, data: null }, { status: handshakeStatus });
+      }
+      if (callerGrant === requiredGrant) {
+        return Response.json(
+          { code: 0, data: { identity: target, serverId: 'fixture', inboundEnabled: true } },
+          { headers: { 'x-kiki-handshake-status': 'approved', 'x-kiki-handshake-proof': signProof(requiredGrant, 'res', suffix) } },
+        );
+      }
+      if (callerGrant !== undefined) {
+        return Response.json(
+          { code: 0, data: { identity: target, serverId: 'fixture', inboundEnabled: true } },
+          { headers: { 'x-kiki-handshake-status': 'revoked', 'x-kiki-handshake-proof': signProof(callerGrant, 'revoked', suffix) } },
+        );
+      }
+      return Response.json({ code: 40301, msg: handshakeReason, data: null }, { status: 403 });
+    }
     if (url.pathname.endsWith('/claim')) return Response.json({ code: 0, data: { grantId: randomUUID(), revision: 1, grant: 'fixture-grant', target } });
-    if (new Headers(init?.headers).get('x-kiki-connection-grant') !== requiredGrant) return Response.json({ code: 40101, msg: 'connection_not_approved', data: null }, { status: 401 });
+    if (reqHeaders.get('x-kiki-connection-grant') !== requiredGrant) return Response.json({ code: 40101, msg: 'connection_not_approved', data: null }, { status: 401 });
     if (url.pathname === '/api/meta') return Response.json({ code: 0, data: { readable: true } });
     return response();
   });
@@ -350,7 +391,7 @@ async function remotePreviewAdmissionFixture() {
   cleanups.push(() => manager.close());
   return {
     manager, record, transport, setResponse: (value: () => Response) => { response = value; },
-    failHandshake: (reason = 'invalid_owner_credential') => { handshakeStatus = 403; handshakeReason = reason; },
+    failHandshake: (reason = 'revoked') => { handshakeStatus = 403; handshakeReason = reason; },
     restoreHandshake: () => { handshakeStatus = 200; },
     replaceRequiredGrant: () => { requiredGrant = 'replacement-grant'; },
   };
@@ -405,25 +446,29 @@ describe('remote HTML refusals through the real connection manager', () => {
     [403, 40301, 'connection_not_approved'],
     [403, 40301, 'unrecognized_preview_denial'],
     [403, 40101, 'html_preview_target_owner_grant_required'],
-  ] as const)('still pauses GUI for HTTP %s with code %s and message %s', async (status, code, msg) => {
+  ] as const)('rejects non-exempt HTTP %s with code %s and message %s', async (status, code, msg) => {
     const f = await remotePreviewAdmissionFixture();
     f.setResponse(() => Response.json({ code, msg, data: null }, { status }));
     const lease = f.manager.lease(f.record.id);
     await expect(f.manager.forward(f.record.id, { operation: 'htmlPreviewOpen' }, lease.signal)).rejects.toMatchObject({ status, reason: 'connection_not_approved' });
-    expect(f.manager.get(f.record.id).state).toBe('authentication_required');
-    expect(lease.signal.aborted).toBe(true); lease.release();
+    expect(f.manager.get(f.record.id).state).toBe(status === 401 ? 'authentication_required' : 'offline');
+    expect(lease.signal.aborted).toBe(status === 401); lease.release();
   });
 
   it('does not exempt a preview-shaped refusal on another operation or during handshake', async () => {
     const f = await remotePreviewAdmissionFixture();
     const lease = f.manager.lease(f.record.id);
     await expect(f.manager.forward(f.record.id, { operation: 'sessionCreate', body: {} }, lease.signal)).rejects.toMatchObject({ status: 403, reason: 'connection_not_approved' });
-    expect(lease.signal.aborted).toBe(true);
-    expect(f.manager.get(f.record.id).state).toBe('authentication_required'); lease.release();
-    const g = await remotePreviewAdmissionFixture(); g.failHandshake();
-    const handshakeLease = g.manager.lease(g.record.id);
-    await expect(g.manager.forward(g.record.id, { operation: 'htmlPreviewOpen' }, handshakeLease.signal)).rejects.toMatchObject({ status: 403 });
-    expect(g.manager.get(g.record.id).state).toBe('authentication_required');
+    expect(lease.signal.aborted).toBe(false);
+    expect(f.manager.get(f.record.id).state).toBe('offline'); lease.release();
+    const g = await remotePreviewAdmissionFixture(); g.failHandshake('html_preview_target_owner_grant_required');
+    const previewShapeLease = g.manager.lease(g.record.id);
+    await expect(g.manager.forward(g.record.id, { operation: 'htmlPreviewOpen' }, previewShapeLease.signal)).rejects.toMatchObject({ status: 403, reason: 'handshake_unavailable' });
+    expect(g.manager.get(g.record.id).state).toBe('offline'); previewShapeLease.release();
+    const h = await remotePreviewAdmissionFixture(); h.failHandshake();
+    const handshakeLease = h.manager.lease(h.record.id);
+    await expect(h.manager.forward(h.record.id, { operation: 'htmlPreviewOpen' }, handshakeLease.signal)).rejects.toMatchObject({ status: 401, reason: 'connection_not_approved' });
+    expect(h.manager.get(h.record.id).state).toBe('authentication_required');
     expect(handshakeLease.signal.aborted).toBe(true); handshakeLease.release();
   });
 
@@ -479,7 +524,8 @@ describe('remote HTML refusals through the real connection manager', () => {
     const lease = f.manager.lease(f.record.id);
     await expect(f.manager.forward(f.record.id, { operation: 'htmlPreviewResource', params: { previewId: 'fixture' } }, lease.signal)).rejects.toMatchObject({ status: 403 });
     expect(cancelled).toBe(true); expect(pulls).toBeLessThanOrEqual(2);
-    expect(lease.signal.aborted).toBe(true); lease.release();
+    expect(f.manager.get(f.record.id).state).toBe('offline');
+    expect(lease.signal.aborted).toBe(false); lease.release();
   });
 });
 

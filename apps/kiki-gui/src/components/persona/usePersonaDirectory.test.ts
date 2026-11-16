@@ -114,4 +114,43 @@ describe('unified persona directory', () => {
     expect(local.latest().directory[0]?.homeSessionId).toBe('local-home');
     expect(remote.latest().directory[0]?.homeSessionId).toBe('remote-home');
   });
+
+  it('tracks lastActivityAt and triggers a one-shot persona refetch when sessions reference an unseen persona or newer home', async () => {
+    let serverPersonas: PersonaSummary[] = [persona('alpha', { homeSessionId: 'alpha-home' })];
+    listPersonas.mockImplementation(async () => serverPersonas);
+
+    const initial = await renderDirectory({
+      sessions: [
+        session('alpha-home', 'alpha', { updated_at: '2026-10-05T12:00:00Z' }),
+      ],
+    });
+    expect(initial.latest().directory[0]?.lastActivityAt).toBe(Date.parse('2026-10-05T12:00:00Z'));
+    expect(listPersonas).toHaveBeenCalledTimes(1);
+
+    // Server creates fast-helper + its home session before personas.changed lands:
+    // rendering with that session triggers a single automatic refetch without looping.
+    serverPersonas = [
+      persona('alpha', { homeSessionId: 'alpha-home' }),
+      persona('fast-helper', { name: 'Helper · Fast', homeSessionId: 'fast-home' }),
+    ];
+    const synced = await renderDirectory({
+      sessions: [
+        session('alpha-home', 'alpha', { updated_at: '2026-10-05T12:00:00Z' }),
+        session('fast-home', 'fast-helper', {
+          updated_at: '2026-10-06T08:30:00Z',
+          metadata: { cwd: '/fixture/fast', bot_persona_id: 'fast-helper', persona_home_managed: true },
+        }),
+      ],
+    });
+    expect(synced.latest().directory.map((entry) => entry.id)).toEqual(['alpha', 'fast-helper']);
+    expect(synced.latest().directory[1]?.lastActivityAt).toBe(Date.parse('2026-10-06T08:30:00Z'));
+
+    // An orphaned session referencing a deleted persona refetches at most once per signature, never looping.
+    listPersonas.mockClear();
+    const orphaned = await renderDirectory({
+      sessions: [session('deleted-home', 'deleted-persona')],
+    });
+    expect(orphaned.latest().directory.map((entry) => entry.id)).toEqual(['alpha', 'fast-helper']);
+    expect(listPersonas).toHaveBeenCalledTimes(2);
+  });
 });

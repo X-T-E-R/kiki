@@ -2494,10 +2494,11 @@ async fn open_host_path(
         .map_err(|error| format!("Kiki host-path task failed: {error}"))?
 }
 
-/// Open an http(s) URL in the system browser. Renderer `window.open` is
-/// unreliable in the desktop webview (wry rejects unhandled new-window
-/// requests), so device-code sign-in routes through this command instead.
-/// Only plain `http:`/`https:` URLs pass — every other scheme stays closed.
+/// Gate external URLs opened in the system browser or OS mail client.
+/// Renderer `window.open` is intercepted via `on_new_window` and `open_external_url`
+/// routes through the same check: only external `http:`/`https:` hosts (excluding
+/// internal webview `tauri.localhost`/`ipc.localhost`) and non-empty `mailto:`
+/// targets without control characters pass; every other scheme stays closed.
 fn is_allowed_external_url(parsed: &Url) -> bool {
     let raw = parsed.as_str();
     if raw.chars().any(char::is_control) {

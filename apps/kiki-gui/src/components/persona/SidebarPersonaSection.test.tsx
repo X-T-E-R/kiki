@@ -11,7 +11,7 @@ import { resetLayoutPreferencesForTests } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
 import type { PersonaDirectoryEntry } from './usePersonaDirectory';
-import { SIDEBAR_PERSONA_PREVIEW_LIMIT, SidebarPersonaSection } from './SidebarPersonaSection';
+import { SIDEBAR_PERSONA_PREVIEW_LIMIT, SidebarPersonaSection, orderSidebarPersonas } from './SidebarPersonaSection';
 
 const navigate = vi.fn();
 const directory = vi.hoisted(() => ({ entries: [] as unknown[] }));
@@ -244,15 +244,19 @@ describe('the sidebar switcher list', () => {
 });
 
 describe('collapsible and count-bounded persona group', () => {
-  it('removes inner scroll, caps preview at 4 with priority ordering, and expands/collapses', async () => {
-    expect(SIDEBAR_PERSONA_PREVIEW_LIMIT).toBe(4);
+  it('removes inner scroll, caps preview at 8 with priority and recency ordering, and expands/collapses', async () => {
+    expect(SIDEBAR_PERSONA_PREVIEW_LIMIT).toBe(8);
     directory.entries = [
-      persona({ id: 'p-alpha', name: 'Alpha' }),
-      persona({ id: 'p-bravo', name: 'Bravo' }),
-      persona({ id: 'p-charlie', name: 'Charlie' }),
-      persona({ id: 'p-delta', name: 'Delta', pinned: true }),
+      persona({ id: 'p-alpha', name: 'Alpha', lastActivityAt: 100 }),
+      persona({ id: 'p-bravo', name: 'Bravo', lastActivityAt: 200 }),
+      persona({ id: 'p-charlie', name: 'Charlie', lastActivityAt: 300 }),
+      persona({ id: 'p-delta', name: 'Delta', pinned: true, lastActivityAt: 50 }),
       persona({ id: 'p-echo', name: 'Echo', life: 'waiting', unreadCount: 2, unreadSessionIds: ['s1', 's2'] }),
       persona({ id: 'p-foxtrot', name: 'Foxtrot', homeSessionId: 'active-home' }),
+      persona({ id: 'p-golf', name: 'Golf', life: 'working', lastActivityAt: 150 }),
+      persona({ id: 'p-hotel', name: 'Hotel · Fast', life: 'done', unreadCount: 1, unreadSessionIds: ['s3'], lastActivityAt: 900 }),
+      persona({ id: 'p-india', name: 'India', lastActivityAt: 50 }),
+      persona({ id: 'p-juliet', name: 'Juliet', lastActivityAt: 400 }),
     ];
     const container = await render([session({ id: 'active-home' })], 'active-home');
     const wrapper = container.querySelector<HTMLElement>('[data-sidebar-personas]')!;
@@ -260,12 +264,21 @@ describe('collapsible and count-bounded persona group', () => {
     expect(wrapper.className).not.toContain('max-h-');
 
     const initialIds = [...container.querySelectorAll('[data-sidebar-persona-row]')].map((el) => el.getAttribute('data-sidebar-persona-row'));
-    expect(initialIds).toEqual(['p-delta', 'p-foxtrot', 'p-echo', 'p-alpha']);
+    expect(initialIds).toEqual([
+      'p-delta',
+      'p-foxtrot',
+      'p-echo',
+      'p-golf',
+      'p-hotel',
+      'p-juliet',
+      'p-charlie',
+      'p-bravo',
+    ]);
 
     const moreBtn = container.querySelector<HTMLButtonElement>('[data-sidebar-personas-more="more"]')!;
     expect(moreBtn).not.toBeNull();
     await act(async () => { moreBtn.click(); });
-    expect(container.querySelectorAll('[data-sidebar-persona-row]')).toHaveLength(6);
+    expect(container.querySelectorAll('[data-sidebar-persona-row]')).toHaveLength(10);
     expect(container.querySelector('[data-sidebar-personas-more="less"]')).not.toBeNull();
 
     const headerToggle = container.querySelector<HTMLButtonElement>('[data-sidebar-personas-toggle]')!;
@@ -274,7 +287,17 @@ describe('collapsible and count-bounded persona group', () => {
     expect(headerToggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelectorAll('[data-sidebar-persona-row]')).toHaveLength(0);
     expect(container.querySelector('[data-sidebar-personas-attention]')).not.toBeNull();
-    expect(container.querySelector('[data-sidebar-personas-collapsed-unread="2"]')).not.toBeNull();
+    expect(container.querySelector('[data-sidebar-personas-collapsed-unread="3"]')).not.toBeNull();
+  });
+
+  it('orders unread and recently active personas ahead of cold alphabetical entries', () => {
+    const ordered = orderSidebarPersonas([
+      persona({ id: 'cold-a', name: 'Alpha' }),
+      persona({ id: 'cold-b', name: 'Bravo', lastActivityAt: 1_000 }),
+      persona({ id: 'recent-fast', name: 'Helper · Fast', lastActivityAt: 9_000 }),
+      persona({ id: 'unread-z', name: 'Zulu · Fast', life: 'done', unreadCount: 1, unreadSessionIds: ['u1'], lastActivityAt: 5_000 }),
+    ]);
+    expect(ordered.map((item) => item.id)).toEqual(['unread-z', 'recent-fast', 'cold-b', 'cold-a']);
   });
 
   it('offers quick Pin, Hide from list, and Persona settings actions from the row menu', async () => {

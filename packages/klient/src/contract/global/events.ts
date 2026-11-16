@@ -23,6 +23,11 @@ export interface SessionArchivedPayload {
   readonly sessionId: string;
 }
 
+/** Payload of `event.session.created` on the global bus. */
+export interface SessionCreatedPayload {
+  readonly sessionId: string;
+}
+
 /** Payload of `event.session.work_changed` on the global bus. */
 export type SessionWorkChangedPayload = Omit<SessionWorkChangedEvent, 'type'> & {
   readonly sessionId: string;
@@ -54,6 +59,8 @@ export interface KlientEventPayloads {
   'kosong.models.changed': ModelsChangedEvent;
   'plugins.reloaded': ReloadSummary;
   'plugins.changed': Record<string, never>;
+  'personas.changed': Record<string, never>;
+  'session.created': SessionCreatedPayload;
   'session.archived': SessionArchivedPayload;
   'session.metaUpdated': SessionMetaUpdatedPayload;
   'session.workChanged': SessionWorkChangedPayload;
@@ -183,6 +190,14 @@ export const globalEvents = {
   },
   'plugins.changed': {
     kind: 'bus', type: 'event.plugin.changed', schema: z.object({}).strict(),
+  },
+  'personas.changed': {
+    kind: 'bus', type: 'event.persona.changed', schema: z.object({}).strict(),
+  },
+  'session.created': {
+    kind: 'bus',
+    type: 'event.session.created',
+    schema: z.object({ sessionId: z.string() }),
   },
   'session.archived': {
     kind: 'bus',

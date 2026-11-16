@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptySessionUsage, type Session } from '@kiki/protocol';
-import { canSetPersonaHome, isBotOrRoomSession, sessionBelongsToPersona, sessionPersonaId } from './personaSessionUtils';
+import { canSetPersonaHome, isBotOrRoomSession, sessionBelongsToPersona, sessionPersonaId, shouldHideFromSessionGroups } from './personaSessionUtils';
 
 function session(input: Partial<Session> = {}): Session {
   return {
@@ -58,5 +58,29 @@ describe('persona session attribution', () => {
     expect(canSetPersonaHome({ ...valid, ephemeral: true }, 'a')).toBe(false);
     expect(canSetPersonaHome({ ...valid, archived: true }, 'a')).toBe(false);
     expect(canSetPersonaHome({ ...valid, metadata: { ...valid.metadata, room_member_of: 'fixture-room' } }, 'a')).toBe(false);
+  });
+
+  it('never black-holes unloaded, newly created, or replaced persona sessions while keeping active and hidden homes single-addressed', () => {
+    const activeHome = session({ id: 'home-alpha', metadata: { cwd: '/fixture/alpha', bot_persona_id: 'alpha', persona_home_managed: true } });
+    const hiddenHome = session({ id: 'home-secret', metadata: { cwd: '/fixture/secret', bot_persona_id: 'secret', persona_home_managed: true } });
+    const replacedHome = session({ id: 'old-alpha', metadata: { cwd: '/fixture/alpha', bot_persona_id: 'alpha' } });
+    const brandNewPersonaHome = session({ id: 'home-fast', metadata: { cwd: '/fixture/fast', bot_persona_id: 'fast-helper', persona_home_managed: true } });
+    const roomMember = session({ id: 'room-1', metadata: { cwd: '/fixture/room', room_persona_id: 'alpha', room_member_of: 'room-alpha' } });
+
+    // Before personasQuery resolves (directory === undefined): only room members hide; persona threads remain visible.
+    expect(shouldHideFromSessionGroups(activeHome, undefined)).toBe(false);
+    expect(shouldHideFromSessionGroups(brandNewPersonaHome, undefined)).toBe(false);
+    expect(shouldHideFromSessionGroups(roomMember, undefined)).toBe(true);
+
+    // Once raw directory resolves (including hidden: true entries):
+    const directory = [
+      { id: 'alpha', homeSessionId: 'home-alpha' },
+      { id: 'secret', homeSessionId: 'home-secret' },
+    ];
+    expect(shouldHideFromSessionGroups(activeHome, directory)).toBe(true);
+    expect(shouldHideFromSessionGroups(hiddenHome, directory)).toBe(true);
+    expect(shouldHideFromSessionGroups(replacedHome, directory)).toBe(false);
+    expect(shouldHideFromSessionGroups(brandNewPersonaHome, directory)).toBe(false);
+    expect(shouldHideFromSessionGroups({ ...activeHome, archived: true }, directory)).toBe(false);
   });
 });

@@ -7,7 +7,7 @@
  * person ("go talk to them"), not a conversation, so it always lands on the
  * stable `/p/:id/daily` address and lets the daily pointer decide where that
  * is. The group header folds into `LayoutPreferences` without introducing an
- * inner scroll container, and caps the default preview slice to four rows.
+ * inner scroll container, and caps the default preview slice to eight rows.
  */
 
 import { useMemo, useState } from 'react';
@@ -34,7 +34,7 @@ import { sortAndFilterDirectory, usePersonaDirectory, type PersonaDirectoryEntry
 import { invalidatePersonas } from './usePersonas';
 
 /** Default preview cap when the persona section is expanded. */
-export const SIDEBAR_PERSONA_PREVIEW_LIMIT = 4;
+export const SIDEBAR_PERSONA_PREVIEW_LIMIT = 8;
 
 const GROUP_HEAD = 'flex h-7 items-center gap-0.5 pr-1 pl-1';
 const HEAD_BUTTON =
@@ -59,7 +59,8 @@ function personaPreviewPriority(item: PersonaDirectoryEntry, activePersonaId: st
   if (activePersonaId !== undefined && item.id === activePersonaId) return 1;
   if (item.life === 'waiting') return 2;
   if (item.life === 'working') return 3;
-  return 4;
+  if (item.life === 'done' || item.unreadCount > 0) return 4;
+  return 5;
 }
 
 export function orderSidebarPersonas(
@@ -70,6 +71,9 @@ export function orderSidebarPersonas(
     const pa = personaPreviewPriority(a, activePersonaId);
     const pb = personaPreviewPriority(b, activePersonaId);
     if (pa !== pb) return pa - pb;
+    if (a.lastActivityAt !== b.lastActivityAt) {
+      return (b.lastActivityAt ?? -Infinity) - (a.lastActivityAt ?? -Infinity);
+    }
     return a.name.localeCompare(b.name);
   });
 }

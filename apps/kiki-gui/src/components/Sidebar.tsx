@@ -697,6 +697,7 @@ function CollapsedSidebarRail({
 export function Sidebar({
   activeSessionId,
   sessions: rawSessions,
+  personaSessions,
   rooms: rawRooms = [],
   sessionGroups: rawSessionGroups,
   sessionsQuery,
@@ -719,6 +720,8 @@ export function Sidebar({
   activeSessionId: string | undefined;
   /** Every loaded session (unfiltered); the pending badge and search read it. */
   sessions: readonly Session[];
+  /** Cross-workspace session snapshot for persona activity when `sessions` is workspace-filtered. */
+  personaSessions?: readonly Session[];
   rooms?: readonly RoomListItem[];
   /** Filtered, sorted, grouped conversations (threads and rooms interleaved). */
   sessionGroups: readonly SessionGroup<ConversationListItem>[];
@@ -1750,7 +1753,7 @@ export function Sidebar({
         offscreen={inert === true}
         onCloseSidebar={onClose}
       />
-      <SidebarPersonaSection sessions={sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
+      <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
 
       <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">
         {/* The section label never gives way: it is T5, unshrinkable and

@@ -1535,6 +1535,16 @@ export class SessionEventBroadcaster {
       );
       return;
     }
+    if (event.type === 'event.persona.changed') {
+      void this.dispatchGlobal({
+        type: 'event.persona.changed',
+        agentId: 'main',
+        sessionId: GLOBAL_SESSION_ID,
+      } as Event).catch((error: unknown) =>
+        this.logDispatchError(GLOBAL_SESSION_ID, 'event.persona.changed', error),
+      );
+      return;
+    }
     if (event.type === 'event.plugin.topic') {
       if (typeof corePayload !== 'object' || corePayload === null) return;
       const candidate = corePayload as Record<string, unknown>;
@@ -2129,6 +2139,7 @@ export function isGlobalEvent(type: string): boolean {
     type.startsWith('event.workspace.') ||
     type.startsWith('event.config.') ||
     (type.startsWith('event.plugin.') && type !== 'event.plugin.topic') ||
+    type.startsWith('event.persona.') ||
     type.startsWith('event.capability.') ||
     type.startsWith('event.model_catalog.')
   );

@@ -57,7 +57,8 @@ import { SpaceViewMemory, SpaceViewState } from './components/SpaceViewState';
 import { readSpaceViewRoute } from './lib/spaceViewState';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
-import { isBotOrRoomSession } from './components/persona/personaSessionUtils';
+import { shouldHideFromSessionGroups } from './components/persona/personaSessionUtils';
+import { usePersonaDirectory } from './components/persona/usePersonaDirectory';
 import { StorageMigrationViewComponent } from './components/storage/StorageMigrationView';
 import { Toasts } from './components/Toasts';
 import { WorkPage } from './components/WorkPage';
@@ -70,6 +71,7 @@ import {
   adjacentRunningSession,
   arrangePinnedFirst,
   buildConversationInbox,
+  dedupeSessions,
   groupConversationItems,
   mergeSessionFirstPage,
   readAllSessionPages,
@@ -530,33 +532,107 @@ function NormalApp() {
     retryDelay: retryRootReadModelDelay,
   });
   // Refresh the head, bridging to the loaded boundary only when it no longer
-  // overlaps. Older loaded pages are not interval-refetched.
+  // overlaps. Older loaded pages are not interval-refetched. Global session and
+  // persona events trigger an immediate coalesced head refresh so newly created
+  // threads appear in the sidebar without waiting for the 15-second poll.
   const queryClient = useQueryClient();
+  const personaHeadKey = useMemo(
+    () => ['sessions', 'persona-head', showArchived, privateFilter] as const,
+    [showArchived, privateFilter],
+  );
   useEffect(() => {
     const controller = new AbortController();
+    let inFlight = false;
+    let queued = false;
+    let coalesceTimer: ReturnType<typeof setTimeout> | undefined;
+    const probedForeignIds = new Set<string>();
+
+    const hasSessionInCache = (data: SessionListData | undefined, sessionId: string): boolean =>
+      data?.pages.some((page) => page.items.some((item) => item.id === sessionId)) === true;
+
+    const runHeadRefresh = async () => {
+      if (controller.signal.aborted) return;
+      if (inFlight) {
+        queued = true;
+        return;
+      }
+      inFlight = true;
+      queued = false;
+      try {
+        const current = queryClient.getQueryData<SessionListData>(sessionsKey);
+        if (current === undefined) {
+          await queryClient.invalidateQueries({ queryKey: sessionsKey });
+        } else {
+          const first = await readSessionFirstPage((before_id) => client.listSessions({
+            page_size: 50,
+            include_archive: showArchived || undefined,
+            include_private: includePrivate || undefined,
+            private_only: privateOnly || undefined,
+            workspace_id: workspaceFilter,
+            before_id,
+          }, { signal: controller.signal }), current, controller.signal);
+          if (controller.signal.aborted) return;
+          queryClient.setQueryData(
+            sessionsKey,
+            (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
+          );
+        }
+        if (workspaceFilter !== undefined && !controller.signal.aborted) {
+          void queryClient.invalidateQueries({ queryKey: personaHeadKey });
+        }
+      } catch {
+        // Transient read errors leave the current list intact until the next event or poll.
+      } finally {
+        inFlight = false;
+        if (!controller.signal.aborted && queued) {
+          queued = false;
+          void runHeadRefresh();
+        }
+      }
+    };
+
+    const scheduleImmediateRefresh = () => {
+      if (controller.signal.aborted || coalesceTimer !== undefined) return;
+      coalesceTimer = setTimeout(() => {
+        coalesceTimer = undefined;
+        void runHeadRefresh();
+      }, 60);
+    };
+
+    const noteMaybeNewSession = (sessionId: string, force = false) => {
+      if (sessionId === '') return;
+      const loaded = queryClient.getQueryData<SessionListData>(sessionsKey);
+      if (hasSessionInCache(loaded, sessionId)) return;
+      if (!force && workspaceFilter !== undefined) {
+        const personaLoaded = queryClient.getQueryData<SessionListData>(personaHeadKey);
+        if (hasSessionInCache(personaLoaded, sessionId) || probedForeignIds.has(sessionId)) return;
+        if (probedForeignIds.size >= 256) probedForeignIds.clear();
+        probedForeignIds.add(sessionId);
+      }
+      scheduleImmediateRefresh();
+    };
+
+    const events = client.klient?.events;
+    const subscriptions = events === undefined
+      ? []
+      : [
+          events.on('session.created', (event) => { noteMaybeNewSession(event.sessionId, true); }),
+          events.on('session.metaUpdated', (event) => { noteMaybeNewSession(event.sessionId); }),
+          events.on('session.workChanged', (event) => { noteMaybeNewSession(event.sessionId); }),
+          events.on('personas.changed', () => { scheduleImmediateRefresh(); }),
+        ];
+
     const stop = startVisiblePoll({
       intervalMs: SESSION_FIRST_PAGE_POLL_INTERVAL_MS,
-      task: async () => {
-        const first = await readSessionFirstPage((before_id) => client.listSessions({
-          page_size: 50,
-          include_archive: showArchived || undefined,
-          include_private: includePrivate || undefined,
-          private_only: privateOnly || undefined,
-          workspace_id: workspaceFilter,
-          before_id,
-        }, { signal: controller.signal }), queryClient.getQueryData<SessionListData>(sessionsKey), controller.signal);
-        if (controller.signal.aborted) return;
-        queryClient.setQueryData(
-          sessionsKey,
-          (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
-        );
-      },
+      task: runHeadRefresh,
     });
     return () => {
       stop();
+      if (coalesceTimer !== undefined) clearTimeout(coalesceTimer);
+      for (const sub of subscriptions) sub.dispose();
       controller.abort();
     };
-  }, [client, includePrivate, privateOnly, queryClient, sessionsKey, showArchived, workspaceFilter]);
+  }, [client, includePrivate, personaHeadKey, privateOnly, queryClient, sessionsKey, showArchived, workspaceFilter]);
   // Pinned sessions are read as their own complete set: the recency pages
   // above only reach as far as the reader has scrolled, and an old pinned
   // session must not wait for them. The key sits under ['sessions'], so every
@@ -590,6 +666,23 @@ function NormalApp() {
     [workspacesQuery.data],
   );
 
+  const personaHeadQuery = useQuery({
+    queryKey: personaHeadKey,
+    enabled: workspaceFilter !== undefined,
+    queryFn: async ({ signal }): Promise<SessionListData> => ({
+      pages: [await client.listSessions({
+        page_size: 100,
+        include_archive: showArchived || undefined,
+        include_private: includePrivate || undefined,
+        private_only: privateOnly || undefined,
+      }, { signal })],
+      pageParams: [undefined],
+    }),
+    staleTime: 15_000,
+    retry: retryRootReadModelQuery,
+    retryDelay: retryRootReadModelDelay,
+  });
+
   // The canonical session order powers QuickSwitcher and the /new recent
   // chips, so it stays pinned-first + newest-first regardless of
   // the sidebar's view preference. Grouping applies its own sort internally.
@@ -599,6 +692,15 @@ function NormalApp() {
     if (privateFilter === 'include') return all;
     return all.filter((session) => session.private !== true);
   }, [privateFilter, sessionsQuery.data, pinnedSessionsQuery.data]);
+  const personaSessions = useMemo(() => {
+    if (workspaceFilter === undefined) return sessions;
+    const crossWorkspace = dedupeSessions(personaHeadQuery.data);
+    if (crossWorkspace.length === 0) return sessions;
+    return dedupeSessions({
+      pages: [{ items: [...sessions, ...crossWorkspace], has_more: false }],
+      pageParams: [undefined],
+    });
+  }, [workspaceFilter, sessions, personaHeadQuery.data]);
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
   // The one update schedule for the whole app: a check after the first screen,
   // a daily tick for a window left open, and a catch-up when it comes back. A
@@ -613,15 +715,17 @@ function NormalApp() {
   // session waiting on the user stays visible from the conversation the
   // drawer hides.
   const seen = useSessionSeen();
+  const personaDirectoryState = usePersonaDirectory({ sessions: personaSessions, seen });
+  const rawPersonaDirectory = personaDirectoryState.data === undefined ? undefined : personaDirectoryState.directory;
   const sidebarBadge = useMemo<SidebarBadge | undefined>(() => {
     const inbox = buildConversationInbox(sessions, conversations.rooms, seen, workspaceOptions);
     return inbox.total === 0 ? undefined : { total: inbox.total, needsYou: inbox.needsYou.length > 0 };
   }, [sessions, conversations.rooms, seen, workspaceOptions]);
   const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
-    // A Bot's home and a room member's own session keep their single address
-    // (the Bot rows above, the room's row); everything else lists here.
+    // A Bot's active home and a room member's own session keep their single
+    // address (the Persona rows above, the room's row); everything else lists here.
     const items = conversations.items.filter((item) =>
-      item.kind === 'room' || item.session.archived === true || !isBotOrRoomSession(item.session));
+      item.kind === 'room' || !shouldHideFromSessionGroups(item.session, rawPersonaDirectory));
     return groupConversationItems(items, {
       groupBy: layoutPrefs.groupBy,
       workspaces: workspaceOptions,
@@ -638,7 +742,7 @@ function NormalApp() {
       },
       ungroupedLabel: t('sidebar.groupUngrouped'),
     });
-  }, [conversations.items, workspaceOptions, listFilters, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
+  }, [conversations.items, rawPersonaDirectory, workspaceOptions, listFilters, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
 
   // System notifications while the window is in the background, the taskbar
   // badge, and notification clicks back to their session.
@@ -905,6 +1009,7 @@ function NormalApp() {
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
         sessions={sessions}
+        personaSessions={personaSessions}
         rooms={conversations.rooms}
         sessionGroups={sessionGroups}
         sessionsQuery={sessionsQuery}

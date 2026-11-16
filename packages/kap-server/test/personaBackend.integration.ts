@@ -13,6 +13,7 @@ import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
 import { IThreadCommunicationService } from '@kiki/agent-core-v2/app/threadCommunication/threadCommunication';
 import { SEND_PEER_THREAD_MESSAGE, peerSendCapability } from '@kiki/agent-core-v2/app/threadCommunication/peerThreadCapability';
 import { type PersonaSummary, type Session } from '@kiki/protocol';
+import { createKlient } from '@kiki/klient/http';
 import { startServer, type RunningServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -364,5 +365,38 @@ describe('persona backend contracts', () => {
     await server.core.accessor.get(ISessionManager).get(daily!)!.accessor.get(ISessionMetadata).update({ custom: { bot_persona_id: 'example' } });
     await expect(service.sendHandoff({ sourceSessionId: source.id, target: '@example', content: 'Old home handoff.', idempotencyKey: 'old-handoff' })).rejects.toThrow(/disabled/i);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('broadcasts personas.changed and session.created over klient WebSocket when personas and threads are created', async () => {
+    const klient = createKlient({
+      endpoint: `http://127.0.0.1:${server.port}`,
+      token: server.localOwnerToken ?? '',
+    });
+    let personaEventCount = 0;
+    const createdSessionIds: string[] = [];
+    const personaSub = klient.events.on('personas.changed', () => {
+      personaEventCount += 1;
+    });
+    const sessionSub = klient.events.on('session.created', (event: { sessionId: string }) => {
+      createdSessionIds.push(event.sessionId);
+    });
+    try {
+      await Promise.all([personaSub.ready, sessionSub.ready]);
+      await persona('fast-helper');
+      await vi.waitFor(() => {
+        expect(personaEventCount).toBeGreaterThanOrEqual(1);
+      });
+      const beforeClaim = personaEventCount;
+      const created = await request<Session>('/sessions', 'POST', { persona: 'fast-helper', metadata: { cwd: home } });
+      expect(created.code, created.msg).toBe(0);
+      await server.core.accessor.get(IPersonaStore).claimHomeSession('fast-helper', created.data.id);
+      await vi.waitFor(() => {
+        expect(createdSessionIds).toContain(created.data.id);
+        expect(personaEventCount).toBeGreaterThan(beforeClaim);
+      });
+    } finally {
+      personaSub.dispose();
+      sessionSub.dispose();
+      await klient.close();
+    }
   });
 });

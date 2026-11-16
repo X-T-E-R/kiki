@@ -52,6 +52,7 @@ import {
 import { API_CODES, ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { subscribePluginFreshness } from '../lib/pluginFreshness';
+import { subscribePersonaFreshness } from '../lib/personaFreshness';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -1226,6 +1227,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // A plugin change moves capabilities, skills, MCP, panels and commands too,
     // and a reconnect can carry one this window never saw.
     let offPlugins = subscribePluginFreshness(klient, queryClient);
+    let offPersonas = subscribePersonaFreshness(klient, queryClient);
     const workChanged = klient.events.on('session.workChanged', (change) => {
       queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
         mergeSessionWorkChanged(old, change),
@@ -1295,6 +1297,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         offUsage = subscribeUsageFreshness(klient, queryClient);
         offPlugins();
         offPlugins = subscribePluginFreshness(klient, queryClient);
+        offPersonas();
+        offPersonas = subscribePersonaFreshness(klient, queryClient);
       }
     });
     const catalog = klient.events.on('kosong.changed', () => {
@@ -1310,6 +1314,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       workChanged.dispose();
       offUsage();
       offPlugins();
+      offPersonas();
     };
   }, [socket, klient, queryClient]);
 

@@ -676,6 +676,10 @@ export const pluginChangedEventSchema = z.object({
   type: z.literal('event.plugin.changed'),
 });
 
+export const personaChangedEventSchema = z.object({
+  type: z.literal('event.persona.changed'),
+});
+
 export const modelCatalogChangedEventSchema = z.object({
   type: z.literal('event.model_catalog.changed'),
   changed: z.array(
@@ -1134,6 +1138,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   sessionStatusChangedEventSchema,
   configChangedEventSchema,
   pluginChangedEventSchema,
+  personaChangedEventSchema,
   modelCatalogChangedEventSchema,
   capabilityChangedEventSchema,
   goalUpdatedEventSchema,

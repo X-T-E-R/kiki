@@ -132,6 +132,15 @@ export interface PluginChangedEvent {
 }
 
 /**
+ * Persona directory or state mutation (create / edit / archive / delete /
+ * home-session claim / visibility toggle / disk change). Global fan-out;
+ * clients re-read the personas REST surface.
+ */
+export interface PersonaChangedEvent {
+  readonly type: 'event.persona.changed';
+}
+
+/**
  * Model catalog mutation after provider discovery / OAuth model refresh.
  * Global fan-out; clients invalidate cached `/models` and `/providers` reads.
  */
@@ -266,6 +275,7 @@ export type AgentEvent =
   | ConfigChangedEvent
   | ConfigWarningEvent
   | PluginChangedEvent
+  | PersonaChangedEvent
   | PluginWsTopicEvent
   | ModelCatalogChangedEvent
   | CapabilityChangedEvent

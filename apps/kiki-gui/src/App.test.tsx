@@ -727,4 +727,62 @@ describe('App sidebar Escape wiring', () => {
     });
     expect(readSettings().uiZoom).toBe(100);
   });
+
+  it('refreshes the session head immediately when a new session event arrives without waiting for the 15s poll', async () => {
+    const listeners = new Map<string, Set<(payload: unknown) => void>>();
+    let serverSessions: Array<Record<string, unknown>> = [];
+    const listSessions = vi.fn(async (params?: { pinned?: boolean }) => ({
+      items: params?.pinned ? [] : serverSessions,
+      has_more: false,
+    }));
+    const conn = appHarness.connection as {
+      client: {
+        listSessions: typeof listSessions;
+        klient: { events: { on: (name: string, fn: (payload: unknown) => void) => { dispose: () => void } } };
+      };
+    };
+    const originalListSessions = conn.client.listSessions;
+    const originalEventsOn = conn.client.klient.events.on;
+    conn.client.listSessions = listSessions;
+    conn.client.klient.events.on = (name: string, fn: (payload: unknown) => void) => {
+      const set = listeners.get(name) ?? new Set();
+      set.add(fn);
+      listeners.set(name, set);
+      return { dispose: () => { set.delete(fn); } };
+    };
+
+    try {
+      await mountApp();
+      await vi.waitFor(() => {
+        expect(listSessions).toHaveBeenCalled();
+      });
+      serverSessions = [{
+        id: 'session_external_new',
+        workspace_id: 'ws_main',
+        title: 'External fast thread',
+        created_at: '2026-10-10T10:00:00Z',
+        updated_at: '2026-10-10T10:00:05Z',
+        busy: false,
+        metadata: { cwd: '/work' },
+        agent_config: { model: '' },
+        permission_rules: [],
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0, context_tokens: 0, context_limit: 0, turn_count: 0 },
+        message_count: 1,
+        last_seq: 2,
+      }];
+      const callsBeforeEvent = listSessions.mock.calls.length;
+      await act(async () => {
+        for (const fn of listeners.get('session.created') ?? []) {
+          fn({ sessionId: 'session_external_new' });
+        }
+      });
+      await vi.waitFor(() => {
+        expect(listSessions.mock.calls.length).toBeGreaterThan(callsBeforeEvent);
+        expect(container.textContent).toContain('External fast thread');
+      }, { timeout: 2_000 });
+    } finally {
+      conn.client.listSessions = originalListSessions;
+      conn.client.klient.events.on = originalEventsOn;
+    }
+  });
 });
