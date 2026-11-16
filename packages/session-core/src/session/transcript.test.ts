@@ -27,6 +27,7 @@ import { selectionCarryoverPresentation } from '../composer/selectionQuote';
 import { parseSelectionCarryovers } from '../composer/timelineAnnotations';
 import { patchTranscriptContent } from './transcript/content';
 import { interactionToBlock } from './transcript/project';
+import { isSteerDeliveredBeforeCutTail } from './transcript/steer';
 import { setSessionRecord } from './transcript/selectors';
 import { resolveItemCopies, resolveTurnCopies } from './transcript/window';
 
@@ -8599,6 +8600,187 @@ describe('background question placement', () => {
       response: undefined,
     })] };
     expect(backgroundOrder(snapshot)).toEqual(['user', 'shell:tc-bash-tail', 'question:pending', 'assistant']);
+  });
+
+  it('does not leak settled older-turn questions or approvals into a newer tail window or its bottom', () => {
+    const snapshot = emptySnapshot({
+      interactions: [
+        backgroundQuestion({
+          interactionId: 'old-turn-question',
+          origin: { agentId: 'main', turnId: 2 },
+          request: { questions: backgroundQuestions, question_id: 'old-turn-question', created_at: '2026-01-01T00:00:02.500Z', turn_id: 2 },
+        }),
+        {
+          interactionId: 'old-unanchored-question',
+          interactionKind: 'question',
+          state: 'answered',
+          request: { questions: backgroundQuestions, question_id: 'old-unanchored-question', created_at: '2026-01-01T00:00:04.000Z' },
+          response: { answers: { q1: { kind: 'single', option_id: 'a' } }, resolved_at: '2026-01-01T00:00:05.000Z' },
+        },
+        {
+          interactionId: 'old-approval',
+          interactionKind: 'approval',
+          state: 'approved',
+          origin: { agentId: 'main', turnId: 3 },
+          request: { approval_id: 'old-approval', tool_name: 'Bash', action: 'pnpm test', created_at: '2026-01-01T00:00:06.000Z', turn_id: 3 },
+          response: { decision: 'approved', resolved_at: '2026-01-01T00:00:07.000Z' },
+        },
+      ],
+      items: [{
+        kind: 'turn',
+        turnId: 't10',
+        ordinal: 10,
+        state: 'running',
+        origin: { kind: 'user' },
+        prompt: 'Latest tail prompt',
+        startedAt: '2026-01-01T00:10:00.000Z',
+        steps: [{
+          kind: 'step',
+          stepId: 't10.1',
+          turnId: 't10',
+          ordinal: 1,
+          state: 'running',
+          frames: [{ kind: 'text', frameId: 'tail-asst', role: 'assistant', text: 'Streaming tail reply' }],
+        }],
+      }],
+    });
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(view.blocks.map((block) => block.kind)).toEqual(['user', 'assistant']);
+  });
+
+  it('anchors questions above streaming thinking/assistant frames and keeps untimed settled turn questions before the final reply', () => {
+    const streamingSnapshot = emptySnapshot({
+      interactions: [{
+        interactionId: 'q-before-stream',
+        interactionKind: 'question',
+        state: 'answered',
+        request: { questions: backgroundQuestions, question_id: 'q-before-stream', created_at: '2026-01-01T00:00:05.000Z' },
+        response: { answers: { q1: { kind: 'single', option_id: 'a' } }, resolved_at: '2026-01-01T00:00:08.000Z' },
+      }],
+      items: [{
+        kind: 'turn',
+        turnId: 't1',
+        ordinal: 1,
+        state: 'running',
+        origin: { kind: 'user' },
+        prompt: 'Plan and implement.',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        stepsPartial: true,
+        steps: [{
+          kind: 'step',
+          stepId: 't1.2',
+          turnId: 't1',
+          ordinal: 2,
+          state: 'running',
+          startedAt: '2026-01-01T00:00:12.000Z',
+          frames: [
+            { kind: 'thinking', frameId: 'think-live', text: 'Synthesizing answer.' },
+            { kind: 'text', frameId: 'asst-live', role: 'assistant', text: 'Streaming answer.' },
+          ],
+        }],
+      }],
+    });
+    const streamingView = projectAgentTranscriptView(createViewState('session_test'), 'main', streamingSnapshot);
+    expect(streamingView.blocks.map((block) => block.kind)).toEqual(['user', 'question', 'thinking', 'assistant']);
+
+    const untimedSettledSnapshot = emptySnapshot({
+      interactions: [{
+        interactionId: 'q-offloaded',
+        interactionKind: 'question',
+        state: 'answered',
+        anchor: { kind: 'tool_call', toolCallId: 'tc-cut', turnId: 't1' } as unknown as AgentTranscriptSnapshot['interactions'][number]['anchor'],
+        request: undefined,
+        response: { answers: { q1: { kind: 'other', text: 'Confirmed.' } } },
+      }],
+      items: [{
+        kind: 'turn',
+        turnId: 't1',
+        ordinal: 1,
+        state: 'completed',
+        origin: { kind: 'user' },
+        prompt: 'Single turn prompt',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        endedAt: '2026-01-01T00:00:20.000Z',
+        stepsPartial: true,
+        steps: [{
+          kind: 'step',
+          stepId: 't1.2',
+          turnId: 't1',
+          ordinal: 2,
+          state: 'completed',
+          startedAt: '2026-01-01T00:00:10.000Z',
+          endedAt: '2026-01-01T00:00:20.000Z',
+          frames: [{ kind: 'text', frameId: 'asst-final', role: 'assistant', text: 'Final answer.' }],
+        }],
+      }],
+    });
+    const untimedView = projectAgentTranscriptView(createViewState('session_test'), 'main', untimedSettledSnapshot);
+    expect(untimedView.blocks.map((block) => block.kind)).toEqual(['user', 'question', 'assistant']);
+  });
+
+  it('keeps earlier-turn steer delivery markers inside their owning turn and retires cut steers once a newer turn starts', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't0',
+          ordinal: 0,
+          state: 'completed',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          origin: { kind: 'user' },
+          prompt: 'Turn zero',
+          stepsPartial: true,
+          steps: [{
+            kind: 'step',
+            stepId: 't0.1',
+            turnId: 't0',
+            ordinal: 1,
+            state: 'completed',
+            frames: [{ kind: 'text', frameId: 'f0', role: 'assistant', text: 'Turn zero reply' }],
+          }],
+        },
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'running',
+          origin: { kind: 'user' },
+          prompt: 'Turn one',
+          steps: [{
+            kind: 'step',
+            stepId: 't1.1',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'running',
+            frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text: 'Turn one streaming' }],
+          }],
+        },
+        {
+          kind: 'marker',
+          markerId: 'message-delivery:steer-t0',
+          marker: 'message.delivery',
+          at: '2026-01-01T00:00:03.000Z',
+          payload: { messageId: 'steer-t0', text: 'Steer inside turn zero', turnId: 't0', origin: { kind: 'user' } },
+        },
+      ],
+    });
+    const steerIdx = blocks.findIndex((block) => block.id === 'user-steer-t0');
+    const turnOneIdx = blocks.findIndex((block) => block.id === 'user-agent-turn-t1-prompt');
+    expect(steerIdx).toBeGreaterThan(0);
+    expect(steerIdx).toBeLessThan(turnOneIdx);
+
+    expect(isSteerDeliveredBeforeCutTail([
+      {
+        kind: 'turn',
+        turnId: 't2',
+        ordinal: 2,
+        state: 'running',
+        startedAt: '2026-01-01T00:01:00.000Z',
+        origin: { kind: 'user' },
+        steps: [],
+      },
+    ], '2026-01-01T00:00:10.000Z')).toBe(true);
   });
 });
 

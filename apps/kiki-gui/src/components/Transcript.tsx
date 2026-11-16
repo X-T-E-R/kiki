@@ -5278,6 +5278,10 @@ export const Transcript = memo(function Transcript({
   // turn index against them when a rare action asks for it.
   const virtualNodesRef = useRef(virtualNodes);
   virtualNodesRef.current = virtualNodes;
+  const resolveFloorBlockLocation = useCallback(
+    (blockId: string) => locateIndexFor(virtualNodesRef.current).blocks.get(blockId),
+    [],
+  );
   // Rows after the previous commit's last row are arriving in this one (an
   // append at the end). Any other row that mounts is coming back into view,
   // or the session is being opened, and does not play an entrance.
@@ -6164,6 +6168,10 @@ export const Transcript = memo(function Transcript({
     window.setTimeout(() => { flashed.classList.remove('settings-card-flash'); }, 1800);
     return { status: 'found' };
   }, [virtualizer, readSeekStructure, controller, agentId]);
+  const locateFloorBlock = useCallback(
+    (blockId: string) => { void locate({ kind: 'block', blockId }); },
+    [locate],
+  );
   useEffect(() => {
     if (sessionIdForLocate === undefined) return undefined;
     return registerTimelineLocator(sessionIdForLocate, agentId, {
@@ -6838,8 +6846,10 @@ export const Transcript = memo(function Transcript({
       <FloorNavRail
         blocks={timelineBlocks}
         nodeIndexes={nodeIndexes}
+        resolveBlockLocation={resolveFloorBlockLocation}
         scrollRef={scrollRef}
         virtualizer={virtualizer}
+        onLocateBlock={locateFloorBlock}
       />
       <JumpToBottom
         virtualizer={virtualizer}

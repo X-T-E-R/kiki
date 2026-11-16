@@ -69,6 +69,10 @@ export function isSteerDeliveredBeforeCutTail(
   for (let i = items.length - 1; i >= 0; i -= 1) {
     const item = items[i];
     if (item?.kind !== 'turn') continue;
+    const turnStarted = item.startedAt === undefined ? Number.NaN : Date.parse(item.startedAt);
+    if (Number.isFinite(turnStarted) && turnStarted > steeredTime) {
+      return true;
+    }
     const hasCutEarlierSteps =
       item.stepsPartial === true ||
       item.contentRefs?.some(
@@ -78,6 +82,10 @@ export function isSteerDeliveredBeforeCutTail(
           ref.direction === 'backward',
       ) === true;
     if (!hasCutEarlierSteps) continue;
+    const turnEnded = item.endedAt === undefined ? Number.NaN : Date.parse(item.endedAt);
+    if (Number.isFinite(turnEnded) && turnEnded > steeredTime) {
+      return true;
+    }
     if (item.steps.some((step) => {
       const started = step.startedAt === undefined ? Number.NaN : Date.parse(step.startedAt);
       return Number.isFinite(started) && started > steeredTime;

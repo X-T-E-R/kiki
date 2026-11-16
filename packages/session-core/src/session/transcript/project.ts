@@ -561,6 +561,34 @@ function recordNumber(record: Record<string, unknown>, ...keys: readonly string[
   return undefined;
 }
 
+function turnNumberOf(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const match = /^t?(\d+)$/.exec(value);
+    if (match?.[1] !== undefined) return Number(match[1]);
+  }
+  return undefined;
+}
+
+function interactionTurnNumber(
+  interaction: AgentTranscriptInteraction,
+  request: Record<string, unknown>,
+): number | undefined {
+  const origin =
+    typeof interaction.origin === 'object' && interaction.origin !== null
+      ? (interaction.origin as Record<string, unknown>)
+      : undefined;
+  const anchor =
+    typeof interaction.anchor === 'object' && interaction.anchor !== null
+      ? (interaction.anchor as Record<string, unknown>)
+      : undefined;
+  return (
+    turnNumberOf(request['turnId'] ?? request['turn_id']) ??
+    turnNumberOf(origin?.['turnId'] ?? origin?.['turn_id']) ??
+    turnNumberOf(anchor?.['turnId'] ?? anchor?.['turn_id'])
+  );
+}
+
 export function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: string): Block | undefined {
   const originAgentId = originAgentFromInteraction(interaction);
   if (interaction.interactionKind === 'approval') {
@@ -568,7 +596,7 @@ export function interactionToBlock(interaction: AgentTranscriptInteraction, agen
       typeof interaction.request === 'object' && interaction.request !== null
         ? (interaction.request as Record<string, unknown>)
         : {};
-    const turnId = recordNumber(request, 'turnId', 'turn_id');
+    const turnId = interactionTurnNumber(interaction, request);
     const toolCallId =
       interaction.toolCallId ?? recordString(request, 'toolCallId', 'tool_call_id') ?? interaction.interactionId;
     const createdAt = recordString(request, 'createdAt', 'created_at') ?? '';
@@ -620,7 +648,7 @@ export function interactionToBlock(interaction: AgentTranscriptInteraction, agen
       typeof interaction.request === 'object' && interaction.request !== null
         ? (interaction.request as Record<string, unknown>)
         : {};
-    const turnId = recordNumber(request, 'turnId', 'turn_id');
+    const turnId = interactionTurnNumber(interaction, request);
     const createdAt = recordString(request, 'createdAt', 'created_at') ?? '';
     const questions = engineQuestionItems(request['questions']);
     const response = typeof interaction.response === 'object' && interaction.response !== null
@@ -1300,12 +1328,22 @@ function resolvePreviousSlot(index: PreviousPositionIndex | undefined, blockId: 
   return undefined;
 }
 
+function effectiveBlockTimelineMs(block: Block, frameTimes?: ReadonlyMap<string, number>): number | undefined {
+  const direct = blockTimelineMs(block);
+  if (direct !== undefined) return direct;
+  if ('frameId' in block && block.frameId !== undefined) return frameTimes?.get(block.frameId);
+  return undefined;
+}
+
 class BucketedInsertionList {
   readonly beforeSlots: Block[][];
   readonly afterSlots: Block[][];
   readonly trailing: Block[] = [];
 
-  constructor(readonly base: readonly Block[]) {
+  constructor(
+    readonly base: readonly Block[],
+    private readonly frameTimes?: ReadonlyMap<string, number>,
+  ) {
     this.beforeSlots = Array.from({ length: base.length + 1 }, () => []);
     this.afterSlots = Array.from({ length: base.length + 1 }, () => []);
   }
@@ -1346,7 +1384,7 @@ class BucketedInsertionList {
       const timedIndices: number[] = [];
       const timedValues: number[] = [];
       for (let index = 0; index < this.base.length; index += 1) {
-        const at = blockTimelineMs(this.base[index]!);
+        const at = effectiveBlockTimelineMs(this.base[index]!, this.frameTimes);
         if (at !== undefined) {
           timedIndices.push(index);
           timedValues.push(at);
@@ -1437,7 +1475,12 @@ function findWithinTurnSlot(blocks: readonly Block[], range: TurnRangeIndex, blo
     if (candidateAt > at || (candidateAt === at && compareTimelineIds(blocks[candidateIndex]!.id, block.id) > 0)) break;
     anchor = candidateIndex;
   }
-  return anchor < 0 ? range.first : anchor + 1;
+  if (anchor < 0) {
+    return range.timedValues.length === 0 && range.firstOpeningFallback >= 0
+      ? range.firstOpeningFallback + 1
+      : range.first;
+  }
+  return anchor + 1;
 }
 
 function insertAtPreviousPosition(
@@ -2019,13 +2062,13 @@ interface TurnTimestampTable {
   readonly turnIds: readonly string[];
 }
 
-function buildTurnTimestampTable(blocks: readonly Block[]): TurnTimestampTable {
+function buildTurnTimestampTable(blocks: readonly Block[], frameTimes?: ReadonlyMap<string, number>): TurnTimestampTable {
   const entries: { at: number; turnId: string; order: number }[] = [];
   for (let index = 0; index < blocks.length; index += 1) {
     const candidate = blocks[index]!;
     const turnId = blockTurnId(candidate);
     if (turnId === undefined) continue;
-    const at = blockTimelineMs(candidate);
+    const at = effectiveBlockTimelineMs(candidate, frameTimes);
     if (at === undefined) continue;
     entries.push({ at, turnId, order: index });
   }
@@ -2089,6 +2132,7 @@ function insertSubagentBlocks(
   source: readonly Block[],
   subagents: readonly SubagentBlock[],
   previous: readonly Block[],
+  frameTimes?: ReadonlyMap<string, number>,
 ): Block[] {
   if (subagents.length === 0) return source.filter((block) => block.kind !== 'subagent');
   const sorted = [...subagents].sort(compareSubagentTimeline);
@@ -2129,7 +2173,7 @@ function insertSubagentBlocks(
           const parentTurnId =
             subagent.parentTurnId ??
             precedingTurnId ??
-            lookupNearestTurnByTime(sourceTurnTable ??= buildTurnTimestampTable(source), blockTimelineMs(subagent));
+            lookupNearestTurnByTime(sourceTurnTable ??= buildTurnTimestampTable(source, frameTimes), blockTimelineMs(subagent));
           anchoredBlocks.push(parentTurnId === undefined ? subagent : { ...subagent, parentTurnId });
           inserted.add(subagent.id);
         }
@@ -2140,14 +2184,14 @@ function insertSubagentBlocks(
 
   if (inserted.size === sorted.length) return anchoredBlocks;
 
-  const turnTable = buildTurnTimestampTable(anchoredBlocks);
+  const turnTable = buildTurnTimestampTable(anchoredBlocks, frameTimes);
   const turnRanges = buildTurnRangeMap(anchoredBlocks);
   const lastSlotById = new Map<string, number>();
   for (let index = 0; index < anchoredBlocks.length; index += 1) {
     lastSlotById.set(anchoredBlocks[index]!.id, index);
   }
   const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
-  const list = new BucketedInsertionList(anchoredBlocks);
+  const list = new BucketedInsertionList(anchoredBlocks, frameTimes);
   const timelineFallbacks: SubagentBlock[] = [];
 
   for (const subagent of sorted) {
@@ -2187,6 +2231,7 @@ function insertSubagentEventBlocks(
   source: readonly Block[],
   events: readonly SubagentEventBlock[],
   previous: readonly Block[],
+  frameTimes?: ReadonlyMap<string, number>,
 ): Block[] {
   const base = source.filter((block) => block.kind !== 'subagent-event');
   if (events.length === 0) return base;
@@ -2210,7 +2255,7 @@ function insertSubagentEventBlocks(
 
   const turnRanges = buildTurnRangeMap(base);
   const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
-  const list = new BucketedInsertionList(base);
+  const list = new BucketedInsertionList(base, frameTimes);
   const timelineFallbacks: SubagentEventBlock[] = [];
   const withinTurnBySlot = new Map<number, SubagentEventBlock[]>();
   const dispatchStacks = new Map<number, SubagentEventBlock[]>();
@@ -2332,10 +2377,7 @@ function interactionPlacement(
     (anchorKind === 'tool_call' && anchor !== undefined ? recordString(anchor, 'toolCallId', 'tool_call_id') : undefined) ??
     (request === undefined ? undefined : recordString(request, 'toolCallId', 'tool_call_id')) ??
     block.request.tool_call_id;
-  const rawTurnId =
-    (anchorKind === 'turn' || anchorKind === 'step' || anchorKind === 'frame') && anchor !== undefined
-      ? anchor['turnId'] ?? anchor['turn_id']
-      : undefined;
+  const rawTurnId = anchor === undefined ? undefined : anchor['turnId'] ?? anchor['turn_id'];
   const turnId =
     normalizeTurnId(rawTurnId) ??
     normalizeTurnId(origin?.['turnId'] ?? origin?.['turn_id']) ??
@@ -2346,7 +2388,7 @@ function interactionPlacement(
       ? recordString(anchor, 'frameId', 'frame_id')
       : undefined;
   const stepId =
-    (anchorKind === 'step' || anchorKind === 'frame') && anchor !== undefined
+    anchor !== undefined
       ? recordString(anchor, 'stepId', 'step_id')
       : undefined;
   return { block, toolCallId, turnId, stepId, frameId };
@@ -2365,28 +2407,61 @@ function isSettledInteraction(block: ApprovalBlock | QuestionBlock): boolean {
   return block.kind === 'approval' ? block.resolution !== undefined : block.outcome !== undefined;
 }
 
+interface InteractionWindowBounds {
+  readonly firstTurnOrdinal?: number;
+  readonly firstTurnStartedMs?: number;
+}
+
 function insertInteractionBlocks(
   source: readonly Block[],
   interactions: readonly AgentTranscriptInteraction[],
   agentId: string,
   previous: readonly Block[],
+  frameTimes?: ReadonlyMap<string, number>,
+  windowBounds?: InteractionWindowBounds,
 ): Block[] {
   const base = source.filter((block) => block.kind !== 'approval' && block.kind !== 'question');
   if (interactions.length === 0) return base;
   // Resolution upserts (`interaction.upsert` with a terminal state) replace
   // the interaction record in the store wholesale and arrive WITHOUT the
   // request payload — rebuilds would fall back to placeholder tool/action
-  // text. Carry the pending card's request forward when the upsert omits it.
+  // text. Carry the pending card's request forward when the upsert omits it
+  // or offloads a large request into contentRefs.
   const previousById = new Map(previous.map((block) => [block.id, block]));
   const projected = interactions
     .flatMap((interaction): ProjectedInteraction[] => {
       let block = interactionToBlock(interaction, agentId);
-      if (
-        (block?.kind === 'approval' || block?.kind === 'question') &&
-        (interaction.request === undefined || interaction.request === null)
-      ) {
+      const contentRefs = (interaction as { readonly contentRefs?: readonly ContentRef[] }).contentRefs;
+      const requestOffloaded = contentRefs?.some((ref) => ref.path[0] === 'request') === true;
+      if (block?.kind === 'approval') {
         const prior = previousById.get(block.id);
-        if (prior?.kind === block.kind) block = { ...block, request: prior.request } as typeof block;
+        if (prior?.kind === 'approval' && (interaction.request === undefined || interaction.request === null)) {
+          block = {
+            ...block,
+            request: {
+              ...prior.request,
+              ...(block.request.turn_id !== undefined ? { turn_id: block.request.turn_id } : {}),
+              ...(block.request.created_at !== '' ? { created_at: block.request.created_at } : {}),
+            },
+          };
+        }
+      } else if (block?.kind === 'question') {
+        const prior = previousById.get(block.id);
+        if (
+          prior?.kind === 'question' &&
+          (interaction.request === undefined ||
+            interaction.request === null ||
+            (requestOffloaded && block.request.questions.length === 0 && prior.request.questions.length > 0))
+        ) {
+          block = {
+            ...block,
+            request: {
+              ...prior.request,
+              ...(block.request.turn_id !== undefined ? { turn_id: block.request.turn_id } : {}),
+              ...(block.request.created_at !== '' ? { created_at: block.request.created_at } : {}),
+            },
+          };
+        }
       }
       return block?.kind === 'approval' || block?.kind === 'question'
         ? [interactionPlacement(interaction, block)]
@@ -2416,9 +2491,12 @@ function insertInteractionBlocks(
 
   const turnRanges = buildTurnRangeMap(base);
   const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
-  const list = new BucketedInsertionList(base);
+  const list = new BucketedInsertionList(base, frameTimes);
   const withinTurnBySlot = new Map<number, (ApprovalBlock | QuestionBlock)[]>();
   const timelineFallbacks: (ApprovalBlock | QuestionBlock)[] = [];
+  const firstTurnOrdinal = windowBounds?.firstTurnOrdinal;
+  const firstTurnStartedMs = windowBounds?.firstTurnStartedMs;
+  const hasOlderHistory = firstTurnOrdinal !== undefined && firstTurnOrdinal > 0;
 
   for (const interaction of projected) {
     if (existingIds.has(interaction.block.id)) continue;
@@ -2447,7 +2525,8 @@ function insertInteractionBlocks(
       }
     }
     if (interaction.turnId !== undefined) {
-      const range = turnRanges.get(normalizeTurnId(interaction.turnId)!);
+      const normalizedTurnId = normalizeTurnId(interaction.turnId)!;
+      const range = turnRanges.get(normalizedTurnId);
       if (range !== undefined) {
         if (interaction.block.kind === 'question' || isSettledInteraction(interaction.block)) {
           const slot = findWithinTurnSlot(base, range, interaction.block);
@@ -2461,13 +2540,56 @@ function insertInteractionBlocks(
             continue;
           }
         }
-        const anchor = range.lastWork >= 0 ? range.lastWork : range.last;
-        list.insertAfter(anchor + 1, interaction.block);
+        if (range.lastWork >= 0) {
+          list.insertAfter(range.lastWork + 1, interaction.block);
+        } else if (
+          isSettledInteraction(interaction.block) &&
+          range.last > range.first &&
+          base[range.last]?.kind === 'assistant'
+        ) {
+          list.insertBefore(range.last, interaction.block);
+        } else {
+          list.insertAfter(range.last + 1, interaction.block);
+        }
         continue;
       }
+      const targetOrdinal = turnNumberOf(normalizedTurnId);
+      if (
+        isSettledInteraction(interaction.block) &&
+        hasOlderHistory &&
+        targetOrdinal !== undefined &&
+        targetOrdinal < firstTurnOrdinal
+      ) {
+        continue;
+      }
+      if (
+        targetOrdinal !== undefined &&
+        (firstTurnOrdinal === undefined || targetOrdinal >= firstTurnOrdinal) &&
+        blockTimelineMs(interaction.block) === undefined
+      ) {
+        const nextTurnSlot = base.findIndex((candidate) => {
+          const candidateOrdinal = turnNumberOf(blockTurnId(candidate));
+          return candidateOrdinal !== undefined && candidateOrdinal > targetOrdinal;
+        });
+        if (nextTurnSlot >= 0) {
+          list.insertBefore(nextTurnSlot, interaction.block);
+          continue;
+        }
+      }
     }
-    if (isSettledInteraction(interaction.block) && blockTimelineMs(interaction.block) === undefined) continue;
-    if (interaction.block.kind === 'question' && blockTimelineMs(interaction.block) !== undefined) {
+    const recordedMs = blockTimelineMs(interaction.block);
+    if (isSettledInteraction(interaction.block) && recordedMs === undefined) continue;
+    if (
+      isSettledInteraction(interaction.block) &&
+      interaction.turnId === undefined &&
+      hasOlderHistory &&
+      firstTurnStartedMs !== undefined &&
+      recordedMs !== undefined &&
+      recordedMs < firstTurnStartedMs
+    ) {
+      continue;
+    }
+    if (interaction.block.kind === 'question' && recordedMs !== undefined) {
       timelineFallbacks.push(interaction.block);
       continue;
     }
@@ -3059,6 +3181,7 @@ function mergeTranscriptPromptBlocks(
   prompts: readonly TranscriptPrompt[],
   previous: readonly Block[] = [],
   items: AgentTranscriptProjectionSource['items'] = [],
+  frameTimes?: ReadonlyMap<string, number>,
 ): Block[] {
   if (prompts.length === 0) return blocks;
   const context = promptOutcomeContext(blocks, items);
@@ -3213,7 +3336,7 @@ function mergeTranscriptPromptBlocks(
     const lastSlotById = new Map<string, number>();
     for (let i = 0; i < next.length; i += 1) lastSlotById.set(next[i]!.id, i);
     const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
-    const list = new BucketedInsertionList(next);
+    const list = new BucketedInsertionList(next, frameTimes);
     const fallbacks = [...timelineInsertions];
     for (const block of previousFallbackInsertions) {
       if (!list.insertPreviousPosition(previousIndex, block, true)) fallbacks.push(block);
@@ -4177,35 +4300,44 @@ export function agentTranscriptToBlocks(
         globalNextCursor += 1;
       }
       const owner = normalizeTurnId(blockTurnId(marker));
+      const ownerOrdinal = turnNumberOf(owner);
+      if (
+        !ownsLoadedPrompt &&
+        firstTurn !== undefined &&
+        firstTurnOrdinal > 0 &&
+        ownerOrdinal !== undefined &&
+        ownerOrdinal < firstTurnOrdinal
+      ) {
+        continue;
+      }
       const ownerStart = firstTurnPosition(owner);
+      const ownerEnd = owner === undefined ? undefined : turnEndIndex.get(owner);
       let nextSlot: number;
       if (ownerStart < 0 || globalNextCursor >= ownerStart) {
         nextSlot = globalNextCursor < baseDeliveries.length ? globalNextCursor : -1;
       } else {
         let cursor = Math.max(ownerStart, ownerNextCursor.get(owner!) ?? ownerStart);
-        const ownerEnd = turnEndIndex.get(owner!) ?? baseDeliveries.length - 1;
-        while (cursor <= ownerEnd) {
+        const boundedOwnerEnd = ownerEnd ?? baseDeliveries.length - 1;
+        while (cursor <= boundedOwnerEnd) {
           const time = baseSourceTimes[cursor];
           if (time !== undefined && time > at) break;
           cursor += 1;
         }
-        if (cursor <= ownerEnd) {
-          ownerNextCursor.set(owner!, cursor);
-          nextSlot = cursor;
-        } else {
-          ownerNextCursor.set(owner!, cursor);
-          while (cursor < baseDeliveries.length) {
-            const time = baseSourceTimes[cursor];
-            if (time !== undefined && time > at) break;
-            cursor += 1;
-          }
-          ownerNextCursor.set(owner!, cursor);
-          nextSlot = cursor < baseDeliveries.length ? cursor : -1;
-        }
+        ownerNextCursor.set(owner!, cursor);
+        nextSlot = cursor <= boundedOwnerEnd ? cursor : boundedOwnerEnd + 1;
       }
       const structural = firstTurnPosition(nextSourceTurns.get(marker.id));
       const insertion = (sourceTimestamps.has(at) || sourceTimestamps.size === 0) && structural >= 0 ? structural : nextSlot;
-      const slot = insertion < 0 ? baseDeliveries.length : insertion;
+      let slot = insertion < 0 ? baseDeliveries.length : insertion;
+      if (ownerEnd !== undefined && slot > ownerEnd + 1) {
+        slot = ownerEnd + 1;
+      } else if (ownerStart < 0 && ownerOrdinal !== undefined) {
+        const laterTurnSlot = baseDeliveries.findIndex((candidate) => {
+          const candidateOrdinal = turnNumberOf(blockTurnId(candidate));
+          return candidateOrdinal !== undefined && candidateOrdinal > ownerOrdinal;
+        });
+        if (laterTurnSlot >= 0 && slot > laterTurnSlot) slot = laterTurnSlot;
+      }
       markerInsertions.insertBefore(slot, marker);
       if (owner !== undefined && (ownerStart < 0 || slot < ownerStart)) {
         turnStartIndex.set(owner, slot);
@@ -4219,7 +4351,7 @@ export function agentTranscriptToBlocks(
     }
     canonicalDeliveries = markerInsertions.materialize();
   }
-  const mergedPromptBlocks = mergeTranscriptPromptBlocks(canonicalDeliveries, prompts, previous, response.items);
+  const mergedPromptBlocks = mergeTranscriptPromptBlocks(canonicalDeliveries, prompts, previous, response.items, frameTimes);
   let withTaskBlocks: Block[];
   if (deferredTaskBlocks.length === 0) {
     withTaskBlocks = mergedPromptBlocks;
@@ -4229,7 +4361,7 @@ export function agentTranscriptToBlocks(
       lastSlotById.set(mergedPromptBlocks[index]!.id, index);
     }
     const previousIndex = buildPreviousPositionIndex(previous, lastSlotById);
-    const taskInsertionList = new BucketedInsertionList(mergedPromptBlocks);
+    const taskInsertionList = new BucketedInsertionList(mergedPromptBlocks, frameTimes);
     const timedTasks: Block[] = [];
     for (const block of deferredTaskBlocks) {
       if (
@@ -4260,9 +4392,23 @@ export function agentTranscriptToBlocks(
     }
     return refs.length === block.agentRefs?.length ? block : { ...block, agentRefs: refs };
   });
-  const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
-  const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
-  const withInteractions = insertInteractionBlocks(withSubagentEvents, response.interactions ?? [], response.agent_id, previous);
+  const interactionWindowBounds: InteractionWindowBounds | undefined =
+    firstTurn === undefined
+      ? undefined
+      : {
+          firstTurnOrdinal: ordinalOf(firstTurn),
+          firstTurnStartedMs: timestampMs(firstTurn.startedAt),
+        };
+  const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous, frameTimes);
+  const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous, frameTimes);
+  const withInteractions = insertInteractionBlocks(
+    withSubagentEvents,
+    response.interactions ?? [],
+    response.agent_id,
+    previous,
+    frameTimes,
+    interactionWindowBounds,
+  );
   const withQuestions = reconcileQuestionTaskNotifications(
     mergeTaskNotifications(placePromptContextAfterUser(withInteractions, response.items)),
     tasks,
@@ -4500,9 +4646,13 @@ function reconcileQuestionTaskNotifications(
     const task = block.taskId === undefined ? undefined : taskById.get(block.taskId);
     if (!isQuestionTaskNotification(block, task)) continue;
     const toolCallId = task?.toolCallId ?? task?.parentToolCallId;
+    const strippedQuestionId = block.taskId?.endsWith('-background')
+      ? block.taskId.slice(0, -'-background'.length)
+      : undefined;
     const questionIndex =
       (toolCallId !== undefined ? questionIndicesByToolCall.get(toolCallId) : undefined) ??
-      (block.taskId !== undefined ? questionIndicesById.get(block.taskId) : undefined);
+      (block.taskId !== undefined ? questionIndicesById.get(block.taskId) : undefined) ??
+      (strippedQuestionId !== undefined ? questionIndicesById.get(strippedQuestionId) : undefined);
     if (questionIndex !== undefined) {
       const existing = out[questionIndex] as QuestionBlock;
       const derived = questionOutcomeFromTaskNotification(block, task, existing.request.questions);

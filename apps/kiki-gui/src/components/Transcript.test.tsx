@@ -96,6 +96,7 @@ import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBoundary';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
 import { ToolCard, toolIcon, resolvedToolName } from './ToolCard';
+import { FloorNavRail, resolveVirtualFloorId } from './FloorNavRail';
 import {
   filterMediaNotRenderedInText,
   mergeSubagentRows,
@@ -6973,6 +6974,93 @@ describe('virtualized transcript scrolling', () => {
       await new Promise((resolve) => setTimeout(resolve, 35));
     });
     expect(container.querySelector('[data-block-id="floor-0"]')).not.toBeNull();
+  });
+
+  it('updates active floor across folded or unmeasured entries on scroll and locates folded ticks on click', async () => {
+    const entries = [
+      { blockId: 'user-0', preview: 'first' },
+      { blockId: 'user-steer-folded', preview: 'folded steer' },
+      { blockId: 'user-unmeasured', preview: 'pending measure' },
+      { blockId: 'user-last', preview: 'latest' },
+    ];
+    const nodeIndexes = new Map<string, number>([
+      ['user-0', 0],
+      ['user-last', 3],
+    ]);
+    const foldedLocations = new Map<string, { index: number; foldId?: string }>([
+      ['user-0', { index: 0 }],
+      ['user-steer-folded', { index: 1, foldId: 'fold-1' }],
+      ['user-unmeasured', { index: 2 }],
+      ['user-last', { index: 3 }],
+    ]);
+    const mockVirtualizer = {
+      measurementsCache: [
+        { start: 0 },
+        { start: 240 },
+        undefined,
+        { start: 900 },
+      ] as unknown as import('@tanstack/react-virtual').VirtualItem[],
+    };
+    expect(resolveVirtualFloorId(entries, nodeIndexes, mockVirtualizer, 860, (id) => foldedLocations.get(id))).toBe('user-last');
+    expect(resolveVirtualFloorId(entries, nodeIndexes, mockVirtualizer, 200, (id) => foldedLocations.get(id))).toBe('user-steer-folded');
+    expect(resolveVirtualFloorId(entries, nodeIndexes, mockVirtualizer, 0, (id) => foldedLocations.get(id))).toBe('user-0');
+    expect(resolveVirtualFloorId(entries, new Map(), { measurementsCache: [] }, 0)).toBe('user-0');
+
+    const located: string[] = [];
+    const scrollEl = document.createElement('div');
+    scrollEl.scrollTop = 900;
+    const scrollToIndex = vi.fn();
+    const railVirtualizer = {
+      measurementsCache: mockVirtualizer.measurementsCache,
+      getTotalSize: () => 1200,
+      scrollToIndex,
+    } as unknown as import('@tanstack/react-virtual').Virtualizer<HTMLDivElement, HTMLDivElement>;
+    const railBlocks: Block[] = [
+      userBlock({ id: 'user-0', text: 'first', turnId: 't0' }),
+      userBlock({ id: 'user-steer-folded', text: 'folded steer', turnId: 't0' }),
+      userBlock({ id: 'user-last', text: 'latest', turnId: 't1' }),
+    ];
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <I18nProvider>
+        <FloorNavRail
+          blocks={railBlocks}
+          nodeIndexes={nodeIndexes}
+          resolveBlockLocation={(id) => foldedLocations.get(id)}
+          scrollRef={{ current: scrollEl }}
+          virtualizer={railVirtualizer}
+          onLocateBlock={(id) => { located.push(id); }}
+        />
+      </I18nProvider>,
+    );
+    const ticks = container.querySelectorAll<HTMLButtonElement>('[data-floor-tick]');
+    expect(ticks).toHaveLength(3);
+    expect(ticks[2]?.hasAttribute('data-floor-active')).toBe(true);
+
+    await act(async () => {
+      scrollEl.scrollTop = 200;
+      scrollEl.dispatchEvent(new Event('scroll'));
+    });
+    expect(ticks[1]?.hasAttribute('data-floor-active')).toBe(true);
+    expect(ticks[2]?.hasAttribute('data-floor-active')).toBe(false);
+
+    await act(async () => {
+      scrollEl.scrollTop = 0;
+      scrollEl.dispatchEvent(new Event('scroll'));
+    });
+    expect(ticks[0]?.hasAttribute('data-floor-active')).toBe(true);
+
+    await act(async () => {
+      click(ticks[1]!);
+    });
+    expect(located).toEqual(['user-steer-folded']);
+    expect(scrollToIndex).not.toHaveBeenCalled();
+
+    await act(async () => {
+      click(ticks[0]!);
+    });
+    expect(scrollToIndex).toHaveBeenCalledWith(0, { align: 'start' });
   });
   });
 });

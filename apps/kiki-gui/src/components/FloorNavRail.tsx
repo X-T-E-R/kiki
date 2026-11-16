@@ -36,23 +36,42 @@ function useStableFloorEntries(blocks: readonly Block[]): readonly FloorEntry[] 
   }, [blocks]);
 }
 
-function resolveVirtualFloorId(
+export interface FloorBlockLocation {
+  readonly index: number;
+  readonly foldId?: string;
+}
+
+export function resolveVirtualFloorId(
   entries: readonly FloorEntry[],
   nodeIndexes: ReadonlyMap<string, number>,
-  virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  virtualizer: Pick<Virtualizer<HTMLDivElement, HTMLDivElement>, 'measurementsCache'>,
   viewportTop: number,
+  resolveBlockLocation?: (blockId: string) => FloorBlockLocation | undefined,
 ): string | undefined {
+  if (entries.length === 0) return undefined;
+  const startOf = (entry: FloorEntry): number | undefined => {
+    const rowIndex = nodeIndexes.get(entry.blockId) ?? resolveBlockLocation?.(entry.blockId)?.index;
+    return rowIndex === undefined ? undefined : virtualizer.measurementsCache[rowIndex]?.start;
+  };
   const target = viewportTop + 80;
   let low = 0;
   let high = entries.length - 1;
   let candidate: string | undefined;
   while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const entry = entries[middle]!;
-    const top = virtualizer.measurementsCache[nodeIndexes.get(entry.blockId)!]!.start;
+    const middle = low + Math.floor((high - low) / 2);
+    let probe = middle;
+    let top = startOf(entries[probe]!);
+    while (top === undefined && probe < high) {
+      probe += 1;
+      top = startOf(entries[probe]!);
+    }
+    if (top === undefined) {
+      high = middle - 1;
+      continue;
+    }
     if (top <= target) {
-      candidate = entry.blockId;
-      low = middle + 1;
+      candidate = entries[probe]!.blockId;
+      low = probe + 1;
     } else {
       high = middle - 1;
     }
@@ -63,8 +82,10 @@ function resolveVirtualFloorId(
 interface FloorNavRailProps {
   blocks: readonly Block[];
   nodeIndexes: ReadonlyMap<string, number>;
+  resolveBlockLocation?: (blockId: string) => FloorBlockLocation | undefined;
   scrollRef: { readonly current: HTMLDivElement | null };
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
+  onLocateBlock?: (blockId: string) => void;
 }
 
 /**
@@ -79,8 +100,10 @@ export function FloorNavRail(props: FloorNavRailProps) {
 function FloorNavRailBody({
   blocks,
   nodeIndexes,
+  resolveBlockLocation,
   scrollRef,
   virtualizer,
+  onLocateBlock,
 }: FloorNavRailProps) {
   const { t } = useI18n();
   const entries = useStableFloorEntries(blocks);
@@ -88,6 +111,7 @@ function FloorNavRailBody({
   const [hovering, setHovering] = useState(false);
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const totalSize = virtualizer.getTotalSize();
 
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
@@ -95,16 +119,16 @@ function FloorNavRailBody({
       setActiveId(undefined);
       return;
     }
-    const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, scroll.scrollTop);
+    const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, scroll.scrollTop, resolveBlockLocation);
     setActiveId((previous) => (previous === next ? previous : next));
-  }, [entries, nodeIndexes, scrollRef, virtualizer]);
+  }, [entries, nodeIndexes, resolveBlockLocation, scrollRef, virtualizer, totalSize]);
 
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (scroll === null || entries.length < 2) return;
     const onScroll = () => {
       setRevealed(true);
-      const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, scroll.scrollTop);
+      const next = resolveVirtualFloorId(entries, nodeIndexes, virtualizer, scroll.scrollTop, resolveBlockLocation);
       setActiveId((previous) => (previous === next ? previous : next));
       if (idleTimer.current !== null) clearTimeout(idleTimer.current);
       idleTimer.current = setTimeout(() => { setRevealed(false); }, REVEAL_IDLE_MS);
@@ -114,7 +138,7 @@ function FloorNavRailBody({
       scroll.removeEventListener('scroll', onScroll);
       if (idleTimer.current !== null) clearTimeout(idleTimer.current);
     };
-  }, [entries, nodeIndexes, scrollRef, virtualizer]);
+  }, [entries, nodeIndexes, resolveBlockLocation, scrollRef, virtualizer]);
 
   const ticks = useMemo(
     () => {
@@ -141,11 +165,23 @@ function FloorNavRailBody({
             aria-label={t('transcript.floorTickAria', { index: index + 1, preview: entry.preview })}
             onClick={() => {
               setActiveId(entry.blockId);
-              // Instant, not smooth: virtual-core drops ResizeObserver
-              // measurements outside the target window during a smooth
-              // scroll and never re-reads them, so rows the animation sweeps
-              // past keep estimated heights and paint over their neighbours.
-              virtualizer.scrollToIndex(nodeIndexes.get(entry.blockId)!, { align: 'start' });
+              const directIndex = nodeIndexes.get(entry.blockId);
+              if (directIndex !== undefined) {
+                // Instant, not smooth: virtual-core drops ResizeObserver
+                // measurements outside the target window during a smooth
+                // scroll and never re-reads them, so rows the animation sweeps
+                // past keep estimated heights and paint over their neighbours.
+                virtualizer.scrollToIndex(directIndex, { align: 'start' });
+                return;
+              }
+              if (onLocateBlock !== undefined) {
+                onLocateBlock(entry.blockId);
+                return;
+              }
+              const fallbackIndex = resolveBlockLocation?.(entry.blockId)?.index;
+              if (fallbackIndex !== undefined) {
+                virtualizer.scrollToIndex(fallbackIndex, { align: 'start' });
+              }
             }}
             className={`h-[2px] rounded-full transition-[width,background-color] duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
               active ? 'w-4 bg-selected-ink' : 'w-2 bg-ink-faint/25 group-hover/floor:w-2.5 group-hover/floor:bg-ink-faint/45 hover:!w-3.5 hover:!bg-ink-soft'
@@ -154,7 +190,7 @@ function FloorNavRailBody({
         );
       });
     },
-    [activeId, entries, nodeIndexes, t, virtualizer],
+    [activeId, entries, nodeIndexes, onLocateBlock, resolveBlockLocation, t, virtualizer],
   );
 
   if (entries.length < 2) return null;
