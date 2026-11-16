@@ -243,7 +243,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const endpoint = resolveEndpointBinding(profile, input.endpoint, input.modelAlias, this.endpointVault, input.endpointSecretRef);
     const endpointEffort = endpoint === undefined ? undefined : endpointThinking(endpoint, input.thinkingEffort, profile.thinkingEffort);
     if (endpoint !== undefined) {
-      await assertEndpointSourceTrusted(profile, requester.accessor.get(ISessionContext).cwd, this.documents, this.registeredWorkspaces,
+      if (profile.endpoint !== undefined) await assertEndpointSourceTrusted(profile, requester.accessor.get(ISessionContext).cwd, this.documents, this.registeredWorkspaces,
         { path: input.runtime.path, realpath: (path) => input.runtime.fs!.realpath(path), roots: input.workspaceRoots ?? new RuntimeWorkspaceView(input.runtime,
           inspectAgentWorkspaceRoots(requester.accessor.get(IAgentRuntimeService), requester.accessor.get(ISessionWorkspaceContext))),
           operatorRoots: input.runtime.identity.runtimeId === 'local'

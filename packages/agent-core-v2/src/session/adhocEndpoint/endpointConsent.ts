@@ -42,23 +42,35 @@ export async function assertEndpointSourceTrusted(profile: AgentProfile, cwd: st
       if (contains(realRoot, realFile)) return;
     }
   }
-  let owner: { readonly realRoot: string; readonly trustRoot: string } | undefined;
-  for (const root of [roots.workDir, ...(roots.additionalDirs ?? [])]) {
-    const realRoot = await realpath(root);
-    if (contains(realRoot, realFile) && (owner === undefined || contains(owner.realRoot, realRoot))) owner = { realRoot, trustRoot: root };
+  let realCwd: string | undefined;
+  try { realCwd = await realpath(cwd); }
+  catch (error) {
+    if (!isError2(error) || error.code !== OsFsErrors.codes.OS_FS_NOT_FOUND) throw error;
   }
+  let workspaceOwner = realCwd !== undefined && contains(realCwd, realFile) ? { realRoot: realCwd, trustRoot: cwd } : undefined;
   if (workspaces !== undefined) {
     let directory = path.dirname(realFile);
     for (;;) {
       const registered = await workspaces.findRegisteredByRoot(directory);
       if (registered !== undefined) {
-        if (owner === undefined || contains(owner.realRoot, directory)) owner = { realRoot: directory, trustRoot: registered.root };
+        if (workspaceOwner === undefined || contains(workspaceOwner.realRoot, directory)) workspaceOwner = { realRoot: directory, trustRoot: registered.root };
         break;
       }
       const parent = path.dirname(directory);
       if (parent === directory) break;
       directory = parent;
     }
+  }
+  if (workspaceOwner !== undefined) {
+    if (await readWorkspaceTrust(docs, workspaceOwner.trustRoot)) return;
+    if (source === 'project' && realCwd !== undefined && contains(workspaceOwner.realRoot, realCwd) && await readWorkspaceTrust(docs, cwd)) return;
+    return reject();
+  }
+  if (source === 'project' && await readWorkspaceTrust(docs, cwd)) return;
+  let owner: { readonly realRoot: string; readonly trustRoot: string } | undefined;
+  for (const root of [roots.workDir, ...(roots.additionalDirs ?? [])]) {
+    const realRoot = await realpath(root);
+    if (contains(realRoot, realFile) && (owner === undefined || contains(owner.realRoot, realRoot))) owner = { realRoot, trustRoot: root };
   }
   if (owner !== undefined && await readWorkspaceTrust(docs, owner.trustRoot)) return;
   reject();

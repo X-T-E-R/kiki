@@ -376,7 +376,7 @@ To use an endpoint with an existing role, pass it to `AgentRun`:
 {"profile":"frontend","endpoint":{"base_url":"https://eval.example.test/v1","model":"eval-preview-model","api_key_env":"EVAL_API_KEY"},"effort":"high","prompt":"Run the frontend evaluation.","description":"Run frontend evaluation"}
 ```
 
-To reuse the endpoint across dispatches, put it in a Markdown profile. Use the structured form for request parameters or explicit capability settings:
+To reuse the endpoint across dispatches, put it in a Markdown profile. This example uses an `endpoint` object:
 
 ```markdown
 ---
@@ -395,7 +395,7 @@ endpoint:
 Run the frontend evaluation.
 ```
 
-The same endpoint fields can be written at the top level instead:
+The same fields, including request parameters and capability settings, can be written at the top level instead:
 
 ```markdown
 ---
@@ -413,7 +413,7 @@ The provider defaults to `openai`. A bound endpoint defaults to capabilities `[t
 
 Prefer `api_key_env` and keep literal API keys out of profile files. A literal `api_key` is held only in session memory and requires reauthentication after restart. Changing the destination requires its own credential instead of reusing the previous endpoint's auth.
 
-Each endpoint and credential pair needs human approval once per session in `manual`, `auto`, or `review` mode; `yolo` skips that prompt. Plugin profiles cannot declare endpoints. Workspace files require trust in their owning workspace; explicit files outside a workspace must be in an operator's agents directory, including an inherited home.
+Each endpoint and credential pair needs human approval once per session in `manual`, `auto`, or `review` mode; `yolo` skips that prompt. Plugin profiles cannot declare endpoints. Endpoint declarations in workspace profiles require trust in their owning workspace; explicit files outside a workspace must be in an operator's agents directory, including an inherited home. An endpoint supplied entirely by `AgentRun` uses destination approval without requiring the role profile's source to be trusted.
 
 Endpoints run only with the native executor and do not mutate the model catalog or configuration. Selecting a catalog `model_alias` discards a profile endpoint, and a call-level endpoint override cannot be combined with `model_alias`; put the upstream model ID in `endpoint.model` instead.
 

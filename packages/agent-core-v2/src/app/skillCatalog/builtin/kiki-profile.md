@@ -102,7 +102,7 @@ The body is rendered as a template on every prompt build. Useful variables: `${s
 
 ### Native evaluation endpoints
 
-Use the structured form when a profile needs a native evaluation endpoint, request parameters, or explicit capabilities:
+A profile can declare a native evaluation endpoint as an `endpoint` object or as flat top-level fields. This example uses an `endpoint` object:
 
 ```markdown
 ---
@@ -121,7 +121,7 @@ endpoint:
 Run the frontend evaluation.
 ```
 
-The same endpoint fields can be written at the top level instead:
+The same fields, including request parameters and capability settings, can be written at the top level instead:
 
 ```markdown
 ---
@@ -135,11 +135,11 @@ api_key_env: EVAL_API_KEY
 Run the frontend evaluation.
 ```
 
-The provider defaults to `openai`. A bound endpoint defaults to capabilities `[tool_use, image_in, thinking]`, `max_context_size: 131072`, and, while `thinking` is enabled, efforts `[low, medium, high, xhigh]`. Explicit capability arrays accept only `image_in`, `video_in`, `audio_in`, `thinking`, and `tool_use`; use the structured form for `request_params` such as `preserve_thinking: true`.
+The provider defaults to `openai`. A bound endpoint defaults to capabilities `[tool_use, image_in, thinking]`, `max_context_size: 131072`, and, while `thinking` is enabled, efforts `[low, medium, high, xhigh]`. Explicit capability arrays accept only `image_in`, `video_in`, `audio_in`, `thinking`, and `tool_use`; `request_params` accepts scalar values such as `preserve_thinking: true`.
 
 Prefer `api_key_env` and keep literal API keys out of profile files. A literal `api_key` is held only in session memory and requires reauthentication after restart. Changing the destination requires its own credential instead of reusing the previous endpoint's auth.
 
-Each endpoint and credential pair needs human approval once per session in `manual`, `auto`, or `review` mode; `yolo` skips that prompt. Plugin profiles cannot declare endpoints. Workspace files require trust in their owning workspace; explicit files outside a workspace must be in an operator's agents directory, including an inherited home.
+Each endpoint and credential pair needs human approval once per session in `manual`, `auto`, or `review` mode; `yolo` skips that prompt. Plugin profiles cannot declare endpoints. Endpoint declarations in workspace profiles require trust in their owning workspace; explicit files outside a workspace must be in an operator's agents directory, including an inherited home. An endpoint supplied entirely by `AgentRun` uses destination approval without requiring the role profile's source to be trusted.
 
 Endpoints run only with the native executor and do not mutate the model catalog or configuration. Selecting a catalog `model_alias` discards a profile endpoint, and a call-level endpoint override cannot be combined with `model_alias`; put the upstream model ID in `endpoint.model` instead.
 

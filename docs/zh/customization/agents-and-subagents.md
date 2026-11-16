@@ -376,7 +376,7 @@ disallowedTools:
 {"profile":"frontend","endpoint":{"base_url":"https://eval.example.test/v1","model":"eval-preview-model","api_key_env":"EVAL_API_KEY"},"effort":"high","prompt":"Run the frontend evaluation.","description":"Run frontend evaluation"}
 ```
 
-要在多次派发中复用端点，将它写入 Markdown profile。需要请求参数或明确能力设置时，使用结构化写法：
+要在多次派发中复用端点，将它写入 Markdown profile。下面是 `endpoint` 对象写法：
 
 ```markdown
 ---
@@ -395,7 +395,7 @@ endpoint:
 Run the frontend evaluation.
 ```
 
-也可以把相同的端点字段直接写在顶层：
+相同的端点字段（包括请求参数和能力设置）也可以直接写在顶层：
 
 ```markdown
 ---
@@ -413,7 +413,7 @@ Provider 默认是 `openai`。绑定后的端点默认使用 `[tool_use, image_i
 
 优先使用 `api_key_env`，不要把 API 密钥直接写进 profile 文件。直接传入的 `api_key` 只保存在当前会话内存中，重启后需要重新认证。切换到不同目标时，必须为新目标提供自己的凭据，不能沿用之前端点的认证。
 
-在 `manual`、`auto` 或 `review` 模式下，每组端点与凭据在当前会话中需由用户批准一次；`yolo` 不弹出该提示。Plugin profile 的端点一律拒绝。工作区内的文件只使用所属工作区的信任记录；工作区外的显式文件必须位于用户或继承 home 的 agents 目录。
+在 `manual`、`auto` 或 `review` 模式下，每组端点与凭据在当前会话中需由用户批准一次；`yolo` 不弹出该提示。Plugin profile 不能声明端点。工作区 profile 中的端点声明需要所属工作区的信任；工作区外的显式文件必须位于用户或继承 home 的 agents 目录。完全由 `AgentRun` 提供的端点仍需目标批准，但不要求角色 profile 的来源已受信任。
 
 端点只能由 native executor 执行，不会修改 model catalog 或配置。选择 catalog 的 `model_alias` 会丢弃 profile endpoint；调用时的 endpoint 覆盖不能与 `model_alias` 同时使用，应把上游模型 ID 写入 `endpoint.model`。
 

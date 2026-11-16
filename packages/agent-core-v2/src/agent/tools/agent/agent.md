@@ -6,10 +6,10 @@ To continue an idle child, pass `resume` with its name or id. `context_mode` sel
 
 Subagents may use AgentNotify only when the parent must change course before their final result; routine progress belongs in the final receipt.
 
-Use a native evaluation endpoint with the structured form when you need request parameters or capability settings:
+To use a native evaluation endpoint, pass an `endpoint` object:
 
 ```json
 {"profile":"frontend","endpoint":{"base_url":"https://eval.example.test/v1","model":"eval-preview-model","api_key_env":"EVAL_API_KEY","request_params":{"preserve_thinking":true}},"effort":"high","prompt":"Run the frontend evaluation.","description":"Run frontend evaluation"}
 ```
 
-The flat shorthand accepts the same endpoint fields without `endpoint`: `{ "profile": "frontend", "base_url": "https://eval.example.test/v1", "model": "eval-preview-model", "api_key_env": "EVAL_API_KEY", "effort": "high", "prompt": "Run the frontend evaluation.", "description": "Run frontend evaluation" }`. Do not combine the two forms or pass `model_alias` with an endpoint; `endpoint.model` is the upstream model ID.
+The flat shorthand accepts the same endpoint fields, including request parameters and capability settings, without `endpoint`: `{ "profile": "frontend", "base_url": "https://eval.example.test/v1", "model": "eval-preview-model", "api_key_env": "EVAL_API_KEY", "effort": "high", "prompt": "Run the frontend evaluation.", "description": "Run frontend evaluation" }`. Do not combine the two forms or pass `model_alias` with an endpoint; `model` is the upstream model ID in either form.

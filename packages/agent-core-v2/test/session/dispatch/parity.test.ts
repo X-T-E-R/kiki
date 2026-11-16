@@ -1944,6 +1944,68 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(lane.subagentRun).not.toHaveBeenCalled();
   });
 
+  it.each(['workDir', 'additionalDirs'] as const)('keeps workspace trust when %s selects a workspace subdirectory', async (rootKind) => {
+    const lane = createLane(disposables, 'internal', { profile: normalizeAgentProfile({ ...parityProfile, allowedModels: undefined }) });
+    lane.setPermissionMode('main', 'yolo');
+    await writeWorkspaceTrust(lane.ix.get(IAtomicDocumentStore), '/workspace', Date.now());
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    Object.assign(runtime.workspace, { supportsExternalPaths: true });
+    Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path,
+      readText: async () => '---\nname: eval\ndescription: Evaluation\nbase_url: https://eval.example.test/v1\nmodel: eval-preview-model\napi_key_env: EVAL_API_KEY\n---\nEvaluate.' } });
+    const result = await lane.runInternal({ profile_file: '/workspace/packages/app/eval.md', prompt: 'Evaluate', description: 'Nested role', background: true,
+      workDir: rootKind === 'workDir' ? '/workspace/packages/app' : undefined, additionalDirs: rootKind === 'additionalDirs' ? ['/workspace/packages/app'] : undefined });
+    expect(result.isError).not.toBe(true);
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    expect(lane.subagentRun).toHaveBeenCalledTimes(1);
+    await complete(lane, 0);
+  });
+
+  it('rejects a nested untrusted registered workspace inside a trusted primary workspace', async () => {
+    const lane = createLane(disposables, 'internal', { profile: normalizeAgentProfile({ ...parityProfile, allowedModels: undefined }) });
+    lane.setPermissionMode('main', 'yolo');
+    await writeWorkspaceTrust(lane.ix.get(IAtomicDocumentStore), '/workspace', Date.now());
+    const findRegisteredByRoot = vi.spyOn(lane.ix.get(IWorkspaceService), 'findRegisteredByRoot').mockImplementation(async (root) => root === '/workspace/vendor/ext'
+      ? { id: 'nested', root, name: 'Nested', createdAt: 0, lastOpenedAt: 0, pinned: false } : undefined);
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path,
+      readText: async () => '---\nname: eval\ndescription: Evaluation\nbase_url: https://eval.example.test/v1\nmodel: eval-preview-model\napi_key_env: EVAL_API_KEY\n---\nEvaluate.' } });
+    const result = await lane.runInternal({ profile_file: '/workspace/vendor/ext/eval.md', prompt: 'Evaluate', description: 'Nested workspace', background: true });
+    expect(findRegisteredByRoot).toHaveBeenCalledWith('/workspace/vendor/ext');
+    expect(result.isError).toBe(true);
+    expect(outputText(result.output)).toContain('Trust the owning workspace');
+    expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+    expect(lane.subagentRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { source: 'explicit', declared: false }, { source: 'plugin', declared: false },
+    { source: 'explicit', declared: true }, { source: 'plugin', declared: true },
+  ] as const)('distinguishes caller endpoints from $source profile declarations (declared=$declared)', async ({ source, declared }) => {
+    const text = `---\nname: coder\ndescription: Evaluation role\n${declared ? 'base_url: https://eval.example.test/v1\nmodel: eval-preview-model\napi_key_env: EVAL_API_KEY\n' : ''}---\nEvaluate.`;
+    const file = '/workspace/.kiki/agents/role.md';
+    const definition = parseAgentFileText({ path: file, source, text });
+    const selected = normalizeAgentProfile({ ...parityProfile, allowedModels: undefined, sourcePath: source === 'plugin' ? file : undefined,
+      fileDefinition: source === 'plugin' ? definition : undefined, endpoint: source === 'plugin' ? definition.endpoint : undefined });
+    const lane = createLane(disposables, 'internal', { profile: selected });
+    lane.setPermissionMode('main', 'yolo');
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path, readText: async () => text } });
+    const result = await lane.runInternal({ profile: source === 'plugin' ? selected.name : undefined, profile_file: source === 'explicit' ? file : undefined,
+      endpoint: declared ? { api_key_env: 'OTHER_EVAL_KEY' } : { base_url: 'https://eval.example.test/v1', model: 'eval-preview-model', api_key_env: 'EVAL_API_KEY' },
+      prompt: 'Evaluate', description: 'Caller endpoint', background: true });
+    if (declared) {
+      expect(result.isError).toBe(true);
+      expect(outputText(result.output)).toContain('untrusted workspace or plugin');
+      expect(lane.lifecycleCreate).not.toHaveBeenCalled();
+      expect(lane.subagentRun).not.toHaveBeenCalled();
+    } else {
+      expect(result.isError).not.toBe(true);
+      expect(lane.lifecycleCreate.mock.calls[0]?.[0]?.binding?.endpoint).toMatchObject({ model: 'eval-preview-model', credential: { kind: 'env', env: 'EVAL_API_KEY' } });
+      expect(lane.subagentRun).toHaveBeenCalledTimes(1);
+      await complete(lane, 0);
+    }
+  });
+
   it('rejects plugin endpoints even when the primary workspace is trusted', async () => {
     const definition = parseAgentFileText({ path: '/workspace/plugins/eval.md', source: 'plugin',
       text: '---\nname: coder\ndescription: Evaluation\nbase_url: https://eval.example.test/v1\nmodel: eval-preview-model\napi_key_env: EVAL_API_KEY\n---\nEvaluate.' });

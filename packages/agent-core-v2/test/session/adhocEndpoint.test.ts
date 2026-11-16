@@ -6,6 +6,8 @@ import { adhocEndpointModelId } from '@kiki/protocol';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IConfigService } from '#/app/config/config';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IWorkspaceService } from '#/app/workspace/workspace';
+import { writeWorkspaceTrust } from '#/workspace/workspaceTrust/trustRecord';
 import { AdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
 import { materializeAdhocModel } from '#/session/adhocEndpoint/adhocEndpointRuntime';
 import { assertEndpointConstraints, endpointThinking, resolveEndpointBinding } from '#/session/adhocEndpoint/endpointBinding';
@@ -190,6 +192,46 @@ describe('ad-hoc endpoint bindings', () => {
     })).rejects.toThrow('untrusted');
     expect(get).toHaveBeenCalled();
     await ix.dispose();
+  });
+
+  it.each([
+    { source: 'explicit', cwd: '/repo', file: '/repo/packages/app/eval.md', workDir: '/repo/packages/app', registered: undefined, trusted: ['/repo'], allowed: true },
+    { source: 'project', cwd: '/repo/packages/app', file: '/repo/.kiki/agents/eval.md', workDir: '/repo/packages/app', registered: '/repo', trusted: ['/repo/packages/app'], allowed: true },
+    { source: 'project', cwd: '/repo/packages/app', file: '/repo/.kiki/agents/eval.md', workDir: '/repo/packages/app', registered: undefined, trusted: ['/repo/packages/app'], allowed: true },
+    { source: 'explicit', cwd: '/workspace', file: '/workspace/vendor/ext/packages/app/eval.md', workDir: '/workspace/vendor/ext/packages/app', registered: '/workspace/vendor/ext', trusted: ['/workspace', '/workspace/vendor/ext/packages/app'], allowed: false },
+  ] as const)('uses workspace boundaries before runtime subdirectories for $source at $file', async ({ source, cwd, file, workDir, registered, trusted, allowed }) => {
+    const ix = testServices();
+    const documents = new Map<string, unknown>();
+    ix.stub(IAtomicDocumentStore, { get: async <T>(_scope: string, key: string) => documents.get(key) as T | undefined,
+      set: async (_scope, key, value) => { documents.set(key, value); } });
+    ix.stub(IWorkspaceService, { findRegisteredByRoot: async (root) => root === registered
+      ? { id: 'registered', root, name: 'Registered', createdAt: 0, lastOpenedAt: 0, pinned: false } : undefined });
+    for (const root of trusted) await writeWorkspaceTrust(ix.get(IAtomicDocumentStore), root, Date.now());
+    const definition = parseAgentFileText({ path: file, source, text: '---\nname: eval\ndescription: Evaluation\n---\nEvaluate.' });
+    const selected = normalizeAgentProfile({ name: 'eval', sourcePath: file, fileDefinition: definition, systemPrompt: () => 'Evaluate.' });
+    const result = assertEndpointSourceTrusted(selected, cwd, ix.get(IAtomicDocumentStore), ix.get(IWorkspaceService), {
+      path: { ...posix, separator: '/', delimiter: ':' }, realpath: async (path) => path, roots: { workDir }, operatorRoots: [],
+    });
+    if (allowed) await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toMatchObject({ code: 'request.invalid' });
+    await ix.dispose();
+  });
+
+  it.each(['explicit', 'plugin'] as const)('checks only profile-declared endpoints when binding a %s role', async (source) => {
+    const ctx = createTestAgent();
+    try {
+      const service = ctx.get(IAgentProfileService);
+      const definition = parseAgentFileText({ path: '/untrusted/.kiki/agents/role.md', source, text: '---\nname: role\ndescription: Role only\n---\nEvaluate.' });
+      const role = normalizeAgentProfile({ name: 'role', sourcePath: definition.path, fileDefinition: definition, systemPrompt: () => 'Evaluate.' });
+      const vault = new AdhocEndpointVault();
+      const endpoint = vault.bind(input);
+      await expect(service.bind({ resolvedProfile: role, endpoint, thinking: 'high' })).resolves.toBeUndefined();
+      expect(service.data().endpoint).toEqual(endpoint);
+      const declared = { ...role, endpoint: input };
+      const overridden = resolveEndpointBinding(declared, { api_key_env: 'OTHER_EVAL_KEY' }, undefined, vault)!;
+      await expect(service.bind({ resolvedProfile: declared, endpoint: overridden, thinking: 'high' })).rejects.toThrow();
+      expect(service.data().endpoint).toEqual(endpoint);
+    } finally { await ctx.dispose(); }
   });
 
   it('rejects untrusted project/plugin and in-workspace explicit endpoints even when unattended', async () => {

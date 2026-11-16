@@ -642,7 +642,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
             })()
           : this.catalog.resolveSelection({ profile: selectedProfileName, route: input.route });
     const endpoint = input.endpoint ?? resolveEndpointBinding(selection.profile, undefined, input.model, this.endpointVault);
-    if (endpoint !== undefined && input.endpoint === undefined) await assertEndpointSourceTrusted(selection.profile, this.sessionContext.cwd, this.documents, this.registeredWorkspaces,
+    if (endpoint !== undefined && selection.profile.endpoint !== undefined) await assertEndpointSourceTrusted(selection.profile, this.sessionContext.cwd, this.documents, this.registeredWorkspaces,
       { path: { ...hostPath, separator: hostPath.sep }, realpath: (path) => this.hostFs.realpath(path), roots: { workDir: this.sessionContext.cwd, additionalDirs: this.workspace.additionalDirs },
         operatorRoots: [this.bootstrap.homeDir, this.bootstrap.userAgentProfileHomeDir, this.bootstrap.baseHomeDir].flatMap((home) => home === undefined ? [] : [hostPath.join(home, 'agents')]) });
     if (isNativeTarget(selection.profile)) {
