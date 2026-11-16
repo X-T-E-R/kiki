@@ -1,6 +1,5 @@
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
 import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path';
-import { fdir } from 'fdir';
 import ignore, { type Ignore } from 'ignore';
 import { isSensitiveFile } from '#/_base/security/sensitiveFile';
 
@@ -117,17 +116,35 @@ export function workspacePathFilter(root: string, paths: readonly string[]): rea
 export function workspacePathInventory(root: string, limit: number): WorkspacePathInventory {
   root = resolve(root);
   const rules = new PathRules(root);
-  const paths = new fdir({ excludeSymlinks: false }).withFullPaths().withDirs()
-    .withMaxFiles(limit + 1)
-    .exclude((name, path) => VCS.has(name) || rules.ignored(path, true))
-    .filter((path, directory) => relative(root, path) !== '' && !VCS.has(basename(path)) && !rules.ignored(path, directory))
-    .crawl(root).sync();
   const entries: WorkspacePathEntry[] = [];
-  for (const path of paths) {
-    const entry = pathEntry(root, path.replace(/[\\/]$/u, ''));
+  const stack: Array<{ readonly path: string; entries?: readonly Dirent[]; index: number }> = [{ path: root, index: 0 }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+    if (frame.entries === undefined) {
+      try { frame.entries = readdirSync(frame.path, { withFileTypes: true }); }
+      catch (error) {
+        stack.pop();
+        if (SKIPPABLE.has((error as NodeJS.ErrnoException).code ?? '')) continue;
+        throw error;
+      }
+    }
+    const dirent = frame.entries[frame.index++];
+    if (dirent === undefined) { stack.pop(); continue; }
+    const path = join(frame.path, dirent.name);
+    if (dirent.isDirectory()) {
+      if (VCS.has(dirent.name) || rules.ignored(path, true)) continue;
+      const entry = pathEntry(root, path);
+      if (entry === undefined) continue;
+      entries.push(entry);
+      if (entries.length > limit) return { entries: [], overflow: true };
+      stack.push({ path, index: 0 });
+      continue;
+    }
+    if (VCS.has(dirent.name) || rules.ignored(path, false)) continue;
+    const entry = pathEntry(root, path);
     if (entry === undefined) continue;
-    if (entries.length >= limit) return { entries: [], overflow: true };
     entries.push(entry);
+    if (entries.length > limit) return { entries: [], overflow: true };
   }
   return { entries, overflow: false };
 }

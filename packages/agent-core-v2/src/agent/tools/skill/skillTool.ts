@@ -212,20 +212,11 @@ interface PromptCommandPath {
   readonly path: string;
 }
 
-const promptCommandPathCache = new WeakMap<SkillCatalog, WeakMap<Runtime, Promise<readonly PromptCommandPath[]>>>();
-
 function canonicalPromptCommandPaths(
   catalog: SkillCatalog,
   runtime: Runtime,
 ): Promise<readonly PromptCommandPath[]> {
-  let byIdentity = promptCommandPathCache.get(catalog);
-  if (byIdentity === undefined) {
-    byIdentity = new WeakMap();
-    promptCommandPathCache.set(catalog, byIdentity);
-  }
-  const cached = byIdentity.get(runtime);
-  if (cached !== undefined) return cached;
-  const pending = Promise.all(
+  return Promise.all(
     catalog.listSkills()
       .filter((entry) => entry.metadata.promptCommand === true && entry.source !== 'builtin')
       .map(async (entry): Promise<PromptCommandPath | undefined> => {
@@ -237,11 +228,6 @@ function canonicalPromptCommandPaths(
         }
       }),
   ).then((entries) => entries.filter((entry): entry is PromptCommandPath => entry !== undefined));
-  byIdentity.set(runtime, pending);
-  void pending.catch(() => {
-    if (byIdentity?.get(runtime) === pending) byIdentity.delete(runtime);
-  });
-  return pending;
 }
 
 function errorResult(message: string): ExecutableToolResult {

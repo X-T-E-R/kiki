@@ -5,7 +5,8 @@ import { instructionVersion } from '#/agent/agentsMdReminder/instructionCoverage
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
-import { unwrapErrorCause } from '#/_base/errors/errors';
+import { isError2, unwrapErrorCause } from '#/_base/errors/errors';
+import { OsFsErrors } from '#/os/interface/hostFsErrors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -461,6 +462,9 @@ export class ReadTool implements IReadTool {
       return { ...result, fileRead: { ...result.readRange, file: { path: safePath, runtimeId,
         version: instructionVersion(instructionContent), scope: basename(dirname(safePath)).toLowerCase() === '.kiki' ? dirname(dirname(safePath)) : dirname(safePath) } } };
     } catch (error) {
+      if (isError2(error) && error.code === OsFsErrors.codes.OS_FS_BINARY_FILE) {
+        return { isError: true, output: notReadableFileOutput(args.path) };
+      }
       if (isTextDecodeError(error)) {
         return { isError: true, output: notUtf8DecodableFileOutput(args.path) };
       }

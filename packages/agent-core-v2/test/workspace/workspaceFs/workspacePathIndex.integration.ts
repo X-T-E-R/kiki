@@ -378,6 +378,33 @@ describe('indexed workspace search with real files, workers and ripgrep', () => 
     );
   });
 
+  it('preserves inventory boundaries, metadata and symlink pruning', async () => {
+    await withLocalIndex(
+      async (root) => {
+        await mkdir(join(root, 'nested'));
+        await mkdir(join(root, 'ignored'));
+        await mkdir(join(root, '.git'));
+        await writeFile(join(root, '.gitignore'), 'ignored/\n');
+        await writeFile(join(root, 'nested', 'visible.ts'), 'visible');
+        await writeFile(join(root, 'nested', '.env'), 'secret');
+        await writeFile(join(root, 'ignored', 'hidden.ts'), 'hidden');
+        await writeFile(join(root, '.git', 'internal'), 'internal');
+        await symlink(join(root, 'nested'), join(root, 'nested-link'), process.platform === 'win32' ? 'junction' : 'dir');
+      },
+      async ({ root }) => {
+        const inventory = workspacePathInventory(root, 100);
+        expect(inventory.overflow).toBe(false);
+        expect(inventory.entries).toContainEqual(expect.objectContaining({ path: 'nested/visible.ts', kind: 'file' }));
+        expect(inventory.entries).toContainEqual(expect.objectContaining({ path: 'nested/.env', kind: 'file', sensitive: true }));
+        expect(inventory.entries).toContainEqual(expect.objectContaining({ path: 'nested-link', kind: 'symlink' }));
+        expect(inventory.entries.some((entry) => entry.path.startsWith('nested-link/'))).toBe(false);
+        expect(inventory.entries.some((entry) => entry.path.startsWith('ignored/'))).toBe(false);
+        expect(inventory.entries.some((entry) => entry.path.startsWith('.git/'))).toBe(false);
+        expect(workspacePathInventory(root, 1)).toEqual({ entries: [], overflow: true });
+      },
+    );
+  });
+
   it.skipIf(process.platform !== 'win32')('accepts a Windows root with different casing', async () => {
     await withLocalIndex(
       async (root) => { await writeFile(join(root, 'case.txt'), 'case'); },

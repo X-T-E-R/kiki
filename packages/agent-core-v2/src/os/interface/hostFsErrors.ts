@@ -9,6 +9,7 @@ export const OsFsErrors = {
     OS_FS_ALREADY_EXISTS: 'os.fs.already_exists',
     OS_FS_PERMISSION_DENIED: 'os.fs.permission_denied',
     OS_FS_NOT_EMPTY: 'os.fs.not_empty',
+    OS_FS_BINARY_FILE: 'os.fs.binary_file',
     OS_FS_UNAVAILABLE: 'os.fs.unavailable',
     OS_FS_UNKNOWN: 'os.fs.unknown',
   },
@@ -45,6 +46,11 @@ export const OsFsErrors = {
       retryable: false,
       public: true,
     },
+    'os.fs.binary_file': {
+      title: 'File is not text',
+      retryable: false,
+      public: true,
+    },
     'os.fs.unavailable': {
       title: 'Filesystem unavailable',
       retryable: true,
@@ -76,6 +82,7 @@ const REASONS: Record<HostFsErrorCode, string> = {
   'os.fs.already_exists': 'path already exists',
   'os.fs.permission_denied': 'permission denied',
   'os.fs.not_empty': 'directory is not empty',
+  'os.fs.binary_file': 'file contains binary data',
   'os.fs.unavailable': 'filesystem resource unavailable',
   'os.fs.unknown': 'unrecognized filesystem error',
 };

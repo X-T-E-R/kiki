@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'pathe';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { symlinkDir } from '../../_base/utils/symlink';
 import { createControlledPromise } from '@antfu/utils';
 import { Event } from '#/_base/event';
 import { Error2, ErrorCodes } from '#/errors';
@@ -400,7 +405,7 @@ describe('SkillTool', () => {
     }
   });
 
-  it('memoizes prompt command identities within a catalog snapshot and runtime generation', async () => {
+  it('resolves only prompt command identities on every explicit load', async () => {
     const commandPath = '/workspace/.kiki/commands/brainstorm.md';
     skills.register(parseSkillText({
       skillMdPath: commandPath,
@@ -414,7 +419,36 @@ describe('SkillTool', () => {
     await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
     await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
 
-    expect(realpath.mock.calls.filter(([path]) => path === commandPath)).toHaveLength(1);
+    expect(realpath.mock.calls.filter(([path]) => path === commandPath)).toHaveLength(2);
+    expect(realpath).not.toHaveBeenCalledWith(COMMIT_SKILL.path);
+  });
+
+  it.each([false, true])('rejects a command symlink created or retargeted after an earlier check (existing: %s)', async existing => {
+    const dir = await mkdtemp(join(tmpdir(), 'kiki-command-retarget-'));
+    const link = join(dir, '.kiki', 'commands');
+    try {
+      await mkdir(join(dir, '.kiki'));
+      for (const target of ['prompts-a', 'prompts-b']) {
+        await mkdir(join(dir, target));
+        await writeFile(join(dir, target, 'review.md'), '# Review');
+      }
+      await writeFile(join(dir, 'independent.md'), '# Independent');
+      if (existing) await symlinkDir(join(dir, 'prompts-a'), link);
+      const commandPath = '/workspace/.kiki/commands/review.md';
+      skills.register(parseSkillText({ skillMdPath: commandPath, skillDirName: 'review', source: 'project', text: '# Review' }));
+      const hostFs = new HostFileSystem();
+      const tool = makeTool(ix, '# Independent', { realpath: async path => {
+        const resolved = await hostFs.realpath(join(dir, path.slice('/workspace/'.length)));
+        return `/workspace/${relative(dir, resolved)}`;
+      } });
+      expect((await executeTool(tool, toolContext({ path: '/workspace/independent.md' }))).isError).not.toBe(true);
+      if (existing) await rm(link, { recursive: true, force: true });
+      await symlinkDir(join(dir, 'prompts-b'), link);
+      const result = await executeTool(tool, toolContext({ path: '/workspace/prompts-b/review.md' }));
+      expect(result.isError).toBe(true);
+      expect(result.delivery).toBeUndefined();
+      expect(result.output).toContain('only be triggered by the user');
+    } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
   it.each(['file', 'directory'])('rejects physical aliases of a discovered command %s symlink', async (linkKind) => {

@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'pathe';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { CpuWorkerError } from '#/app/cpuWorker/host';
+import * as cpuRuntime from '#/app/cpuWorker/runtime';
 
 import { PathSecurityError } from '#/tool/path-access';
 import { MEDIA_SNIFF_BYTES } from '#/agent/media/file-type';
@@ -757,6 +763,28 @@ describe('ReadTool', () => {
       '"/tmp/blob-with-late-nul" is not readable as UTF-8 text. Only text files can be read.',
     );
     expect(output).not.toContain('Python tools');
+  });
+
+  it.each([false, true])('uses the display path for a late NUL rejected by a tail read (worker fallback: %s)', async fallback => {
+    const dir = await mkdtemp(join(tmpdir(), 'kiki-read-tail-nul-'));
+    const path = join(dir, 'late-nul.txt');
+    const bytes = Buffer.from('safe text\n'.repeat(40_000));
+    bytes[300 * 1024] = 0;
+    await writeFile(path, bytes);
+    const run = fallback ? vi.spyOn(cpuRuntime, 'runCpuTask').mockRejectedValue(new CpuWorkerError('CPU_QUEUE_FULL', 'CPU worker queue is full')) : undefined;
+    try {
+      const env = { ...createTestEnv(), pathClass: process.platform === 'win32' ? 'win32' as const : 'posix' as const };
+      const tool = createReadTool(new HostFileSystem(), env, stubWorkspaceContext(dir));
+      const result = await execute(tool, { path: 'late-nul.txt', line_offset: -2 });
+      expect(result).toMatchObject({ isError: true,
+        output: '"late-nul.txt" is not readable as UTF-8 text. Only text files can be read.' });
+      expect(toolContentString(result)).not.toContain(dir);
+      expect(toolContentString(result)).not.toContain('os.fs.unknown');
+    } finally {
+      run?.mockRestore();
+      await cpuRuntime.closeCpuPool();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('rejects invalid UTF-8 instead of returning replacement characters', async () => {

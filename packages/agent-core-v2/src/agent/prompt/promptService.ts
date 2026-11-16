@@ -596,7 +596,10 @@ export const promptIdentityKey = defineState('prompt.identity', (): Map<string, 
     const turnId = state.get(event.activePromptId)?.turnId ?? event.promptIds.map(id => state.get(id)?.turnId).find(id => id !== undefined);
     for (const promptId of event.promptIds) {
       const entry = state.get(promptId);
-      if (entry !== undefined) state.set(promptId, { ...entry, phase: 'launched', steered: true, turnId: turnId ?? entry.turnId });
+      if (entry !== undefined) {
+        state.delete(promptId);
+        state.set(promptId, { ...entry, phase: 'launched', steered: true, turnId: turnId ?? entry.turnId });
+      }
     }
   })
   .on(PromptOutcomeCommitted, (state, event) => {

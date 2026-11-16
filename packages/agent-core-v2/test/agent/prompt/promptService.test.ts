@@ -1736,6 +1736,9 @@ describe('AgentPromptService', () => {
     }
     expect([...states.get(promptIdentityKey).values()].filter(identity => identity.turnId === 14).map(identity => identity.promptId))
       .toEqual(['newer-queued', 'older-queued']);
+    await dispatcher.dispatch(new PromptSteered({ activePromptId: 'older-queued', promptIds: ['newer-queued'], content: [], steeredAt: '2026-01-01T00:00:02.000Z' }));
+    expect([...states.get(promptIdentityKey).values()].filter(identity => identity.turnId === 14).map(identity => identity.promptId))
+      .toEqual(['older-queued', 'newer-queued']);
   });
 
   it('persists prompt resolution identities in replayable state', async () => {

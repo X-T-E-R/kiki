@@ -2,7 +2,7 @@ import { open, readFile, stat as nodeStat, type FileHandle } from 'node:fs/promi
 import { isUtf8 } from 'node:buffer';
 import type { Stats } from 'node:fs';
 import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/decodeText';
-import { toHostFsError } from '#/os/interface/hostFsErrors';
+import { HostFsError, OsFsErrors, toHostFsError } from '#/os/interface/hostFsErrors';
 
 const READ_CHUNK_SIZE = 256 * 1024;
 const LINE_INDEX_CHUNK_SIZE = 1024 * 1024;
@@ -147,13 +147,14 @@ export class LocalLineReader {
     try {
       const stat = await fh.stat();
       const index = this.lineIndex(path, stat);
+      const tailLines = Math.max(0, options.tailLines);
       const buffer = Buffer.allocUnsafe(READ_CHUNK_SIZE);
       const pieces: Buffer[] = [];
       let offset = stat.size;
       let newlines = 0;
       let finalLf = false;
-      let start = 0;
-      let found = false;
+      let start = tailLines === 0 ? stat.size : 0;
+      let found = tailLines === 0;
       let carry = Buffer.alloc(0);
       let valid = true;
       while (offset > 0) {
@@ -168,7 +169,8 @@ export class LocalLineReader {
         }
         const chunk = buffer.subarray(0, length);
         if (offset + length === stat.size) finalLf = chunk[length - 1] === 0x0a;
-        if (chunk.includes(0)) throw new Error('File contains NUL bytes and cannot be read as text.');
+        if (chunk.includes(0)) throw new HostFsError(OsFsErrors.codes.OS_FS_BINARY_FILE,
+          'File contains NUL bytes and cannot be read as text.', { details: { path, op: 'read' } });
         let prefix = 0;
         while (prefix < Math.min(3, length) && (chunk[prefix]! & 0xc0) === 0x80) prefix++;
         const validation = carry.length === 0 ? chunk.subarray(prefix) : Buffer.concat([chunk.subarray(prefix), carry]);
@@ -177,13 +179,13 @@ export class LocalLineReader {
         let keep = 0;
         for (let newline = chunk.lastIndexOf(0x0a); newline >= 0; newline = newline === 0 ? -1 : chunk.lastIndexOf(0x0a, newline - 1)) {
           newlines++;
-          if (!found && newlines === options.tailLines + Number(finalLf)) {
+          if (!found && newlines === tailLines + Number(finalLf)) {
             found = true;
             start = offset + newline + 1;
             keep = newline + 1;
           }
         }
-        if (pieces.length === 0 || !found || start >= offset && start < offset + length) {
+        if (!found || start >= offset && start < offset + length) {
           if (keep < length) pieces.push(Buffer.from(chunk.subarray(keep)));
         }
         if (found && index.tail !== undefined) break;
@@ -197,7 +199,7 @@ export class LocalLineReader {
         throw new Error('File changed while reading its tail; retry the read.');
       }
       const text = decodeTextWithErrors(Buffer.concat(pieces.reverse()), 'utf-8', options.errors ?? 'strict', start !== 0);
-      return { startLine: Math.max(1, totalLines - options.tailLines + 1), totalLines,
+      return { startLine: Math.max(1, totalLines - tailLines + 1), totalLines,
         lines: [...splitLinesKeepingTerminator(text)], size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino };
     } catch (error) {
       signal?.throwIfAborted();

@@ -99,7 +99,13 @@ export class HostFileSystem implements IHostFileSystem {
   async *readLineRange(path: string, options: LineRangeOptions): AsyncGenerator<string> {
     const { signal, ...range } = options;
     signal?.throwIfAborted();
-    const lines = range.maxLines > 0 && (range.fileSize ?? (await nodeStat(path)).size) >= LINE_RANGE_WORKER_MIN_BYTES
+    if (range.maxLines <= 0) return;
+    let fileSize = range.fileSize;
+    if (fileSize === undefined) {
+      try { fileSize = (await nodeStat(path)).size; }
+      catch (error) { signal?.throwIfAborted(); throw toHostFsError(error, { path, op: 'read' }); }
+    }
+    const lines = fileSize >= LINE_RANGE_WORKER_MIN_BYTES
       ? await this.readLineRangeInWorker(path, range, signal)
       : undefined;
     if (lines === undefined) {
@@ -129,7 +135,12 @@ export class HostFileSystem implements IHostFileSystem {
   async readTailRange(path: string, options: TailRangeOptions): Promise<{ startLine: number; totalLines: number; lines: AsyncGenerator<string> }> {
     const { signal, ...range } = options;
     signal?.throwIfAborted();
-    if ((range.fileSize ?? (await nodeStat(path)).size) < LINE_RANGE_WORKER_MIN_BYTES) return this.lineReader.readTailRange(path, options);
+    let fileSize = range.fileSize;
+    if (fileSize === undefined) {
+      try { fileSize = (await nodeStat(path)).size; }
+      catch (error) { signal?.throwIfAborted(); throw toHostFsError(error, { path, op: 'read' }); }
+    }
+    if (fileSize < LINE_RANGE_WORKER_MIN_BYTES) return this.lineReader.readTailRange(path, options);
     let page: TailRangePage;
     try {
       page = await runCpuTask<TailRangePage>({ type: 'file.tailRange', path, options: range }, { signal });

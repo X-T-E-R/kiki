@@ -497,9 +497,6 @@ importers:
       chokidar:
         specifier: ^4.0.3
         version: 4.0.3
-      fdir:
-        specifier: ^6.5.0
-        version: 6.5.0(picomatch@4.0.4)
       guarded-fetch:
         specifier: 0.1.5
         version: 0.1.5

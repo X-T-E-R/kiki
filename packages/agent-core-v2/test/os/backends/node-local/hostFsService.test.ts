@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CpuWorkerError } from '#/app/cpuWorker/host';
 import * as cpuRuntime from '#/app/cpuWorker/runtime';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { ErrorCodes } from '#/errors';
 
 import { symlinkDir, windowsSymlinksUnavailable } from '../../../_base/utils/symlink';
 
@@ -87,6 +88,21 @@ describe('HostFileSystem readLineRange', () => {
     return result;
   }
 
+  it('translates missing routing-stat failures for ranges without fileSize', async () => {
+    const path = join(dir, 'missing.txt');
+    const failure = { name: 'HostFsError', code: ErrorCodes.OS_FS_NOT_FOUND, details: { path, op: 'read', errno: 'ENOENT' } };
+    await expect(collect(path, 1, 1)).rejects.toMatchObject(failure);
+    await expect(fs.readTailRange(path, { tailLines: 1 })).rejects.toMatchObject(failure);
+  });
+
+  it.each([0, -5])('returns no tail lines for a nonpositive count %s on a multi-chunk LF file', async tailLines => {
+    const path = join(dir, 'tail-zero.txt');
+    await writeFile(path, 'line\n'.repeat(100_000), 'utf-8');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(collectTail(path, { tailLines })).resolves.toEqual({ startLine: 100_001, totalLines: 100_000, lines: [] });
+    }
+  });
+
   it('reads worker tails with exact counts for final LF and no final LF', async () => {
     const withLf = join(dir, 'tail-final-lf.txt');
     const withLfContent = `${'prefix\n'.repeat(200_000)}tail-a\ntail-b\n`;
@@ -146,7 +162,7 @@ describe('HostFileSystem readLineRange', () => {
     const path = join(dir, 'tail-nul-prefix.txt');
     await writeFile(path, Buffer.concat([Buffer.alloc(300 * 1024, 0x61), Buffer.from([0]), Buffer.from('\ntail\n')]));
 
-    await expect(fs.readTailRange(path, { tailLines: 1 })).rejects.toMatchObject({ code: 'os.fs.unknown' });
+    await expect(fs.readTailRange(path, { tailLines: 1 })).rejects.toMatchObject({ code: ErrorCodes.OS_FS_BINARY_FILE });
   });
 
   it('invalidates a lazy tail iterator after the source changes', async () => {

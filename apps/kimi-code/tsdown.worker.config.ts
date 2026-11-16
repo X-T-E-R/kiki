@@ -23,7 +23,6 @@ const workerAlwaysBundle = [
   /^@kiki\//,
   /^@jimp\//,
   /^@jsquash\/webp(?:\/|$)/,
-  /^fdir(?:\/|$)/,
   /^ignore(?:\/|$)/,
   /^jimp$/,
   /^pathe(?:\/|$)/,
