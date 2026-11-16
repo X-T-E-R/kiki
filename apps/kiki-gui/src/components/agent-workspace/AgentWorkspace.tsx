@@ -106,6 +106,7 @@ export interface AgentWorkspaceNavigation {
   readonly sharedRail?: {
     readonly open: boolean;
     readonly toggle: () => void;
+    readonly close?: () => void;
     readonly available?: boolean;
     readonly yielded?: boolean;
     readonly ensureDockedOpen?: () => void;
@@ -353,7 +354,11 @@ function WorkspaceSurface({
                   }
                   onClick={onCloseRail}
                   onKeyDown={(event) => {
-                    if (event.key === 'Escape') onCloseRail();
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onCloseRail();
+                    }
                   }}
                 />
               ) : null}
@@ -370,7 +375,11 @@ function WorkspaceSurface({
               className="app-overlay-backdrop lg:hidden"
               onClick={onCloseRail}
               onKeyDown={(event) => {
-                if (event.key === 'Escape') onCloseRail();
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onCloseRail();
+                }
               }}
             />
           )

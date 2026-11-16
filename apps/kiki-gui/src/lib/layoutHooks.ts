@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import {
   DEFAULT_LAYOUT_PREFERENCES,
@@ -130,6 +130,7 @@ function setDragging(active: boolean) {
 
 function clearDragging() {
   delete document.body.dataset['paneResizing'];
+  delete document.body.dataset['paneResizeAxis'];
 }
 
 export interface PaneResizeDynamicBounds {
@@ -148,38 +149,73 @@ export function usePaneResize(options: {
   resolveBounds?: (handle: HTMLElement) => PaneResizeDynamicBounds | undefined;
 }) {
   const { value, min, max, onChange, onReset, direction = 1, resolveBounds } = options;
+  const activeCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      activeCleanupRef.current?.();
+    };
+  }, []);
 
   const startResize = useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
       if (event.button !== 0) return;
       event.preventDefault();
+      activeCleanupRef.current?.();
       const handle = event.currentTarget;
       const startX = event.clientX;
       const resolved = resolveBounds?.(handle);
       const activeMin = resolved?.min ?? min;
       const activeMax = Math.max(activeMin, resolved?.max ?? max);
       const startValue = resolved?.startValue ?? value;
+      let valueRef = startValue;
+      let ended = false;
       handle.setPointerCapture(event.pointerId);
       handle.dataset['dragging'] = 'true';
       setDragging(true);
 
-      const up = () => {
+      const detachListeners = () => {
         clearDragging();
-        onChange(clamp(valueRef, activeMin, activeMax), true);
         handle.dataset['dragging'] = 'false';
         handle.removeEventListener('pointermove', trackedMove);
         handle.removeEventListener('pointerup', up);
-        handle.removeEventListener('pointercancel', up);
+        handle.removeEventListener('pointercancel', cancel);
+        handle.removeEventListener('lostpointercapture', cancel);
+        window.removeEventListener('blur', cancel);
       };
-      let valueRef = startValue;
       const trackedMove = (moveEvent: Event) => {
+        if (ended) return;
         const clientX = (moveEvent as PointerEvent).clientX;
         valueRef = clamp(startValue + ((clientX - startX) / cssZoomFactor()) * direction, activeMin, activeMax);
         onChange(valueRef, false);
       };
+      const up = (upEvent: Event) => {
+        if (ended) return;
+        ended = true;
+        activeCleanupRef.current = null;
+        const clientX = (upEvent as PointerEvent).clientX;
+        valueRef = clamp(startValue + ((clientX - startX) / cssZoomFactor()) * direction, activeMin, activeMax);
+        detachListeners();
+        onChange(valueRef, true);
+      };
+      const cancel = () => {
+        if (ended) return;
+        ended = true;
+        activeCleanupRef.current = null;
+        detachListeners();
+        onChange(clamp(valueRef, activeMin, activeMax), true);
+      };
+      activeCleanupRef.current = () => {
+        if (ended) return;
+        ended = true;
+        activeCleanupRef.current = null;
+        detachListeners();
+      };
       handle.addEventListener('pointermove', trackedMove);
       handle.addEventListener('pointerup', up);
-      handle.addEventListener('pointercancel', up);
+      handle.addEventListener('pointercancel', cancel);
+      handle.addEventListener('lostpointercapture', cancel);
+      window.addEventListener('blur', cancel);
     },
     [value, min, max, onChange, direction, resolveBounds],
   );

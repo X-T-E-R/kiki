@@ -3787,6 +3787,14 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
         });
       }
     };
+    const closeRail = () => {
+      if (previewMaximized) {
+        setYieldedOverlay({ regime, open: false });
+      } else {
+        setUserRailOpen(false);
+        localStorage.setItem('kiki.layout', JSON.stringify({ railOpen: false }));
+      }
+    };
     const ensureDockedOpen = () => {
       setUserRailOpen(true);
     };
@@ -3807,8 +3815,9 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
         sharedRail: {
           open: effectiveRailOpen,
           toggle: toggleRail,
+          close: closeRail,
           available: true,
-          yielded: previewMaximized,
+          yielded: true,
           ensureDockedOpen,
         },
       }),
@@ -3831,9 +3840,17 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
               <>
                 {overlayRailOpen ? (
                   <div
+                    tabIndex={-1}
                     data-rail-backdrop
                     className="app-overlay-backdrop--row"
-                    onClick={() => setYieldedOverlay({ regime, open: false })}
+                    onClick={closeRail}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        closeRail();
+                      }
+                    }}
                   />
                 ) : null}
                 <aside data-session-rail className="app-rail-shell">
@@ -4041,7 +4058,106 @@ describe('PreviewWorkspace multi-pane choreography & sibling-aware resize', () =
       });
       expect(previewEl.style.width).toBe(`${DEFAULT_PREVIEW_WIDTH}px`);
       expect(localStorage.getItem('kiki.previewPanelWidth')).toBe(String(DEFAULT_PREVIEW_WIDTH));
+
+      // pointercancel with clientX: 0 preserves last pointermove width (450px) and clears body[data-pane-resizing].
+      await act(async () => {
+        resizer.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: 864, bubbles: true }));
+        resizer.dispatchEvent(new PointerEvent('pointermove', { clientX: 834, bubbles: true }));
+      });
+      expect(document.body.dataset['paneResizing']).toBe('true');
+      await act(async () => {
+        resizer.dispatchEvent(new PointerEvent('pointercancel', { clientX: 0, bubbles: true }));
+      });
+      expect(document.body.dataset['paneResizing']).toBeUndefined();
+      expect(previewEl.style.width).toBe('450px');
+
+      // Unmounting mid-drag removes body[data-pane-resizing].
+      await act(async () => {
+        resizer.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: 834, bubbles: true }));
+      });
+      expect(document.body.dataset['paneResizing']).toBe('true');
+      await act(async () => { probe.root.unmount(); });
+      expect(document.body.dataset['paneResizing']).toBeUndefined();
     } finally {
+      innerWidthSpy.mockRestore();
+    }
+  });
+
+  it('resets maximize when crossing into <1024px overlayStage and avoids backdrop Escape double-toggle', async () => {
+    let isOverlayStage = false;
+    const listeners = new Set<(event: MediaQueryListEvent) => void>();
+    const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: ((query: string) => ({
+        get matches() {
+          return query.includes('max-width: 1023px') ? isOverlayStage : false;
+        },
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: (type: string, cb: EventListenerOrEventListenerObject) => {
+          if (type === 'change' && query.includes('max-width: 1023px') && typeof cb === 'function') {
+            listeners.add(cb as (event: MediaQueryListEvent) => void);
+          }
+        },
+        removeEventListener: (type: string, cb: EventListenerOrEventListenerObject) => {
+          if (type === 'change' && typeof cb === 'function') {
+            listeners.delete(cb as (event: MediaQueryListEvent) => void);
+          }
+        },
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia,
+    });
+    const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1600);
+    try {
+      const probe = await mountChoreography();
+      await openFile(probe.container, '/work/src/server.ts');
+
+      // Even with sharedRail.yielded === true, non-maximized preview hides [data-preview-toggle-rail].
+      expect(workspace().querySelector('[data-preview-toggle-rail]')).toBeNull();
+
+      await pressPreviewControl('[data-preview-fullscreen-toggle]');
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+      expect(document.querySelector('.conversation-center')!.hasAttribute('inert')).toBe(true);
+
+      // Summon overlay rail and press Escape directly on [data-rail-backdrop]: closes once without re-toggling open!
+      await pressPreviewControl('[data-preview-toggle-rail]');
+      const backdrop = document.querySelector<HTMLElement>('[data-rail-backdrop]')!;
+      expect(backdrop).not.toBeNull();
+      await act(async () => {
+        backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      expect(document.querySelector('[data-session-rail]')).toBeNull();
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(true);
+
+      // Crossing below 1024px resets previewMaximized and un-inerts .conversation-center!
+      await act(async () => {
+        isOverlayStage = true;
+        for (const listener of [...listeners]) {
+          listener({ matches: true, media: '(max-width: 1023px)' } as MediaQueryListEvent);
+        }
+      });
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+      expect(document.querySelector('.conversation-center')!.hasAttribute('inert')).toBe(false);
+
+      // Widening back >=1024px opens docked (previewMaximized was reset, not stranded).
+      await act(async () => {
+        isOverlayStage = false;
+        for (const listener of [...listeners]) {
+          listener({ matches: false, media: '(max-width: 1023px)' } as MediaQueryListEvent);
+        }
+      });
+      expect(workspace().hasAttribute('data-preview-fullscreen')).toBe(false);
+      expect(document.querySelector('.conversation-center')!.hasAttribute('inert')).toBe(false);
+    } finally {
+      if (originalMatchMedia !== undefined) {
+        Object.defineProperty(window, 'matchMedia', originalMatchMedia);
+      } else {
+        Reflect.deleteProperty(window, 'matchMedia');
+      }
       innerWidthSpy.mockRestore();
     }
   });

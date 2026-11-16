@@ -260,13 +260,13 @@ export function MediaPreviewProvider({
   }, [sessionId, snapshotAgentId]);
 
   useEffect(() => {
-    if (!panelOpen || cockpit || tabsState.tabs.length === 0) {
+    if (!panelOpen || cockpit || tabsState.tabs.length === 0 || overlayStage) {
       setPreviewMaximized(false);
     }
-  }, [panelOpen, cockpit, tabsState.tabs.length]);
+  }, [panelOpen, cockpit, tabsState.tabs.length, overlayStage]);
 
   const previewVisible = panelOpen && !cockpit && tabsState.tabs.length > 0;
-  const effectiveMaximized = previewVisible && previewMaximized;
+  const effectiveMaximized = previewVisible && previewMaximized && !overlayStage;
   const shellPreviewOwner = useMemo(() => ({}), []);
   const ownsShellPreview =
     registerSessionOpener && shell?.slots.preview !== null && shell?.slots.preview !== undefined;

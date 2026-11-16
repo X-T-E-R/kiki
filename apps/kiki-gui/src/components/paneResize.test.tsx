@@ -270,11 +270,51 @@ describe('usePaneResize dynamic bounds and iframe drag shield', () => {
     expect(events.at(-1)).toEqual({ value: 410, final: true });
   });
 
-  it('shields iframes from pointer events and disables pane transitions while resizing', () => {
+  it('shields iframes from pointer events, layers base focus-visible, and hides covered center under wallpaper skins', () => {
     const css = readFileSync(resolve(import.meta.dirname, '../index.css'), 'utf8');
     expect(css).toMatch(/body\[data-pane-resizing='true'\]\s+iframe\s*\{\s*pointer-events:\s*none\s*!important;/);
     expect(css).toContain('--kiki-pane-duration: 180ms;');
     expect(css).toContain('--kiki-pane-ease: cubic-bezier(0.2, 0, 0, 1);');
     expect(css).toMatch(/body\[data-pane-resizing='true'\]\s+\.preview-workspace[\s\S]*?transition:\s*none\s*!important;/);
+    expect(css).toMatch(/@layer\s+base\s*\{[\s\S]*?:focus-visible\s*\{/);
+    expect(css).toMatch(/\.conversation-center\[data-center-covered\]\s*\{\s*opacity:\s*0;\s*pointer-events:\s*none;\s*\}/);
+  });
+
+  it('ignores pointercancel clientX=0 and cleans up body[data-pane-resizing] on blur and unmount', async () => {
+    const { container, events } = await mountPaneResizeHarness({ direction: -1 });
+    const handle = container.querySelector<HTMLElement>('[data-handle]')!;
+    act(() => {
+      handle.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: 500, bubbles: true }));
+      handle.dispatchEvent(new PointerEvent('pointermove', { clientX: 460, bubbles: true }));
+    });
+    expect(document.body.dataset['paneResizing']).toBe('true');
+    // pointercancel often carries clientX: 0; must preserve last pointermove value (340), never jump!
+    act(() => {
+      handle.dispatchEvent(new PointerEvent('pointercancel', { clientX: 0, bubbles: true }));
+    });
+    expect(document.body.dataset['paneResizing']).toBeUndefined();
+    expect(events.at(-1)).toEqual({ value: 340, final: true });
+
+    // Window blur ends an active drag cleanly.
+    act(() => {
+      handle.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: 500, bubbles: true }));
+      handle.dispatchEvent(new PointerEvent('pointermove', { clientX: 470, bubbles: true }));
+    });
+    expect(document.body.dataset['paneResizing']).toBe('true');
+    act(() => {
+      window.dispatchEvent(new Event('blur'));
+    });
+    expect(document.body.dataset['paneResizing']).toBeUndefined();
+    expect(events.at(-1)).toEqual({ value: 330, final: true });
+
+    // Unmounting mid-drag removes body[data-pane-resizing].
+    act(() => {
+      handle.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientX: 500, bubbles: true }));
+    });
+    expect(document.body.dataset['paneResizing']).toBe('true');
+    const mounted = mounts.pop()!;
+    await act(async () => { mounted.root.unmount(); });
+    mounted.container.remove();
+    expect(document.body.dataset['paneResizing']).toBeUndefined();
   });
 });

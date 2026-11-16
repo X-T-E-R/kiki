@@ -247,20 +247,21 @@ body {
 :root[data-skin='contrast'] {
   --focus-ring-width: 3px;
 }
-:focus-visible {
-  outline: var(--focus-ring-width) solid var(--color-selected-ink);
-  outline-offset: 2px;
-}
-/* Tailwind's `focus-visible:outline-2` rings (most buttons and fields) set
- * their own width; High contrast widens those too. Other skins never match. */
-:root[data-skin='contrast'] :focus-visible {
-  outline-width: var(--focus-ring-width);
-}
-
-/* Reduce motion for the focus outline when users prefer reduced motion. */
-@media (prefers-reduced-motion: reduce) {
+@layer base {
   :focus-visible {
-    transition: none;
+    outline: var(--focus-ring-width) solid var(--color-selected-ink);
+    outline-offset: 2px;
+  }
+  /* Tailwind's `focus-visible:outline-2` rings (most buttons and fields) set
+   * their own width; High contrast widens those too. Other skins never match. */
+  :root[data-skin='contrast'] :focus-visible {
+    outline-width: var(--focus-ring-width);
+  }
+  /* Reduce motion for the focus outline when users prefer reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    :focus-visible {
+      transition: none;
+    }
   }
 }
 
@@ -906,6 +907,11 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   min-height: 0;
 }
 
+.conversation-center[data-center-covered] {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Inside the stage the shell itself is transparent canvas; the conversation
  * column, the preview workspace and the inspector each become a sheet, split
  * by the stage gap. The column keeps its paper ground so the seat's fade
@@ -942,25 +948,23 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   display: contents;
 }
 
-/* Fullscreen preview fills the conversation row — the main content area —
- * and never the window: the app sidebar stays visible and usable beside it.
- * Docked inspector yields automatically; when explicitly summoned over a
- * maximized or priority-band preview, its slot renders out-of-flow with a
- * stage-scoped scrim and full-height sheet at z-36. */
-.conversation-row:has(> .conversation-preview-slot > [data-preview-fullscreen]:not([hidden])) {
-  position: relative;
-}
+/* Fullscreen preview fills the conversation row on desktop (lg and up) — the
+ * main content area — and never the window: the app sidebar stays visible and
+ * usable beside it. Below lg, preview always uses its native sheet/drawer. */
+@media (min-width: 1024px) {
+  .conversation-row:has(> .conversation-preview-slot > [data-preview-fullscreen]:not([hidden])) {
+    position: relative;
+  }
 
-.preview-workspace.preview-workspace--fullscreen {
-  position: absolute;
-  inset: 0;
-  z-index: 34;
-  width: auto;
-  height: auto;
-  max-width: none;
-}
+  .preview-workspace.preview-workspace--fullscreen {
+    position: absolute;
+    inset: 0;
+    z-index: 34;
+    width: auto;
+    height: auto;
+    max-width: none;
+  }
 
-@media (min-width: 768px) {
   .preview-workspace.preview-workspace--fullscreen:not(.preview-workspace--overlay) {
     overflow: hidden;
     border-radius: var(--kiki-sheet-radius);

@@ -295,7 +295,7 @@ export function TerminalPanel({
   const [confirmKillId, setConfirmKillId] = useState<string | undefined>(undefined);
   const [mirror, setMirror] = useState('');
   const [dragging, setDragging] = useState(false);
-  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const dragRef = useRef<{ startY: number; startHeight: number; lastHeight: number } | null>(null);
 
   // The store publishes on tab/status changes; output itself bypasses React
   // via bindOutput, so panel renders stay cheap during a stream.
@@ -324,18 +324,30 @@ export function TerminalPanel({
   }, [confirmKillId]);
 
   useEffect(() => {
+    const onWindowBlur = () => {
+      const drag = dragRef.current;
+      if (drag === null) return;
+      dragRef.current = null;
+      setDragging(false);
+      delete document.body.dataset['paneResizing'];
+      delete document.body.dataset['paneResizeAxis'];
+      onHeightChange(drag.lastHeight, true);
+    };
+    window.addEventListener('blur', onWindowBlur);
     return () => {
+      window.removeEventListener('blur', onWindowBlur);
       if (dragRef.current !== null) {
+        dragRef.current = null;
         delete document.body.dataset['paneResizing'];
         delete document.body.dataset['paneResizeAxis'];
       }
     };
-  }, []);
+  }, [onHeightChange]);
 
   const onDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    dragRef.current = { startY: event.clientY, startHeight: height };
+    dragRef.current = { startY: event.clientY, startHeight: height, lastHeight: height };
     setDragging(true);
     document.body.dataset['paneResizing'] = 'true';
     document.body.dataset['paneResizeAxis'] = 'row';
@@ -345,7 +357,8 @@ export function TerminalPanel({
   const onDragMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (drag === null) return;
-    onHeightChange(clampTerminalPanelHeight(drag.startHeight + (drag.startY - event.clientY)), false);
+    drag.lastHeight = clampTerminalPanelHeight(drag.startHeight + (drag.startY - event.clientY));
+    onHeightChange(drag.lastHeight, false);
   };
   const onDragEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
@@ -355,6 +368,15 @@ export function TerminalPanel({
     delete document.body.dataset['paneResizing'];
     delete document.body.dataset['paneResizeAxis'];
     onHeightChange(clampTerminalPanelHeight(drag.startHeight + (drag.startY - event.clientY)), true);
+  };
+  const onDragCancel = () => {
+    const drag = dragRef.current;
+    if (drag === null) return;
+    dragRef.current = null;
+    setDragging(false);
+    delete document.body.dataset['paneResizing'];
+    delete document.body.dataset['paneResizeAxis'];
+    onHeightChange(drag.lastHeight, true);
   };
 
   const killTab = (id: string) => {
@@ -382,7 +404,8 @@ export function TerminalPanel({
         onPointerDown={onDragStart}
         onPointerMove={onDragMove}
         onPointerUp={onDragEnd}
-        onPointerCancel={onDragEnd}
+        onPointerCancel={onDragCancel}
+        onLostPointerCapture={onDragCancel}
       >
         <div className="mx-auto mt-0.5 h-0.5 w-10 rounded-full bg-shell-hover transition-colors group-hover:bg-accent" />
       </div>
