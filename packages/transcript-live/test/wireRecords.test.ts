@@ -336,8 +336,7 @@ describe('streamWireRecords', () => {
       });
       expect(streamed).toEqual(records.slice(0, 256));
       expect(result).toMatchObject({ recordCount: 256, nextByteOffset: Buffer.byteLength(prefix), complete: true });
-      expect(result.bytesRead).toBeGreaterThan(Buffer.byteLength(prefix));
-      expect(result.bytesRead).toBeLessThanOrEqual(1 << 20);
+      expect(result.bytesRead).toBe(Buffer.byteLength(prefix));
       expect(await readWireRecords(wirePath)).toEqual(records);
     });
   });

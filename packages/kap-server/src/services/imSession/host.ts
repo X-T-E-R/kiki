@@ -44,9 +44,11 @@ import {
   type SessionApprovalRequest,
 } from '@kiki/agent-core-v2';
 import { messageContentSchema, type AsrTranscribeInput, type ImProviderKind, type MessageContent } from '@kiki/protocol';
+import type { IAgentScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
+import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
 import { promptIdentityKey } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { SEND_MESSAGE_SECTION, type SendMessageConfig } from '@kiki/agent-core-v2/agent/tools/message/configSection';
-import type { ImPolicy } from '@nb-corp/im-bridge-core/imSession';
+import type { ImBinding, ImMessageMetadata, ImPolicy } from '@nb-corp/im-bridge-core/imSession';
 import { createSafeHttpTransport } from '@nb-corp/nb-im';
 import type { PromptSubmission } from '../../protocol/rest-prompt';
 
@@ -94,7 +96,9 @@ export async function createImSessionHost(input: {
   const factories = [...(input.factories ?? loadSessionFactories(input.homeDir))];
   const plugins = new PluginImAdapterBridge(factories);
   let activeBridge: ImSessionBridge | undefined;
-  const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger, plugins, () => activeBridge?.policy() ?? { allowed: true, default_enabled: true });
+  const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger, plugins,
+    () => activeBridge?.policy() ?? { allowed: true, default_enabled: true },
+    async () => (await activeBridge!.snapshot()).bindings);
   const fetchImpl = input.wechatFetch ?? ((url, init) => globalThis.fetch(url, init));
   const wechatLogin = new WechatQrLogin(fetchImpl, () => ports.wechatTokens(), async (credential) => ports.credentials.create!({ providerKind: 'wechat_bridge', credential }));
   const bridge = new ImSessionBridge({ ports, factories, locale: () => readHostLocale(input.homeDir), wechatLogin });
@@ -168,6 +172,8 @@ function telegramHttp(token: string): ImHttpTransport {
 class NotificationSessionPorts implements ImSessionPorts {
   private readonly pendingAnswers = new Map<string, Record<string, string | true>>();
   private readonly settledSteerPrompts = new Set<string>();
+  private readonly replyDeliveries = new WeakMap<IAgentScopeHandle, Map<string, Set<string>>>();
+  private readonly replyDestinations = new WeakMap<IAgentScopeHandle, Map<string, readonly string[]>>();
 
   constructor(
     private readonly core: Scope,
@@ -176,6 +182,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     readonly logger: HostLogger,
     private readonly plugins: PluginImAdapterBridge,
     private readonly readPolicy: () => ImPolicy,
+    private readonly readBindings: () => Promise<readonly ImBinding[]>,
   ) {}
 
   readonly history = {
@@ -246,6 +253,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     setHome: async (personaId: string, sessionId: string) => { await this.core.accessor.get(IBotService).setHomeSession(personaId, sessionId); },
     activity: (sessionId: string) => this.inSession(sessionId, async (session) => {
       const agent = await ensureMainAgent(session);
+      this.observeReplyDeliveries(agent);
       const prompt = agent.accessor.get(IAgentPromptService);
       const loop = agent.accessor.get(IAgentLoopService);
       const queue = prompt.list();
@@ -388,6 +396,13 @@ class NotificationSessionPorts implements ImSessionPorts {
       : undefined;
     return this.inSession(input.sessionId, async (session) => {
       const agent = await ensureMainAgent(session);
+      this.observeReplyDeliveries(agent);
+      if (input.im !== undefined) {
+        const destinations = this.replyDestinations.get(agent) ?? new Map<string, readonly string[]>();
+        if (destinations.size >= 256) destinations.delete(destinations.keys().next().value!);
+        destinations.set(input.promptId, replyChannelIds(input.sessionId, input.im, await this.readBindings()));
+        this.replyDestinations.set(agent, destinations);
+      }
       const prompt = agent.accessor.get(IAgentPromptService);
       const known = prompt.lookup(input.promptId);
       if (known !== undefined) {
@@ -580,7 +595,7 @@ class NotificationSessionPorts implements ImSessionPorts {
         return undefined;
       }
       return text;
-    } catch (error) {
+    } catch {
       if (input.signal?.aborted) input.signal.throwIfAborted();
       this.warnAsr(timeout.aborted ? 'timeout' : 'failed');
       return undefined;
@@ -631,9 +646,34 @@ class NotificationSessionPorts implements ImSessionPorts {
     });
   }
 
+  private observeReplyDeliveries(agent: IAgentScopeHandle): void {
+    if (this.replyDeliveries.has(agent)) return;
+    const delivered = new Map<string, Set<string>>();
+    this.replyDeliveries.set(agent, delivered);
+    agent.accessor.get(IAgentToolExecutorService).hooks.onDidExecuteTool.register('im-reply-delivery', async (context, next) => {
+      await next();
+      if (context.toolCall.name !== 'SendMessage' || context.result.isError === true) return;
+      const channels = deliveredUserChannels(typeof context.result.output === 'string' ? context.result.output : '');
+      if (channels.size === 0) return;
+      const to = recordOf(context.args)?.['to'];
+      if (to !== undefined && to !== 'user') return;
+      let promptId: string | undefined;
+      for (const identity of agent.accessor.get(IAgentStateService).get(promptIdentityKey).values()) {
+        if (identity.turnId === context.turnId) promptId = identity.promptId;
+      }
+      if (promptId !== undefined) {
+        if (delivered.size >= 256) delivered.delete(delivered.keys().next().value!);
+        const prior = delivered.get(promptId) ?? new Set<string>();
+        for (const channel of channels) prior.add(channel);
+        delivered.set(promptId, prior);
+      }
+    });
+  }
+
   private async readVisible(sessionId: string, promptId: string, turnId?: number): Promise<ImVisibleReply> {
     return this.inSession(sessionId, async (session) => {
       const agent = await ensureMainAgent(session);
+      this.observeReplyDeliveries(agent);
       const prompt = agent.accessor.get(IAgentPromptService);
       const resolvedTurnId = turnId ?? prompt.lookup(promptId)?.turnId;
       const messages = agent.accessor.get(IAgentContextMemoryService).get();
@@ -642,7 +682,19 @@ class NotificationSessionPorts implements ImSessionPorts {
       for (const identity of identities.values()) {
         if (identity.turnId === resolvedTurnId) latestPromptId = identity.promptId;
       }
-      const selected = visibleReplyMessages(messages, promptId, resolvedTurnId, latestPromptId);
+      const origin = messages.find(message => message.id === promptId)?.origin;
+      const metadata = origin?.kind === 'user' ? origin.im : undefined;
+      let destinations = this.replyDestinations.get(agent)?.get(promptId);
+      if (destinations === undefined && metadata !== undefined) {
+        destinations = replyChannelIds(sessionId, metadata, await this.readBindings());
+        const retained = this.replyDestinations.get(agent) ?? new Map<string, readonly string[]>();
+        if (retained.size >= 256) retained.delete(retained.keys().next().value!);
+        retained.set(promptId, destinations);
+        this.replyDestinations.set(agent, retained);
+      }
+      const channels = this.replyDeliveries.get(agent)?.get(promptId);
+      const delivered = destinations !== undefined && destinations.some(channel => channels?.has(channel));
+      const selected = visibleReplyMessages(messages, promptId, resolvedTurnId, latestPromptId, delivered, destinations);
       const text = selected.flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('');
       const media: ImVisibleMedia[] = [];
       const store = session.accessor.get(ISessionMediaStore);
@@ -815,22 +867,45 @@ function isReplyPrompt(message: ReplySelectorMessage): boolean {
   return message.role === 'user' && (message.origin === undefined || message.origin.kind === 'user');
 }
 
-function deliveredToUser(output: string): boolean {
+export function replyChannelIds(sessionId: string, metadata: ImMessageMetadata, bindings: readonly ImBinding[]): readonly string[] {
+  return bindings.filter(binding => {
+    if (binding.session_id !== sessionId || binding.provider_instance_id !== metadata.provider_instance_id || binding.account_id !== metadata.account_id) return false;
+    const identity = binding.identity;
+    const incoming = metadata.identity;
+    if (identity.chat_id !== incoming.chat_id) return false;
+    const scope = binding.binding_scope ?? 'sender';
+    if (scope === 'chat') return identity.chat_kind === 'group' && incoming.chat_kind === 'group';
+    if (identity.topic_id !== incoming.topic_id) return false;
+    return scope === 'topic' && identity.topic_id !== '0'
+      ? identity.chat_kind === 'group' && incoming.chat_kind === 'group' : identity.sender_id === incoming.sender_id;
+  }).map(binding => `im:${binding.id}`);
+}
+
+function deliveredUserChannels(output: string): Set<string> {
   let value: unknown;
   try {
     value = JSON.parse(output);
   } catch {
-    return false;
+    return new Set();
   }
   const receipt = recordOf(value);
-  return Array.isArray(receipt?.['delivered_to']) && receipt['delivered_to'].includes('user') ||
-    Array.isArray(receipt?.['messages']) && receipt['messages'].some((item: unknown) => {
-      const message = recordOf(item);
-      return Array.isArray(message?.['delivered_to']) && message['delivered_to'].includes('user');
-    });
+  const messages = Array.isArray(receipt?.['messages']) ? receipt['messages'].map(recordOf) : [receipt];
+  let delivered: Set<string> | undefined;
+  for (const message of messages) {
+    if (!Array.isArray(message?.['delivered_to']) || !message['delivered_to'].includes('user') || !Array.isArray(message['channels'])) return new Set();
+    const channels = new Set<string>();
+    for (const item of message['channels']) {
+      const channel = recordOf(item);
+      if (typeof channel?.['channel_id'] === 'string' && channel['channel_id'].startsWith('im:') &&
+          channel['status'] === 'delivered' && channel['borrowed'] !== true) channels.add(channel['channel_id']);
+    }
+    delivered = delivered === undefined ? channels : new Set([...delivered].filter(channel => channels.has(channel)));
+  }
+  return delivered ?? new Set();
 }
 
-export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: readonly T[], promptId: string, turnId?: number, latestPromptId?: string): T[] {
+export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: readonly T[], promptId: string, turnId?: number, latestPromptId?: string, delivered = false, destinations?: readonly string[]): T[] {
+  if (delivered) return [];
   const promptIndex = messages.findIndex((message) => message.id === promptId);
   const resolved = turnId ?? (promptIndex >= 0 ? messages[promptIndex]?.source?.turnId : undefined);
   if (promptIndex < 0 && (resolved === undefined || latestPromptId !== undefined && latestPromptId !== promptId ||
@@ -848,7 +923,8 @@ export function visibleReplyMessages<T extends ReplySelectorMessage>(messages: r
       }
     } else if (message.role === 'tool' && message.isError !== true && message.toolCallId !== undefined && sends.has(message.toolCallId)) {
       const output = (message.content ?? []).filter((part) => part.type === 'text').map((part) => part.text ?? '').join('');
-      if (deliveredToUser(output)) return [];
+      const channels = deliveredUserChannels(output);
+      if (destinations === undefined ? channels.size > 0 : destinations.some(channel => channels.has(channel))) return [];
     }
   }
   return selected;

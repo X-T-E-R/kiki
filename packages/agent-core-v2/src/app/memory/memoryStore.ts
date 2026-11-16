@@ -140,6 +140,7 @@ export interface IMemoryStore {
   inventory(scope: MemoryScope): Promise<MemoryInventory>;
   list(scope: MemoryScope, includeInactive?: boolean): Promise<readonly MemoryEntry[]>;
   get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined>;
+  getMany?(scope: MemoryScope, ids: readonly string[]): Promise<ReadonlyMap<string, MemoryEntry>>;
   put(input: MemoryMutation): Promise<MemoryPutResult>;
   query(scopes: readonly MemoryScope[], input: MemoryQuery, signal?: AbortSignal): Promise<MemoryQueryPage>;
   delete(scope: MemoryScope, id: string, expectedRevision: string, writer?: MemoryWriter): Promise<string>;

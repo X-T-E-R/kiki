@@ -387,7 +387,8 @@ export class ReadTool implements IReadTool {
         return { isError: true, output: `"${args.path}" is neither a regular file nor a directory, so Read cannot open it.` };
       }
 
-      const header = await fs.readBytes(safePath, MEDIA_SNIFF_BYTES);
+      const small = stat.size <= (64 << 10) ? await fs.readBytes(safePath, (64 << 10) + 1) : undefined;
+      const header = small?.subarray(0, MEDIA_SNIFF_BYTES) ?? await fs.readBytes(safePath, MEDIA_SNIFF_BYTES);
       const fileType = detectFileType(safePath, header);
       if (fileType.kind === 'image' || fileType.kind === 'video') {
         const next = this.mediaToolAvailable() ? ` Use ${MEDIA_TOOL_NAME} to view it.` : '';
@@ -408,8 +409,9 @@ export class ReadTool implements IReadTool {
       let detectedEncoding: UtfTextEncoding | undefined;
       let instructionContent: string | undefined;
       if (basename(safePath).toLowerCase() === 'agents.md' && !detection.seemsBinary) {
-        instructionContent = detection.encoding === 'utf-8' ? await fs.readText(safePath, { errors: 'strict' })
-          : decodeUtfText(await fs.readBytes(safePath), detection.encoding);
+        instructionContent = small !== undefined && small.length <= (64 << 10) ? decodeUtfText(small, detection.encoding)
+          : detection.encoding === 'utf-8' ? await fs.readText(safePath, { errors: 'strict' })
+            : decodeUtfText(await fs.readBytes(safePath), detection.encoding);
         lines = decodedLines(splitLinesKeepingTerminator(instructionContent));
         detectedEncoding = detection.encoding === 'utf-8' ? undefined : detection.encoding;
       } else if (!detection.seemsBinary && detection.encoding !== 'utf-8') {
@@ -422,7 +424,7 @@ export class ReadTool implements IReadTool {
               'Convert it to UTF-8 first (e.g. with `iconv`).',
           };
         }
-        const decoded = decodeUtfText(await fs.readBytes(safePath), detection.encoding);
+        const decoded = decodeUtfText(small !== undefined && small.length <= (64 << 10) ? small : await fs.readBytes(safePath), detection.encoding);
         detectedEncoding = detection.encoding;
         lines = decodedLines(splitLinesKeepingTerminator(decoded));
       } else if (fileType.kind === 'unknown') {
@@ -431,16 +433,19 @@ export class ReadTool implements IReadTool {
           output: notReadableFileOutput(args.path),
         };
       } else {
-        if (lineOffset > 0 && fs.readLineRange !== undefined) {
+        if (small !== undefined && small.length <= (64 << 10)) {
+          lines = decodedLines(splitLinesKeepingTerminator(decodeUtfText(small, 'utf-8')));
+        } else if (lineOffset > 0 && fs.readLineRange !== undefined) {
           lines = fs.readLineRange(safePath, {
             startLine: lineOffset,
             maxLines: effectiveLimit + 1,
+            fileSize: stat.size,
             errors: 'strict',
             signal,
           });
           sourceStartLine = lineOffset;
         } else if (lineOffset < 0 && fs.readTailRange !== undefined) {
-          const range = await fs.readTailRange(safePath, { tailLines: Math.abs(lineOffset), errors: 'strict', signal });
+          const range = await fs.readTailRange(safePath, { tailLines: Math.abs(lineOffset), fileSize: stat.size, errors: 'strict', signal });
           lines = range.lines;
           sourceStartLine = range.startLine;
         } else {
@@ -603,6 +608,7 @@ export class ReadTool implements IReadTool {
   ): Promise<ExecutableToolResult> {
     const tailCount = Math.abs(lineOffset);
     const entries: ReadLineEntry[] = [];
+    let head = 0;
     const flags: LineEndingFlags = { hasCrLf: false, hasLf: false, hasLoneCr: false };
     let currentLineNo = sourceStartLine - 1;
 
@@ -612,17 +618,13 @@ export class ReadTool implements IReadTool {
       }
       currentLineNo += 1;
       updateLineEndingFlags(flags, rawLine);
-      entries.push({
-        lineNo: currentLineNo,
-        rawContent: stripTrailingLf(rawLine),
-      });
-      if (entries.length > tailCount) {
-        entries.shift();
-      }
+      const entry = { lineNo: currentLineNo, rawContent: stripTrailingLf(rawLine) };
+      if (entries.length < tailCount) entries.push(entry);
+      else { entries[head] = entry; head = (head + 1) % tailCount; }
     }
 
     return this.finishTailEntries({
-      entries,
+      entries: head === 0 ? entries : [...entries.slice(head), ...entries.slice(0, head)],
       lineEndingFlags: flags,
       effectiveLimit,
       totalLines: currentLineNo,

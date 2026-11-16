@@ -7,6 +7,7 @@ import type { HistoryNavRow, HistoryNavScan, HistoryNavSearch } from './historyL
 import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
 import { hashHistoryRecord } from './historySource';
 import { matchHistoryText, planHistoryQuery } from './historyQuery';
+import { historySearchCandidate } from './historySearchIndex';
 import { makeSnippet } from '../../search/snippet';
 
 export interface HistorySortedBoundary { readonly time: number; readonly key: string }
@@ -117,6 +118,7 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
       incompleteReason: reason, gaps: [reason] };
   }
   const plan = planHistoryQuery(search.query, search.mode);
+  const candidate = historySearchCandidate(plan);
   const matches: Array<{ hit: HistoryHit; score: number; time: number; key: string }> = [];
   const gaps = new Set<string>(cursor?.skippedOversize ? ['record_exceeds_page_budget'] : []);
   let after = cursor?.after;
@@ -129,9 +131,11 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
       const limit = Math.min(64, input.maxRecords - recordsRead);
       const candidates = db.searchRows({ workspace: input.workspace, session: input.session, agent: input.agent,
         direction: order === 'oldest' ? 'asc' : 'desc', after, includeToolOutput: search.includeToolOutput,
-        role: search.role, startTime: search.after, endTime: search.before, limit });
+        role: search.role, startTime: search.after, endTime: search.before, candidate, limit });
       recordsRead += candidates.length;
       if (candidates.length === 0) { complete = true; break; }
+      const spans = candidates.map(item => item.row.anchor).toSorted((left, right) => left.start - right.start || left.end - right.end);
+      let buffered: { start: number; end: number; raw: Buffer } | undefined;
       for (const [index, candidate] of candidates.entries()) {
         input.signal?.throwIfAborted();
         const { row, key, time } = candidate;
@@ -140,19 +144,34 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
           gaps.add('record_exceeds_page_budget');
           after = { key, time };
         } else {
-          if (size > input.maxBytes - bytesRead) break outer;
           if (size <= 0 || row.anchor.end > asOf) throw new Error('stale_scan_cursor');
-          const raw = Buffer.allocUnsafe(size);
-          let received = 0;
-          while (received < size) {
-            input.signal?.throwIfAborted();
-            const count = logical !== undefined
-              ? await readLogicalInto(logical, raw, received, size - received, row.anchor.start + received)
-              : (await file!.read(raw, received, size - received, row.anchor.start + received)).bytesRead;
-            if (count === 0) throw new Error('stale_scan_cursor');
-            received += count;
-            bytesRead += count;
+          if (buffered === undefined || row.anchor.start < buffered.start || row.anchor.end > buffered.end) {
+            if (size > input.maxBytes - bytesRead) break outer;
+            const at = spans.findIndex(span => span.start === row.anchor.start && span.end === row.anchor.end);
+            let first = at;
+            let last = at;
+            const maximum = Math.min(1 << 20, input.maxBytes - bytesRead);
+            while (first > 0 && last - first + 1 < 128 && spans[first]!.start - spans[first - 1]!.end <= (64 << 10) &&
+                spans[last]!.end - spans[first - 1]!.start <= maximum) first--;
+            while (last + 1 < spans.length && last - first + 1 < 128 && spans[last + 1]!.start - spans[last]!.end <= (64 << 10) &&
+                spans[last + 1]!.end - spans[first]!.start <= maximum) last++;
+            const start = spans[first]!.start;
+            const end = spans[last]!.end;
+            if (start < 0 || end > asOf) throw new Error('stale_scan_cursor');
+            const raw = Buffer.allocUnsafe(end - start);
+            let received = 0;
+            while (received < raw.length) {
+              input.signal?.throwIfAborted();
+              const count = logical !== undefined
+                ? await readLogicalInto(logical, raw, received, raw.length - received, start + received)
+                : (await file!.read(raw, received, raw.length - received, start + received)).bytesRead;
+              if (count === 0) throw new Error('stale_scan_cursor');
+              received += count;
+              bytesRead += count;
+            }
+            buffered = { start, end, raw };
           }
+          const raw = buffered.raw.subarray(row.anchor.start - buffered.start, row.anchor.end - buffered.start);
           if (hashHistoryRecord(raw) !== row.anchor.digest) throw new Error('stale_scan_cursor');
           const record = JSON.parse(raw.toString('utf8')) as Record<string, unknown>;
           const text = input.textOf(record, row.part, row.selector);

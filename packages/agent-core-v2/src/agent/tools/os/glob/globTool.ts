@@ -1,6 +1,5 @@
-import { normalize, relative, resolve } from 'pathe';
-import picomatch from 'picomatch';
-import { win32 } from 'node:path';
+import { normalize, resolve } from 'pathe';
+import { runCpuTask } from '#/app/cpuWorker/runtime';
 import type { WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
 
 import { ensureRgPath, rgUnavailableMessage, type EnsureRgPathOptions, type RgProbe } from '#/os/backends/node-local/tools/rgLocator';
@@ -37,7 +36,6 @@ import {
   withDefinitionReadRoots,
   type PathClass,
   isSensitiveFile,
-  SENSITIVE_DOT_VARIANT_SUFFIXES,
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { matchesGlobRuleSubject } from '#/tool/rule-match';
@@ -51,20 +49,6 @@ import {
 } from './glob';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'] as const;
-
-const SENSITIVE_KEY_BASENAMES = ['id_rsa', 'id_ed25519', 'id_ecdsa'] as const;
-const SENSITIVE_GLOBS_TO_EXCLUDE: readonly string[] = [
-  '**/.env',
-  ...SENSITIVE_KEY_BASENAMES.flatMap((name) => [
-    `**/${name}`,
-    `**/${name}[-_]*`,
-    ...SENSITIVE_DOT_VARIANT_SUFFIXES.map((suffix) => `**/${name}${suffix}`),
-  ]),
-  '**/.aws/credentials',
-  '**/.aws/credentials/**',
-  '**/.gcp/credentials',
-  '**/.gcp/credentials/**',
-];
 
 export class GlobTool implements IGlobTool {
   declare readonly _serviceBrand: undefined;
@@ -211,12 +195,10 @@ export class GlobTool implements IGlobTool {
     }
 
     let rawPaths = args.include_ignored === true || processService instanceof SshHostProcessService
-      ? undefined : pathIndex?.glob(searchRoot, args.pattern);
-    const indexed = rawPaths !== undefined;
+      ? undefined : await pathIndex?.glob(searchRoot, args.pattern);
     let bufferTruncated = false;
     let timedOut = false;
     let traversalWarning: string | undefined;
-    let matches: ((path: string) => boolean) | undefined;
     if (rawPaths === undefined) {
       let rgPath: string;
       try {
@@ -246,7 +228,7 @@ export class GlobTool implements IGlobTool {
 
       let run;
       try {
-        run = await runRgOnce(processService, buildRgArgs(rgPath, args), signal, { cwd: searchRoot });
+        run = await runRgOnce(processService, buildRgArgs(rgPath, args, false, env.pathClass === 'win32'), signal, { cwd: searchRoot });
       } catch (error) {
         return { isError: true, output: formatSpawnError(error) };
       }
@@ -256,7 +238,7 @@ export class GlobTool implements IGlobTool {
 
       if (shouldRetryRipgrepEagain(run)) {
         try {
-          run = await runRgOnce(processService, buildRgArgs(rgPath, args, true), signal, { cwd: searchRoot });
+          run = await runRgOnce(processService, buildRgArgs(rgPath, args, true, env.pathClass === 'win32'), signal, { cwd: searchRoot });
         } catch (error) {
           return { isError: true, output: formatSpawnError(error) };
         }
@@ -279,22 +261,17 @@ export class GlobTool implements IGlobTool {
         return { isError: true, output: 'Glob aborted' };
       }
 
-      const pattern = args.pattern.replace(/^\//u, '');
-      const matcher = picomatch(pattern, { dot: true, basename: !pattern.includes('/') && pattern !== '*' });
-      matches = path => matcher(env.pathClass === 'win32'
-        ? win32.relative(searchRoot, path).replaceAll('\\', '/') : relative(searchRoot, path));
       rawPaths = splitCompletePaths(stdoutText, bufferTruncated || timedOut).map(path => resolve(searchRoot, path));
+      if (args.include_ignored !== true && !(processService instanceof SshHostProcessService)) {
+        rawPaths = await runCpuTask<readonly string[]>({ type: 'workspace.pathFilter', root: searchRoot, paths: rawPaths }, { signal });
+      }
     }
 
-    let kept: readonly string[] = rawPaths;
+    const kept: string[] = [];
     let filteredSensitive = 0;
-    if (!indexed) {
-      const filtered: string[] = [];
-      for (const path of rawPaths) {
-        if (isSensitiveFile(path)) filteredSensitive++;
-        else if (matches === undefined || matches(path)) filtered.push(path);
-      }
-      kept = filtered;
+    for (const path of rawPaths) {
+      if (isSensitiveFile(path)) filteredSensitive++;
+      else kept.push(path);
     }
 
     const offset = args.offset ?? 0;
@@ -421,20 +398,19 @@ function createRgProbe(processService: IHostProcessService): RgProbe {
   };
 }
 
-function buildRgArgs(rgPath: string, args: GlobInput, singleThreaded = false): string[] {
+function buildRgArgs(rgPath: string, args: GlobInput, singleThreaded = false, insensitive = false): string[] {
   const cmd: string[] = [rgPath];
   if (singleThreaded) cmd.push('-j', '1');
   cmd.push('--files', '--hidden', '--sortr=modified');
   const pattern = args.pattern.replace(/^\//, '');
-  if (!pattern.includes('**') && (pattern === '*' || pattern.includes('/'))) {
+  if (!/\{[^}]*\//u.test(pattern) && !pattern.includes('**') && (pattern === '*' || pattern.includes('/'))) {
     cmd.push('--max-depth', String(pattern.split('/').length));
   }
   for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) {
     cmd.push('--glob', `!${dir}`);
   }
-  for (const glob of SENSITIVE_GLOBS_TO_EXCLUDE) {
-    cmd.push('--glob', `!${glob}`);
-  }
+  if (insensitive) cmd.push('--glob-case-insensitive');
+  cmd.push('--glob', pattern);
   if (args.include_ignored) cmd.push('--no-ignore');
   cmd.push('.');
   return cmd;

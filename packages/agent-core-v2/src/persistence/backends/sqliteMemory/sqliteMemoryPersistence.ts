@@ -3,7 +3,7 @@ import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
-import { IMemoryPersistence, type MemoryCommit, type MemoryLegacyPayload } from '#/persistence/interface/memoryPersistence';
+import { IMemoryPersistence, type MemoryCommit, type MemoryLegacyPayload, type MemoryReadView } from '#/persistence/interface/memoryPersistence';
 import { trackQueryStoreDisposal } from '#/persistence/queryStoreDisposals';
 import { MemoryWorker } from './host';
 import type { MemoryOperation } from './protocol';
@@ -27,6 +27,7 @@ export class SqliteMemoryPersistence extends Disposable implements IMemoryPersis
     return this.worker.request(operation);
   }
   read(...[scopes, generation]: Parameters<IMemoryPersistence['read']>): ReturnType<IMemoryPersistence['read']> { return this.operation({ type: 'read', scopes, generation }); }
+  readIds(scope: string, ids: readonly string[], generation?: number): Promise<MemoryReadView> { return this.operation({ type: 'readIds', scope, ids, generation }); }
   revision(...[scope, id, revision]: Parameters<IMemoryPersistence['revision']>): ReturnType<IMemoryPersistence['revision']> { return this.operation({ type: 'revision', scope, id, revision }); }
   commit(input: MemoryCommit): ReturnType<IMemoryPersistence['commit']> { return this.operation({ type: 'commit', input }); }
   receipt(...[operationId, request]: Parameters<IMemoryPersistence['receipt']>): ReturnType<IMemoryPersistence['receipt']> { return this.operation({ type: 'receipt', operationId, request }); }

@@ -1,8 +1,8 @@
 import type { MessagePort } from 'node:worker_threads';
-import { workspacePathInventory } from '#/os/backends/node-local/workspacePathInventory';
+import { workspacePathInventory, workspacePathEntry, workspacePathFilter } from '#/os/backends/node-local/workspacePathInventory';
 import { executeWorkspaceTrigram, type WorkspaceTrigramOperation } from '#/os/backends/node-local/workspaceTrigramStore';
 import { decodeImageVerdict } from '#/agent/media/imageDecode';
-import { LocalLineReader, type LineRangeOptions } from '#/os/backends/node-local/lineReader';
+import { LocalLineReader, type LineRangeOptions, type TailRangeOptions } from '#/os/backends/node-local/lineReader';
 import { decodeWireInput, projectWireInput } from './wireTask';
 import { parseThreadTurnRecord } from '#/app/threadCommunication/threadTurnRecord';
 
@@ -17,6 +17,9 @@ export type CpuOperation =
   | { readonly type: 'wire.context'; readonly input: MessagePort; readonly scope: string; readonly key: string }
   | { readonly type: 'wire.threadTurnRecord'; readonly input: MessagePort }
   | FileLineRangeOperation
+  | { readonly type: 'file.tailRange'; readonly path: string; readonly options: Omit<TailRangeOptions, 'signal'> }
+  | { readonly type: 'workspace.pathFilter'; readonly root: string; readonly paths: readonly string[] }
+  | { readonly type: 'workspace.path'; readonly root: string; readonly path: string }
   | { readonly type: 'workspace.paths'; readonly root: string; readonly limit: number }
   | WorkspaceTrigramOperation;
 
@@ -24,6 +27,8 @@ const lineReader = new LocalLineReader();
 
 export async function executeCpuOperation(operation: CpuOperation): Promise<unknown> {
   switch (operation.type) {
+    case 'workspace.pathFilter': return workspacePathFilter(operation.root, operation.paths);
+    case 'workspace.path': return workspacePathEntry(operation.root, operation.path);
     case 'workspace.paths': return workspacePathInventory(operation.root, operation.limit);
     case 'workspace.trigram.begin':
     case 'workspace.trigram.update':
@@ -36,6 +41,7 @@ export async function executeCpuOperation(operation: CpuOperation): Promise<unkn
       for await (const chunk of decodeWireInput(operation.input)) chunks.push(chunk);
       return parseThreadTurnRecord(chunks.join(''));
     }
+    case 'file.tailRange': return lineReader.readTailPage(operation.path, operation.options);
     case 'file.lineRange': {
       const lines: string[] = [];
       for await (const line of lineReader.readLineRange(operation.path, operation.options)) lines.push(line);

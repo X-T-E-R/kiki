@@ -23,6 +23,7 @@ export interface HistoryNavigationProof {
  * Exact record digests are a separate check.
  */
 export async function historyNavigationProof(path: string, through: number, signal?: AbortSignal): Promise<HistoryNavigationProof> {
+  signal?.throwIfAborted();
   const before = await stat(path, { bigint: true });
   const identity = `${before.dev}:${before.ino}:${before.birthtimeNs}`;
   let opened: LogicalWire | undefined;
@@ -30,7 +31,9 @@ export async function historyNavigationProof(path: string, through: number, sign
     const size = Math.min(through, PROOF_BYTES);
     const tailStart = Math.max(0, through - PROOF_BYTES);
     const read = async (position: number, length: number): Promise<Uint8Array> => {
+      signal?.throwIfAborted();
       const bytes = length === 0 ? new Uint8Array() : await opened!.readAt(position, length);
+      signal?.throwIfAborted();
       if (bytes.byteLength !== length) throw new Error('history_source_changed');
       return bytes;
     };
@@ -63,6 +66,7 @@ export async function historyNavigationProof(path: string, through: number, sign
       }
       unchangedOrAppended(await stat(path, { bigint: true }), after);
     }
+    signal?.throwIfAborted();
     return { identity, size: Number(before.size), mtimeNs: String(before.mtimeNs),
       ctimeNs: String(before.ctimeNs), head, tail };
   } finally { opened?.close(); }

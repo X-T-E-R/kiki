@@ -3,8 +3,10 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HostProcessService, IAgentContextMemoryService, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IAgentPromptService, IBootstrapService, IBotService, IConfigService, IEventService, IFileService, IHostProcessService, ISessionContext, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionMediaStore, ISessionMetadata, ISessionQuestionService, IWorkAdmissionService, ITelemetryService, promptAdmission, type Scope } from '@kiki/agent-core-v2';
+import { HostProcessService, IAgentContextMemoryService, IAgentLifecycleService, IAgentLoopService, IAgentProfileService, IAgentPromptService, IAgentStateService, IBootstrapService, IBotService, IConfigService, IEventService, IFileService, IHostProcessService, ISessionContext, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionMediaStore, ISessionMetadata, ISessionQuestionService, IWorkAdmissionService, ITelemetryService, promptAdmission, type Scope } from '@kiki/agent-core-v2';
 import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
+import { OrderedHookSlot } from '@kiki/agent-core-v2/hooks';
 import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
 import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
 import { IPluginService } from '@kiki/agent-core-v2/app/plugin/plugin';
@@ -765,6 +767,8 @@ describe('long replies', () => {
           if (key === IAgentProfileService) return { getModelProviderType: () => 'openai', data: () => ({ executorId: 'native' }) };
           if (key === IAgentLoopService) return { status: () => ({ activeTurnId: undefined }) };
           if (key === IAgentContextMemoryService) return { get: () => [] };
+          if (key === IAgentStateService) return { get: () => new Map() };
+          if (key === IAgentToolExecutorService) return { hooks: { onDidExecuteTool: new OrderedHookSlot() } };
           throw new Error('unexpected_agent_service');
         },
       },

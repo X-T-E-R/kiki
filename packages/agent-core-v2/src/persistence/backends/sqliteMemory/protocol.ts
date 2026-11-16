@@ -3,6 +3,7 @@ import type { MemoryCommit, MemoryLegacyPayload } from '../../interface/memoryPe
 
 export type MemoryOperation =
   | { readonly type: 'read'; readonly scopes: readonly string[]; readonly generation?: number }
+  | { readonly type: 'readIds'; readonly scope: string; readonly ids: readonly string[]; readonly generation?: number }
   | { readonly type: 'revision'; readonly scope: string; readonly id: string; readonly revision: string }
   | { readonly type: 'commit'; readonly input: MemoryCommit }
   | { readonly type: 'receipt'; readonly operationId: string; readonly request?: string }

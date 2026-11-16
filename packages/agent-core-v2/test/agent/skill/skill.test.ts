@@ -400,6 +400,23 @@ describe('SkillTool', () => {
     }
   });
 
+  it('memoizes prompt command identities within a catalog snapshot and runtime generation', async () => {
+    const commandPath = '/workspace/.kiki/commands/brainstorm.md';
+    skills.register(parseSkillText({
+      skillMdPath: commandPath,
+      skillDirName: 'brainstorm',
+      source: 'project',
+      text: 'Discuss options.',
+    }));
+    const realpath = vi.fn(async (path: string) => path);
+    const tool = makeTool(ix, '# Independent', { realpath });
+
+    await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
+    await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
+
+    expect(realpath.mock.calls.filter(([path]) => path === commandPath)).toHaveLength(1);
+  });
+
   it.each(['file', 'directory'])('rejects physical aliases of a discovered command %s symlink', async (linkKind) => {
     const root = '/workspace/.kiki/commands';
     const target = '/workspace/prompts/review.md';

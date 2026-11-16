@@ -961,12 +961,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       try {
         const persisted = await this.persistence.readTaskOutputSnapshot(taskId, previewLimit);
         if (persisted !== undefined) {
-          const terminalReceipt = isAgentTaskTerminal(info.status) && info.detached !== false
-            ? await this.persistence.readTask(taskId) : undefined;
-          const verified = !isAgentTaskTerminal(info.status) || info.detached === false ||
-            (info.receiptVerification === 'verified' && terminalReceipt?.receiptVerification === 'verified' &&
+          const terminal = isAgentTaskTerminal(info.status) && info.detached !== false;
+          let verified = !terminal;
+          if (terminal && info.receiptVerification === 'verified' && info.receipt !== undefined) {
+            verified = info.receipt.bytes === persisted.outputSizeBytes &&
+              await this.persistence.verifyTaskOutputReceipt(taskId, persisted.outputPath, info.receipt);
+          } else if (terminal) {
+            const terminalReceipt = await this.persistence.readTask(taskId);
+            verified = info.receiptVerification === 'verified' && terminalReceipt?.receiptVerification === 'verified' &&
               info.receipt?.sha256 === terminalReceipt.receipt?.sha256 &&
-              info.receipt?.bytes === persisted.outputSizeBytes);
+              info.receipt?.bytes === persisted.outputSizeBytes;
+          }
           return { ...persisted, outputPath: verified ? persisted.outputPath : undefined,
             fullOutputAvailable: verified };
         }

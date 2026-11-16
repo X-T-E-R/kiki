@@ -6,10 +6,11 @@ import { ErrorCodes, isError2 } from '#/errors';
 import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import type { Runtime } from '#/runtime/runtime';
 import { resolvePathAccessPath } from '#/tool/path-access';
 import { ToolAccesses } from '#/tool/toolContract';
 import { isPromptCommandPath, parseSkillText } from '#/app/skillCatalog/parser';
-import type { SkillDefinition } from '#/app/skillCatalog/types';
+import type { SkillCatalog, SkillDefinition } from '#/app/skillCatalog/types';
 
 import type { SkillActivationOrigin } from '#/agent/contextMemory/types';
 import { IAgentSkillService } from '#/agent/skill/skill';
@@ -102,17 +103,9 @@ export class SkillTool implements ISkillTool {
           }
           catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
           await this.catalog.ready;
-          for (const entry of this.catalog.catalog.listSkills()) {
-            if (entry.metadata.promptCommand !== true || entry.source === 'builtin') continue;
-            let canonicalCommandPath: string;
-            try {
-              canonicalCommandPath = await lease.runtime.fs!.realpath(entry.path);
-            } catch (error) {
-              if (isError2(error) && (error.code === ErrorCodes.OS_FS_NOT_FOUND || error.code === ErrorCodes.OS_FS_NOT_DIRECTORY)) continue;
-              throw error;
-            }
-            const commandPath = resolvePathAccessPath(canonicalCommandPath, pathOptions);
-            if (commandPath === actualPath) return errorResult(`Skill "${entry.name}" can only be triggered by the user (model invocation is disabled).`);
+          for (const command of await canonicalPromptCommandPaths(this.catalog.catalog, lease.runtime)) {
+            const commandPath = resolvePathAccessPath(command.path, pathOptions);
+            if (commandPath === actualPath) return errorResult(`Skill "${command.name}" can only be triggered by the user (model invocation is disabled).`);
           }
           const definition = parseSkillText({
             skillMdPath: actualPath,
@@ -212,6 +205,43 @@ export async function executeModelSkill(
     output: `Skill "${skill.name}" loaded.`,
     delivery: { kind: 'steer', message },
   };
+}
+
+interface PromptCommandPath {
+  readonly name: string;
+  readonly path: string;
+}
+
+const promptCommandPathCache = new WeakMap<SkillCatalog, WeakMap<Runtime, Promise<readonly PromptCommandPath[]>>>();
+
+function canonicalPromptCommandPaths(
+  catalog: SkillCatalog,
+  runtime: Runtime,
+): Promise<readonly PromptCommandPath[]> {
+  let byIdentity = promptCommandPathCache.get(catalog);
+  if (byIdentity === undefined) {
+    byIdentity = new WeakMap();
+    promptCommandPathCache.set(catalog, byIdentity);
+  }
+  const cached = byIdentity.get(runtime);
+  if (cached !== undefined) return cached;
+  const pending = Promise.all(
+    catalog.listSkills()
+      .filter((entry) => entry.metadata.promptCommand === true && entry.source !== 'builtin')
+      .map(async (entry): Promise<PromptCommandPath | undefined> => {
+        try {
+          return { name: entry.name, path: await runtime.fs!.realpath(entry.path) };
+        } catch (error) {
+          if (isError2(error) && (error.code === ErrorCodes.OS_FS_NOT_FOUND || error.code === ErrorCodes.OS_FS_NOT_DIRECTORY)) return undefined;
+          throw error;
+        }
+      }),
+  ).then((entries) => entries.filter((entry): entry is PromptCommandPath => entry !== undefined));
+  byIdentity.set(runtime, pending);
+  void pending.catch(() => {
+    if (byIdentity?.get(runtime) === pending) byIdentity.delete(runtime);
+  });
+  return pending;
 }
 
 function errorResult(message: string): ExecutableToolResult {

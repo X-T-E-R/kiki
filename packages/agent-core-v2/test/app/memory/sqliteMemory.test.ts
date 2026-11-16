@@ -101,6 +101,40 @@ describe('canonical Memory transactions', () => {
     await expect(store.put({ ...input, body: 'Different request' })).rejects.toThrow('another request');
   });
 
+  it('serves bounded point views without inventory reads and preserves revisions, tombstones, and generations', async () => {
+    const active = await save('Bounded active');
+    const archived = await save('Bounded archived');
+    const archivedResult = await store.put({ action: 'archive', scope: global, id: archived.entry.id, expectedRevision: archived.entry.revision, reason: 'Retire the archived fixture', source });
+    const beforeUpdate = await persistence.read(['memory/global']);
+    const changed = await update(active.entry, 'Updated bounded content; preserve the complete condition.');
+    const deleted = await save('Bounded deleted');
+    const beforeDelete = await persistence.read(['memory/global']);
+    await store.delete(global, deleted.entry.id, deleted.entry.revision);
+    const readIds = vi.spyOn(persistence, 'readIds');
+    const inventory = vi.spyOn(store, 'inventory');
+    const read = vi.spyOn(persistence, 'read');
+    expect(await store.get(global, changed.entry.id)).toEqual(changed.entry);
+    expect(await store.get(global, deleted.entry.id)).toBeUndefined();
+    expect(store.getMany).toBeDefined();
+    const many = await store.getMany!(global, [changed.entry.id, archived.entry.id, deleted.entry.id, 'm_missing']);
+    expect([...many.keys()].toSorted()).toEqual([changed.entry.id, archived.entry.id].toSorted());
+    expect(many.get(changed.entry.id)).toEqual(changed.entry);
+    expect(many.get(archived.entry.id)).toEqual(archivedResult.entry);
+    expect(inventory).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(readIds).toHaveBeenCalledTimes(3);
+    const historical = await persistence.readIds!('memory/global', [changed.entry.id, 'm_missing'], beforeUpdate.generation);
+    expect(historical.generation).toBe(beforeUpdate.generation);
+    expect(historical.objects.find((object) => object.id === changed.entry.id)?.entry).toEqual(active.entry);
+    expect(historical.objects.find((object) => object.id === 'm_missing')).toBeUndefined();
+    const deletedHistory = await persistence.readIds!('memory/global', [deleted.entry.id], beforeDelete.generation);
+    expect(deletedHistory.objects.find((object) => object.id === deleted.entry.id)?.entry).toEqual(deleted.entry);
+    const current = await persistence.readIds!('memory/global', [changed.entry.id, deleted.entry.id], beforeDelete.generation + 1);
+    expect(current.objects.find((object) => object.id === changed.entry.id)?.entry).toEqual(changed.entry);
+    expect(current.objects.find((object) => object.id === deleted.entry.id)?.entry).toBeNull();
+    await expect(persistence.readIds!('memory/global', [changed.entry.id], current.generation + 1)).rejects.toThrow('Invalid Memory commit view');
+  });
+
   it('rolls every object back when a later CAS fails and commits a supersede once', async () => {
     const first = await save('First');
     const second = await save('Second');
@@ -228,6 +262,28 @@ describe('canonical Memory transactions', () => {
     expect((await store.get(global, data.entry.id))?.body).toBe(data.entry.body);
     approval = 'off';
     expect((await execution.execute({ ...context, toolCallId: 'off' })).isError).toBe(true);
+  });
+
+  it('batches multi-ID reads per visible scope and preserves missing, inactive, and tombstone results', async () => {
+    const active = await save('Read active');
+    const archived = await save('Read archived');
+    const archivedResult = await store.put({ action: 'archive', scope: global, id: archived.entry.id, expectedRevision: archived.entry.revision, reason: 'Retire read fixture', source });
+    const deleted = await save('Read deleted');
+    await store.delete(global, deleted.entry.id, deleted.entry.revision);
+    const getMany = vi.spyOn(store, 'getMany');
+    const inventory = vi.spyOn(store, 'inventory');
+    const read = ix.get(IMemoryReadTool).resolveExecution({ ids: [active.entry.id, archivedResult.entry.id, deleted.entry.id, 'm_missing'] });
+    if (!('execute' in read)) throw new Error('Expected execution');
+    const output = JSON.parse((await read.execute({ turnId: 3, toolCallId: 'batch-read', signal: new AbortController().signal })).output as string) as { id: string; status?: string; missing?: boolean; reason?: string }[];
+    expect(getMany).toHaveBeenCalledTimes(2);
+    expect(getMany).toHaveBeenCalledWith(global, [active.entry.id, archivedResult.entry.id, deleted.entry.id, 'm_missing']);
+    expect(inventory).not.toHaveBeenCalled();
+    expect(output).toEqual([
+      expect.objectContaining({ id: active.entry.id, status: 'active' }),
+      expect.objectContaining({ id: archivedResult.entry.id, status: 'archived' }),
+      { id: deleted.entry.id, missing: true, reason: 'not_found', recovery: 'Locate the ID in visible scopes; do not create a duplicate to bypass lookup.' },
+      { id: 'm_missing', missing: true, reason: 'not_found', recovery: 'Locate the ID in visible scopes; do not create a duplicate to bypass lookup.' },
+    ]);
   });
 });
 

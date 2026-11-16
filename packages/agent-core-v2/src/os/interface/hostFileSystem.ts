@@ -40,6 +40,7 @@ export interface IHostFileSystem {
     options: {
       startLine: number;
       maxLines: number;
+      fileSize?: number;
       encoding?: BufferEncoding;
       errors?: TextDecodeErrors;
       signal?: AbortSignal;
@@ -48,7 +49,7 @@ export interface IHostFileSystem {
   /** Locate the last tailLines UTF-8 lines, with a one-based startLine (1 for an empty file) and no extra line after a final LF. The lazy iterator rejects if the source size or mtime changes after locating. */
   readTailRange?(
     path: string,
-    options: { tailLines: number; encoding?: 'utf-8' | 'utf8'; errors?: TextDecodeErrors; signal?: AbortSignal },
+    options: { tailLines: number; fileSize?: number; encoding?: 'utf-8' | 'utf8'; errors?: TextDecodeErrors; signal?: AbortSignal },
   ): Promise<{ startLine: number; totalLines: number; lines: AsyncGenerator<string> }>;
   createExclusive(path: string, data: Uint8Array): Promise<boolean>;
   stat(path: string): Promise<HostFileStat>;

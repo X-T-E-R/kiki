@@ -179,6 +179,8 @@ function shouldSurfaceVideoUploadError(error: unknown, inlineVideoSupported: boo
   return isVideoUploadAuthError(error);
 }
 
+const SMALL_MEDIA_READ_BYTES = 256 * 1024;
+
 export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ReadMediaFile' as const;
@@ -308,7 +310,11 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     }
 
     try {
-      const header = await fs.readBytes(safePath, MEDIA_SNIFF_BYTES);
+      const stat = await fs.stat(safePath);
+      const data = stat.size <= SMALL_MEDIA_READ_BYTES && stat.size <= MAX_MEDIA_BYTES
+        ? Buffer.from(await fs.readBytes(safePath))
+        : undefined;
+      const header = data?.subarray(0, MEDIA_SNIFF_BYTES) ?? await fs.readBytes(safePath, MEDIA_SNIFF_BYTES);
       const fileType = detectFileType(safePath, header, 'media');
 
       if (fileType.kind === 'text') {
@@ -357,7 +363,6 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         };
       }
 
-      const stat = await fs.stat(safePath);
       if (stat.size === 0) {
         return { isError: true, output: `"${args.path}" is empty.` };
       }
@@ -420,13 +425,13 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         };
       }
 
-      const data = Buffer.from(await fs.readBytes(safePath));
-      let dimensions = fileType.kind === 'image' ? sniffImageDimensions(data) : null;
+      const mediaData = data ?? Buffer.from(await fs.readBytes(safePath));
+      let dimensions = fileType.kind === 'image' ? sniffImageDimensions(mediaData) : null;
       let mediaPart: ContentPart;
       let delivery: ImageDelivery | undefined;
       if (fileType.kind === 'image') {
         if (args.region !== undefined) {
-          const outcome = await cropImageForModel(data, fileType.mimeType, args.region, {
+          const outcome = await cropImageForModel(mediaData, fileType.mimeType, args.region, {
             skipResize: args.full_resolution === true,
             telemetry: this.compressTelemetry,
             acceptedMimes: this.imagePolicy?.acceptedTypes,
@@ -451,13 +456,13 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           };
           dimensions = { width: outcome.originalWidth, height: outcome.originalHeight };
         } else if (args.full_resolution === true) {
-          if (data.length > IMAGE_BYTE_BUDGET) {
+          if (mediaData.length > IMAGE_BYTE_BUDGET) {
             return {
               isError: true,
-              output: buildFullResolutionLimitError(args.path, data.length),
+              output: buildFullResolutionLimitError(args.path, mediaData.length),
             };
           }
-          const base64 = data.toString('base64');
+          const base64 = mediaData.toString('base64');
           mediaPart = {
             type: 'image_url',
             imageUrl: { url: `data:${fileType.mimeType};base64,${base64}` },
@@ -466,12 +471,12 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             kind: 'full',
             width: dimensions?.width ?? 0,
             height: dimensions?.height ?? 0,
-            byteLength: data.length,
+            byteLength: mediaData.length,
             mimeType: fileType.mimeType,
           };
         } else {
           const { readByteBudget, maxEdge } = imageDeliveryLimits;
-          const compressed = await compressImageForModel(data, fileType.mimeType, {
+          const compressed = await compressImageForModel(mediaData, fileType.mimeType, {
             byteBudget: readByteBudget,
             maxEdge,
             telemetry: this.compressTelemetry,
@@ -508,7 +513,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           }
         }
       } else {
-        mediaPart = await this.videoContentPart(data, fileType.mimeType, safePath);
+        mediaPart = await this.videoContentPart(mediaData, fileType.mimeType, safePath);
       }
 
       const tag = fileType.kind === 'image' ? 'image' : 'video';

@@ -100,7 +100,7 @@ export class CpuWorkerPool {
       } catch (error) {
         this.settle(pending, new CpuWorkerError('CPU_WORKER_EXIT', 'CPU worker dispatch failed', { cause: error }));
         slot.active = undefined;
-        this.retire(slot);
+        void this.retire(slot);
       }
     }
   }
@@ -127,7 +127,7 @@ export class CpuWorkerPool {
       if (slot.worker !== worker) return;
       if (slot.active !== undefined) this.settle(slot.active, new CpuWorkerError('CPU_WORKER_EXIT', 'CPU worker failed', { cause }));
       slot.active = undefined;
-      this.retire(slot);
+      void this.retire(slot);
     });
     worker.on('exit', (code) => {
       if (slot.worker !== worker) return;
@@ -151,14 +151,15 @@ export class CpuWorkerPool {
     const slot = this.slots.find((candidate) => candidate.active === pending);
     if (slot === undefined) return;
     slot.active = undefined;
-    this.settle(pending, error);
-    this.retire(slot);
+    const retired = this.retire(slot);
+    void Promise.resolve(retired).then(() => this.settle(pending, error), () => this.settle(pending, error));
   }
 
-  private retire(slot: Slot): void {
-    if (slot.worker === undefined || slot.retiring !== undefined) return;
+  private retire(slot: Slot): Promise<number> | undefined {
+    if (slot.worker === undefined || slot.retiring !== undefined) return slot.retiring;
     slot.retiring = slot.worker.terminate();
     void slot.retiring.catch(() => {});
+    return slot.retiring;
   }
 
   private settle(pending: Pending, error?: unknown, value?: unknown): void {
@@ -177,7 +178,7 @@ export class CpuWorkerPool {
     for (const slot of this.slots) {
       if (slot.active !== undefined) this.settle(slot.active, error);
       slot.active = undefined;
-      this.retire(slot);
+      void this.retire(slot);
     }
     this.closing = Promise.all(this.slots.flatMap((slot) => slot.retiring === undefined ? [] : [slot.retiring])).then(() => {});
     return this.closing;

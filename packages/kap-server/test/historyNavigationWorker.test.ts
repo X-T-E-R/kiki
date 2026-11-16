@@ -303,7 +303,7 @@ describe('history navigation worker', () => {
       expect(reopened).toMatchObject({ complete: true, nextByteOffset: wireBytes, recordsRead: 0 });
       expect(indexedRows(workerDbPath, SESSION)).toBe(workerRows);
 
-      await writeSyntheticWire(wirePath, INITIAL_TURNS, 12_000, true);
+      await writeSyntheticWire(wirePath, INITIAL_TURNS, 13_000, true);
       const queuedAbort = new AbortController();
       const activeScan = navigation.scan(SESSION, AGENT);
       await nextTurn();
@@ -320,7 +320,7 @@ describe('history navigation worker', () => {
       expect(completedAppend.complete).toBe(true);
       expect(indexedRows(workerDbPath, SESSION)).toBeGreaterThan(workerRows);
 
-      await writeSyntheticWire(wirePath, INITIAL_TURNS + 12_000, 8_000, true);
+      await writeSyntheticWire(wirePath, INITIAL_TURNS + 13_000, 8_000, true);
       const activeAbort = new AbortController();
       const cancelledActive = navigation.scan(SESSION, AGENT, activeAbort.signal);
       await nextTurn();
@@ -382,11 +382,11 @@ describe('history navigation worker boundaries', () => {
     const home = await mkdtemp(join(tmpdir(), 'history-navigation-canonical-worker-'));
     const wirePath = join(home, 'wire.jsonl');
     let projectedCalls = 0;
-    const source = { ...transcriptStub(wirePath),
+    const source = Object.assign(transcriptStub(wirePath), {
       readRetainedColdTurn: async () => undefined,
       readColdWindowTurn: async () => undefined,
       readProjectedColdTurn: async () => { projectedCalls += 1; throw new Error('main-thread fold'); },
-    } as unknown as TranscriptService;
+    });
     const navigation = new HistoryNavigation(join(home, 'navigation.sqlite'), source);
     try {
       await writeFile(wirePath, wireLine({ type: 'note', padding: 'x'.repeat(1 << 20) }).repeat(9) + turnWire(15));

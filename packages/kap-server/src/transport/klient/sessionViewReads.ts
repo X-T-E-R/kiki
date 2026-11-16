@@ -858,7 +858,10 @@ async function readColdTranscriptPage(
         snapshot = { ...snapshot, hasMoreOlder: false };
       }
       query.refreshTurn = updated.turnId;
-      return { snapshot, page: { items: [updated], hasMore: located.page.items.length > 0 || located.page.hasMore || snapshot.hasMoreOlder === true }, query };
+      const index = snapshot.items.indexOf(updated);
+      const nextTurn = snapshot.items.findIndex((item, position) => position > index && item.kind === 'turn');
+      const items = snapshot.items.slice(index, nextTurn < 0 ? undefined : nextTurn);
+      return { snapshot, page: { items, hasMore: located.page.items.length > 0 || located.page.hasMore || snapshot.hasMoreOlder === true }, query };
     }
   }
   if (boundaryOrphan && orphan !== undefined && extendingBoundary && snapshot.hasMoreOlder === true) return { snapshot, page: { items: [], hasMore: true }, query, preparing: true };
@@ -909,7 +912,10 @@ async function readColdTranscriptPage(
           await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) {
         snapshot = { ...snapshot, hasMoreOlder: false };
       }
-      located = { page: { items: [updated], hasMore: located.page.items.length > 0 || located.page.hasMore || snapshot.hasMoreOlder === true }, missing: false };
+      const index = snapshot.items.indexOf(updated);
+      const nextTurn = snapshot.items.findIndex((item, position) => position > index && item.kind === 'turn');
+      const items = snapshot.items.slice(index, nextTurn < 0 ? undefined : nextTurn);
+      located = { page: { items, hasMore: located.page.items.length > 0 || located.page.hasMore || snapshot.hasMoreOlder === true }, missing: false };
       query.refreshTurn = updated.turnId;
     }
   }

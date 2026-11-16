@@ -149,7 +149,8 @@ export async function streamWireRecords(
     lineBytes = 0;
   };
 
-  const consume = (line: Buffer, terminated: boolean, raw?: Buffer): void => {
+  const consume = async (line: Buffer, terminated: boolean, raw?: Buffer): Promise<void> => {
+    signal?.throwIfAborted();
     const normalized = line.length > 0 && line.at(-1) === 0x0d ? line.subarray(0, -1) : line;
     if (normalized.length === 0) {
       nextByteOffset += line.length + (terminated ? 1 : 0);
@@ -176,9 +177,10 @@ export async function streamWireRecords(
       }
     }
     const endByteOffset = nextByteOffset + line.length + (terminated ? 1 : 0);
-    const keepReading = options.onRecord(record as ContextRecord, {
+    const keepReading = await options.onRecord(record as ContextRecord, {
       startByteOffset: nextByteOffset, endByteOffset, ordinal: startRecordOrdinal + recordCount,
     }, options.includeRawRecord ? raw ?? (terminated ? Buffer.concat([line, Buffer.from('\n')]) : line) : undefined);
+    signal?.throwIfAborted();
     recordCount += 1;
     nextByteOffset = endByteOffset;
     if (keepReading === false) stop('record_budget');
@@ -191,7 +193,7 @@ export async function streamWireRecords(
     return line;
   };
 
-  const absorb = (chunk: Buffer): void => {
+  const absorb = async (chunk: Buffer): Promise<void> => {
     let rest = chunk;
     for (;;) {
       const newline = rest.indexOf(0x0a);
@@ -215,7 +217,7 @@ export async function streamWireRecords(
         return;
       }
       lineNumber += 1;
-      consume(mergeLine(), true, raw);
+      await consume(mergeLine(), true, raw);
       if (stopped) return;
       rest = rest.subarray(newline + 1);
     }
@@ -260,18 +262,19 @@ export async function streamWireRecords(
       position += read;
       bytesRead += read;
       remainingBytes -= read;
-      absorb(chunk);
+      await absorb(chunk);
     }
     if (!stopped && lineBytes > 0) {
       if (endByteOffset !== undefined) stop('partial_tail');
       else {
         lineNumber += 1;
-        consume(mergeLine(), false);
+        await consume(mergeLine(), false);
       }
     }
   } finally {
     await handle?.close().catch(() => undefined);
   }
+  signal?.throwIfAborted();
   return {
     recordCount,
     bytesRead,
@@ -286,67 +289,12 @@ export interface AwaitedWireRecordsStreamOptions extends Omit<WireRecordsStreamO
   readonly onRecord: (record: ContextRecord, span: WireRecordSpan, raw?: Uint8Array) => Promise<unknown> | boolean | void;
 }
 
-/** Backpressured consumer: at most 128 records or 1 MiB of complete lines are pending before awaiting each callback. */
+/** Backpressured consumer: each callback finishes before the next record is decoded, retaining the current read chunk. */
 export async function streamWireRecordsAwaited(
   wirePath: string,
   options: AwaitedWireRecordsStreamOptions,
 ): Promise<WireRecordsStreamResult> {
-  const BATCH_RECORDS = 128;
-  const BATCH_BYTES = 1 << 20;
-  const byteBudget = optionalLimit(options.maxBytes);
-  const recordBudget = optionalLimit(options.maxRecords);
-  if (byteBudget === 0 || recordBudget === 0) return streamWireRecords(wirePath, {
-    ...options, onRecord: () => undefined,
-  });
-  let nextByteOffset = optionalLimit(options.startByteOffset) ?? 0;
-  let recordCount = 0;
-  let bytesRead = 0;
-  for (;;) {
-    options.signal?.throwIfAborted();
-    if (byteBudget !== undefined && bytesRead >= byteBudget) {
-      return { recordCount, bytesRead, nextByteOffset, complete: false, incompleteReason: 'byte_budget' };
-    }
-    if (recordBudget !== undefined && recordCount >= recordBudget) {
-      return { recordCount, bytesRead, nextByteOffset, complete: false, incompleteReason: 'record_budget' };
-    }
-    const pending: Array<{ record: ContextRecord; span: WireRecordSpan; raw?: Uint8Array }> = [];
-    let batchBytes = 0;
-    const read = await streamWireRecords(wirePath, {
-      chunkBytes: options.chunkBytes,
-      maxBytes: byteBudget === undefined ? undefined : byteBudget - bytesRead,
-      maxRecords: recordBudget === undefined ? BATCH_RECORDS : Math.min(BATCH_RECORDS, recordBudget - recordCount),
-      maxLineBytes: options.maxLineBytes,
-      startByteOffset: nextByteOffset,
-      endByteOffset: options.endByteOffset,
-      startRecordOrdinal: (optionalLimit(options.startRecordOrdinal) ?? 0) + recordCount,
-      signal: options.signal,
-      includeRawRecord: options.includeRawRecord,
-      decodeRecord: options.decodeRecord,
-      byteSource: options.byteSource,
-      retainIncompleteRecord: options.retainIncompleteRecord,
-      continuation: nextByteOffset === (options.startByteOffset ?? 0) ? options.continuation : undefined,
-      onRecord: (record, span, raw) => {
-        pending.push({ record, span, raw });
-        batchBytes += span.endByteOffset - span.startByteOffset;
-        return pending.length < BATCH_RECORDS && batchBytes < BATCH_BYTES;
-      },
-    });
-    bytesRead += read.bytesRead;
-    for (const item of pending) {
-      options.signal?.throwIfAborted();
-      const keepReading = await options.onRecord(item.record, item.span, item.raw);
-      recordCount += 1;
-      nextByteOffset = item.span.endByteOffset;
-      if (keepReading === false) return {
-        recordCount, bytesRead, nextByteOffset, complete: false, incompleteReason: 'record_budget',
-      };
-    }
-    nextByteOffset = read.nextByteOffset;
-    if (read.complete) return { recordCount, bytesRead, nextByteOffset, complete: true };
-    if (read.incompleteReason !== 'record_budget' || pending.length === 0) return {
-      recordCount, bytesRead, nextByteOffset, complete: false, incompleteReason: read.incompleteReason, continuation: read.continuation,
-    };
-  }
+  return streamWireRecords(wirePath, options);
 }
 
 /** Historical unbounded array read, including its partial-tail behavior. */

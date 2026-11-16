@@ -85,6 +85,7 @@ export interface MemoryImportResult {
 export interface IMemoryPersistence {
   readonly _serviceBrand: undefined;
   read(scopes: readonly string[], generation?: number): Promise<MemoryReadView>;
+  readIds?(scope: string, ids: readonly string[], generation?: number): Promise<MemoryReadView>;
   revision(scope: string, id: string, revision: string): Promise<MemoryEntry | undefined>;
   commit(input: MemoryCommit): Promise<MemoryCommitReceipt>;
   receipt(operationId: string, request?: string): Promise<MemoryCommitReceipt | undefined>;

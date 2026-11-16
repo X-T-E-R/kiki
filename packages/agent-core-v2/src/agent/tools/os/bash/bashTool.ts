@@ -243,6 +243,7 @@ export class BashTool implements IBashTool {
       const env = lease.runtime.environment;
       command = env.osKind === 'Windows' && env.shellName === 'bash' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
+      lease.runtime.pathIndex?.invalidate();
       proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command, lease.runtime.identity.runtimeId === 'local'));
     } catch (error) {
       lease.dispose();
@@ -275,7 +276,7 @@ export class BashTool implements IBashTool {
     let taskId: string;
     try {
       taskId = this.tasks.registerTask(
-        new ProcessTask(proc, command, description, onProcessOutput, () => lease.dispose()),
+        new ProcessTask(proc, command, description, onProcessOutput, () => { lease.runtime.pathIndex?.invalidate(); lease.dispose(); }),
         {
           detached: startsInBackground,
           lifetime: startsInBackground ? (args.lifetime ?? 'finite') : undefined,

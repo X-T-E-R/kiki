@@ -19,7 +19,7 @@ import { toHostFsError } from '#/os/interface/hostFsErrors';
 import { CpuWorkerError } from '#/app/cpuWorker/host';
 import { runCpuTask } from '#/app/cpuWorker/runtime';
 import type { FileLineRangeOperation } from '#/app/cpuWorker/tasks';
-import { LocalLineReader, type LineRangeOptions, type LineReadOptions } from './lineReader';
+import { LocalLineReader, type LineRangeOptions, type LineReadOptions, type TailRangeOptions, type TailRangePage } from './lineReader';
 
 const LINE_RANGE_WORKER_MIN_BYTES = 256 * 1024;
 
@@ -99,7 +99,7 @@ export class HostFileSystem implements IHostFileSystem {
   async *readLineRange(path: string, options: LineRangeOptions): AsyncGenerator<string> {
     const { signal, ...range } = options;
     signal?.throwIfAborted();
-    const lines = range.maxLines > 0 && await this.isLargeFile(path)
+    const lines = range.maxLines > 0 && (range.fileSize ?? (await nodeStat(path)).size) >= LINE_RANGE_WORKER_MIN_BYTES
       ? await this.readLineRangeInWorker(path, range, signal)
       : undefined;
     if (lines === undefined) {
@@ -126,12 +126,19 @@ export class HostFileSystem implements IHostFileSystem {
     }
   }
 
-  private async isLargeFile(path: string): Promise<boolean> {
+  async readTailRange(path: string, options: TailRangeOptions): Promise<{ startLine: number; totalLines: number; lines: AsyncGenerator<string> }> {
+    const { signal, ...range } = options;
+    signal?.throwIfAborted();
+    if ((range.fileSize ?? (await nodeStat(path)).size) < LINE_RANGE_WORKER_MIN_BYTES) return this.lineReader.readTailRange(path, options);
+    let page: TailRangePage;
     try {
-      return (await nodeStat(path)).size >= LINE_RANGE_WORKER_MIN_BYTES;
-    } catch {
-      return false;
+      page = await runCpuTask<TailRangePage>({ type: 'file.tailRange', path, options: range }, { signal });
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (isWorkerUnavailable(error)) return this.lineReader.readTailRange(path, options);
+      throw error;
     }
+    return { startLine: page.startLine, totalLines: page.totalLines, lines: this.lineReader.tailLines(path, page, signal) };
   }
 
   async createExclusive(path: string, data: Uint8Array): Promise<boolean> {

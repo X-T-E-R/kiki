@@ -1,4 +1,5 @@
-import { open, readFile, type FileHandle } from 'node:fs/promises';
+import { open, readFile, stat as nodeStat, type FileHandle } from 'node:fs/promises';
+import { isUtf8 } from 'node:buffer';
 import type { Stats } from 'node:fs';
 import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/decodeText';
 import { toHostFsError } from '#/os/interface/hostFsErrors';
@@ -14,11 +15,26 @@ export interface LineReadOptions {
   readonly encoding?: BufferEncoding;
   readonly errors?: TextDecodeErrors;
   readonly signal?: AbortSignal;
+  readonly fileSize?: number;
 }
 
 export interface LineRangeOptions extends LineReadOptions {
   readonly startLine: number;
   readonly maxLines: number;
+}
+
+export interface TailRangeOptions extends LineReadOptions {
+  readonly tailLines: number;
+}
+
+export interface TailRangePage {
+  readonly startLine: number;
+  readonly totalLines: number;
+  readonly lines: readonly string[];
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly ino: number;
 }
 
 interface LineCheckpoint {
@@ -35,6 +51,7 @@ interface LineIndexEntry {
   checkpoints: LineCheckpoint[];
   readonly locations: Map<number, LineCheckpoint>;
   locating?: Promise<void>;
+  tail?: { readonly totalLines: number; readonly utf8: boolean };
 }
 
 function isUtf8Encoding(encoding: BufferEncoding): boolean {
@@ -107,6 +124,85 @@ export class LocalLineReader {
       signal?.throwIfAborted();
       throw toHostFsError(error, { path, op: 'read' });
     }
+  }
+
+  async readTailRange(path: string, options: TailRangeOptions): Promise<{ startLine: number; totalLines: number; lines: AsyncGenerator<string> }> {
+    const page = await this.readTailPage(path, options);
+    return { startLine: page.startLine, totalLines: page.totalLines, lines: this.tailLines(path, page, options.signal) };
+  }
+
+  async *tailLines(path: string, page: TailRangePage, signal?: AbortSignal): AsyncGenerator<string> {
+    signal?.throwIfAborted();
+    const current = await nodeStat(path);
+    if (current.size !== page.size || current.mtimeMs !== page.mtimeMs || current.ctimeMs !== page.ctimeMs || current.ino !== page.ino) {
+      throw new Error('File changed after locating its tail; retry the read.');
+    }
+    for (const line of page.lines) { signal?.throwIfAborted(); yield line; }
+  }
+
+  async readTailPage(path: string, options: TailRangeOptions): Promise<TailRangePage> {
+    const signal = options.signal;
+    signal?.throwIfAborted();
+    const fh = await open(path, 'r');
+    try {
+      const stat = await fh.stat();
+      const index = this.lineIndex(path, stat);
+      const buffer = Buffer.allocUnsafe(READ_CHUNK_SIZE);
+      const pieces: Buffer[] = [];
+      let offset = stat.size;
+      let newlines = 0;
+      let finalLf = false;
+      let start = 0;
+      let found = false;
+      let carry = Buffer.alloc(0);
+      let valid = true;
+      while (offset > 0) {
+        signal?.throwIfAborted();
+        const length = Math.min(buffer.length, offset);
+        offset -= length;
+        let received = 0;
+        while (received < length) {
+          const { bytesRead } = await fh.read(buffer, received, length - received, offset + received);
+          if (bytesRead === 0) throw new Error('File changed while reading its tail; retry the read.');
+          received += bytesRead;
+        }
+        const chunk = buffer.subarray(0, length);
+        if (offset + length === stat.size) finalLf = chunk[length - 1] === 0x0a;
+        if (chunk.includes(0)) throw new Error('File contains NUL bytes and cannot be read as text.');
+        let prefix = 0;
+        while (prefix < Math.min(3, length) && (chunk[prefix]! & 0xc0) === 0x80) prefix++;
+        const validation = carry.length === 0 ? chunk.subarray(prefix) : Buffer.concat([chunk.subarray(prefix), carry]);
+        valid = valid && isUtf8(validation) && (offset !== 0 || prefix === 0);
+        carry = Buffer.from(chunk.subarray(0, prefix));
+        let keep = 0;
+        for (let newline = chunk.lastIndexOf(0x0a); newline >= 0; newline = newline === 0 ? -1 : chunk.lastIndexOf(0x0a, newline - 1)) {
+          newlines++;
+          if (!found && newlines === options.tailLines + Number(finalLf)) {
+            found = true;
+            start = offset + newline + 1;
+            keep = newline + 1;
+          }
+        }
+        if (pieces.length === 0 || !found || start >= offset && start < offset + length) {
+          if (keep < length) pieces.push(Buffer.from(chunk.subarray(keep)));
+        }
+        if (found && index.tail !== undefined) break;
+      }
+      const totalLines = index.tail?.totalLines ?? newlines + Number(stat.size > 0 && !finalLf);
+      valid = index.tail?.utf8 ?? valid;
+      if (!valid && (options.errors ?? 'strict') === 'strict') throw new TypeError('The encoded data was not valid for encoding utf-8');
+      index.tail = { totalLines, utf8: valid };
+      const current = await fh.stat();
+      if (current.size !== stat.size || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs || current.ino !== stat.ino) {
+        throw new Error('File changed while reading its tail; retry the read.');
+      }
+      const text = decodeTextWithErrors(Buffer.concat(pieces.reverse()), 'utf-8', options.errors ?? 'strict', start !== 0);
+      return { startLine: Math.max(1, totalLines - options.tailLines + 1), totalLines,
+        lines: [...splitLinesKeepingTerminator(text)], size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino };
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw toHostFsError(error, { path, op: 'read' });
+    } finally { await fh.close(); }
   }
 
   private async *readUtf8Lines(

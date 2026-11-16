@@ -74,7 +74,18 @@ export class LocalRuntime implements Runtime {
         additionalDirs: roots.additionalDirs?.map((root) => path.resolve(root)),
       }),
     };
-    this.fs = fs;
+    this.fs = fs === undefined ? undefined : Object.assign(Object.create(fs) as IHostFileSystem, {
+      writeText: async (path: string, data: string) => { await fs.writeText(path, data); await this.pathIndex?.mutation(path); },
+      appendText: async (path: string, data: string) => { await fs.appendText(path, data); await this.pathIndex?.mutation(path); },
+      writeBytes: async (path: string, data: Uint8Array) => { await fs.writeBytes(path, data); await this.pathIndex?.mutation(path); },
+      createExclusive: async (path: string, data: Uint8Array) => {
+        const created = await fs.createExclusive(path, data);
+        if (created) await this.pathIndex?.mutation(path);
+        return created;
+      },
+      mkdir: async (path: string, options?: { readonly recursive?: boolean }) => { await fs.mkdir(path, options); await this.pathIndex?.mutation(path); },
+      remove: async (path: string) => { await fs.remove(path); await this.pathIndex?.mutation(path); },
+    });
     this.process = process;
     this.watch = watch;
     this.terminal = terminal;
@@ -84,11 +95,12 @@ export class LocalRuntime implements Runtime {
     return this.currentStatus;
   }
 
-  dispose(): void {
-    this.pathIndex?.dispose();
+  async dispose(): Promise<void> {
+    const disposed = this.pathIndex?.dispose();
     this.currentStatus = 'disposed';
     this.statusEmitter.fire('disposed');
     this.statusEmitter.dispose();
+    await disposed;
   }
 }
 

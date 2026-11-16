@@ -189,9 +189,11 @@ export class GrepTool implements IGrepTool {
 
     const pathClass = env.pathClass;
     const searchesDirectory = args.path === undefined || await isDirectoryPath(fs, searchRoot);
+    await pathIndex?.whenSettled();
     const snapshot = pathIndex?.snapshot();
     let candidates = searchesDirectory && args.include_ignored !== true && args.glob === undefined && args.type === undefined &&
-      normalize(searchRoot) === normalize(pathIndex?.root ?? '') && snapshot !== undefined
+      (pathClass === 'win32' ? normalize(searchRoot).toLowerCase() === normalize(pathIndex?.root ?? '').toLowerCase()
+        : normalize(searchRoot) === normalize(pathIndex?.root ?? '')) && snapshot !== undefined
       ? await pathIndex?.trigram?.candidates(snapshot, args.pattern, args.literal === true, args['-i'] === true) : undefined;
     if (candidates !== undefined && candidates.reduce((length, path) => length + path.length + 3, 0) > 16_000) candidates = undefined;
     if (candidates?.length === 0) return { output: 'No matches found' };

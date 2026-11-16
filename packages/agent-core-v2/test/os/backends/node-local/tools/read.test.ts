@@ -23,6 +23,7 @@ import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
 
 const signal = new AbortController().signal;
+const SMALL_READ_BYTES = (64 << 10) + 1;
 const PERMISSIVE_WORKSPACE = stubWorkspaceContext('/');
 
 function linesFromContent(content: string): string[] {
@@ -102,15 +103,16 @@ function createReadTool(
 }
 
 function createSpiedFs(content: string) {
-  const bytes = Buffer.from(content, 'utf8');
+  let bytes = Buffer.from(content, 'utf8');
   const readBytes = vi.fn(async (_path: string, n?: number) =>
     n === undefined ? bytes : bytes.subarray(0, n),
   );
-  const readLines = vi.fn().mockImplementation(() => generateLines(content));
-  const readText = vi.fn(async () => content);
+  const readLines = vi.fn().mockImplementation(() => generateLines(bytes.toString('utf8')));
+  const readText = vi.fn(async () => bytes.toString('utf8'));
   const stat = vi.fn(async () => ({ isFile: true, isDirectory: false, size: bytes.length }));
+  const setContent = (next: string): void => { bytes = Buffer.from(next, 'utf8'); };
   const fs = { cwd: '/', readBytes, readLines, readText, stat, realpath: async (path: string) => path } as unknown as IHostFileSystem;
-  return { fs, readBytes, readLines, readText, stat };
+  return { fs, readBytes, readLines, readText, stat, setContent };
 }
 
 interface FakeFile {
@@ -230,16 +232,16 @@ describe('ReadTool', () => {
 
   it('binds complete and partial AGENTS reads to the version actually returned', async () => {
     const { instructionVersion } = await import('#/agent/agentsMdReminder/instructionCoverage');
-    const { fs, readText } = createSpiedFs('rule one\nrule two\nrule three');
+    const { fs, setContent } = createSpiedFs('rule one\nrule two\nrule three');
     const tool = createReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
     const first = await execute(tool, { path: '/tmp/AGENTS.md', n_lines: 1 });
     expect(first.fileRead).toMatchObject({ file: { path: '/tmp/AGENTS.md', scope: '/tmp', runtimeId: 'local', version: instructionVersion('rule one\nrule two\nrule three') }, startLine: 1, endLine: 1, truncated: false });
     expect(first.fileRead?.totalLines).toBeUndefined();
-    readText.mockResolvedValue('changed rule');
+    setContent('changed rule');
     const complete = await execute(tool, { path: '/tmp/AGENTS.md' });
     expect(complete.output).toBe('1\tchanged rule');
     expect(complete.fileRead).toMatchObject({ file: { version: instructionVersion('changed rule') }, startLine: 1, endLine: 1, totalLines: 1, truncated: false });
-    readText.mockResolvedValue('x'.repeat(MAX_LINE_LENGTH + 1));
+    setContent('x'.repeat(MAX_LINE_LENGTH + 1));
     expect((await execute(tool, { path: '/tmp/AGENTS.md' })).fileRead?.truncated).toBe(true);
   });
 
@@ -421,7 +423,7 @@ describe('ReadTool', () => {
 
     const result = await execute(tool, { path: '../../outside.txt' });
     expect(result.output).toBe('1\toutside');
-    expect(readBytes).toHaveBeenCalledWith('/outside.txt', MEDIA_SNIFF_BYTES);
+    expect(readBytes).toHaveBeenCalledWith('/outside.txt', SMALL_READ_BYTES);
   });
 
   it('allows relative traversal into a skill root the session catalog provides', async () => {
@@ -456,7 +458,7 @@ describe('ReadTool', () => {
     const result = await execute(tool, { path: '/skills/linked/SKILL.md' });
     expect(result.isError ?? false).toBe(false);
     expect(result.output).toBe('1\tskill body');
-    expect(readBytes).toHaveBeenCalledWith('/installed/skill/SKILL.md', MEDIA_SNIFF_BYTES);
+    expect(readBytes).toHaveBeenCalledWith('/installed/skill/SKILL.md', SMALL_READ_BYTES);
   });
 
   it('allows explicit absolute paths outside the workspace', async () => {
@@ -471,8 +473,8 @@ describe('ReadTool', () => {
         '1 line read starting at line 1. Total lines in file: 1. File size: 8 bytes. End of file.',
       ),
     );
-    expect(readBytes).toHaveBeenCalledWith('/tmp/external.txt', MEDIA_SNIFF_BYTES);
-    expect(readLines).toHaveBeenCalledWith('/tmp/external.txt', { errors: 'strict', signal: expect.any(AbortSignal) });
+    expect(readBytes).toHaveBeenCalledWith('/tmp/external.txt', SMALL_READ_BYTES);
+    expect(readLines).not.toHaveBeenCalled();
   });
 
   it('marks a workspace symlink to an external target for approval before reading', async () => {
@@ -623,8 +625,8 @@ describe('ReadTool', () => {
         '1 line read starting at line 1. Total lines in file: 1. File size: 9 bytes. End of file.',
       ),
     );
-    expect(readBytes).toHaveBeenCalledWith('/home/test/notes/today.txt', MEDIA_SNIFF_BYTES);
-    expect(readLines).toHaveBeenCalledWith('/home/test/notes/today.txt', { errors: 'strict', signal: expect.any(AbortSignal) });
+    expect(readBytes).toHaveBeenCalledWith('/home/test/notes/today.txt', SMALL_READ_BYTES);
+    expect(readLines).not.toHaveBeenCalled();
   });
 
   it('declares sensitive targets for permission evaluation before reading', async () => {
@@ -738,7 +740,7 @@ describe('ReadTool', () => {
     const header = Buffer.from('text prefix without nul', 'utf8');
     const { fs } = createSpiedMapFs({
       '/tmp/blob-with-late-nul': {
-        bytes: header,
+        bytes: Buffer.concat([header, Buffer.alloc((64 << 10) + 1 - header.length, 0x61)]),
         readLines: async function* readLines(): AsyncGenerator<string> {
           yield 'safe text\n';
           yield `binary${String.fromCodePoint(0)}tail\n`;
@@ -761,7 +763,7 @@ describe('ReadTool', () => {
     const replacement = String.fromCodePoint(0xfffd);
     const { fs } = createSpiedMapFs({
       '/tmp/not-utf8.txt': {
-        bytes: Buffer.from('text header'),
+        bytes: Buffer.concat([Buffer.from('text header'), Buffer.alloc((64 << 10) + 1 - 'text header'.length, 0x61)]),
         readLines: async function* readLines(
           _path: string,
           options?: { errors?: 'strict' | 'replace' | 'ignore' },
@@ -918,8 +920,9 @@ describe('ReadTool', () => {
   });
 
   it('reads through bounded byte preflight and streams line iteration without full readText', async () => {
+    const sourceLine = (line: number): string => `line ${String(line)} ${'x'.repeat(80)}`;
     const bytes = Buffer.from(
-      Array.from({ length: MAX_LINES + 5 }, (_, i) => `line ${String(i + 1)}`).join('\n'),
+      Array.from({ length: MAX_LINES + 5 }, (_, i) => sourceLine(i + 1)).join('\n'),
       'utf8',
     );
     const readText = vi.fn(async () => {
@@ -929,7 +932,7 @@ describe('ReadTool', () => {
     const readLines = vi.fn().mockImplementation(async function* (): AsyncGenerator<string> {
       for (let i = 1; i <= MAX_LINES + 5; i += 1) {
         consumed = i;
-        yield `line ${String(i)}\n`;
+        yield `${sourceLine(i)}\n`;
       }
     });
     const readBytes = vi.fn(async (_path: string, n?: number) =>
@@ -954,7 +957,7 @@ describe('ReadTool', () => {
   });
 
   it('uses the bounded range reader when available', async () => {
-    const content = Array.from({ length: 20 }, (_, i) => `line ${String(i + 1)}`).join('\n');
+    const content = Array.from({ length: 20 }, (_, i) => `line ${String(i + 1)} ${'x'.repeat(4096)}`).join('\n');
     const bytes = Buffer.from(content, 'utf8');
     const readLines = vi.fn();
     const readLineRange = vi.fn(async function* (
@@ -984,6 +987,7 @@ describe('ReadTool', () => {
     expect(readLineRange).toHaveBeenCalledWith('/tmp/range.txt', {
       startLine: 5,
       maxLines: 4,
+      fileSize: bytes.length,
       errors: 'strict',
       signal: expect.any(AbortSignal),
     });

@@ -74,6 +74,102 @@ describe('HostFileSystem readLineRange', () => {
     return lines;
   }
 
+  async function collectTail(path: string, options: { tailLines: number; fileSize?: number }): Promise<{ startLine: number; totalLines: number; lines: string[] }> {
+    const located = await fs.readTailRange(path, options);
+    const lines: string[] = [];
+    for await (const line of located.lines) lines.push(line);
+    return { startLine: located.startLine, totalLines: located.totalLines, lines };
+  }
+
+  async function materialize(lines: AsyncGenerator<string>): Promise<string[]> {
+    const result: string[] = [];
+    for await (const line of lines) result.push(line);
+    return result;
+  }
+
+  it('reads worker tails with exact counts for final LF and no final LF', async () => {
+    const withLf = join(dir, 'tail-final-lf.txt');
+    const withLfContent = `${'prefix\n'.repeat(200_000)}tail-a\ntail-b\n`;
+    await writeFile(withLf, withLfContent, 'utf-8');
+    await expect(collectTail(withLf, { tailLines: 2 })).resolves.toEqual({
+      startLine: 200_001,
+      totalLines: 200_002,
+      lines: ['tail-a\n', 'tail-b\n'],
+    });
+
+    const withoutLf = join(dir, 'tail-no-final-lf.txt');
+    const withoutLfContent = `${'prefix\n'.repeat(200_000)}tail-a\ntail-b`;
+    await writeFile(withoutLf, withoutLfContent, 'utf-8');
+    await expect(collectTail(withoutLf, { tailLines: 2 })).resolves.toEqual({
+      startLine: 200_001,
+      totalLines: 200_002,
+      lines: ['tail-a\n', 'tail-b'],
+    });
+  });
+
+  it('preserves CRLF and mixed newline terminators in worker tails', async () => {
+    const path = join(dir, 'tail-mixed-newlines.txt');
+    await writeFile(path, `${'prefix\r\n'.repeat(100_000)}crlf\r\nmixed\nlast\r\n`, 'utf-8');
+
+    await expect(collectTail(path, { tailLines: 3 })).resolves.toEqual({
+      startLine: 100_001,
+      totalLines: 100_003,
+      lines: ['crlf\r\n', 'mixed\n', 'last\r\n'],
+    });
+  });
+
+  it('decodes UTF-8 that crosses a 256 KiB worker chunk boundary', async () => {
+    const path = join(dir, 'tail-utf8-boundary.txt');
+    const chunkSize = 256 * 1024;
+    const prefix = Buffer.alloc(chunkSize - 1, 0x61);
+    const first = Buffer.concat([prefix, Buffer.from('€\n')]);
+    const remaining = chunkSize * 2 - first.length;
+    const second = Buffer.concat([Buffer.from('tail-'), Buffer.alloc(remaining - 6, 0x62), Buffer.from('\n')]);
+    await writeFile(path, Buffer.concat([first, second]));
+
+    const result = await collectTail(path, { tailLines: 2 });
+    expect(result).toEqual({
+      startLine: 1,
+      totalLines: 2,
+      lines: [`${'a'.repeat(chunkSize - 1)}€\n`, `tail-${'b'.repeat(remaining - 6)}\n`],
+    });
+  });
+
+  it('rejects invalid UTF-8 in a skipped prefix', async () => {
+    const path = join(dir, 'tail-invalid-prefix.txt');
+    await writeFile(path, Buffer.concat([Buffer.alloc(300 * 1024, 0x61), Buffer.from([0xff]), Buffer.from('\ntail\n')]));
+
+    await expect(fs.readTailRange(path, { tailLines: 1 })).rejects.toMatchObject({ code: 'os.fs.unknown' });
+  });
+
+  it('rejects NUL bytes in a skipped prefix', async () => {
+    const path = join(dir, 'tail-nul-prefix.txt');
+    await writeFile(path, Buffer.concat([Buffer.alloc(300 * 1024, 0x61), Buffer.from([0]), Buffer.from('\ntail\n')]));
+
+    await expect(fs.readTailRange(path, { tailLines: 1 })).rejects.toMatchObject({ code: 'os.fs.unknown' });
+  });
+
+  it('invalidates a lazy tail iterator after the source changes', async () => {
+    const path = join(dir, 'tail-lazy-change.txt');
+    const original = `${'prefix\n'.repeat(100_000)}tail\n`;
+    await writeFile(path, original, 'utf-8');
+    const located = await fs.readTailRange(path, { tailLines: 1 });
+    await writeFile(path, `${original}changed\n`, 'utf-8');
+
+    await expect(materialize(located.lines)).rejects.toThrow(/changed after locating/u);
+  });
+
+  it('passes a known file size into the real tail worker without a routing stat', async () => {
+    const path = join(dir, 'tail-known-size.txt');
+    await writeFile(path, `${'prefix\n'.repeat(200_000)}tail\n`, 'utf-8');
+    const fileSize = (await nodeStat(path)).size;
+    const run = vi.spyOn(cpuRuntime, 'runCpuTask');
+
+    await expect(collectTail(path, { tailLines: 1, fileSize })).resolves.toMatchObject({ lines: ['tail\n'] });
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0]?.[0]).toEqual({ type: 'file.tailRange', path, options: { tailLines: 1, fileSize } });
+  });
+
   it('shares high-offset indexing without materializing skipped wire records', async () => {
     const path = join(dir, 'large-wire.jsonl');
     const lines = Array.from({ length: 18000 }, (_, index) => `${JSON.stringify({ index, text: '数据'.repeat(650), pad: 'x'.repeat(200) })}\r\n`);

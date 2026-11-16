@@ -256,7 +256,7 @@ export class AgentTaskPersistence {
         while (start < length && (data[start]! & 0xc0) === 0x80) start++;
       }
       const preview = textDecoder.decode(data.subarray(start, length));
-      const previewBytes = textEncoder.encode(preview).byteLength;
+      const previewBytes = Buffer.byteLength(preview, 'utf8');
       return {
         outputPath: this.taskOutputFileAt(taskId, root),
         outputSizeBytes: size,
@@ -266,6 +266,24 @@ export class AgentTaskPersistence {
       };
     }
     return undefined;
+  }
+
+  async verifyTaskOutputReceipt(
+    taskId: string,
+    outputPath: string,
+    receipt: AgentTaskReceipt,
+  ): Promise<boolean> {
+    validateTaskId(taskId);
+    if (!isValidReceipt(taskId, receipt)) return false;
+    const roots = [this.primaryRoot(), this.fallbackRoot].filter(
+      (root): root is AgentTaskPersistenceRoot => root !== undefined && this.taskOutputFileAt(taskId, root) === outputPath,
+    );
+    for (const root of roots) {
+      try {
+        if (await this.verifyOutputReceipt(taskId, root, receipt)) return true;
+      } catch {}
+    }
+    return false;
   }
 
   async listTasks(filter?: (info: PersistedTask) => boolean): Promise<readonly PersistedTask[]> {
@@ -313,34 +331,32 @@ export class AgentTaskPersistence {
     if (receipt === undefined) {
       return { ...task, receiptVerification: task.receiptVerification === 'invalid' ? 'invalid' : 'legacy_unverified' };
     }
-    if (!isRecord(receipt) || receipt.schemaVersion !== 1 ||
-        receipt.path !== `${TASKS_SCOPE}/${task.taskId}/${OUTPUT_LOG_KEY}` ||
-        receipt.mediaType !== 'text/plain; charset=utf-8' ||
-        !Number.isSafeInteger(receipt.bytes) || receipt.bytes < 0 ||
-        typeof receipt.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.sha256) ||
-        (receipt.contentState !== 'final' && receipt.contentState !== 'unavailable') ||
-        !isoDateTimeSchema.safeParse(receipt.committedAt).success ||
-        (receipt.sourceTurnId !== undefined &&
-          (!Number.isSafeInteger(receipt.sourceTurnId) || receipt.sourceTurnId < 0))) {
+    if (!isValidReceipt(task.taskId, receipt)) {
       return { ...task, receipt: undefined, receiptVerification: 'invalid' };
     }
     try {
-      const scope = this.taskOutputScope(task.taskId, root);
-      if (await this.bytes.size(scope, OUTPUT_LOG_KEY) !== receipt.bytes) {
-        return { ...task, receipt: undefined, receiptVerification: 'invalid' };
-      }
-      const hash = createHash('sha256');
-      let total = 0;
-      for await (const chunk of this.bytes.readStream(scope, OUTPUT_LOG_KEY)) {
-        total += chunk.byteLength;
-        if (total > receipt.bytes) break;
-        hash.update(chunk);
-      }
-      if (total === receipt.bytes && hash.digest('hex') === receipt.sha256) {
+      if (await this.verifyOutputReceipt(task.taskId, root, receipt)) {
         return { ...task, receiptVerification: 'verified' };
       }
     } catch {}
     return { ...task, receipt: undefined, receiptVerification: 'invalid' };
+  }
+
+  private async verifyOutputReceipt(
+    taskId: string,
+    root: AgentTaskPersistenceRoot,
+    receipt: AgentTaskReceipt,
+  ): Promise<boolean> {
+    const scope = this.taskOutputScope(taskId, root);
+    if (await this.bytes.size(scope, OUTPUT_LOG_KEY) !== receipt.bytes) return false;
+    const hash = createHash('sha256');
+    let total = 0;
+    for await (const chunk of this.bytes.readStream(scope, OUTPUT_LOG_KEY)) {
+      total += chunk.byteLength;
+      if (total > receipt.bytes) return false;
+      hash.update(chunk);
+    }
+    return total === receipt.bytes && hash.digest('hex') === receipt.sha256;
   }
 
   private async readTaskOutputData(taskId: string): Promise<TaskOutputData | undefined> {
@@ -473,6 +489,27 @@ function isReadablePersistedTask(obj: unknown): obj is DiskPersistedTask {
 
 function isLegacyPersistedTask(task: DiskPersistedTask): task is LegacyPersistedTask {
   return 'task_id' in task;
+}
+
+function isValidReceipt(taskId: string, receipt: unknown): receipt is AgentTaskReceipt {
+  if (!isRecord(receipt)) return false;
+  const schemaVersion = receipt['schemaVersion'];
+  const path = receipt['path'];
+  const mediaType = receipt['mediaType'];
+  const bytes = receipt['bytes'];
+  const sha256 = receipt['sha256'];
+  const contentState = receipt['contentState'];
+  const committedAt = receipt['committedAt'];
+  const sourceTurnId = receipt['sourceTurnId'];
+  return schemaVersion === 1 &&
+    path === `${TASKS_SCOPE}/${taskId}/${OUTPUT_LOG_KEY}` &&
+    mediaType === 'text/plain; charset=utf-8' &&
+    typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes >= 0 &&
+    typeof sha256 === 'string' && /^[a-f0-9]{64}$/.test(sha256) &&
+    (contentState === 'final' || contentState === 'unavailable') &&
+    isoDateTimeSchema.safeParse(committedAt).success &&
+    (sourceTurnId === undefined ||
+      (typeof sourceTurnId === 'number' && Number.isSafeInteger(sourceTurnId) && sourceTurnId >= 0));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

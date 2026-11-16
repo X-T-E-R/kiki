@@ -11,6 +11,7 @@ const database = new MemoryDatabase((workerData as { database: string }).databas
 function execute(operation: MemoryOperation): unknown {
   switch (operation.type) {
     case 'read': return database.read(operation.scopes, operation.generation);
+    case 'readIds': return database.readIds(operation.scope, operation.ids, operation.generation);
     case 'revision': return database.revision(operation.scope, operation.id, operation.revision);
     case 'commit': return database.commit(operation.input);
     case 'receipt': return database.receipt(operation.operationId, operation.request);

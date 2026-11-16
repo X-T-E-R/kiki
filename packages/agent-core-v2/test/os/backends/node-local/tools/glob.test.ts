@@ -359,14 +359,14 @@ describe('GlobTool', () => {
   });
 
   it('matches brace patterns locally without overriding ripgrep ignore rules', async () => {
-    const exec = execReturning('/workspace/a.ts\n/workspace/shared.ts\n/workspace/shared.tsx\n/workspace/a.js\n');
+    const exec = execReturning('/workspace/a.ts\n/workspace/shared.ts\n/workspace/shared.tsx\n');
     const { tool, withCwd } = makeTool(workspace, { exec });
 
     const result = await execute(tool, { pattern: '*.{ts,tsx}' });
 
     expect(result.isError).toBeFalsy();
     withCwd.toHaveBeenCalledWith('/workspace');
-    expect(execArgs(exec)).not.toContain('*.{ts,tsx}');
+    expect(execArgs(exec)).toContain('*.{ts,tsx}');
     const output = toolContentString(result);
     expect(output).toContain('a.ts');
     expect(output).toContain('shared.ts');
@@ -382,7 +382,7 @@ describe('GlobTool', () => {
 
     expect(result.isError).toBeFalsy();
     withCwd.toHaveBeenCalledWith('/workspace');
-    expect(execArgs(exec)).not.toContain('\\{a,b\\}.ts');
+    expect(execArgs(exec)).toContain('\\{a,b\\}.ts');
     expect(result.output).toContain('{a,b}.ts');
   });
 
@@ -753,7 +753,7 @@ describe('GlobTool', () => {
 
     expect(result.isError).toBeFalsy();
     withCwd.toHaveBeenCalledWith('/workspace');
-    expect(execArgs(exec)).not.toContain('**/*.py');
+    expect(execArgs(exec)).toContain('**/*.py');
     expect(result.output).toContain('a.py');
     expect(result.output).toContain('sub/b.py');
   });
@@ -869,7 +869,7 @@ describe('GlobTool', () => {
 
     expect(result.isError).toBeFalsy();
     withCwd.toHaveBeenCalledWith('/workspace');
-    expect(execArgs(exec)).not.toContain('**/main/*.py');
+    expect(execArgs(exec)).toContain('**/main/*.py');
     expect(result.output).toContain('src/main/app.py');
   });
 

@@ -25,7 +25,7 @@ export async function discoverHistoryTurnBoundaries(path: string, agent: string,
   const adapter = new NavigationWireAdapter(agent);
   let current: number | undefined;
   const read = await streamLogicalWireRecords(path, {
-    endByteOffset: watermark, chunkBytes: 1 << 20, signal, decodeRecord: historyNavigationRecord,
+    endByteOffset: watermark, chunkBytes: 1 << 20, maxLineBytes: 32 << 20, signal, decodeRecord: historyNavigationRecord,
     onRecord(record, span) {
       const effects = adapter.add(record);
       if (record['type'] === 'turn.prompt') {

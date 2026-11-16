@@ -131,6 +131,7 @@ LICENSE/NOTICE for the original attribution and full terms.
     @nb-corp/nb-im 0.3.1 (nb-im contributors)
     @nb-corp/im-bridge-core 0.1.0 (shared IM session bridge)
     fastify 5.8.5 and pino 9.14.0 (Matteo Collina)
+    fdir 6.5.0 (Abdullah Atta / thecodrr)
     node-pty 1.1.0 (Microsoft Corporation)
     react and react-dom 19.2.5; @tanstack/react-query 5.99.2
     @xterm/xterm 5.5.0 and its addon-fit/addon-web-links packages

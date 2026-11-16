@@ -453,6 +453,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     if (!req.follow_gitignore || req.query === '' || req.cursor !== undefined && !req.cursor.startsWith('pi1_')) return undefined;
     await this.searchDirectory('', req.cursor !== undefined, signal);
     const index = this.pathIndex();
+    await index?.whenSettled();
     const snapshot = index?.snapshot();
     if (index === undefined || snapshot === undefined) {
       if (req.cursor?.startsWith('pi1_')) throw invalidSearchCursor();
@@ -632,6 +633,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     };
     const cap = req.limit;
     const index = req.follow_gitignore ? this.pathIndex() : undefined;
+    await index?.whenSettled();
     const revision = index?.snapshot()?.revision;
     const cacheKey = JSON.stringify(req);
     const cached = this.indexedSuggestCache.get(cacheKey);
@@ -876,6 +878,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     }
     args.push('--max-count', String(req.max_matches_per_file));
     const index = this.pathIndex();
+    await index?.whenSettled();
     const snapshot = index?.snapshot();
     let candidates = req.follow_gitignore && req.include_globs === undefined && req.exclude_globs === undefined && snapshot !== undefined
       ? await index?.trigram?.candidates(snapshot, req.pattern, !req.regex, !req.case_sensitive) : undefined;

@@ -19,6 +19,7 @@ import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb
 import { historyDirectoryWindowGuard } from '../src/services/history/historyDirectoryWindow';
 import * as logicalWire from '../src/services/history/logicalWireRead';
 import { historyArchiveSeed } from '../src/services/historyArchive';
+import { matchHistoryText, planHistoryQuery } from '../src/services/history/historyQuery';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 
 vi.mock('../src/services/history/logicalWireRead', { spy: true });
@@ -800,14 +801,11 @@ describe('history navigation source rows', () => {
         expect(page.coverage?.scanned?.records).toBeLessThanOrEqual(50_000);
       }
       const recent = await archive.search({ ...request, query: 'tailmarker', sort: 'newest' });
-      expect(recent).toMatchObject({ items: [{ turn: 8, time: 1008 }], hasMore: true });
+      expect(recent).toMatchObject({ items: [{ turn: 8, time: 1008 }], hasMore: false });
       expect(recent.coverage?.scanned?.bytes).toBeLessThan(2 << 20);
       const absent = await archive.search({ ...request, query: 'absentmarker' });
-      expect(absent).toMatchObject({ items: [], continuation: 'scan', hasMore: true,
-        coverage: { complete: false }, incomplete: 'wire_scan_limit' });
-      const absentTail = await archive.search({ ...request, query: 'absentmarker', pageToken: absent.pageToken });
-      expect(absentTail).toMatchObject({ items: [], hasMore: false, coverage: { complete: true } });
-      expect(absentTail.pageToken).toBeUndefined();
+      expect(absent).toMatchObject({ items: [], hasMore: false, coverage: { complete: true, scanned: { records: 0, bytes: 0 } } });
+      expect(absent.pageToken).toBeUndefined();
       const alternate = await archive.search({ ...request, query: 'needle fff', pageToken: undefined });
       expect(alternate.items.map((hit) => hit.turn)).toEqual([8]);
       const manifestScopes = (await db.ready()).db.prepare(`SELECT hex(s.name) AS scope FROM manifest m
@@ -886,7 +884,7 @@ describe('history navigation source rows', () => {
       } finally { await reopenedDb.close(); }
       const database = (await db.ready()).db;
       const version = database.prepare('PRAGMA user_version').get();
-      expect(version).toEqual({ user_version: 3 });
+      expect(version).toEqual({ user_version: 4 });
       const scopeId = (database.prepare('SELECT id FROM scopes WHERE name=?').get('ws\0s\0main') as { id: number }).id;
       const plan = database.prepare(`EXPLAIN QUERY PLAN SELECT r.key,r.value FROM rows r
         WHERE r.scope=? AND r.active=1 AND json_extract(r.value,'$.part') IN ('prompt','text','output')
@@ -1308,7 +1306,7 @@ describe('history navigation source rows', () => {
       expect((await archive.search(request)).items[0]?.turn).toBe(2);
       reads.length = 0;
       expect((await archive.search(request)).items[0]?.turn).toBe(2);
-      expect(reads.filter(read => read.bytes >= (64 << 10))).toEqual([{ start: 0, bytes: size }, { start: 0, bytes: size }]);
+      expect(reads.filter(read => read.bytes >= (64 << 10))).toEqual(Array.from({ length: 3 }, () => ({ start: 0, bytes: size })));
     } finally { gate.mockRestore(); await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
@@ -1429,6 +1427,73 @@ describe('history navigation source rows', () => {
         pageToken = page.pageToken;
       }
       expect(turns).toEqual([8, 7, 6, 5, 4, 3, 2, 1, 0]);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
+
+describe('history lexical candidate lookup', () => {
+  it('narrows ASCII, CJK, normalized literals and punctuation without changing canonical matching', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-fts-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    const texts = Array.from({ length: 80 }, (_, turn) => turn === 42 ? 'selectiveMarker A+B ＦＯＯ' : turn === 17 ? '中文检索' : 'ordinary body');
+    try {
+      await writeFile(wirePath, texts.map((text, turnId) => line({ type: 'turn.prompt', turnId, time: turnId,
+        input: [{ type: 'text', text }], origin: { kind: 'user' } })).join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      await nav.scan('s', 'main');
+      const database = await db.ready();
+      const candidates = vi.spyOn(database, 'searchRows');
+      for (const [query, mode] of [['selectiveMarker', 'auto'], ['中文', 'auto'], ['中文检索', 'literal'], ['A+B', 'literal'],
+        ['ＦＯＯ', 'terms'], ['foo', 'literal'], ['selectiveMarker x', 'auto'], ['selectiveMarker x', 'any'],
+        ['notthere selectiveMarker', 'all'], ['中文检索 selectiveMarker', 'any']] as const) {
+        const result = await nav.scan('s', 'main', undefined, { query, mode, sort: 'newest', pageSize: 100 });
+        const plan = planHistoryQuery(query, mode);
+        expect(result?.hits?.map(hit => hit.turn)).toEqual(texts.flatMap((text, turn) => matchHistoryText(text, plan) === undefined ? [] : [turn]).reverse());
+        if (query === 'selectiveMarker') {
+          expect(result?.recordsRead).toBe(1);
+          expect(candidates.mock.lastCall?.[0].candidate).toMatchObject({ index: 'nav_trigrams' });
+        }
+        if (query === '中文') expect(candidates.mock.lastCall?.[0].candidate).toBeUndefined();
+      }
+      const scope = (database.db.prepare('SELECT id FROM scopes WHERE name=?').get('ws\0s\0main') as { id: number }).id;
+      database.db.prepare("UPDATE rows SET value=json_set(value,'$.anchor.digest',?) WHERE scope=? AND turn=42").run('0'.repeat(64), scope);
+      await expect(nav.scan('s', 'main', undefined, { query: 'selectiveMarker', mode: 'auto', sort: 'newest', pageSize: 10 })).rejects.toThrow('stale_scan_cursor');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('indexes tool output separately and verifies extracted content hashes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-fts-tool-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      await writeFile(wirePath, lines.join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const request = { query: 'needle', mode: 'auto' as const, sort: 'newest' as const, pageSize: 10 };
+      expect((await nav.scan('s', 'main', undefined, request))?.hits).toEqual([]);
+      expect((await nav.scan('s', 'main', undefined, { ...request, includeToolOutput: true }))?.hits).toMatchObject([{ role: 'tool' }]);
+      expect((await nav.scan('s', 'main', undefined, { ...request, role: 'tool', after: 1003, before: 1004 }))?.hits).toHaveLength(1);
+      const database = await db.ready();
+      database.db.prepare("UPDATE rows SET value=json_set(value,'$.contentHash',?) WHERE json_extract(value,'$.part')='output'").run('0'.repeat(64));
+      await expect(nav.scan('s', 'main', undefined, { ...request, role: 'tool' })).rejects.toThrow('stale_scan_cursor');
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('returns source_missing and rejects an old preparation before indexed boundary lookup', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-missing-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+    try {
+      const nav = new HistoryLocatorStore(db, transcript);
+      expect(await nav.lookupDirectory('ws', 's', 'main', 4)).toEqual({ status: 'source_missing' });
+      await writeFile(wirePath, line({ type: 'llm.request', pad: 'x'.repeat(9 << 20) }) + lines.join(''));
+      expect(await nav.lookupDirectory('ws', 's', 'main', 4, undefined, { offset: 1, incarnation: 'replaced' }))
+        .toEqual({ status: 'stale_ref' });
+      expect((await db.ready()).readBoundaryManifest('ws\0s\0main')).toBeUndefined();
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 });

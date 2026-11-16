@@ -5,7 +5,7 @@ import type { WorkspacePathEntry } from './workspacePathInventory';
 
 export type WorkspaceTrigramOperation =
   | { readonly type: 'workspace.trigram.begin'; readonly path: string; readonly epoch: string }
-  | { readonly type: 'workspace.trigram.update'; readonly path: string; readonly epoch: string; readonly root: string; readonly entries: readonly WorkspacePathEntry[] }
+  | { readonly type: 'workspace.trigram.update'; readonly path: string; readonly epoch: string; readonly root: string; readonly entries: readonly WorkspacePathEntry[]; readonly removed?: readonly string[] }
   | { readonly type: 'workspace.trigram.finish'; readonly path: string; readonly epoch: string }
   | { readonly type: 'workspace.trigram.query'; readonly path: string; readonly epoch: string; readonly literal: string; readonly insensitive: boolean; readonly limit: number };
 
@@ -35,7 +35,7 @@ export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation): b
     if (operation.type === 'workspace.trigram.query') {
       const complete = db.prepare("SELECT 1 FROM meta WHERE key='complete'").get();
       if (complete === undefined) { db.exec('ROLLBACK'); return undefined; }
-      const chars = [...operation.literal];
+      const chars = Array.from(operation.literal);
       const grams = new Set<string>();
       for (let index = 0; index + 2 < chars.length; index++) grams.add(chars.slice(index, index + 3).join(''));
       const query = [...grams].map(gram => `"${gram.replaceAll('"', '""')}"`).join(' AND ');
@@ -50,6 +50,10 @@ export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation): b
       db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('complete','1')").run();
       db.exec('COMMIT');
       return true;
+    }
+    for (const path of operation.removed ?? []) {
+      db.prepare('DELETE FROM content WHERE rowid IN (SELECT id FROM files WHERE path=?)').run(path);
+      db.prepare('DELETE FROM files WHERE path=?').run(path);
     }
     const find = db.prepare('SELECT * FROM files WHERE path=?');
     const touch = db.prepare('UPDATE files SET epoch=? WHERE id=?');

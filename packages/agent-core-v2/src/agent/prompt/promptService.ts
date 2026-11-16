@@ -587,7 +587,10 @@ export const promptIdentityKey = defineState('prompt.identity', (): Map<string, 
   })
   .on(TurnSteer, (state, event) => {
     const entry = event.promptId === undefined ? undefined : state.get(event.promptId);
-    if (entry !== undefined) state.set(entry.promptId, { ...entry, phase: 'launched', turnId: event.turnId });
+    if (entry !== undefined) {
+      state.delete(entry.promptId);
+      state.set(entry.promptId, { ...entry, phase: 'launched', turnId: event.turnId });
+    }
   })
   .on(PromptSteered, (state, event) => {
     const turnId = state.get(event.activePromptId)?.turnId ?? event.promptIds.map(id => state.get(id)?.turnId).find(id => id !== undefined);
@@ -942,7 +945,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private releaseRecordWorkAdmission(record: Record): void {
-    record.workHold?.dispose();
+    void record.workHold?.dispose();
     record.workHold = undefined;
     record.workAdmission?.dispose();
     record.workAdmission = undefined;
@@ -954,7 +957,7 @@ export class AgentPromptService implements IAgentPromptService {
       for (const steered of this.steered.get(this.active.id) ?? []) this.releaseRecordWorkAdmission(steered);
     }
     for (const record of this.pending) this.releaseRecordWorkAdmission(record);
-    for (const [operationId, admission] of [...this.modelSwitchAdmissions]) {
+    for (const [operationId, admission] of this.modelSwitchAdmissions) {
       if (this.switchFlight?.operationId === operationId) continue;
       this.modelSwitchAdmissions.delete(operationId);
       admission.dispose();
@@ -2269,7 +2272,7 @@ export class AgentPromptService implements IAgentPromptService {
         });
         for (const item of fresh) this.steerAcceptances.set(item.id, result);
       }
-      await Promise.all(selected.map(item => this.steerAcceptances.get(item.id)));
+      await Promise.all(selected.map(item => this.steerAcceptances.get(item.id)).filter(promise => promise !== undefined));
       return selected.map(item => item.handle);
     }
     const fresh = selected.filter(item => !this.steerAcceptances.has(item.id));
@@ -2299,7 +2302,7 @@ export class AgentPromptService implements IAgentPromptService {
         void item.completionDeferred.promise.then(() => { this.steerAcceptances.delete(item.id); });
       }
     }
-    await Promise.all(selected.map(item => this.steerAcceptances.get(item.id)));
+    await Promise.all(selected.map(item => this.steerAcceptances.get(item.id)).filter(promise => promise !== undefined));
     return selected.map(item => item.handle);
   }
 

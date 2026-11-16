@@ -1,5 +1,5 @@
-import { lstatSync, readFileSync } from 'node:fs';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import { fdir } from 'fdir';
 import ignore, { type Ignore } from 'ignore';
 import { isSensitiveFile } from '#/_base/security/sensitiveFile';
@@ -12,6 +12,7 @@ export interface WorkspacePathEntry {
   readonly ctimeMs: number;
   readonly size: number;
   readonly ino: number;
+  readonly sensitive?: boolean;
 }
 
 export interface WorkspacePathInventory {
@@ -21,66 +22,112 @@ export interface WorkspacePathInventory {
 
 const VCS = new Set(['.git', '.hg', '.svn', '.jj', '.bzr', '.sl']);
 const IGNORE_FILES = ['.gitignore', '.ignore', '.rgignore'];
+const SKIPPABLE = new Set(['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR']);
 
-export function workspacePathInventory(root: string, limit: number): WorkspacePathInventory {
-  root = resolve(root);
-  const rules = new Map<string, readonly (Ignore | undefined)[]>();
-  const matchers = (directory: string): readonly (Ignore | undefined)[] => {
-    const cached = rules.get(directory);
-    if (cached !== undefined) return cached;
-    const loaded: Array<Ignore | undefined> = [];
-    for (const name of IGNORE_FILES) {
-      try {
-        loaded.push(ignore().add(readFileSync(join(directory, name), 'utf8')));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        loaded.push(undefined);
+class PathRules {
+  private readonly rules = new Map<string, readonly (Ignore | undefined)[]>();
+  private readonly parents: string[] = [];
+  private readonly exclude?: Ignore;
+  constructor(private readonly root: string) {
+    let parent = root;
+    for (;;) {
+      this.parents.unshift(parent);
+      const git = join(parent, '.git');
+      if (existsSync(git)) {
+        let gitDir = git;
+        if (lstatSync(git).isFile()) gitDir = resolve(parent, readFileSync(git, 'utf8').trim().replace(/^gitdir: /u, ''));
+        if (existsSync(join(gitDir, 'commondir'))) gitDir = resolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf8').trim());
+        this.exclude = this.load(join(gitDir, 'info', 'exclude'), parent);
+        break;
       }
+      const next = dirname(parent);
+      if (next === parent) break;
+      parent = next;
     }
-    rules.set(directory, loaded);
-    return loaded;
-  };
-  const ignored = (path: string, directory: boolean): boolean => {
-    const parents: string[] = [];
-    let parent = dirname(path);
-    while (parent === root || parent.startsWith(`${root}${process.platform === 'win32' ? '\\' : '/'}`)) {
-      parents.push(parent);
-      if (parent === root) break;
-      parent = dirname(parent);
+  }
+  private load(path: string, directory: string): Ignore | undefined {
+    try {
+      const matcher = ignore().add(readFileSync(path, 'utf8'));
+      const route = relative(directory, this.root).replaceAll('\\', '/');
+      if (route !== '' && !route.startsWith('../')) {
+        const parts = route.split('/');
+        matcher.add(parts.map((_part, index) => `!/${parts.slice(0, index + 1).join('/')}/`));
+      }
+      return matcher;
+    } catch (error) {
+      if (SKIPPABLE.has((error as NodeJS.ErrnoException).code ?? '')) return undefined;
+      throw error;
+    }
+  }
+  ignored(path: string, directory: boolean): boolean {
+    const parents = [...this.parents];
+    const local = relative(this.root, dirname(path));
+    if (local !== '') {
+      let current = this.root;
+      for (const part of local.split(/[\\/]/u)) { current = join(current, part); parents.push(current); }
     }
     let excluded = false;
+    const apply = (matcher: Ignore, parent: string): void => {
+      const result = matcher.test(relative(parent, path).replaceAll('\\', '/') + (directory ? '/' : ''));
+      if (result.ignored) excluded = true;
+      if (result.unignored) excluded = false;
+    };
+    if (this.exclude !== undefined) apply(this.exclude, this.parents[0]!);
     for (let kind = 0; kind < IGNORE_FILES.length; kind++) {
-      for (let index = parents.length - 1; index >= 0; index--) {
-        const directoryPath = parents[index]!;
-        const local = relative(directoryPath, path).replaceAll('\\', '/') + (directory ? '/' : '');
-        const result = matchers(directoryPath)[kind]?.test(local);
-        if (result?.ignored) excluded = true;
-        if (result?.unignored) excluded = false;
+      for (const parent of parents) {
+        let matchers = this.rules.get(parent);
+        if (matchers === undefined) {
+          matchers = IGNORE_FILES.map(name => this.load(join(parent, name), parent));
+          this.rules.set(parent, matchers);
+        }
+        const matcher = matchers[kind];
+        if (matcher !== undefined) apply(matcher, parent);
       }
     }
     return excluded;
-  };
-  const paths = new fdir({ excludeSymlinks: false }).withFullPaths().withDirs().withErrors()
+  }
+}
+
+function pathEntry(root: string, path: string): WorkspacePathEntry | undefined {
+  let stat;
+  try { stat = lstatSync(path); }
+  catch (error) {
+    if (SKIPPABLE.has((error as NodeJS.ErrnoException).code ?? '')) return undefined;
+    throw error;
+  }
+  if (!stat.isFile() && !stat.isDirectory() && !stat.isSymbolicLink()) return undefined;
+  return { path: relative(root, path).replaceAll('\\', '/'), name: basename(path),
+    kind: stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : 'file',
+    mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, size: stat.size, ino: stat.ino, sensitive: isSensitiveFile(path) };
+}
+
+export function workspacePathEntry(root: string, path: string): WorkspacePathEntry | undefined {
+  const local = relative(root, path);
+  if (local === '' || local === '..' || local.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(local) ||
+      local.split(/[\\/]/u).some(part => VCS.has(part))) return undefined;
+  const entry = pathEntry(root, path);
+  return entry === undefined || new PathRules(root).ignored(path, entry.kind === 'directory') ? undefined : entry;
+}
+
+export function workspacePathFilter(root: string, paths: readonly string[]): readonly string[] {
+  const rules = new PathRules(root);
+  return paths.filter(path => !rules.ignored(path, false));
+}
+
+export function workspacePathInventory(root: string, limit: number): WorkspacePathInventory {
+  root = resolve(root);
+  const rules = new PathRules(root);
+  const paths = new fdir({ excludeSymlinks: false }).withFullPaths().withDirs()
     .withMaxFiles(limit + 1)
-    .exclude((name, path) => VCS.has(name) || isSensitiveFile(path) || ignored(path, true))
-    .filter((path, directory) => relative(root, path) !== '' && !VCS.has(basename(path)) && !isSensitiveFile(path) && !ignored(path, directory))
+    .exclude((name, path) => VCS.has(name) || rules.ignored(path, true))
+    .filter((path, directory) => relative(root, path) !== '' && !VCS.has(basename(path)) && !rules.ignored(path, directory))
     .crawl(root).sync();
   const entries: WorkspacePathEntry[] = [];
-  let files = 0;
   for (const path of paths) {
-    let stat;
-    try {
-      stat = lstatSync(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw error;
-    }
-    if (!stat.isFile() && !stat.isDirectory() && !stat.isSymbolicLink()) continue;
-    if (stat.isFile() && ++files > limit || entries.length >= limit) return { entries: [], overflow: true };
-    const local = relative(root, path).replaceAll('\\', '/').replace(/\/$/u, '');
-    if (local === '') continue;
-    entries.push({ path: local, name: basename(path), kind: stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : 'file',
-      mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, size: stat.size, ino: stat.ino });
+    const entry = pathEntry(root, path.replace(/[\\/]$/u, ''));
+    if (entry === undefined) continue;
+    if (entries.length >= limit) return { entries: [], overflow: true };
+    entries.push(entry);
   }
   return { entries, overflow: false };
 }

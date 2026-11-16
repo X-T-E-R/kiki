@@ -115,6 +115,16 @@ async function matches(store: IMemoryStore, visible: readonly MemoryScope[], id:
   const found = await Promise.all(visible.map(async (scope) => ({ entry: await store.get(scope, id), scope })));
   return found.flatMap(({ entry, scope }) => entry === undefined ? [] : [{ entry, scope }]);
 }
+async function matchesMany(store: IMemoryStore, visible: readonly MemoryScope[], ids: readonly string[]): Promise<ReadonlyMap<string, { readonly entry: MemoryEntry; readonly scope: MemoryScope }[]>> {
+  const found = new Map<string, { entry: MemoryEntry; scope: MemoryScope }[]>();
+  for (const id of new Set(ids)) found.set(id, []);
+  const perScope = await Promise.all(visible.map(async (scope) => {
+    if (store.getMany !== undefined) return [...(await store.getMany(scope, ids)).entries()].map(([id, entry]) => ({ id, entry, scope }));
+    return (await Promise.all(ids.map(async (id) => ({ id, entry: await store.get(scope, id) })))).flatMap((item) => item.entry === undefined ? [] : [{ id: item.id, entry: item.entry, scope }]);
+  }));
+  for (const entries of perScope) for (const { id, entry, scope } of entries) found.get(id)?.push({ entry, scope });
+  return found;
+}
 function lookupFailure(code: 'not_found' | 'ambiguous_target' | 'scope_mismatch', found: readonly { entry: MemoryEntry; scope: MemoryScope }[]): { isError: true; output: string } {
   return { isError: true, output: JSON.stringify({ code, message: code === 'ambiguous_target' ? 'The ID exists in multiple visible scopes' : code === 'scope_mismatch' ? 'The target belongs to another visible scope' : 'Memory not found',
     recovery: 'Read the visible target in its owning scope and copy its target fields; do not create a duplicate.', visible_targets: found.map(({ entry, scope }) => ({ ...target(scope, entry), owner_scope: scope, title: entry.title, status: entry.status })) }) };
@@ -269,8 +279,11 @@ Check status and validity. Archived and superseded entries are history, not curr
       try {
         const persona = this.memorySnapshot.getPersona();
         const visible = parsed.data.scope === undefined ? scopes(this.session, persona) : [resolveScope(parsed.data.scope, this.session, persona)];
-        const items = await Promise.all((parsed.data.ids ?? [parsed.data.id!]).map(async (id) => {
-          const found = await matches(this.store, visible, id);
+        const requested = parsed.data.ids ?? [parsed.data.id!];
+        const unique = [...new Set(requested)];
+        const batched = unique.length > 1 ? await matchesMany(this.store, visible, unique) : undefined;
+        const items = await Promise.all(requested.map(async (id) => {
+          const found = batched === undefined ? await matches(this.store, visible, id) : batched.get(id) ?? [];
           if (found.length > 1) return { id, missing: true, ...JSON.parse(lookupFailure('ambiguous_target', found).output) };
           const item = found[0];
           if (item === undefined) return { id, missing: true, reason: 'not_found', recovery: 'Locate the ID in visible scopes; do not create a duplicate to bypass lookup.' };

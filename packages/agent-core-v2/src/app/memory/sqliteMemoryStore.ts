@@ -66,6 +66,10 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const base = await this.scopes.resolve(scope);
     return { base, view: await this.persistence.read([base]) };
   }
+  private async pointView(scope: MemoryScope, ids: readonly string[]): Promise<MemoryReadView> {
+    const base = await this.scopes.resolve(scope);
+    return this.persistence.readIds === undefined ? this.persistence.read([base]) : this.persistence.readIds(base, ids);
+  }
   async checkpoint(): Promise<string> { return String((await this.persistence.read([])).generation); }
   async snapshot(scopes: readonly MemoryScope[]): ReturnType<ISqliteMemoryStore['snapshot']> {
     const bases = await Promise.all(scopes.map((scope) => this.scopes.resolve(scope)));
@@ -82,7 +86,12 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   async list(scope: MemoryScope, includeInactive = false): ReturnType<IMemoryStore['list']> {
     return (await this.inventory(scope)).entries.filter((entry) => includeInactive || entry.status === 'active' || entry.status === 'pending').toSorted((a, b) => b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id));
   }
-  async get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined> { return (await this.inventory(scope)).entries.find((entry) => entry.id === id); }
+  async get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined> {
+    return (await this.pointView(scope, [id])).objects.find((object) => object.id === id)?.entry ?? undefined;
+  }
+  async getMany(scope: MemoryScope, ids: readonly string[]): Promise<ReadonlyMap<string, MemoryEntry>> {
+    return new Map((await this.pointView(scope, ids)).objects.flatMap((object) => object.entry === null || !ids.includes(object.id) ? [] : [[object.id, object.entry] as const]));
+  }
   async getRevision(scope: MemoryScope, id: string, revision: string): Promise<MemoryEntry | undefined> { return this.persistence.revision(await this.scopes.resolve(scope), id, revision); }
   async provenance(scope: MemoryScope, id: string): Promise<MemoryProvenance> { return this.persistence.provenance(await this.scopes.resolve(scope), id); }
   async ingest({ mutation, unit }: MemoryIngestCandidate): Promise<MemoryPutResult> {

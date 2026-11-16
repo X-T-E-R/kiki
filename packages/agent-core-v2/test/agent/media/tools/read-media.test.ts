@@ -358,6 +358,17 @@ describe('ReadMediaFileTool', () => {
     expect(result.output).toContain('not a supported image or video file');
   });
 
+  it('reads a small media file once and sniffs the full-read prefix', async () => {
+    const fs = createTestFs({ '/workspace/sample.png': { data: pngBuffer() } });
+    const result = await execute(new ReadMediaFileTool(runtimeFor(fs), WORKSPACE, capabilities()), {
+      path: '/workspace/sample.png',
+    });
+
+    expect(result.isError).toBe(false);
+    expect(vi.mocked(fs.readBytes)).toHaveBeenCalledOnce();
+    expect(vi.mocked(fs.readBytes)).toHaveBeenCalledWith('/workspace/sample.png');
+  });
+
   it('returns a text/image/text wrap plus a <system> note for PNG files', async () => {
     const result = await execute(makeTool({ '/workspace/sample.png': { data: pngBuffer() } }), {
       path: '/workspace/sample.png',

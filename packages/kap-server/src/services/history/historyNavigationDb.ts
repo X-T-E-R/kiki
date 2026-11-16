@@ -1,6 +1,9 @@
 import { open, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { normalizeLiteral } from '@kiki/lexical';
+import { encodeTerms } from '../../search/sqlite/terms';
+import type { HistorySearchCandidate } from './historySearchIndex';
 import type { ColumnPageQuery, IQueryStore, Page, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 import type { NavigationAdapterCursor, NavigationScalarState } from '@kiki/transcript/navigationWireAdapter';
 import type { HistoryNavigationProof } from './historyNavigationProof';
@@ -11,13 +14,14 @@ import { navigationStatement, navigationScope, clearNavigationScopes, SqliteNavi
 
 type NavigationStore = Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>;
 const APPLICATION_ID = 0x4b484e31;
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const MANIFEST_MAX_BYTES = 16 << 10;
 const CONVERSATION_SEARCH_PARTS = "('prompt','text','output')";
 const SELECT_ROW = 'r.*,s.workspace,s.session,s.agent';
 const COLUMNS = new Set(['turn', 'position', 'time']);
 const FILTERS = new Set(['workspace', 'session', 'agent', 'kind', 'turn', 'active', 'step']);
-const TABLES = ['rows', 'state', 'turn_sequence', 'anchor_sequence', 'manifest', 'canonical_spans', 'turn_boundaries', 'boundary_manifest'];
+const TABLES = ['search_documents', 'rows', 'state', 'turn_sequence', 'anchor_sequence', 'manifest', 'canonical_spans', 'turn_boundaries', 'boundary_manifest'];
+const SEARCH_TABLES = ['nav_terms', 'nav_trigrams'];
 
 export interface HistoryNavManifest {
   readonly v: 2;
@@ -88,10 +92,11 @@ export class HistoryNavigationDb implements NavigationStore {
       const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'")
         .all() as Array<{ name: string }>).map(row => row.name);
       if (applicationId !== 0 && applicationId !== APPLICATION_ID || applicationId === 0 && tables.length > 0 ||
-        applicationId === APPLICATION_ID && ![1, 2, SCHEMA_VERSION].includes(version)) {
+        applicationId === APPLICATION_ID && ![1, 2, 3, SCHEMA_VERSION].includes(version)) {
         throw new Error(`unrecognized history navigation index at ${actual}`);
       }
-      if (tables.some(name => ![...TABLES, 'scopes', 'directory_views'].includes(name))) {
+      if (tables.some(name => ![...TABLES, 'scopes', 'directory_views', ...SEARCH_TABLES,
+        ...SEARCH_TABLES.flatMap(table => ['data', 'idx', 'config', 'docsize'].map(suffix => `${table}_${suffix}`))].includes(name))) {
         throw new Error(`unrecognized history navigation tables at ${actual}`);
       }
       db.exec('PRAGMA busy_timeout=1000');
@@ -100,9 +105,9 @@ export class HistoryNavigationDb implements NavigationStore {
       db.exec(`PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8192; PRAGMA mmap_size=0;
         PRAGMA wal_autocheckpoint=500; PRAGMA journal_size_limit=33554432; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE`);
       const current = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-      const rebuilding = applicationId === APPLICATION_ID && (current === 1 || current === 2);
+      const rebuilding = applicationId === APPLICATION_ID && current < SCHEMA_VERSION;
       if (rebuilding) {
-        for (const table of ['rows', 'state', 'turn_sequence', 'anchor_sequence', 'manifest']) db.exec(`DROP TABLE IF EXISTS ${table}`);
+        for (const table of [...SEARCH_TABLES, ...TABLES, 'directory_views', 'scopes']) db.exec(`DROP TABLE IF EXISTS ${table}`);
       }
       db.exec(`CREATE TABLE IF NOT EXISTS scopes (
           id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, projection TEXT NOT NULL,
@@ -152,6 +157,19 @@ export class HistoryNavigationDb implements NavigationStore {
           scope INTEGER PRIMARY KEY REFERENCES scopes(id) ON DELETE CASCADE, watermark INTEGER NOT NULL, proof TEXT NOT NULL
         ) STRICT;
         CREATE TABLE IF NOT EXISTS directory_views (id TEXT PRIMARY KEY, used INTEGER NOT NULL) STRICT, WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS search_documents (
+          id INTEGER PRIMARY KEY, scope INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+          key TEXT NOT NULL, content_hash TEXT NOT NULL, UNIQUE(scope,key)
+        ) STRICT;
+        CREATE VIRTUAL TABLE IF NOT EXISTS nav_terms USING fts5(terms, content='', contentless_delete=1);
+        CREATE VIRTUAL TABLE IF NOT EXISTS nav_trigrams USING fts5(body, tokenize='trigram', detail='none', content='', contentless_delete=1);
+        CREATE TRIGGER IF NOT EXISTS nav_row_search_delete AFTER DELETE ON rows BEGIN
+          DELETE FROM search_documents WHERE scope=old.scope AND key=old.key;
+        END;
+        CREATE TRIGGER IF NOT EXISTS nav_search_delete AFTER DELETE ON search_documents BEGIN
+          DELETE FROM nav_terms WHERE rowid=old.id;
+          DELETE FROM nav_trigrams WHERE rowid=old.id;
+        END;
         PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}; COMMIT;`);
       const free = (db.prepare('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count;
       if (rebuilding || free > 0 && db.prepare('SELECT 1 FROM scopes LIMIT 1').get() === undefined) db.exec('VACUUM');
@@ -338,13 +356,20 @@ export class HistoryNavigationDb implements NavigationStore {
   }
   searchRows(input: { workspace: string; session: string; agent: string; direction: 'asc' | 'desc';
     after?: { time: number; key: string }; includeToolOutput?: boolean; role?: 'user' | 'assistant' | 'tool' | 'record';
-    startTime?: number; endTime?: number; limit: number }): Array<{ key: string; time: number; row: HistoryNavRow }> {
+    startTime?: number; endTime?: number; candidate?: HistorySearchCandidate; limit: number }): Array<{ key: string; time: number; row: HistoryNavRow }> {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 64) throw new Error('invalid history navigation page');
+    const id = this.sourceScope(input.workspace, input.session, input.agent);
     const time = 'coalesce(r.time,0)';
     const where = ['r.scope=? AND r.active=1', input.role === 'record' ? "json_extract(r.value,'$.part')='record'" : `json_extract(r.value,'$.part') IN ${CONVERSATION_SEARCH_PARTS}`,
       "EXISTS (SELECT 1 FROM rows p WHERE p.scope=r.scope AND p.kind='turn' AND p.turn=r.turn AND p.active=1)",
       "coalesce(json_extract(r.value,'$.role'),'user')=?"];
     const bounds: Array<string | number> = [];
+    if (input.candidate !== undefined) {
+      const index = input.candidate.index;
+      where.push(`r.key IN (SELECT d.key FROM search_documents d WHERE d.scope=? AND d.id IN
+        (SELECT rowid FROM ${index} WHERE ${index} MATCH ?))`);
+      bounds.push(id, input.candidate.match);
+    }
     if (input.startTime !== undefined || input.endTime !== undefined) where.push('r.time IS NOT NULL');
     if (input.startTime !== undefined) { where.push(`${time}>=?`); bounds.push(input.startTime); }
     if (input.endTime !== undefined) { where.push(`${time}<?`); bounds.push(input.endTime); }
@@ -357,10 +382,22 @@ export class HistoryNavigationDb implements NavigationStore {
     const roles = input.role !== undefined ? [input.role] : input.includeToolOutput === true ? ['user', 'assistant', 'tool'] : ['user', 'assistant'];
     const select = `SELECT r.key AS sort_key,${time} AS sort_time,${SELECT_ROW} FROM rows r JOIN scopes s ON s.id=r.scope WHERE ${where.join(' AND ')}`;
     const sql = `${roles.map(() => select).join(' UNION ALL ')} ORDER BY sort_time ${direction},sort_key ${direction} LIMIT ?`;
-    const id = this.sourceScope(input.workspace, input.session, input.agent);
     const values = roles.flatMap(role => [id, role, ...bounds]);
     return (navigationStatement(this.db, sql).all(...values, input.limit) as unknown as Array<StoredRow & { sort_time: number }>)
       .map(row => ({ key: this.externalKey(row), time: row.sort_time, row: decodeRow(row) }));
+  }
+
+  indexText(key: string, row: HistoryNavRow, text: string): void {
+    const scope = this.sourceScope(row.workspace, row.session, row.agent, true);
+    const local = this.localKey(key);
+    const previous = navigationStatement(this.db, 'SELECT id,content_hash FROM search_documents WHERE scope=? AND key=?')
+      .get(scope, local) as { id: number; content_hash: string } | undefined;
+    if (previous?.content_hash === row.contentHash) return;
+    if (previous !== undefined) navigationStatement(this.db, 'DELETE FROM search_documents WHERE id=?').run(previous.id);
+    const document = navigationStatement(this.db, 'INSERT INTO search_documents(scope,key,content_hash) VALUES(?,?,?) RETURNING id')
+      .get(scope, local, row.contentHash!) as { id: number };
+    navigationStatement(this.db, 'INSERT INTO nav_terms(rowid,terms) VALUES(?,?)').run(document.id, encodeTerms(text));
+    navigationStatement(this.db, 'INSERT INTO nav_trigrams(rowid,body) VALUES(?,?)').run(document.id, normalizeLiteral(text));
   }
 
   private localKey(key: string): string {

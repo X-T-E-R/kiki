@@ -18,6 +18,7 @@ import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompacti
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { turnPromptText } from '#/agent/loop/turnEvents';
+import { TurnSteer } from '#/agent/loop/turnOps';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { stubExecutionControl } from '../../session/executionControl/stubs';
@@ -43,6 +44,7 @@ import {
   PromptSteerAccepted,
   PromptSubmitted,
   promptQueueKey,
+  promptIdentityKey,
   promptResolutionKey,
   type PromptEnqueuedPayload,
 } from '#/agent/prompt/promptService';
@@ -1720,6 +1722,20 @@ describe('AgentPromptService', () => {
     expect(handle.id).toBe('prompt-1');
     expect(handle.userMessageId).toBe('prompt-1');
     expect((await handle.launched)?.id).toBe(0);
+  });
+
+  it('orders prompt identities by actual steering rather than earlier queue insertion', async () => {
+    const { dispatcher, states } = harness();
+    for (const [queueIndex, promptId] of ['older-queued', 'newer-queued'].entries()) {
+      await dispatcher.dispatch(new PromptEnqueued({ schemaVersion: 1, promptId, userMessageId: promptId,
+        message: message(promptId), createdAt: new Date(0).toISOString(), appendTiming: 'tasks_done',
+        revision: 0, queueIndex, alreadyMaterialized: false }));
+    }
+    for (const promptId of ['newer-queued', 'older-queued']) {
+      await dispatcher.dispatch(new TurnSteer({ promptId, turnId: 14, input: [], origin: { kind: 'user' } }));
+    }
+    expect([...states.get(promptIdentityKey).values()].filter(identity => identity.turnId === 14).map(identity => identity.promptId))
+      .toEqual(['newer-queued', 'older-queued']);
   });
 
   it('persists prompt resolution identities in replayable state', async () => {

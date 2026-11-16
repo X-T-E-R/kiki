@@ -1105,6 +1105,22 @@ describe('BashTool', () => {
     expect(exec.mock.calls[0]?.[2]?.ownedProcessLifetime).toBeUndefined();
   });
 
+  it('invalidates local path and trigram snapshots before spawn and at process settlement', async () => {
+    const invalidate = vi.fn();
+    const { runner, exec } = createTestRunner(vi.fn(async () => {
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      return processWithOutput({ stdout: 'created\n' });
+    }));
+    const env = createTestEnv();
+    const session = createTestCtx();
+    const runtime = disposables.add(new LocalRuntime(session.workspaceId, env, undefined, runner, undefined, undefined));
+    Object.assign(runtime, { pathIndex: { invalidate, dispose: async () => {} } });
+    const tool = bashTool(runner, env, session, undefined, undefined, undefined, { runtime });
+    expect(await executeTool(tool, context({ command: 'touch created.txt' }))).toMatchObject({ isError: false });
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledTimes(2);
+  });
+
   it('returns stderr and marks non-zero exit codes as tool errors', async () => {
     const { runner } = createTestRunner(processWithOutput({ stderr: 'boom\n', exitCode: 2 }));
     const tool = bashTool(runner);

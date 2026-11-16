@@ -287,6 +287,27 @@ export class MemoryDatabase {
       return { generation: at, objects };
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
+  readIds(scope: string, ids: readonly string[], generation?: number): MemoryReadView {
+    this.reconcileBeforeRead();
+    this.db.exec('BEGIN');
+    try {
+      const current = this.generation();
+      const at = generation ?? current;
+      if (!Number.isSafeInteger(at) || at < 0 || at > current) throw new Error('Invalid Memory commit view');
+      const objects: MemoryReadView['objects'][number][] = [];
+      const requested = [...new Set(ids)];
+      if (requested.length > 0) {
+        const placeholders = requested.map(() => '?').join(',');
+        const query = this.db.prepare(`SELECT r.* FROM commit_views c JOIN revisions r ON r.scope=c.scope AND r.id=c.id AND r.revision=c.revision WHERE c.scope=? AND c.id IN (${placeholders}) AND c.generation<=? AND NOT EXISTS(SELECT 1 FROM commit_views newer WHERE newer.scope=c.scope AND newer.id=c.id AND newer.generation>c.generation AND newer.generation<=?) AND NOT EXISTS(SELECT 1 FROM barriers b WHERE b.scope=c.scope AND b.id=c.id) ORDER BY r.id`);
+        for (const row of query.all(scope, ...requested, at, at)) {
+          const entry = row['entry'] === null ? null : JSON.parse(String(row['entry'])) as MemoryEntry;
+          if (entry === null || !this.legacyEntryBlocked(scope, entry)) objects.push({ scope, id: String(row['id']), revision: String(row['revision']), entry });
+        }
+      }
+      this.db.exec('COMMIT');
+      return { generation: at, objects };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   revision(scope: string, id: string, revision: string): MemoryEntry | undefined {
     this.reconcileBeforeRead();
     this.restoreRevision(scope, id, revision);

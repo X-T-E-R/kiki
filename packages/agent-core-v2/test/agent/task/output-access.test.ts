@@ -197,6 +197,17 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     expect(snapshot.fullOutputAvailable).toBe(true);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('uses the in-memory verified receipt without rereading task metadata', async () => {
+    const taskId = registerProcess(manager, immediateProcess(0, 'verified output\n'), 'echo', 'verified');
+
+    await manager.wait(taskId);
+    const readTask = vi.spyOn(persistence, 'readTask');
+    const snapshot = await manager.getOutputSnapshot(taskId, 1_000);
+
+    expect(snapshot.fullOutputAvailable).toBe(true);
+    expect(readTask).not.toHaveBeenCalled();
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('getOutputSnapshot truncates large persisted output to a tail preview with paging metadata', async () => {
     const head = 'HEAD-MARKER\n';
     const tail = 'TAIL-MARKER\n';

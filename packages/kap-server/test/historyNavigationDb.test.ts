@@ -301,7 +301,7 @@ describe('history navigation SQLite repository', () => {
       try {
         upgraded = await HistoryNavigationDb.open(path);
         expect(upgraded.db.prepare('PRAGMA application_id').get()).toEqual({ application_id: APPLICATION_ID });
-        expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 });
+        expect(upgraded.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
         expect(upgraded.db.prepare('SELECT count(*) AS count FROM rows').get()).toEqual({ count: 0 });
         expect(upgraded.db.prepare('SELECT count(*) AS count FROM state').get()).toEqual({ count: 0 });
         expect(upgraded.db.prepare('SELECT count(*) AS count FROM manifest').get()).toEqual({ count: 0 });
@@ -399,7 +399,7 @@ describe('history navigation schema recovery', () => {
       reader.exec('COMMIT');
       reader.close();
       const reopened = await lazy.ready();
-      expect(reopened.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 });
+      expect(reopened.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
       expect(reopened.readManifest('absent')).toBeUndefined();
       expect(reopened.db.prepare('SELECT count(*) AS n FROM scopes').get()).toEqual({ n: 0 });
     } finally {
@@ -435,5 +435,38 @@ describe('history navigation schema recovery', () => {
       const third = a.projected('3'.repeat(64));
       expect(third.readManifest(scope(third))?.generation).toBe('3');
     } finally { a.close(); b.close(); await rm(home, { recursive: true, force: true }); }
+  });
+});
+
+
+describe('history navigation schema 4 postings', () => {
+  it('transactionally rebuilds schema 3 boundaries, manifests and canonical spans and vacuums old bodies', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-schema-three-'));
+    const path = join(home, 'navigation.sqlite');
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=3;
+      CREATE TABLE scopes(id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,projection TEXT NOT NULL,workspace TEXT NOT NULL,session TEXT NOT NULL,agent TEXT NOT NULL) STRICT;
+      CREATE TABLE rows(scope INTEGER NOT NULL REFERENCES scopes(id),key TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,key)) STRICT, WITHOUT ROWID;
+      CREATE TABLE canonical_spans(scope INTEGER NOT NULL REFERENCES scopes(id),turn_id TEXT NOT NULL,ordinal INTEGER NOT NULL,start_byte INTEGER NOT NULL,end_byte INTEGER NOT NULL,digest BLOB NOT NULL,PRIMARY KEY(scope,turn_id,ordinal)) STRICT, WITHOUT ROWID;
+      CREATE TABLE turn_boundaries(scope INTEGER NOT NULL REFERENCES scopes(id),turn_id INTEGER NOT NULL,start_byte INTEGER NOT NULL,end_byte INTEGER NOT NULL,PRIMARY KEY(scope,turn_id)) STRICT, WITHOUT ROWID;
+      CREATE TABLE boundary_manifest(scope INTEGER PRIMARY KEY REFERENCES scopes(id),watermark INTEGER NOT NULL,proof TEXT NOT NULL) STRICT;
+      INSERT INTO scopes VALUES(1,'legacy','','ws','s','main');
+      INSERT INTO turn_boundaries VALUES(1,4,0,100);
+      INSERT INTO boundary_manifest VALUES(1,100,'{}');`);
+    legacy.prepare('INSERT INTO rows VALUES(1,?,?)').run('old', 'x'.repeat(6 << 20));
+    legacy.close();
+    const before = (await stat(path)).size;
+    try {
+      const db = await HistoryNavigationDb.open(path);
+      try {
+        expect(db.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
+        for (const table of ['scopes', 'rows', 'canonical_spans', 'turn_boundaries', 'boundary_manifest', 'search_documents']) {
+          expect(db.db.prepare(`SELECT count(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+        }
+        expect(db.db.prepare("SELECT name FROM sqlite_master WHERE name IN ('nav_terms','nav_trigrams') ORDER BY name").all())
+          .toEqual([{ name: 'nav_terms' }, { name: 'nav_trigrams' }]);
+      } finally { db.close(); }
+      expect((await stat(path)).size).toBeLessThan(before / 4);
+    } finally { await rm(home, { recursive: true, force: true }); }
   });
 });

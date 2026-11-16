@@ -29,7 +29,7 @@ import { discoverHistoryDirectoryTail, historyDirectoryWindowGuard, historyDirec
 export const HISTORY_NAV_COLLECTION = 'history_navigation_v1';
 export const HISTORY_NAV_SCAN_BYTES = 8 << 20;
 export const HISTORY_NAV_SCAN_RECORDS = 50_000;
-const HISTORY_NAV_CHUNK_BYTES = 64 << 10;
+const HISTORY_NAV_CHUNK_BYTES = 1 << 20;
 const HISTORY_NAV_MAX_LINE_BYTES = 32 << 20;
 const MAX_SCANNERS = 2;
 const MAX_QUEUED_SCANS = 8;
@@ -382,7 +382,10 @@ export class HistoryLocatorEngine {
     } finally {
       if (abort !== undefined) signal?.removeEventListener('abort', abort);
       flight.waiters -= 1;
-      if (flight.waiters === 0 && !flight.settled) flight.controller.abort();
+      if (flight.waiters === 0 && !flight.settled) {
+        flight.controller.abort();
+        await flight.promise.catch(() => undefined);
+      }
     }
   }
 
@@ -694,7 +697,10 @@ export class HistoryLocatorEngine {
             toolCount: old?.active ? old.toolCount ?? 0 : 0,
             anchor: old?.active && old.contentHash === row.contentHash ||
               row.part === undefined && old?.active ? old.anchor : row.anchor });
-          if (turn.prompt !== undefined) addHit(old?.active && old.contentHash === row.contentHash ? old : row, turn.prompt);
+          if (turn.prompt !== undefined) {
+            stateDb?.indexText(key, row, turn.prompt);
+            addHit(old?.active && old.contentHash === row.contentHash ? old : row, turn.prompt);
+          }
         } else if (operation.op === 'step.upsert') {
           const turn = Number(operation.turnId.slice(1));
           const step = `t${turn}.${operation.step.ordinal}`;
@@ -746,6 +752,7 @@ export class HistoryLocatorEngine {
               continue;
             }
             touched.set(rowId, { ...row, position: old?.active ? old.position ?? row.position : row.position });
+            if (part.part !== 'input') stateDb?.indexText(rowId, row, part.text);
             const parentKey = rowKey({ ...row, kind: 'turn', step: undefined, frame: undefined });
             const parent = await load(parentKey);
             if (parent !== undefined) {
@@ -1069,8 +1076,10 @@ export class HistoryLocatorEngine {
     const previous = this.scanQueue.tail;
     let release!: () => void;
     this.scanQueue.tail = new Promise<void>(resolve => { release = resolve; });
+    let entered = false;
     try {
-      await previous;
+      await (signal === undefined ? previous : abortable(previous, signal));
+      entered = true;
       signal?.throwIfAborted();
       const db = await (this.store as LazyHistoryNavigationDb).ready();
       const scope = `${workspace}\0${session}\0${agent}`;
@@ -1090,13 +1099,24 @@ export class HistoryLocatorEngine {
       if (projected === undefined) return undefined;
       const row = await projected.navigation.row(workspace, session, agent, step === undefined ? 'turn' : 'step', turn, step);
       return row?.active === true ? { status: 'ok', ref: projected.navigation.ref(row) } : { status: 'not_found' };
-    } finally { this.scanQueue.queued--; release(); }
+    } finally {
+      this.scanQueue.queued--;
+      if (entered) release(); else void previous.then(release);
+    }
   }
 
   async lookupDirectory(workspace: string, session: string, agent: string, turn: number, step?: string,
     preparation?: HistoryPreparation, signal?: AbortSignal): Promise<HistoryDirectoryLookup> {
-    const indexed = await this.indexedTurnDirectory(workspace, session, agent, turn, step, signal);
-    if (indexed !== undefined) return indexed;
+    try {
+    if (preparation !== undefined) {
+      const location = await this.transcript.historyWireLocation(session, agent);
+      const incarnation = location === undefined ? undefined : await historySourceIncarnation(location.wirePath);
+      if (incarnation === undefined) return { status: 'source_missing' };
+      if (preparation.incarnation !== incarnation) return { status: 'stale_ref' };
+    } else {
+      const indexed = await this.indexedTurnDirectory(workspace, session, agent, turn, step, signal);
+      if (indexed !== undefined) return indexed;
+    }
     const scan = await this.scan(session, agent, signal);
     if (scan === undefined) return { status: 'source_missing' };
     if (preparation !== undefined && (preparation.incarnation !== scan.incarnation ||
@@ -1114,6 +1134,11 @@ export class HistoryLocatorEngine {
     if (row.position === undefined) return { status: 'navigation_unavailable', reason: 'position_missing' };
     const checked = await this.read(this.ref(row), signal);
     return checked.status === 'ok' ? { status: 'ok', ref: this.ref(row) } : checked;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'source_missing' };
+      throw error;
+    }
   }
 
   async directoryRef(workspace: string, session: string, agent: string,
