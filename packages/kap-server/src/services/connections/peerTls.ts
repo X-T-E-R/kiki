@@ -1,4 +1,5 @@
 import { Agent, request } from 'node:https';
+import type { ClientRequest } from 'node:http';
 import { connect, type ConnectionOptions, type TLSSocket } from 'node:tls';
 import { Readable } from 'node:stream';
 import { AdmissionError } from './admission';
@@ -6,6 +7,7 @@ import { spkiFingerprint } from './tlsIdentity';
 
 const IDLE_AGENT_TTL_MS = 120_000;
 const MAX_POOLED_AGENTS = 64;
+const REQUEST_SIGNAL = Symbol('kiki.peerTls.requestSignal');
 
 interface PooledAgentEntry {
   agent: Agent;
@@ -16,6 +18,7 @@ interface PooledAgentEntry {
 
 const pooledAgents = new Map<string, PooledAgentEntry>();
 const pendingHandshakes = new WeakMap<Agent, Set<TLSSocket>>();
+const requestSignals = new WeakMap<ClientRequest, AbortSignal>();
 let sweepTimer: ReturnType<typeof setInterval> | undefined;
 
 function normalizeFingerprint(fingerprint: string): string {
@@ -27,6 +30,7 @@ function poolKey(origin: string, fingerprint: string): string {
 }
 
 function agentHasActiveSockets(agent: Agent): boolean {
+  if ((pendingHandshakes.get(agent)?.size ?? 0) > 0) return true;
   for (const sockets of Object.values(agent.sockets)) {
     if ((sockets?.length ?? 0) > 0) return true;
   }
@@ -36,11 +40,23 @@ function agentHasActiveSockets(agent: Agent): boolean {
   return false;
 }
 
+function destroyPinnedAgent(agent: Agent): void {
+  const handshakes = pendingHandshakes.get(agent);
+  if (handshakes !== undefined) {
+    const active = [...handshakes];
+    handshakes.clear();
+    for (const socket of active) {
+      socket.destroy(new Error('TLS connection pool closed'));
+    }
+  }
+  agent.destroy();
+}
+
 function sweepIdleAgents(now = Date.now()): void {
   for (const [key, entry] of pooledAgents) {
     if (now - entry.lastUsedAt < IDLE_AGENT_TTL_MS || agentHasActiveSockets(entry.agent)) continue;
     pooledAgents.delete(key);
-    entry.agent.destroy();
+    destroyPinnedAgent(entry.agent);
   }
   if (pooledAgents.size === 0 && sweepTimer !== undefined) {
     clearInterval(sweepTimer);
@@ -54,6 +70,11 @@ function ensureSweepTimer(): void {
   sweepTimer.unref();
 }
 
+type InternalAgent = Agent & {
+  addRequest(req: ClientRequest, options: Record<PropertyKey, unknown>, ...rest: unknown[]): void;
+  createSocket(req: ClientRequest, options: Record<PropertyKey, unknown>, cb: (err: Error | null, socket?: TLSSocket) => void): void;
+};
+
 function attachVerifiedConnection(
   agent: Agent,
   fingerprint: string | undefined,
@@ -61,7 +82,26 @@ function attachVerifiedConnection(
   signal: AbortSignal | undefined,
   keepAlive: boolean,
 ): void {
+  const internal = agent as InternalAgent;
+  const baseAddRequest = internal.addRequest.bind(internal);
+  internal.addRequest = (req, options, ...rest) => {
+    if (options !== null && typeof options === 'object' && REQUEST_SIGNAL in options) {
+      const candidate = options[REQUEST_SIGNAL];
+      delete options[REQUEST_SIGNAL];
+      if (candidate instanceof AbortSignal) requestSignals.set(req, candidate);
+    }
+    baseAddRequest(req, options, ...rest);
+  };
+  const baseCreateSocket = internal.createSocket.bind(internal);
+  internal.createSocket = (req, options, cb) => {
+    const reqSignal = requestSignals.get(req);
+    const nextOptions = reqSignal === undefined ? options : { ...options, [REQUEST_SIGNAL]: reqSignal };
+    baseCreateSocket(req, nextOptions, cb);
+  };
   agent.createConnection = (options, callback) => {
+    const optionBag = options as Record<PropertyKey, unknown>;
+    const requestSignal = optionBag[REQUEST_SIGNAL];
+    delete optionBag[REQUEST_SIGNAL];
     const socket: TLSSocket = connect({ ...options, rejectUnauthorized: false } as ConnectionOptions);
     socket.setNoDelay(true);
     if (keepAlive) socket.setKeepAlive(true, 15_000);
@@ -71,7 +111,11 @@ function attachVerifiedConnection(
       pendingHandshakes.set(agent, handshakes);
     }
     handshakes.add(socket);
-    const deadline = signal === undefined ? AbortSignal.timeout(15_000) : AbortSignal.any([AbortSignal.timeout(15_000), signal]);
+    const callerSignal = requestSignal instanceof AbortSignal ? requestSignal : undefined;
+    const signals: AbortSignal[] = [AbortSignal.timeout(15_000)];
+    if (signal !== undefined) signals.push(signal);
+    if (callerSignal !== undefined) signals.push(callerSignal);
+    const deadline = signals.length === 1 ? signals[0]! : AbortSignal.any(signals);
     const abort = () => socket.destroy(deadline.reason instanceof Error ? deadline.reason : new Error('TLS handshake cancelled'));
     const closed = () => fail(new Error('TLS handshake closed'));
     const cleanup = () => {
@@ -140,7 +184,7 @@ export function pooledPinnedAgent(endpoint: string | URL, fingerprint: string): 
     if (oldestKey !== undefined) {
       const evicted = pooledAgents.get(oldestKey);
       pooledAgents.delete(oldestKey);
-      evicted?.agent.destroy();
+      if (evicted !== undefined) destroyPinnedAgent(evicted.agent);
     }
   }
   const agent = new Agent({
@@ -180,7 +224,7 @@ export function evictPinnedAgent(endpoint?: string | URL, fingerprint?: string):
     if (targetOrigin !== undefined && entry.origin !== targetOrigin) continue;
     if (normalized !== undefined && entry.fingerprint !== normalized) continue;
     pooledAgents.delete(key);
-    entry.agent.destroy();
+    destroyPinnedAgent(entry.agent);
   }
 }
 
@@ -191,7 +235,7 @@ export function closePinnedAgents(): void {
   }
   for (const [key, entry] of pooledAgents) {
     pooledAgents.delete(key);
-    entry.agent.destroy();
+    destroyPinnedAgent(entry.agent);
   }
 }
 
@@ -218,6 +262,7 @@ function dispatchPinnedRequest(url: string | URL, init: RequestInit, agent: Agen
     }
     let responded = false;
     let settled = false;
+    const handshakeController = callerSignal === undefined ? undefined : new AbortController();
     const finish = (outcome: { response: Response } | { retryableReusedError: Error } | { error: unknown }) => {
       if (settled) return;
       settled = true;
@@ -231,7 +276,8 @@ function dispatchPinnedRequest(url: string | URL, init: RequestInit, agent: Agen
         method: init.method,
         headers: Object.fromEntries(new Headers(init.headers)),
         agent,
-      },
+        [REQUEST_SIGNAL]: handshakeController?.signal,
+      } as Parameters<typeof request>[1],
       (res) => {
         responded = true;
         const headers = new Headers();
@@ -248,22 +294,11 @@ function dispatchPinnedRequest(url: string | URL, init: RequestInit, agent: Agen
     );
     const onCallerAbort = () => {
       const reason = callerSignal?.reason instanceof Error ? callerSignal.reason : new Error('Request aborted');
-      const hadAssignedSocket = req.socket !== null && req.socket !== undefined;
+      handshakeController?.abort(reason);
       req.destroy(reason);
-      if (!hadAssignedSocket) {
-        const handshakes = pendingHandshakes.get(agent);
-        if (handshakes !== undefined && handshakes.size > 0) {
-          const iter = handshakes.values().next();
-          if (!iter.done) {
-            handshakes.delete(iter.value);
-            iter.value.destroy(reason);
-          }
-        }
-      }
       finish({ error: reason });
     };
-    callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
-    req.once('error', (error) => {
+    req.on('error', (error) => {
       if (callerSignal?.aborted) {
         finish({ error: callerSignal.reason instanceof Error ? callerSignal.reason : error });
         return;
@@ -274,6 +309,7 @@ function dispatchPinnedRequest(url: string | URL, init: RequestInit, agent: Agen
       }
       finish({ error });
     });
+    callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
     if (init.body === undefined || init.body === null) req.end();
     else if (typeof init.body === 'string' || Buffer.isBuffer(init.body) || init.body instanceof Uint8Array) req.end(init.body);
     else {

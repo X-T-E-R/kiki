@@ -9,11 +9,11 @@ import { createServer as createHttpsServer } from 'node:https';
 import { X509Certificate } from 'node:crypto';
 import { createServer as createNetServer, createConnection, type Socket } from 'node:net';
 import type { FastifyInstance } from 'fastify';
-import { peerFetch } from '../src/services/connections/peerTls';
+import { evictPinnedAgent, peerFetch } from '../src/services/connections/peerTls';
 import { loadPeerTlsIdentity, spkiFingerprint } from '../src/services/connections/tlsIdentity';
 import { pairOutbound, PeerListeners } from '../src/services/connections/pairing';
 import { formatPairingUri, matchConnectionOperation, parsePairingUri } from '@kiki/protocol';
-import { ConnectionAdmission } from '../src/services/connections/admission';
+import { AdmissionError, ConnectionAdmission } from '../src/services/connections/admission';
 import { ConnectionAudience, isPeerProcedureAllowed } from '../src/services/connections/audience';
 import { RemoteConnectionManager, validateEndpoint } from '../src/services/connections/manager';
 import { directEndpoints, PairingRateLimit } from '../src/services/connections/pairing';
@@ -444,6 +444,189 @@ describe('paired peer surface parity and host boundaries', () => {
         expect(recovered.status).toBe(200);
         await recovered.json();
         expect(manager.get(paired.id).state).toBe('online');
+      } finally { lease.release(); }
+    } finally { await manager.close(); await admission.close(); peer.closeAllConnections(); await new Promise<void>((resolve) => peer.close(() => resolve())); }
+  });
+
+  it('isolates concurrent pooled TLS handshakes on per-request abort and cleans up pending handshakes on eviction', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-tls-concurrent-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const fingerprint = spkiFingerprint(new X509Certificate(tls.cert).publicKey);
+    let closeResponseSocket = false;
+    let holdResponses = false;
+    const heldResponses: Array<() => void> = [];
+    const tlsServer = createHttpsServer(tls, (_req, res) => {
+      const send = () => {
+        if (closeResponseSocket) res.setHeader('connection', 'close');
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ ok: true }));
+      };
+      if (holdResponses) heldResponses.push(send);
+      else send();
+    });
+    tlsServer.listen(0, '127.0.0.1'); await once(tlsServer, 'listening');
+    const tlsAddress = tlsServer.address(); if (tlsAddress === null || typeof tlsAddress === 'string') throw new Error('No TLS address');
+
+    const accepted: Array<{ socket: Socket; closed: boolean; releaseToTls: () => void }> = [];
+    const gate = createNetServer((inbound) => {
+      const buffered: Buffer[] = [];
+      let bridged = false;
+      const onData = (chunk: Buffer) => { buffered.push(chunk); };
+      inbound.on('data', onData);
+      const entry = {
+        socket: inbound,
+        closed: false,
+        releaseToTls: () => {
+          if (bridged || entry.closed) return;
+          bridged = true;
+          inbound.off('data', onData);
+          const upstream = createConnection({ host: '127.0.0.1', port: tlsAddress.port }, () => {
+            for (const chunk of buffered.splice(0)) upstream.write(chunk);
+            inbound.pipe(upstream);
+            upstream.pipe(inbound);
+          });
+          upstream.on('error', () => inbound.destroy());
+          inbound.on('error', () => upstream.destroy());
+        },
+      };
+      inbound.once('close', () => { entry.closed = true; });
+      accepted.push(entry);
+    });
+    gate.listen(0, '127.0.0.1'); await once(gate, 'listening');
+    const gateAddress = gate.address(); if (gateAddress === null || typeof gateAddress === 'string') throw new Error('No gate address');
+    const endpoint = `https://127.0.0.1:${gateAddress.port}/api/meta`;
+
+    try {
+      const pending1 = peerFetch(endpoint, {}, fingerprint);
+      await vi.waitFor(() => expect(accepted.length).toBe(1));
+
+      const controller2 = new AbortController();
+      const pending2 = peerFetch(endpoint, { signal: controller2.signal }, fingerprint);
+      await vi.waitFor(() => expect(accepted.length).toBe(2));
+
+      controller2.abort(new Error('cancel second handshake only'));
+      await expect(pending2).rejects.toThrow('cancel second handshake only');
+      await vi.waitFor(() => expect(accepted[1]?.closed).toBe(true));
+      expect(accepted[0]?.closed).toBe(false);
+
+      accepted[0]!.releaseToTls();
+      const response1 = await pending1;
+      expect(response1.status).toBe(200);
+      expect(await response1.json()).toEqual({ ok: true });
+
+      evictPinnedAgent(endpoint, fingerprint);
+      const pending3 = peerFetch(endpoint, {}, fingerprint);
+      const pending3Failure = expect(pending3).rejects.toThrow('TLS connection pool closed');
+      await vi.waitFor(() => expect(accepted.length).toBe(3));
+      evictPinnedAgent(endpoint, fingerprint);
+      await vi.waitFor(() => expect(accepted[2]?.closed).toBe(true));
+      await pending3Failure;
+
+      closeResponseSocket = true;
+      holdResponses = true;
+      const startIndex = accepted.length;
+      const controllers = Array.from({ length: 16 }, () => new AbortController());
+      const activeBatch = controllers.map((c) => peerFetch(endpoint, { signal: c.signal }, fingerprint));
+      for (const p of activeBatch) void p.catch(() => undefined);
+      await vi.waitFor(() => expect(accepted.length - startIndex).toBe(16));
+      for (let idx = startIndex; idx < startIndex + 16; idx += 1) {
+        accepted[idx]!.releaseToTls();
+      }
+      await vi.waitFor(() => expect(heldResponses.length).toBe(16));
+
+      const controller17 = new AbortController();
+      const queued17 = peerFetch(endpoint, { signal: controller17.signal }, fingerprint);
+      void queued17.catch(() => undefined);
+      expect(accepted.length - startIndex).toBe(16);
+
+      heldResponses.shift()!();
+      const firstBatchRes = await activeBatch[0]!;
+      expect(firstBatchRes.status).toBe(200);
+      await firstBatchRes.json();
+      controllers[0]!.abort(new AdmissionError(409, 'connection_released'));
+
+      await vi.waitFor(() => expect(accepted.length - startIndex).toBe(17));
+      holdResponses = false;
+      while (heldResponses.length > 0) heldResponses.shift()!();
+      accepted[startIndex + 16]!.releaseToTls();
+
+      const restResponses = await Promise.all([...activeBatch.slice(1), queued17]);
+      for (const res of restResponses) {
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true });
+      }
+    } finally {
+      evictPinnedAgent(endpoint, fingerprint);
+      for (const entry of accepted) entry.socket.destroy();
+      await new Promise<void>((resolve) => gate.close(() => resolve()));
+      tlsServer.closeAllConnections();
+      await new Promise<void>((resolve) => tlsServer.close(() => resolve()));
+    }
+  });
+
+  it('counts at most one transport strike per failed forward or summary poll cycle when handshake cache expires', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-single-strike-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const admission = new ConnectionAdmission(join(home, 'target'), identity('target'));
+    const manager = new RemoteConnectionManager(join(home, 'source'), identity('source'));
+    let dropAll = false;
+    const peer = createHttpsServer(tls, (req, res) => {
+      if (dropAll) {
+        req.socket.destroy();
+        return;
+      }
+      void (async () => {
+        if (req.url === '/api/remote-connections/pair/claim') {
+          let body = ''; for await (const part of req) body += part;
+          const input = JSON.parse(body);
+          const claim = await admission.claimPair(input.code, input.source, input.sourceLabel);
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { target: claim.target, targetLabel: 'Target', peerToken: claim.peerToken, grantId: claim.grantId, revision: claim.revision } }));
+          return;
+        }
+        if (req.url === '/api/remote-connections/handshake') {
+          const proof = admission.inspectHandshakeProof({ nonce: String(req.headers['x-kiki-handshake-nonce']), proof: String(req.headers['x-kiki-handshake-proof']), grantId: String(req.headers['x-kiki-handshake-grant']) });
+          if (proof !== undefined) { res.setHeader('x-kiki-handshake-status', proof.status); res.setHeader('x-kiki-handshake-proof', proof.proof); }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { identity: admission.identity, serverId: 'peer', inboundEnabled: true } }));
+          return;
+        }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ code: 0, data: { online: true, busy_sessions: 0, needs_you_sessions: 0, revision: 'rev-1', as_of: Date.now() } }));
+      })().catch((error) => res.destroy(error));
+    });
+    peer.listen(0, '127.0.0.1'); await once(peer, 'listening');
+    const address = peer.address(); if (address === null || typeof address === 'string') throw new Error('No peer address');
+    const endpoint = `https://127.0.0.1:${address.port}`;
+    try {
+      const paired = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: true, requestBridge: false }, undefined);
+      const lease = manager.lease(paired.id);
+      try {
+        const okRes = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+        expect(okRes.status).toBe(200);
+        await okRes.json();
+
+        const baseNow = Date.now();
+        let clockOffset = 65_000;
+        const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => baseNow + clockOffset);
+        try {
+          const cancelled = new AbortController();
+          cancelled.abort(new Error('caller cancelled'));
+          await expect(manager.forward(paired.id, { operation: 'meta' }, cancelled.signal)).rejects.toThrow('caller cancelled');
+          expect(manager.get(paired.id).state).toBe('online');
+
+          dropAll = true;
+          await manager.pollSummaries();
+          expect(manager.get(paired.id).state).toBe('online');
+
+          dropAll = false;
+          clockOffset += 10_000;
+          await manager.pollSummaries();
+          expect(manager.get(paired.id).state).toBe('online');
+          expect(manager.get(paired.id).summary?.stale).toBe(false);
+        } finally {
+          nowSpy.mockRestore();
+        }
       } finally { lease.release(); }
     } finally { await manager.close(); await admission.close(); peer.closeAllConnections(); await new Promise<void>((resolve) => peer.close(() => resolve())); }
   });

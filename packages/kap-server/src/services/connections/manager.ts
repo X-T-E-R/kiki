@@ -58,8 +58,7 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 function isImmediateFailureError(error: unknown): boolean {
-  if (!(error instanceof AdmissionError)) return false;
-  return error.status === 401 || ['identity_changed', 'inbound_disabled', 'connection_not_approved', 'handshake_failed'].includes(error.reason);
+  return error instanceof AdmissionError;
 }
 export class PairingBridgeRetirementError extends AdmissionError {
   constructor() { super(500, 'connection_stored_bridge_retirement_failed'); }
@@ -94,6 +93,7 @@ export class RemoteConnectionManager {
   private readonly verified = new Map<string, VerifiedGuiSession>();
   private readonly proveFlights = new Map<string, Promise<Credential>>();
   private readonly failureStrikes = new Map<string, number>();
+  private readonly countedStrikeErrors = new WeakSet<object>();
   private readonly healthProbes = new Map<string, Promise<void>>();
   private retirePairingBridges?: (id: string, grantId: string) => Promise<void>;
   credentialEpoch(id: string): number { return this.epochs.get(id) ?? 0; }
@@ -122,9 +122,9 @@ export class RemoteConnectionManager {
           if (!this.records.includes(record) || this.replacing.has(record.id)) return;
           const epoch = this.credentialEpoch(record.id);
           this.lastSummaryAttempt.set(record.id, Date.now());
+          let lease = this.summaryLeases.get(record.id);
+          if (lease === undefined || lease.signal.aborted) { lease = this.lease(record.id); this.summaryLeases.set(record.id, lease); }
           try {
-            let lease = this.summaryLeases.get(record.id);
-            if (lease === undefined || lease.signal.aborted) { lease = this.lease(record.id); this.summaryLeases.set(record.id, lease); }
             const response = await this.forward(record.id, { operation: 'spaceSummary' }, lease.signal);
             const envelope = await readBoundedJsonBody(response, 8192) as { code: number; data: unknown };
             if (envelope.code !== 0) throw new AdmissionError(502, 'summary_unavailable');
@@ -133,7 +133,9 @@ export class RemoteConnectionManager {
             record.summary = { value: spaceSummarySchema.parse(envelope.data), lastSeen: Date.now(), stale: false };
             this.notePeerSuccess(record.id, epoch);
             await this.change(async () => undefined);
-          } catch (error) { this.recordTransportStrike(record.id, error, epoch); }
+          } catch (error) {
+            if (!lease.signal.aborted) this.recordTransportStrike(record.id, error, epoch);
+          }
         }));
       }
     } finally { this.summaryPolling = false; }
@@ -385,6 +387,10 @@ export class RemoteConnectionManager {
       this.failed(id, error, epoch);
       return;
     }
+    if (typeof error === 'object' && error !== null) {
+      if (this.countedStrikeErrors.has(error)) return;
+      this.countedStrikeErrors.add(error);
+    }
     const strikes = (this.failureStrikes.get(id) ?? 0) + 1;
     this.failureStrikes.set(id, strikes);
     if (strikes >= TRANSPORT_OFFLINE_STRIKES) {
@@ -415,7 +421,7 @@ export class RemoteConnectionManager {
     })();
     this.healthProbes.set(id, probe);
   }
-  async connect(id: string, signal: AbortSignal, forceProve = false, deadlineSignal = signal): Promise<{ record: RemoteConnection; credential: Credential; transport: ConnectionTransport; fromCache: boolean }> {
+  async connect(id: string, signal: AbortSignal, forceProve = false, deadlineSignal = signal, recordStrike = true): Promise<{ record: RemoteConnection; credential: Credential; transport: ConnectionTransport; fromCache: boolean }> {
     const record = this.get(id); const epoch = this.credentialEpoch(id);
     this.requireEpoch(id, epoch);
     if (!record.enabled || record.state === 'identity_changed') throw new AdmissionError(409, record.lastError ?? 'connection_paused');
@@ -461,8 +467,8 @@ export class RemoteConnectionManager {
       return { record, credential, transport, fromCache: false };
     } catch (error) {
       if (!signal.aborted) {
-        this.verified.delete(id);
-        this.recordTransportStrike(id, error, epoch);
+        if (!deadlineSignal.aborted || isImmediateFailureError(error)) this.verified.delete(id);
+        if (recordStrike && !deadlineSignal.aborted) this.recordTransportStrike(id, error, epoch);
       }
       throw error;
     }
@@ -496,7 +502,7 @@ export class RemoteConnectionManager {
     const method = CONNECTION_OPERATIONS[operation][0];
     const serializedBody = rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body));
     const executeAttempt = async (forceProve: boolean): Promise<Response> => {
-      const { record, transport, credential, fromCache } = await this.connect(id, signal, forceProve, callSignal);
+      const { record, transport, credential, fromCache } = await this.connect(id, signal, forceProve, callSignal, false);
       this.requireEpoch(id, epoch); callSignal.throwIfAborted();
       const url = new URL(connectionOperationPath(operation, input.params), transport.endpoint);
       for (const [key, value] of Object.entries(input.query ?? {})) for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(key, String(item));
