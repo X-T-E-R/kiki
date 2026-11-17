@@ -20,8 +20,8 @@ export const TaskWaitInputSchema = z.object({
     .describe(
       'The task to wait for: a shell, subagent or other background task. Omit it to wait for the first running task to finish; as the main agent outside goal mode, subagent tasks are left out of that.',
     ),
-  sync_wait: z.boolean().optional().describe('Ignored. Accepted so that older calls still validate.'),
-  sync_reason: z.string().optional().describe('Ignored. Accepted so that older calls still validate.'),
+  sync_wait: z.boolean().optional().describe('Explicit same-turn wait for a main agent on a running background subagent outside active goal mode. Requires task_id and a non-empty sync_reason.'),
+  sync_reason: z.string().optional().describe('Concrete same-turn dependency requiring the subagent result before this turn can finish. Routine report collection should use automatic notification instead.'),
 });
 
 export type TaskWaitInput = z.infer<typeof TaskWaitInputSchema>;

@@ -499,11 +499,25 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
         await reconcileWithoutReadingJournal(ctx, background);
         for (const taskId of ['bash-orphan00', 'agent-mismatch', 'agent-noid0001']) {
           expect(background.getTask(taskId)).toMatchObject({ status: 'lost' });
-          expect(background.getTask(taskId)?.stopReason).toContain('external execution outcome is unconfirmed');
+          expect(background.getTask(taskId)?.stopReason).toContain(taskId === 'bash-orphan00'
+            ? 'external execution outcome is unconfirmed' : 'Interrupted when the host process restarted');
         }
         expect((await background.getOutputSnapshot('agent-mismatch', 4096)).preview).not.toContain('not this agent');
         expect(run).not.toHaveBeenCalled();
         expect(ctx.get(IAgentLifecycleService).list()).toHaveLength(agentsBefore);
+      } finally {
+        run.mockRestore();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('preserves the unconfirmed external executor diagnostic without replaying execution', async () => {
+      await persistence.writeTask(persistedAgent({ executorId: 'example-executor', executorProtocol: 'external' }));
+      const run = vi.spyOn(ctx.get(IAgentExecutionService), 'run');
+      try {
+        await reconcileWithoutReadingJournal(ctx, background);
+        expect(background.getTask('agent-track001')?.stopReason).toContain('external execution outcome is unconfirmed');
+        expect(background.getTask('agent-track001')?.stopReason).not.toContain('Interrupted when the host process restarted');
+        expect(run).not.toHaveBeenCalled();
       } finally {
         run.mockRestore();
       }
@@ -535,7 +549,7 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
         expect(outcomeReadFailed).toBe(true);
         expect(readJournal).not.toHaveBeenCalled();
         expect(background.getTask('agent-track001')).toMatchObject({ status: 'lost' });
-        expect(background.getTask('agent-track001')?.stopReason).toContain('external execution outcome is unconfirmed');
+        expect(background.getTask('agent-track001')?.stopReason).toContain('Interrupted when the host process restarted');
         expect((await background.getOutputSnapshot('agent-track001', 4096)).preview).not.toContain('unread receipt');
       } finally {
         metadata.read = original;

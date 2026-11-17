@@ -24,6 +24,7 @@ import {
   IAgentLifecycleService,
   IAgentProfileService,
   IAgentUsageService,
+  IBotService,
   IConfigService,
   IPersonaStore,
   IAppendLogStore,
@@ -1628,6 +1629,58 @@ describe('server-v2 /api/sessions', () => {
     expect(body.data.items[0]?.agent_config).toMatchObject({ persona: { id: 'summary-persona' } });
     expect(body.data.items[1]?.agent_config).toMatchObject({ persona: { id: 'legacy-persona' } });
     expect(read).not.toHaveBeenCalled();
+  });
+
+  it('filters personas from live profiles or indexed metadata without replaying agent wires', async () => {
+    const core = server!.core.accessor;
+    const handle = await core.get(ISessionManager).create({ sessionId: 'live-persona-filter', workDir: home! });
+    await handle.accessor.get(IAgentLifecycleService).create({ agentId: MAIN_AGENT_ID });
+    const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
+    const rows: SessionSummary[] = [
+      { id: handle.id, workspaceId, cwd: home, personaId: 'indexed-persona', createdAt: 1, updatedAt: 3000, archived: false },
+      { id: 'cold-persona-filter', workspaceId, cwd: home, personaId: 'target-persona', createdAt: 1, updatedAt: 2000, archived: false },
+      { id: 'legacy-persona-filter', workspaceId, cwd: home, custom: { bot_persona_id: 'target-persona' }, createdAt: 1, updatedAt: 1000, archived: false },
+    ];
+    const index = core.get(ISessionIndex);
+    vi.spyOn(index, 'listRecent').mockResolvedValue({ items: rows, nextCursor: undefined });
+    const read = vi.spyOn(core.get(IAppendLogStore), 'read').mockImplementation(() => {
+      throw new Error('Persona filtering must not replay an agent wire');
+    });
+    const belongs = vi.spyOn(core.get(IBotService), 'sessionBelongsToPersona').mockImplementation(async () => {
+      throw new Error('Persona filtering must not call BotService');
+    });
+    const { body } = await getJson<PageWire>('/api/sessions?persona=target-persona&page_size=50');
+    expect(body.code).toBe(0);
+    expect(body.data.items.map((row) => row.id)).toEqual(['cold-persona-filter', 'legacy-persona-filter']);
+    expect(read).not.toHaveBeenCalled();
+    expect(belongs).not.toHaveBeenCalled();
+  });
+
+  it('batches persona-filtered list scans over large cold indexes', async () => {
+    const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
+    const rows: SessionSummary[] = Array.from({ length: 2000 }, (_, index) => ({
+      id: index === 1999 ? 'persona-batch-target' : `persona-batch-${index}`,
+      workspaceId: created.workspace_id,
+      cwd: home,
+      custom: index === 1999 ? { bot_persona_id: 'target-persona' } : undefined,
+      createdAt: 1,
+      updatedAt: 2000 - index,
+      archived: false,
+    }));
+    const index = server!.core.accessor.get(ISessionIndex);
+    const list = vi.spyOn(index, 'listRecent').mockImplementation(async (query) => {
+      const start = query.before === undefined ? 0 : rows.findIndex((row) => row.id === query.before) + 1;
+      const items = rows.slice(start, start + (query.limit ?? rows.length));
+      return { items, nextCursor: start + items.length < rows.length ? items.at(-1)?.id : undefined };
+    });
+    const started = performance.now();
+    const { body } = await getJson<PageWire>('/api/sessions?persona=target-persona&page_size=1');
+    const elapsedMs = performance.now() - started;
+    expect(body.code).toBe(0);
+    expect(body.data.items.map((row) => row.id)).toEqual(['persona-batch-target']);
+    expect(list.mock.calls).toHaveLength(4);
+    expect(list.mock.calls.every(([query]) => query.limit === 500)).toBe(true);
+    process.stdout.write(`${JSON.stringify({ personaIndexScan: { sessions: rows.length, pages: list.mock.calls.length, elapsedMs } })}\n`);
   });
 
   it('bounds default list bytes, drains every ID, preserves an after range, and filters busy before paging', async () => {

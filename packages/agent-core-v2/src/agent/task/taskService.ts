@@ -81,6 +81,7 @@ import { resolveAgentTaskConfig } from './configSection';
 import { readCommittedAgentRunOutcomes } from './agentOutcome';
 import { AgentTaskPersistence } from './persist';
 import { runningSubagentStatus } from './runningSubagentStatus';
+import { COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import {
   taskKey,
   TaskNotified,
@@ -318,6 +319,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private restoreRecovery: Promise<void> | undefined;
   private restoreDisposed = false;
   private restorePending = false;
+  private unarchiveRecoveryPending = false;
 
   private fireWorkChange(): void {
     this._onDidChangeWork.fire();
@@ -420,10 +422,23 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       ),
     );
     this._register(this.executionControl.onDidChange((state) => {
-      if (state.phase === 'running' && this.restorePending) {
+      if (state.phase !== 'running') return;
+      if (this.restorePending) {
         void this.resumeRestoration().catch(error => this.log.error('agent task restoration failed', { error }));
+      } else if (this.unarchiveRecoveryPending) {
+        void this.restoreAgentTaskNotifications(true).catch(error => this.log.error('unarchived task notification recovery failed', { error }));
       }
     }));
+    if (this.sessionMetadata !== undefined) {
+      this._register(this.sessionMetadata.onDidChangeMetadata(({ changed }) => {
+        if (!changed.includes('archived') || this.restoreDisposed) return;
+        this.unarchiveRecoveryPending = this.sessionMetadata?.snapshot().archived === false;
+        this.fireWorkChange();
+        if (this.unarchiveRecoveryPending && !this.executionControl.isHeld()) {
+          void this.restoreAgentTaskNotifications(true).catch(error => this.log.error('unarchived task notification recovery failed', { error }));
+        }
+      }));
+    }
   }
 
   private get ghosts(): Map<string, AgentTaskInfo> {
@@ -814,16 +829,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   hasUnfinishedWork(includeRestoration = true): boolean {
     if (includeRestoration && this.restorePending) return true;
+    const notificationsEnabled = this.sessionMetadata?.snapshot().archived !== true;
     for (const entry of this.tasks.values()) {
       if (entry.options.lifetime === 'service') continue;
       if (!TERMINAL_STATUSES.has(entry.status) || entry.cleanupFailure !== undefined) return true;
-      if (entry.visible && this.isDetached(entry) && !this.isTerminalNotificationSuppressed(entry.taskId) &&
+      if (notificationsEnabled && entry.visible && this.isDetached(entry) && !this.isTerminalNotificationSuppressed(entry.taskId) &&
         !this.deliveredNotificationKeys.has(entry.taskId)) return true;
     }
     for (const info of this.ghosts.values()) {
-      if (info.lifetime !== 'service' && this.hasUndeliveredTaskNotification(info)) return true;
+      if (notificationsEnabled && info.lifetime !== 'service' && this.hasUndeliveredTaskNotification(info)) return true;
     }
-    return this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0 ||
+    return (notificationsEnabled && (this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0)) ||
       this.pendingWaitDeliveries.size > 0;
   }
 
@@ -1609,9 +1625,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         status: 'lost',
         endedAt: info.endedAt ?? Date.now(),
         stopReason: [
-          'Execution tracking was not reattached when this agent scope was restored. The external execution outcome is unconfirmed.',
+          info.kind === 'agent' && (info.executorProtocol ?? info.executorId ?? 'native') === 'native'
+            ? 'Interrupted when the host process restarted before the subagent finished; resume this subagent to inspect its last persisted step and continue.'
+            : 'Execution tracking was not reattached when this agent scope was restored. The external execution outcome is unconfirmed.',
           info.kind === 'agent' && info.agentId !== undefined
-            ? `Inspect preserved work and resume the same agent (${info.agentId}) with a new prompt ID. Do not repeat unconfirmed external actions.`
+            ? `Inspect preserved work and resume the same agent (${info.agentId}) with a new prompt ID. Do not repeat actions whose result was not observed.`
             : 'Inspect the original execution and preserved output before starting replacement work.',
           info.stopReason === undefined ? undefined : `Previous diagnostic: ${info.stopReason}`,
         ].filter((part) => part !== undefined).join(' '),
@@ -1958,6 +1976,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private async notifyAgentTask(info: AgentTaskInfo): Promise<void> {
+    if (this.sessionMetadata?.snapshot().archived === true) return;
     const generation = this.notificationUndoGeneration;
     const context = await this.buildAgentTaskNotificationContext(info);
     if (generation !== this.notificationUndoGeneration || context === undefined) return;
@@ -2022,7 +2041,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
     const goal = this.currentGoal();
     const lastEnded = this.states.has(turnKey) ? this.states.get(turnKey).lastEnded : undefined;
-    if (info.status === 'lost' || (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId)) {
+    if (this.sessionMetadata?.snapshot().archived === true ||
+      (info.status === 'lost' && !this.isInterruptedBackgroundSubagent(info)) ||
+      (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId)) {
       return 'activeOrNextTurn';
     }
     if (goal !== null && goal.status !== 'complete' &&
@@ -2032,6 +2053,12 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       return 'activeOrNextTurn';
     }
     return 'activeOrNewTurn';
+  }
+
+  private isInterruptedBackgroundSubagent(info: AgentTaskInfo): boolean {
+    return this.scopeContext.parentAgentId === undefined &&
+      info.kind === 'agent' && info.status === 'lost' && info.detached === true &&
+      info.ownerAgentId === this.scopeContext.agentId && info.agentId !== undefined;
   }
 
   private async commitMaterializedNotifications(signal: AbortSignal): Promise<void> {
@@ -2057,9 +2084,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     }
   }
 
-  private restoreAgentTaskNotifications(): Promise<void> {
+  private restoreAgentTaskNotifications(notify = false): Promise<void> {
     const restore = this.notificationRestoreQueue.then(() =>
-      this.restoreAgentTaskNotificationsNow(),
+      this.restoreAgentTaskNotificationsNow(notify),
     );
     this.notificationRestoreQueue = restore.catch(() => {});
     return restore;
@@ -2071,7 +2098,12 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       !this.isTerminalNotificationSuppressed(info.taskId) && !this.deliveredNotificationKeys.has(info.taskId);
   }
 
-  private async restoreAgentTaskNotificationsNow(): Promise<void> {
+  private async restoreAgentTaskNotificationsNow(notify: boolean): Promise<void> {
+    if (this.restoreDisposed || this.exitSuppressionArmed) return;
+    await this.sessionMetadata?.ready;
+    if (this.restoreDisposed || this.exitSuppressionArmed || this.sessionMetadata?.snapshot().archived === true ||
+      (notify && (!this.unarchiveRecoveryPending || this.executionControl.isHeld()))) return;
+    if (notify || this.restorePending) this.unarchiveRecoveryPending = false;
     const delivery = {};
     const candidates = this.list(false).filter(info => this.hasUndeliveredTaskNotification(info));
     const ordinaryCount = candidates.filter((info) => info.kind !== 'question').length;
@@ -2079,7 +2111,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       remainingBytes: NOTIFICATION_BATCH_PREVIEW_BYTES,
       perTaskBytes: Math.max(4, Math.floor(NOTIFICATION_BATCH_PREVIEW_BYTES / Math.max(1, ordinaryCount))),
     });
-    for (const info of candidates) await this.restoreAgentTaskNotification(info, delivery);
+    for (const info of candidates) {
+      if (notify) await this.notifyAgentTask(info);
+      else await this.restoreAgentTaskNotification(info, delivery);
+    }
   }
 
   private async restoreAgentTaskNotification(info: AgentTaskInfo, delivery: object): Promise<void> {
@@ -2171,6 +2206,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       const notification = buildAgentTaskNotification(info, output);
       const renderContent = (delivery: object): readonly ContentPart[] => {
         const snapshot = budgetNotificationPreview(info, output, delivery, this.pendingNotificationRequests.size);
+        const name = info.kind === 'agent'
+          ? info.collaborationTaskName ?? (info.agentId === undefined ? undefined
+            : this.sessionMetadata?.snapshot().agents?.[info.agentId]?.labels?.[COLLABORATION_TASK_NAME_LABEL])
+          : undefined;
         const remainingSubagents = info.kind === 'agent'
           ? runningSubagentStatus(this, this.lifecycle, this.scopeContext.agentId, info.agentId)
           : undefined;
@@ -2181,6 +2220,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
             title: escapeXmlTags(notification.title),
             body: escapeXmlTags(notification.body),
             children: [
+              ...(name === undefined ? [] : [`Name: ${escapeXmlTags(name)}`]),
               ...(agentTaskNotificationChildren(info, snapshot) ?? []),
               ...agentRecoveryGuidance(info),
               ...(remainingSubagents === undefined ? [] : [remainingSubagents]),
@@ -2526,7 +2566,7 @@ function agentRecoveryGuidance(info: AgentTaskInfo): string[] {
   const agentId = info.agentId;
   if (agentId === undefined || agentId === info.taskId) return [];
   return [
-    `If continuation is still appropriate, use AgentRun(resume="${escapeXmlTags(agentId)}", prompt="First inspect the existing work and side effects of any tool call whose result was not observed; continue without blindly repeating it.").`,
+    `After checking the child's state and preserved work, use AgentRun({ resume: "${escapeXmlTags(agentId)}" }) if continuation is still appropriate. Inspect side effects of any tool call whose result was not observed; do not blindly repeat it.`,
     `Use agent_id ("${escapeXmlTags(agentId)}"), NOT source_id / task_id ("${escapeXmlTags(info.taskId)}") for resume.`,
     'Omitted background defaults to background for main and foreground for subagents. Use background=true for background continuation, or background=false explicitly for a synchronous receipt. The prior context is retained, but a missing tool result does not mean the action had no side effects.',
   ];

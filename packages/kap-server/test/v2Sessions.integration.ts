@@ -37,6 +37,7 @@ interface SessionWireV2 {
     updated_at: number;
     archived: boolean;
     private: boolean;
+    persona_id?: string;
   };
   activity: { status: 'running' | 'approval' | 'question' | 'cleanup_pending' | 'failed' | 'idle' };
   git?: {
@@ -69,6 +70,7 @@ const SUMMARIES: SessionSummary[] = [
     workspaceId: WS_A,
     cwd: '/repo/a',
     title: 'Alpha',
+    personaId: 'summary-persona',
     lastPrompt: 'do alpha',
     createdAt: 3_000,
     updatedAt: 5_000,
@@ -79,6 +81,7 @@ const SUMMARIES: SessionSummary[] = [
     workspaceId: WS_A,
     cwd: '/repo/a',
     title: undefined,
+    custom: { room_persona_id: 'legacy-persona' },
     lastPrompt: 'do beta',
     createdAt: 1_000,
     updatedAt: 4_000,
@@ -89,6 +92,7 @@ const SUMMARIES: SessionSummary[] = [
     workspaceId: WS_B,
     cwd: '/repo/b',
     title: 'Gamma',
+    custom: { room_persona_id: 'Bad Persona' },
     lastPrompt: undefined,
     createdAt: 2_000,
     updatedAt: 3_000,
@@ -342,6 +346,7 @@ describe('server /api/sessions/query', () => {
     expect(first.meta).toEqual({
       title: 'Alpha',
       last_prompt: 'do alpha',
+      persona_id: 'summary-persona',
       created_at: 3_000,
       updated_at: 5_000,
       archived: false,
@@ -353,8 +358,10 @@ describe('server /api/sessions/query', () => {
 
     const second = page.items[1] as SessionWireV2;
     expect(second.meta.title).toBeNull();
+    expect(second.meta.persona_id).toBe('legacy-persona');
     const third = page.items[2] as SessionWireV2;
     expect(third.meta.last_prompt).toBeNull();
+    expect(third.meta.persona_id).toBeUndefined();
   });
 
   it('filters by workspace.id (single, repeated OR, unknown)', async () => {

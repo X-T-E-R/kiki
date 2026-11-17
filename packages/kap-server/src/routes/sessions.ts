@@ -198,6 +198,18 @@ function sessionMatchesPrivacy(
   return (includePrivate || isPrivate !== true) && (query.private_only !== true || isPrivate === true);
 }
 
+function legacyPersonaIdOf(summary: SessionSummary): string | undefined {
+  const legacyPersona = summary.custom?.['bot_persona_id'] ?? summary.custom?.['room_persona_id'];
+  return typeof legacyPersona === 'string' && legacyPersona.length > 0 ? legacyPersona : undefined;
+}
+
+function listPersonaIdOf(core: Scope, summary: SessionSummary): string | undefined {
+  const live = getLiveSessionById(core.accessor, summary.id);
+  const main = live?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+  if (main !== undefined) return main.accessor.get(IAgentProfileService).data().personaId;
+  return summary.personaId ?? legacyPersonaIdOf(summary);
+}
+
 const sessionsListQueryCoercion = z
   .object({
     before_id: z.string().min(1).optional(),
@@ -765,8 +777,7 @@ export function registerSessionsRoutes(
       const personaNames = new Map<string, Promise<string>>();
       const project = async (summary: SessionSummary, cwd: string, facts = resolveSessionFacts(core, summary.id, summary.usage)): Promise<Session> => {
         if (facts.live === false) {
-          const legacyPersona = summary.custom?.['bot_persona_id'] ?? summary.custom?.['room_persona_id'];
-          const personaId = summary.personaId ?? (typeof legacyPersona === 'string' && legacyPersona.length > 0 ? legacyPersona : undefined);
+          const personaId = summary.personaId ?? legacyPersonaIdOf(summary);
           if (personaId !== undefined) {
             let name = personaNames.get(personaId);
             if (name === undefined) {
@@ -802,7 +813,7 @@ export function registerSessionsRoutes(
           const page = await index.listRecent({
             workspaceIds,
             includeArchived,
-            limit: wanted - collected.length,
+            limit: raw.persona === undefined ? wanted - collected.length : Math.max(wanted - collected.length, 500),
             before: pageBefore,
             after: pageBefore === undefined ? after : undefined,
           });
@@ -818,7 +829,7 @@ export function registerSessionsRoutes(
             const cwd = summary.cwd ?? roots.get(summary.workspaceId) ?? (archivedOnly ? '' : undefined);
             if (cwd === undefined) continue;
             if (needle && ![summary.title ?? '', cwd, summary.workspaceId].some((value) => value.toLocaleLowerCase().includes(needle))) continue;
-            if (raw.persona !== undefined && !(await core.accessor.get(IBotService).sessionBelongsToPersona(summary, raw.persona))) continue;
+            if (raw.persona !== undefined && listPersonaIdOf(core, summary) !== raw.persona) continue;
             if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
             if (archivedOnly && !summary.archived) continue;
             if (raw.pinned !== undefined && (summary.custom?.[SESSION_PIN_METADATA_KEY] === true) !== raw.pinned) continue;
@@ -2000,7 +2011,7 @@ export async function resolveSessionBindingFacts(
   persistedUsage?: SessionUsageSummary,
   metadata?: AgentMeta,
   signal?: AbortSignal,
-  options: { readonly includeAccounting?: boolean } = {},
+  options: { readonly includeAccounting?: boolean; readonly sessionMetadata?: SessionMeta } = {},
 ): Promise<SessionFacts> {
   let facts = resolveSessionFacts(core, sessionId, persistedUsage);
   if (facts.live && !facts.agentConfig?.model) {
@@ -2019,7 +2030,7 @@ export async function resolveSessionBindingFacts(
     }
   }
   if (facts.live) return facts;
-  const saved = await readColdSessionMeta(core, workspaceId, sessionId);
+  const saved = options.sessionMetadata ?? await readColdSessionMeta(core, workspaceId, sessionId);
   const mainMetadata = metadata ?? saved?.agents?.[MAIN_AGENT_ID];
   const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal,
     { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });

@@ -15,6 +15,7 @@ import type { IDisposable } from '#/_base/di/lifecycle';
 import { IAgentProfileService } from '#/index';
 import { ISessionExecutionControl, type ExecutionResumePoint } from '#/session/executionControl/executionControl';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import type { ModelRequestTiming } from '#/kosong/model/modelRequester';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -2708,6 +2709,46 @@ describe('llm requester attempt retry', () => {
       expect(contentParts[0]?.['uuid']).toBe(assistantDeltas[1]?.partId);
     } finally {
       await ctx.dispose();
+    }
+  });
+});
+
+describe('post-delivery thinking-only completion', () => {
+  it.each(['none', 'bookkeeping', 'synchronous'] as const)('silently completes a normal thinking-only response unless invalidated by subsequent %s tools', async (followup) => {
+    const local = createTestAgent(permissionModeServices('yolo'));
+    const requester = local.get(IAgentLLMRequesterService);
+    const start = requester.start.bind(requester);
+    vi.spyOn(requester, 'start').mockImplementation((...args) => {
+      const request = start(...args);
+      return { ...request, result: request.result.then(response => ({ ...response, completionAuthority: 'normal' as const })) };
+    });
+    vi.spyOn(requester, 'supportsAssistantPrefill').mockReturnValue(true);
+    const delivery = local.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    const run = vi.fn(async () => ({ output: 'Follow-up completed.', allowsTurnEndWithSendMessage: followup === 'bookkeeping' }));
+    local.get(IAgentToolRegistryService).register({
+      name: 'FollowupWork', description: 'Complete follow-up work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'FollowupWork', execute: run }),
+    });
+    local.get(IAgentProfileService).update({ activeToolNames: ['SendMessage', 'FollowupWork'] });
+    local.mockNextResponse({ type: 'function', id: 'send-result', name: 'SendMessage', arguments: JSON.stringify({ text: 'The result has been delivered.' }) });
+    if (followup !== 'none') local.mockNextResponse({ type: 'function', id: 'followup-work', name: 'FollowupWork', arguments: '{}' });
+    local.mockNextResponse({ type: 'think', think: 'The delivered result needs no visible repetition.' });
+    if (followup === 'synchronous') local.mockNextResponse({ type: 'text', text: 'Report the follow-up result.' });
+    try {
+      const handle = await local.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Deliver the result once.' }], toolCalls: [],
+      } });
+      expect(await handle.completion).toMatchObject({ state: 'completed', result: { type: 'completed' } });
+      expect(local.llmCalls).toHaveLength(followup === 'none' ? 2 : followup === 'bookkeeping' ? 3 : 4);
+      expect(run).toHaveBeenCalledTimes(followup === 'none' ? 0 : 1);
+      const history = local.contextData().history;
+      expect(history.some(message => message.role === 'user' && message.content.some(part => part.type === 'text' && part.text === 'Continue.'))).toBe(followup === 'synchronous');
+      expect(history.some(message => message.role === 'assistant' && message.content.some(part => part.type === 'text' && part.text === 'Report the follow-up result.'))).toBe(followup === 'synchronous');
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
     }
   });
 });

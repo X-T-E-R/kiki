@@ -1010,6 +1010,8 @@ describe('AgentTaskService', () => {
 
   it('records external-main task notifications without enqueueing a model step', async () => {
     ix.stub(ISessionMetadata, {
+      onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'],
+      snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
       read: async () => ({
         id: 'test-session',
         createdAt: 0,
@@ -1990,6 +1992,8 @@ describe('AgentTaskService', () => {
       resumePoint: (id: string) => (id === 'agent-paused' ? ({ agentId: id } as never) : undefined),
     });
     freshIx.stub(ISessionMetadata, {
+      onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'],
+      snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
       read: async () => ({
         id: 'test-session',
         createdAt: 0,
@@ -2411,7 +2415,7 @@ describe('AgentTaskService', () => {
     const controlServices = () => createServices(disposables, { additionalServices: reg => {
       reg.definePartialInstance(IAtomicDocumentStore, docs);
       reg.definePartialInstance(ISessionContext, session);
-      reg.definePartialInstance(ISessionMetadata, { update: async () => {}, snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents: { 'receipt-owner': { parentAgentId: 'main' }, main: { parentAgentId: null }, idle: { parentAgentId: null } } }) });
+      reg.definePartialInstance(ISessionMetadata, { onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'], update: async () => {}, snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents: { 'receipt-owner': { parentAgentId: 'main' }, main: { parentAgentId: null }, idle: { parentAgentId: null } } }) });
       reg.definePartialInstance(IAgentLifecycleService, { list: () => [...agentHandles.values()], get: id => agentHandles.get(id), create });
       reg.define(ISessionExecutionControl, SessionExecutionControl);
     } });
@@ -2604,7 +2608,8 @@ describe('AgentTaskService', () => {
     const restored = await service.reconcile();
     expect(restored).toHaveLength(1);
     expect(restored[0]).toMatchObject({ status: 'lost', receipt: { contentState: 'unavailable' } });
-    expect(restored[0]?.stopReason).toContain('outcome is unconfirmed');
+    expect(restored[0]?.stopReason).toContain('Interrupted when the host process restarted');
+    expect(restored[0]?.stopReason).not.toContain('external execution outcome');
     expect(restored[0]?.stopReason).toContain('resume the same agent (agent-child)');
     expect(restored[0]?.stopReason).toContain(pending.stopReason);
     expect(service.getTask(terminal.taskId)?.status).toBe('completed');

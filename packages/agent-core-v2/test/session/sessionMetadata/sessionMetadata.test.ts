@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -12,7 +15,7 @@ import {
 } from '#/app/sessionIndex/sessionIndex';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, SESSION_META_VERSION } from '#/session/sessionMetadata/sessionMetadata';
 import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
 import { readCommittedAgentRunOutcomes } from '#/agent/task/agentOutcome';
 import {
@@ -27,6 +30,7 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 
 import { stubSessionIndexMirror } from '../../app/sessionIndex/stubs';
@@ -126,6 +130,27 @@ describe('SessionMetadata', () => {
     await expect(meta.ready).rejects.toBe(failure);
     expect(failure.message).toBe(`initial metadata ${phase} failed`);
     await expect(drainSessionMetadataWrites()).resolves.toBeUndefined();
+  });
+
+  it('restores a two-megabyte 278-agent state document with native decoding and no migration write', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'metadata-restore-'));
+    ix.stub(IFileSystemStorageService, new FileStorageService(home));
+    const agents = Object.fromEntries(Array.from({ length: 278 }, (_, index) => [`child-${index}`, {
+      type: 'sub' as const, createdAt: index, status: 'completed' as const, labels: { example: 'x'.repeat(7_500) },
+    }]));
+    const saved = { id: 's1', version: SESSION_META_VERSION, createdAt: 1, updatedAt: 1, archived: false, agents, custom: {}, isCustomTitle: false };
+    const store = ix.get(IAtomicDocumentStore);
+    await store.set(META_SCOPE, 'state.json', saved);
+    const writes = vi.spyOn(store, 'set');
+    try {
+      const started = performance.now();
+      const meta = ix.get(ISessionMetadata);
+      await meta.ready;
+      const elapsedMs = performance.now() - started;
+      expect(Object.keys(meta.snapshot().agents!)).toHaveLength(278);
+      expect(writes).not.toHaveBeenCalled();
+      console.log('metadata-native-restore', { bytes: JSON.stringify(saved).length, agents: 278, elapsedMs });
+    } finally { await disposables.dispose(); await rm(home, { recursive: true, force: true }); }
   });
 
   it('retains native JSON semantics for custom metadata during cooperative writes', async () => {

@@ -420,6 +420,21 @@ export class SessionIndexProjector {
       });
     }
 
+    const retainFingerprints = (): void => {
+      if (this.fingerprintGeneration !== generation) return;
+      if (invalidationEpoch !== this.fingerprintInvalidationEpoch) {
+        if (this.fullInvalidationEpoch > invalidationEpoch) {
+          nextFingerprintCache.clear();
+        } else {
+          for (const [key, epoch] of this.keyInvalidationEpochs) {
+            if (epoch > invalidationEpoch) nextFingerprintCache.delete(key);
+          }
+        }
+      }
+      if (this.fingerprintInvalidationEpoch === invalidationEpoch) this.keyInvalidationEpochs.clear();
+      this.fingerprintCache = nextFingerprintCache;
+    };
+    if (options?.reuseFingerprints === true) retainFingerprints();
     return async () => {
       if (ops.length > 0) await advanceSessionIndexRevision(queryStore);
       await this.batchChunks(ops);
@@ -433,17 +448,7 @@ export class SessionIndexProjector {
           sourceMaxMtimeMs,
         });
       }
-      if (invalidationEpoch !== this.fingerprintInvalidationEpoch) {
-        if (this.fullInvalidationEpoch > invalidationEpoch) {
-          nextFingerprintCache.clear();
-        } else {
-          for (const [key, epoch] of this.keyInvalidationEpochs) {
-            if (epoch > invalidationEpoch) nextFingerprintCache.delete(key);
-          }
-        }
-      }
-      if (this.fingerprintInvalidationEpoch === invalidationEpoch) this.keyInvalidationEpochs.clear();
-      this.fingerprintCache = nextFingerprintCache;
+      retainFingerprints();
       const result = { sessions, upserted, removed };
       if (upserted > 0 || removed > 0) {
         log.info('session index reconciliation repaired drift', { generation, ...result });

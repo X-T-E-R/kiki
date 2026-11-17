@@ -81,9 +81,53 @@ import { resolveAgentSourceGraph } from '#/workspace/workspaceAgentProfileLoader
 import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
 import { AgentProfileWriterService } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriterService';
 import { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
+import { discoverCachedAgentFiles } from '#/agent/profile/agentFileDiscoveryCache';
 
 import { stubBootstrap, type StubSpaceOptions } from '../../app/bootstrap/stubs';
 import type { SpaceHome } from '#/app/bootstrap/spaceHome';
+
+it('shares fingerprinted user and extra discovery across workspaces and warns once per invalid revision', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'profile-discovery-cache-'));
+  const fs = new HostFileSystem();
+  const read = vi.spyOn(fs, 'readText');
+  const warn = vi.fn();
+  const roots = [{ path: home, source: 'user' as const }];
+  try {
+    await Promise.all(Array.from({ length: 80 }, (_, index) => writeFile(join(home, `example-${index}.md`), `---\nname: example-${index}\ndescription: Example profile\n---\n${'Example prompt. '.repeat(500)}`)));
+    const invalid = join(home, 'invalid.md');
+    await writeFile(invalid, '---\nname: [\n---\nInvalid profile');
+    const loaded = await Promise.all(Array.from({ length: 4 }, () => discoverCachedAgentFiles(fs, roots, warn)));
+    expect(loaded.every(result => result === loaded[0])).toBe(true);
+    expect(loaded[0]?.agents).toHaveLength(80);
+    expect(warn.mock.calls.filter(([message]) => message.includes('Skipping invalid agent file'))).toHaveLength(1);
+    const reads = read.mock.calls.length;
+    const started = performance.now();
+    expect(await discoverCachedAgentFiles(fs, roots, warn)).toBe(loaded[0]);
+    const warmMs = performance.now() - started;
+    expect(read).toHaveBeenCalledTimes(reads);
+    await writeFile(join(home, 'example-0.md'), '---\nname: example-0\ndescription: Updated example\n---\nUpdated prompt');
+    expect((await discoverCachedAgentFiles(fs, roots, warn)).agents.find(agent => agent.name === 'example-0')?.prompt).toBe('Updated prompt');
+    expect(warn.mock.calls.filter(([message]) => message.includes('Skipping invalid agent file'))).toHaveLength(1);
+    await writeFile(invalid, '---\nname: [\n---\nInvalid profile changed');
+    await discoverCachedAgentFiles(fs, roots, warn);
+    expect(warn.mock.calls.filter(([message]) => message.includes('Skipping invalid agent file'))).toHaveLength(2);
+    await writeFile(join(home, 'added.md'), '---\nname: added\ndescription: Added example\n---\nAdded prompt');
+    expect((await discoverCachedAgentFiles(fs, roots, warn)).agents).toHaveLength(81);
+    console.log('profile-discovery-warm', { files: 81, elapsedMs: warmMs, bodyReads: 0 });
+  } finally { read.mockRestore(); await rm(home, { recursive: true, force: true }); }
+});
+
+it.each(['readdir', 'readText'] as const)('retries discovery after a transient %s failure without caching an empty catalog', async (method) => {
+  const home = await mkdtemp(join(tmpdir(), 'profile-discovery-retry-'));
+  const fs = new HostFileSystem();
+  await writeFile(join(home, 'example.md'), '---\nname: example\ndescription: Example profile\n---\nExample prompt');
+  const fail = vi.spyOn(fs, method).mockRejectedValueOnce(new Error('temporary read failure'));
+  try {
+    const roots = [{ path: home, source: 'user' as const }];
+    expect((await discoverCachedAgentFiles(fs, roots)).agents).toHaveLength(0);
+    expect((await discoverCachedAgentFiles(fs, roots)).agents.map(agent => agent.name)).toEqual(['example']);
+  } finally { fail.mockRestore(); await rm(home, { recursive: true, force: true }); }
+});
 
 function configStub(): IConfigService & {
   setExtraAgentDirs(dirs: readonly string[]): void;

@@ -13,7 +13,8 @@ function lastTurnOutcome(activity: AgentActivityState | undefined, trackedStart:
   switch (lastTurn.reason) {
     case 'completed': return 'completed';
     case 'cancelled': return 'cancelled';
-    case 'failed': return 'failed';
+    case 'failed':
+    case 'blocked': return 'failed';
     default: return undefined;
   }
 }

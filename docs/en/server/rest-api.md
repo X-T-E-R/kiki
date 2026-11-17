@@ -1166,7 +1166,7 @@ A next-generation session query for list views — filtering, sorting, and field
 | `page_token` | Pagination token from the previous page |
 | `page` | Stateless 1-based page number; mutually exclusive with `page_token` (`40001` when combined) |
 
-Every response item carries the `workspace`, `meta` (including the boolean `private`), and `activity` groups, plus `git` when `include=git` — or just `{ id, archived }` under `fields=id,archived`. Every page additionally carries `total`, the size of the filtered set. The page token binds the first page's query conditions (including the projection); changing them mid-pagination returns `40922`. `page` mode is a stateless alternative for jumping to arbitrary pages: every request is an independent snapshot, no token is minted, and `next_page_token` is always `null`.
+Every response item carries the `workspace`, `meta` (including the boolean `private` and optional `persona_id` when bound to a persona), and `activity` groups, plus `git` when `include=git` — or just `{ id, archived }` under `fields=id,archived`. Every page additionally carries `total`, the size of the filtered set. The page token binds the first page's query conditions (including the projection); changing them mid-pagination returns `40922`. `page` mode is a stateless alternative for jumping to arbitrary pages: every request is an independent snapshot, no token is minted, and `next_page_token` is always `null`.
 
 ### `POST /api/sessions:archive` and `POST /api/sessions:restore`
 

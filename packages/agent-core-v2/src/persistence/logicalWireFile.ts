@@ -18,13 +18,14 @@ export async function readPinnedRange(
   position: number,
   length: number,
   signal?: AbortSignal,
+  chunkBytes?: number,
 ): Promise<Uint8Array> {
   if (!Number.isSafeInteger(position) || position < 0 || !Number.isSafeInteger(length) || length <= 0) {
     return new Uint8Array();
   }
   const parts: Uint8Array[] = [];
   let total = 0;
-  for await (const chunk of pinned.read({ start: position, end: position + length - 1 }, { signal })) {
+  for await (const chunk of pinned.read({ start: position, end: position + length - 1 }, { signal, chunkBytes })) {
     parts.push(chunk);
     total += chunk.byteLength;
     if (total >= length) break;

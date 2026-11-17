@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
-import { IAppendLogStore, IFileSystemStorageService, IAtomicDocumentStore, ISessionIndex, ISessionManager, IWorkspaceService, type AgentMeta, type Scope } from '@kiki/agent-core-v2';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FileStorageService } from '../../agent-core-v2/src/persistence/backends/node-fs/fileStorageService';
+import { IAppendLogStore, IFileSystemStorageService, IAtomicDocumentStore, IModelService, ISessionIndex, ISessionManager, IWorkspaceService, type AgentMeta, type Scope } from '@kiki/agent-core-v2';
 import { sessionSnapshotResponseSchema, type SnapshotSubagent } from '@kiki/protocol';
 import { assembleBrowseSnapshot } from '../src/routes/snapshot';
 import { sessionAgentCounts } from '../src/routes/sessionAgentCounts';
@@ -20,12 +24,18 @@ describe('session agent metadata counts', () => {
       resultSummary: 'historical result'.repeat(100),
     };
     const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 2, archived: false, agents };
-    const readMetadata = vi.fn(async () => meta);
+    const readMetadata = vi.fn(async (_scope: string, key: string) => key === 'state.json' ? meta : undefined);
     const manager = { get: vi.fn(() => undefined), acquire: vi.fn() };
     const bindingReads: string[] = [];
+    const home = await mkdtemp(join(tmpdir(), 'roster-counts-'));
+    onTestFinished(() => rm(home, { recursive: true, force: true }));
+    const storage = new FileStorageService(home);
+    vi.spyOn(storage, 'size').mockResolvedValue(wireBytes);
+    vi.spyOn(storage, 'mtime').mockResolvedValue(0);
     const services = new Map<unknown, unknown>([
-      [IFileSystemStorageService, { size: async () => wireBytes, mtime: async () => 0 }],
+      [IFileSystemStorageService, storage],
       [IAppendLogStore, { read: async function* (scope: string) { bindingReads.push(scope); yield* []; } }],
+      [IModelService, { ready: Promise.resolve(), resolveId: (id: string) => id }],
       [ISessionManager, manager], [ISessionIndex, { get: async () => ({ ...meta, workspaceId: 'wd_fixture_000000000000' }) }],
       [IAtomicDocumentStore, { get: readMetadata }], [IWorkspaceService, { get: async () => ({ root: 'C:/fixture' }) }],
     ]);
@@ -39,9 +49,9 @@ describe('session agent metadata counts', () => {
     expect(snapshot.agent_counts).toEqual({ total: 301, subagents: 300, completed: 280, failed: 10, cancelled: 0, active: 0, idle: 0, unknown: 10 });
     const parsed = sessionSnapshotResponseSchema.safeParse(snapshot);
     expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
-    expect(readMetadata).toHaveBeenCalledTimes(1);
+    expect(readMetadata.mock.calls.filter(([, key]) => key === 'state.json')).toHaveLength(1);
     expect(parsed.data?.session.agent_config).toMatchObject({ model: 'example/model', profile: 'example-profile', execution });
-    expect(bindingReads).toEqual(wireBytes === 0 ? [expect.stringMatching(/agents\/main$/)] : []);
+    expect(bindingReads).toEqual([]);
     expect(manager.acquire).not.toHaveBeenCalled();
     expect(snapshot.messages.items).toEqual([]);
   });
@@ -138,6 +148,15 @@ describe('lightweight metadata roster', () => {
     expect(roster[0]).toMatchObject({ status: 'running', activity_status: 'running', live: true,
       status_source: 'runtime', started_at: new Date(40).toISOString(), completed_at: undefined });
     expect(sessionAgentCounts(agents, roster).active).toBe(1);
+  });
+
+  it.each(['completed', 'cancelled', 'failed', 'blocked'] as const)('projects a restored %s turn outcome instead of idle', (reason) => {
+    const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 30, archived: false, agents: { child: {} } };
+    const runtime = new Map([['child', { lifecycle: 'ready' as const, background: [], lastTurn: { turnId: 1, reason, at: 20 } }]]);
+    const expected = reason === 'blocked' ? 'failed' : reason;
+    expect(sessionAgentRoster(meta.id, meta, [], runtime)[0]).toMatchObject({
+      activity_status: expected, status: expected, status_source: 'runtime', completed_at: new Date(20).toISOString(),
+    });
   });
 
   it('does not label a tool wait or an open tracked task as idle', () => {

@@ -11,6 +11,7 @@ import {
   type SessionSummary,
 } from '@kiki/agent-core-v2';
 import { IGitService, type FsPullRequest } from '@kiki/agent-core-v2/app/git/git';
+import { personaIdSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';
@@ -204,6 +205,7 @@ const v2SessionSchema = z.object({
     private: z.boolean(),
     archived_at: z.number().int().nullable(),
     execution_phase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
+    persona_id: z.string().optional(),
   }),
   activity: z.object({ status: v2ActivityStatusSchema }),
   git: v2GitDomainSchema.optional(),
@@ -294,6 +296,18 @@ function makeComparator(sort: V2Sort): (a: SessionSummary, b: SessionSummary) =>
     const order = a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     return ascending ? order : -order;
   };
+}
+
+function legacyPersonaIdOf(summary: SessionSummary): string | undefined {
+  for (const legacyPersona of [summary.custom?.['bot_persona_id'], summary.custom?.['room_persona_id']]) {
+    const parsed = personaIdSchema.safeParse(legacyPersona);
+    if (parsed.success) return parsed.data;
+  }
+  return undefined;
+}
+
+function personaIdOf(summary: SessionSummary): string | undefined {
+  return summary.personaId ?? legacyPersonaIdOf(summary);
 }
 
 const PAGE_TOKEN_VERSION = 1;
@@ -623,6 +637,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
             private: summary.private === true,
             archived_at: summary.archivedAt ?? null,
             execution_phase: summary.executionPhase,
+            persona_id: personaIdOf(summary),
           },
           activity: { status: mapActivityStatus(factsOf(summary.id), summary.lastTurnReason) },
           git:

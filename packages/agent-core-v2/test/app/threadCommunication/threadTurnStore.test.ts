@@ -115,6 +115,38 @@ describe('ThreadTurnStore', () => {
     read.mockRestore();
   });
 
+  it('folds stripped media and thinking parts during bounded preparation without retaining their payloads', async () => {
+    const mediaPayload = `media-payload-${'x'.repeat(4 * 1024 * 1024)}`;
+    await seed([
+      { ...prompt(), turnId: 0 },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'content.part', stepUuid: 'step-0', turnId: '0', part: { type: 'image_url', imageUrl: { url: `data:image/png;base64,${mediaPayload}` } } },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'content.part', stepUuid: 'step-0', turnId: '0', part: { type: 'think', think: 'private thought' } },
+      },
+      part(0, 'visible output'),
+      ended(0),
+    ]);
+
+    let page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1);
+    expect(page).toMatchObject({ turns: [], preparing: true, hasMore: true });
+    expect(page.source.prepared).toBeDefined();
+    let steps = 0;
+    while (page.preparing) {
+      expect(++steps).toBeLessThan(5);
+      page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, page.source);
+    }
+
+    expect(page.turns.map((turn) => [turn.turnId, turn.output])).toEqual([[0, 'visible output']]);
+    const collection = `thread-turns-v1:${Buffer.from(SCOPE).toString('base64url')}`;
+    const projected = JSON.stringify(await Promise.all((await query.listKeys(collection)).map((key) => query.get(collection, key))));
+    expect(projected).not.toContain('media-payload-');
+    expect(projected).not.toContain('private thought');
+  }, 30_000);
+
   it('does not schedule once per record while replaying many small records', async () => {
     const parts = Array.from({ length: 3000 }, () => part(0, 'x'));
     await seed([{ ...prompt(), turnId: 0 }, ...parts, ended(0)]);
