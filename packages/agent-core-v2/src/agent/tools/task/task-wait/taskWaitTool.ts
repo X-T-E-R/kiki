@@ -77,7 +77,7 @@ function skippedSubagentsNote(skipped: readonly AgentTaskInfo[]): string[] {
   if (skipped.length === 0) return [];
   const ids = skipped.map((task) => task.taskId).join(', ');
   return [
-    `Not waited for: subagent ${skipped.length === 1 ? 'task' : 'tasks'} ${ids}. A wait without task_id leaves out subagent tasks, because their results reach you by notification; to wait for one, call TaskWait with its task_id.`,
+    `Not waited for: subagent ${skipped.length === 1 ? 'task' : 'tasks'} ${ids}. A wait without task_id leaves out subagent tasks, because their results reach you by notification. Do independent work or end the turn and continue on notification. For a genuine same-turn dependency, specify task_id, sync_wait=true and a concrete sync_reason.`,
   ];
 }
 
@@ -161,14 +161,14 @@ export class TaskWaitTool implements ITaskWaitTool {
     const saved = ctx.executionWait?.kind === 'task' ? ctx.executionWait : undefined;
     const startedAt = saved?.startedAt ?? Date.now();
     const timeoutMs = saved?.timeoutMs ?? args.timeout * 1000;
-    const skipsSubagents = args.task_id === undefined &&
-      this.scope.agentId === MAIN_AGENT_ID &&
+    const mainOutsideGoal = this.scope.agentId === MAIN_AGENT_ID &&
       this.scope.parentAgentId === undefined &&
       this.goals.getGoal().goal?.status !== 'active';
-    const running: readonly AgentTaskInfo[] = saved === undefined ? this.tasks.list(true) : [];
-    const skippedSubagents: readonly AgentTaskInfo[] = skipsSubagents ? running.filter((task) => task.kind === 'agent') : [];
-    const runningAtStart = saved === undefined ? running.filter((task) => !skippedSubagents.includes(task))
+    const running = saved === undefined ? this.tasks.list(true)
       : saved.taskIds.flatMap(id => { const task = this.tasks.getTask(id); return task === undefined ? [] : [task]; });
+    const skippedSubagents = args.task_id === undefined && mainOutsideGoal
+      ? running.filter(task => task.kind === 'agent' && !TERMINAL_STATUSES.has(task.status)) : [];
+    const runningAtStart = running.filter(task => !skippedSubagents.includes(task));
     const executionWait = { kind: 'task' as const, taskIds: args.task_id === undefined ? runningAtStart.map(task => task.taskId) : [args.task_id], startedAt, timeoutMs };
 
     if (args.task_id === undefined) {
@@ -188,6 +188,16 @@ export class TaskWaitTool implements ITaskWaitTool {
     } else if (this.tasks.getTask(args.task_id) === undefined) {
       this.track(args, startedAt, timeoutMs, 'task_not_found', 0);
       return { isError: true, output: `Task not found: ${args.task_id}` };
+    }
+
+    const target = args.task_id === undefined ? undefined : this.tasks.getTask(args.task_id);
+    if (mainOutsideGoal && target?.kind === 'agent' && target.detached !== false &&
+      target.terminalNotificationSuppressed !== true && !TERMINAL_STATUSES.has(target.status) &&
+      !(args.sync_wait === true && args.sync_reason?.trim())) {
+      return {
+        isError: true,
+        output: 'TaskWait did not wait: this background subagent sends an automatic completion notification. Do independent work or end the turn and continue on notification; the task remains running and its notification has not been consumed. For a genuine same-turn dependency, specify task_id, sync_wait=true and a non-empty concrete sync_reason.',
+      };
     }
 
     let waited: AgentTaskInfo | undefined;

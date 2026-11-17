@@ -1010,6 +1010,7 @@ describe('AgentTaskService', () => {
 
   it('records external-main task notifications without enqueueing a model step', async () => {
     ix.stub(ISessionMetadata, {
+      snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
       read: async () => ({
         id: 'test-session',
         createdAt: 0,
@@ -1990,6 +1991,7 @@ describe('AgentTaskService', () => {
       resumePoint: (id: string) => (id === 'agent-paused' ? ({ agentId: id } as never) : undefined),
     });
     freshIx.stub(ISessionMetadata, {
+      snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
       read: async () => ({
         id: 'test-session',
         createdAt: 0,
@@ -2604,7 +2606,8 @@ describe('AgentTaskService', () => {
     const restored = await service.reconcile();
     expect(restored).toHaveLength(1);
     expect(restored[0]).toMatchObject({ status: 'lost', receipt: { contentState: 'unavailable' } });
-    expect(restored[0]?.stopReason).toContain('outcome is unconfirmed');
+    expect(restored[0]?.stopReason).toContain('Interrupted when the host process restarted');
+    expect(restored[0]?.stopReason).not.toContain('external execution outcome');
     expect(restored[0]?.stopReason).toContain('resume the same agent (agent-child)');
     expect(restored[0]?.stopReason).toContain(pending.stopReason);
     expect(service.getTask(terminal.taskId)?.status).toBe('completed');

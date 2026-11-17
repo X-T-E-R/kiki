@@ -112,6 +112,9 @@ import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persis
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { AdhocEndpointVault, IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
+import { IRequestAdmission } from '#/kosong/model/requestAdmission';
+import { IWorkspaceService } from '#/app/workspace/workspace';
 import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { AgentCollaborationRegistry, IAgentCollaborationRegistry, COLLABORATION_TASK_NAME_LABEL, COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
@@ -504,6 +507,9 @@ describe('AgentLifecycleService', () => {
       }),
       provider: () => undefined,
     });
+    ix.set(IAdhocEndpointVault, new SyncDescriptor(AdhocEndpointVault));
+    ix.stub(IRequestAdmission, { acquire: async () => ({ release() {} }) });
+    ix.stub(IWorkspaceService, { findRegisteredByRoot: async () => undefined });
     ix.stub(IModelCatalog, { _serviceBrand: undefined } as IModelCatalog);
     ix.stub(IModelService, {
       _serviceBrand: undefined,
@@ -1859,7 +1865,7 @@ describe('AgentLifecycleService', () => {
     } as unknown as ISessionMetadata);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
-      get: () => ({ providerName: 'test-provider', capabilities: UNKNOWN_CAPABILITY, supportEfforts: ['high'] }),
+      get: (id: string) => ({ id, providerName: 'test-provider', capabilities: UNKNOWN_CAPABILITY, supportEfforts: ['high'] }),
     } as unknown as IModelCatalog);
     const svc = ix.get(IAgentLifecycleService);
 
@@ -2051,7 +2057,7 @@ describe('AgentLifecycleService', () => {
     } as unknown as IAgentIdentity);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
-      get: () => ({ providerName: 'test-provider', capabilities: { ...UNKNOWN_CAPABILITY, thinking: true }, defaultEffort: 'high' }),
+      get: (id: string) => ({ id, providerName: 'test-provider', capabilities: { ...UNKNOWN_CAPABILITY, thinking: true }, defaultEffort: 'high' }),
     } as unknown as IModelCatalog);
     ix.stub(ISessionContext, {
       _serviceBrand: undefined,

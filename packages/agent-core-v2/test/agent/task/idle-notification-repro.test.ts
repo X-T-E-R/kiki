@@ -33,7 +33,7 @@ import type { generate as kosongGenerate } from '#/kosong/contract/generate';
 import { ChatProviderError } from '#/kosong/contract/errors';
 import { IConfigService } from '#/app/config/config';
 import { LOOP_CONTROL_SECTION } from '#/agent/loop/configSection';
-import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentTaskService, type AgentTaskInfo } from '#/agent/task/task';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import { QuestionBackgroundTask } from '#/agent/tools/ask-user-question/question-background-task';
 import { escapeXml } from '#/_base/utils/xml-escape';
@@ -1779,7 +1779,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       const text = notifications[0]!.content.map((part) => part.type === 'text' ? part.text : '').join('');
       expect(text).toContain('task.failed');
       expect(text).toContain('child failed');
-      expect(text).toContain('AgentRun(resume="child-damaged"');
+      expect(text).toContain('AgentRun({ resume: "child-damaged" })');
       expect(text).toContain('Task receipt verification failed');
       expect(text).not.toContain('malicious completion');
       expect(text).not.toContain('<output-preview');
@@ -1834,7 +1834,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       }
       const failed = texts.find((text) => text.includes('agent-batch004'))!;
       expect(failed).toContain('错误 &lt;failure&gt; & reason');
-      expect(failed).toContain('AgentRun(resume="child-4"');
+      expect(failed).toContain('AgentRun({ resume: "child-4" })');
       const question = texts.find((text) => text.includes('question-batch000'))!;
       expect(question).toContain(answer);
       expect(question).toContain('Background question answered');
@@ -1875,4 +1875,97 @@ describe('task notification → main agent (real Agent instance)', () => {
       expect(flatContext).toMatch(/task\.lost/);
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
   });
+});
+
+describe('interrupted background subagent recovery', () => {
+  let home: string;
+  let ctx: TestAgentContext;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'background-subagent-restart-'));
+    ctx = createTestAgent(homeDirServices(home), taskServices());
+    ctx.mockNextResponse({ type: 'text', text: 'Waiting for the background child notification.' });
+    await (await ctx.get(IAgentPromptService).enqueue({ message: {
+      role: 'user', content: [{ type: 'text', text: 'Coordinate the background work.' }], toolCalls: [],
+    } })).completion;
+  });
+
+  afterEach(async () => {
+    await ctx.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  async function restart(options: { held?: boolean; archived?: boolean; task?: Partial<Extract<AgentTaskInfo, { kind: 'agent' }>> } = {}) {
+    if (options.held) {
+      await ctx.get(ISessionExecutionControl).pause({ operationId: 'pause-before-restart' });
+      await vi.waitFor(async () => expect((await ctx.get(ISessionExecutionControl).read()).phase).toBe('paused'));
+    }
+    if (options.archived) await ctx.get(ISessionMetadata).setArchived(true);
+    const records = await ctx.persistedWireRecords();
+    await ctx.dispose();
+    await createAgentTaskPersistence(home).writeTask({
+      kind: 'agent', taskId: 'agent-restart0', agentId: 'child-interrupted',
+      description: 'inspect existing work', collaborationTaskName: 'recovery_worker',
+      executorId: 'native', executorProtocol: 'native', status: 'running',
+      detached: true, ownerAgentId: 'main', startedAt: 1, endedAt: null,
+      ...options.task,
+    });
+    ctx = createTestAgent(homeDirServices(home), taskServices());
+    ctx.mockNextResponse({ type: 'text', text: 'Inspect the interrupted child before resuming it.' });
+    await ctx.restore(records);
+    return ctx.get(IAgentTaskService) as TaskServiceTestManager;
+  }
+
+  it('wakes an idle restored parent once, persists delivery, and never runs the interrupted child', async () => {
+    const tasks = await restart();
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await ctx.get(IAgentLoopService).settled();
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(tasks.getTask('agent-restart0')).toMatchObject({ status: 'lost', receiptVerification: 'verified' });
+    const messages = ctx.context.get().filter(message => message.origin?.kind === 'task' && message.origin.taskId === 'agent-restart0');
+    expect(messages).toHaveLength(1);
+    const text = messages.flatMap(message => message.content).map(part => part.type === 'text' ? part.text : '').join('\n');
+    expect(text).toContain('child-interrupted');
+    expect(text).toContain('recovery_worker');
+    expect(text).toContain('Interrupted when the host process restarted');
+    expect(text).toContain('AgentRun({ resume: "child-interrupted" })');
+    expect(text).not.toContain('external execution outcome is unconfirmed');
+    expect(ctx.get(IAgentLifecycleService).list().map(handle => handle.id)).not.toContain('child-interrupted');
+    await tasks.reconcile();
+    expect(notifiedCount(ctx)).toBe(1);
+    const records = await ctx.persistedWireRecords();
+    await ctx.dispose();
+    ctx = createTestAgent(homeDirServices(home), taskServices());
+    await ctx.restore(records);
+    await ctx.get(IAgentLoopService).settled();
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(notifiedCount(ctx)).toBe(0);
+    expect(ctx.context.get().filter(message => message.origin?.kind === 'task' && message.origin.taskId === 'agent-restart0')).toHaveLength(1);
+    expect(ctx.get(IAgentTaskService).getTask('agent-restart0')?.status).toBe('lost');
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('holds recovery until execution is released, then delivers once', async () => {
+    await restart({ held: true });
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(notifiedCount(ctx)).toBe(0);
+    const control = ctx.get(ISessionExecutionControl);
+    expect(control.isHeld()).toBe(true);
+    await control.resume({ operationId: 'resume-after-restart', pauseOperationId: 'pause-before-restart' });
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await ctx.get(IAgentLoopService).settled();
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(ctx.get(IAgentTaskService).getTask('agent-restart0')?.status).toBe('lost');
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each([
+    { archived: true },
+    { task: { ownerAgentId: 'another-parent' } },
+    { task: { detached: false } },
+    { task: { status: 'completed' as const, endedAt: 2 } },
+    { task: { terminalNotificationSuppressed: true } },
+  ])('does not wake an archived parent or an unrelated, foreground, completed or suppressed task: %j', async (options) => {
+    await restart(options);
+    await ctx.get(IAgentLoopService).settled();
+    expect(ctx.llmCalls).toHaveLength(0);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

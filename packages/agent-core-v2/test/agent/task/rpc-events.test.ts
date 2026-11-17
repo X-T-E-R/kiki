@@ -1378,9 +1378,10 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     await drainNotifications(ctx);
     const text = notificationMessageFor(agent, taskId).content[0]!.text;
     expect(text).toContain('agent_id="agent-7"');
-    expect(text).toMatch(/AgentRun\(resume="agent-7"/);
+    expect(text).toContain('AgentRun({ resume: "agent-7" })');
     expect(text).toContain('background=true');
-    expect(text).toContain('inspect the existing work and side effects');
+    expect(text).toContain("checking the child's state and preserved work");
+    expect(text).toContain('Inspect side effects of any tool call whose result was not observed');
     expect(text).toMatch(/agent_id.*NOT source_id|source_id.*NOT agent_id/);
     expect(fireAndForgetTrigger).toHaveBeenCalledWith('Notification', expect.objectContaining({
       matcherValue: 'task.failed',
@@ -1441,7 +1442,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     await drainNotifications(ctx);
     const text = notificationMessageFor(agent, taskId).content[0]!.text;
     expect(text).toContain('agent_id="agent-8"');
-    expect(text).not.toMatch(/AgentRun\(resume="agent-8"/);
+    expect(text).not.toContain('AgentRun({ resume: "agent-8" })');
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('process task body never mentions resume', async () => {
@@ -1456,7 +1457,7 @@ describe('AgentTaskService — agent recovery notification bodies', () => {
     await drainNotifications(ctx);
     const text = notificationMessageFor(agent, taskId).content[0]!.text;
     expect(text).not.toContain('agent_id=');
-    expect(text).not.toMatch(/AgentRun\(resume=/);
+    expect(text).not.toContain('AgentRun({ resume:');
     expect(text).toContain(`source_id="${taskId}"`);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
