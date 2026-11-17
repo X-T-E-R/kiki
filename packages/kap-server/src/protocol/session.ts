@@ -8,7 +8,7 @@ import {
   sessionMetadataSchema,
 } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
-import { personaAvatarDataSchema, executorCapabilitiesSchema, usageAccountingSnapshotSchema, sessionSeedModeSchema, sessionSeedCarrySchema } from '@kiki/protocol';
+import { personaAvatarDataSchema, executorCapabilitiesSchema, usageAccountingSnapshotSchema, sessionSeedModeSchema, sessionSeedCarrySchema, sessionForkedFromSchema } from '@kiki/protocol';
 import { workspaceIdSchema } from './workspace';
 
 export const sessionUsageSchema = z.object({
@@ -81,6 +81,7 @@ export const sessionSchema = z.object({
   negotiated: executorCapabilitiesSchema.shape.negotiated,
   allow_kiki_subagents: z.boolean().optional(),
   promoted_from: sessionPromotedFromSchema.optional(),
+  forked_from: sessionForkedFromSchema.optional(),
   id: z.string().min(1),
   workspace_id: workspaceIdSchema,
   title: z.string(),

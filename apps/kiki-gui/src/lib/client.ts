@@ -1364,9 +1364,19 @@ export class KikiClient {
    * previews are small (a 768px jpeg is tens of KB), so a generous entry count
    * costs little and the byte budget remains the real ceiling.
    */
-  private static readonly PREVIEW_CACHE_MAX_ENTRIES = 64;
-  private static readonly PREVIEW_CACHE_MAX_BYTES = 32 * 1024 * 1024;
-  private readonly previewFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string }> }>();
+  private static readonly PREVIEW_CACHE_MAX_ENTRIES = 256;
+  private static readonly PREVIEW_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+  private static readonly UI_MEDIA_CACHE_MAX_ENTRIES = 256;
+  private static readonly UI_MEDIA_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+  private static readonly UI_MEDIA_CACHE_MAX_ITEM_BYTES = 16 * 1024 * 1024;
+  private static readonly BACKGROUND_PREVIEW_CONCURRENCY = 2;
+  private readonly previewFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> }>();
+  private readonly mediaFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> }>();
+  private readonly uiMediaCache = new Map<string, { readonly bytes: Uint8Array; readonly mime: string; readonly name?: string; readonly etag?: string }>();
+  private uiMediaCacheBytes = 0;
+  private activeBackgroundPreviews = 0;
+  private readonly backgroundPreviewWaiters: Array<{ readonly enter: () => void; readonly cancel: () => void }> = [];
+  private readonly nativeAgentCache = new Set<string>();
   private readonly onSessionMutation: KikiClientOptions['onSessionMutation'];
 
   constructor(options: KikiClientOptions) {
@@ -1426,8 +1436,15 @@ export class KikiClient {
     previous.signal.abort();
     for (const flight of this.previewFlights.values()) flight.controller.abort();
     this.previewFlights.clear();
+    for (const flight of this.mediaFlights.values()) flight.controller.abort();
+    this.mediaFlights.clear();
+    for (const waiter of [...this.backgroundPreviewWaiters]) waiter.cancel();
+    this.backgroundPreviewWaiters.length = 0;
     this.previewBytes.clear();
     this.previewCacheBytes = 0;
+    this.uiMediaCache.clear();
+    this.uiMediaCacheBytes = 0;
+    this.nativeAgentCache.clear();
     this.serverLeaseId = undefined;
   }
 
@@ -1844,6 +1861,17 @@ export class KikiClient {
     return (executor ?? 'native') === 'native';
   }
 
+  noteNativeAgent(sessionId: string, agentId: string): void {
+    const key = `${sessionId}\0${agentId}`;
+    this.nativeAgentCache.delete(key);
+    this.nativeAgentCache.add(key);
+    while (this.nativeAgentCache.size > 512) {
+      const oldest = this.nativeAgentCache.values().next().value;
+      if (oldest === undefined) break;
+      this.nativeAgentCache.delete(oldest);
+    }
+  }
+
   async sendAgentMessage(
     sessionId: string,
     agentId: string,
@@ -1855,8 +1883,13 @@ export class KikiClient {
     skills?: readonly PromptSkillActivation[],
   ): Promise<AgentMessageReceipt | null> {
     const session = this.klient.session(sessionId);
-    const executor = await this.run(() => session.getAgentExecutor(agentId));
-    if ((executor ?? 'native') !== 'native') {
+    const cacheKey = `${sessionId}\0${agentId}`;
+    let executor = this.nativeAgentCache.has(cacheKey) ? 'native' : undefined;
+    if (executor === undefined) {
+      executor = (await this.run(() => session.getAgentExecutor(agentId))) ?? 'native';
+      if (executor === 'native') this.noteNativeAgent(sessionId, agentId);
+    }
+    if (executor !== 'native') {
       if (content?.some((part) => part.type !== 'text')) {
         throw new ExternalAgentAttachmentUnsupportedError();
       }
@@ -2256,19 +2289,56 @@ export class KikiClient {
     await this.memoryRequest('DELETE', `/fs:media-preview/${encodeURIComponent(previewId)}`, { timeoutMs: 10_000 });
   }
 
-  private cachedPreviewBytes(
+  private runInBackgroundPreviewLane<T>(
+    signal: AbortSignal,
+    read: () => Promise<T>,
+  ): Promise<T> {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    const execute = async (): Promise<T> => {
+      this.activeBackgroundPreviews += 1;
+      try {
+        signal.throwIfAborted();
+        return await read();
+      } finally {
+        this.activeBackgroundPreviews -= 1;
+        this.backgroundPreviewWaiters.shift()?.enter();
+      }
+    };
+    if (this.activeBackgroundPreviews < KikiClient.BACKGROUND_PREVIEW_CONCURRENCY) {
+      return execute();
+    }
+    return new Promise<T>((resolve, reject) => {
+      const waiter = {
+        enter: () => {
+          signal.removeEventListener('abort', waiter.cancel);
+          resolve(execute());
+        },
+        cancel: () => {
+          const index = this.backgroundPreviewWaiters.indexOf(waiter);
+          if (index >= 0) this.backgroundPreviewWaiters.splice(index, 1);
+          signal.removeEventListener('abort', waiter.cancel);
+          reject(signal.reason ?? new DOMException('Media preview cancelled', 'AbortError'));
+        },
+      };
+      this.backgroundPreviewWaiters.push(waiter);
+      signal.addEventListener('abort', waiter.cancel, { once: true });
+    });
+  }
+
+  private sharedMediaFlight<T extends { bytes: Uint8Array; mime: string; name?: string }>(
+    flights: Map<string, { controller: AbortController; users: number; promise: Promise<T> }>,
     key: string,
-    read: (etag: string | undefined, signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
+    start: (signal: AbortSignal) => Promise<T>,
     signal?: AbortSignal,
-  ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+  ): Promise<T> {
     if (signal?.aborted === true) return Promise.reject(signal.reason);
-    let flight = this.previewFlights.get(key);
+    let flight = flights.get(key);
     if (flight === undefined) {
       const controller = new AbortController();
-      flight = { controller, users: 0, promise: this.readAndCachePreview(key, (etag) => read(etag, controller.signal)) };
-      this.previewFlights.set(key, flight);
+      flight = { controller, users: 0, promise: start(controller.signal) };
+      flights.set(key, flight);
       const current = flight;
-      const clear = () => { if (this.previewFlights.get(key) === current) this.previewFlights.delete(key); };
+      const clear = () => { if (flights.get(key) === current) flights.delete(key); };
       void current.promise.then(clear, clear);
     }
     const current = flight;
@@ -2280,7 +2350,7 @@ export class KikiClient {
         settled = true;
         signal?.removeEventListener('abort', cancel);
         current.users -= 1;
-        if (current.users === 0 && this.previewFlights.get(key) === current) { this.previewFlights.delete(key); current.controller.abort(); }
+        if (current.users === 0 && flights.get(key) === current) { flights.delete(key); current.controller.abort(); }
         done();
       };
       const cancel = () => { finish(() => { reject(signal?.reason); }); };
@@ -2289,14 +2359,79 @@ export class KikiClient {
     });
   }
 
+  peekUiMediaCache(key: string): { readonly bytes: Uint8Array; readonly mime: string; readonly name?: string; readonly etag?: string } | undefined {
+    const hit = this.uiMediaCache.get(key);
+    if (hit === undefined) return undefined;
+    this.uiMediaCache.delete(key);
+    this.uiMediaCache.set(key, hit);
+    return hit;
+  }
+
+  storeUiMediaCache(key: string, entry: { readonly bytes: Uint8Array; readonly mime: string; readonly name?: string; readonly etag?: string }): void {
+    if (entry.bytes.byteLength === 0 || entry.bytes.byteLength > KikiClient.UI_MEDIA_CACHE_MAX_ITEM_BYTES) return;
+    const previous = this.uiMediaCache.get(key);
+    if (previous !== undefined) {
+      this.uiMediaCache.delete(key);
+      this.uiMediaCacheBytes -= previous.bytes.byteLength;
+    }
+    this.uiMediaCache.set(key, entry);
+    this.uiMediaCacheBytes += entry.bytes.byteLength;
+    while (this.uiMediaCache.size > KikiClient.UI_MEDIA_CACHE_MAX_ENTRIES || this.uiMediaCacheBytes > KikiClient.UI_MEDIA_CACHE_MAX_BYTES) {
+      const oldest = this.uiMediaCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.uiMediaCacheBytes -= this.uiMediaCache.get(oldest)!.bytes.byteLength;
+      this.uiMediaCache.delete(oldest);
+    }
+  }
+
+  peekSessionMediaPreviewBytes(
+    sessionId: string,
+    fileId: string,
+    mediaType?: string,
+  ): { bytes: Uint8Array; mime: string; name?: string; etag: string } | undefined {
+    const key = `media-preview:${sessionId}:${fileId}:${mediaType ?? ''}`;
+    const hit = this.previewBytes.get(key);
+    if (hit === undefined) return undefined;
+    this.previewBytes.delete(key);
+    this.previewBytes.set(key, hit);
+    return hit;
+  }
+
+  peekHostMediaPreviewBytes(
+    path: string,
+    mediaType?: string,
+  ): { bytes: Uint8Array; mime: string; etag: string } | undefined {
+    const key = `host-preview:${path}:${mediaType ?? ''}`;
+    const hit = this.previewBytes.get(key);
+    if (hit === undefined) return undefined;
+    this.previewBytes.delete(key);
+    this.previewBytes.set(key, hit);
+    return hit;
+  }
+
+  private cachedPreviewBytes(
+    key: string,
+    read: (etag: string | undefined, signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
+    signal?: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> {
+    return this.sharedMediaFlight(
+      this.previewFlights,
+      key,
+      (flightSignal) => this.runInBackgroundPreviewLane(flightSignal, () => this.readAndCachePreview(key, (etag) => read(etag, flightSignal))),
+      signal,
+    );
+  }
+
   private async readAndCachePreview(
     key: string,
     read: (etag?: string) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
-  ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+  ): Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> {
     const cached = this.previewBytes.get(key);
     const result = await this.run(read(cached?.etag));
     if (result.notModified) {
       if (cached === undefined) throw new Error('Preview cache is missing a validated response');
+      this.previewBytes.delete(key);
+      this.previewBytes.set(key, cached);
       return cached;
     }
     if (cached !== undefined) {
@@ -2320,7 +2455,7 @@ export class KikiClient {
     return this.run(this.rest.filesystem.readHostFileBytes(path, { ...this.readingOptions(), ...options }));
   }
 
-  readHostMediaPreviewBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string }> {
+  readHostMediaPreviewBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string; etag?: string }> {
     return this.cachedPreviewBytes(`host-preview:${path}:${options?.mediaType ?? ''}`, (etag, signal) =>
       this.rest.filesystem.readHostMediaPreview(path, { ...this.readingOptions(), ...options, signal, ifNoneMatch: etag }), options?.signal);
   }
@@ -2335,14 +2470,22 @@ export class KikiClient {
     fileId: string,
     options?: import('@kiki/klient').HttpRestMediaOptions,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
-    return this.run(this.rest.sessions.media(sessionId, fileId, { ...this.readingOptions(), ...options }));
+    if (options?.ifNoneMatch !== undefined) {
+      return this.run(this.rest.sessions.media(sessionId, fileId, { ...this.readingOptions(), ...options }));
+    }
+    return this.sharedMediaFlight(
+      this.mediaFlights,
+      `media-full:${sessionId}:${fileId}`,
+      (flightSignal) => this.run(this.rest.sessions.media(sessionId, fileId, { ...this.readingOptions(), ...options, signal: flightSignal })),
+      options?.signal,
+    );
   }
 
   readSessionMediaPreviewBytes(
     sessionId: string,
     fileId: string,
     options?: import('@kiki/klient').HttpRestMediaOptions,
-  ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+  ): Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> {
     return this.cachedPreviewBytes(`media-preview:${sessionId}:${fileId}:${options?.mediaType ?? ''}`, (etag, signal) =>
       this.rest.sessions.mediaPreview(sessionId, fileId, { ...this.readingOptions(), ...options, signal, ifNoneMatch: etag }), options?.signal);
   }

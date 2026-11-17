@@ -2332,3 +2332,121 @@ describe('KikiClient compound action generation (F1)', () => {
     } finally { await client.klient.close(); }
   });
 });
+
+describe('KikiClient background preview lane and high-priority media bypass', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('caps concurrent background thumbnail reads at 2, drops aborted waiters, and lets full-resolution media bypass the lane immediately', async () => {
+    let activePreviews = 0;
+    let peakPreviews = 0;
+    const previewResolvers: Array<{ readonly fileId: string; readonly resolve: () => void }> = [];
+    let fullStartedWhilePreviewsBlocked = false;
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/preview')) {
+        const fileId = url.pathname.split('/').at(-2)!;
+        activePreviews += 1;
+        peakPreviews = Math.max(peakPreviews, activePreviews);
+        await new Promise<void>((resolve) => {
+          previewResolvers.push({ fileId, resolve });
+        });
+        activePreviews -= 1;
+        return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
+          status: 200,
+          headers: { 'content-type': 'image/png', etag: `"etag-${fileId}"` },
+        });
+      }
+      if (url.pathname.includes('/media/full-now')) {
+        fullStartedWhilePreviewsBlocked = activePreviews === 2;
+        return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg' },
+        });
+      }
+      throw new Error(`unexpected URL: ${url.toString()}`);
+    }));
+
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const abortScrolledOut = new AbortController();
+      const p1 = client.readSessionMediaPreviewBytes('s1', 'thumb-1');
+      const p2 = client.readSessionMediaPreviewBytes('s1', 'thumb-2');
+      const p3Cancelled = client.readSessionMediaPreviewBytes('s1', 'thumb-3', { signal: abortScrolledOut.signal });
+      const p4 = client.readSessionMediaPreviewBytes('s1', 'thumb-4');
+
+      await vi.waitFor(() => expect(previewResolvers).toHaveLength(2));
+      expect(peakPreviews).toBe(2);
+
+      abortScrolledOut.abort();
+      await expect(p3Cancelled).rejects.toThrow();
+
+      const fullMedia = await client.readSessionMediaBytes('s1', 'full-now');
+      expect(fullStartedWhilePreviewsBlocked).toBe(true);
+      expect(fullMedia.mime).toBe('image/jpeg');
+
+      previewResolvers.shift()!.resolve();
+      await p1;
+      await vi.waitFor(() => expect(previewResolvers).toHaveLength(2));
+      expect(previewResolvers.map((entry) => entry.fileId)).toEqual(['thumb-2', 'thumb-4']);
+      expect(peakPreviews).toBe(2);
+
+      while (previewResolvers.length > 0) {
+        previewResolvers.shift()!.resolve();
+      }
+      await Promise.all([p2, p4]);
+    } finally {
+      await client.klient.close();
+    }
+  });
+
+  it('stores and promotes UI media cache entries with LRU byte eviction and skips repeat getAgentExecutor RPCs for known native agents', async () => {
+    const rpcCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api/klient/call')) {
+        const body = JSON.parse(init?.body as string) as { procedure: { method: string } };
+        rpcCalls.push(body.procedure.method);
+        return Response.json({ code: 0, msg: 'success', data: 'native' });
+      }
+      return Response.json({
+        code: 0,
+        msg: 'success',
+        data: {
+          prompt_id: 'p1',
+          user_message_id: 'p1',
+          status: 'queued',
+          content: [{ type: 'text', text: 'ok' }],
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+      });
+    }));
+
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const a = new Uint8Array(24 * 1024 * 1024);
+      const b = new Uint8Array(24 * 1024 * 1024);
+      const c = new Uint8Array(24 * 1024 * 1024);
+      client.storeUiMediaCache('k-a', { bytes: a, mime: 'image/png' });
+      client.storeUiMediaCache('k-b', { bytes: b, mime: 'image/png' });
+      expect(client.peekUiMediaCache('k-a')?.bytes).toBe(a);
+      client.storeUiMediaCache('k-c', { bytes: c, mime: 'image/png' });
+      expect(client.peekUiMediaCache('k-b')).toBeUndefined();
+      expect(client.peekUiMediaCache('k-a')?.bytes).toBe(a);
+      expect(client.peekUiMediaCache('k-c')?.bytes).toBe(c);
+
+      client.noteNativeAgent('s1', 'branch-1');
+      await client.sendAgentMessage('s1', 'branch-1', 'ok', [{ type: 'text', text: 'ok' }], 'idemp-1');
+      expect(rpcCalls).toEqual([]);
+
+      await client.sendAgentMessage('s1', 'sub-1', 'ok', [{ type: 'text', text: 'ok' }], 'idemp-2');
+      await client.sendAgentMessage('s1', 'sub-1', 'ok', [{ type: 'text', text: 'ok' }], 'idemp-3');
+      expect(rpcCalls).toEqual(['getAgentExecutor']);
+    } finally {
+      await client.klient.close();
+    }
+  });
+});
+

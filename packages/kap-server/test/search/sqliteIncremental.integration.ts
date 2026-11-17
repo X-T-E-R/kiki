@@ -185,14 +185,14 @@ it('leaves WAL-paused work with its caller when automatic recovery is disabled',
   } finally { if (reader.isTransaction) reader.exec('ROLLBACK'); reader.close(); }
 });
 
-it('skips non-branch subagent directories without inserting skip rows when indexSubagents is false while indexing side branches', async () => {
+it('skips both subagent and branch directories without inserting skip rows when indexSubagents is false and cleans up previously indexed branch rows', async () => {
   await wire('s1', 'main needle');
   await mkdir(join(home, 's1', 'agents', 'sub-1'), { recursive: true });
   await writeFile(join(home, 's1', 'agents', 'sub-1', 'wire.jsonl'), line('subagent hidden one'));
   await mkdir(join(home, 's1', 'agents', 'sub-2'), { recursive: true });
   await writeFile(join(home, 's1', 'agents', 'sub-2', 'wire.jsonl'), line('subagent hidden two'));
   await mkdir(join(home, 's1', 'agents', 'branch-1'), { recursive: true });
-  await writeFile(join(home, 's1', 'agents', 'branch-1', 'wire.jsonl'), line('branch visible needle'));
+  await writeFile(join(home, 's1', 'agents', 'branch-1', 'wire.jsonl'), line('branch hidden needle'));
   await writeFile(
     join(home, 's1', 'state.json'),
     JSON.stringify({
@@ -205,22 +205,21 @@ it('skips non-branch subagent directories without inserting skip rows when index
   );
   index.resetReadCounters();
   await index.syncSession(session('s1'));
-  expect(index.syncStatus.wireFilesRead).toBe(2);
+  expect(index.syncStatus.wireFilesRead).toBe(1);
   const rows = index.db
     .prepare('SELECT agent_id, policy FROM files WHERE session_id=? ORDER BY agent_id')
     .all('s1') as { agent_id: string; policy: string }[];
   expect(rows).toEqual([
-    { agent_id: 'branch-1', policy: 'full' },
     { agent_id: 'main', policy: 'full' },
   ]);
   expect((await index.search({
-    query: 'branch visible',
-    literalQuery: normalizeLiteral('branch visible'),
+    query: 'branch hidden',
+    literalQuery: normalizeLiteral('branch hidden'),
     mode: 'literal',
     sort: 'time_desc',
     op: 'AND',
     pageSize: 10,
-  })).rows).toHaveLength(1);
+  })).rows).toHaveLength(0);
   expect((await index.search({
     query: 'subagent hidden',
     literalQuery: normalizeLiteral('subagent hidden'),
@@ -229,4 +228,41 @@ it('skips non-branch subagent directories without inserting skip rows when index
     op: 'AND',
     pageSize: 10,
   })).rows).toHaveLength(0);
+
+  index.close();
+  const dbPath = join(home, 'index.sqlite');
+  const subagentIndex = await SqliteSearchIndex.open(dbPath, { indexSubagents: true });
+  try {
+    await subagentIndex.syncSession(session('s1'));
+    expect((await subagentIndex.search({
+      query: 'branch hidden',
+      literalQuery: normalizeLiteral('branch hidden'),
+      mode: 'literal',
+      sort: 'time_desc',
+      op: 'AND',
+      pageSize: 10,
+    })).rows).toHaveLength(1);
+  } finally {
+    await subagentIndex.close();
+  }
+
+  index = await SqliteSearchIndex.open(dbPath, { indexSubagents: false });
+  await index.syncSession(session('s1'));
+  expect((await index.search({
+    query: 'branch hidden',
+    literalQuery: normalizeLiteral('branch hidden'),
+    mode: 'literal',
+    sort: 'time_desc',
+    op: 'AND',
+    pageSize: 10,
+  })).rows).toHaveLength(0);
+  const cleanedRows = index.db
+    .prepare('SELECT agent_id, policy FROM files WHERE session_id=? ORDER BY agent_id')
+    .all('s1') as { agent_id: string; policy: string }[];
+  expect(cleanedRows).toEqual([
+    { agent_id: 'branch-1', policy: 'skip' },
+    { agent_id: 'main', policy: 'full' },
+    { agent_id: 'sub-1', policy: 'skip' },
+    { agent_id: 'sub-2', policy: 'skip' },
+  ]);
 });

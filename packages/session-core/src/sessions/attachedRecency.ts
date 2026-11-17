@@ -6,7 +6,11 @@ function parentIdOf(session: Session): string | undefined {
   const createdBy = session.metadata['created_by_session_id'];
   if (typeof createdBy === 'string' && createdBy !== '' && createdBy !== session.id) return createdBy;
   const parent = session.metadata['parent_session_id'];
-  return session.metadata['child_session_kind'] === 'child' && typeof parent === 'string' && parent !== '' && parent !== session.id ? parent : undefined;
+  if (session.metadata['child_session_kind'] === 'child' && typeof parent === 'string' && parent !== '' && parent !== session.id) {
+    return parent;
+  }
+  const forkedParent = session.forked_from?.session_id;
+  return typeof forkedParent === 'string' && forkedParent !== '' && forkedParent !== session.id ? forkedParent : undefined;
 }
 
 function newer(a: string, b: string): string {

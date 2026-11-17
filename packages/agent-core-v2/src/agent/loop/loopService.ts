@@ -57,7 +57,7 @@ import { OrderedHookSlot } from '#/hooks';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
-import type { ContextMessage } from '#/agent/contextMemory/types';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { isVacuousContentPart } from '#/agent/contextMemory/vacuousContent';
@@ -232,7 +232,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       for (;;) {
         const batch = runtime.queue.takeNextBatch();
         if (batch === undefined) break;
-        this.materializeBatch(batch, { turnId: runtime.turnId, stepId: randomUUID(), step: runtime.steps });
+        if (this.materializeBatch(batch, { turnId: runtime.turnId, stepId: randomUUID(), step: runtime.steps }).invalidatesUserDelivery) {
+          runtime.userDeliveryConfirmed = false;
+        }
       }
       runtime.queue.enqueue(new ResumeStepRequest(runtime.job?.seed ?? { input: [], origin: { kind: 'unknown' } }));
     }
@@ -1119,7 +1121,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             { stepId: begun.step.uuid, logicalStepId: `${runtime.turnId}/${begun.step.batch.driver.id}`, attempt: begun.step.attempt },
             runtime,
             begun.step.batch.driver instanceof ThinkingOnlyContinuationStepRequest,
-            begun.step.batch.driver.kind === 'continuation' && begun.step.batch.merged.length === 0,
+            begun.step.allowsSilentPostDelivery,
           );
           const completed = this.completeLoopStep(runtime, result);
           if (completed !== undefined) return completed;
@@ -1142,7 +1144,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       queue: job?.queue ?? this.standaloneStepQueue,
       steps: job?.restored?.completedSteps ?? 0,
       pendingStep: job?.restored?.pendingStep,
-      userDeliveryConfirmed: job?.restored?.userDeliveryConfirmed ?? job?.restored?.pendingStep?.userDeliveryConfirmed ?? false,
+      userDeliveryConfirmed: job?.restored?.userDeliveryConfirmed
+        ?? job?.restored?.pendingStep?.userDeliveryConfirmed
+        ?? (this.scope.parentAgentId === undefined && isBackgroundWakeupSeed(job?.seed.origin)),
       thinkingOnlyContinuations: 0,
       extensionRecoveryStreak: 0,
       extensionBudgetUsed: 0,
@@ -1183,18 +1187,26 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     }
     const attempt = (runtime.attempts.get(batch.driver.id) ?? 0) + 1;
     runtime.attempts.set(batch.driver.id, attempt);
+    const stepNumber = ++runtime.steps;
+    const stepUuid = randomUUID();
+    const { invalidatesUserDelivery, allowsSilentPostDelivery } = this.materializeBatch(batch, {
+      turnId: runtime.turnId,
+      stepId: stepUuid,
+      step: stepNumber,
+    });
+    if (invalidatesUserDelivery) runtime.userDeliveryConfirmed = false;
     const step: StepRuntime = {
       attempt,
-      number: ++runtime.steps,
-      uuid: randomUUID(),
+      number: stepNumber,
+      uuid: stepUuid,
       batch,
       mutableStep,
+      allowsSilentPostDelivery,
       signal: mutableStep?.controller === undefined
         ? runtime.turnSignal
         : AbortSignal.any([runtime.turnSignal, mutableStep.controller.signal]),
     };
     EventEmitter.setMaxListeners(MAX_STEP_SIGNAL_LISTENERS, step.signal);
-    this.materializeBatch(batch, { turnId: runtime.turnId, stepId: step.uuid, step: step.number });
     return { step };
   }
 
@@ -1401,15 +1413,24 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return { type: 'return', result: { type: 'failed', error, steps: runtime.steps } };
   }
 
-  private materializeBatch(batch: StepRequestBatch, anchor: MaterializeAnchor): void {
+  private materializeBatch(
+    batch: StepRequestBatch,
+    anchor: MaterializeAnchor,
+  ): { readonly invalidatesUserDelivery: boolean; readonly allowsSilentPostDelivery: boolean } {
+    const evaluation = evaluateStepBatchDelivery(batch);
     const delivery = {};
     this.materializeRequest(batch.driver, delivery, anchor);
     for (const request of batch.merged) {
       this.materializeRequest(request, delivery, anchor);
     }
+    return evaluation;
   }
 
-  private materializeRequest(request: StepRequest, delivery: object, anchor: MaterializeAnchor): void {
+  private materializeRequest(
+    request: StepRequest,
+    delivery: object,
+    anchor: MaterializeAnchor,
+  ): void {
     if (request.state !== 'pending') return;
     request.onWillMaterialize();
     const messages = request.resolveContextMessages(delivery);
@@ -1569,11 +1590,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       continuationBudget.extensionRecoveryStreak = 0;
       this.lastRequestTraceId = request.trace.traceId;
       const silentPostDeliveryTurnEnd = this.scope.parentAgentId === undefined &&
-        plainToolContinuation && continuationBudget.userDeliveryConfirmed &&
+        plainToolContinuation &&
+        continuationBudget.userDeliveryConfirmed &&
+        response.completionAuthority === 'normal' &&
         response.providerFinishReason === 'completed' && response.message.partial !== true &&
         response.rawFinishReason !== 'CONTINUATION' && !hasAnswerOrToolCall(response);
-      const googleThinkSnapshot = !silentPostDeliveryTurnEnd && isThinkOnlyCompletion(response) &&
-        this.llmRequester.supportsAssistantPrefill?.() === false;
+      const googleThinkSnapshot = !silentPostDeliveryTurnEnd &&
+        isThinkOnlyCompletion(response) && this.llmRequester.supportsAssistantPrefill?.() === false;
       if (googleThinkSnapshot && continuationBudget.thinkingOnlyContinuations >= 1) {
         response = this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
         this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
@@ -1813,9 +1836,11 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const finishReason = response.providerFinishReason ?? 'completed';
     if (response.message.toolCalls.length === 0) return finishReason === 'tool_calls' ? 'other' : finishReason;
     let pending: readonly ExecutionPendingTool[] = runtime.pendingStep?.tools ?? response.message.toolCalls.map(call => ({ call }));
-    let stopTurn = runtime.pendingStep?.stopTurn ?? false;
+    let sendMessageStopRequested = runtime.pendingStep?.stopTurn ?? false;
     let forcedStopTurn = runtime.pendingStep?.forcedStopTurn ?? false;
     let sendMessageCompletionBlocked = runtime.pendingStep?.sendMessageCompletionBlocked ?? false;
+    let anySendMessageUnconfirmed = runtime.pendingStep?.anySendMessageUnconfirmed ?? false;
+    let anyToolError = runtime.pendingStep?.anyToolError ?? false;
     const systemReminders: Array<{ readonly text: string; readonly variant: string }> = [];
     while (pending.length > 0) {
       runtime.pendingStep = {
@@ -1825,9 +1850,11 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         response,
         trace,
         tools: pending,
-        stopTurn,
+        stopTurn: sendMessageStopRequested,
         forcedStopTurn,
         sendMessageCompletionBlocked,
+        anySendMessageUnconfirmed,
+        anyToolError,
         userDeliveryConfirmed: runtime.userDeliveryConfirmed,
       };
       try { await this.pauseAtBoundary(runtime); }
@@ -1860,7 +1887,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             toolCallId: batch.call.id, name: batch.call.name, args: batch.args, extras: batch.call.extras });
           this.context.appendLoopEvent({ type: 'tool.result', parentUuid: callUuid, toolCallId: batch.call.id,
             result: { isError: true, output: batch.output } });
+          if (batch.call.name === 'SendMessage') {
+            anySendMessageUnconfirmed = true;
+            sendMessageStopRequested = false;
+          }
           sendMessageCompletionBlocked = true;
+          anyToolError = true;
           continue;
         }
         for await (const toolResult of this.toolExecutor.execute(batch.tools.map(tool => tool.call), {
@@ -1886,12 +1918,15 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             result: { output: result.output, isError: result.isError, note: result.note, runtimeId: result.runtimeId, memoryReceipt: result.memoryReceipt,
               fileRead: result.fileRead === undefined ? undefined : { ...result.fileRead, truncated: result.truncated === true || result.fileRead.truncated } } });
           await this.hooks.onDidAppendToolResult.run({ toolCallId, isError: result.isError });
+          if (result.isError === true) anyToolError = true;
           if (toolResult.toolName === 'SendMessage') {
             if (result.isError === true || result.userDeliveryConfirmed !== true) {
+              anySendMessageUnconfirmed = true;
               sendMessageCompletionBlocked = true;
-            } else {
+              sendMessageStopRequested = false;
+            } else if (!anySendMessageUnconfirmed) {
               runtime.userDeliveryConfirmed = true;
-              if (result.stopTurn === true) stopTurn = true;
+              if (result.stopTurn === true) sendMessageStopRequested = true;
             }
           } else {
             if (result.isError === true || result.allowsTurnEndWithSendMessage !== true) sendMessageCompletionBlocked = true;
@@ -1903,11 +1938,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     }
     signal.throwIfAborted();
     for (const reminder of systemReminders) this.appendExtensionReminder(reminder.text, reminder.variant);
-    if (sendMessageCompletionBlocked) {
-      stopTurn = false;
+    if (anySendMessageUnconfirmed || (sendMessageCompletionBlocked && (!sendMessageStopRequested || anyToolError))) {
       runtime.userDeliveryConfirmed = false;
     }
-    return stopTurn || forcedStopTurn ? 'completed' : 'tool_calls';
+    return (sendMessageStopRequested && !sendMessageCompletionBlocked && !anySendMessageUnconfirmed) || forcedStopTurn
+      ? 'completed'
+      : 'tool_calls';
   }
 
   private isPrivateSession(): boolean {
@@ -2424,6 +2460,49 @@ function googleThinkSnapshotExhausted(response: AgentLLMRequestFinish): ChatProv
   );
 }
 
+function isBackgroundNotificationOrigin(origin: PromptOrigin | undefined): boolean {
+  if (origin === undefined) return false;
+  if (origin.kind === 'merged') return origin.origins.length > 0 && origin.origins.every(isBackgroundNotificationOrigin);
+  return origin.kind === 'task' || origin.kind === 'agent_message' || origin.kind === 'injection';
+}
+
+function isBackgroundWakeupSeed(origin: PromptOrigin | undefined): boolean {
+  if (origin === undefined) return false;
+  if (origin.kind === 'task' || origin.kind === 'agent_message') return true;
+  if (origin.kind !== 'merged' || origin.origins.length === 0) return false;
+  return origin.origins.every(isBackgroundNotificationOrigin) && origin.origins.some(isBackgroundWakeupSeed);
+}
+
+function isBackgroundNotificationRequest(request: StepRequest): boolean {
+  if (request.kind === 'task_notification') return true;
+  if (request.kind !== 'steer' && request.kind !== 'prompt' && request.kind !== 'message') return false;
+  const messages = request.resolveContextMessages();
+  if (messages.length > 0) {
+    return messages.every((message) => isBackgroundNotificationOrigin(message.origin));
+  }
+  return isBackgroundNotificationOrigin(request.turnSeed?.origin);
+}
+
+function requestInvalidatesUserDelivery(request: StepRequest): boolean {
+  if (request.kind === 'continuation' || request.kind === 'thinking-only-continuation') return false;
+  return !isBackgroundNotificationRequest(request);
+}
+
+function evaluateStepBatchDelivery(batch: StepRequestBatch): {
+  readonly invalidatesUserDelivery: boolean;
+  readonly allowsSilentPostDelivery: boolean;
+} {
+  const requests = [batch.driver, ...batch.merged];
+  const invalidatesUserDelivery = requests.some(requestInvalidatesUserDelivery);
+  const allowsSilentPostDelivery = !invalidatesUserDelivery && requests.every(
+    (request) =>
+      request.kind === 'continuation' ||
+      request.kind === 'thinking-only-continuation' ||
+      isBackgroundNotificationRequest(request),
+  );
+  return { invalidatesUserDelivery, allowsSilentPostDelivery };
+}
+
 function isThinkOnlyCompletion(response: AgentLLMRequestFinish): boolean {
   if (response.completionAuthority !== 'normal') return false;
   if (response.message.partial === true) return false;
@@ -2590,6 +2669,7 @@ interface StepRuntime {
   readonly uuid: string;
   readonly batch: StepRequestBatch;
   readonly mutableStep: MutableStep | undefined;
+  readonly allowsSilentPostDelivery: boolean;
   readonly signal: AbortSignal;
 }
 

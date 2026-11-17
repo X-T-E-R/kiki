@@ -456,7 +456,149 @@ if ($calls[1].Arguments -ne '--background') { throw "Background launch did not p
 '@, (New-Object Text.UTF8Encoding($false)))
     Invoke-Controller @('-ControllerPath', $controller, '-RuntimePath', $legacyRoot) 0 $backgroundRunner | Out-Null
 
-    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, and legacy-launch cases.'
+    $hotSwitchPath = Join-Path $PSScriptRoot 'desktop-hot-switch.ps1'
+    $hotSwitchRunner = Join-Path $testRoot 'hot-switch-units.ps1'
+    [IO.File]::WriteAllText($hotSwitchRunner, @'
+param([string]$HotSwitchPath, [string]$ControllerPath, [string]$ScratchRoot)
+$ErrorActionPreference = 'Stop'
+. $ControllerPath -Action Launch
+
+$ast = [Management.Automation.Language.Parser]::ParseFile($HotSwitchPath, [ref]$null, [ref]$null)
+$paramAst = $ast.ParamBlock.Parameters
+$settleParam = $paramAst | Where-Object { $_.Name.VariablePath.UserPath -eq 'SettleSeconds' }
+if ($null -eq $settleParam -or $settleParam.DefaultValue.Extent.Text -ne '600') {
+    throw "Expected default SettleSeconds = 600, saw '$($settleParam.DefaultValue.Extent.Text)'."
+}
+$interruptParam = $paramAst | Where-Object { $_.Name.VariablePath.UserPath -eq 'InterruptAfterSettle' }
+if ($null -eq $interruptParam -or $interruptParam.DefaultValue.Extent.Text -ne '$true') {
+    throw "Expected default InterruptAfterSettle = `$true, saw '$($interruptParam.DefaultValue.Extent.Text)'."
+}
+$noInterruptParam = $paramAst | Where-Object { $_.Name.VariablePath.UserPath -eq 'NoInterruptAfterSettle' }
+if ($null -eq $noInterruptParam) {
+    throw 'Expected switch parameter -NoInterruptAfterSettle.'
+}
+
+$fnNames = @('Call-Local', 'Execution', 'Lifecycle', 'Stop-ProcessBounded', 'Close-DesktopShell', 'Await-Release', 'Release-OurPauses')
+foreach ($definition in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $fnNames }, $false)) {
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+
+# 1. Execution uses bounded timeouts (> 0) for resume/cancelPause as well as read/pause, and Lifecycle passes interrupt_work.
+$ownerToken = 'a' * 43
+$lastBody = $null
+function Invoke-RestMethod {
+    param($Uri, $Headers, $MaximumRedirection, $TimeoutSec, $Method, $ContentType, $Body)
+    $script:lastBody = if ($Body) { $Body | ConvertFrom-Json } else { $null }
+    return @{ code = 0; data = $TimeoutSec }
+}
+$server = @{ port = 1; server_id = 'srv-1' }
+foreach ($method in @('resume', 'cancelPause')) {
+    $t = Execution $server 'sess-1' $method
+    if ($t -le 0) { throw "Expected bounded positive timeout for $method, saw $t." }
+}
+foreach ($method in @('read', 'pause')) {
+    $t = Execution $server 'sess-1' $method
+    if ($t -ne 60) { throw "Expected 60s timeout for $method, saw $t." }
+}
+$null = Lifecycle $server 'update'
+if ($lastBody.interrupt_work -ne $false) { throw 'Expected Lifecycle default interrupt_work = $false.' }
+$null = Lifecycle $server 'update' $true
+if ($lastBody.interrupt_work -ne $true) { throw 'Expected Lifecycle interrupt_work = $true when requested.' }
+
+# 2. Close-DesktopShell terminates tray/hidden shells where CloseMainWindow() returns $false and restores closeToTray.
+$homePath = Join-Path $ScratchRoot 'tray-home'
+[IO.Directory]::CreateDirectory($homePath) | Out-Null
+$prefsFile = Join-Path $homePath 'desktop.json'
+Write-AtomicUtf8Json $prefsFile ([ordered]@{ closeToTray = $true; theme = 'paper' })
+$StartupSeconds = 2
+$stoppedIds = New-Object System.Collections.Generic.List[int]
+function Stop-Process {
+    param([int]$Id, [switch]$Force, $ErrorAction)
+    $stoppedIds.Add($Id) | Out-Null
+    $script:trayShellExited = $true
+}
+$script:trayShellExited = $false
+$trayShell = New-Object PSObject -Property @{ Id = 42420 }
+$trayShell | Add-Member -MemberType ScriptProperty -Name HasExited -Value { return $script:trayShellExited }
+$trayShell | Add-Member -MemberType ScriptMethod -Name Refresh -Value { }
+$trayShell | Add-Member -MemberType ScriptMethod -Name CloseMainWindow -Value { return $false }
+$trayShell | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($ms) return $script:trayShellExited }
+
+Close-DesktopShell $trayShell
+if (-not $stoppedIds.Contains(42420)) { throw 'Close-DesktopShell did not terminate tray-hidden shell process.' }
+$restoredPrefs = Get-Content -LiteralPath $prefsFile -Raw | ConvertFrom-Json
+if ($restoredPrefs.closeToTray -ne $true -or $restoredPrefs.theme -ne 'paper') {
+    throw 'Close-DesktopShell did not restore desktop.json closeToTray preference.'
+}
+
+# 3. Await-Release explicitly verifies meta.build_id / instance.build_id against ExpectedCommit.
+$runtime = Join-Path $ScratchRoot 'await-rt'
+$state = [pscustomobject]@{
+    oldServerId = 'old-srv'
+    serverHomeId = 'home-1'
+    spaceId = 'main'
+    hadDesktop = $false
+}
+$launcherStub = [pscustomobject]@{ HasExited = $false; ExitCode = 0 }
+$expectedSha = 'c' * 40
+$wrongSha = 'd' * 40
+$script:mockServer = [pscustomobject]@{
+    releaseId = 'rel-new'
+    instance = [pscustomobject]@{ build_id = $wrongSha; port = 1; server_id = 'new-srv' }
+    meta = [pscustomobject]@{ build_id = $wrongSha; server_id = 'new-srv'; server_home_id = 'home-1'; current_space_id = 'main' }
+}
+function Find-Server { return $script:mockServer }
+function Find-Shells { return @() }
+$mismatchCaught = $false
+try {
+    $null = Await-Release 'rel-new' $expectedSha $launcherStub
+} catch {
+    if ($_.Exception.Message -match "reported build_id '$wrongSha' instead of expected commit '$expectedSha'") {
+        $mismatchCaught = $true
+    } else {
+        throw "Unexpected Await-Release error: $($_.Exception.Message)"
+    }
+}
+if (-not $mismatchCaught) { throw 'Await-Release did not reject mismatched build_id.' }
+
+$script:mockServer.instance.build_id = $expectedSha
+$script:mockServer.meta.build_id = $expectedSha
+$matched = Await-Release 'rel-new' $expectedSha $launcherStub
+if ($matched.meta.build_id -cne $expectedSha) { throw 'Await-Release did not return matching build_id server.' }
+
+# 4. Release-OurPauses tolerates idle/pausing states when $AllowCancel = $true (post-InterruptAfterSettle).
+$state = [pscustomobject]@{
+    sessions = @(
+        [pscustomobject]@{ id = 's-idle'; pauseId = 'p-1' },
+        [pscustomobject]@{ id = 's-pausing'; pauseId = 'p-2' }
+    )
+}
+$execCalls = New-Object System.Collections.Generic.List[string]
+function Execution([object]$Server, [string]$Id, [string]$Method, [object[]]$Arguments = @()) {
+    $execCalls.Add("$Id`:$Method") | Out-Null
+    if ($Method -eq 'read') {
+        if ($Id -eq 's-idle') { return [pscustomobject]@{ pauseOperationId = 'p-1'; phase = 'idle' } }
+        return [pscustomobject]@{ pauseOperationId = 'p-2'; phase = 'pausing' }
+    }
+    return [pscustomobject]@{ phase = 'idle' }
+}
+Release-OurPauses ([pscustomobject]@{ instance = $server }) $true
+if (-not $execCalls.Contains('s-pausing:cancelPause')) {
+    throw "Expected Release-OurPauses with AllowCancel to cancel lingering pause; saw: $($execCalls -join ', ')"
+}
+
+# 5. -Recover branch reuses Close-DesktopShell to clean up lingering tray shells before throwing.
+$recoverIfAst = $ast.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.IfStatementAst] -and $node.Extent.Text -match '^\s*if\s*\(\$Recover\)'
+}, $false) | Select-Object -First 1
+if ($null -eq $recoverIfAst -or $recoverIfAst.Extent.Text -notmatch 'Close-DesktopShell') {
+    throw 'Expected -Recover branch to reuse Close-DesktopShell for lingering tray desktop shells.'
+}
+'@, (New-Object Text.UTF8Encoding($false)))
+    Invoke-Controller @('-HotSwitchPath', $hotSwitchPath, '-ControllerPath', $controller, '-ScratchRoot', (Join-Path $testRoot 'hs-unit')) 0 $hotSwitchRunner | Out-Null
+
+    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, legacy-launch, and hot-switch-guard cases.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

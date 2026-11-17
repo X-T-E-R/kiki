@@ -1115,3 +1115,65 @@ describe('handing a new agent to Kiki', () => {
     expect(client.createSession).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('multi-workspace connection pool protection', () => {
+  it('issues zero cross-workspace profile requests on initial mount across 97 workspaces and bounds deep-link lookup concurrency to <= 2', async () => {
+    const manyWorkspaces = Array.from({ length: 97 }, (_, index) => ({
+      id: `ws-${index}`,
+      root: `/fixture/ws-${index}`,
+      name: `Project ${index}`,
+      pinned: false,
+      last_opened_at: new Date(Date.UTC(2026, 0, 1, 0, 0, 100 - index)).toISOString(),
+    }));
+    const targetProfile: NamedAgentProfile = {
+      ...sub,
+      name: 'deep_specialist',
+      workspace_id: 'ws-3',
+      source_file: '/fixture/ws-3/deep_specialist/SYSTEM.md',
+    };
+    client.listWorkspaceCatalog.mockResolvedValue({ items: manyWorkspaces });
+
+    let inFlightElsewhere = 0;
+    let maxConcurrentElsewhere = 0;
+    const probedWorkspaces: string[] = [];
+
+    client.listNamedAgentProfiles.mockImplementation(async (query?: unknown) => {
+      const wsId = typeof query === 'string'
+        ? query
+        : typeof query === 'object' && query !== null && 'workspace_id' in query
+          ? String((query as { workspace_id: unknown }).workspace_id)
+          : 'global';
+      if (wsId === 'ws-0') {
+        return { items: [main, sub, explore], complete: true };
+      }
+      probedWorkspaces.push(wsId);
+      inFlightElsewhere += 1;
+      maxConcurrentElsewhere = Math.max(maxConcurrentElsewhere, inFlightElsewhere);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlightElsewhere -= 1;
+      return wsId === 'ws-3'
+        ? { items: [targetProfile], complete: true }
+        : { items: [main, explore], complete: true };
+    });
+
+    await render();
+    // Initial mount with 97 registered workspaces must never query the other 96 workspaces.
+    expect(probedWorkspaces).toEqual([]);
+
+    // Navigating to a deep link missing from ws-0 probes by recency with concurrency <= 2 and stops once ws-3 matches.
+    await act(async () => {
+      routerNavigate.current?.({ pathname: '/settings/agents', search: '?workspace=ws-0&agent=deep_specialist' });
+    });
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    }
+    await settle();
+
+    expect(maxConcurrentElsewhere).toBeLessThanOrEqual(2);
+    expect(probedWorkspaces).toContain('ws-3');
+    expect(probedWorkspaces.length).toBeLessThanOrEqual(5);
+    const elsewhereLine = container.querySelector('[data-agent-elsewhere]')!;
+    expect(elsewhereLine).not.toBeNull();
+    expect(elsewhereLine.textContent).toContain('Project 3');
+  });
+});

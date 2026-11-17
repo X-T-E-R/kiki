@@ -885,7 +885,7 @@ export class AgentPromptService implements IAgentPromptService {
     @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
-    let executionWasHeld = false;
+    let executionWasHeld = executionControl.isHeld();
     const executionSubscription = executionControl.onDidChange((state) => {
       const held = state.phase !== 'running';
       if (executionControl.isDurablyPaused()) this.releaseDurablyPausedAdmissions();

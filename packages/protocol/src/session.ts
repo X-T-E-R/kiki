@@ -141,6 +141,9 @@ export const worktreeIsolationSchema = z.object({
 export const sessionDeliverySchema = z.enum(['reply', 'message']);
 export type SessionDelivery = z.infer<typeof sessionDeliverySchema>;
 
+export const sessionSeedModeSchema = z.enum(['fresh', 'compact', 'verbatim']);
+export type SessionSeedMode = z.infer<typeof sessionSeedModeSchema>;
+
 /** Where a promoted thread came from: the subagent whose conversation seeded it. */
 export const sessionPromotedFromSchema = z.object({
   session_id: z.string().min(1),
@@ -151,6 +154,18 @@ export const sessionPromotedFromSchema = z.object({
 });
 export type SessionPromotedFrom = z.infer<typeof sessionPromotedFromSchema>;
 
+/** Where a forked session came from: the source session and turn/message boundary it split off from. */
+export const sessionForkedFromSchema = z.object({
+  session_id: z.string().min(1),
+  title: z.string().optional(),
+  through_message_id: z.string().min(1).optional(),
+  turn_index: z.number().int().nonnegative().optional(),
+  through_user_message: z.boolean().optional(),
+  seed: sessionSeedModeSchema.optional(),
+  forked_at: isoDateTimeSchema.optional(),
+});
+export type SessionForkedFrom = z.infer<typeof sessionForkedFromSchema>;
+
 export const sessionSchema = z.object({
   executor_id: z.string().optional(),
   negotiated: executorCapabilitiesSchema.shape.negotiated,
@@ -158,6 +173,8 @@ export const sessionSchema = z.object({
   delivery: sessionDeliverySchema.optional(),
   /** Set on threads created by promoting a subagent; absent otherwise and on older servers. */
   promoted_from: sessionPromotedFromSchema.optional(),
+  /** Set on sessions forked from another session; absent otherwise and on older servers. */
+  forked_from: sessionForkedFromSchema.optional(),
   id: z.string().min(1),
   workspace_id: workspaceIdSchema,
   title: z.string(),
@@ -253,9 +270,6 @@ export const expectedSessionCursorSchema = z.object({
   epoch: z.string().min(1),
 });
 export type ExpectedSessionCursor = z.infer<typeof expectedSessionCursorSchema>;
-
-export const sessionSeedModeSchema = z.enum(['fresh', 'compact', 'verbatim']);
-export type SessionSeedMode = z.infer<typeof sessionSeedModeSchema>;
 
 export const sessionSeedCarrySchema = z.union([
   z.object({ last: z.number().int().nonnegative() }).strict(),

@@ -1633,25 +1633,44 @@ describe('server-v2 /api/sessions', () => {
 
   it('filters personas from live profiles or indexed metadata without replaying agent wires', async () => {
     const core = server!.core.accessor;
-    const handle = await core.get(ISessionManager).create({ sessionId: 'live-persona-filter', workDir: home! });
-    await handle.accessor.get(IAgentLifecycleService).create({ agentId: MAIN_AGENT_ID });
-    const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"', '[search]', 'enabled = false',
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"', 'api_key = "YOUR_API_KEY"',
+      '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 4000',
+    ].join('\n'));
+    await core.get(IConfigService).reload();
+    const livePersonaId = 'live-explicit-persona';
+    await core.get(IPersonaStore).put({ id: livePersonaId, name: 'Live explicit persona', description: 'A test persona.' });
+    const createdLive = await postJson<SessionWire>('/api/sessions', { persona: livePersonaId, metadata: { cwd: home } });
+    expect(createdLive.body.code, createdLive.body.msg).toBe(0);
+    const live = createdLive.body.data;
+    const fallback = await core.get(ISessionManager).create({ sessionId: 'live-persona-fallback', workDir: home! });
+    await fallback.accessor.get(IAgentLifecycleService).create({ agentId: MAIN_AGENT_ID });
+    const workspaceId = fallback.accessor.get(ISessionContext).workspaceId;
     const rows: SessionSummary[] = [
-      { id: handle.id, workspaceId, cwd: home, personaId: 'indexed-persona', createdAt: 1, updatedAt: 3000, archived: false },
-      { id: 'cold-persona-filter', workspaceId, cwd: home, personaId: 'target-persona', createdAt: 1, updatedAt: 2000, archived: false },
-      { id: 'legacy-persona-filter', workspaceId, cwd: home, custom: { bot_persona_id: 'target-persona' }, createdAt: 1, updatedAt: 1000, archived: false },
+      { id: live.id, workspaceId, cwd: home, personaId: 'target-persona', createdAt: 1, updatedAt: 5000, archived: false },
+      { id: fallback.id, workspaceId, cwd: home, custom: { bot_persona_id: '', room_persona_id: 'target-persona' }, createdAt: 1, updatedAt: 4000, archived: false },
+      { id: 'cold-persona-filter', workspaceId, cwd: home, personaId: 'target-persona', createdAt: 1, updatedAt: 3000, archived: false },
+      { id: 'legacy-persona-filter', workspaceId, cwd: home, custom: { bot_persona_id: 'malformed id', room_persona_id: 'target-persona' }, createdAt: 1, updatedAt: 2000, archived: false },
+      { id: 'custom-persona-filter', workspaceId, cwd: home, custom: { persona_id: 'target-persona' }, createdAt: 1, updatedAt: 1500, archived: false },
+      { id: 'malformed-persona-filter', workspaceId, cwd: home, custom: { bot_persona_id: 'malformed id' }, createdAt: 1, updatedAt: 1000, archived: false },
     ];
     const index = core.get(ISessionIndex);
     vi.spyOn(index, 'listRecent').mockResolvedValue({ items: rows, nextCursor: undefined });
     const read = vi.spyOn(core.get(IAppendLogStore), 'read').mockImplementation(() => {
       throw new Error('Persona filtering must not replay an agent wire');
     });
+    const personaGet = vi.spyOn(core.get(IPersonaStore), 'get');
     const belongs = vi.spyOn(core.get(IBotService), 'sessionBelongsToPersona').mockImplementation(async () => {
       throw new Error('Persona filtering must not call BotService');
     });
     const { body } = await getJson<PageWire>('/api/sessions?persona=target-persona&page_size=50');
     expect(body.code).toBe(0);
-    expect(body.data.items.map((row) => row.id)).toEqual(['cold-persona-filter', 'legacy-persona-filter']);
+    expect(body.data.items.map((row) => row.id)).toEqual([fallback.id, 'cold-persona-filter', 'legacy-persona-filter', 'custom-persona-filter']);
+    for (const row of body.data.items) {
+      expect(row.agent_config).toMatchObject({ persona: { id: 'target-persona' } });
+    }
+    expect(personaGet).not.toHaveBeenCalledWith('malformed id');
     expect(read).not.toHaveBeenCalled();
     expect(belongs).not.toHaveBeenCalled();
   });
@@ -1673,14 +1692,11 @@ describe('server-v2 /api/sessions', () => {
       const items = rows.slice(start, start + (query.limit ?? rows.length));
       return { items, nextCursor: start + items.length < rows.length ? items.at(-1)?.id : undefined };
     });
-    const started = performance.now();
     const { body } = await getJson<PageWire>('/api/sessions?persona=target-persona&page_size=1');
-    const elapsedMs = performance.now() - started;
     expect(body.code).toBe(0);
     expect(body.data.items.map((row) => row.id)).toEqual(['persona-batch-target']);
     expect(list.mock.calls).toHaveLength(4);
     expect(list.mock.calls.every(([query]) => query.limit === 500)).toBe(true);
-    process.stdout.write(`${JSON.stringify({ personaIndexScan: { sessions: rows.length, pages: list.mock.calls.length, elapsedMs } })}\n`);
   });
 
   it('bounds default list bytes, drains every ID, preserves an after range, and filters busy before paging', async () => {

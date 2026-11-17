@@ -95,6 +95,57 @@ function threadCacheVersionReader(client: QueryClient | undefined): () => number
   };
 }
 
+const THREAD_REF_PREFETCH_CONCURRENCY = 2;
+
+interface ThreadRefPrefetchQueue {
+  active: number;
+  readonly queued: Set<string>;
+  readonly tasks: Map<string, () => Promise<void>>;
+}
+
+const prefetchQueues = new WeakMap<QueryClient, ThreadRefPrefetchQueue>();
+
+function enqueueThreadRefPrefetch(
+  client: QueryClient,
+  sessionId: string,
+  fetchSession: (id: string) => Promise<Session>,
+): void {
+  if (client.getQueryState(['thread-ref', sessionId]) !== undefined) return;
+  let state = prefetchQueues.get(client);
+  if (state === undefined) {
+    state = { active: 0, queued: new Set(), tasks: new Map() };
+    prefetchQueues.set(client, state);
+  }
+  if (state.queued.has(sessionId) || state.tasks.has(sessionId)) return;
+  const queue = state;
+  const pump = () => {
+    while (queue.active < THREAD_REF_PREFETCH_CONCURRENCY && queue.queued.size > 0) {
+      const nextId = queue.queued.values().next().value;
+      if (nextId === undefined) break;
+      queue.queued.delete(nextId);
+      const run = queue.tasks.get(nextId);
+      queue.tasks.delete(nextId);
+      if (run === undefined) continue;
+      if (client.getQueryState(['thread-ref', nextId]) !== undefined) continue;
+      queue.active += 1;
+      void run().finally(() => {
+        queue.active -= 1;
+        pump();
+      });
+    }
+  };
+  queue.queued.add(sessionId);
+  queue.tasks.set(sessionId, () =>
+    client.prefetchQuery({
+      queryKey: ['thread-ref', sessionId],
+      queryFn: () => fetchSession(sessionId),
+      staleTime: 60_000,
+      retry: false,
+    }),
+  );
+  pump();
+}
+
 /**
  * The directory for the linked ids in view. `ids` drives the one-shot fetch
  * for records no cached list carries; lookups for other ids still read the cache.
@@ -126,8 +177,7 @@ export function useThreadRefDirectory(
     for (const id of missing) {
       // One attempt per id: a failed lookup (deleted, other host) stays a
       // short-id chip rather than retrying on every render.
-      if (client.getQueryState(['thread-ref', id]) !== undefined) continue;
-      void client.prefetchQuery({ queryKey: ['thread-ref', id], queryFn: () => fetchSession(id), staleTime: 60_000, retry: false });
+      enqueueThreadRefPrefetch(client, id, fetchSession);
     }
   }, [client, fetchSession, missing, sourceMatches]);
   const hasRefs = ids.length > 0;

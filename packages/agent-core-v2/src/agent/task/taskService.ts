@@ -312,14 +312,25 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     tasks: readonly AgentTaskWaitDelivery[];
     cleanup: () => void;
   }>();
+  private readonly waitConsumingKeys = new Set<string>();
+  private readonly pausedRequiredAgents = new Set<string>();
+  private pausedRequiredAgentsSync: Promise<void> | undefined;
   private exitSuppressionArmed = false;
   private readonly persistence: AgentTaskPersistence;
   private notificationRestoreQueue: Promise<void> = Promise.resolve();
   private mediaRecovery?: (info: MediaTaskInfo) => Promise<AgentTask | undefined>;
+  private static readonly RESTORE_RETRY_DELAYS_MS = [100, 500, 2_000] as const;
+
   private restoreRecovery: Promise<void> | undefined;
+  private restoreRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  private restoreRetryAttempts = 0;
+  private restoreExhausted = false;
+  private readonly reconciledTerminatedTaskIds = new Set<string>();
   private restoreDisposed = false;
   private restorePending = false;
   private unarchiveRecoveryPending = false;
+  private readonly atomicDocs: IAtomicDocumentStore;
+  private readonly session: ISessionContext;
 
   private fireWorkChange(): void {
     this._onDidChangeWork.fire();
@@ -354,6 +365,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
   ) {
     super();
+    this.atomicDocs = atomicDocs;
+    this.session = session;
     this.states.contributeState(taskKey);
     this.states.contributeState(taskNotificationDeliveryKey);
     this.states.contributeState(taskGhostsKey);
@@ -399,7 +412,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     this._register(this.loop.hooks.onWillBeginStep.register('task.notificationDelivery', async ({ signal, firstStepOfTurn }, next) => {
       signal.throwIfAborted();
       await this.commitMaterializedNotifications(signal);
-      if (firstStepOfTurn) await this.restoreAgentTaskNotifications();
+      if (firstStepOfTurn) {
+        if (this.restorePending && this.restoreRecovery === undefined && !this.executionControl.isHeld()) {
+          await this.resumeRestoration().catch((error) => {
+            this.log.error('agent task restoration on step start failed', { error });
+          });
+        }
+        await this.restoreAgentTaskNotifications();
+      }
       signal.throwIfAborted();
       await next();
     }, { before: 'context-injector' }));
@@ -422,13 +442,24 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       ),
     );
     this._register(this.executionControl.onDidChange((state) => {
-      if (state.phase !== 'running') return;
+      if (state.phase !== 'running') {
+        this.clearRestoreRetryTimer();
+        void this.syncPausedRequiredAgents();
+        return;
+      }
+      this.pausedRequiredAgents.clear();
+      this.restoreRetryAttempts = 0;
+      if (this.restorePending) this.restoreExhausted = false;
+      this.fireWorkChange();
       if (this.restorePending) {
         void this.resumeRestoration().catch(error => this.log.error('agent task restoration failed', { error }));
       } else if (this.unarchiveRecoveryPending) {
         void this.restoreAgentTaskNotifications(true).catch(error => this.log.error('unarchived task notification recovery failed', { error }));
       }
     }));
+    if (this.executionControl.isHeld()) {
+      void this.syncPausedRequiredAgents();
+    }
     if (this.sessionMetadata !== undefined) {
       this._register(this.sessionMetadata.onDidChangeMetadata(({ changed }) => {
         if (!changed.includes('archived') || this.restoreDisposed) return;
@@ -463,28 +494,95 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private async restoreAfterReplay(): Promise<void> {
     this.restoreGhostsFromWire();
+    this.clearRestoreRetryTimer();
+    this.restoreRetryAttempts = 0;
+    this.restoreExhausted = false;
     this.restorePending = true;
     this.fireWorkChange();
   }
 
+  private clearRestoreRetryTimer(): void {
+    if (this.restoreRetryTimer !== undefined) {
+      clearTimeout(this.restoreRetryTimer);
+      this.restoreRetryTimer = undefined;
+    }
+  }
+
+  private scheduleRestoreRetry(): void {
+    if (this.restoreDisposed || this.executionControl.isHeld()) return;
+    const delayMs = AgentTaskService.RESTORE_RETRY_DELAYS_MS[this.restoreRetryAttempts];
+    if (delayMs === undefined) {
+      if (!this.restoreExhausted) {
+        this.restoreExhausted = true;
+        this.fireWorkChange();
+      }
+      return;
+    }
+    this.restoreRetryAttempts += 1;
+    this.clearRestoreRetryTimer();
+    const timer = setClampedTimeout(() => {
+      this.restoreRetryTimer = undefined;
+      if (this.restoreDisposed || !this.restorePending || this.executionControl.isHeld()) return;
+      void this.resumeRestorationInternal(true).catch((error) => {
+        this.log.error('agent task restoration retry failed', { error });
+      });
+    }, delayMs);
+    timer.unref?.();
+    this.restoreRetryTimer = timer;
+  }
+
   resumeRestoration(): Promise<void> {
+    return this.resumeRestorationInternal(false);
+  }
+
+  private resumeRestorationInternal(fromScheduledRetry: boolean): Promise<void> {
     if (this.restoreRecovery !== undefined) return this.restoreRecovery;
     if (this.executionControl.isHeld()) return Promise.resolve();
-    this.restoreRecovery = withoutRestoreAttempt(async () => {
+    this.clearRestoreRetryTimer();
+    if (!fromScheduledRetry && this.restoreExhausted) {
+      this.restoreRetryAttempts = 0;
+      this.restoreExhausted = false;
+      this.fireWorkChange();
+    }
+    const recovery = withoutRestoreAttempt(async () => {
       try {
         await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
-        if (this.restoreDisposed) return;
+        if (this.restoreDisposed) {
+          this.restorePending = false;
+          this.restoreExhausted = false;
+          this.fireWorkChange();
+          return;
+        }
         const context = { agentId: this.scopeContext.agentId };
         await timeRestorePhase(this.log, context, 'task_load', () => this.loadFromDisk({ replace: false }));
-        if (this.restoreDisposed) return;
+        if (this.restoreDisposed) {
+          this.restorePending = false;
+          this.restoreExhausted = false;
+          this.fireWorkChange();
+          return;
+        }
         await timeRestorePhase(this.log, context, 'task_reconcile', () => this.reconcile());
-      } finally {
         this.restorePending = false;
+        this.restoreRetryAttempts = 0;
+        this.restoreExhausted = false;
         this.fireWorkChange();
         if (!this.restoreDisposed) this.eventBus.publish(new TaskRestorationSettled({}));
+      } catch (error) {
+        if (this.restoreRecovery === recovery) this.restoreRecovery = undefined;
+        if (this.restoreDisposed) {
+          this.restorePending = false;
+          this.restoreExhausted = false;
+          this.fireWorkChange();
+        } else {
+          this.scheduleRestoreRetry();
+        }
+        throw error;
+      } finally {
+        if (this.restoreRecovery === recovery) this.restoreRecovery = undefined;
       }
     });
-    return this.restoreRecovery;
+    this.restoreRecovery = recovery;
+    return recovery;
   }
 
   private activeBackgroundTaskReminder(): string | undefined {
@@ -529,7 +627,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       startedAt: restored?.startedAt ?? Date.now(),
       ownerTurnId: restored === undefined ? (options.ownerTurnId ?? this.loop.status().activeTurnId) : restored.ownerTurnId,
       goalId: restored === undefined ? this.currentGoal()?.goalId : restored.goalId,
-      terminalNotificationSuppressed: restored?.terminalNotificationSuppressed,
+      terminalNotificationSuppressed: options.terminalNotificationSuppressed,
       endedAt: null,
       foregroundRelease: detached ? undefined : createForegroundRelease(),
       abortController: new AbortController(),
@@ -601,13 +699,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   async recordCompletedTask(info: AgentTaskInfo & { readonly status: 'completed' }, finalOutput: string): Promise<void> {
     const terminal = { ...info, detached: true,
-      terminalNotificationSuppressed: info.terminalNotificationSuppressed || this.exitSuppressionArmed || undefined };
+      terminalNotificationSuppressed: info.terminalNotificationSuppressed || undefined };
     const existing = this.ghosts.get(info.taskId) ?? await this.persistence.readTask(info.taskId);
     const committed = existing?.status === 'completed' && existing.receiptVerification === 'verified'
       ? existing : { ...terminal, receipt: await this.persistence.commitTerminalTask(terminal, finalOutput), receiptVerification: 'verified' as const };
     this.ghosts.set(info.taskId, committed);
     this.localTaskIds.add(info.taskId);
-    if (this.states.get(taskKey).get(info.taskId)?.status !== 'completed') {
+    const currentStatus = this.states.get(taskKey).get(info.taskId)?.status;
+    if (currentStatus === undefined || !isAgentTaskTerminal(currentStatus)) {
       this.recordTaskTerminated(committed, Buffer.from(finalOutput, 'utf-8').subarray(-TERMINAL_OUTPUT_TAIL_BYTES).toString('utf-8'));
     }
     try {
@@ -782,6 +881,91 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return original;
   }
 
+  async settlePausedAgentTask(taskId: string, reason: string): Promise<AgentTaskInfo | undefined> {
+    const entry = this.tasks.get(taskId);
+    const currentInfo = entry === undefined ? this.ghosts.get(taskId) : this.toInfo(entry);
+    if (currentInfo === undefined || currentInfo.kind !== 'agent') return currentInfo;
+    if (TERMINAL_STATUSES.has(currentInfo.status)) return currentInfo;
+    const outcomeRead = currentInfo.agentId === undefined
+      ? undefined
+      : await readCommittedAgentRunOutcomes(this.sessionMetadata);
+    const known = outcomeRead?.ok === true ? outcomeRead.outcomes.get(taskId) : undefined;
+    if (known !== undefined && known.subagentId === currentInfo.agentId) {
+      if (entry !== undefined) {
+        entry.terminalNotificationSuppressed = undefined;
+        if (known.finalOutput !== undefined && entry.finalOutput === undefined) {
+          entry.finalOutput = known.finalOutput;
+          const bytes = Buffer.byteLength(known.finalOutput, 'utf-8');
+          entry.outputSizeBytes += bytes;
+          this.appendRetainedOutput(entry, known.finalOutput, bytes);
+        }
+        await this.settleTask(entry, {
+          status: known.status,
+          stopReason: known.stopReason,
+        });
+        await entry.persistWriteQueue;
+        return this.toInfo(entry);
+      }
+      const updated: AgentTaskInfo = {
+        ...currentInfo,
+        status: known.status,
+        endedAt: known.endedAt ?? currentInfo.endedAt ?? Date.now(),
+        cleanupPending: undefined,
+        terminalNotificationSuppressed: undefined,
+        stopReason: known.stopReason,
+        parentSteering: known.parentSteering ?? currentInfo.parentSteering,
+      };
+      let committed: AgentTaskInfo;
+      try {
+        const receipt = await this.persistence.commitTerminalTask(updated, known.finalOutput);
+        committed = { ...updated, receipt, receiptVerification: 'verified' as const };
+      } catch (error) {
+        this.log.error('known paused agent outcome receipt persistence failed', { taskId, error });
+        committed = updated;
+        await this.persistence.writeTask(committed);
+      }
+      this.ghosts.set(taskId, committed);
+      this.localTaskIds.add(taskId);
+      this.fireWorkChange();
+      this.recordTaskTerminated(
+        committed,
+        known.finalOutput === undefined
+          ? undefined
+          : Buffer.from(known.finalOutput, 'utf-8').subarray(-TERMINAL_OUTPUT_TAIL_BYTES).toString('utf-8'),
+      );
+      await this.dispatcher.flush();
+      await this.notifyAgentTask(committed);
+      return committed;
+    }
+    if (entry !== undefined) {
+      entry.terminalNotificationSuppressed = undefined;
+      return this.stop(taskId, reason);
+    }
+    const updated: AgentTaskInfo = {
+      ...currentInfo,
+      status: 'killed',
+      endedAt: Date.now(),
+      terminalNotificationSuppressed: undefined,
+      stopReason: reason,
+    };
+    let committed: AgentTaskInfo;
+    try {
+      const receipt = await this.persistence.commitTerminalTask(updated);
+      committed = { ...updated, receipt, receiptVerification: 'verified' as const };
+    } catch (error) {
+      this.log.error('paused agent task receipt persistence failed', { taskId, error });
+      committed = updated;
+      await this.persistence.writeTask(committed);
+    }
+    this.ghosts.set(taskId, committed);
+    this.localTaskIds.add(taskId);
+    this.fireWorkChange();
+    this.recordTaskTerminated(committed);
+    await this.dispatcher.flush();
+    await this.notifyAgentTask(committed);
+    return committed;
+  }
+
   async getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined> {
     const info = this.getTask(taskId);
     if (info?.receiptVerification !== 'verified' || !isAgentTaskTerminal(info.status)) return info;
@@ -828,7 +1012,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   hasUnfinishedWork(includeRestoration = true): boolean {
-    if (includeRestoration && this.restorePending) return true;
+    if (includeRestoration && this.restorePending && !this.restoreExhausted) return true;
     const notificationsEnabled = this.sessionMetadata?.snapshot().archived !== true;
     for (const entry of this.tasks.values()) {
       if (entry.options.lifetime === 'service') continue;
@@ -956,10 +1140,21 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const lostTasks = await this.markLoadedTasksLost();
     for (const info of lostTasks) {
       if (this.restoreDisposed) return lostTasks;
-      this.recordTaskTerminated(info);
+      this.recordReconciledTaskTerminated(info);
     }
     if (!this.restoreDisposed) await timeRestorePhase(this.log, { agentId: this.scopeContext.agentId }, 'task_notifications', () => this.restoreAgentTaskNotifications());
     return lostTasks;
+  }
+
+  private recordReconciledTaskTerminated(info: AgentTaskInfo): void {
+    if (this.restoreDisposed || this.reconciledTerminatedTaskIds.has(info.taskId)) return;
+    const current = this.states.get(taskKey).get(info.taskId);
+    if (current !== undefined && isAgentTaskTerminal(current.status)) {
+      this.reconciledTerminatedTaskIds.add(info.taskId);
+      return;
+    }
+    this.reconciledTerminatedTaskIds.add(info.taskId);
+    this.recordTaskTerminated(info);
   }
 
   async getOutputSnapshot(
@@ -1111,19 +1306,24 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const origins = tasks.map(({ taskId, status }): TaskNotificationOrigin => ({
       taskId, status, notificationId: taskNotificationId(taskId, status),
     }));
-    const newlyConsumedKeys = new Set(
-      origins.map(notificationKey).filter((key) => !this.deliveredNotificationKeys.has(key) && !this.hasDeliveredNotification(key)),
-    );
-    await this.dispatcher.dispatch(new TaskWaitDelivered({ keys: origins.map(notificationKey) }));
-    await this.dispatcher.flush();
-    for (const origin of origins) {
-      const key = notificationKey(origin);
-      this.pendingNotificationRequests.get(key)?.abort();
-      this.markDeliveredNotification(origin);
-      if (newlyConsumedKeys.has(key)) {
-        const info = this.getTask(origin.taskId);
-        if (info !== undefined) this.appendSubagentReturnSteering(info);
+    for (const origin of origins) this.waitConsumingKeys.add(notificationKey(origin));
+    try {
+      const newlyConsumedKeys = new Set(
+        origins.map(notificationKey).filter((key) => !this.deliveredNotificationKeys.has(key) && !this.hasDeliveredNotification(key)),
+      );
+      await this.dispatcher.dispatch(new TaskWaitDelivered({ keys: origins.map(notificationKey) }));
+      await this.dispatcher.flush();
+      for (const origin of origins) {
+        const key = notificationKey(origin);
+        this.pendingNotificationRequests.get(key)?.abort();
+        this.markDeliveredNotification(origin);
+        if (newlyConsumedKeys.has(key)) {
+          const info = this.getTask(origin.taskId);
+          if (info !== undefined) this.appendSubagentReturnSteering(info);
+        }
       }
+    } finally {
+      for (const origin of origins) this.waitConsumingKeys.delete(notificationKey(origin));
     }
   }
 
@@ -1385,6 +1585,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   async stopAllOnExit(reason: string): Promise<readonly AgentTaskInfo[]> {
     await this.suppressAllTerminalNotifications();
     if (this.keepAliveOnExit()) return [];
+    if (this.executionControl.isHeld()) await this.syncPausedRequiredAgents();
     const stopping = this.list(true).filter(info => !this.hasPausedExecution(info)).map(info => this.stop(info.taskId, reason));
     const stopped = await Promise.all(stopping);
     await Promise.all(this.pendingSettlements);
@@ -1393,12 +1594,46 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return stopped.filter((info): info is AgentTaskInfo => info !== undefined);
   }
 
+  private async syncPausedRequiredAgents(): Promise<void> {
+    if (this.pausedRequiredAgentsSync !== undefined) return this.pausedRequiredAgentsSync;
+    const sync = Promise.resolve().then(async () => {
+      if (!this.executionControl.isHeld()) {
+        if (this.pausedRequiredAgents.size > 0) {
+          this.pausedRequiredAgents.clear();
+          this.fireWorkChange();
+        }
+        return;
+      }
+      let doc: { readonly requiredAgents?: readonly string[] } | undefined;
+      try {
+        doc = await this.atomicDocs.get<{ readonly requiredAgents?: readonly string[] }>(
+          this.session.scope(),
+          'execution-control.json',
+        );
+      } catch {
+        return;
+      }
+      if (!this.executionControl.isHeld()) return;
+      this.pausedRequiredAgents.clear();
+      for (const id of doc?.requiredAgents ?? []) this.pausedRequiredAgents.add(id);
+      this.fireWorkChange();
+    }).finally(() => {
+      if (this.pausedRequiredAgentsSync === sync) this.pausedRequiredAgentsSync = undefined;
+    });
+    this.pausedRequiredAgentsSync = sync;
+    return sync;
+  }
+
   private hasPausedExecution(info: AgentTaskInfo): boolean {
-    return info.kind === 'agent' && info.agentId !== undefined && this.executionControl.resumePoint(info.agentId) !== undefined;
+    if (info.kind !== 'agent' || info.agentId === undefined) return false;
+    if (this.executionControl.resumePoint(info.agentId) !== undefined) return true;
+    if (!this.executionControl.isHeld()) return false;
+    return this.executionControl.isParked?.(info.agentId) === true || this.pausedRequiredAgents.has(info.agentId);
   }
 
   override dispose(): void | Promise<void> {
     this.restoreDisposed = true;
+    this.clearRestoreRetryTimer();
     this.exitSuppressionArmed = true;
     const hadPendingWaitDeliveries = this.pendingWaitDeliveries.size > 0;
     for (const pending of this.pendingWaitDeliveries.values()) pending.cleanup();
@@ -1436,7 +1671,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private marksTerminalNotificationSuppressed(entry: ManagedTask): boolean {
-    return this.exitSuppressionArmed && !this.keepAliveOnExit() && this.isDetached(entry);
+    return this.exitSuppressionArmed && !this.keepAliveOnExit() && this.isDetached(entry) && !this.hasPausedExecution(this.toInfo(entry));
   }
 
   async wait(
@@ -1550,6 +1785,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private async markLoadedTasksLost(): Promise<readonly AgentTaskInfo[]> {
     await this.executionControl.ready();
+    if (this.executionControl.isHeld()) await this.syncPausedRequiredAgents();
     const lostTasks: AgentTaskInfo[] = [];
     let changed = false;
     const persistence = this.persistence;
@@ -1562,93 +1798,108 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       });
     }
     const outcomes = outcomeRead?.ok === true ? outcomeRead.outcomes : undefined;
-    for (const [taskId, stored] of this.ghosts) {
-      if (this.restoreDisposed) break;
-      if (this.localTaskIds.has(taskId)) continue;
-      if (stored.kind === 'process' && stored.cleanupPending === true) {
-        const resolved = this.resolveRestoredCleanup(stored);
-        this.ghosts.set(taskId, resolved);
-        changed = true;
-        await persistence.writeTask(resolved);
-        lostTasks.push(resolved);
-        continue;
-      }
-      if (TERMINAL_STATUSES.has(stored.status)) continue;
-      const info = stored;
-      if (this.hasPausedExecution(info)) continue;
-      if (info.kind === 'media' && this.mediaRecovery !== undefined) {
-        const recovered = await this.mediaRecovery(info);
-        if (recovered !== undefined) {
-          this.registerTask(recovered, { taskId, detached: true });
+    try {
+      for (const [taskId, stored] of this.ghosts) {
+        if (this.restoreDisposed) break;
+        if (this.localTaskIds.has(taskId)) continue;
+        if (stored.kind === 'process' && stored.cleanupPending === true) {
+          const resolved = this.resolveRestoredCleanup(stored);
+          await persistence.writeTask(resolved);
+          this.ghosts.set(taskId, resolved);
           changed = true;
+          this.recordReconciledTaskTerminated(resolved);
+          lostTasks.push(resolved);
           continue;
         }
-      }
-      if (info.kind === 'agent') {
-        const agentId = info.agentId;
-        const known = agentId === undefined ? undefined : outcomes?.get(taskId);
-        if (known !== undefined && known.subagentId === agentId) {
-          const updated: AgentTaskInfo = {
-            ...info,
-            status: known.status,
-            endedAt: known.endedAt ?? info.endedAt ?? Date.now(),
-            cleanupPending: undefined,
-            stopReason: known.stopReason,
-            parentSteering: known.parentSteering ?? info.parentSteering,
-          };
-          try {
-            const receipt = await persistence.commitTerminalTask(updated, known.finalOutput);
-            const committed = { ...updated, receipt, receiptVerification: 'verified' as const };
-            this.ghosts.set(taskId, committed);
-            changed = true;
-            lostTasks.push(committed);
-          } catch (error) {
-            this.log.error('known agent outcome receipt persistence failed', { taskId, error });
-            this.ghosts.set(taskId, updated);
-            changed = true;
-            await persistence.writeTask(updated);
-            lostTasks.push(updated);
+        if (TERMINAL_STATUSES.has(stored.status)) {
+          const replayed = this.states.get(taskKey).get(taskId);
+          if (replayed !== undefined && !isAgentTaskTerminal(replayed.status)) {
+            this.recordReconciledTaskTerminated(stored);
           }
           continue;
         }
+        const info = stored;
+        if (this.hasPausedExecution(info)) continue;
+        if (info.kind === 'media' && this.mediaRecovery !== undefined) {
+          const recovered = await this.mediaRecovery(info);
+          if (recovered !== undefined) {
+            this.registerTask(recovered, { taskId, detached: true });
+            changed = true;
+            continue;
+          }
+        }
+        if (info.kind === 'agent') {
+          const agentId = info.agentId;
+          const known = agentId === undefined ? undefined : outcomes?.get(taskId);
+          if (known !== undefined && known.subagentId === agentId) {
+            const updated: AgentTaskInfo = {
+              ...info,
+              status: known.status,
+              endedAt: known.endedAt ?? info.endedAt ?? Date.now(),
+              cleanupPending: undefined,
+              stopReason: known.stopReason,
+              parentSteering: known.parentSteering ?? info.parentSteering,
+            };
+            try {
+              const receipt = await persistence.commitTerminalTask(updated, known.finalOutput);
+              const committed = { ...updated, receipt, receiptVerification: 'verified' as const };
+              this.ghosts.set(taskId, committed);
+              changed = true;
+              this.recordReconciledTaskTerminated(committed);
+              lostTasks.push(committed);
+            } catch (error) {
+              this.log.error('known agent outcome receipt persistence failed', { taskId, error });
+              await persistence.writeTask(updated);
+              this.ghosts.set(taskId, updated);
+              changed = true;
+              this.recordReconciledTaskTerminated(updated);
+              lostTasks.push(updated);
+            }
+            continue;
+          }
+        }
+        if (info.cleanupPending === true) {
+          const resolved = this.resolveRestoredCleanup(info);
+          await persistence.writeTask(resolved);
+          this.ghosts.set(taskId, resolved);
+          changed = true;
+          this.recordReconciledTaskTerminated(resolved);
+          lostTasks.push(resolved);
+          continue;
+        }
+        const updated: AgentTaskInfo = {
+          ...info,
+          status: 'lost',
+          endedAt: info.endedAt ?? Date.now(),
+          stopReason: [
+            info.kind === 'agent' && (info.executorProtocol ?? info.executorId ?? 'native') === 'native'
+              ? 'Interrupted when the host process restarted before the subagent finished; resume this subagent to inspect its last persisted step and continue.'
+              : 'Execution tracking was not reattached when this agent scope was restored. The external execution outcome is unconfirmed.',
+            info.kind === 'agent' && info.agentId !== undefined
+              ? `Inspect preserved work and resume the same agent (${info.agentId}) with a new prompt ID. Do not repeat actions whose result was not observed.`
+              : 'Inspect the original execution and preserved output before starting replacement work.',
+            info.stopReason === undefined ? undefined : `Previous diagnostic: ${info.stopReason}`,
+          ].filter((part) => part !== undefined).join(' '),
+        };
+        try {
+          const receipt = await persistence.commitTerminalTask(updated);
+          const committed = { ...updated, receipt, receiptVerification: 'verified' as const };
+          this.ghosts.set(taskId, committed);
+          changed = true;
+          this.recordReconciledTaskTerminated(committed);
+          lostTasks.push(committed);
+        } catch (error) {
+          this.log.error('lost task receipt persistence failed', { taskId, error });
+          await persistence.writeTask(updated);
+          this.ghosts.set(taskId, updated);
+          changed = true;
+          this.recordReconciledTaskTerminated(updated);
+          lostTasks.push(updated);
+        }
       }
-      if (info.cleanupPending === true) {
-        const resolved = this.resolveRestoredCleanup(info);
-        this.ghosts.set(taskId, resolved);
-        changed = true;
-        await persistence.writeTask(resolved);
-        lostTasks.push(resolved);
-        continue;
-      }
-      const updated: AgentTaskInfo = {
-        ...info,
-        status: 'lost',
-        endedAt: info.endedAt ?? Date.now(),
-        stopReason: [
-          info.kind === 'agent' && (info.executorProtocol ?? info.executorId ?? 'native') === 'native'
-            ? 'Interrupted when the host process restarted before the subagent finished; resume this subagent to inspect its last persisted step and continue.'
-            : 'Execution tracking was not reattached when this agent scope was restored. The external execution outcome is unconfirmed.',
-          info.kind === 'agent' && info.agentId !== undefined
-            ? `Inspect preserved work and resume the same agent (${info.agentId}) with a new prompt ID. Do not repeat actions whose result was not observed.`
-            : 'Inspect the original execution and preserved output before starting replacement work.',
-          info.stopReason === undefined ? undefined : `Previous diagnostic: ${info.stopReason}`,
-        ].filter((part) => part !== undefined).join(' '),
-      };
-      try {
-        const receipt = await persistence.commitTerminalTask(updated);
-        const committed = { ...updated, receipt, receiptVerification: 'verified' as const };
-        this.ghosts.set(taskId, committed);
-        changed = true;
-        lostTasks.push(committed);
-      } catch (error) {
-        this.log.error('lost task receipt persistence failed', { taskId, error });
-        this.ghosts.set(taskId, updated);
-        changed = true;
-        await persistence.writeTask(updated);
-        lostTasks.push(updated);
-      }
+    } finally {
+      if (changed) this.fireWorkChange();
     }
-    if (changed) this.fireWorkChange();
     return lostTasks;
   }
 
@@ -2014,14 +2265,24 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         .then(async ({ turn, step }) => {
           await step.result;
           if (!request.aborted) return;
-          const result = await turn.result.catch(() => undefined);
+          const result = await (turn.durableResult ?? turn.result).catch(() => undefined);
           if (generation !== this.notificationUndoGeneration || this.pendingNotificationRequests.get(key) !== request) return;
           this.clearPendingNotification(key, request);
-          if (result?.type === 'completed') await this.notifyAgentTask(info);
+          if (
+            (result?.type === 'completed' || result?.type === 'cancelled') &&
+            !this.restoreDisposed &&
+            !this.exitSuppressionArmed &&
+            !this.deliveredNotificationKeys.has(key) &&
+            !this.waitConsumingKeys.has(key)
+          ) {
+            await this.notifyAgentTask(info);
+          }
         })
         .catch((error) => {
           this.clearPendingNotification(key, request);
-          this.log.error('task notification admission failed', { taskId: info.taskId, error });
+          if (!this.restoreDisposed && !this.exitSuppressionArmed) {
+            this.log.error('task notification admission failed', { taskId: info.taskId, error });
+          }
         });
     } catch (error) {
       this.clearPendingNotification(key, request);
@@ -2043,7 +2304,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const lastEnded = this.states.has(turnKey) ? this.states.get(turnKey).lastEnded : undefined;
     if (this.sessionMetadata?.snapshot().archived === true ||
       (info.status === 'lost' && !this.isInterruptedBackgroundSubagent(info)) ||
-      (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId)) {
+      (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId &&
+        !(this.scopeContext.parentAgentId === undefined && info.kind === 'agent' && info.detached !== false && info.status !== 'killed'))) {
       return 'activeOrNextTurn';
     }
     if (goal !== null && goal.status !== 'complete' &&
@@ -2183,7 +2445,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const key = notificationKey(origin);
     if (this.buildingNotificationKeys.has(key)) return undefined;
     if (this.scheduledNotificationKeys.has(key)) return undefined;
-    if (this.deliveredNotificationKeys.has(key)) return undefined;
+    if (this.deliveredNotificationKeys.has(key) || this.waitConsumingKeys.has(key)) return undefined;
     if (this.hasDeliveredNotification(key)) return undefined;
     this.buildingNotificationKeys.add(key);
     this.fireWorkChange();
@@ -2211,7 +2473,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
             : this.sessionMetadata?.snapshot().agents?.[info.agentId]?.labels?.[COLLABORATION_TASK_NAME_LABEL])
           : undefined;
         const remainingSubagents = info.kind === 'agent'
-          ? runningSubagentStatus(this, this.lifecycle, this.scopeContext.agentId, info.agentId)
+          ? runningSubagentStatus(this, this.lifecycle, this.scopeContext.agentId, info.agentId, undefined, info.taskId)
           : undefined;
         return [{
           type: 'text',

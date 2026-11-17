@@ -180,6 +180,82 @@ describe('visible IM reply messages', () => {
       expect((await ports.sessions.readVisible('session', 'P1', 14)).text).toBe('');
       identities.set('P2', { promptId: 'P2', turnId: 14 });
       expect((await ports.sessions.readVisible('session', 'P2', 14)).text).toBe('closing');
+
+      messages = [
+        { id: 'P3', role: 'user', origin: { kind: 'user', im }, source: { turnId: 15 }, content: [] },
+        { ...messages[0]!, source: { turnId: 15 } },
+      ];
+      identities.set('P3', { promptId: 'P3', turnId: 15 });
+      await hook.run({
+        ...context,
+        turnId: 15,
+        result: { output: JSON.stringify({ delivered_to: ['user'], channels: [{ channel_id: 'im:origin', status: 'partial', message_ids: [] }] }) },
+      });
+      expect((await ports.sessions.readVisible('session', 'P3', 15)).text).toBe('closing');
+
+      await hook.run({
+        ...context,
+        turnId: 15,
+        result: { output: JSON.stringify({ delivered_to: ['user'], channels: [{ channel_id: 'im:origin', status: 'partial', message_ids: ['om_text_1'] }] }) },
+      });
+      expect((await ports.sessions.readVisible('session', 'P3', 15)).text).toBe('');
+
+      messages = [
+        { id: 'P4', role: 'user', origin: { kind: 'user', im }, source: { turnId: 16 }, content: [] },
+        { ...messages[1]!, source: { turnId: 16 } },
+      ];
+      identities.set('P4', { promptId: 'P4', turnId: 16 });
+      await hook.run({
+        ...context,
+        turnId: 16,
+        result: { output: JSON.stringify({ delivered_to: ['user'], channels: [{ channel_id: 'im:origin', status: 'partial', message_ids: ['img_1'], detail: 'text_failed:send_failed' }] }) },
+      });
+      expect((await ports.sessions.readVisible('session', 'P4', 16)).text).toBe('closing');
+
+      await hook.run({
+        ...context,
+        turnId: 16,
+        result: { output: JSON.stringify({ voice_only: true, delivered_to: ['user'], channels: [{ channel_id: 'im:origin', status: 'delivered', message_ids: ['v_1'] }] }) },
+      });
+      expect((await ports.sessions.readVisible('session', 'P4', 16)).text).toBe('closing');
+
+      await hook.run({
+        ...context,
+        turnId: 16,
+        result: { output: JSON.stringify({ delivered_to: ['user'], channels: [{ channel_id: 'im:origin', status: 'partial', message_ids: [], unsupported: ['voice'], detail: 'wechat_rejected' }] }) },
+      });
+      expect((await ports.sessions.readVisible('session', 'P4', 16)).text).toBe('');
+
+      messages = [
+        { id: 'P5', role: 'user', origin: { kind: 'user', im }, source: { turnId: 17 }, content: [] },
+        { ...messages[1]!, source: { turnId: 17 } },
+      ];
+      identities.set('P5', { promptId: 'P5', turnId: 17 });
+      await hook.run({
+        ...context,
+        turnId: 17,
+        result: { output: JSON.stringify({ delivered_to: ['user'], channels: [{ channel_id: 'im:origin', status: 'partial', message_ids: [], detail: 'attachment_partial' }] }) },
+      });
+      expect((await ports.sessions.readVisible('session', 'P5', 17)).text).toBe('');
+
+      messages = [
+        { id: 'P6', role: 'user', origin: { kind: 'user', im }, source: { turnId: 18 }, content: [] },
+        { ...messages[1]!, source: { turnId: 18 } },
+      ];
+      identities.set('P6', { promptId: 'P6', turnId: 18 });
+      await hook.run({
+        ...context,
+        turnId: 18,
+        result: {
+          output: JSON.stringify({
+            messages: [
+              { voice_only: true, delivered_to: ['user'], channels: [{ channel_id: 'im:origin', status: 'delivered', message_ids: ['v_1'] }] },
+              { delivered_to: ['user'], channels: [{ channel_id: 'im:origin', status: 'delivered', message_ids: ['t_1'] }] },
+            ],
+          }),
+        },
+      });
+      expect((await ports.sessions.readVisible('session', 'P6', 18)).text).toBe('');
     } finally { await bridge.close(); }
   });
 

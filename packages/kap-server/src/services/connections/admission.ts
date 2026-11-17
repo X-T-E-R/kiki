@@ -4,7 +4,7 @@ import { PAIRING_CODE_ALPHABET, bridgeOperationsSchema, connectionGrantSchema, n
 import { generateServerToken } from '../auth/persistentToken';
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 
-const DEFAULT_PAIR_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait'];
+const DEFAULT_PAIR_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create', 'tools'];
 const LAST_CONNECTED_AT_PERSIST_INTERVAL_MS = 5 * 60 * 1000;
 interface StoredGrant extends Omit<ConnectionGrant, 'activeLeases'> { digest: string; allowBridge?: boolean }
 interface PairingCode { digest: string; expiresAt: number; allowBridge: boolean; bridgeOperations?: BridgeOperation[]; failures: number; consumed: boolean; label: string }
@@ -207,7 +207,7 @@ export class ConnectionAdmission {
       return { code, expiresAt, allowBridge: input.allowBridge !== false, bridgeOperations };
     });
   }
-  claimPair(raw: string, source: ConnectionIdentity, sourceLabel: string, requestBridge = true): Promise<PeerApproval> {
+  claimPair(raw: string, source: ConnectionIdentity, sourceLabel: string, requestBridge = true, bridgeOperations?: readonly BridgeOperation[]): Promise<PeerApproval> {
     return this.change(async () => {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
       if (!this.state.enabled) throw new AdmissionError(403, 'inbound_disabled');
@@ -226,14 +226,15 @@ export class ConnectionAdmission {
       match.consumed = true;
       const peerToken = generateServerToken();
       const allowBridge = match.allowBridge && requestBridge;
-      const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label: sourceLabel, createdAt: now, digest: digest(peerToken), allowBridge };
+      const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label: sourceLabel, createdAt: now, digest: digest(peerToken), allowBridge: match.allowBridge };
       await this.revokePrevious(source);
       this.state.grants.push(entry);
-      const bridgeOperations = [...(match.bridgeOperations ?? DEFAULT_PAIR_BRIDGE_OPERATIONS)];
-      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations };
+      const approved = match.bridgeOperations ?? DEFAULT_PAIR_BRIDGE_OPERATIONS;
+      const effectiveOperations = bridgeOperations === undefined ? [...approved] : approved.filter((op) => bridgeOperations.includes(op));
+      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: effectiveOperations };
     });
   }
-  approvePeer(source: ConnectionIdentity, label: string, allowBridge = true): Promise<PeerApproval> {
+  approvePeer(source: ConnectionIdentity, label: string, allowBridge = true, bridgeOperations?: readonly BridgeOperation[]): Promise<PeerApproval> {
     return this.change(async () => {
       if (this.unavailableReason !== undefined) throw new AdmissionError(403, this.unavailableReason);
       const enabled = this.state.enabled;
@@ -244,7 +245,7 @@ export class ConnectionAdmission {
       const entry: StoredGrant = { id: randomUUID(), source, target: this.identity, purpose: 'gui', revision: 1, status: 'approved', label, createdAt: Date.now(), digest: digest(peerToken), allowBridge };
       await this.revokePrevious(source);
       this.state.grants.push(entry);
-      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: [...DEFAULT_PAIR_BRIDGE_OPERATIONS] };
+      return { grantId: entry.id, revision: entry.revision, peerToken, target: this.identity, allowBridge, bridgeOperations: [...new Set(bridgeOperations ?? DEFAULT_PAIR_BRIDGE_OPERATIONS)] };
     });
   }
   attach(id: string, close: () => void): () => void {

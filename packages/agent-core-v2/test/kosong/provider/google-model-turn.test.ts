@@ -403,6 +403,65 @@ describe('google-genai trailing model turn', () => {
     expect(stream.usage).toMatchObject({ inputOther: 8, output: 5 });
   });
 
+  it('stops a multi-hop CONTINUATION when a subsequent hop finishes with CONTINUATION without a fresh token', async () => {
+    const seen = installFetchSequence([
+      () => responseSse({
+        candidates: [{
+          content: { role: 'model', parts: [{ text: 'hop-1' }] },
+          finishReason: 'CONTINUATION',
+          continuationToken: 'token-hop-1',
+        }],
+      }),
+      () => responseSse({
+        candidates: [{
+          content: { role: 'model', parts: [] },
+          finishReason: 'CONTINUATION',
+        }],
+      }),
+    ]);
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-4-argon', apiKey: KEY, stream: true });
+    const stream = await provider.generate('system', [], [user('Hi')], { auth: { apiKey: KEY } });
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+
+    expect(seen).toHaveLength(2);
+    expect(parts).toEqual([{ type: 'text', text: 'hop-1' }]);
+    expect(stream.finishReason).toBe('other');
+    expect(stream.rawFinishReason).toBe('CONTINUATION');
+    expect(stream.continuationToken).toBeUndefined();
+  });
+
+  it('stops a non-streaming multi-hop CONTINUATION when a subsequent hop omits a fresh token', async () => {
+    const json = (payload: Record<string, unknown>) => new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    const seen = installFetchSequence([
+      () => json({
+        candidates: [{
+          content: { role: 'model', parts: [{ text: 'hop-1' }] },
+          finishReason: 'CONTINUATION',
+          continuationToken: 'token-hop-1',
+        }],
+      }),
+      () => json({
+        candidates: [{
+          finishReason: 'CONTINUATION',
+        }],
+      }),
+    ]);
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-4-argon', apiKey: KEY, stream: false });
+    const stream = await provider.generate('system', [], [user('Hi')], { auth: { apiKey: KEY } });
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+
+    expect(seen).toHaveLength(2);
+    expect(parts).toEqual([{ type: 'text', text: 'hop-1' }]);
+    expect(stream.finishReason).toBe('other');
+    expect(stream.rawFinishReason).toBe('CONTINUATION');
+    expect(stream.continuationToken).toBeUndefined();
+  });
+
   it('does not continue MAX_TOKENS or change the explicit output budget', async () => {
     const seen = installFetch(() => responseSse({
       candidates: [{

@@ -934,7 +934,7 @@ describe('AgentToolExecutorService', () => {
     expect(bodyCalls).toBe(0);
   });
 
-  it('ignores an undeclared argument, shows only the remaining arguments to every stage, and notes it on the result', async () => {
+  it('rejects an undeclared argument before approval, hooks, or tool execution', async () => {
     ix.stub(ISessionContext, { sessionId: 'session-extension' });
     const approvalRequests: Array<Parameters<IAgentToolApprovalService['requestToolApproval']>> = [];
     ix.stub(IAgentToolApprovalService, {
@@ -943,11 +943,10 @@ describe('AgentToolExecutorService', () => {
         return { permissionDecision: 'approved' };
       },
     });
-    const policyArgs: unknown[] = [];
-    disposables.add(extensions.registerToolPreExecutePolicy('plugin-ask', (context) => {
-      policyArgs.push(context.args);
-      return { decision: 'require_ask', promptReason: 'check this call' };
-    }));
+    disposables.add(extensions.registerToolPreExecutePolicy('plugin-ask', () => ({
+      decision: 'require_ask',
+      promptReason: 'check this call',
+    })));
     let beforeArgs: unknown;
     disposables.add(executor.onBeforeExecuteTool((event) => {
       beforeArgs = event.args;
@@ -964,16 +963,38 @@ describe('AgentToolExecutorService', () => {
 
     const results = await execute([toolCall('extra-call', 'strict-extra', { text: 'hi', reason: 'because' })]);
 
-    const stripped = { text: 'hi' };
-    expect(results[0]).toMatchObject({ output: 'hi', note: 'Note: ignored unknown argument(s): reason.' });
-    expect(results[0]?.isError).not.toBe(true);
-    expect(policyArgs).toEqual([stripped]);
-    expect(beforeArgs).toEqual(stripped);
-    expect(approvalRequests).toHaveLength(1);
-    expect(approvalRequests[0]?.[0].args).toEqual(stripped);
-    expect(approvalRequests[0]?.[0].toolCall.arguments).toBe(JSON.stringify(stripped));
-    expect(protocolEvents.find((event) => event.type === 'tool.call.started')).toMatchObject({ args: stripped });
-    expect(tool.calls.map((call) => call.args)).toEqual([stripped]);
+    expect(results[0]).toMatchObject({
+      isError: true,
+      output: 'Invalid args for tool "strict-extra": must NOT have additional property \'reason\'',
+    });
+    expect(beforeArgs).toBeUndefined();
+    expect(approvalRequests).toEqual([]);
+    expect(tool.calls).toEqual([]);
+  });
+
+  it('coerces declared primitive argument types before pre-execute policies inspect args', async () => {
+    ix.stub(ISessionContext, { sessionId: 'session-extension' });
+    let policySeenArgs: unknown;
+    disposables.add(extensions.registerToolPreExecutePolicy('plugin-inspect', (ctx) => {
+      policySeenArgs = structuredClone(ctx.args);
+      return { decision: 'pass' };
+    }));
+    const tool = new TestTool('coerced-policy', {
+      parameters: {
+        type: 'object',
+        properties: { count: { type: 'number' } },
+        required: ['count'],
+        additionalProperties: false,
+      },
+    });
+    registry.register(tool);
+
+    const results = await execute([toolCall('coerce-call', 'coerced-policy', { count: '42' })]);
+
+    expect(results[0]).toMatchObject({ output: 'coerced-policy result' });
+    expect(results[0]?.isError).toBeFalsy();
+    expect(policySeenArgs).toEqual({ count: 42 });
+    expect(tool.calls[0]?.args).toEqual({ count: 42 });
   });
 
   it('keeps rejecting a near miss of a declared argument and names the intended one', async () => {

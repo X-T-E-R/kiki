@@ -17,6 +17,7 @@ import { Link } from 'react-router-dom';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
+import { compactIdentifier, compactSessionId } from '../../../lib/compactIdentifier';
 import { useConnection } from '../../../state/connection';
 import { Tag } from '../../capabilities/primitives';
 import { InlineError, Toggle } from '../../controls';
@@ -188,8 +189,12 @@ export function BrowserRuntimeDetails({ id, type, status }: {
         {status.currentCall === undefined ? null : (
           <>
             <dt className="text-ink-faint">{t('st.browser.detail.currentCall')}</dt>
-            <dd className="min-w-0 break-all font-mono text-ink-soft" data-browser-current-call>
-              {`${status.currentCall.tool} · ${status.currentCall.sessionId} · ${status.currentCall.agentId}${status.currentCall.tab === undefined ? '' : ` · ${status.currentCall.tab}`}`}
+            <dd
+              className="min-w-0 break-all font-mono text-ink-soft"
+              data-browser-current-call
+              title={`${status.currentCall.tool} · ${status.currentCall.sessionId} · ${status.currentCall.agentId}${status.currentCall.tab === undefined ? '' : ` · ${status.currentCall.tab}`}`}
+            >
+              {`${status.currentCall.tool} · ${compactSessionId(status.currentCall.sessionId)} · ${compactIdentifier(status.currentCall.agentId)}${status.currentCall.tab === undefined ? '' : ` · ${compactIdentifier(status.currentCall.tab)}`}`}
             </dd>
           </>
         )}
@@ -220,7 +225,7 @@ export function BrowserRuntimeDetails({ id, type, status }: {
                   {tab.active === true ? <Tag tone="accent">{t('st.browser.tabs.active')}</Tag> : null}
                   {tab.label === undefined ? null : <Tag>{tab.label}</Tag>}
                 </span>
-                <span className="block truncate font-mono text-[11px] text-ink-faint" title={tab.targetId}>{tab.targetId}</span>
+                <span className="block truncate font-mono text-[11px] text-ink-faint" title={tab.targetId}>{compactIdentifier(tab.targetId)}</span>
               </li>
             ))}
           </ul>

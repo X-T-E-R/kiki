@@ -19,7 +19,7 @@ import type { SpaceWindowMode } from '@kiki/session-core/settings';
 import type { DesktopSpaceStatus } from '../host';
 import { useI18n } from '../i18n';
 import { usePhoneMode } from '../lib/layoutHooks';
-import { browsableRemote, connectionStateTone, remoteSummaryView } from '../lib/remoteConnections';
+import { browsableRemote, connectionStateTone, remoteSummaryView, spacePlatformLabel } from '../lib/remoteConnections';
 import { MAIN_SPACE_ID, spaceRunState, spaceStatus, type SpaceListItem } from '../lib/spaces';
 import type { ScopeRestoreFailure } from '../lib/navScope';
 import { Icon } from './icons';
@@ -462,6 +462,12 @@ function RemoteSpaceRow({
     : undefined;
   const tone = connectionStateTone(record.state);
   const stateText = opening ? t('sidebar.space.openingInline') : remoteStateLabel(record, t, staleTime);
+  const platformLabel = spacePlatformLabel(summary?.platform);
+  const rttMs = !opening && record.state === 'online' ? (summary?.rttMs ?? record.rttMs) : undefined;
+  const metaParts = [
+    platformLabel,
+    rttMs !== undefined ? `${rttMs} ms` : undefined,
+  ].filter((part): part is string => part !== undefined);
 
   return (
     <button
@@ -492,6 +498,12 @@ function RemoteSpaceRow({
             <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${REMOTE_TONE_DOT[tone]}`} />
             {stateText}
           </span>
+          {!opening && metaParts.length > 0 ? (
+            <>
+              <span aria-hidden>·</span>
+              <span data-space-remote-meta className="tabular-nums">{metaParts.join(' · ')}</span>
+            </>
+          ) : null}
           {!opening && summary !== null && summary.busy > 0 ? (
             <>
               <span aria-hidden>·</span>

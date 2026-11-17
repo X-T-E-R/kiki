@@ -4,7 +4,7 @@
   // environment (DOM + vite client types) differs.
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node", "vite/client"],
     // `zod` belongs to `@kiki/protocol`, which this program already includes.
     // One test checks a Recipe manifest against the real protocol schema, so

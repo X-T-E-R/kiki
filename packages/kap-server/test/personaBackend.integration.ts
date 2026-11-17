@@ -399,4 +399,85 @@ describe('persona backend contracts', () => {
       await klient.close();
     }
   });
+
+  it('resolves cold state.json agents.main.personaId, rejects malformed custom strings, and prefers live persona overrides across list and query routes', async () => {
+    await persona('nia-director');
+    await persona('nia-fast');
+    const workspace = await server.core.accessor.get(IWorkspaceService).createOrTouch(home);
+    const seedColdState = async (sessionId: string, state: Record<string, unknown>) => {
+      const dir = join(home, 'sessions', workspace.id, sessionId, 'session-meta');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'state.json'), JSON.stringify(state));
+    };
+    await seedColdState('cold-director', {
+      id: 'cold-director',
+      cwd: home,
+      title: 'Director cold',
+      createdAt: 1,
+      updatedAt: 5000,
+      archived: false,
+      agents: { main: { type: 'main', personaId: 'nia-director' } },
+    });
+    await seedColdState('cold-fast', {
+      id: 'cold-fast',
+      cwd: home,
+      title: 'Fast cold',
+      createdAt: 1,
+      updatedAt: 4000,
+      archived: false,
+      agents: { main: { type: 'main', personaId: 'nia-fast' } },
+    });
+    await seedColdState('cold-invalid-custom', {
+      id: 'cold-invalid-custom',
+      cwd: home,
+      title: 'Invalid custom',
+      createdAt: 1,
+      updatedAt: 3000,
+      archived: false,
+      custom: { bot_persona_id: 'bad id!', room_persona_id: 'ALSO INVALID' },
+    });
+    await (server.core.accessor.get(ISessionIndex) as unknown as { reconcileNow(): Promise<void> }).reconcileNow();
+
+    const directorList = await request<{ items: Session[] }>('/sessions?persona=nia-director&page_size=50');
+    expect(directorList.code, directorList.msg).toBe(0);
+    expect(directorList.data.items.map((item) => item.id)).toEqual(['cold-director']);
+    expect(directorList.data.items[0]?.agent_config.persona?.id).toBe('nia-director');
+
+    const fastPoint = await request<Session>('/sessions/cold-fast');
+    expect(fastPoint.code, fastPoint.msg).toBe(0);
+    expect(fastPoint.data.agent_config.persona?.id).toBe('nia-fast');
+
+    const queryBefore = await request<{ items: { id: string; meta: { persona_id?: string } }[] }>('/sessions/query?page_size=50');
+    expect(queryBefore.code, queryBefore.msg).toBe(0);
+    const byIdBefore = new Map(queryBefore.data.items.map((item) => [item.id, item.meta.persona_id]));
+    expect(byIdBefore.get('cold-director')).toBe('nia-director');
+    expect(byIdBefore.get('cold-fast')).toBe('nia-fast');
+    expect(byIdBefore.get('cold-invalid-custom')).toBeUndefined();
+
+    const liveSession = await create({ persona: 'nia-director', metadata: { cwd: home } });
+    const liveHandle = server.core.accessor.get(ISessionManager).get(liveSession.id)!;
+    await liveHandle.accessor.get(ISessionMetadata).update({ custom: { bot_persona_id: 'nia-director' } });
+    const liveProfile = liveHandle.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentProfileService);
+    await liveProfile.bind({ persona: 'nia-fast' });
+
+    const liveList = await request<{ items: Session[] }>('/sessions?persona=nia-fast&page_size=50');
+    expect(liveList.code, liveList.msg).toBe(0);
+    expect(liveList.data.items.map((item) => item.id)).toContain(liveSession.id);
+    expect(liveList.data.items.find((item) => item.id === liveSession.id)?.agent_config.persona?.id).toBe('nia-fast');
+    const directorAfter = await request<{ items: Session[] }>('/sessions?persona=nia-director&page_size=50');
+    expect(directorAfter.data.items.map((item) => item.id)).not.toContain(liveSession.id);
+    const livePoint = await request<Session>(`/sessions/${liveSession.id}`);
+    expect(livePoint.data.agent_config.persona?.id).toBe('nia-fast');
+    const queryAfter = await request<{ items: { id: string; meta: { persona_id?: string } }[] }>('/sessions/query?page_size=50');
+    expect(queryAfter.data.items.find((item) => item.id === liveSession.id)?.meta.persona_id).toBe('nia-fast');
+
+    const heads = await request<Record<string, { total: number; items: Session[] }>>('/personas/session-heads?per_persona_limit=1&include_private=true');
+    expect(heads.code, heads.msg).toBe(0);
+    expect(heads.data['nia-fast']?.total).toBe(2);
+    expect(heads.data['nia-fast']?.items).toHaveLength(1);
+    expect(heads.data['nia-fast']?.items[0]?.id).toBe(liveSession.id);
+    expect(heads.data['nia-director']?.total).toBe(1);
+    expect(heads.data['nia-director']?.items.map((item) => item.id)).toEqual(['cold-director']);
+    expect(Object.keys(heads.data).sort()).toEqual(['nia-director', 'nia-fast']);
+  });
 });

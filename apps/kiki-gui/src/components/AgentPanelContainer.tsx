@@ -26,6 +26,7 @@ import { useI18n } from '../i18n';
 import { useAutoCompact } from './useAutoCompact';
 import { InspectorOverview, type OverviewFigures } from './agent-panel/InspectorOverview';
 import { CockpitOverview } from './rail-variants/CockpitOverview';
+import { descendantIds } from './rail-variants/model';
 import type { RailMode } from './rail-variants/shell';
 import { agentUsageCacheHitRate, calculateCacheHitRate, aggregateTreeCacheHitRate, aggregateTreeCacheReadTokens, aggregateTreeCacheWriteTokens } from './agent-panel/cacheRate';
 import type { AgentTokenUsage } from './agent-panel/types';
@@ -99,6 +100,18 @@ function revisionToken(ids: readonly string[], revisions: ReadonlyMap<string, st
   return JSON.stringify(ids.map((id) => [id, revisions.get(id) ?? '']));
 }
 
+interface CachedPanelSourceRevision {
+  readonly cursorSeq: SessionViewState['cursor']['seq'] | undefined;
+  readonly cursorEpoch: SessionViewState['cursor']['epoch'] | undefined;
+  readonly resetVersion: number | undefined;
+  readonly usageRevision: number | undefined;
+  readonly usage: SessionViewState['usage'] | undefined;
+  readonly rosterUsage: AgentForest['byId'][string]['usage'] | undefined;
+  readonly value: string;
+}
+
+const METRICS_SETTLE_THROTTLE_MS = 200;
+
 function usePanelSourceRevisions(
   controller: SessionController | undefined,
   forest: AgentForest,
@@ -108,6 +121,13 @@ function usePanelSourceRevisions(
 ): ReadonlyMap<string, string> {
   const forestRef = useRef(forest);
   const idsRef = useRef(ids);
+  const cacheRef = useRef<{ sessionId: string; byId: Map<string, CachedPanelSourceRevision> }>({
+    sessionId,
+    byId: new Map(),
+  });
+  if (cacheRef.current.sessionId !== sessionId) {
+    cacheRef.current = { sessionId, byId: new Map() };
+  }
   forestRef.current = forest;
   idsRef.current = ids;
   const subscribe = useCallback((listener: () => void) => {
@@ -117,7 +137,55 @@ function usePanelSourceRevisions(
     return () => { offController?.(); offUsage(); };
   }, [controller, klient, sessionId]);
   const read = useCallback(
-    () => idsRef.current.map((id) => sourceRevisionFor(controller, forestRef.current, id, panelUsageRevision(klient, sessionId, id))).join('\n'),
+    () => {
+      const main = controller?.getState();
+      const mainEpoch = main?.cursor.epoch;
+      const mainReset = main?.transcriptResetVersion;
+      const currentForest = forestRef.current;
+      const currentIds = idsRef.current;
+      const cache = cacheRef.current.byId;
+      const parts = new Array<string>(currentIds.length);
+      for (let i = 0; i < currentIds.length; i += 1) {
+        const id = currentIds[i]!;
+        const state = controller?.getAgentState(id);
+        const cursorSeq = state?.cursor.seq;
+        const cursorEpoch = state?.cursor.epoch ?? mainEpoch;
+        const resetVersion = state?.transcriptResetVersion ?? mainReset;
+        const usageRevision = panelUsageRevision(klient, sessionId, id);
+        const usage = state?.usage;
+        const rosterUsage = currentForest.byId[id]?.usage;
+        const cached = cache.get(id);
+        if (
+          cached !== undefined &&
+          cached.cursorSeq === cursorSeq &&
+          cached.cursorEpoch === cursorEpoch &&
+          cached.resetVersion === resetVersion &&
+          cached.usageRevision === usageRevision &&
+          cached.usage === usage &&
+          cached.rosterUsage === rosterUsage
+        ) {
+          parts[i] = cached.value;
+          continue;
+        }
+        const value = panelMetricsSourceRevision({
+          cursorSeq,
+          cursorEpoch,
+          transcriptResetVersion: resetVersion,
+          usageSourceRevision: usageRevision === undefined ? undefined : String(usageRevision),
+          usage,
+          rosterUsage,
+        });
+        cache.set(id, { cursorSeq, cursorEpoch, resetVersion, usageRevision, usage, rosterUsage, value });
+        parts[i] = value;
+      }
+      if (cache.size > currentIds.length + 64) {
+        const keep = new Set(currentIds);
+        for (const key of cache.keys()) {
+          if (!keep.has(key)) cache.delete(key);
+        }
+      }
+      return parts.join('\n');
+    },
     [controller, klient, sessionId],
   );
   const packed = useSyncExternalStore(subscribe, read, read);
@@ -194,7 +262,7 @@ function useAgentViewState(sessionId: string, agentId: string, visible: boolean)
  */
 export type AgentPanelPart = 'all' | 'work' | 'usage' | 'overview' | 'profile';
 
-export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', overviewMode = 'default', renderOverview, onOpenAgent, expandedBranches, onToggleBranch, sessionPending, mainLabel }: {
+export function AgentPanelContainer({ state, forest, agentId, visible = true, part = 'all', overviewMode = 'default', renderOverview, onOpenAgent, expandedBranches, onToggleBranch, sessionPending, mainLabel, scopeRootId = MAIN_AGENT_ID, rootBusy, rootTurnStartedAt, rootLabel }: {
   state: SessionViewState;
   forest: AgentForest;
   agentId: string;
@@ -214,6 +282,11 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   sessionPending?: readonly (ApprovalBlock | QuestionBlock)[];
   /** Cockpit graph: how the main agent's own lane reads. */
   mainLabel?: string;
+  /** Tree root for overview/cockpit: `main` on the main session page, or the routed branch/subagent id on its own page. */
+  scopeRootId?: string;
+  rootBusy?: boolean;
+  rootTurnStartedAt?: number;
+  rootLabel?: string;
 }) {
   const connection = useConnection();
   const { klient } = connection;
@@ -349,20 +422,32 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const profile = data?.profile;
   const [scope, setScope] = useState<'agent' | 'tree'>('agent');
   const cockpit = part === 'overview' && overviewMode === 'cockpit';
-  const showsTree = cockpit || (agentId === MAIN_AGENT_ID && (part === 'all' || part === 'usage' || (part === 'overview' && scope === 'tree')));
-  const settleOwner = cockpit ? MAIN_AGENT_ID : agentId;
+  const isSessionRoot = scopeRootId === MAIN_AGENT_ID;
+  const subtreeDescendants = useMemo(
+    () => (agentId === MAIN_AGENT_ID ? [] : descendantIds(forest, agentId)),
+    [forest, agentId],
+  );
+  const hasSubtree = subtreeDescendants.length > 0;
+  const canShowTreeScope = agentId === MAIN_AGENT_ID || hasSubtree;
+  const showsTree = cockpit
+    ? (isSessionRoot || hasSubtree)
+    : (canShowTreeScope && (part === 'all' || part === 'usage' || (part === 'overview' && scope === 'tree')));
+  const isSessionTree = showsTree && isSessionRoot && (cockpit || agentId === MAIN_AGENT_ID);
+  const settleOwner = cockpit && isSessionRoot ? MAIN_AGENT_ID : agentId;
   const spaceIdentity = `${connection.spaceKey}:${connection.scopeId}:${serverId}`;
   const metricsIdentity = `${spaceIdentity}:${state.sessionId}:${settleOwner}`;
   const headerMetrics = header.data?.metrics ?? EMPTY_PANEL_METRICS;
   const sessionState = controller?.getState() ?? state;
   const roster = sessionState.snapshotSubagents;
-  const ids = useMemo(() => showsTree
+  const ids = useMemo(() => (isSessionTree
     ? [...new Set([MAIN_AGENT_ID, agentId, ...Object.keys(forest.byId), ...roster.map(snapshotSubagentAgentId), ...Object.keys(headerMetrics)])].sort()
-    : [agentId], [showsTree, agentId, forest.byId, roster, headerMetrics]);
-  const rosterRef = showsTree ? sessionState.contentRefs?.find((ref) => ref.source.kind === 'snapshot' && ref.kind === 'array' && ref.path.length === 1 && ref.path[0] === 'subagents') : undefined;
+    : showsTree
+      ? [...new Set([agentId, ...subtreeDescendants])].sort()
+      : [agentId]), [isSessionTree, showsTree, agentId, subtreeDescendants, forest.byId, roster, headerMetrics]);
+  const rosterRef = isSessionTree ? sessionState.contentRefs?.find((ref) => ref.source.kind === 'snapshot' && ref.kind === 'array' && ref.path.length === 1 && ref.path[0] === 'subagents') : undefined;
   const rosterTruncated = rosterRef !== undefined;
   const rosterLoading = rosterRef !== undefined && sessionState.detailLoads[`content:${JSON.stringify(rosterRef)}`]?.status === 'loading';
-  const rosterIncomplete = showsTree && (rosterTruncated || (sessionState.agentCounts?.total ?? 0) > ids.length);
+  const rosterIncomplete = isSessionTree && (rosterTruncated || (sessionState.agentCounts?.total ?? 0) > ids.length);
   const revisions = usePanelSourceRevisions(controller, forest, ids, klient, state.sessionId);
   const kept = useRef({ identity: metricsIdentity, byId: new Map<string, KeptPanelMetric>() });
   if (kept.current.identity !== metricsIdentity) kept.current = { identity: metricsIdentity, byId: new Map() };
@@ -387,9 +472,64 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     if (subtotal !== undefined) metrics[id] = row === undefined || subtotal !== row.metrics ? countingMetric(subtotal) : subtotal;
     if (isUnsettledPanelMetrics(row?.metrics)) requestIds.push(id);
   }
-  const canSettle = metricsWanted && visible && state.loaded && !state.resyncing && (header.isSuccess || showsTree && kept.current.byId.size > 0);
-  const requestToken = `${spaceIdentity}\0${revisionToken(requestIds, revisions)}`;
-  const settleBlocked = settleBlock?.identity === metricsIdentity && settleBlock.token === requestToken;
+  const childFirstScreenPending = agentId !== MAIN_AGENT_ID && agentState !== undefined && !agentState.loaded;
+  const canSettle = metricsWanted && visible && state.loaded && !state.resyncing && !childFirstScreenPending && (header.isSuccess || showsTree && kept.current.byId.size > 0);
+  const requestIdsKey = requestIds.join('\0');
+  const stableRequestIds = useMemo(() => (requestIdsKey === '' ? [] : requestIdsKey.split('\0')), [requestIdsKey]);
+  const requestToken = useMemo(
+    () => `${spaceIdentity}\0${revisionToken(stableRequestIds, revisions)}`,
+    [spaceIdentity, stableRequestIds, revisions],
+  );
+  const [, bumpSettleThrottle] = useState(0);
+  const settleThrottle = useRef<{
+    identity: string;
+    windowStart: number;
+    windowCount: number;
+    ids: readonly string[];
+    token: string;
+  }>({ identity: metricsIdentity, windowStart: 0, windowCount: 0, ids: stableRequestIds, token: requestToken });
+  if (settleThrottle.current.identity !== metricsIdentity || !canSettle || stableRequestIds.length === 0) {
+    const active = canSettle && stableRequestIds.length > 0;
+    settleThrottle.current = {
+      identity: metricsIdentity,
+      windowStart: active ? Date.now() : 0,
+      windowCount: active ? 1 : 0,
+      ids: stableRequestIds,
+      token: requestToken,
+    };
+  } else if (settleThrottle.current.token !== requestToken) {
+    const now = Date.now();
+    if (settleThrottle.current.windowStart === 0 || now - settleThrottle.current.windowStart >= METRICS_SETTLE_THROTTLE_MS) {
+      settleThrottle.current = { identity: metricsIdentity, windowStart: now, windowCount: 1, ids: stableRequestIds, token: requestToken };
+    } else if (settleThrottle.current.windowCount < 2) {
+      settleThrottle.current = {
+        identity: metricsIdentity,
+        windowStart: settleThrottle.current.windowStart,
+        windowCount: settleThrottle.current.windowCount + 1,
+        ids: stableRequestIds,
+        token: requestToken,
+      };
+    }
+  }
+  const activeRequestIds = settleThrottle.current.ids;
+  const activeRequestToken = settleThrottle.current.token;
+  useEffect(() => {
+    if (!canSettle || stableRequestIds.length === 0 || activeRequestToken === requestToken) return;
+    const elapsed = Date.now() - settleThrottle.current.windowStart;
+    const delay = Math.max(0, METRICS_SETTLE_THROTTLE_MS - elapsed);
+    const timer = setTimeout(() => {
+      settleThrottle.current = {
+        identity: metricsIdentity,
+        windowStart: Date.now(),
+        windowCount: 1,
+        ids: stableRequestIds,
+        token: requestToken,
+      };
+      bumpSettleThrottle((n) => n + 1);
+    }, delay);
+    return () => { clearTimeout(timer); };
+  }, [canSettle, stableRequestIds, activeRequestToken, requestToken, metricsIdentity]);
+  const settleBlocked = settleBlock?.identity === metricsIdentity && (settleBlock.token === requestToken || settleBlock.token === activeRequestToken);
   const currentRevisions = useRef(revisions);
   currentRevisions.current = revisions;
   const [, updateMetrics] = useState(0);
@@ -397,8 +537,8 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     queryKey: panelMetricsSettleKey(
       state.sessionId,
       settleOwner,
-      requestIds,
-      requestToken,
+      activeRequestIds,
+      activeRequestToken,
       serverId,
     ),
     queryFn: ({ signal, queryKey }) => {
@@ -506,8 +646,8 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const treeComplete = treeTokensCovered && ids.every((id) => metrics[id]?.costPartial !== true);
   const treeCounting = showsTree && (rosterLoading || requestIds.length > 0 && !metricsSettle.isError);
   const tree = sumAgentTreeMetrics(ids, metrics);
-  const canonical = useCanonicalSessionUsage(metricsWanted && visible && showsTree && !treeTokensCovered, state.sessionId);
-  const matchedSession = sessionState.session?.id === state.sessionId && sessionState.session.private !== true
+  const canonical = useCanonicalSessionUsage(metricsWanted && visible && isSessionTree && !treeTokensCovered, state.sessionId);
+  const matchedSession = isSessionTree && sessionState.session?.id === state.sessionId && sessionState.session.private !== true
     ? sessionState.session
     : undefined;
   const sessionAccounting = canonical.usage?.accounting ?? matchedSession?.usage?.accounting;
@@ -515,7 +655,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const savedTotal = savedUsage === undefined ? 0 : savedUsage.input_tokens + savedUsage.output_tokens + savedUsage.cache_read_tokens + savedUsage.cache_creation_tokens;
   const accountingTotal = sessionAccounting === undefined ? 0 : Object.values(sessionAccounting.tokens).reduce((sum, value) => sum + value, 0);
   const useSavedUsage = sessionAccounting?.complete !== true && savedUsage !== undefined && savedTotal >= accountingTotal;
-  const treeCacheRate = treeTokensCovered ? aggregateTreeCacheHitRate(ids, metrics) : (() => {
+  const treeCacheRate = treeTokensCovered || !isSessionTree ? aggregateTreeCacheHitRate(ids, metrics) : (() => {
     const tokens = useSavedUsage ? undefined : sessionAccounting?.tokens;
     const read = tokens?.input_cache_read ?? savedUsage?.cache_read_tokens;
     const denominator = tokens === undefined
@@ -523,7 +663,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       : tokens.input_other + tokens.input_cache_read + tokens.input_cache_creation;
     return calculateCacheHitRate(read, denominator);
   })();
-  const canonicalTotalTokens = (() => {
+  const canonicalTotalTokens = !isSessionTree ? null : (() => {
     if (sessionAccounting !== undefined && !useSavedUsage) {
       const tokens = sessionAccounting.tokens;
       const sum = tokens.input_other + tokens.input_cache_read + tokens.input_cache_creation + tokens.output;
@@ -538,10 +678,10 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     const sum = raw.input_tokens + raw.cache_read_tokens + raw.cache_creation_tokens + raw.output_tokens;
     return sum > 0 ? sum : null;
   })();
-  if (!treeTokensCovered && canonicalTotalTokens !== null) {
+  if (isSessionTree && !treeTokensCovered && canonicalTotalTokens !== null) {
     tree.totalTokens = tree.totalTokens === null ? canonicalTotalTokens : Math.max(tree.totalTokens, canonicalTotalTokens);
   }
-  if (!treeTokensCovered) {
+  if (isSessionTree && !treeTokensCovered) {
     const cost = useSavedUsage ? savedUsage.total_cost_usd : sessionAccounting?.cost_usd_estimated;
     if (known(cost)) tree.totalCostUsd = cost;
   }
@@ -733,12 +873,15 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const facts = overviewFacts({
     t, agentId, state, agentState: currentAgentState, forest, usage, metrics, ids, treeComplete, treeCounting, tree, treeCacheRate,
     compactPoint: autoCompact?.status?.tokens,
+    canShowTreeScope,
+    cockpitUsesTree: isSessionRoot || hasSubtree,
   });
   if (part === 'overview') {
     const cockpit = (
       <CockpitOverview
         sessionId={state.sessionId}
         agentId={agentId}
+        rootAgentId={scopeRootId}
         forest={forest}
         blocks={state.blocks}
         contextUsed={facts.contextUsed}
@@ -752,11 +895,11 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
         expandedBranches={expandedBranches ?? NO_BRANCHES}
         onToggleBranch={onToggleBranch ?? noopToggleBranch}
         sessionPending={sessionPending ?? NO_PENDING_BLOCKS}
-        mainBusy={state.busy}
-        turnStartedAt={state.turnStartedAt}
-        mainLabel={mainLabel ?? t('rail.ownerMain')}
+        mainBusy={rootBusy ?? state.busy}
+        turnStartedAt={rootTurnStartedAt ?? state.turnStartedAt}
+        mainLabel={rootLabel ?? mainLabel ?? t('rail.ownerMain')}
         sessionTasks={state.tasks}
-        agentCounts={state.agentCounts}
+        agentCounts={isSessionRoot ? state.agentCounts : undefined}
       />
     );
     return <div data-agent-panel-container data-agent-panel-part="overview" data-overview-mode={overviewMode}>
@@ -924,8 +1067,10 @@ function overviewFacts(input: {
   tree: { totalTokens: number | null; totalCostUsd: number | null };
   treeCacheRate: number | null;
   compactPoint: number | undefined;
+  canShowTreeScope: boolean;
+  cockpitUsesTree: boolean;
 }) {
-  const { t, agentId, state, agentState, forest, usage, treeComplete, treeCounting, tree } = input;
+  const { t, agentId, state, agentState, forest, usage, treeComplete, treeCounting, tree, canShowTreeScope, cockpitUsesTree } = input;
   const isMain = agentId === MAIN_AGENT_ID;
   const node = forest.byId[agentId];
   const contextUsed = agentState?.contextTokens ?? node?.contextTokens
@@ -935,41 +1080,20 @@ function overviewFacts(input: {
     isMain ? state.session?.usage?.context_limit : undefined].find((value): value is number => known(value) && value > 0);
   const contextLimit = reportedLimit !== undefined && reportedLimit > 0 ? reportedLimit : undefined;
   const figures = figuresFrom(usage, t);
-  // The standard inspector's own tree scope. It stays main-only on purpose:
-  // the inspector offers a reader a switch between "this agent" and "the
-  // tree", and widening that switch to every child page is a product change
-  // this slice does not own. The cockpit is the other surface (see
-  // `cockpitTreeFigures`), and there the tree is the fixed subject.
-  const treeFigures: OverviewFigures | undefined = isMain ? {
+  const treeFigures: OverviewFigures | undefined = canShowTreeScope ? {
     costUsd: tree.totalCostUsd ?? undefined,
     totalTokens: tree.totalTokens ?? undefined,
     cacheRate: input.treeCacheRate ?? undefined,
     incomplete: !treeComplete,
     counting: treeCounting,
   } : undefined;
-  // The cockpit's figures, for every agent's page.
-  //
-  // The cockpit's context and cache arcs answer "what has this session cost",
-  // which is a question about the tree and not about whichever agent happens
-  // to be open — its graph is the whole tree on every page. So it is fed the
-  // tree figures on any agent's page, not just main's. Gating these on main
-  // meant a child page's cockpit fell back to that one agent's own numbers
-  // while still labelling them "whole session", so the same rail reported two
-  // different totals depending on which agent was selected. The inputs
-  // (`tree`, `metrics`, `ids`, `treeComplete`) are already derived for every
-  // agent, so this widens what is *offered*, not what is read: no per-agent
-  // transcript or body is subscribed here.
-  //
-  // A tree that is not fully counted sums only the agents the server has
-  // reported and marks itself incomplete, which the arcs already render as a
-  // partial scope instead of a total.
-  const cockpitTreeFigures: OverviewFigures = {
+  const cockpitTreeFigures: OverviewFigures | undefined = cockpitUsesTree ? {
     costUsd: tree.totalCostUsd ?? undefined,
     totalTokens: tree.totalTokens ?? undefined,
     cacheRate: input.treeCacheRate ?? undefined,
     incomplete: !treeComplete,
     counting: treeCounting,
-  };
+  } : undefined;
   const startedAt = isMain ? state.session?.created_at : node?.startedAt;
   const tailTurnId = Number(state.turnTail?.turnId);
   const turns = isMain ? (state.session?.usage?.turn_count ?? 0) > 0 ? state.session?.usage?.turn_count

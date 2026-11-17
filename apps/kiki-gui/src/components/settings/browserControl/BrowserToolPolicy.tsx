@@ -4,6 +4,8 @@ import { readLastSessionId } from '@kiki/session-core/settings';
 
 import { useConnection } from '../../../state/connection';
 import { useI18n } from '../../../i18n';
+import { formatSessionOwnerLabel } from '../../../lib/compactIdentifier';
+import { useSessionNamesWithClient } from '../../../lib/threadTitles';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine } from '../../controls';
 import { SECONDARY_BUTTON } from '../../ui';
@@ -16,6 +18,7 @@ export function BrowserToolPolicy({ enabled }: { readonly enabled: boolean }) {
   const save = useInstantSave();
   const [confirming, setConfirming] = useState(false);
   const sessionId = readLastSessionId();
+  const lookupSessionName = useSessionNamesWithClient(sessionId !== undefined ? [sessionId] : [], client);
   const key = ['browser-tool-policy', scopeId, sessionId];
   const query = useQuery({
     queryKey: key,
@@ -52,7 +55,9 @@ export function BrowserToolPolicy({ enabled }: { readonly enabled: boolean }) {
     <ConfirmDialog open={confirming} title={t('st.browser.refreshToolPolicy')} body={t('st.browser.refreshToolPolicyBody')}
       tone="default" busy={save.saving} confirmLabel={t('st.browser.refreshToolPolicy')} onConfirm={apply}
       onCancel={() => { setConfirming(false); }}>
-      <p className="break-all font-mono text-[11px] text-ink-soft">{sessionId}</p>
+      <p className="break-all font-mono text-[11px] text-ink-soft" title={sessionId}>
+        {formatSessionOwnerLabel(sessionId, lookupSessionName(sessionId).title)}
+      </p>
     </ConfirmDialog>
   </div>;
 }

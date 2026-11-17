@@ -380,7 +380,7 @@ interface ColdWireWindow {
 }
 
 function completeColdWindowTurn(window: ColdWireWindow, turnId: string): TranscriptTurn | undefined {
-  if (window.skippedTurnIds?.includes(turnId) === true) return undefined;
+  if (window.skippedTurnIds?.some(id => id === turnId || id === '*') === true) return undefined;
   const index = window.snapshot.items.findIndex(item => item.kind === 'turn' && item.turnId === turnId);
   const turn = window.snapshot.items[index];
   if (turn?.kind !== 'turn' || !window.records.some(({ record }) => record.type === 'turn.prompt' && wireTurnId(record) === turnId)) return undefined;
@@ -467,11 +467,12 @@ function coldPrefixSkippedTurnIds(current: AgentTranscriptSnapshot['items'], mer
 }
 
 function wireTurnId(record: ContextRecord): string | undefined {
-  const direct = (record as { turnId?: unknown }).turnId;
-  if (typeof direct === 'number' && Number.isSafeInteger(direct) && direct >= 0) return `t${direct}`;
-  if (record.type !== 'context.append_loop_event') return undefined;
-  const nested = (record as { event?: { turnId?: unknown } }).event?.turnId;
-  return typeof nested === 'number' && Number.isSafeInteger(nested) && nested >= 0 ? `t${nested}` : undefined;
+  const value = record.type === 'context.append_loop_event'
+    ? (record as { event?: { turnId?: unknown } }).event?.turnId
+    : (record as { turnId?: unknown }).turnId;
+  if (typeof value !== 'number' && !(typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value))) return undefined;
+  const ordinal = Number(value);
+  return Number.isSafeInteger(ordinal) && ordinal >= 0 ? `t${ordinal}` : undefined;
 }
 
 interface TurnStartIndex {
@@ -2372,13 +2373,13 @@ export class TranscriptService {
       const startAt = read.recordStarts[fitted.keepFrom];
       if (startAt === undefined || startAt >= window.start) return window;
       const retainedTurnIds = new Set(fitted.snapshot.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
-      const skippedTurnIds = (window.skippedTurnIds ?? []).filter(turnId => retainedTurnIds.has(turnId));
+      const skippedTurnIds = (window.skippedTurnIds ?? []).filter(turnId => turnId === '*' || retainedTurnIds.has(turnId));
       extended = { ...window, start: startAt, entire: false, records: fitted.records,
         snapshot: fitted.snapshot, bytes: fitted.bytes, droppedTail: fitted.droppedTail || window.droppedTail === true,
         skippedTurnIds: skippedTurnIds.length > 0 ? skippedTurnIds : undefined };
     } else {
       const retainedTurnIds = new Set(snapshot.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
-      const skippedTurnIds = (window.skippedTurnIds ?? []).filter(turnId => retainedTurnIds.has(turnId));
+      const skippedTurnIds = (window.skippedTurnIds ?? []).filter(turnId => turnId === '*' || retainedTurnIds.has(turnId));
       extended = { ...window, start: next, entire, records: merged, snapshot, bytes,
         skippedTurnIds: skippedTurnIds.length > 0 ? skippedTurnIds : undefined };
     }
@@ -2556,9 +2557,12 @@ export class TranscriptService {
     let timelineBytes = 0;
     let scannedRecords = 0;
     let reverseTurn: string | undefined;
+    let skippedUnknownTurn = false;
     let complete = true;
+    let boundary = end;
     const startedAt = performance.now();
     const finish = () => {
+      if (skippedUnknownTurn) skippedTurnIds.add('*');
       records.reverse();
       this.coldReadRecords += scannedRecords;
       this.coldReadsCompleted++;
@@ -2568,65 +2572,97 @@ export class TranscriptService {
     const opened = await openLogicalWire(wirePath, signal);
     if (opened === undefined) return { start: end, records, complete: false, skippedTurnIds: [] };
     let position = end;
-    let suffix = Buffer.alloc(0);
-    let boundary = end;
+    let recordEnd = end;
+    const suffix: Buffer[] = [];
+    let suffixBytes = 0;
+    let oversizedLine = false;
+    let oversizedLeading = Buffer.alloc(0);
     let turns = 0;
     let wantedTurns = DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns;
     let hasUndo = false;
-    let oversizedEnd: number | undefined;
-    let leading = Buffer.alloc(0);
     let yieldedAt = performance.now();
     const floor = Math.max(0, end - COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES);
     try {
       while (position > floor && scannedRecords < WIRE_COLD_READ_MAX_RECORDS) {
         signal.throwIfAborted();
-        const start = Math.max(floor, position - (oversizedEnd === undefined ? Math.min(WIRE_READ_CHUNK_BYTES, FIRST_SCREEN_WINDOW_BYTES - suffix.length) : WIRE_READ_CHUNK_BYTES));
+        const start = Math.max(floor, position - WIRE_READ_CHUNK_BYTES);
         const chunk = Buffer.from(await opened.readAt(start, position - start));
         this.coldReadBytes += chunk.byteLength;
-        const bytes = suffix.length === 0 ? chunk : Buffer.concat([chunk, suffix]);
-        let lineEnd = bytes.length;
-        if (oversizedEnd !== undefined) {
-          const previous = bytes.lastIndexOf(0x0a);
+        let lineEnd = chunk.length;
+        if (position === end && chunk.at(-1) === 0x0a) lineEnd--;
+        while (lineEnd > 0) {
+          const previous = chunk.lastIndexOf(0x0a, lineEnd - 1);
           if (previous < 0 && start > 0) {
-            leading = bytes.subarray(0, DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES);
-            position = start;
+            if (oversizedLine) {
+              oversizedLeading = chunk.subarray(0, Math.min(64, lineEnd));
+            } else if (suffixBytes + lineEnd > FIRST_SCREEN_WINDOW_MAX_BYTES) {
+              oversizedLine = true;
+              oversizedLeading = chunk.subarray(0, Math.min(64, lineEnd));
+              suffix.length = 0;
+              suffixBytes = 0;
+            } else {
+              suffix.push(chunk.subarray(0, lineEnd));
+              suffixBytes += lineEnd;
+            }
+            break;
+          }
+          const lineStart = previous + 1;
+          const prefix = chunk.subarray(lineStart, lineEnd);
+          boundary = start + lineStart;
+          if (oversizedLine) {
+            const head = prefix.length >= 64 ? prefix : Buffer.concat([prefix, oversizedLeading]);
+            const opaque = transcriptWindowRecord(head);
+            oversizedLine = false;
+            oversizedLeading = Buffer.alloc(0);
+            if (opaque === undefined) {
+              boundary = recordEnd;
+              complete = false;
+              if (reverseTurn !== undefined) skippedTurnIds.add(reverseTurn);
+              else skippedUnknownTurn = true;
+              return finish();
+            }
+            scannedRecords++;
+            records.push({ record: opaque, position: { startByteOffset: boundary, endByteOffset: recordEnd } });
+            recordEnd = boundary;
+            lineEnd = previous;
             continue;
           }
-          const prefix = Buffer.concat([bytes.subarray(previous + 1), leading]);
-          const record = transcriptWindowRecord(prefix);
-          if (record === undefined) return finish();
-          boundary = start + previous + 1;
-          records.push({ record, position: { startByteOffset: boundary, endByteOffset: oversizedEnd } });
-          scannedRecords++;
-          oversizedEnd = undefined;
-          leading = Buffer.alloc(0);
-          lineEnd = previous;
-        } else if (bytes.at(-1) === 0x0a) lineEnd--;
-        while (lineEnd > 0) {
-          const previous = bytes.lastIndexOf(0x0a, lineEnd - 1);
-          if (previous < 0 && start > 0) break;
-          const lineStart = previous + 1;
-          const line = bytes.subarray(lineStart, lineEnd);
-          boundary = start + lineStart;
+          const line = suffix.length === 0 ? prefix : Buffer.concat([prefix, ...suffix.toReversed()]);
+          suffix.length = 0;
+          suffixBytes = 0;
           if (line.length > 0) {
             scannedRecords++;
             let record: ContextRecord;
             try {
               record = transcriptWindowRecord(line) ?? JSON.parse(line.toString('utf8')) as ContextRecord;
             } catch (error) {
-              if (!(error instanceof SyntaxError) || start + lineEnd !== end) throw error;
+              if (!(error instanceof SyntaxError) || recordEnd !== end) throw error;
               complete = false;
+              recordEnd = boundary;
               lineEnd = previous;
               continue;
             }
             if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
-            const event = record['event'] as Record<string, unknown> | undefined;
-            reverseTurn = wireTurnId(record) ?? (record.type === 'context.append_loop_event' ? wireTurnId({ type: record.type, turnId: event?.['turnId'] }) : undefined) ?? reverseTurn;
+            const owningTurn = wireTurnId(record);
+            if (owningTurn !== undefined) {
+              reverseTurn = owningTurn;
+              if (skippedUnknownTurn) {
+                skippedTurnIds.add(owningTurn);
+                skippedUnknownTurn = false;
+              }
+            }
             if (record.type === 'context.append_loop_event') timelineBytes += line.byteLength;
-            if (record.type === 'context.append_loop_event' && timelineBytes > FIRST_SCREEN_WINDOW_BYTES && reverseTurn !== undefined) skippedTurnIds.add(reverseTurn);
-            else records.push({ record, position: { startByteOffset: boundary, endByteOffset: Math.min(end, start + lineEnd + 1) } });
+            if (record.type === 'context.append_loop_event' && timelineBytes > FIRST_SCREEN_WINDOW_BYTES) {
+              if (reverseTurn === undefined) skippedUnknownTurn = true;
+              else skippedTurnIds.add(reverseTurn);
+            } else records.push({ record, position: { startByteOffset: boundary, endByteOffset: recordEnd } });
             if (record.type === 'context.undo') hasUndo = true;
-            if (record.type === 'turn.prompt' || record.type === 'turn_begin') turns++;
+            if (record.type === 'turn.prompt' || record.type === 'turn_begin') {
+              if (skippedUnknownTurn) skippedTurnIds.add('*');
+              skippedUnknownTurn = false;
+              reverseTurn = undefined;
+              turns++;
+            }
             if (turns >= wantedTurns) {
               const visible = hasUndo ? this.projectColdRecords(agentId, records.toReversed(), false).items.filter(item => item.kind === 'turn').length : turns;
               if (visible >= DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns) return finish();
@@ -2634,6 +2670,7 @@ export class TranscriptService {
             }
             if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS || record.type === 'context.clear' || record.type === 'branch.base') return finish();
           }
+          recordEnd = boundary;
           lineEnd = previous;
           if (performance.now() - yieldedAt >= 4) {
             await new Promise<void>(resolve => { setImmediate(resolve); });
@@ -2641,13 +2678,11 @@ export class TranscriptService {
             yieldedAt = performance.now();
           }
         }
-        suffix = bytes.subarray(0, Math.max(0, lineEnd));
-        if (suffix.length >= FIRST_SCREEN_WINDOW_BYTES) {
-          oversizedEnd = boundary;
-          leading = suffix.subarray(0, DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES);
-          suffix = Buffer.alloc(0);
-        }
         position = start;
+      }
+      if (suffix.length > 0 || oversizedLine) {
+        boundary = recordEnd;
+        complete = false;
       }
       return finish();
     } finally { opened.close(); }

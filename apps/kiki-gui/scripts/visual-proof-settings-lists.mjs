@@ -141,9 +141,9 @@ const scenarios = [
   {
     name: 'lists-pricing', fixture: 'settings-lists', matrix: ['theme'],
     run: async ({ page, shot, link }) => {
-      await page.goto(link('/usage'), { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-usage-pricing-open]', { timeout: 30_000 });
-      await page.locator('[data-usage-pricing-open]').click();
+      await page.goto(link('/usage?panel=history'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-usage-unpriced-trigger]', { timeout: 30_000 });
+      await page.locator('[data-usage-unpriced-trigger]').click();
       await page.waitForSelector('[data-usage-pricing-panel] [data-pricing-row]', { timeout: 15_000 });
       await page.waitForTimeout(600);
       await shot('list-pricing');

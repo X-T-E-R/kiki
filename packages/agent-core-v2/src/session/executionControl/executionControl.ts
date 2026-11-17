@@ -14,6 +14,8 @@ export interface ExecutionPendingStep {
   readonly stopTurn?: boolean;
   readonly forcedStopTurn?: boolean;
   readonly sendMessageCompletionBlocked?: boolean;
+  readonly anySendMessageUnconfirmed?: boolean;
+  readonly anyToolError?: boolean;
   readonly userDeliveryConfirmed?: boolean;
   readonly step: number;
   readonly stepId: string;

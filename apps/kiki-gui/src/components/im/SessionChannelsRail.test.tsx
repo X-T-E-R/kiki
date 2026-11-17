@@ -30,7 +30,7 @@ const mockImSessions = {
   confirm: vi.fn(),
   channelViews: vi.fn(async () => ({
     internal_enabled: true,
-    channels: [{ id: 'feishu-duty', kind: 'notify' as const, bound: true, enabled: true, capabilities: [] }],
+    channels: [{ id: 'feishu-duty', kind: 'notify' as 'im' | 'notify', bound: true, enabled: true, capabilities: [] }],
   })),
   setNotificationChannel: vi.fn(),
   removeNotificationChannel: vi.fn(),
@@ -43,6 +43,7 @@ const mockClient = {
   getSessionOptionalCapabilities: vi.fn(),
   setSessionOptionalCapability: vi.fn(),
   getConfig: vi.fn(),
+  getSession: vi.fn(),
   notifications: {
     getSettings: vi.fn(async () => ({ channels: [{ id: 'feishu-duty', name: '飞书值班群 Webhook', enabled: true }] })),
   },
@@ -93,6 +94,8 @@ async function expandChannels(container: ParentNode) {
   if (toggle!.getAttribute('aria-expanded') === 'false') {
     await act(async () => {
       toggle!.click();
+    });
+    await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
@@ -109,6 +112,10 @@ describe('SessionChannelsRail', () => {
     const foldedToggle = container.querySelector<HTMLButtonElement>('[data-rail-channels-toggle]')!;
     expect(foldedToggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-rail-channels-body]')).toBeNull();
+    expect(mockImSessions.channelViews).toHaveBeenCalledWith('sess-1');
+    expect(mockImSessions.snapshot).not.toHaveBeenCalled();
+    expect(mockClient.getSessionOptionalCapabilities).not.toHaveBeenCalled();
+    expect(mockClient.notifications.getSettings).not.toHaveBeenCalled();
 
     await expandChannels(container);
     expect(foldedToggle.getAttribute('aria-expanded')).toBe('true');
@@ -126,7 +133,7 @@ describe('SessionChannelsRail', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     const nextToggle = container.querySelector<HTMLButtonElement>('[data-rail-channels-toggle]')!;
-    expect(mockClient.getSessionOptionalCapabilities).toHaveBeenCalledWith('sess-2');
+    expect(mockClient.getSessionOptionalCapabilities).not.toHaveBeenCalledWith('sess-2');
     expect(nextToggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-rail-channels-body]')).toBeNull();
 
@@ -135,6 +142,7 @@ describe('SessionChannelsRail', () => {
       addButton.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    expect(mockClient.getSessionOptionalCapabilities).toHaveBeenCalledWith('sess-2');
     expect(nextToggle.getAttribute('aria-expanded')).toBe('true');
     expect(addButton.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('[data-rail-channel-picker]')).not.toBeNull();
@@ -159,6 +167,13 @@ describe('SessionChannelsRail', () => {
       },
     ];
     mockImSessions.snapshot.mockResolvedValue(createSnapshot(bindings));
+    mockImSessions.channelViews.mockResolvedValueOnce({
+      internal_enabled: true,
+      channels: [
+        { id: 'im:b-tg-41', kind: 'im' as const, bound: true, enabled: true, capabilities: [] },
+        { id: 'feishu-duty', kind: 'notify' as const, bound: true, enabled: true, capabilities: [] },
+      ],
+    });
     mockClient.getSessionOptionalCapabilities.mockResolvedValue({
       host_id: 'host-1',
       sessionId: 'sess-1',
@@ -170,6 +185,9 @@ describe('SessionChannelsRail', () => {
     });
 
     const container = await renderRail({ sessionId: 'sess-1', sessionTitle: '0.4.4 发布' });
+    expect(mockImSessions.snapshot).not.toHaveBeenCalled();
+    expect(mockClient.getSessionOptionalCapabilities).not.toHaveBeenCalled();
+    expect(mockClient.notifications.getSettings).not.toHaveBeenCalled();
 
     // Header count
     const countEl = container.querySelector('[data-rail-channels-count]');
@@ -275,6 +293,8 @@ describe('SessionChannelsRail', () => {
     const addBtn = container.querySelector('[data-rail-channel-add]') as HTMLButtonElement;
     await act(async () => {
       addBtn.click();
+    });
+    await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
@@ -336,6 +356,8 @@ describe('SessionChannelsRail', () => {
     const addBtn = container.querySelector('[data-rail-channel-add]') as HTMLButtonElement;
     await act(async () => {
       addBtn.click();
+    });
+    await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
@@ -495,6 +517,8 @@ describe('SessionChannelsRail', () => {
     const addBtn = container.querySelector('[data-rail-channel-add]') as HTMLButtonElement;
     await act(async () => {
       addBtn.click();
+    });
+    await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
@@ -553,5 +577,92 @@ describe('SessionChannelsRail', () => {
       output_enabled: true,
     }));
     expect(mockImSessions.confirm).not.toHaveBeenCalled();
+  });
+
+  it('resolves human session titles for occupied candidates and middle-ellipsizes bare IM/account/session IDs without duplicating subtitles', async () => {
+    const bindings = [
+      {
+        id: 'b-wx-raw',
+        provider_instance_id: 'wx-inst',
+        provider_kind: 'wechat_bridge' as const,
+        account_id: 'wx-bot',
+        identity: {
+          chat_id: 'o0aa11bBcCdDeEfFgGhHiIjJkKlL@im.wechat',
+          sender_id: 'o0aa11bBcCdDeEfFgGhHiIjJkKlL@im.wechat',
+          topic_id: '0',
+        },
+        session_id: 'session_ffc09b7f-a341-40a2-8c11-99887766a63d',
+        enabled: true,
+        busy: 'queue' as const,
+        reply: 'final' as const,
+        mobile_interactions: true,
+      },
+      {
+        id: 'b-tg-dm',
+        provider_instance_id: 'tg-inst',
+        provider_kind: 'telegram' as const,
+        account_id: 'tg-bot',
+        identity: {
+          chat_id: '8192037465',
+          sender_id: '8192037465',
+          sender_name: 'Alex Rivera',
+          topic_id: '0',
+        },
+        session_id: 'session_ab2e5500-a11c-47b6-b123-445566778899',
+        enabled: true,
+        busy: 'queue' as const,
+        reply: 'final' as const,
+        mobile_interactions: true,
+      },
+    ];
+    mockImSessions.snapshot.mockResolvedValue(createSnapshot(bindings));
+    mockImSessions.channelViews.mockResolvedValue({ internal_enabled: true, channels: [] });
+    mockClient.getSessionOptionalCapabilities.mockResolvedValue({
+      host_id: 'host-1',
+      sessionId: 'sess-1',
+      revision: 1,
+      rows: [],
+    } as unknown as OptionalCapabilitySessionResponse);
+    mockClient.getConfig.mockResolvedValue({});
+    mockClient.getSession.mockImplementation(async (id: string) => {
+      if (id === 'session_ffc09b7f-a341-40a2-8c11-99887766a63d') {
+        return {
+          id,
+          title: 'Research',
+          workspace_id: 'ws-1',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        };
+      }
+      throw new Error('session deleted');
+    });
+
+    const container = await renderRail({ sessionId: 'sess-1', sessionTitle: 'Current Workspace' });
+    const addBtn = container.querySelector('[data-rail-channel-add]') as HTMLButtonElement;
+    await act(async () => {
+      addBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    const picker = container.querySelector('[data-rail-channel-picker]')!;
+    expect(picker).not.toBeNull();
+    const rows = Array.from(picker.querySelectorAll('li'));
+    expect(rows).toHaveLength(2);
+
+    // Row 1 (WeChat raw ID): middle-ellipsized once on primary line, real session title "Research" on subtitle, never raw @im.wechat or session_uuid
+    expect(rows[0]!.textContent).toContain('WeChat · o0aa…kKlL');
+    expect(rows[0]!.textContent).not.toContain('@im.wechat');
+    expect(rows[0]!.textContent).toContain('Research');
+    expect(rows[0]!.textContent).not.toContain('session_ffc09b7f');
+    expect(rows[0]!.textContent?.match(/o0aa…kKlL/g)?.length).toBe(1);
+
+    // Row 2 (Telegram DM): human sender name on primary line, compact numeric ID + compact fallback session ID on subtitle
+    expect(rows[1]!.textContent).toContain('Telegram · Alex Rivera');
+    expect(rows[1]!.textContent).not.toContain('8192037465 · Alex Rivera');
+    expect(rows[1]!.textContent).toContain('8192…7465');
+    expect(rows[1]!.textContent).toContain('ab2e…8899');
+    expect(rows[1]!.textContent).not.toContain('session_ab2e5500');
   });
 });

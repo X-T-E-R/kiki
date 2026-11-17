@@ -83,8 +83,16 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     close() {}
     getForest() { return actual.buildAgentForest([], []); }
     retainHistoryRead() { return () => {}; }
+    handleSessionRecord() {}
   }
-  return { ...actual, SessionController: function SessionControllerFixture() { return fixture.controller ?? new Controller(); } };
+  return {
+    ...actual,
+    SessionController: function SessionControllerFixture(_transport: unknown, _view: unknown, sessionId?: string) {
+      const instance = (fixture.controller ?? new Controller()) as { sessionId?: string };
+      instance.sessionId ??= sessionId;
+      return instance;
+    },
+  };
 });
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
 vi.mock('./Transcript', async (original) => ({

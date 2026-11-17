@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { createDecorator } from '#/_base/di/instantiation';
+import { createDecorator, ref, type LiveRef } from '#/_base/di/instantiation';
+import {
+  IAgentRuntimeService,
+  inspectAgentWorkspaceRoots,
+} from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import {
   BRANCH_CONFIG_SECTION,
@@ -13,7 +17,10 @@ import {
   SessionSeedCarrySchema,
   SessionSeedModeSchema,
 } from '#/features/btw/seedBuilder';
+import type { Runtime } from '#/runtime/runtime';
+import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ToolAccesses, type AgentTool, type ToolExecution } from '#/tool/toolContract';
 
@@ -58,6 +65,8 @@ export class BranchTool implements AgentTool<BranchInput> {
     @ISessionBranchService private readonly branches: ISessionBranchService,
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
     @IConfigService private readonly config: IConfigService,
+    @ref(IAgentRuntimeService) private readonly runtime?: LiveRef<IAgentRuntimeService>,
+    @ref(ISessionWorkspaceContext) private readonly workspace?: LiveRef<ISessionWorkspaceContext>,
   ) {}
 
   get description(): string {
@@ -65,11 +74,30 @@ export class BranchTool implements AgentTool<BranchInput> {
     return branchToolDescription(preference);
   }
 
+  private resolveExternalCwdAccesses(cwd: string | undefined): ToolAccesses {
+    if (cwd === undefined) return ToolAccesses.none();
+    const runtimeService = this.runtime?.current;
+    const workspace = this.workspace?.current;
+    if (runtimeService === undefined || workspace === undefined) return ToolAccesses.none();
+    const runtime = runtimeService.inspect();
+    const inherited = inspectAgentWorkspaceRoots(runtimeService, workspace);
+    const view = new RuntimeWorkspaceView(runtime, inherited);
+    const resolved = view.resolve(cwd, view.workDir, true);
+    if (view.roots.some((root) => containsRuntimePath(runtime, root, resolved))) {
+      return ToolAccesses.none();
+    }
+    return ToolAccesses.file('readwrite', resolved, {
+      recursive: true,
+      implicitExternal: true,
+      workspaceRoot: true,
+    });
+  }
+
   resolveExecution(input: BranchInput): ToolExecution {
     return {
       description: input.title === undefined ? 'Opening session branch' : `Opening branch: ${input.title}`,
       approvalRule: this.name,
-      accesses: ToolAccesses.none(),
+      accesses: this.resolveExternalCwdAccesses(input.cwd),
       execute: async () => {
         if (this.scope.isBranch === true || this.scope.agentId !== MAIN_AGENT_ID) {
           return {
@@ -93,6 +121,7 @@ export class BranchTool implements AgentTool<BranchInput> {
           toolsLocked: false,
         });
         return {
+          allowsTurnEndWithSendMessage: true,
           output: JSON.stringify({
             branch_id: created.branchId,
             name: input.name,
@@ -105,4 +134,13 @@ export class BranchTool implements AgentTool<BranchInput> {
       },
     };
   }
+}
+
+function containsRuntimePath(runtime: Runtime, root: string, candidate: string): boolean {
+  const relative = runtime.path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${runtime.path.separator}`) &&
+    !runtime.path.isAbsolute(relative)
+  );
 }

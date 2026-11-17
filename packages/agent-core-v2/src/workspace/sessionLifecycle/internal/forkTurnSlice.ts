@@ -78,6 +78,20 @@ export function sliceMainRecordsAtTurn(
   };
 }
 
+/** Counts visible user turns in canonical main wire records. */
+export function countVisibleUserTurns(records: readonly WireRecord[]): number {
+  const reducer = createContextTranscriptReducer();
+  for (let index = 0; index < records.length; index += 1) {
+    reducer.add({ ...records[index]!, time: index });
+  }
+  const transcript = reducer.result();
+  let count = 0;
+  for (const message of transcript.entries) {
+    if (isUserVisibleTurnRecord({ type: 'context.append_message', message })) count += 1;
+  }
+  return count;
+}
+
 export function sliceSubagentRecordsAtTime(
   records: readonly WireRecord[],
   cutoffTime: number | undefined,

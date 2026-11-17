@@ -60,6 +60,7 @@ import {
   hasExplicitRetryVeto,
   isRetryableMalformedFunctionCallError,
   isRetryableMissingTerminalError,
+  isRetryableUncommittedStreamOverloadError,
   requestDeliveryProvenance,
   readProviderEventErrorCode,
   isImageFormatError,
@@ -899,7 +900,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         });
         const malformedFunctionCall = source?.type === 'turn' && !attemptObservedVisibleContent && isRetryableMalformedFunctionCallError(error);
         const missingTerminal = source?.type === 'turn' && !attemptObservedSubstantiveOutput && isRetryableMissingTerminalError(error);
-        const discardRetry = malformedFunctionCall || missingTerminal;
+        const uncommittedOverload = source?.type === 'turn' && !attemptObservedSubstantiveOutput && isRetryableUncommittedStreamOverloadError(error);
+        const discardRetry = malformedFunctionCall || missingTerminal || uncommittedOverload;
         if (source?.type === 'operation' && retryPolicy?.retry === false) attachErrorDetails(error, { retry_policy_veto: true });
         if (retry === 'never' || retryPolicy?.retry === false || (hasExplicitRetryVeto(error) && !discardRetry) ||
           isAbortError(error) || signal?.aborted === true) throw error;
@@ -907,18 +909,20 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           const partialOutput = attemptObservedOutput || (discardRetry
             ? requestDeliveryProvenance(error) === 'executed' : !isRetryableGenerateError(error));
           if (partialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
-          const maxAttempts = Math.min(discardRetry ? 3 : DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
+          const maxAttempts = Math.min(malformedFunctionCall || missingTerminal ? 3 : DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
             this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
           if (interruptionAttempt >= maxAttempts) {
-            const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt, retry_max_attempts: maxAttempts };
-            attachErrorDetails(error, details);
-            attachErrorDetails(raw, details);
-            this.log.warn('upstream interruption retry exhausted', {
-              ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
-              maxAttempts, retainedPartialOutput: attemptObservedOutput, ...retryErrorFields(raw), ...responseTransportLogFields(error),
-            });
-            throw error;
-          }
+            if (!uncommittedOverload || !this.infiniteRetryEnabled) {
+              const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt, retry_max_attempts: maxAttempts };
+              attachErrorDetails(error, details);
+              attachErrorDetails(raw, details);
+              this.log.warn('upstream interruption retry exhausted', {
+                ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
+                maxAttempts, retainedPartialOutput: attemptObservedOutput, ...retryErrorFields(raw), ...responseTransportLogFields(error),
+              });
+              throw error;
+            }
+          } else {
           if (malformedFunctionCall && params.toolChoice === undefined && request.tools.length > 0 &&
             params.requestParams?.['tool_choice'] === undefined && request.model.requestParams?.['tool_choice'] === undefined) {
             params = { ...params, toolChoice: 'auto' };
@@ -952,9 +956,10 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           await sleepForRetry(delayMs, signal);
           await refreshIdentityParams();
           continue;
+          }
         }
         params = { ...params, googleContinuationToken: undefined };
-        if ((requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error)) ||
+        if ((requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error) && !uncommittedOverload) ||
           readProviderEventErrorCode(error) === 'antigravity_thinking_only') throw error;
         const nextPolicy = this.nextProjectionPolicyForError(
           error,
@@ -970,7 +975,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           continue;
         }
         if (
-          (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error)) ||
+          (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error) && !uncommittedOverload) ||
           !this.infiniteRetryEnabled ||
           isRequestGovernanceError(error) ||
           raw instanceof APIContextOverflowError

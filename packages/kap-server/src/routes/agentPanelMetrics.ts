@@ -39,10 +39,23 @@ type PersistedUsage = {
   complete: boolean;
 };
 
+type PersistedAgentContext = {
+  readonly contextTokens: number | null;
+  readonly contextLimit: number | null;
+  readonly compactionCount: number | null;
+};
+
+const EMPTY_PERSISTED_CONTEXT: PersistedAgentContext = {
+  contextTokens: null,
+  contextLimit: null,
+  compactionCount: null,
+};
+
 interface PersistedMetricsCacheEntry {
   readonly expiresAt: number;
   readonly liveRecords?: number;
   readonly usage: PersistedUsage;
+  readonly context: PersistedAgentContext;
 }
 
 interface PersistedMetricsScanResult {
@@ -91,8 +104,28 @@ const PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS = 600_000;
 const PERSISTED_METRICS_SCAN_MAX_RECORDS = 100_000;
 const PERSISTED_METRICS_SCAN_MAX_BYTES = 128 * 1024 * 1024;
 const PERSISTED_METRICS_SCAN_WALL_TIME_MS = 5_000;
-const PERSISTED_METRICS_CACHE_MAX_ENTRIES = 1024;
+export const PERSISTED_METRICS_CACHE_MAX_ENTRIES = 8192;
+const PERSISTED_METRICS_RUNTIME_CONCURRENCY = 8;
 const persistedMetricsStates = new WeakMap<Scope, PersistedMetricsState>();
+
+async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const laneCount = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(Array.from({ length: laneCount }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index]!);
+    }
+  }));
+  return results;
+}
 
 export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelPricingService, isPrivate = false): AgentPanelMetrics {
   const usage = agent.accessor.get(IAgentUsageService).status();
@@ -167,34 +200,6 @@ export async function readPersistedAgentPanelMetrics(
     ? await core.accessor.get(IFileSystemStorageService).list(`${sessionScope}/agents`)
     : [...new Set(options.agentIds)];
   const wanted = requested.filter((agentId) => !skip.has(agentId));
-  const metadata = wanted.length === 0 ? undefined : await readColdSessionMeta(core, workspaceId, sessionId);
-  const runtime = new Map(await Promise.all(wanted.map(async agentId => {
-    const meta = metadata?.agents?.[agentId];
-    const [facts, profile, size] = await Promise.all([
-      readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, agentId, meta, options.signal),
-      readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, meta, options.signal,
-        { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
-      logicalByteSize(core.accessor.get(IFileSystemStorageService), `${sessionScope}/agents/${agentId}`, 'wire.jsonl'),
-    ]);
-    const native = profile?.driver !== 'external' && !(metadata !== undefined && isExternalClientMain(metadata, agentId))
-      && (profile?.executorId ?? meta?.executor ?? 'native') === 'native';
-    return [agentId, { facts, checkpointReady: facts.complete && (size ?? 0) > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, context: {
-      contextTokens: facts.contextTokens ?? null,
-      contextLimit: native ? persistedAgentContextLimit(core, profile, profile?.modelAlias ?? meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
-      compactionCount: native ? facts.panelAccounting?.successfulCompactions ?? null : null,
-    } }] as const;
-  })));
-  const resolvedUsage = (agentId: string, canonical: PersistedUsage): PersistedUsage => {
-    const facts = runtime.get(agentId)?.facts;
-    const accounting = facts?.panelAccounting;
-    if (canonical.complete || runtime.get(agentId)?.checkpointReady !== true || accounting === undefined) return canonical;
-    return {
-      usage: sumUsage(Object.values(accounting.knownByModel)) ?? { ...EMPTY_USAGE },
-      byModel: accounting.knownByModel, byModelMask: accounting.knownByModelMask,
-      records: accounting.records, knownUsageRecords: accounting.knownRecords,
-      partial: accounting.incomplete, complete: true,
-    };
-  };
   const mutable = new Set(options.mutableAgentIds ?? []);
   const sourceFor = (agentId: string) => agentMetricsCacheKey(workspaceId, sessionId, agentId);
   const keyFor = (agentId: string) => {
@@ -222,18 +227,61 @@ export async function readPersistedAgentPanelMetrics(
   const valid = new Set(wanted.map(sourceFor));
   state.reads.add(valid);
   const result = new Map<string, AgentPanelMetrics>();
-  const finish = () => Object.freeze(Object.fromEntries([...result].map(([id, metrics]) => [id,
-    valid.has(sourceFor(id)) ? { ...metrics, ...runtime.get(id)?.context } : { ...metrics, ...runtime.get(id)?.context, usageComplete: false, usagePartial: true, costPartial: true },
-  ])));
+  const contexts = new Map<string, PersistedAgentContext>();
+  const finish = () => Object.freeze(Object.fromEntries([...result].map(([id, metrics]) => {
+    const ctx = contexts.get(id) ?? EMPTY_PERSISTED_CONTEXT;
+    return [id, valid.has(sourceFor(id))
+      ? { ...metrics, ...ctx }
+      : { ...metrics, ...ctx, usageComplete: false, usagePartial: true, costPartial: true }];
+  })));
   try {
     const missing: string[] = [];
     const now = Date.now();
     for (const agentId of wanted) {
       const cached = state.cache.get(sourceFor(agentId));
-      if (cached !== undefined && cached.expiresAt > now && cached.liveRecords === options.mutableUsageRecords?.[agentId]) result.set(agentId, toPersistedMetrics(cached.usage, pricing));
-      else missing.push(agentId);
+      if (cached !== undefined && cached.expiresAt > now && cached.liveRecords === options.mutableUsageRecords?.[agentId]) {
+        result.set(agentId, toPersistedMetrics(cached.usage, pricing));
+        contexts.set(agentId, cached.context);
+      } else {
+        missing.push(agentId);
+      }
     }
     if (missing.length === 0) return finish();
+    const metadata = await readColdSessionMeta(core, workspaceId, sessionId);
+    const runtime = new Map(await mapBounded(missing, PERSISTED_METRICS_RUNTIME_CONCURRENCY, async (agentId) => {
+      options.signal?.throwIfAborted();
+      const meta = metadata?.agents?.[agentId];
+      const [facts, profile, size] = await Promise.all([
+        readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, agentId, meta, options.signal),
+        readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, meta, options.signal,
+          { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
+        logicalByteSize(core.accessor.get(IFileSystemStorageService), `${sessionScope}/agents/${agentId}`, 'wire.jsonl'),
+      ]);
+      const native = profile?.driver !== 'external' && !(metadata !== undefined && isExternalClientMain(metadata, agentId))
+        && (profile?.executorId ?? meta?.executor ?? 'native') === 'native';
+      const context: PersistedAgentContext = {
+        contextTokens: facts.contextTokens ?? null,
+        contextLimit: native ? persistedAgentContextLimit(core, profile, profile?.modelAlias ?? meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
+        compactionCount: native ? facts.panelAccounting?.successfulCompactions ?? null : null,
+      };
+      return [agentId, {
+        facts,
+        checkpointReady: facts.complete && (size ?? 0) > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+        context,
+      }] as const;
+    }));
+    for (const [agentId, entry] of runtime) contexts.set(agentId, entry.context);
+    const resolvedUsage = (agentId: string, canonical: PersistedUsage): PersistedUsage => {
+      const facts = runtime.get(agentId)?.facts;
+      const accounting = facts?.panelAccounting;
+      if (canonical.complete || runtime.get(agentId)?.checkpointReady !== true || accounting === undefined) return canonical;
+      return {
+        usage: sumUsage(Object.values(accounting.knownByModel)) ?? { ...EMPTY_USAGE },
+        byModel: accounting.knownByModel, byModelMask: accounting.knownByModelMask,
+        records: accounting.records, knownUsageRecords: accounting.knownRecords,
+        partial: accounting.incomplete, complete: true,
+      };
+    };
     if (options.settle === false) {
       const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, missing, options.signal);
       for (const agentId of missing) result.set(agentId, toPersistedMetrics(resolvedUsage(agentId, persistedUsageOf(rows[agentId])), pricing));
@@ -286,7 +334,12 @@ export async function readPersistedAgentPanelMetrics(
           const ttl = mutable.has(agentId)
             ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
             : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
-          cachePersistedMetrics(state, sourceFor(agentId), { expiresAt: Date.now() + ttl, liveRecords: options.mutableUsageRecords?.[agentId], usage });
+          cachePersistedMetrics(state, sourceFor(agentId), {
+            expiresAt: Date.now() + ttl,
+            liveRecords: options.mutableUsageRecords?.[agentId],
+            usage,
+            context: runtime.get(agentId)?.context ?? EMPTY_PERSISTED_CONTEXT,
+          });
         }
         return { usages, budgetCapped: Object.values(usages).some((usage) => !usage.complete) };
       }).finally(() => {

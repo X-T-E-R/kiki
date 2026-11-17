@@ -635,6 +635,11 @@ export function descriptorFromMeta(agentId: string, meta: AgentMeta | undefined)
   const branchInitiator = rawInitiator === 'user' || rawInitiator === 'agent' ? rawInitiator : undefined;
   const toolsLocked = labels?.['toolsLocked'] === 'true' ? true : labels?.['toolsLocked'] === 'false' ? false : undefined;
   const branchSealed = labels?.['branchSealed'] === 'true' ? true : undefined;
+  const rawBaseTurn = labels?.['branchBaseTurnId'];
+  const parsedBaseTurn = rawBaseTurn !== undefined && /^\d+$/.test(rawBaseTurn) ? Number(rawBaseTurn) : undefined;
+  const branchBaseTurnId = parsedBaseTurn !== undefined && Number.isSafeInteger(parsedBaseTurn) ? parsedBaseTurn : undefined;
+  const rawBaseMessageId = labels?.['branchBaseMessageId'];
+  const branchBaseMessageId = typeof rawBaseMessageId === 'string' && rawBaseMessageId.length > 0 ? rawBaseMessageId : undefined;
   return {
     agentId,
     createdAt: meta?.createdAt === undefined ? undefined : new Date(meta.createdAt).toISOString(),
@@ -650,5 +655,7 @@ export function descriptorFromMeta(agentId: string, meta: AgentMeta | undefined)
     branchInitiator,
     toolsLocked,
     branchSealed,
+    branchBaseTurnId,
+    branchBaseMessageId,
   };
 }

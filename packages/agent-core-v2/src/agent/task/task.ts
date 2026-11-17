@@ -54,6 +54,7 @@ export interface RegisterAgentTaskOptions {
   readonly autoBackgroundOnTimeout?: boolean;
   readonly signal?: AbortSignal;
   readonly ownerTurnId?: number;
+  readonly terminalNotificationSuppressed?: boolean;
   /** Preallocated by a transactional adapter before the task starts. */
   readonly taskId?: string;
   /** Keep the task private until a transactional caller commits registration. */
@@ -117,6 +118,7 @@ export interface IAgentTaskService {
   getTask(taskId: string): AgentTaskInfo | undefined;
   getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined>;
   findPausedAgentTask(agentId: string, taskId?: string): Promise<AgentTaskInfo | undefined>;
+  settlePausedAgentTask?(taskId: string, reason: string): Promise<AgentTaskInfo | undefined>;
   list(activeOnly?: boolean, limit?: number, offset?: number): readonly AgentTaskInfo[];
   hasUnfinishedWork(includeRestoration?: boolean): boolean;
   hasWorkPreventingPausedExit?(): boolean;

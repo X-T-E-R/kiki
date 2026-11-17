@@ -37,7 +37,11 @@ import { IEventService } from '#/app/event/event';
 import { IWorkAdmissionService } from '#/app/workAdmission/workAdmission';
 import { WorkAdmissionService } from '#/app/workAdmission/workAdmissionService';
 import { AgentSkillService } from '#/agent/skill/skillService';
-import { SkillToolInputSchema } from '#/agent/tools/skill/skill';
+import {
+  MAX_SKILL_QUERY_DEPTH,
+  NestedSkillTooDeepError,
+  SkillToolInputSchema,
+} from '#/agent/tools/skill/skill';
 import { SkillTool } from '#/agent/tools/skill/skillTool';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -304,6 +308,7 @@ describe('SkillTool', () => {
 
   function makeTool(
     ix: TestInstantiationService,
+    depth?: number,
     text = '# Explicit $ARGUMENTS',
     fs: Partial<IHostFileSystem> = {},
     plugins?: IPluginService,
@@ -331,7 +336,7 @@ describe('SkillTool', () => {
       plugins,
       usage,
     );
-    return tool;
+    return depth === undefined ? tool : tool.withInitialQueryDepth(depth);
   }
 
   it('applies the workspace usage gate to name and explicit-path skill activation', async () => {
@@ -343,7 +348,7 @@ describe('SkillTool', () => {
       enabled: () => true,
       allows: async () => false,
     } as unknown as IPluginUsageService;
-    const tool = makeTool(ix, '# Explicit $ARGUMENTS', {}, plugins, usage);
+    const tool = makeTool(ix, undefined, '# Explicit $ARGUMENTS', {}, plugins, usage);
 
     const byName = await executeTool(tool, toolContext({ skill: 'commit' }));
     const byPath = await executeTool(tool, toolContext({ path: 'skills/review.md' }));
@@ -372,7 +377,7 @@ describe('SkillTool', () => {
   });
 
   it('loads an explicit file with args, provenance and resource root without replacing the catalog', async () => {
-    const tool = makeTool(ix, '---\nname: commit\narguments: [target]\n---\nReview $target');
+    const tool = makeTool(ix, undefined, '---\nname: commit\narguments: [target]\n---\nReview $target');
     const result = await executeTool(tool, toolContext({ path: 'skills/review.md', args: 'staged' }));
     expect(result.isError).not.toBe(true);
     expect(result.delivery).toMatchObject({ kind: 'steer', message: {
@@ -386,7 +391,7 @@ describe('SkillTool', () => {
 
   it('enforces user-only and inline restrictions for explicit paths', async () => {
     for (const metadata of ['disable-model-invocation: true', 'type: flow']) {
-      const result = await executeTool(makeTool(ix, `---\nname: private\n${metadata}\n---\nSecret`), toolContext({ path: 'private.md' }));
+      const result = await executeTool(makeTool(ix, undefined, `---\nname: private\n${metadata}\n---\nSecret`), toolContext({ path: 'private.md' }));
       expect(result.isError).toBe(true);
       expect(result.delivery).toBeUndefined();
     }
@@ -398,7 +403,7 @@ describe('SkillTool', () => {
       source: 'project', text: 'Discuss options.',
     }));
     for (const input of [{ skill: 'brainstorm' }, { path: '.kiki/commands/brainstorm.md' }]) {
-      const result = await executeTool(makeTool(ix, 'Discuss options.'), toolContext(input));
+      const result = await executeTool(makeTool(ix, undefined, 'Discuss options.'), toolContext(input));
       expect(result.isError).toBe(true);
       expect(result.delivery).toBeUndefined();
       expect(result.output).toContain('only be triggered by the user');
@@ -414,7 +419,7 @@ describe('SkillTool', () => {
       text: 'Discuss options.',
     }));
     const realpath = vi.fn(async (path: string) => path);
-    const tool = makeTool(ix, '# Independent', { realpath });
+    const tool = makeTool(ix, undefined, '# Independent', { realpath });
 
     await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
     await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
@@ -437,7 +442,7 @@ describe('SkillTool', () => {
       const commandPath = '/workspace/.kiki/commands/review.md';
       skills.register(parseSkillText({ skillMdPath: commandPath, skillDirName: 'review', source: 'project', text: '# Review' }));
       const hostFs = new HostFileSystem();
-      const tool = makeTool(ix, '# Independent', { realpath: async path => {
+      const tool = makeTool(ix, undefined, '# Independent', { realpath: async path => {
         const resolved = await hostFs.realpath(join(dir, path.slice('/workspace/'.length)));
         return `/workspace/${relative(dir, resolved)}`;
       } });
@@ -465,7 +470,7 @@ describe('SkillTool', () => {
     expect(discovered.skills).toHaveLength(1);
     expect(discovered.skills[0]!.metadata.promptCommand).toBe(true);
     for (const skill of discovered.skills) skills.register(skill);
-    const tool = makeTool(ix, '', fs);
+    const tool = makeTool(ix, undefined, '', fs);
     for (const path of [target, '/workspace/alias.md']) {
       const result = await executeTool(tool, toolContext({ path }));
       expect(result.isError).toBe(true);
@@ -495,7 +500,7 @@ describe('SkillTool', () => {
     expect(discovered.skills).toHaveLength(2);
     for (const skill of discovered.skills) skills.register(skill);
     vanished = true;
-    const tool = makeTool(ix, '', fs);
+    const tool = makeTool(ix, undefined, '', fs);
     const ordinary = await executeTool(tool, toolContext({ path: '/workspace/independent.md' }));
     expect(ordinary.isError).not.toBe(true);
     expect(ordinary.delivery).toBeDefined();
@@ -512,7 +517,7 @@ describe('SkillTool', () => {
     skills.register(parseSkillText({ skillMdPath: commandPath, skillDirName: 'private', source: 'project', text: '# Private' }));
     const failure = new Error2(code, 'Cannot resolve command identity');
     const readText = vi.fn(async () => '# Independent');
-    const tool = makeTool(ix, '', {
+    const tool = makeTool(ix, undefined, '', {
       realpath: async (path) => { if (path === commandPath) throw failure; return path; },
       readText,
     });
@@ -532,7 +537,7 @@ describe('SkillTool', () => {
       return path;
     });
     const result = await executeTool(
-      makeTool(ix, '# Independent', { realpath }),
+      makeTool(ix, undefined, '# Independent', { realpath }),
       toolContext({ path: '/workspace/independent.md' }),
     );
     expect(result.isError).not.toBe(true);
@@ -545,7 +550,7 @@ describe('SkillTool', () => {
 
   it('declares a sensitive canonical symlink target before reading skill content', async () => {
     const readText = vi.fn(async () => '# forbidden');
-    const tool = makeTool(ix, '', { realpath: async () => '/workspace/.env', readText });
+    const tool = makeTool(ix, undefined, '', { realpath: async () => '/workspace/.env', readText });
     const resolved = await tool.resolveExecution({ path: 'safe.md' });
     expect(resolved).toMatchObject({ accesses: [{ path: '/workspace/.env' }] });
     expect(readText).not.toHaveBeenCalled();
@@ -555,7 +560,7 @@ describe('SkillTool', () => {
     ['commands/review.md', '/workspace/ordinary.md'],
     ['ordinary.md', '/workspace/commands/review.md'],
   ])('keeps user-only command policy across a symlink from %s', async (path, target) => {
-    const tool = makeTool(ix, '# user-only command', { realpath: async () => target });
+    const tool = makeTool(ix, undefined, '# user-only command', { realpath: async () => target });
     const result = await executeTool(tool, toolContext({ path }));
     expect(result.isError).toBe(true);
     expect(result.delivery).toBeUndefined();
@@ -564,7 +569,7 @@ describe('SkillTool', () => {
 
   it('uses the canonical path for admission and provenance without reading during preparation', async () => {
     const readText = vi.fn(async () => '# approved file');
-    const tool = makeTool(ix, '', { realpath: async () => '/workspace/actual.md', readText });
+    const tool = makeTool(ix, undefined, '', { realpath: async () => '/workspace/actual.md', readText });
     const execution = await tool.resolveExecution({ path: 'link.md' });
     expect(execution).toMatchObject({ display: { kind: 'skill_call', skill_name: '/workspace/actual.md' } });
     expect(readText).not.toHaveBeenCalled();
@@ -640,6 +645,43 @@ describe('SkillTool', () => {
       type: 'text',
       text: expect.stringContaining('ARGUMENTS: src/app.ts'),
     });
+  });
+
+  it('requires matching skills to invoke the Skill tool in its description', () => {
+    const tool = makeTool(ix);
+    expect(tool.description).toContain('BLOCKING REQUIREMENT');
+    expect(tool.description).toContain('MUST call this tool');
+  });
+
+  it('honors initialQueryDepth as an alias for queryDepth', async () => {
+    const nested = await executeTool(
+      makeTool(ix, 2),
+      toolContext({ skill: 'commit' }),
+    );
+    const root = await executeTool(
+      makeTool(ix, 0),
+      toolContext({ skill: 'commit' }),
+    );
+
+    expect(prompted).toHaveLength(0);
+    expect(nested.delivery?.message.origin).toMatchObject({
+      kind: 'skill_activation',
+      trigger: 'nested-skill',
+    });
+    expect(root.delivery?.message.origin).toMatchObject({
+      kind: 'skill_activation',
+      trigger: 'model-tool',
+    });
+  });
+
+  it('throws a structured recursion error when nested skill invocation is too deep', async () => {
+    await expect(
+      executeTool(
+        makeTool(ix, MAX_SKILL_QUERY_DEPTH),
+        toolContext({ skill: 'commit' }),
+      ),
+    ).rejects.toBeInstanceOf(NestedSkillTooDeepError);
+    expect(prompted).toHaveLength(0);
   });
 });
 
@@ -885,5 +927,52 @@ describe('AgentSkillService busy delivery (harness)', () => {
       code: ErrorCodes.REQUEST_INVALID,
       message: expect.stringContaining('ordinary prompts'),
     });
+  });
+
+  it('tracks live consecutive skill-chain depth in the agent loop without depth injection and resets after non-skill work', async () => {
+    const catalog = new InMemorySkillCatalog();
+    for (const name of ['s1', 's2', 's3', 's4']) {
+      catalog.register(stubSkill(name, { content: `Loaded ${name}`, metadata: {} }));
+    }
+    ctx = createTestAgent(skillServices(catalog));
+    ctx.get(IAgentToolRegistryService).register({
+      name: 'Work',
+      description: 'Non-skill work',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      resolveExecution: () => ({
+        approvalRule: '',
+        execute: async () => ({ output: 'work done' }),
+      }),
+    });
+    ctx.configure({ tools: ['Skill', 'Work'] });
+
+    ctx.mockNextResponse({ type: 'function', id: 'c1', name: 'Skill', arguments: JSON.stringify({ skill: 's1' }) });
+    ctx.mockNextResponse({ type: 'function', id: 'c2', name: 'Skill', arguments: JSON.stringify({ skill: 's2' }) });
+    ctx.mockNextResponse({ type: 'function', id: 'c3', name: 'Skill', arguments: JSON.stringify({ skill: 's3' }) });
+    ctx.mockNextResponse({ type: 'function', id: 'c4', name: 'Skill', arguments: JSON.stringify({ skill: 's4' }) });
+    ctx.mockNextResponse({ type: 'function', id: 'c4-retry', name: 'Skill', arguments: JSON.stringify({ skill: 's4' }) });
+    ctx.mockNextResponse({ type: 'function', id: 'c5', name: 'Work', arguments: '{}' });
+    ctx.mockNextResponse({ type: 'function', id: 'c6', name: 'Skill', arguments: JSON.stringify({ skill: 's4' }) });
+    ctx.mockNextResponse({ type: 'text', text: 'all done' });
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'run chain' }] });
+    await ctx.untilTurnEnd();
+
+    const history = ctx.contextData().history;
+    const activations = history
+      .filter((m) => m.role === 'user' && m.origin?.kind === 'skill_activation')
+      .map((m) => (m.origin?.kind === 'skill_activation' ? { name: m.origin.skillName, trigger: m.origin.trigger } : null));
+    expect(activations).toEqual([
+      { name: 's1', trigger: 'model-tool' },
+      { name: 's2', trigger: 'nested-skill' },
+      { name: 's3', trigger: 'nested-skill' },
+      { name: 's4', trigger: 'model-tool' },
+    ]);
+
+    for (const rejectedId of ['c4', 'c4-retry']) {
+      const rejected = history.find((m) => m.role === 'tool' && m.toolCallId === rejectedId);
+      expect(rejected).toBeDefined();
+      expect(JSON.stringify(rejected?.content)).toContain(`exceeded the maximum depth of ${String(MAX_SKILL_QUERY_DEPTH)}`);
+    }
   });
 });

@@ -9,9 +9,102 @@ import { MEDIA_PREVIEW_MAX_BYTES } from '@kiki/protocol';
 export const MEDIA_PREVIEW_BYTES = MEDIA_PREVIEW_MAX_BYTES;
 export const MEDIA_PREVIEW_EDGE = 768;
 
+const PREVIEW_RESULT_CACHE_MAX_ENTRIES = 256;
+const PREVIEW_RESULT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const previewResultCache = new Map<string, { readonly bytes: Uint8Array; readonly mime: string }>();
+let previewResultCacheBytes = 0;
+const previewResultFlights = new Map<string, {
+  readonly controller: AbortController;
+  users: number;
+  readonly promise: Promise<{ bytes: Uint8Array; mime: string }>;
+}>();
+
 export class MediaPreviewUnavailableError extends Error {}
 
-export async function createMediaPreview(file: SessionMediaFile, mediaType: string | undefined, signal: AbortSignal): Promise<{ bytes: Uint8Array; mime: string }> {
+export async function createMediaPreview(
+  file: SessionMediaFile,
+  mediaType: string | undefined,
+  signal: AbortSignal,
+  cacheKey?: string,
+): Promise<{ bytes: Uint8Array; mime: string }> {
+  signal.throwIfAborted();
+  if (cacheKey !== undefined && cacheKey.length > 0) {
+    const cached = previewResultCache.get(cacheKey);
+    if (cached !== undefined) {
+      previewResultCache.delete(cacheKey);
+      previewResultCache.set(cacheKey, cached);
+      return cached;
+    }
+    return sharedServerPreviewFlight(cacheKey, signal, (flightSignal) => computeMediaPreview(file, mediaType, flightSignal));
+  }
+  return computeMediaPreview(file, mediaType, signal);
+}
+
+function sharedServerPreviewFlight(
+  key: string,
+  signal: AbortSignal,
+  compute: (signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string }>,
+): Promise<{ bytes: Uint8Array; mime: string }> {
+  let flight = previewResultFlights.get(key);
+  if (flight === undefined) {
+    const controller = new AbortController();
+    const promise = compute(controller.signal).then((result) => {
+      storeServerPreviewResult(key, result);
+      return result;
+    });
+    flight = { controller, users: 0, promise };
+    previewResultFlights.set(key, flight);
+    const current = flight;
+    const clear = () => {
+      if (previewResultFlights.get(key) === current) previewResultFlights.delete(key);
+    };
+    void current.promise.then(clear, clear);
+  }
+  const current = flight;
+  current.users += 1;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (done: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', cancel);
+      current.users -= 1;
+      if (current.users === 0 && previewResultFlights.get(key) === current) {
+        previewResultFlights.delete(key);
+        current.controller.abort();
+      }
+      done();
+    };
+    const cancel = () => {
+      finish(() => { reject(signal.reason ?? new Error('Media preview cancelled')); });
+    };
+    signal.addEventListener('abort', cancel, { once: true });
+    void current.promise.then(
+      (value) => { finish(() => { resolve(value); }); },
+      (error: unknown) => { finish(() => { reject(error); }); },
+    );
+  });
+}
+
+function storeServerPreviewResult(key: string, result: { readonly bytes: Uint8Array; readonly mime: string }): void {
+  if (result.bytes.byteLength > PREVIEW_RESULT_CACHE_MAX_BYTES) return;
+  const previous = previewResultCache.get(key);
+  if (previous !== undefined) {
+    previewResultCache.delete(key);
+    previewResultCacheBytes -= previous.bytes.byteLength;
+  }
+  previewResultCache.set(key, result);
+  previewResultCacheBytes += result.bytes.byteLength;
+  while (previewResultCache.size > PREVIEW_RESULT_CACHE_MAX_ENTRIES || previewResultCacheBytes > PREVIEW_RESULT_CACHE_MAX_BYTES) {
+    const oldest = previewResultCache.keys().next().value;
+    if (oldest === undefined) break;
+    const entry = previewResultCache.get(oldest)!;
+    previewResultCacheBytes -= entry.bytes.byteLength;
+    previewResultCache.delete(oldest);
+  }
+}
+
+async function computeMediaPreview(file: SessionMediaFile, mediaType: string | undefined, signal: AbortSignal): Promise<{ bytes: Uint8Array; mime: string }> {
   signal.throwIfAborted();
   if (file.size === 0) throw new MediaPreviewUnavailableError('This media is empty. Open or download the original.');
   let mime = file.mediaType === 'application/octet-stream' ? mediaType : file.mediaType;

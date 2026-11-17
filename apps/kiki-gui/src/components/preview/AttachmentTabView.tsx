@@ -33,6 +33,7 @@ import { safeImagePreviewName } from '../imagePreviewName';
 import { ImageViewport } from '../ImageViewport';
 import { Markdown } from '../Markdown';
 import { MediaLoadFailure, useSessionMedia } from '../mediaParts';
+import { useMediaPreview } from '../mediaPreviewContext';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
 import { DocumentTabView } from './DocumentTabView';
@@ -84,6 +85,7 @@ export function PreviewAttachmentView({
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const mediaPreview = useMediaPreview();
   const remoteScope = !isLocalKikiComputer(connection);
   const { source } = resource;
   const sessionId =
@@ -181,6 +183,19 @@ export function PreviewAttachmentView({
     playback.status === 'fallback' &&
     (!html || mode === 'source' || htmlPreviewState.status === 'error');
   const load = useSessionMedia(canonicalItem, sessionId, shouldLoadBytes, false, attempt);
+  const isImageAttachment = resource.type === 'image' || canonicalItem.kind === 'image';
+  const openAttachmentLightbox = useCallback((fallbackSrc: string) => {
+    if (
+      mediaPreview?.openGalleryImage !== undefined &&
+      sessionId === mediaPreview.sessionId &&
+      isImageAttachment &&
+      (canonicalItem.fileId !== undefined || canonicalItem.url !== undefined)
+    ) {
+      mediaPreview.openGalleryImage(canonicalItem);
+      return;
+    }
+    onOpenImage(fallbackSrc, name, trustedPath);
+  }, [canonicalItem, isImageAttachment, mediaPreview, name, onOpenImage, sessionId, trustedPath]);
   const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
   const [transfer, setTransfer] = useState<{
     readonly status: 'idle' | 'downloading' | 'saving' | 'saved' | 'failed';
@@ -201,6 +216,7 @@ export function PreviewAttachmentView({
     return refined === resource.type ? resource : { ...resource, type: refined, mime: load.mime || resource.mime };
   }, [load, name, resource]);
 
+  const hasPreviewFallback = isImageAttachment && load.status === 'loading' && load.thumbnailUrl !== undefined;
   const readState = useMemo<PreviewReadState>(() => {
     let status: 'loading' | 'ready' | 'failed';
     if (documentPreview) {
@@ -214,12 +230,10 @@ export function PreviewAttachmentView({
       } else {
         status = 'loading';
       }
-    } else if (playback.status === 'ready') {
+    } else if (playback.status === 'ready' || load.status === 'ready' || (playback.status !== 'failed' && hasPreviewFallback)) {
       status = 'ready';
     } else if (playback.status === 'failed' || load.status === 'failed') {
       status = 'failed';
-    } else if (load.status === 'ready') {
-      status = 'ready';
     } else {
       status = 'loading';
     }
@@ -228,7 +242,7 @@ export function PreviewAttachmentView({
       readableFromDevice: status !== 'failed',
       originalReadable: trustedPath !== undefined && status !== 'failed',
     };
-  }, [documentPreview, docReadStatus, viewable, html, mode, htmlPreviewState.status, playback.status, load.status, trustedPath]);
+  }, [documentPreview, docReadStatus, viewable, html, mode, htmlPreviewState.status, playback.status, load.status, hasPreviewFallback, trustedPath]);
 
   useEffect(() => {
     onReadStateChange?.(readState);
@@ -716,13 +730,36 @@ export function PreviewAttachmentView({
                 <MediaLoadFailure name={name} decode={false} onRetry={() => { setAttempt((value) => value + 1); }} />
               </div>
             ) : load.status === 'loading' ? (
-              <DelayedReadingNotice active />
+              load.thumbnailUrl !== undefined && (effectiveResource.type === 'image' || canonicalItem.kind === 'image') ? (
+                <ImageViewport
+                  identity={tabKey}
+                  src={load.thumbnailUrl}
+                  alt={name}
+                  caption={<span title={trustedPath ?? name}>{name}</span>}
+                  meta={size !== undefined ? formatBytes(size) : undefined}
+                  showHeader={!phoneForm}
+                  actions={
+                    <button
+                      type="button"
+                      onClick={() => { openAttachmentLightbox(load.thumbnailUrl!); }}
+                      title={t('media.viewImage')}
+                      aria-label={t('media.viewImage')}
+                      className={CAPTION_ACTION_CLASS}
+                    >
+                      <Icon name="eye" size={14} />
+                    </button>
+                  }
+                />
+              ) : (
+                <DelayedReadingNotice active />
+              )
             ) : load.status === 'failed' ? (
               <div className="flex min-h-0 flex-1 items-center justify-center p-4" data-preview-attachment-error>
                 <MediaLoadFailure name={name} decode={false} onRetry={() => { setAttempt((value) => value + 1); }} />
               </div>
             ) : load.mime.startsWith('image/') || effectiveResource.type === 'image' ? (
               <ImageViewport
+                identity={tabKey}
                 src={load.url}
                 alt={name}
                 caption={<span title={trustedPath ?? name}>{name}</span>}
@@ -731,7 +768,7 @@ export function PreviewAttachmentView({
                 actions={
                   <button
                     type="button"
-                    onClick={() => { onOpenImage(load.url, name, trustedPath); }}
+                    onClick={() => { openAttachmentLightbox(load.url); }}
                     title={t('media.viewImage')}
                     aria-label={t('media.viewImage')}
                     className={CAPTION_ACTION_CLASS}

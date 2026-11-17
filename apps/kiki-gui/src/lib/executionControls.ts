@@ -470,8 +470,10 @@ export function useExecutionCancelPauseOne(
 ): ExecutionAction {
   const pauseOperationId = state?.pauseOperationId;
   const cancelable = useMemo(
-    () => state?.phase === 'pausing' && pauseOperationId !== undefined ? [sessionId] : [],
-    [pauseOperationId, sessionId, state?.phase],
+    () => (state?.phase === 'pausing' || (state?.phase === 'failed' && state.pausedAt === undefined)) && pauseOperationId !== undefined
+      ? [sessionId]
+      : [],
+    [pauseOperationId, sessionId, state?.pausedAt, state?.phase],
   );
   return useExecutionAction(cancelable, 'cancelPause', (execution, _sessionId, operationId) => {
     if (pauseOperationId === undefined) return Promise.reject(new Error('pause-operation-unavailable'));
@@ -489,7 +491,9 @@ export function useExecutionResume(
 ): ExecutionAction {
   const resumable = useMemo(
     () => Object.entries(states)
-      .filter((entry): entry is [string, ExecutionControlState] => entry[1]?.phase === 'paused' && entry[1].pauseOperationId !== undefined)
+      .filter((entry): entry is [string, ExecutionControlState] =>
+        (entry[1]?.phase === 'paused' || (entry[1]?.phase === 'failed' && entry[1].pausedAt !== undefined))
+        && entry[1].pauseOperationId !== undefined)
       .map(([sessionId]) => sessionId),
     [states],
   );

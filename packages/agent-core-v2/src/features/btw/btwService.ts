@@ -63,6 +63,8 @@ const FOLD_PROMPT_MESSAGE =
 export class SessionBranchService extends Service implements ISessionBranchService {
   declare readonly _serviceBrand: undefined;
   private readonly profileHost: { readonly accessor: ServicesAccessor };
+  private readonly foldTails = new Map<string, Promise<unknown>>();
+  private readonly sealingBranches = new Set<string>();
 
   constructor(
     @IInstantiationService instantiation: IInstantiationService,
@@ -200,6 +202,8 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       branchSeed: seedMode,
       branchInitiator: initiator,
       toolsLocked: toolsLocked ? 'true' : 'false',
+      ...(builtSeed.baseAnchor?.turnId === undefined ? {} : { branchBaseTurnId: String(builtSeed.baseAnchor.turnId) }),
+      ...(builtSeed.baseAnchor?.messageId === undefined ? {} : { branchBaseMessageId: builtSeed.baseAnchor.messageId }),
       ...(taskName === undefined ? {} : { [COLLABORATION_TASK_NAME_LABEL]: taskName }),
     };
 
@@ -316,128 +320,161 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     };
   }
 
+  private runSerializedFold<T>(branchId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.foldTails.get(branchId) ?? Promise.resolve();
+    const current = previous.then(work, work);
+    const tail = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.foldTails.set(branchId, tail);
+    void tail.finally(() => {
+      if (this.foldTails.get(branchId) === tail) {
+        this.foldTails.delete(branchId);
+      }
+    });
+    return current;
+  }
+
   async foldBranch(input: FoldSessionBranchInput): Promise<FoldSessionBranchResult> {
     const branchId = input.branchId.trim();
     if (branchId.length === 0 || branchId === MAIN_AGENT_ID) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'branchId must identify a non-main branch agent.');
     }
-    const sessionMeta = await this.metadata.read();
-    const branchMeta = sessionMeta.agents?.[branchId];
-    if (branchMeta?.labels?.['branch'] !== 'true') {
-      throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Branch "${branchId}" does not exist`, {
-        details: { agentId: branchId },
-      });
-    }
-    const branchHandle = await this.ensureLiveAgent(branchId);
-    const branchStates = branchHandle.accessor.get(IAgentStateService);
-    const alreadySealed = branchStates.get(branchSealedKey) === true || branchMeta.labels?.['branchSealed'] === 'true';
-    const turnState = branchStates.get(turnKey);
-    const throughTurnId = Math.max(0, (turnState?.nextTurnId ?? 0) - 1);
-    const hasTurns = (turnState?.nextTurnId ?? 0) > 0;
+    return this.runSerializedFold(branchId, async () => {
+      const sessionMeta = await this.metadata.read();
+      const branchMeta = sessionMeta.agents?.[branchId];
+      if (branchMeta?.labels?.['branch'] !== 'true') {
+        throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Branch "${branchId}" does not exist`, {
+          details: { agentId: branchId },
+        });
+      }
+      const branchHandle = await this.ensureLiveAgent(branchId);
+      const branchStates = branchHandle.accessor.get(IAgentStateService);
+      const alreadySealed =
+        branchStates.get(branchSealedKey) === true ||
+        branchMeta.labels?.['branchSealed'] === 'true' ||
+        this.sealingBranches.has(branchId);
+      const turnState = branchStates.get(turnKey);
+      const throughTurnId = Math.max(0, (turnState?.nextTurnId ?? 0) - 1);
+      const hasTurns = (turnState?.nextTurnId ?? 0) > 0;
 
-    const authoredBody = normalizeNonBlank(input.context) ?? normalizeNonBlank(input.summary);
-    if (authoredBody === undefined) {
-      if (input.fromTool === true) {
-        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Merge requires a non-empty summary or context.');
+      const authoredBody = normalizeNonBlank(input.context) ?? normalizeNonBlank(input.summary);
+      if (authoredBody === undefined) {
+        if (input.fromTool === true) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Merge requires a non-empty summary or context.');
+        }
+        if (alreadySealed) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Branch is already sealed; provide an explicit summary note if you want to fold again.');
+        }
+        await branchHandle.accessor.get(IAgentPromptService).enqueue({
+          message: {
+            id: newMessageId(),
+            role: 'user',
+            content: [{ type: 'text', text: FOLD_PROMPT_MESSAGE }],
+            toolCalls: [],
+            origin: { kind: 'user' },
+          },
+          waitForLaunch: false,
+        });
+        return {
+          branchId,
+          status: 'prompted',
+          done: false,
+          sealed: false,
+          handedBackCount: 0,
+          throughTurnId,
+        };
       }
-      if (alreadySealed) {
-        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Branch is already sealed; provide an explicit summary note if you want to fold again.');
+
+      const done = input.done !== false;
+      if (alreadySealed && (done || input.fromTool === true)) {
+        throw new Error2(
+          ErrorCodes.REQUEST_INVALID,
+          'Branch is already sealed; only non-sealing explicit summary notes can fold again.',
+        );
       }
-      await branchHandle.accessor.get(IAgentPromptService).enqueue({
-        message: {
-          id: newMessageId(),
-          role: 'user',
-          content: [{ type: 'text', text: FOLD_PROMPT_MESSAGE }],
-          toolCalls: [],
-          origin: { kind: 'user' },
-        },
-        waitForLaunch: false,
+
+      const foldId = `fold_${ulid()}`;
+      const branchTitle = branchMeta.userLabel ?? branchMeta.displayName;
+      const asks = input.asks?.map((item) => item.trim()).filter((item) => item.length > 0);
+      const targetAgentId = branchMeta.parentAgentId ?? MAIN_AGENT_ID;
+      const targetHandle = await this.ensureLiveAgent(targetAgentId);
+
+      const foldText = formatBranchFoldText({
+        branchId,
+        branchTitle,
+        body: authoredBody,
+        asks,
+        throughTurnId,
+        hasTurns,
+        done,
       });
+
+      const origin: BranchFoldOrigin = {
+        kind: 'branch_fold',
+        foldId,
+        branchId,
+        branchTitle,
+        asks: asks !== undefined && asks.length > 0 ? asks : undefined,
+        throughTurnId,
+        done,
+      };
+
+      const foldMessage: ContextMessage = {
+        id: newMessageId(),
+        role: 'user',
+        content: [{ type: 'text', text: foldText }],
+        toolCalls: [],
+        origin,
+      };
+
+      let sealed = alreadySealed;
+      let handedBackCount = 0;
+      if (done) this.sealingBranches.add(branchId);
+      try {
+        if ((targetHandle.accessor.get(IAgentProfileService).data().executorId ?? 'native') === 'native') {
+          targetHandle.accessor.get(IAgentLoopService).enqueue(new MessageStepRequest(foldMessage, {
+            kind: 'branch_fold',
+            admission: 'activeOrNewTurn',
+            mergeable: false,
+            turnScoped: false,
+            deliveryOrigin: 'mailbox',
+          }));
+        } else {
+          await targetHandle.accessor.get(IAgentPromptService).enqueue({ message: foldMessage, waitForLaunch: false });
+        }
+
+        if (done) {
+          await branchHandle.accessor.get(IEventDispatcher).dispatch(new AgentBranchSealed({
+            sealed: true,
+            foldId,
+          }));
+          await this.metadata.updateAgent(branchId, (current) => ({
+            ...current,
+            completedAt: current?.completedAt ?? Date.now(),
+            labels: {
+              ...current.labels,
+              branchSealed: 'true',
+            },
+          }));
+          sealed = true;
+          handedBackCount = await this.handBackQueuedPrompts(branchHandle, targetHandle);
+        }
+      } finally {
+        if (done) this.sealingBranches.delete(branchId);
+      }
+
       return {
         branchId,
-        status: 'prompted',
-        done: false,
-        sealed: false,
-        handedBackCount: 0,
+        foldId,
+        status: 'merged',
+        done,
+        sealed,
+        handedBackCount,
         throughTurnId,
       };
-    }
-
-    const done = input.done !== false;
-    const foldId = `fold_${ulid()}`;
-    const branchTitle = branchMeta.userLabel ?? branchMeta.displayName;
-    const asks = input.asks?.map((item) => item.trim()).filter((item) => item.length > 0);
-    const targetAgentId = branchMeta.parentAgentId ?? MAIN_AGENT_ID;
-    const targetHandle = await this.ensureLiveAgent(targetAgentId);
-
-    const foldText = formatBranchFoldText({
-      branchId,
-      branchTitle,
-      body: authoredBody,
-      asks,
-      throughTurnId,
-      hasTurns,
-      done,
     });
-
-    const origin: BranchFoldOrigin = {
-      kind: 'branch_fold',
-      foldId,
-      branchId,
-      branchTitle,
-      asks: asks !== undefined && asks.length > 0 ? asks : undefined,
-      throughTurnId,
-      done,
-    };
-
-    const foldMessage: ContextMessage = {
-      id: newMessageId(),
-      role: 'user',
-      content: [{ type: 'text', text: foldText }],
-      toolCalls: [],
-      origin,
-    };
-
-    if ((targetHandle.accessor.get(IAgentProfileService).data().executorId ?? 'native') === 'native') {
-      targetHandle.accessor.get(IAgentLoopService).enqueue(new MessageStepRequest(foldMessage, {
-        kind: 'branch_fold',
-        admission: 'activeOrNewTurn',
-        mergeable: false,
-        turnScoped: false,
-        deliveryOrigin: 'mailbox',
-      }));
-    } else {
-      await targetHandle.accessor.get(IAgentPromptService).enqueue({ message: foldMessage, waitForLaunch: false });
-    }
-
-    let sealed = alreadySealed;
-    let handedBackCount = 0;
-    if (done && !alreadySealed) {
-      await branchHandle.accessor.get(IEventDispatcher).dispatch(new AgentBranchSealed({
-        sealed: true,
-        foldId,
-      }));
-      await this.metadata.updateAgent(branchId, (current) => ({
-        ...current,
-        completedAt: current?.completedAt ?? Date.now(),
-        labels: {
-          ...current.labels,
-          branchSealed: 'true',
-        },
-      }));
-      sealed = true;
-      handedBackCount = await this.handBackQueuedPrompts(branchHandle, targetHandle);
-    }
-
-    return {
-      branchId,
-      foldId,
-      status: 'merged',
-      done,
-      sealed,
-      handedBackCount,
-      throughTurnId,
-    };
   }
 
   private async handBackQueuedPrompts(

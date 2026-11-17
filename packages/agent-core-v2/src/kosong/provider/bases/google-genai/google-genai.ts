@@ -572,6 +572,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   private _blocked = false;
   private _grounded = false;
   private _continuationToken: string | undefined;
+  private _hopContinuationToken: string | undefined;
 
   get continuationToken(): string | undefined { return this._continuationToken; }
 
@@ -646,11 +647,14 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
       const contentParts = content?.['parts'];
       if (typeof continuationToken === 'string' && continuationToken.length > 0) {
         this._continuationToken = continuationToken;
+        this._hopContinuationToken = continuationToken;
       } else if (Array.isArray(contentParts) && contentParts.length > 0) {
         this._continuationToken = undefined;
+        this._hopContinuationToken = undefined;
       }
     } else {
       this._continuationToken = undefined;
+      this._hopContinuationToken = undefined;
     }
     if (raw === undefined) {
       return;
@@ -760,9 +764,15 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
         this._throwIfAborted(signal);
         yield part;
       }
-      const token = this._rawFinishReason === 'CONTINUATION' ? this._continuationToken : undefined;
-      if (token === undefined || this._continue === undefined) break;
+      const token = this._rawFinishReason === 'CONTINUATION' ? this._hopContinuationToken : undefined;
+      if (token === undefined || this._continue === undefined) {
+        if (this._rawFinishReason === 'CONTINUATION') {
+          this._continuationToken = undefined;
+        }
+        break;
+      }
       this._completeHopUsage();
+      this._hopContinuationToken = undefined;
       this._rawFinishReason = null;
       this._finishReason = null;
       current = await this._continue(token) as Record<string, unknown>;
@@ -787,9 +797,15 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
           }
         }
         this._throwIfAborted(signal);
-        const token = this._rawFinishReason === 'CONTINUATION' ? this._continuationToken : undefined;
-        if (token === undefined || this._continue === undefined) break;
+        const token = this._rawFinishReason === 'CONTINUATION' ? this._hopContinuationToken : undefined;
+        if (token === undefined || this._continue === undefined) {
+          if (this._rawFinishReason === 'CONTINUATION') {
+            this._continuationToken = undefined;
+          }
+          break;
+        }
         this._completeHopUsage();
+        this._hopContinuationToken = undefined;
         this._rawFinishReason = null;
         this._finishReason = null;
         current = await this._continue(token) as AsyncIterable<Record<string, unknown>>;

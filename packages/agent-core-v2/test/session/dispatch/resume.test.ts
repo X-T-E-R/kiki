@@ -1921,6 +1921,79 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     }
   });
 
+  it('AgentSend continuation registers a detached parent task and wakes idle parent even if sourceTurnId was cancelled', async () => {
+    const ctx = await host();
+    const parent = testAgent();
+    hosts.push(parent);
+    await parent.ready;
+    const parentLoop = parent.get(IAgentLoopService);
+    const parentTasks = parent.get(IAgentTaskService);
+    const { child } = dispatchFor(ctx);
+    let sourceTurnId = 0;
+    const hook = parentLoop.hooks.onDidFinishStep.register('cancel-send-source-turn', async (step, next) => {
+      sourceTurnId = step.turnId;
+      await hook.dispose();
+      parentLoop.cancel();
+      await next();
+    });
+    parent.mockNextResponse({ type: 'text', text: 'cancelled parent turn' });
+    await parent.rpc.prompt({ input: [{ type: 'text', text: 'start send turn' }] });
+    await parent.untilTurnEnd();
+    await parentLoop.settled();
+    expect(parentLoop.status().lastTurnResult).toBe('cancelled');
+
+    const childHandle: IAgentScopeHandle = { kind: 'agent', id: CHILD, accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
+    const parentHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => parent.get(id) }, dispose: () => {} };
+    const { dispatch: parentAwareDispatch } = (() => {
+      const ix = new TestInstantiationService();
+      containers.push(ix);
+      ix.stub(IAgentLifecycleService, { onWillCreate: Event.None as Event<IAgentScopeHandle>, onDidCreate: Event.None as Event<IAgentScopeHandle>, onDidDispose: Event.None as Event<string>,
+        get: (id) => id === CHILD ? childHandle : id === 'main' ? parentHandle : undefined });
+      ix.stub(IAgentCollaborationRegistry, {});
+      ix.set(IConfigService, ctx.get(IConfigService));
+      ix.set(IModelService, ctx.get(IModelService));
+      ix.set(IModelCatalog, ctx.get(IModelCatalog));
+      ix.set(IAdhocEndpointVault, ctx.get(IAdhocEndpointVault));
+      ix.set(IWorkspaceService, ctx.get(IWorkspaceService));
+      ix.set(IAgentExecutorRegistry, ctx.get(IAgentExecutorRegistry));
+      ix.set(ISessionMetadata, ctx.get(ISessionMetadata));
+      ix.set(ISessionAgentProfileCatalog, ctx.get(ISessionAgentProfileCatalog));
+      ix.set(ILogService, ctx.get(ILogService));
+      ix.set(IBootstrapService, ctx.get(IBootstrapService));
+      ix.set(IFlagService, ctx.get(IFlagService));
+      ix.set(IWorkAdmissionService, ctx.get(IWorkAdmissionService));
+      ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
+      ix.set(ISessionContext, ctx.get(ISessionContext));
+      ix.set(IAppendLogStore, ctx.get(IAppendLogStore));
+      ix.set(IAtomicDocumentStore, ctx.get(IAtomicDocumentStore));
+      ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
+      ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
+      return { dispatch: ix.get(ISessionDispatchService) };
+    })();
+    const parentAwareMail = mailboxFor(ctx, child, parentAwareDispatch);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Child continuation result.' });
+    parent.mockNextResponse({ type: 'text', text: 'Parent received AgentSend continuation.' });
+    const accepted = await parentAwareMail.messaging.send({
+      sourceAgentId: 'main',
+      sourceTaskName: 'root',
+      sourceTurnId,
+      targetAgentId: CHILD,
+      targetTaskName: 'saved_child',
+      content: 'Continue after cancelled turn.',
+      idempotencyKey: 'send-after-cancelled-turn',
+      waitForRunningDelivery: true,
+      idleWake: 'owned-child',
+    });
+    expect(accepted).toMatchObject({ delivery: 'delivered', resumed: true });
+    await vi.waitFor(() => expect(parent.llmCalls).toHaveLength(2));
+    await parentLoop.settled();
+    const continuationTasks = parentTasks.list(false).filter((info) => info.kind === 'agent' && info.agentId === CHILD);
+    expect(continuationTasks).toHaveLength(1);
+    expect(continuationTasks[0]).toMatchObject({ status: 'completed', detached: true, ownerTurnId: sourceTurnId });
+    expect(JSON.stringify(parent.llmCalls[1]!.history)).toContain('Child continuation result.');
+  });
+
   it('keeps quiescence and held admissions exclusive when pending steps are preserved', async () => {
     const ctx = await host();
     const loop = ctx.get(IAgentLoopService);

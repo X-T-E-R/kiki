@@ -80,6 +80,24 @@ describe('thread communication tools', () => {
       SendMessageToThreadToolInputSchema.safeParse({
         thread: ref,
         content: 'hello',
+      }).success,
+    ).toBe(true);
+    expect(
+      SendMessageToThreadToolInputSchema.safeParse({
+        thread: {
+          host_id: 'host',
+          workspace_id: 'workspace',
+          session_id: 'session',
+          bridge_id: '33333333-3333-4333-8333-333333333333',
+          connection_id: '44444444-4444-4444-8444-444444444444',
+        },
+        content: 'hello',
+      }).success,
+    ).toBe(true);
+    expect(
+      SendMessageToThreadToolInputSchema.safeParse({
+        thread: ref,
+        content: 'hello',
         idempotency_key: 'key',
       }).success,
     ).toBe(true);
@@ -262,7 +280,8 @@ describe('thread communication tools', () => {
 
     expect('execute' in execution).toBe(true);
     if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
-    await execution.execute({} as never);
+    const result = await execution.execute({} as never);
+    expect('allowsTurnEndWithSendMessage' in result ? result.allowsTurnEndWithSendMessage : undefined).toBe(true);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
       source: {
@@ -279,6 +298,87 @@ describe('thread communication tools', () => {
       content: 'from ambient',
       idempotencyKey: 'ambient-key',
     });
+    } finally { await ix.dispose(); }
+  });
+
+  it('defaults peer thread idempotency_key to toolCallId when omitted and accepts ThreadList refs', async () => {
+    const sent: unknown[] = [];
+    const service = {
+      _serviceBrand: undefined,
+      hostId: 'local-host',
+      isWorkspaceEnabled: async () => true,
+      [SEND_PEER_THREAD_MESSAGE]: async (input: unknown) => {
+        sent.push(input);
+        return { messageId: 'message-1', targetSeq: 1, acceptedAt: 1, deduplicated: false, delivery: 'delivered' as const };
+      },
+    } as unknown as IThreadCommunicationService & IThreadPeerSendCapability;
+    const ix = new TestInstantiationService();
+    try {
+      ix.set(IThreadCommunicationService, service);
+      ix.set(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' } as ISessionContext);
+      ix.stub(IRoomService, {});
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IAgentContextMemoryService, { get: () => [] });
+      ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
+      const parsed = SendMessageToThreadToolInputSchema.parse({
+        thread: {
+          host_id: 'local-host',
+          workspace_id: 'workspace-b',
+          session_id: 'target-b',
+          bridge_id: '33333333-3333-4333-8333-333333333333',
+          connection_id: '44444444-4444-4444-8444-444444444444',
+        },
+        content: 'hello without explicit key',
+      });
+      const execution = ix.get(ISendMessageToThreadTool).resolveExecution(parsed);
+      if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
+      const result = await execution.execute({ toolCallId: 'peer-call-42' } as never);
+      expect('allowsTurnEndWithSendMessage' in result ? result.allowsTurnEndWithSendMessage : undefined).toBe(true);
+      expect(sent).toEqual([
+        expect.objectContaining({
+          target: {
+            hostId: 'local-host',
+            workspaceId: 'workspace-b',
+            sessionId: 'target-b',
+            bridgeId: '33333333-3333-4333-8333-333333333333',
+            connectionId: '44444444-4444-4444-8444-444444444444',
+          },
+          content: 'hello without explicit key',
+          idempotencyKey: 'peer-call-42',
+        }),
+      ]);
+    } finally { await ix.dispose(); }
+  });
+
+  it.each([
+    { delivery: 'delivered' as const, allows: true },
+    { delivery: 'pending' as const, allows: true },
+    { delivery: 'undeliverable' as const, allows: undefined },
+  ])('sets peer completion eligibility for $delivery delivery', async ({ delivery, allows }) => {
+    const service = {
+      _serviceBrand: undefined,
+      hostId: 'local-host',
+      isWorkspaceEnabled: async () => true,
+      [SEND_PEER_THREAD_MESSAGE]: async () => ({
+        messageId: 'message-1', targetSeq: 1, acceptedAt: 1, deduplicated: false, delivery,
+      }),
+    } as unknown as IThreadCommunicationService & IThreadPeerSendCapability;
+    const ix = new TestInstantiationService();
+    try {
+      ix.set(IThreadCommunicationService, service);
+      ix.set(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' } as ISessionContext);
+      ix.stub(IRoomService, {});
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IAgentContextMemoryService, { get: () => [] });
+      ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
+      const execution = ix.get(ISendMessageToThreadTool).resolveExecution({
+        thread: { host_id: 'local-host', workspace_id: 'workspace-b', session_id: 'target-b' },
+        content: 'peer message', idempotency_key: 'peer-key',
+      });
+      if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
+      const result = await execution.execute({} as never);
+      expect('allowsTurnEndWithSendMessage' in result ? result.allowsTurnEndWithSendMessage : undefined).toBe(allows);
+      expect(result.isError).not.toBe(true);
     } finally { await ix.dispose(); }
   });
 
@@ -322,8 +422,27 @@ describe('thread communication tools', () => {
       const execution = tool.resolveExecution({ room: 'room-a', content: 'hello room' });
       if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
       const result = await execution.execute({ toolCallId: 'call-1' } as never);
+      expect('allowsTurnEndWithSendMessage' in result ? result.allowsTurnEndWithSendMessage : undefined).toBe(true);
       expect(posted).toEqual([['room-a', { sessionId: 'thread-a', toolCallId: 'call-1', text: 'hello room', mentions: undefined }]]);
       expect(JSON.parse(result.output as string)).toEqual({ roomId: 'room-a', messageId: 'room-message-1', delivery: 'delivered' });
+    } finally { await ix.dispose(); }
+  });
+
+  it('leaves room completion eligibility unset when the post is undeliverable', async () => {
+    const ix = new TestInstantiationService();
+    try {
+      ix.set(IThreadCommunicationService, { _serviceBrand: undefined, hostId: 'local-host', isWorkspaceEnabled: async () => true } as unknown as IThreadCommunicationService);
+      ix.set(ISessionContext, { _serviceBrand: undefined, sessionId: 'thread-a', workspaceId: 'workspace-a' } as ISessionContext);
+      ix.stub(IRoomService, { postBotMessage: async () => undefined });
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IAgentContextMemoryService, {});
+      ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
+      const execution = ix.get(ISendMessageToThreadTool).resolveExecution({ room: 'room-a', content: 'hello room' });
+      if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
+      const result = await execution.execute({ toolCallId: 'call-2' } as never);
+      expect('allowsTurnEndWithSendMessage' in result ? result.allowsTurnEndWithSendMessage : undefined).toBeUndefined();
+      expect(result.isError).not.toBe(true);
+      expect(JSON.parse(result.output as string)).toEqual({ roomId: 'room-a', messageId: undefined, delivery: 'undeliverable' });
     } finally { await ix.dispose(); }
   });
 

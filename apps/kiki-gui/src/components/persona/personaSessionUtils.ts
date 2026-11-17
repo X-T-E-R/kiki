@@ -74,7 +74,7 @@ export function mergePersonaConversations(
     if (localItem !== undefined) {
       const serverTime = new Date(serverItem.updated_at ?? 0).getTime();
       const localTime = new Date(localItem.updated_at ?? 0).getTime();
-      merged.push(localTime > serverTime ? localItem : serverItem);
+      merged.push(localTime >= serverTime ? localItem : serverItem);
     } else {
       merged.push(serverItem);
     }

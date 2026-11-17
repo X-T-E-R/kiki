@@ -96,6 +96,14 @@ export function sessionAgentRoster(
         ? registration.labels['toolsLocked'] === 'true'
         : row?.tools_locked,
       branch_sealed: branchSealed,
+      branch_base_turn_id:
+        registration?.labels?.['branchBaseTurnId'] !== undefined && /^\d+$/.test(registration.labels['branchBaseTurnId'])
+          ? Number(registration.labels['branchBaseTurnId'])
+          : row?.branch_base_turn_id,
+      branch_base_message_id:
+        registration?.labels?.['branchBaseMessageId'] !== undefined && registration.labels['branchBaseMessageId'].length > 0
+          ? registration.labels['branchBaseMessageId']
+          : row?.branch_base_message_id,
       model: (current ? activity.model : undefined) ?? registration?.model ?? row?.model,
       thinking_effort: registration?.thinkingEffort ?? row?.thinking_effort,
       thinking_effort_explicit: registration?.thinkingEffort !== undefined ? registration.thinkingEffortExplicit : row?.thinking_effort_explicit,

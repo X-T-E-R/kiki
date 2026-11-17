@@ -188,22 +188,29 @@ describe('args-validator unknown arguments', () => {
     additionalProperties: false,
   };
 
-  it('removes arguments the schema does not declare and reports them', () => {
-    expect(validateWithCoercion(closed, { path: 'a', reason: 'x', options: { depth: '2', why: 'y' } })).toEqual({
-      args: { path: 'a', options: { depth: 2 } },
-      error: null,
-      ignored: ['reason', 'options.why'],
+  it('rejects undeclared arguments instead of stripping them', () => {
+    const rootExtra: JsonType = { path: 'a', reason: 'x' };
+    expect(validateWithCoercion(closed, rootExtra)).toEqual({
+      args: rootExtra,
+      error: "must NOT have additional property 'reason'",
     });
+
+    const nestedExtra: JsonType = { path: 'a', options: { depth: '2', why: 'y' } };
+    const nestedResult = validateWithCoercion(closed, nestedExtra);
+    expect(nestedResult.args).toBe(nestedExtra);
+    expect(nestedResult.error).toContain("must NOT have additional property 'why'");
   });
 
-  it('keeps rejecting a near miss of an argument the call did not supply', () => {
+  it('rejects a near miss of a declared argument and names the intended one, and still rejects when supplied alongside it', () => {
     const result = validateWithCoercion(closed, { path: 'a', replace_al: true });
+    expect(result.error).toContain("must NOT have additional property 'replace_al'");
     expect(result.error).toContain("did you mean 'replace_all'");
-    expect(result.ignored).toBeUndefined();
-    expect(validateWithCoercion(closed, { path: 'a', replace_all: true, replace_al: true }).ignored).toEqual(['replace_al']);
+
+    const duplicate = validateWithCoercion(closed, { path: 'a', replace_all: true, replace_al: true });
+    expect(duplicate.error).toContain("must NOT have additional property 'replace_al'");
   });
 
-  it('never removes a property that another union branch declares', () => {
+  it('rejects extra properties on union branches', () => {
     const union = {
       type: 'object',
       oneOf: [
@@ -211,11 +218,10 @@ describe('args-validator unknown arguments', () => {
         { type: 'object', properties: { action: { const: 'delete' }, id: { type: 'string' } }, required: ['action', 'id'], additionalProperties: false },
       ],
     };
-    expect(validateWithCoercion(union, { action: 'delete', id: 'j1', reason: 'x' })).toEqual({
-      args: { action: 'delete', id: 'j1' },
-      error: null,
-      ignored: ['reason'],
-    });
+    const deleteWithReason = validateWithCoercion(union, { action: 'delete', id: 'j1', reason: 'x' });
+    expect(deleteWithReason.error).toContain("must NOT have additional property 'reason'");
+    expect(deleteWithReason.args).toEqual({ action: 'delete', id: 'j1', reason: 'x' });
+
     const listWithId = validateWithCoercion(union, { action: 'list', id: 'j1', reason: 'x' });
     expect(listWithId.error).toContain("'id'");
     expect(listWithId.args).toEqual({ action: 'list', id: 'j1', reason: 'x' });

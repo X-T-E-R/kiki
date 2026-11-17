@@ -16,6 +16,7 @@ import { useI18n } from '../../i18n';
 import { useHost } from '../../host';
 import { useConnection } from '../../state/connection';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
+import { compactIdentifier } from '../../lib/compactIdentifier';
 import { remoteSpaceScope, useRemoteConnections } from '../../lib/remoteConnections';
 import { requestScopeNavigation } from '../../lib/navScope';
 import { pushToast } from '../../lib/toasts';
@@ -63,7 +64,11 @@ export function BridgedOriginLine({ block, records, onOpen }: {
   const hostId = bridge.source?.hostId;
   const hostName = hostId === undefined || hostId === '' ? undefined : hostId;
   const home = bridge.sourceHomeId === undefined || bridge.sourceHomeId === '' ? undefined : bridge.sourceHomeId;
-  const where = hostName ?? t('transcript.bridgedOriginUnknown');
+  const matchedRecord = home === undefined ? undefined : records?.find((record) => record.target.homeId === home);
+  const compactHost = hostName === undefined ? undefined : compactIdentifier(hostName);
+  const where = compactHost !== undefined && compactHost === hostName
+    ? hostName
+    : (matchedRecord?.label?.trim() || compactHost || t('transcript.bridgedOriginUnknown'));
   const address = [home, hostName].filter((part): part is string => part !== undefined).join(' · ');
   const line = t('transcript.bridgedOrigin', {
     where,

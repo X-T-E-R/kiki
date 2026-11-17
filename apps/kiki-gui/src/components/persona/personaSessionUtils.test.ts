@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { emptySessionUsage, type Session } from '@kiki/protocol';
-import { canSetPersonaHome, isBotOrRoomSession, sessionBelongsToPersona, sessionPersonaId, shouldHideFromSessionGroups } from './personaSessionUtils';
+import {
+  canSetPersonaHome,
+  isBotOrRoomSession,
+  mergePersonaConversations,
+  sessionBelongsToPersona,
+  sessionPersonaId,
+  shouldHideFromSessionGroups,
+} from './personaSessionUtils';
 
 function session(input: Partial<Session> = {}): Session {
   return {
@@ -82,5 +89,40 @@ describe('persona session attribution', () => {
     expect(shouldHideFromSessionGroups(replacedHome, directory)).toBe(false);
     expect(shouldHideFromSessionGroups(brandNewPersonaHome, directory)).toBe(false);
     expect(shouldHideFromSessionGroups({ ...activeHome, archived: true }, directory)).toBe(false);
+  });
+
+  it('prefers live local session state when updated_at matches a cached server item, while newer server timestamps still win', () => {
+    const staleServerSameTs = session({
+      id: 'topic-1',
+      busy: false,
+      updated_at: '2026-11-18T08:00:00Z',
+      agent_config: { model: '', persona: { id: 'alpha', name: 'Alpha' } },
+    });
+    const liveLocalSameTs = session({
+      id: 'topic-1',
+      busy: true,
+      updated_at: '2026-11-18T08:00:00Z',
+      agent_config: { model: '', persona: { id: 'alpha', name: 'Alpha' } },
+    });
+    const newerServer = session({
+      id: 'topic-2',
+      title: 'Server renamed',
+      updated_at: '2026-11-18T09:00:00Z',
+      agent_config: { model: '', persona: { id: 'alpha', name: 'Alpha' } },
+    });
+    const olderLocal = session({
+      id: 'topic-2',
+      title: 'Old local title',
+      updated_at: '2026-11-18T08:30:00Z',
+      agent_config: { model: '', persona: { id: 'alpha', name: 'Alpha' } },
+    });
+
+    const merged = mergePersonaConversations(
+      [staleServerSameTs, newerServer],
+      [liveLocalSameTs, olderLocal],
+      'alpha',
+    );
+    expect(merged.find((item) => item.id === 'topic-1')?.busy).toBe(true);
+    expect(merged.find((item) => item.id === 'topic-2')?.title).toBe('Server renamed');
   });
 });

@@ -38,7 +38,7 @@ import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccount
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
-import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from '../src/routes/agentPanelMetrics';
+import { PERSISTED_METRICS_CACHE_MAX_ENTRIES, readAgentPanelMetrics, readPersistedAgentPanelMetrics } from '../src/routes/agentPanelMetrics';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 import { usageRuntime } from '../src/usage/usageRuntime';
 import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
@@ -168,6 +168,7 @@ function persistedFixture(
   config: {
     readonly agentIds?: readonly string[];
     readonly beforeRead?: (scope: string, signal: AbortSignal | undefined) => Promise<void>;
+    readonly onSize?: (scope: string, key: string) => Promise<void> | void;
     readonly recordBytes?: number;
   } = {},
 ) {
@@ -199,7 +200,10 @@ function persistedFixture(
         const ids = config.agentIds ?? ['main'];
         return prefix === undefined ? ids : ids.filter((id) => id.startsWith(prefix));
       };
-      if (property === 'size') return async (scope: string, key: string) => key === 'wire.jsonl' ? bytes().length : target.size(scope, key);
+      if (property === 'size') return async (scope: string, key: string) => {
+        await config.onSize?.(scope, key);
+        return key === 'wire.jsonl' ? bytes().length : target.size(scope, key);
+      };
       if (property === 'mtime') return async (scope: string, key: string) => key === 'wire.jsonl' ? mtime : target.mtime(scope, key);
       if (property === 'readStream') return (scope: string, key: string, range?: { readonly start: number; readonly end: number }, options?: { readonly signal?: AbortSignal; readonly chunkBytes?: number }) => {
         if (key !== 'wire.jsonl') return target.readStream(scope, key, range);
@@ -1250,15 +1254,74 @@ describe('persisted agent panel metrics cache scope', () => {
   });
 
   it('evicts the oldest session entry after reaching the per-core capacity', async () => {
-    const fixture = persistedFixture([record('model', usage(1, 0), true)]);
+    const fillIds = Array.from({ length: PERSISTED_METRICS_CACHE_MAX_ENTRIES }, (_, i) => `fill-${i}`);
+    const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+      agentIds: ['main', ...fillIds],
+    });
+    const { core } = fixture;
     const modelPricing = pricing({ model: 1 });
-    for (let index = 0; index < 1025; index += 1) {
-      await persisted(fixture.core, modelPricing, `capacity-${index}`);
-    }
-    expect(fixture.reads()).toBe(1025);
+    expect((await persisted(core, modelPricing, 'capacity-0', { agentIds: ['main'] }))['main']?.totalTokens).toBe(1);
+    expect(fixture.reads()).toBe(1);
+
+    const model = core.accessor.get(IUsageReadModel);
+    const logs = core.accessor.get(IAppendLogStore);
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const session = 'sessions/workspace-capacity-fill/session-capacity-fill/agents';
+    const first = `${session}/main`;
+    const size = await storage.size(first, 'wire.jsonl') ?? 0;
+    const mtimeMs = await storage.mtime(first, 'wire.jsonl') ?? 0;
+    await model.applyBatch(await Promise.all(fillIds.map(async (id) => ({
+      source: `${session}/${id}`, progress: { batchStart: 0, offset: 0, ordinal: 1 },
+      records: [{ time: 1, model: 'model', usage: usage(1, 0), usageKnown: true }],
+      publish: { start: 0, journalSize: 0, checkpoint: { generation: await logs.generation(`${session}/${id}`, 'wire.jsonl'), offset: size, size, mtimeMs, boundaryHash: '', valid: true } },
+    }))));
+    await persisted(core, modelPricing, 'capacity-fill', { agentIds: fillIds });
+
     fixture.setRecords([record('model', usage(2, 0), true)]);
-    expect((await persisted(fixture.core, modelPricing, 'capacity-0'))['main']?.totalTokens).toBe(2);
-    expect(fixture.reads()).toBe(1026);
+    expect((await persisted(core, modelPricing, 'capacity-0', { agentIds: ['main'] }))['main']?.totalTokens).toBe(2);
+    expect(fixture.reads()).toBe(2);
+  });
+
+  it('retains all 1521 cold subagents in cache without self-eviction and skips runtime disk reads on cache hit', async () => {
+    const ids = ['main', ...Array.from({ length: 1520 }, (_, i) => `child-${i}`)];
+    let tracking = false;
+    let statCalls = 0;
+    let activeStat = 0;
+    let maxConcurrentStat = 0;
+    const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, {
+      agentIds: ids,
+      onSize: async () => {
+        if (!tracking) return;
+        statCalls += 1;
+        activeStat += 1;
+        maxConcurrentStat = Math.max(maxConcurrentStat, activeStat);
+        await Promise.resolve();
+        activeStat -= 1;
+      },
+    });
+    const { core } = fixture;
+    const model = core.accessor.get(IUsageReadModel);
+    const logs = core.accessor.get(IAppendLogStore);
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const session = 'sessions/workspace-scale/session-scale/agents';
+    const first = `${session}/main`;
+    const size = await storage.size(first, 'wire.jsonl') ?? 0;
+    const mtimeMs = await storage.mtime(first, 'wire.jsonl') ?? 0;
+    await model.applyBatch(await Promise.all(ids.map(async (id) => ({
+      source: `${session}/${id}`, progress: { batchStart: 0, offset: 0, ordinal: 1 },
+      records: [{ time: 1, model: 'model', usage: usage(1, 0), usageKnown: true }],
+      publish: { start: 0, journalSize: 0, checkpoint: { generation: await logs.generation(`${session}/${id}`, 'wire.jsonl'), offset: size, size, mtimeMs, boundaryHash: '', valid: true } },
+    }))));
+    tracking = true;
+    const firstRead = await persisted(core, pricing({ model: 1 }), 'scale', { agentIds: ids });
+    expect(Object.keys(firstRead)).toHaveLength(1521);
+    expect(statCalls).toBeGreaterThan(0);
+    expect(maxConcurrentStat).toBeLessThanOrEqual(32);
+    statCalls = 0;
+
+    const cachedRead = await persisted(core, pricing({ model: 1 }), 'scale', { agentIds: ids });
+    expect(Object.keys(cachedRead)).toHaveLength(1521);
+    expect(statCalls).toBe(0);
   });
 });
 
@@ -1284,8 +1347,9 @@ describe('usage projection maintenance', () => {
     expect(fixture.reads()).toBe(1);
   });
 
-  it('batch-verifies 1210 aligned typed SQLite sources beyond the 1024-row cache without preparing facts or wires', async () => {
-    const ids = ['main', ...Array.from({ length: 1209 }, (_, i) => `child-${i}`)];
+  it('batch-verifies aligned typed SQLite sources beyond the 8192-row cache without preparing facts or wires', async () => {
+    const totalSources = PERSISTED_METRICS_CACHE_MAX_ENTRIES + 186;
+    const ids = ['main', ...Array.from({ length: totalSources - 1 }, (_, i) => `child-${i}`)];
     const fixture = persistedFixture([record('model', usage(1, 0), true)], undefined, { agentIds: ids });
     const { core } = fixture;
     const model = core.accessor.get(IUsageReadModel);
@@ -1305,10 +1369,10 @@ describe('usage projection maintenance', () => {
     const singles = vi.spyOn(model, 'summary');
     for (let index = 0; index < 3; index++) {
       const rows = await persisted(core, pricing({ model: 1 }), 'batch', { agentIds: ids });
-      expect(Object.keys(rows)).toHaveLength(1210);
+      expect(Object.keys(rows)).toHaveLength(totalSources);
       expect(Object.values(rows).every((row) => row.totalTokens === 1 && row.usageComplete)).toBe(true);
     }
-    expect(batches.mock.calls.map(([sources]) => sources.length)).toEqual([1210, 186, 186]);
+    expect(batches.mock.calls.map(([sources]) => sources.length)).toEqual([totalSources, 186, 186]);
     expect(summaries).not.toHaveBeenCalled();
     expect(singles).not.toHaveBeenCalled();
     expect(fixture.reads()).toBe(0);

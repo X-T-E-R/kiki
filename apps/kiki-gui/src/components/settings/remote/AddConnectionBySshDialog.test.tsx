@@ -88,13 +88,32 @@ describe('adding a remote space over SSH', () => {
     await act(async () => { await Promise.resolve(); });
     const note = container.querySelector('[data-remote-ssh-note]')?.textContent ?? '';
     expect(note).toContain('until it is stopped');
+    const borrowToolsBox = container.querySelector('[data-remote-ssh-borrow-tools]') as HTMLInputElement;
+    expect(borrowToolsBox.checked).toBe(true);
     const submit = container.querySelector('[data-remote-ssh-submit]') as HTMLButtonElement;
     expect(submit.disabled).toBe(false);
     await act(async () => { submit.click(); });
     expect(sshConnect).toHaveBeenCalledWith(expect.objectContaining({
       label: 'acme-box',
       backgroundSummary: true,
+      borrowTools: true,
       profile: expect.objectContaining({ remoteHome: 'C:/kiki' }),
+    }));
+    expect(onAdded).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows disabling borrowTools before connecting over SSH', async () => {
+    const onAdded = vi.fn();
+    const { container } = render(
+      <AddConnectionBySshDialog client={client} profiles={[PROFILE]} defaultHome="C:/kiki" onClose={vi.fn()} onAdded={onAdded} />,
+    );
+    await act(async () => { await Promise.resolve(); });
+    const borrowToolsBox = container.querySelector('[data-remote-ssh-borrow-tools]') as HTMLInputElement;
+    await act(async () => { borrowToolsBox.click(); });
+    expect(borrowToolsBox.checked).toBe(false);
+    await act(async () => { (container.querySelector('[data-remote-ssh-submit]') as HTMLButtonElement).click(); });
+    expect(sshConnect).toHaveBeenCalledWith(expect.objectContaining({
+      borrowTools: false,
     }));
     expect(onAdded).toHaveBeenCalledTimes(1);
   });

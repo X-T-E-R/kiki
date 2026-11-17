@@ -43,8 +43,11 @@ export class WorkspacePathIndex {
   private readonly controller = new AbortController();
   private disposed = false;
   private watching = false;
+  private overflowed = false;
   readonly trigram?: WorkspaceTrigramIndex;
   error?: unknown;
+
+  get isOverflowed(): boolean { return this.overflowed; }
 
   constructor(readonly root: string, private readonly cpu: ICpuWorkerService, cacheDir?: string) {
     this.root = resolve(root);
@@ -88,11 +91,14 @@ export class WorkspacePathIndex {
     if (this.disposed || local === '..' || local.startsWith('../') || isAbsolute(local)) return;
     if (local === '' || ['.gitignore', '.ignore', '.rgignore'].includes(basename(local))) { this.invalidate(); return; }
     const key = pathIdentity(local);
-    this.trigram?.dirty(this.byPath.get(key)?.path ?? local);
+    if (!this.overflowed) this.trigram?.dirty(this.byPath.get(key)?.path ?? local);
     const previous = this.pathUpdates.get(key) ?? Promise.resolve();
     const update = previous.then(async () => {
       if (this.disposed) return;
-      if (this.current === undefined) { this.invalidate(); return; }
+      if (this.current === undefined) {
+        if (!this.overflowed) this.invalidate();
+        return;
+      }
       const epoch = this.revision;
       const display = this.byPath.get(key)?.path ?? local;
       const entry = await this.cpu.request<WorkspacePathEntry | undefined>({ type: 'workspace.path', root: this.root, path: resolve(this.root, display) },
@@ -137,7 +143,17 @@ export class WorkspacePathIndex {
     const revision = this.revision;
     this.pending = this.cpu.request<WorkspacePathInventory>({ type: 'workspace.paths', root: this.root, limit: 250_000 }, { signal: this.controller.signal, timeoutMs: 120_000 })
       .then(async inventory => {
-        if (inventory.overflow) return;
+        if (inventory.overflow) {
+          if (this.disposed || revision !== this.revision) return;
+          this.overflowed = true;
+          this.current = undefined;
+          this.prepared.clear();
+          this.byPath.clear();
+          this.globCache.clear();
+          this.fuzzyCache.clear();
+          this.trigram?.invalidate();
+          return;
+        }
         const prepared = new Map<string, PreparedEntry>();
         const byPath = new Map<string, WorkspacePathEntry>();
         for (let offset = 0; offset < inventory.entries.length; offset += 512) {
@@ -149,6 +165,7 @@ export class WorkspacePathIndex {
           await yieldToEventLoop();
         }
         if (this.disposed || revision !== this.revision) return;
+        this.overflowed = false;
         this.prepared = prepared;
         this.byPath = byPath;
         this.globCache.clear();
@@ -198,13 +215,16 @@ export class WorkspacePathIndex {
 
   fuzzy(query: string, pathMode: boolean): readonly WorkspacePathEntry[] | undefined {
     if (this.current === undefined) return undefined;
-    if (query === '') return this.current.entries;
+    if (query === '') {
+      return this.current.entries.filter(entry => !entry.sensitive);
+    }
     const key = `${Number(pathMode)}\0${query}`;
     const cached = this.fuzzyCache.get(key);
     if (cached !== undefined) return cached;
     const lower = query.toLowerCase();
     const mask = characterMask(lower, true);
-    const matches = [...this.prepared.values()].filter(entry => (entry.charMask & mask) === mask)
+    const matches = [...this.prepared.values()]
+      .filter(entry => !entry.sensitive && (entry.charMask & mask) === mask)
       .map(entry => ({ entry, score: computeFuzzyScore(pathMode ? entry.path : entry.name, lower) }))
       .filter(item => item.score > 0).sort((left, right) => right.score - left.score || left.entry.path.localeCompare(right.entry.path))
       .map(item => item.entry);

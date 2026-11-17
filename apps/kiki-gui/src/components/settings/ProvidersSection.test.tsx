@@ -374,7 +374,8 @@ describe('ProvidersSection unified connections list and folds', () => {
     expect(decisionRow.querySelector('[data-decision-badge]')?.textContent).toBe('Decision');
 
     const chatRow = container.querySelector<HTMLDetailsElement>('[data-connection-row="openai-api"]')!;
-    chatRow.open = true;
+    await act(async () => { chatRow.open = true; });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const capPanel = chatRow.querySelector('[data-provider-decision-capabilities="openai-api"]')!;
     expect(capPanel).not.toBeNull();
     const modelInput = capPanel.querySelector<HTMLInputElement>('[data-decision-capability-model="openai_decisions"]')!;

@@ -170,6 +170,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       log,
       sessionsScope: bootstrap.scope('sessions'),
     });
+    this._register(mirror.onDidChange(({ id, workspaceId }) => {
+      this.projector.invalidateFingerprint(workspaceId, id);
+    }));
   }
 
   override dispose(): Promise<void> {
@@ -518,7 +521,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       this.checkReconcileActive(attempt);
       const request = this.reconcileRequest;
       const reuseFingerprints = this.reuseReconcileFingerprints;
-      this.reuseReconcileFingerprints = true;
       const mutated = new Map<string, string | undefined>();
       const subscription = this.mirror.onDidChange(({ id, workspaceId }) => mutated.set(id, workspaceId));
       let committed = false;
@@ -543,21 +545,19 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         });
       } finally {
         subscription.dispose();
+        if (!committed) {
+          if (mutated.size > 0 && [...mutated.values()].every(workspaceId => workspaceId !== undefined)) {
+            for (const [id, workspaceId] of mutated) this.projector.invalidateFingerprint(workspaceId, id);
+          } else this.projector.invalidateFingerprint();
+        }
       }
       if (committed && request === this.reconcileRequest) {
+        this.reuseReconcileFingerprints = true;
         this.nextReconcileRetryAt = 0;
         this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
         this.reconcileRetryTimer.cancel();
         return;
       }
-      if (reuseFingerprints) {
-        if (mutated.size > 0 && [...mutated.values()].every((workspaceId) => workspaceId !== undefined)) {
-          for (const [id, workspaceId] of mutated) this.projector.invalidateFingerprint(workspaceId, id);
-        } else {
-          this.projector.invalidateFingerprint();
-        }
-      }
-      this.reuseReconcileFingerprints &&= reuseFingerprints;
     }
     const delay = this.reconcileRetryDelayMs;
     this.nextReconcileRetryAt = Date.now() + delay;

@@ -74,8 +74,10 @@ import { SESSION_MEDIA_DIR } from '#/agent/media/mediaRef';
 import {
   type AgentMeta,
   externalClientMetaOf,
+  FORKED_FROM_KEY,
   ISessionMetadata,
   PROMOTED_FROM_KEY,
+  type SessionForkedFrom,
   type SessionMeta,
   type SessionPromotedFrom,
 } from '#/session/sessionMetadata/sessionMetadata';
@@ -134,6 +136,7 @@ import { agentScopeOf, sessionDirOf, sessionScopeOf } from './internal/addressin
 import { SessionArchived } from './sessionLifecycleEvents';
 import {
   assertForkTurnIndex,
+  countVisibleUserTurns,
   sliceMainRecordsAtTurn,
   sliceSubagentRecordsAtTime,
 } from './internal/forkTurnSlice';
@@ -536,13 +539,18 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             [ISessionInstructionsProvider, this.workspaceInstructions.sessionProvider()],
             [ISessionContextSourceReloader, {
               _serviceBrand: undefined,
-              reload: async () => {
+              reload: async (trigger?: string) => {
+                if (trigger === 'restore' && this.plugins.hasLoadedSnapshot()) {
+                  return { instructionsChanged: false, pluginsChanged: false };
+                }
                 const beforeInstructions = JSON.stringify(this.workspaceInstructions.snapshot);
                 const beforePlugins = JSON.stringify({
                   systemPrompts: await this.plugins.enabledSystemPrompts(workspaceId),
                   sessionStarts: await this.plugins.enabledSessionStarts(workspaceId),
                 });
-                await this.plugins.reloadPlugins();
+                if (trigger === undefined || trigger === 'manual' || !this.plugins.hasLoadedSnapshot()) {
+                  await this.plugins.reloadPlugins();
+                }
                 await Promise.all([
                   this.workspaceAgentProfileLoader.reload(),
                   this.extraAgentProfileLoader.reload(),
@@ -1325,11 +1333,29 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let anyActiveTurn = hasActiveTurnOnSession(sourceHandle, opts.externalMaterialOnly === true);
     assertForkTurnIndex(opts.turnIndex);
 
+    const sourceQuiescenceLeases: IDisposable[] = [];
+    const releaseSourceQuiescence = (): void => {
+      for (const lease of sourceQuiescenceLeases.splice(0)) {
+        lease.dispose();
+      }
+    };
+
     let targetId: string | undefined;
     let target: ISessionScopeHandle | undefined;
     let targetSessionDir: string | undefined;
     try {
-      if (sourceHandle !== undefined) await sourceHandle.accessor.get(ISessionMetadata).drain();
+      if (sourceHandle !== undefined) {
+        for (const agent of sourceHandle.accessor.get(IAgentLifecycleService).list()) {
+          if (opts.externalMaterialOnly === true && agent.id !== MAIN_AGENT_ID) continue;
+          const lease = agent.accessor.get(IAgentLoopService).tryAcquireQuiescence({ pendingSteps: 'preserve' });
+          if (lease === undefined) {
+            anyActiveTurn = true;
+          } else {
+            sourceQuiescenceLeases.push(lease);
+          }
+        }
+        await sourceHandle.accessor.get(ISessionMetadata).drain();
+      }
       if (hasActiveTurnOnSession(sourceHandle, opts.externalMaterialOnly === true)) anyActiveTurn = true;
       const sourceMeta =
         sourceHandle !== undefined
@@ -1459,6 +1485,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (!anyActiveTurn && hasUnsettledForkRecords(rawRecordsByAgent, opts.throughUserMessage === true)) {
         anyActiveTurn = true;
       }
+      releaseSourceQuiescence();
 
       if (!anyActiveTurn) {
         for (const agentId of retainedAgentIds) {
@@ -1679,6 +1706,23 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         delete forkedCustom['externalClient'];
         if (Object.keys(forkedCustom).length === 0) forkedCustom = undefined;
       }
+      const totalVisibleTurns = opts.turnIndex === undefined ? countVisibleUserTurns(mainSourceRecords) : undefined;
+      const resolvedTurnIndex =
+        opts.turnIndex !== undefined
+          ? opts.turnIndex
+          : totalVisibleTurns !== undefined && totalVisibleTurns > 0
+            ? totalVisibleTurns - 1
+            : undefined;
+      const sourceTitle = latestSourceMeta?.title ?? sourceMeta?.title;
+      const forkedFrom: SessionForkedFrom = {
+        sessionId: sourceId,
+        title: sourceTitle !== undefined && sourceTitle.length > 0 ? sourceTitle : undefined,
+        throughMessageId: opts.throughMessageId,
+        turnIndex: resolvedTurnIndex,
+        throughUserMessage: opts.throughUserMessage,
+        seed: opts.seed ?? 'verbatim',
+        forkedAt: Date.now(),
+      };
       await targetMeta.update({
         title,
         titleKind: opts.title !== undefined ? 'custom' : sourceMeta?.titleKind,
@@ -1688,7 +1732,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         lastPrompt: turnSlice === undefined ? sourceMeta?.lastPrompt : turnSlice.lastPrompt,
         lastTurnReason: anyActiveTurn ? settledMainLastTurnReason : sourceMeta?.lastTurnReason,
         usage: aggregateSessionUsage(target),
-        custom: forkedCustom,
+        custom: { ...forkedCustom, [FORKED_FROM_KEY]: forkedFrom },
       });
 
       await this.appendSessionIndexEntry(targetId, this.workspaceContext.cwd);
@@ -1702,6 +1746,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     } catch (error) {
       if (targetId === undefined || targetSessionDir === undefined) throw error;
       return this.rollbackSession(targetId, target, targetSessionDir, error);
+    } finally {
+      releaseSourceQuiescence();
     }
   }
 

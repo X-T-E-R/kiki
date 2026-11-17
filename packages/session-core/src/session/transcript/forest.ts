@@ -39,6 +39,8 @@ export function rosterFromTranscriptAgents(
       branchInitiator: agent.branchInitiator,
       toolsLocked: agent.toolsLocked,
       branchSealed: agent.branchSealed,
+      branchBaseTurnId: agent.branchBaseTurnId,
+      branchBaseMessageId: agent.branchBaseMessageId,
       status,
       createdAt: agent.createdAt,
       disposedAt: agent.disposedAt,
@@ -140,10 +142,16 @@ export function taskItemsFromTranscriptTasks(
   return tasks.flatMap((task) => {
     const agentId = task.agentId !== undefined && task.agentId !== '' ? task.agentId : ownerAgentId;
     if (agentId === undefined || agentId === '' || ((task.agentId === undefined || task.agentId === '') && task.state !== 'running')) return [];
+    const parentAgentId =
+      ownerAgentId !== undefined && ownerAgentId !== '' && agentId !== ownerAgentId
+        ? ownerAgentId
+        : undefined;
     return [
       {
         id: task.taskId,
         agentId,
+        parentAgentId,
+        parentToolCallId: task.parentToolCallId,
         kind: task.kind,
         name: task.name ?? task.subagentName,
         description: task.description,
@@ -163,13 +171,21 @@ export function taskItemsFromTranscriptTasks(
   });
 }
 
-export function taskItemsFromSessionTasks(tasks: readonly Task[]): readonly AgentTaskItem[] {
+export function taskItemsFromSessionTasks(
+  tasks: readonly Task[],
+  ownerAgentId?: string,
+): readonly AgentTaskItem[] {
   return tasks.flatMap((task) => {
     if (task.kind !== 'subagent' || task.agent_id === undefined || task.agent_id === '') return [];
+    const parentAgentId =
+      ownerAgentId !== undefined && ownerAgentId !== '' && task.agent_id !== ownerAgentId
+        ? ownerAgentId
+        : undefined;
     return [
       {
         id: task.id,
         agentId: task.agent_id,
+        parentAgentId,
         kind: task.kind,
         description: task.description,
         status: task.status,
@@ -240,6 +256,8 @@ export function rosterFromSnapshotSubagents(
         branchInitiator: subagent.branch_initiator,
         toolsLocked: subagent.tools_locked,
         branchSealed: subagent.branch_sealed,
+        branchBaseTurnId: subagent.branch_base_turn_id,
+        branchBaseMessageId: presentSnapshotText(subagent.branch_base_message_id),
         model: presentSnapshotText(subagent.model),
         thinkingEffort: presentSnapshotText(subagent.thinking_effort),
         thinkingEffortExplicit: subagent.thinking_effort_explicit,
@@ -422,7 +440,97 @@ export function sessionAgentForestFromTranscript(
   state: SessionViewState,
   response: AgentTranscriptResponse | undefined,
 ): AgentForest {
-  return sessionAgentForest(state, rosterFromTranscriptResponse(response), taskItemsFromTranscriptTasks(response?.tasks));
+  return sessionAgentForest(state, rosterFromTranscriptResponse(response), taskItemsFromTranscriptTasks(response?.tasks, response?.agent_id));
+}
+
+/**
+ * Overlay a routed child/branch view's own subagent blocks and tasks onto an
+ * existing session forest so children spawned by that branch or subagent appear
+ * immediately under `forest.byId[agentId].childIds` even before the main
+ * session shell re-renders or finishes paging large snapshot rosters.
+ */
+export function mergeAgentViewIntoForest(
+  forest: AgentForest,
+  agentId: string,
+  state: Pick<SessionViewState, 'blocks' | 'tasks'> & Partial<Pick<SessionViewState, 'snapshotSubagents'>>,
+): AgentForest {
+  if (agentId === '' || agentId === MAIN_AGENT_ID) return forest;
+  const blocks = state.blocks.filter((block): block is SubagentBlock => block.kind === 'subagent');
+  const subagentTasks = state.tasks.filter(
+    (task) =>
+      task.kind === 'subagent' &&
+      task.agent_id !== undefined &&
+      task.agent_id !== '' &&
+      task.agent_id !== agentId,
+  );
+  if (blocks.length === 0 && subagentTasks.length === 0) return forest;
+
+  const live = overlayLiveSourcesWithSnapshotSubagents(
+    liveSourcesFromSubagentBlocks(blocks).map((entry) => ({
+      ...entry,
+      parentAgentId: entry.parentAgentId ?? agentId,
+    })),
+    state.snapshotSubagents,
+  );
+  const taskItems = taskItemsFromSessionTasks(subagentTasks, agentId);
+  const roster: AgentRosterDescriptor[] = Object.values(forest.byId).map((node) => ({
+    agentId: node.agentId,
+    createdAt: node.createdAt,
+    parentAgentId: node.parentAgentId,
+    parentToolCallId: node.parentToolCallId,
+    name: node.name,
+    label: node.label,
+    isBranch: node.isBranch,
+    branchSeed: node.branchSeed,
+    branchInitiator: node.branchInitiator,
+    toolsLocked: node.toolsLocked,
+    branchSealed: node.branchSealed,
+    branchBaseTurnId: node.branchBaseTurnId,
+    branchBaseMessageId: node.branchBaseMessageId,
+    nameSource: node.nameSource,
+    statusSource: node.statusSource,
+    model: node.model,
+    thinkingEffort: node.thinkingEffort,
+    thinkingEffortExplicit: node.thinkingEffortExplicit,
+    executorId: node.executorId,
+    executorProtocol: node.executorProtocol,
+    contextTokens: node.contextTokens,
+    maxContextTokens: node.maxContextTokens,
+    usage: node.usage,
+    status: node.status === 'unknown' ? undefined : node.status,
+    refreshing: node.refreshing,
+    refreshingUntil: node.refreshingUntil,
+    busy: node.busy,
+    toolCallCount: node.toolCallCount,
+    toolCallCountKnown: node.toolCallCountKnown,
+    startedAt: node.startedAt,
+    endedAt: node.endedAt,
+    description: node.description,
+    summary: node.summary,
+    error: node.error,
+  }));
+  if (forest.byId[agentId] === undefined) {
+    roster.push({ agentId, name: agentId });
+  }
+  const rebuilt = overlayForestDisplayFields(buildAgentForest(live, roster, taskItems), live);
+  const byId = { ...rebuilt.byId };
+  for (const [id, prev] of Object.entries(forest.byId)) {
+    const cur = byId[id];
+    if (cur === undefined) continue;
+    if (prev.nameSource !== undefined || prev.statusSource !== undefined || prev.turnOutcome !== undefined) {
+      byId[id] = {
+        ...cur,
+        nameSource: cur.nameSource ?? prev.nameSource,
+        statusSource: cur.statusSource ?? prev.statusSource,
+        turnOutcome: cur.turnOutcome ?? prev.turnOutcome,
+      };
+    }
+  }
+  const merged: AgentForest = {
+    byId,
+    roots: rebuilt.roots.map((root) => byId[root.agentId] ?? root),
+  };
+  return stabilizeAgentForest(forest, merged);
 }
 
 interface SnapshotAgentRef {
@@ -476,7 +584,7 @@ export function liveSourcesFromAgentSnapshots(
       byId.set(task.agentId, {
         subagentId: task.agentId,
         parentAgentId,
-        parentToolCallId: existing?.parentToolCallId,
+        parentToolCallId: task.parentToolCallId ?? existing?.parentToolCallId,
         name: task.name ?? task.subagentName ?? existing?.name ?? task.agentId,
         model: task.model ?? existing?.model,
         thinkingEffort: task.thinkingEffort ?? existing?.thinkingEffort,

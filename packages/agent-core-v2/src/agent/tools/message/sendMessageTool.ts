@@ -94,7 +94,7 @@ export const SendMessageToolInputSchema = z.object({
   voice_mode: SendMessageVoiceModeSchema.optional().describe('Voice delivery mode: none (default unless configured in Settings), append (keep text and attach native voice), or only (send native voice without text).'),
   tts: SendMessageTtsInputSchema.optional().describe('Optional TTS synthesis configuration, provider/voice/model overrides, and separate speech text.'),
   messages: z.array(MessageBatchItemSchema).min(1).max(32).optional(),
-  end_turn: z.boolean().optional().describe('Set true when the complete user-visible reply is delivered and this turn has no remaining work that needs synchronous tool results. Same-step TodoList updates, AgentSend, and background AgentRun, Bash, or AskUserQuestion with automatic completion notifications can end the turn and wait for those notifications. Omit only when this turn still needs synchronous follow-up tools or result review. Pending messages and goal work still run.'),
+  end_turn: z.boolean().optional().describe('Set true when the complete user-visible reply is delivered and this turn has no remaining work that needs synchronous tool results. Same-step successful TodoList, MemoryWrite, Branch, and ThreadSend results, AgentSend, and background AgentRun, Bash, or AskUserQuestion with automatic completion notifications can end the turn and wait for those notifications. Omit only when this turn still needs synchronous follow-up tools or result review. Pending messages and goal work still run.'),
 }).strict().superRefine((input, ctx) => {
   const hasBatch = input.messages !== undefined;
   const hasLegacyContent = input.text !== undefined || input.attachments !== undefined || input.reply_to !== undefined || input.mention_ids !== undefined || input.tts?.text !== undefined;
@@ -150,6 +150,7 @@ type ExtendedAttachmentReceipt = MessageAttachmentReceipt & {
 
 type ExtendedReceipt = SendMessageReceipt & {
   readonly voiceOnly?: boolean;
+  readonly voiceAppend?: boolean;
 };
 
 function optionalService<T>(instantiation: IInstantiationService, id: ServiceIdentifier<T>): T | undefined {
@@ -163,7 +164,7 @@ function optionalService<T>(instantiation: IInstantiationService, id: ServiceIde
 export class SendMessageTool implements ISendMessageTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'SendMessage';
-  readonly description = 'Send one complete message or an ordered messages batch to this thread’s enabled bound outputs, a room, or another Bot. Use either the legacy text/attachments/reply_to fields or messages items, never both. Omit channel/channels for bound-output fan-out, or name explicit channel IDs; unbound channels require the borrowing policy. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Native TTS voice synthesis can be controlled per message or batch via voice_mode (none, append, only) and tts (mode, text, provider, model, voice, language, format, sample_rate_hz, options); omitted fields use Settings defaults. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. When the complete user-visible reply is delivered and this turn has no remaining synchronous work, set end_turn=true to skip an empty continuation and wait for later notifications. This includes same-step TodoList updates, AgentSend, and background AgentRun, Bash, or AskUserQuestion with automatic completion notifications. Omit end_turn only when this turn still needs synchronous follow-up tools or result review; goal work and queued messages still run. Do not send a closing SendMessage or ordinary-text confirmation.';
+  readonly description = 'Send one complete message or an ordered messages batch to this thread’s enabled bound outputs, a room, or another Bot. Use either the legacy text/attachments/reply_to fields or messages items, never both. Omit channel/channels for bound-output fan-out, or name explicit channel IDs; unbound channels require the borrowing policy. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Native TTS voice synthesis can be controlled per message or batch via voice_mode (none, append, only) and tts (mode, text, provider, model, voice, language, format, sample_rate_hz, options); omitted fields use Settings defaults. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. When the complete user-visible reply is delivered and this turn has no remaining synchronous work, set end_turn=true to skip an empty continuation and wait for later notifications. This includes successful same-step TodoList, MemoryWrite, Branch, and ThreadSend results, AgentSend, and background AgentRun, Bash, or AskUserQuestion with automatic completion notifications. Omit end_turn only when this turn still needs synchronous follow-up tools or result review; goal work and queued messages still run. Do not send a closing SendMessage or ordinary-text confirmation.';
   readonly parameters = toInputJsonSchema(SendMessageToolInputSchema);
 
   constructor(
@@ -225,7 +226,7 @@ export class SendMessageTool implements ISendMessageTool {
     return {
       output: JSON.stringify(toWireReceipt(receipt), null, 2),
       note: notes.length > 0 ? `<system>${notes.join(' ')}</system>` : undefined,
-      userDeliveryConfirmed: userDeliveryConfirmed ? true : undefined,
+      userDeliveryConfirmed: input.end_turn !== false && userDeliveryConfirmed ? true : undefined,
       stopTurn: input.end_turn === true && userDeliveryConfirmed ? true : undefined,
     };
   }
@@ -277,7 +278,7 @@ export class SendMessageTool implements ISendMessageTool {
     return {
       output: JSON.stringify({ messages }, null, 2),
       note: notes.size > 0 ? `<system>${[...notes].join(' ')}</system>` : undefined,
-      userDeliveryConfirmed: fullyDelivered ? true : undefined,
+      userDeliveryConfirmed: input.end_turn !== false && fullyDelivered ? true : undefined,
       stopTurn: input.end_turn === true && fullyDelivered ? true : undefined,
     };
   }
@@ -380,65 +381,95 @@ export class SendMessageTool implements ISendMessageTool {
       return markTargetVoiceUnsupportedOnReceipt(receipt, input.to, tts.mode);
     }
 
+    const userMessage: UserMessageInput = {
+      sessionId: this.session.sessionId,
+      toolCallId: ctx.toolCallId,
+      text: deliveredText,
+      attachments: baseAttachments,
+      replyTo: input.reply_to,
+      mentionIds: input.mention_ids,
+      sender: identity,
+      channel: input.channel,
+      channels: input.channels,
+      signal: ctx.signal,
+    };
     if (tts.mode === 'none') {
-      const message: UserMessageInput = {
-        sessionId: this.session.sessionId,
-        toolCallId: ctx.toolCallId,
-        text: deliveredText,
-        attachments: baseAttachments,
-        replyTo: input.reply_to,
-        mentionIds: input.mention_ids,
-        sender: identity,
-        channel: input.channel,
-        channels: input.channels,
-        signal: ctx.signal,
-      };
-      return this.userRouter.current === undefined
-        ? routeUserMessage(message, [internalMessageChannel()])
-        : this.userRouter.current.sendMessage(message);
+      return this.dispatchUserMessage(userMessage);
     }
 
     const selection = await this.inspectSelectedChannels(input);
     if (selection !== undefined) {
       const anySupportsVoice = selection.channels.some((ch) => ch.capabilities.some((cap) => cap.kind === 'voice'));
-      if (tts.mode === 'only' && baseAttachments.length === 0 && !anySupportsVoice) {
-        return {
-          messageId: `send:${ctx.toolCallId}`,
-          deliveredTo: [],
-          sender: identity,
-          delivery: 'undeliverable',
-          voiceOnly: true,
-          channels: selection.channels.map((ch) => ({
-            channelId: ch.id,
-            status: 'unsupported' as const,
-            borrowed: selection.borrowed.has(ch.id) ? true : undefined,
-            unsupported: ['voice'],
-          })),
-        };
+      if (!anySupportsVoice) {
+        if (tts.mode === 'only' && baseAttachments.length === 0) {
+          return {
+            messageId: `send:${ctx.toolCallId}`,
+            deliveredTo: [],
+            sender: identity,
+            delivery: 'undeliverable',
+            voiceOnly: true,
+            channels: selection.channels.map((ch) => ({
+              channelId: ch.id,
+              status: 'unsupported' as const,
+              borrowed: selection.borrowed.has(ch.id) ? true : undefined,
+              unsupported: ['voice'],
+            })),
+          };
+        }
+        if (tts.mode === 'append' && deliveredText.length > 0) {
+          const textReceipt = await this.dispatchUserMessage(userMessage);
+          return {
+            ...markChannelsVoiceUnsupported(textReceipt, selection.channels, selection.borrowed),
+            voiceAppend: true,
+          };
+        }
       }
     }
 
-    const voiceAttachment = await this.synthesizeVoiceAttachment(tts, selection?.channels, ctx);
+    let voiceAttachment: MessageAttachmentReceipt;
+    try {
+      voiceAttachment = await this.synthesizeVoiceAttachment(tts, selection?.channels, ctx);
+    } catch (error) {
+      if (
+        ctx.signal.aborted ||
+        isAbortError(error) ||
+        isFfmpegCleanupUnconfirmed(error) ||
+        tts.mode !== 'append' ||
+        deliveredText.length === 0
+      ) {
+        throw error;
+      }
+      const textReceipt = await this.dispatchUserMessage(userMessage);
+      return {
+        ...markChannelsVoiceUnsupported(
+          textReceipt,
+          selection?.channels ?? [internalMessageChannel()],
+          selection?.borrowed ?? new Set(),
+          errorMessage(error),
+        ),
+        voiceAppend: true,
+      };
+    }
     const allAttachments = [...baseAttachments, voiceAttachment];
     const receipt = await this.routeWithVoice(
       {
-        sessionId: this.session.sessionId,
-        toolCallId: ctx.toolCallId,
-        text: deliveredText,
+        ...userMessage,
         attachments: allAttachments,
-        replyTo: input.reply_to,
-        mentionIds: input.mention_ids,
-        sender: identity,
-        channel: input.channel,
-        channels: input.channels,
-        signal: ctx.signal,
       },
       baseAttachments,
       voiceAttachment,
       tts.mode,
       selection,
     );
-    return tts.mode === 'only' ? { ...receipt, voiceOnly: true } : receipt;
+    if (tts.mode === 'only') return { ...receipt, voiceOnly: true };
+    if (tts.mode === 'append') return { ...receipt, voiceAppend: true };
+    return receipt;
+  }
+
+  private dispatchUserMessage(message: UserMessageInput): Promise<SendMessageReceipt> {
+    return this.userRouter.current === undefined
+      ? routeUserMessage(message, [internalMessageChannel()])
+      : this.userRouter.current.sendMessage(message);
   }
 
   private async inspectSelectedChannels(input: SendMessageItemInput): Promise<{
@@ -601,7 +632,48 @@ export class SendMessageTool implements ISendMessageTool {
       return markVoiceUnsupportedOnReceipt(textReceipt, voiceAttachment, mode);
     }
 
-    return dispatch(message);
+    try {
+      return await dispatch(message);
+    } catch (error) {
+      if (
+        isMediaUnsupportedError(error) &&
+        mode === 'append' &&
+        message.text.length > 0 &&
+        voiceSupportedChannels.length > 0 &&
+        voiceUnsupportedChannels.length > 0
+      ) {
+        const voiceReceipt = await dispatch({
+          ...message,
+          channel: undefined,
+          channels: voiceSupportedChannels.map((ch) => ch.id),
+        });
+        const textReceipt = await dispatch({
+          ...message,
+          attachments: baseAttachments,
+          channel: undefined,
+          channels: voiceUnsupportedChannels.map((ch) => ch.id),
+        });
+        const combinedMap = new Map<string, MessageChannelReceipt>();
+        for (const ch of voiceReceipt.channels ?? []) combinedMap.set(ch.channelId, ch);
+        for (const ch of markChannelsVoiceUnsupported(textReceipt, voiceUnsupportedChannels, selection.borrowed).channels ?? []) {
+          combinedMap.set(ch.channelId, ch);
+        }
+        const mergedChannels = selection.channels
+          .map((ch) => combinedMap.get(ch.id))
+          .filter((ch): ch is MessageChannelReceipt => ch !== undefined);
+        const delivered = mergedChannels.some((ch) => ch.status === 'delivered' || ch.status === 'partial');
+        const blocked = mergedChannels.length > 0 && mergedChannels.every((ch) => ch.status === 'unsupported' || ch.status === 'failed');
+        return {
+          messageId: `send:${message.toolCallId}`,
+          deliveredTo: delivered ? ['user'] : [],
+          attachments: message.attachments,
+          sender: message.sender,
+          delivery: delivered ? 'delivered' : blocked ? 'undeliverable' : 'pending',
+          channels: mergedChannels,
+        };
+      }
+      throw error;
+    }
   }
 
   private async synthesizeVoiceAttachment(
@@ -1078,6 +1150,32 @@ function extractErrorChannels(error: unknown): readonly string[] {
   return ['internal'];
 }
 
+function markChannelsVoiceUnsupported(
+  receipt: SendMessageReceipt,
+  fallbackChannels: readonly MessageChannelBinding[],
+  borrowed: ReadonlySet<string>,
+  detail?: string,
+): SendMessageReceipt {
+  const channels: MessageChannelReceipt[] = receipt.channels !== undefined && receipt.channels.length > 0
+    ? receipt.channels.map((ch) => ({
+        ...ch,
+        status: ch.status === 'delivered' ? 'partial' : ch.status,
+        unsupported: [...new Set([...(ch.unsupported ?? []), 'voice'])],
+        detail: ch.detail ?? detail,
+      }))
+    : fallbackChannels.map((ch) => ({
+        channelId: ch.id,
+        status: receipt.delivery === 'undeliverable' ? 'unsupported' : 'partial',
+        borrowed: borrowed.has(ch.id) ? true : undefined,
+        unsupported: ['voice'],
+        detail,
+      }));
+  return {
+    ...receipt,
+    channels,
+  };
+}
+
 function markVoiceUnsupportedOnReceipt(
   receipt: SendMessageReceipt,
   voiceAttachment: MessageAttachmentReceipt,
@@ -1281,14 +1379,36 @@ function hasExplicitChannelTargets(input: { readonly channel?: unknown; readonly
   return Array.isArray(input.channels) && input.channels.length > 0;
 }
 
+function isConfirmedVoiceAppendPartial(channel: MessageChannelReceipt): boolean {
+  if (channel.status !== 'partial') return false;
+  if (!Array.isArray(channel.unsupported) || channel.unsupported.length === 0) return false;
+  if (!channel.unsupported.every((kind) => kind === 'voice')) return false;
+  if (channel.messageIds !== undefined && channel.messageIds.length === 0) return false;
+  const detail = channel.detail;
+  if (
+    detail === 'attachment_partial' ||
+    detail === 'text_failed' ||
+    detail === 'text_empty' ||
+    detail?.startsWith('text_failed:') === true ||
+    detail?.startsWith('text_empty:') === true
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function confirmedChannelDelivery(
-  channels: readonly { readonly status?: unknown }[] | undefined,
+  channels: readonly MessageChannelReceipt[] | undefined,
   explicitTargets: boolean,
   voiceOnly: boolean,
+  voiceAppend: boolean,
 ): boolean {
   if (channels === undefined) return true;
   if (channels.length === 0) return false;
-  if (explicitTargets) return channels.every((channel) => channel.status === 'delivered');
+  if (explicitTargets) {
+    return channels.every((channel) =>
+      channel.status === 'delivered' || (voiceAppend && !voiceOnly && isConfirmedVoiceAppendPartial(channel)));
+  }
   if (voiceOnly) return channels.some((channel) => channel.status === 'delivered');
   return channels.some((channel) => channel.status === 'delivered' || channel.status === 'partial');
 }
@@ -1299,7 +1419,12 @@ function confirmedUserDelivery(
 ): boolean {
   return receipt.deliveredTo.includes('user') &&
     (receipt.delivery === undefined || receipt.delivery === 'delivered') &&
-    confirmedChannelDelivery(receipt.channels, hasExplicitChannelTargets(input), receipt.voiceOnly === true);
+    confirmedChannelDelivery(
+      receipt.channels,
+      hasExplicitChannelTargets(input),
+      receipt.voiceOnly === true,
+      receipt.voiceAppend === true,
+    );
 }
 
 function notesForReceipt(receipt: SendMessageReceipt): readonly string[] {

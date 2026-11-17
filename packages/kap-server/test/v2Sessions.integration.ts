@@ -5,8 +5,12 @@ import { join } from 'node:path';
 import {
   Error2,
   ErrorCodes,
-  ISessionIndex,
+  IAgentLifecycleService,
   IEventService,
+  IPersonaStore,
+  ISessionContext,
+  ISessionIndex,
+  ISessionManager,
   closeSessionById,
   getLiveSessionById,
   resumeSessionById,
@@ -362,6 +366,49 @@ describe('server /api/sessions/query', () => {
     const third = page.items[2] as SessionWireV2;
     expect(third.meta.last_prompt).toBeNull();
     expect(third.meta.persona_id).toBeUndefined();
+  });
+
+  it('uses live persona bindings before indexed and legacy metadata', async () => {
+    const core = server!.core.accessor;
+    const livePersonaId = 'live-v2-persona';
+    await core.get(IPersonaStore).put({ id: livePersonaId, name: 'Live v2 persona', description: 'A test persona.' });
+    const manager = core.get(ISessionManager);
+    const live = await manager.create({
+      sessionId: 'v2-live-explicit-persona',
+      workDir: home!,
+      mainAgentBinding: {
+        persona: livePersonaId,
+        thinking: 'off',
+        endpoint: {
+          provider_type: 'openai',
+          base_url: 'https://example.test/v1',
+          model: 'stub',
+          capabilities: [],
+          max_context_size: 4096,
+          credential: { kind: 'env', env: 'STUB_KEY' },
+        },
+      },
+    });
+    const fallback = await manager.create({ sessionId: 'v2-live-fallback-persona', workDir: home! });
+    await fallback.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+    const workspaceId = fallback.accessor.get(ISessionContext).workspaceId;
+    const added: SessionSummary[] = [
+      { id: live.id, workspaceId, cwd: home, personaId: 'stale-target-persona', createdAt: 1, updatedAt: 9000, archived: false },
+      { id: fallback.id, workspaceId, cwd: home, custom: { bot_persona_id: 'bad id', room_persona_id: 'fallback-target-persona' }, createdAt: 1, updatedAt: 8000, archived: false },
+      { id: 'v2-custom-persona', workspaceId, cwd: home, custom: { persona_id: 'nia-director' }, createdAt: 1, updatedAt: 7500, archived: false },
+      { id: 'v2-malformed-persona', workspaceId, cwd: home, custom: { bot_persona_id: 'bad id' }, createdAt: 1, updatedAt: 7000, archived: false },
+    ];
+    SUMMARIES.push(...added);
+    try {
+      const page = await getData('?meta.private=all');
+      const byId = new Map(page.items.map((item) => [item.id, item as SessionWireV2]));
+      expect(byId.get(live.id)?.meta.persona_id).toBe(livePersonaId);
+      expect(byId.get(fallback.id)?.meta.persona_id).toBe('fallback-target-persona');
+      expect(byId.get('v2-custom-persona')?.meta.persona_id).toBe('nia-director');
+      expect(byId.get('v2-malformed-persona')?.meta.persona_id).toBeUndefined();
+    } finally {
+      for (const summary of added) SUMMARIES.splice(SUMMARIES.indexOf(summary), 1);
+    }
   });
 
   it('filters by workspace.id (single, repeated OR, unknown)', async () => {

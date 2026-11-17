@@ -14,6 +14,7 @@ import type { Session } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { shortCwd } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
+import { compactSessionId } from '../../lib/compactIdentifier';
 import { useThreadTitle } from '../../lib/threadTitles';
 import {
   visibleWorktrees,
@@ -41,6 +42,25 @@ type Notice =
 
 type GcPlan = { readonly removable: number; readonly kept: number };
 
+const WORKTREE_SESSION_FETCH_CONCURRENCY = 2;
+
+function createConcurrencyLimiter(maxConcurrent: number) {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async <T,>(fn: () => Promise<T>): Promise<T> => {
+    if (active >= maxConcurrent) {
+      await new Promise<void>((resolve) => { waiting.push(resolve); });
+    }
+    active += 1;
+    try {
+      return await fn();
+    } finally {
+      active -= 1;
+      waiting.shift()?.();
+    }
+  };
+}
+
 export function WorktreesCard() {
   const { client } = useConnection();
   const { t, tp, locale } = useI18n();
@@ -56,10 +76,12 @@ export function WorktreesCard() {
   });
   const records = useMemo(() => visibleWorktrees(list.data?.worktrees ?? []), [list.data]);
   const sessionIds = useMemo(() => [...new Set(records.map((record) => record.owner.sessionId))], [records]);
+  const limitSessionFetch = useMemo(() => createConcurrencyLimiter(WORKTREE_SESSION_FETCH_CONCURRENCY), [client]);
   const sessionQueries = useQueries({
     queries: sessionIds.map((id) => ({
       queryKey: ['worktrees', 'owner-session', id],
-      queryFn: () => client.getSession(id),
+      queryFn: () => limitSessionFetch(() => client.getSession(id)),
+      enabled: available,
       staleTime: 10_000,
       retry: false,
     })),
@@ -313,7 +335,7 @@ function WorktreeRow({
               title={record.owner.sessionId}
               className="shrink-0"
             >
-              {t('st.worktrees.sessionMissing')}{record.owner.sessionId ? ` (${record.owner.sessionId.slice(0, 8)})` : ''}
+              {t('st.worktrees.sessionMissing')}{record.owner.sessionId ? ` (${compactSessionId(record.owner.sessionId)})` : ''}
             </span>
           )}
           {title !== undefined || !ownerPending ? <span aria-hidden>·</span> : null}

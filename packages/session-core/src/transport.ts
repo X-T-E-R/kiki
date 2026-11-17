@@ -467,6 +467,8 @@ export interface AgentTranscriptAgent {
   readonly branchInitiator?: 'user' | 'agent';
   readonly toolsLocked?: boolean;
   readonly branchSealed?: boolean;
+  readonly branchBaseTurnId?: number;
+  readonly branchBaseMessageId?: string;
   readonly createdAt?: string;
   readonly disposedAt?: string;
 }

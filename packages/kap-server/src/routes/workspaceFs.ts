@@ -7,6 +7,7 @@ import {
   HostFolderNotAbsoluteError,
   HostFolderNotFoundError,
   HostFolderPermissionError,
+  IBootstrapService,
   IHostFileSystem,
   IHostFolderBrowser,
   isError2,
@@ -279,10 +280,11 @@ async function handleFsContent(
   reply.header('last-modified', new Date(st.mtimeMs ?? 0).toUTCString());
   if (req.query.preview === 'media') {
     try {
+      const homeDir = core.accessor.get(IBootstrapService)?.homeDir ?? '';
       const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview({
         name: abs, size: st.size, mediaType: guessMime(abs, isBinary),
         stream: (range) => createReadStream(abs, range),
-      }, undefined, signal));
+      }, undefined, signal, `${homeDir}\0${etag}`));
       if (reply.raw.destroyed) return;
       const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
       const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);

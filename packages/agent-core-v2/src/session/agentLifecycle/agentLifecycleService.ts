@@ -49,6 +49,7 @@ import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompacti
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import { IAgentPluginToolService } from '#/agent/userTool/pluginToolService';
+import { IAgentRemoteToolService } from '#/agent/remoteTools/agentRemoteToolService';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { interactionKey } from '#/session/interaction/interactionOps';
 import { IWireService } from '#/wire/wire';
@@ -430,6 +431,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         handle.accessor.get(IAgentMediaToolsRegistrar).refresh();
         await phase('agent_tools', () => handle.accessor.get(IAgentToolActivationService).activate());
         await phase('agent_plugin_tools', () => handle.accessor.get(IAgentPluginToolService).ready());
+        await phase('agent_remote_tools', () => handle.accessor.get(IAgentRemoteToolService).ready());
       }
       if (priorAgentMeta !== undefined || opts.restoreBinding !== undefined) {
         await handle.accessor.get(IAgentProfileService).warnRestoredUnavailableTools();
@@ -747,6 +749,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         child.accessor.get(IAgentMediaToolsRegistrar).refresh();
         await child.accessor.get(IAgentToolActivationService).activate();
         await child.accessor.get(IAgentPluginToolService).ready();
+        await child.accessor.get(IAgentRemoteToolService).ready();
       }
       const bound = childProfile.data();
       await this.sessionMetadata.updateAgent(child.id, (current) => ({

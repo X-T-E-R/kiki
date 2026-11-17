@@ -20,6 +20,7 @@ export function createConnectionsFacade(transport: HttpRestTransport): Connectio
     remove: (connectionId) => transport.json(prefix + '/' + id(connectionId), { method: 'DELETE' }),
     setEnabled: (connectionId, enabled) => transport.json(prefix + '/' + id(connectionId) + '/enabled', { method: 'PUT', body: { enabled } }),
     retry: (connectionId) => transport.json(prefix + '/' + id(connectionId) + '/retry', { method: 'POST', body: {} }),
+    verifyFingerprint: (connectionId, options) => transport.json(prefix + '/' + id(connectionId) + '/verify-fingerprint', { ...options, method: 'POST', body: {} }),
     summary: (connectionId, options) => transport.json(prefix + '/' + id(connectionId) + '/call', { ...options, method: 'POST', body: { operation: 'spaceSummary' } }),
     handshake: () => transport.json(prefix + '/handshake'),
     createPairCode: (input) => transport.json(prefix + '/inbound/pair-code', { method: 'POST', body: input ?? {} }),

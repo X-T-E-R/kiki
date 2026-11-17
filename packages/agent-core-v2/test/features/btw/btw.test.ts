@@ -28,6 +28,7 @@ import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { BRANCH_CONFIG_SECTION, type BranchUsagePreference } from '#/app/branch/configSection';
+import { ErrorCodes } from '#/errors';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IConfigService } from '#/app/config/config';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
@@ -165,7 +166,7 @@ function createBranchFoldHarness(ix: TestInstantiationService, initialMeta: Agen
   ix.stub(ISessionContext, { sessionId: 'session-1', workspaceId: 'workspace-1' });
   ix.stub(IConfigService, {});
   ix.set(ISessionBranchService, new SyncDescriptor(SessionBranchService));
-  return { service: ix.get(ISessionBranchService), updateAgent, enqueue, prompt, create, getBranchMeta: () => branchMeta };
+  return { service: ix.get(ISessionBranchService), metadata, updateAgent, enqueue, prompt, create, getBranchMeta: () => branchMeta };
 }
 
 describe('SessionBtwService', () => {
@@ -353,6 +354,48 @@ describe('SessionBranchService completion metadata', () => {
     } finally {
       now.mockRestore();
     }
+  });
+
+  it('serializes concurrent foldBranch calls on the same branch so only one seals and emits branch_fold', async () => {
+    const harness = createBranchFoldHarness(ix, { parentAgentId: 'main' });
+    let releaseFirstMetadataRead: () => void = () => {};
+    const firstReadGate = new Promise<void>((resolveGate) => {
+      releaseFirstMetadataRead = resolveGate;
+    });
+    const origRead = harness.metadata.read;
+    let reads = 0;
+    harness.metadata.read = async () => {
+      reads += 1;
+      if (reads === 1) {
+        await firstReadGate;
+      }
+      return origRead();
+    };
+
+    const first = harness.service.foldBranch({
+      branchId: 'branch-1',
+      summary: 'First merge',
+      done: true,
+      fromTool: true,
+    });
+    const second = harness.service.foldBranch({
+      branchId: 'branch-1',
+      summary: 'Concurrent duplicate merge',
+      done: true,
+      fromTool: true,
+    });
+
+    await Promise.resolve();
+    releaseFirstMetadataRead();
+
+    const [firstOutcome, secondOutcome] = await Promise.allSettled([first, second]);
+    expect(firstOutcome.status).toBe('fulfilled');
+    expect(secondOutcome.status).toBe('rejected');
+    if (secondOutcome.status === 'rejected') {
+      expect(secondOutcome.reason).toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    }
+    expect(harness.enqueue).toHaveBeenCalledTimes(1);
+    expect(harness.updateAgent).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -735,4 +735,38 @@ describe('CockpitOverview whole-tree background read', () => {
     expect(all('[data-cockpit-axis="grid"]').length).toBe(1);
     expect(all('[data-cockpit-axis="tick"]').length).toBe(1);
   });
+
+  it('loads and displays background tasks from child subagents when rooted on a Branch page while excluding main tasks', async () => {
+    connectionClient.listAgentTasks.mockReset();
+    connectionClient.listAgentTasks.mockImplementation((async () => page({
+      items: [
+        task('t-branch-child', { owner_agent_id: 'branch-sub-1', source: 'live' }),
+        task('t-main-outside', { owner_agent_id: MAIN_AGENT_ID, source: 'live' }),
+      ],
+      owners: [
+        { owner_agent_id: MAIN_AGENT_ID, source: 'live', state: 'complete' },
+        { owner_agent_id: 'branch-1', source: 'live', state: 'complete' },
+        { owner_agent_id: 'branch-sub-1', source: 'live', state: 'complete' },
+      ],
+      coverage: { total_owners: 3, completed_owners: 3, failed_owners: 0, pending_owners: 0, inventory_complete: true, complete: true, failures: [] },
+    })) as never);
+
+    await render({
+      agentId: 'branch-1',
+      rootAgentId: 'branch-1',
+      mainLabel: 'Polish right rail',
+      forest: forestOf([
+        node(MAIN_AGENT_ID, { childIds: ['branch-1'] }),
+        node('branch-1', { label: 'Polish right rail', parentAgentId: MAIN_AGENT_ID, isBranch: true, childIds: ['branch-sub-1'] }),
+        node('branch-sub-1', { label: 'Reviewer subagent', parentAgentId: 'branch-1', status: 'running', busy: true }),
+      ]),
+    });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+
+    expect(connectionClient.listAgentTasks).toHaveBeenCalledTimes(1);
+    expect(q('[data-cockpit-overview]')?.getAttribute('data-cockpit-subject')).toBe('agent');
+    expect(q('[data-cockpit-task="t-branch-child"]')).toBeTruthy();
+    expect(q('[data-cockpit-task="t-branch-child"] [data-task-owner-label]')?.textContent).toBe('Reviewer subagent');
+    expect(q('[data-cockpit-task="t-main-outside"]')).toBeNull();
+  });
 });

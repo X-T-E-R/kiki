@@ -915,7 +915,7 @@ export class SessionDispatchService implements ISessionDispatchService {
                 : { taskName: run.child.name, agentType: run.child.profileName },
               () => childProfileService.getParentSteering?.(),
             ),
-            { timeoutMs: resolveSubagentTimeoutMs(this.config), ownerTurnId },
+            { timeoutMs: resolveSubagentTimeoutMs(this.config), ownerTurnId, detached: true },
           );
           await this.recordRun(run.child.agentId, taskId, run.child.sourceRef, operationId);
           await requester.accessor.get(IEventDispatcher).dispatch(

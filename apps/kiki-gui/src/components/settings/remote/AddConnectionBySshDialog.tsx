@@ -34,6 +34,7 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
   const [profileId, setProfileId] = useState(initialProfileId ?? profiles[0]?.id ?? '');
   const [label, setLabel] = useState('');
   const [background, setBackground] = useState(true);
+  const [borrowTools, setBorrowTools] = useState(true);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Feedback>(null);
   const host = profiles.find((entry) => entry.id === profileId);
@@ -54,7 +55,12 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
     setBusy(true);
     setFailure(null);
     try {
-      const record = await connectionsApi(client).sshConnect({ profile, label: label.trim(), backgroundSummary: background });
+      const record = await connectionsApi(client).sshConnect({
+        profile,
+        label: label.trim(),
+        backgroundSummary: background,
+        borrowTools,
+      });
       onAdded(record);
     } catch (error) {
       const reason = connectionFailureText(error instanceof Error ? error.message : '');
@@ -98,6 +104,18 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
           <Toggle id="remote-ssh-background" label={t('st.remote.background')} layout="bare"
             checked={background} onChange={setBackground} />
         </SettingField>
+
+        <label className="flex cursor-pointer items-start gap-2.5 text-[13px] text-ink" htmlFor="remote-ssh-borrow-tools">
+          <input
+            id="remote-ssh-borrow-tools"
+            type="checkbox"
+            data-remote-ssh-borrow-tools
+            checked={borrowTools}
+            onChange={(event) => { setBorrowTools(event.target.checked); }}
+            className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
+          />
+          <span className="font-medium text-ink">{t('st.remote.borrowTools')}</span>
+        </label>
 
         <FeedbackLine feedback={failure} />
       </form>

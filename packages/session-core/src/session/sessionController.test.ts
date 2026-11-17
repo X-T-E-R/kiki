@@ -7357,3 +7357,151 @@ it.each(['close', 'suspend'] as const)('settles a pending bootstrap on %s and di
   expect(fixture.channel.snapshot).not.toHaveBeenCalled();
   controller.close();
 });
+
+it('fast-seeds a focused subagent or branch via high-priority HTTP page before delayed WS reset and hands over cleanly', async () => {
+  const fixture = bootstrapViewFixture();
+  const branchTurn = userTurnSnapshot({ prompt: 'branch prompt', assistantText: 'instant branch body' }).items[0]!;
+  let backgroundPageStarted = false;
+  const pageCalls: string[] = [];
+  vi.mocked(fixture.channel.transcriptPage).mockImplementation(async (_sessionId, input) => {
+    pageCalls.push(`${input.agentId}:${input.pageSize}`);
+    if (input.agentId === 'main') {
+      backgroundPageStarted = true;
+      await new Promise<void>(() => {});
+    }
+    return {
+      session_id: 'session_test',
+      agent_id: input.agentId,
+      items: [branchTurn],
+      has_more: false,
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+      agents: [],
+      pending_interactions: [],
+      cursor: { seq: 5, epoch: 'epoch-canonical' },
+      coverage: { kind: 'full', hasMoreOlder: false },
+    };
+  });
+
+  const controller = new SessionController({} as KikiClient, fixture.view, 'session_test');
+  const opening = controller.open();
+  fixture.send({
+    type: 'transcript',
+    generation: 1,
+    event: resetEvent('main', {
+      ...userTurnSnapshot({ prompt: 'main', assistantText: 'main reply' }),
+      hasMoreOlder: true,
+      olderCursor: 'older-main',
+    }, 2, true),
+  });
+  fixture.send({ type: 'snapshot', generation: 1, snapshot: snapshot() });
+  await opening;
+
+  try {
+    void controller.loadOlderMessages('main');
+    await vi.waitFor(() => expect(backgroundPageStarted).toBe(true));
+
+    controller.retainAgentView('branch-view', 'branch-1', 'delta');
+    controller.setFocusedAgent('branch-1');
+
+    await vi.waitFor(() => {
+      const branchState = controller.getAgentState('branch-1');
+      expect(branchState.transcriptReady).toBe(true);
+      expect(branchState.blocks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: 'assistant', text: 'instant branch body' })]),
+      );
+    });
+    expect(pageCalls).toContain('branch-1:20');
+    expect(fixture.controls.setTranscriptGrades).toHaveBeenCalledWith({
+      '*': 'off',
+      main: 'turn',
+      'branch-1': 'delta',
+    });
+
+    fixture.send({
+      type: 'transcript',
+      generation: 1,
+      event: resetEvent('branch-1', userTurnSnapshot({ prompt: 'branch prompt', assistantText: 'authoritative ws body' }), 6, true),
+    });
+    controller.flushFrames();
+    await vi.waitFor(() => {
+      const branchState = controller.getAgentState('branch-1');
+      expect(branchState.refreshing).toBe(false);
+      expect(branchState.blocks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: 'assistant', text: 'authoritative ws body' })]),
+      );
+    });
+    expect(fixture.controls.updateTranscriptCursor).toHaveBeenCalledWith('branch-1', { seq: 6, epoch: 'epoch-canonical' });
+  } finally {
+    controller.close();
+  }
+});
+
+it('polls durable restoring admission on a cold-opened session, adopts the user message, and resyncs into live streaming', async () => {
+  vi.useFakeTimers();
+  const fixture = bootstrapViewFixture();
+  const coldShell = {
+    ...snapshot(),
+    epoch: 'cold:session_test',
+    as_of_seq: 0,
+  };
+  let snapshotReads = 0;
+  vi.mocked(fixture.channel.snapshot).mockImplementation(async () => {
+    snapshotReads += 1;
+    return snapshot();
+  });
+  const submitPrompt = vi.fn(async () => ({
+    prompt_id: 'cold-p1',
+    user_message_id: 'cold-p1',
+    status: 'queued' as const,
+    admission: 'restoring' as const,
+    content: [{ type: 'text' as const, text: 'wake up cold session' }],
+    created_at: '2026-01-01T00:00:00.000Z',
+  }));
+  const getDurableIngress = vi.fn(async () => ({
+    prompt_id: 'cold-p1',
+    user_message_id: 'cold-p1',
+    status: 'running' as const,
+    admission: 'admitted' as const,
+    content: [{ type: 'text' as const, text: 'wake up cold session' }],
+    created_at: '2026-01-01T00:00:00.000Z',
+  }));
+  const transport = {
+    submitPrompt,
+    getDurableIngress,
+  } as unknown as KikiClient;
+
+  const controller = new SessionController(transport, fixture.view, 'session_test', { persistenceHint: 'saved' });
+  const opening = controller.open();
+  fixture.send({
+    type: 'transcript',
+    generation: 1,
+    event: {
+      ...resetEvent('main', userTurnSnapshot(), 0),
+      cursor: { seq: 0, epoch: 'cold:session_test:main' },
+    },
+  });
+  fixture.send({ type: 'snapshot', generation: 1, snapshot: coldShell });
+  await opening;
+
+  try {
+    expect(controller.getState().cursor.epoch).toBe('cold:session_test');
+    const result = await controller.sendPrompt({ promptId: 'cold-p1', text: 'wake up cold session' });
+    expect(result.admission).toBe('restoring');
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(getDurableIngress).toHaveBeenCalledWith('session_test', 'cold-p1', 'main');
+    expect(controller.getState().blocks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'user', promptId: 'cold-p1', text: 'wake up cold session' })]),
+    );
+    expect(snapshotReads).toBeGreaterThanOrEqual(1);
+  } finally {
+    controller.close();
+    vi.useRealTimers();
+  }
+});
+

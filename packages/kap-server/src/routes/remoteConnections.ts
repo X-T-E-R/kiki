@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { IncomingMessage } from 'node:http';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { z } from 'zod';
-import { MEDIA_PREVIEW_MAX_BYTES, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, pairClaimInputSchema, pairCodeCreateInputSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
+import { MEDIA_PREVIEW_MAX_BYTES, bridgeOperationsSchema, pluginPanelDocumentSchema, connectionAddInputSchema, connectionBrokerInputSchema, connectionClaimInputSchema, connectionIdentitySchema, connectionInviteInputSchema, connectionPairInputSchema, connectionProvisionInputSchema, pairClaimInputSchema, pairCodeCreateInputSchema, sshConnectionConnectInputSchema, sshConnectionRegisterInputSchema, sshRemoteExecuteSchema, sshRemoteProfileSchema, bridgeGrantSchema } from '@kiki/protocol';
 import type { SshRemoteConnector } from '../services/sshRemote/connector';
 import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
 import { decodeJsonFrame } from '@kiki/klient/host';
@@ -13,6 +13,7 @@ import { AdmissionError, ConnectionAdmission, sameIdentity } from '../services/c
 import { isPeerFrameAllowed, peerAudience } from '../services/connections/audience';
 import { BROKER_BODY_BYTES, BROKER_FS_READ_BODY_BYTES, BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES, RemoteConnectionManager } from '../services/connections/manager';
 import { directEndpoints, machineLabel, pairOutbound, PairingRateLimit, type PairingHooks } from '../services/connections/pairing';
+import { currentSpacePlatform } from '../services/connections/spaceSummary';
 import { webPrincipal, type WebAccess } from '../services/webAccess';
 import { pooledPinnedAgent, requirePinnedTls } from '../services/connections/peerTls';
 import type { MintPluginPanelDocument } from './pluginPanelDocuments';
@@ -34,7 +35,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     try { return reply.send(okEnvelope(await work(), requestId)); }
     catch (error) { if (!(error instanceof AdmissionError)) throw error; reply.code(error.status); return reply.send(errEnvelope(40101, error.reason, requestId)); }
   };
-  app.get('/api/remote-connections/handshake', async (req, reply) => reply.send(okEnvelope({ identity: admission.identity, ...req.headers.authorization === undefined ? {} : { targetLabel: machineLabel() }, serverId, inboundEnabled: admission.status().enabled, tlsFingerprint: tlsFingerprint(), capabilities: tlsFingerprint() === undefined ? ['handshake-mutual-proof-v1'] : ['tls-spki-pin-v1', 'handshake-mutual-proof-v1'] }, req.id)));
+  app.get('/api/remote-connections/handshake', async (req, reply) => reply.send(okEnvelope({ identity: admission.identity, ...req.headers.authorization === undefined ? {} : { targetLabel: machineLabel() }, serverId, inboundEnabled: admission.status().enabled, tlsFingerprint: tlsFingerprint(), platform: currentSpacePlatform(), capabilities: tlsFingerprint() === undefined ? ['handshake-mutual-proof-v1'] : ['tls-spki-pin-v1', 'handshake-mutual-proof-v1'] }, req.id)));
   app.post('/api/remote-connections/claim', { bodyLimit: 8192 }, async (req, reply) => respond(req.id, reply, async () => { const input = connectionClaimInputSchema.parse(req.body); return admission.claim(input.invitation, input.source); }));
   app.post('/api/remote-connections/provision', { bodyLimit: 8192 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
@@ -81,11 +82,11 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
   app.post('/api/remote-connections/inbound/peer-grant', { bodyLimit: 16384 }, async (req, reply) => {
     reply.header('cache-control', 'no-store');
     return respond(req.id, reply, async () => {
-      const input = z.object({ source: connectionIdentitySchema, label: z.string().min(1).max(128), sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(), requestBridge: z.boolean().optional() }).strict().parse(req.body);
+      const input = z.object({ source: connectionIdentitySchema, label: z.string().min(1).max(128), sourceWorkspaces: z.array(z.string().min(1).max(512)).max(64).optional(), requestBridge: z.boolean().optional(), bridgeOperations: bridgeOperationsSchema.optional() }).strict().parse(req.body);
       if (admission.unavailableReason !== undefined) throw new AdmissionError(403, admission.unavailableReason);
-      const claimed = await admission.approvePeer(input.source, input.label, input.requestBridge);
+      const claimed = await admission.approvePeer(input.source, input.label, input.requestBridge, input.bridgeOperations);
       try {
-        const bridge = claimed.allowBridge && hooks.current !== undefined ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.label, sourceWorkspaces: input.sourceWorkspaces ?? [] }) : [];
+        const bridge = claimed.allowBridge && hooks.current !== undefined ? await hooks.current.issueBridges({ grantId: claimed.grantId, source: input.source, sourceLabel: input.label, sourceWorkspaces: input.sourceWorkspaces ?? [], approvedOperations: claimed.bridgeOperations, requestedOperations: input.bridgeOperations }) : [];
         return { peerToken: claimed.peerToken, grantId: claimed.grantId, revision: claimed.revision, target: claimed.target, targetLabel: machineLabel(), ...bridge.length > 0 ? { bridge } : {} };
       } catch (error) { await admission.revoke(claimed.grantId).catch(() => undefined); throw error; }
     });
@@ -115,9 +116,11 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
         const workspaces = hooks.current === undefined ? [] : await hooks.current.workspaces();
         return manager.registerSsh({ purpose: 'gui', planId: ready.id, label: input.label?.trim() || input.profile.label, enableInbound: true, backgroundSummary: input.backgroundSummary }, controller.signal, hooks.current === undefined ? undefined : {
           sourceWorkspaces: workspaces,
-          install: async (connectionId, bundle, connectionGrantId) => {
+          bridgeOperations: input.bridgeOperations,
+          borrowTools: input.borrowTools,
+          install: async (connectionId, bundle, connectionGrantId, borrowTools) => {
             await hooks.current?.enableThreads().catch(() => undefined);
-            await hooks.current?.installBridge(connectionId, bridgeGrantSchema.parse(bundle.grant), bundle.credential, connectionGrantId);
+            await hooks.current?.installBridge(connectionId, bridgeGrantSchema.parse(bundle.grant), bundle.credential, connectionGrantId, borrowTools);
           },
         });
       }); }
@@ -147,6 +150,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     if (typeof enabled !== 'boolean') throw new AdmissionError(400, 'invalid_connection_setting'); return manager.enable((req.params as { connectionId: string }).connectionId, enabled);
   }));
   app.post('/api/remote-connections/:connectionId/retry', async (req, reply) => respond(req.id, reply, () => manager.retry((req.params as { connectionId: string }).connectionId)));
+  app.post('/api/remote-connections/:connectionId/verify-fingerprint', async (req, reply) => respond(req.id, reply, () => manager.verifyFingerprint((req.params as { connectionId: string }).connectionId)));
   app.post('/api/remote-connections/:connectionId/call', { bodyLimit: BROKER_BODY_BYTES }, async (req, reply) => {
     const id = (req.params as { connectionId: string }).connectionId;
     const input = connectionBrokerInputSchema.parse(req.body);

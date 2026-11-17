@@ -37,13 +37,19 @@ vi.mock('./persona/PersonaSettingsUpdate', () => ({
 }));
 
 vi.mock('./AgentPanelContainer', () => ({
-  AgentPanelContainer: ({ part = 'all', agentId, overviewMode, renderOverview }: {
-    part?: string; agentId: string; overviewMode?: string;
+  AgentPanelContainer: ({ part = 'all', agentId, scopeRootId, overviewMode, renderOverview }: {
+    part?: string; agentId: string; scopeRootId?: string; overviewMode?: string;
     renderOverview?: (body: React.ReactNode, scopeSwitch: React.ReactNode) => React.ReactNode;
   }) => {
-    const body = <div data-panel-props={part} data-panel-agent={agentId} data-panel-mode={overviewMode} />;
+    const body = <div data-panel-props={part} data-panel-agent={agentId} data-panel-scope-root={scopeRootId} data-panel-mode={overviewMode} />;
     return renderOverview === undefined ? body : renderOverview(body, overviewMode === 'cockpit' ? null : <div data-usage-scope-switch />);
   },
+}));
+
+const pluginSlotsHolder: { current: readonly any[] } = { current: [] };
+vi.mock('./plugins/PluginComposerSlots', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./plugins/PluginComposerSlots')>()),
+  usePluginGuiSlots: () => ({ slots: pluginSlotsHolder.current }),
 }));
 
 const registryHolder: { current: any } = { current: null };
@@ -101,6 +107,8 @@ beforeAll(() => {
 afterEach(async () => {
   registryHolder.current = null;
   connectionHolder.current = null;
+  pluginSlotsHolder.current = [];
+  localStorage.removeItem('kiki.railMode');
   for (const { container, root } of mounts.splice(0)) {
     await act(async () => { root.unmount(); });
     container.remove();
@@ -581,13 +589,15 @@ describe('RightRail shared chapters', () => {
     // (overview), then the record chapter with the agent's work and its tasks.
     const scroll = child.querySelector('[data-agent-panel-scroll]')!;
     expect(scroll.querySelector('[data-inspector-setup]')).toBeNull();
+    // Session-level cron stays on main; a routed subagent page keeps its own record only.
+    expect(main.querySelector('[data-rail-session-cron]')).not.toBeNull();
+    expect(scroll.querySelector('[data-rail-session-cron]')).toBeNull();
     const order = [
       scroll.querySelector('[data-rail-profile-head]'),
       now,
       scroll.querySelector('[data-rail-agent-panel-slot]'),
       scroll.querySelector('[data-panel-props="work"]'),
       scroll.querySelector('[data-tasks-scroll]'),
-      scroll.querySelector('[data-rail-session-cron]'),
     ];
     expect(order.every((node) => node !== null)).toBe(true);
     for (let index = 1; index < order.length; index += 1) {
@@ -1533,5 +1543,162 @@ describe('RightRail sibling-aware resize clamp', () => {
     } finally {
       innerWidthSpy.mockRestore();
     }
+  });
+});
+
+describe('RightRail plugin preview routing and branch-owned rail', () => {
+  it('opens a PreviewWorkspace plugin tab when clicking a Right Rail inspector-tab slot instead of embedding an inline panel', async () => {
+    pluginSlotsHolder.current = [{
+      pluginId: 'kiki-phone',
+      pluginVersion: '0.3.2',
+      id: 'phone-preview-inspector',
+      slot: 'inspector-tab',
+      title: { default: 'Phone', zh: '手机', en: 'Phone' },
+      panelId: 'phone-preview',
+      entryUrl: '/api/plugins/kiki-phone/ui/preview.html',
+    }];
+    const openPluginPanel = vi.fn();
+    const { MediaPreviewContext } = await import('./mediaPreviewContext');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <MediaPreviewContext.Provider
+              value={{
+                openPluginPanel,
+                activePluginPanelKey: 'kiki-phone:phone-preview',
+              } as never}
+            >
+              <RightRail
+                state={{ ...createViewState('sess-1'), tasks: [] }}
+                forest={forest}
+                onCancelTask={() => {}}
+                onStopAgentTask={async () => {}}
+                onOpenSubagent={() => {}}
+              />
+            </MediaPreviewContext.Provider>
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+
+    const tabBtn = container.querySelector<HTMLButtonElement>('[data-plugin-inspector-open="kiki-phone:phone-preview"]')!;
+    expect(tabBtn).not.toBeNull();
+    expect(tabBtn.getAttribute('data-plugin-panel-active')).toBe('true');
+    expect(container.querySelector('iframe')).toBeNull();
+
+    await act(async () => {
+      tabBtn.click();
+    });
+    expect(openPluginPanel).toHaveBeenCalledTimes(1);
+    expect(openPluginPanel).toHaveBeenCalledWith('kiki-phone', 'phone-preview', 'Phone');
+    expect(container.querySelector('iframe')).toBeNull();
+  });
+
+  it('scopes a routed Branch page Right Rail to the branch itself in both default and cockpit modes and shows subagents spawned by the branch', async () => {
+    const branchForest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main', status: 'idle', busy: false },
+      {
+        agentId: 'branch-281',
+        parentAgentId: 'main',
+        name: 'rail_polish',
+        label: 'Polish right rail',
+        isBranch: true,
+        branchSeed: 'compact',
+        branchSealed: false,
+        status: 'running',
+        busy: true,
+      },
+    ]);
+    const onStopAgentTask = vi.fn(async () => {});
+    const onOpenSubagent = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>
+            <RightRail
+              state={{
+                ...createViewState('sess-1'),
+                loaded: true,
+                busy: true,
+                blocks: [{
+                  kind: 'subagent',
+                  id: 'subagent:agent-285',
+                  subagentId: 'agent-285',
+                  parentAgentId: 'branch-281',
+                  parentToolCallId: 'call-285',
+                  name: 'reviewer',
+                  label: 'Independent review',
+                  description: 'Independent review',
+                  model: undefined,
+                  thinkingEffort: undefined,
+                  status: 'running',
+                  summary: undefined,
+                  error: undefined,
+                  endedAt: undefined,
+                  toolCallCount: 0,
+                  transcript: [],
+                }],
+                tasks: [{
+                  id: 'task-285',
+                  session_id: 'sess-1',
+                  kind: 'subagent',
+                  agent_id: 'agent-285',
+                  description: 'Independent review',
+                  status: 'running',
+                  created_at: '2026-01-01T00:05:00.000Z',
+                }],
+              }}
+              forest={branchForest}
+              selectedAgentId="branch-281"
+              subagent={{
+                agentId: 'branch-281',
+                block: undefined,
+                pendingInteractionCount: 0,
+                onJumpToSpawn: () => {},
+              }}
+              taskOwnerAgentId="branch-281"
+              onCancelTask={() => {}}
+              onStopAgentTask={onStopAgentTask}
+              onOpenSubagent={onOpenSubagent}
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    });
+
+    // Main-only sections never leak into the routed Branch page
+    expect(container.querySelector('[data-rail-section="branches"]')).toBeNull();
+    expect(container.querySelector('[data-rail-session-cron]')).toBeNull();
+    expect(container.querySelector('[data-rail-persona-settings]')).toBeNull();
+
+    // Overview belongs to branch-281 (not main) in default mode
+    const overviewDefault = container.querySelector('[data-panel-props="overview"]')!;
+    expect(overviewDefault.getAttribute('data-panel-agent')).toBe('branch-281');
+    expect(overviewDefault.getAttribute('data-panel-scope-root')).toBe('branch-281');
+
+    // Subagent spawned by branch-281 appears live in branch-281's roster
+    expect(container.querySelector('[data-inspector-agents]')).not.toBeNull();
+    expect(container.textContent).toContain('Independent review');
+
+    // Switching to cockpit keeps branch-281 as the overview/scope root rather than falling back to main
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-rail-mode="cockpit"]')!.click();
+    });
+    const overviewCockpit = container.querySelector('[data-panel-props="overview"]')!;
+    expect(overviewCockpit.getAttribute('data-panel-mode')).toBe('cockpit');
+    expect(overviewCockpit.getAttribute('data-panel-agent')).toBe('branch-281');
+    expect(overviewCockpit.getAttribute('data-panel-scope-root')).toBe('branch-281');
+    expect(container.querySelector('[data-rail-section="branches"]')).toBeNull();
   });
 });

@@ -105,14 +105,34 @@ it('shares fingerprinted user and extra discovery across workspaces and warns on
     expect(await discoverCachedAgentFiles(fs, roots, warn)).toBe(loaded[0]);
     const warmMs = performance.now() - started;
     expect(read).toHaveBeenCalledTimes(reads);
+
+    const baseHostFs = new HostFileSystem();
+    const wrappedWarn = vi.fn();
+    const statSpy = vi.spyOn(HostFileSystem.prototype, 'stat');
+    try {
+      const wrappedA = Object.assign(Object.create(baseHostFs) as IHostFileSystem, {
+        writeText: async (path: string, data: string) => baseHostFs.writeText(path, data),
+      });
+      const wrappedB = Object.assign(Object.create(baseHostFs) as IHostFileSystem, {
+        writeText: async (path: string, data: string) => baseHostFs.writeText(path, data),
+      });
+      const firstWrapped = await discoverCachedAgentFiles(wrappedA, roots, wrappedWarn);
+      const statsAfterFirst = statSpy.mock.calls.length;
+      expect(await discoverCachedAgentFiles(wrappedB, roots, wrappedWarn)).toBe(firstWrapped);
+      expect(statSpy.mock.calls.length).toBe(statsAfterFirst);
+      expect(wrappedWarn).toHaveBeenCalledTimes(1);
+    } finally {
+      statSpy.mockRestore();
+    }
+
     await writeFile(join(home, 'example-0.md'), '---\nname: example-0\ndescription: Updated example\n---\nUpdated prompt');
-    expect((await discoverCachedAgentFiles(fs, roots, warn)).agents.find(agent => agent.name === 'example-0')?.prompt).toBe('Updated prompt');
+    expect((await discoverCachedAgentFiles(fs, roots, warn, { revalidate: true })).agents.find(agent => agent.name === 'example-0')?.prompt).toBe('Updated prompt');
     expect(warn.mock.calls.filter(([message]) => message.includes('Skipping invalid agent file'))).toHaveLength(1);
     await writeFile(invalid, '---\nname: [\n---\nInvalid profile changed');
-    await discoverCachedAgentFiles(fs, roots, warn);
+    await discoverCachedAgentFiles(fs, roots, warn, { revalidate: true });
     expect(warn.mock.calls.filter(([message]) => message.includes('Skipping invalid agent file'))).toHaveLength(2);
     await writeFile(join(home, 'added.md'), '---\nname: added\ndescription: Added example\n---\nAdded prompt');
-    expect((await discoverCachedAgentFiles(fs, roots, warn)).agents).toHaveLength(81);
+    expect((await discoverCachedAgentFiles(fs, roots, warn, { freshnessMs: 0 })).agents).toHaveLength(81);
     console.log('profile-discovery-warm', { files: 81, elapsedMs: warmMs, bodyReads: 0 });
   } finally { read.mockRestore(); await rm(home, { recursive: true, force: true }); }
 });

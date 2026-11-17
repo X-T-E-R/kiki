@@ -7,6 +7,8 @@ import {
   type ImProviderKind,
 } from '@kiki/protocol';
 
+import { compactIdentifier, formatImIdentityDisplay, formatSessionOwnerLabel } from '../../lib/compactIdentifier';
+import { useSessionNames } from '../../lib/threadTitles';
 import { pushUndoToast } from '../../lib/toasts';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { useChannelsI18n as useI18n } from './channelsI18n';
@@ -17,8 +19,6 @@ import { RebindModal } from './RebindModal';
 import {
   extractConflictDetails,
   findSendMessageRow,
-  formatIdentityChannel,
-  formatIdentityVariant,
   isBindingAdmittedInbound,
   isBindingAdmittedOutbound,
   isBindingSessionAdmitted,
@@ -68,19 +68,20 @@ function SessionChannelsRailBody({
   // Home and Connection scoped query keys (R3: Scope isolation)
   const scopeId = connection?.scopeId ?? 'local';
   const spaceKey = connection?.spaceKey ?? 'main';
+  const detailsWanted = open || pickerOpen || rebindModalOpen;
 
   const snapshotQuery = useQuery({
     queryKey: ['im-sessions', scopeId, spaceKey],
     queryFn: () => connection!.client.imSessions.snapshot(),
-    enabled: connection !== null,
+    enabled: connection !== null && detailsWanted,
     placeholderData: (previous) => previous,
-    refetchInterval: (query) => query.state.data?.instances.some((item) => item.listening) === true ? 2_000 : false,
+    refetchInterval: (query) => detailsWanted && query.state.data?.instances.some((item) => item.listening) === true ? 2_000 : false,
   });
 
   const sessionCapQuery = useQuery({
     queryKey: ['optional-capabilities', scopeId, spaceKey, sessionId],
     queryFn: () => connection!.client.getSessionOptionalCapabilities(sessionId),
-    enabled: connection !== null && typeof connection.client.getSessionOptionalCapabilities === 'function',
+    enabled: connection !== null && detailsWanted && typeof connection.client.getSessionOptionalCapabilities === 'function',
     staleTime: 5_000,
   });
 
@@ -95,9 +96,21 @@ function SessionChannelsRailBody({
   const notifySettingsQuery = useQuery({
     queryKey: ['notifications', 'settings', scopeId, spaceKey],
     queryFn: () => connection!.client.notifications.getSettings(),
-    enabled: connection !== null && typeof connection.client.notifications?.getSettings === 'function',
+    enabled: connection !== null && detailsWanted && typeof connection.client.notifications?.getSettings === 'function',
     staleTime: 30_000,
   });
+
+  // Resolve human titles for sessions owning candidate bindings only when expanded/picking
+  const foreignSessionIds = useMemo(() => {
+    if (!detailsWanted) return [];
+    const ids = new Set<string>();
+    for (const b of snapshotQuery.data?.bindings ?? []) {
+      if (b.session_id && b.session_id !== sessionId) ids.add(b.session_id);
+    }
+    if (rebindConflict?.previous_session_id) ids.add(rebindConflict.previous_session_id);
+    return [...ids];
+  }, [detailsWanted, snapshotQuery.data?.bindings, sessionId, rebindConflict?.previous_session_id]);
+  const lookupSessionName = useSessionNames(foreignSessionIds);
 
   // R4: Candidates construction
   const candidates: RebindCandidate[] = useMemo(() => {
@@ -126,6 +139,7 @@ function SessionChannelsRailBody({
           identity: b.identity,
           isOccupied: false,
           currentSessionId: b.session_id,
+          currentSessionTitle: b.session_id ? lookupSessionName(b.session_id).title : undefined,
           pendingReanchor: true,
         });
       } else if (!b.session_id) {
@@ -151,12 +165,13 @@ function SessionChannelsRailBody({
           identity: b.identity,
           isOccupied: true,
           currentSessionId: b.session_id,
+          currentSessionTitle: lookupSessionName(b.session_id).title,
           pendingReanchor: false,
         });
       }
     }
     return list;
-  }, [snapshotQuery.data, sessionId]);
+  }, [snapshotQuery.data, sessionId, lookupSessionName]);
 
   const data = snapshotQuery.data;
   const policy = data?.policy;
@@ -167,7 +182,7 @@ function SessionChannelsRailBody({
 
   // R2: Authoritative optional row admission — NO guessing
   const smRow = findSendMessageRow(sessionCapQuery.data);
-  const smLoading = sessionCapQuery.isLoading;
+  const smLoading = sessionCapQuery.isLoading || (detailsWanted && sessionCapQuery.isPending && !sessionCapQuery.isError);
   const smQueryFailed = sessionCapQuery.isError || (sessionCapQuery.isSuccess && smRow === undefined);
   const smUnresolved = smQueryFailed || (smRow?.unresolved ?? false);
   const smToolPolicyDeny = smRow?.reason === 'tool_policy';
@@ -182,8 +197,14 @@ function SessionChannelsRailBody({
   const inboundCount = useMemo(() => policy ? bindings.filter((b) => isBindingAdmittedInbound(b, policy, sessionId)).length : 0, [bindings, policy, sessionId]);
   const outboundImCount = useMemo(() => policy ? bindings.filter((b) => isBindingAdmittedOutbound(b, policy, sessionId)).length : 0, [bindings, policy, sessionId]);
 
-  // R1 / R2: Notification channel filtering (bound vs candidate from target channels)
+  // R1 / R2: Channel filtering from lightweight target channels view + snapshot when expanded
   const allTargetChannels = useMemo(() => targetChannelsQuery.data?.channels ?? [], [targetChannelsQuery.data?.channels]);
+  const boundImChannels = useMemo(() => {
+    return allTargetChannels.filter((c) => c.kind === 'im' && c.bound !== false);
+  }, [allTargetChannels]);
+  const enabledBoundImCount = useMemo(() => {
+    return boundImChannels.filter((c) => c.enabled).length;
+  }, [boundImChannels]);
   const boundNotifyChannels = useMemo(() => {
     return allTargetChannels.filter((c) => c.kind === 'notify' && c.bound !== false);
   }, [allTargetChannels]);
@@ -196,7 +217,10 @@ function SessionChannelsRailBody({
     return boundNotifyChannels.filter((c) => c.enabled).length;
   }, [boundNotifyChannels]);
 
-  const outboundTotal = 1 + outboundImCount + enabledBoundNotifyCount; // internal (always 1) + IM outbound + Enabled Bound Notify
+  const hasSnapshot = data !== undefined && policy !== undefined;
+  const headerTotalCount = (hasSnapshot ? bindings.length : boundImChannels.length) + boundNotifyChannels.length;
+  const headerInboundCount = hasSnapshot ? inboundCount : enabledBoundImCount;
+  const outboundTotal = 1 + (hasSnapshot ? outboundImCount : enabledBoundImCount) + enabledBoundNotifyCount; // internal (always 1) + IM outbound + Enabled Bound Notify
   const isBorrowingEnabled = policy?.allow_channel_borrowing ?? false;
 
   const runAction = async (id: string, work: () => Promise<unknown>) => {
@@ -354,12 +378,13 @@ function SessionChannelsRailBody({
     );
   };
 
-  if (connection === null || snapshotQuery.data === undefined || policy === undefined) return null;
+  if (connection === null) return null;
+  if (!detailsWanted && targetChannelsQuery.data === undefined && !hasSnapshot) return null;
   // A session with no channels keeps the whole chapter out of the rail (the
   // other empty chapters already follow that rule) — unless something still
   // needs this surface: the SendMessage tool row, a failed row read, or a
   // candidate waiting to bind.
-  if (bindings.length === 0 && boundNotifyChannels.length === 0 && candidates.length === 0 && sessionCapQuery.isSuccess && smRow === undefined) return null;
+  if (!detailsWanted && hasSnapshot && bindings.length === 0 && boundNotifyChannels.length === 0 && candidates.length === 0 && sessionCapQuery.isSuccess && smRow === undefined) return null;
 
   // R2: Authoritative status copy based on effective/allowed/reason (never guess)
   let smStatusText: string;
@@ -391,7 +416,7 @@ function SessionChannelsRailBody({
   const notifyCatalog = notifySettingsQuery.data?.channels ?? {};
   const getNotifyDisplayName = (channelViewId: string) => {
     const rawId = stripNotifyPrefix(channelViewId);
-    return notifyCatalog[rawId]?.label || rawId;
+    return notifyCatalog[rawId]?.label || compactIdentifier(rawId);
   };
 
   return (
@@ -409,11 +434,11 @@ function SessionChannelsRailBody({
             {t('st.im.channels')}
           </span>
           <span className="text-[12px] text-ink-faint tabular-nums" data-rail-channels-count>
-            {bindings.length + boundNotifyChannels.length}
+            {headerTotalCount}
           </span>
           <span className="flex-1" />
           <span className="text-[11.5px] text-ink-faint mr-1" data-rail-channels-summary>
-            {inboundCount} {t('st.im.dir.in')} · {outboundTotal} {t('st.im.dir.out')}
+            {headerInboundCount} {t('st.im.dir.in')} · {outboundTotal} {t('st.im.dir.out')}
           </span>
           <InspectorChevron open={open} />
         </button>
@@ -483,7 +508,7 @@ function SessionChannelsRailBody({
               <span>{t('st.im.dir.inOut')}</span>
             </div>
 
-            {bindings.length === 0 ? (
+            {bindings.length === 0 || policy === undefined ? (
               <p className="py-1 text-[11.5px] text-ink-faint">{t('st.im.noBindings')}</p>
             ) : (
               <ul className="space-y-1" data-rail-im-list>
@@ -492,8 +517,7 @@ function SessionChannelsRailBody({
                   const inOn = isBindingAdmittedInbound(b, policy, sessionId);
                   const outOn = isBindingAdmittedOutbound(b, policy, sessionId);
                   const tagType = inOn && outOn ? 'bi' : inOn ? 'in' : outOn ? 'out' : 'off';
-                  const identityLabel = formatIdentityVariant(b.identity);
-                  const channelInfo = formatIdentityChannel(b.identity.chat_id, b.identity.topic_id);
+                  const identityDisplay = formatImIdentityDisplay(b.identity);
                   const busy = busyId === b.id;
                   const isBlocked = !policy.allowed || !b.enabled;
                   const isRestricted = !isBaseAdmitted;
@@ -517,8 +541,8 @@ function SessionChannelsRailBody({
                           >
                             {t(`st.im.tag.${tagType}`)}
                           </span>
-                          <span className="text-[12.5px] text-ink truncate" title={identityLabel}>
-                            {providerDisplayName(b.provider_kind)} · {identityLabel}
+                          <span className="text-[12.5px] text-ink truncate" title={identityDisplay.fullTitle}>
+                            {providerDisplayName(b.provider_kind)} · {identityDisplay.primary}
                           </span>
                         </div>
 
@@ -568,12 +592,14 @@ function SessionChannelsRailBody({
                         </div>
                       </div>
 
-                      {/* Sub row with channel id & unbind action */}
+                      {/* Sub row with optional channel metadata & unbind action */}
                       <div className="flex items-center justify-between text-[11px] text-ink-faint pt-0.5">
-                        <span className="font-mono truncate" title={channelInfo}>
-                          {channelInfo}
+                        <span className="min-w-0 truncate" title={identityDisplay.fullTitle}>
+                          {identityDisplay.secondary ? (
+                            <span className="font-mono">{identityDisplay.secondary}</span>
+                          ) : null}
                           {isRestricted ? (
-                            <span className="text-amber-ink ml-1.5">
+                            <span className={`text-amber-ink${identityDisplay.secondary ? ' ml-1.5' : ''}`}>
                               ({t('st.im.channelDisabledHint')})
                             </span>
                           ) : null}
@@ -582,7 +608,7 @@ function SessionChannelsRailBody({
                           type="button"
                           onClick={() => removeBinding(b.id)}
                           disabled={busy}
-                          className="hover:text-danger hover:underline ml-2"
+                          className="shrink-0 hover:text-danger hover:underline ml-2"
                         >
                           {t('st.im.unbind')}
                         </button>
@@ -692,8 +718,10 @@ function SessionChannelsRailBody({
                 <ul className="space-y-1.5 max-h-52 overflow-y-auto">
                   {/* IM candidates */}
                   {candidates.map((c) => {
-                    const identityText = formatIdentityVariant(c.identity);
-                    const channelInfo = formatIdentityChannel(c.identity.chat_id, c.identity.topic_id);
+                    const identityDisplay = formatImIdentityDisplay(c.identity);
+                    const ownerLabel = c.isOccupied
+                      ? formatSessionOwnerLabel(c.currentSessionId, c.currentSessionTitle, t('st.im.unknownSession'))
+                      : undefined;
                     const busy = busyId === c.id;
 
                     return (
@@ -702,22 +730,31 @@ function SessionChannelsRailBody({
                         className="flex items-center justify-between gap-2 p-1.5 rounded hover:bg-ink/[0.04]"
                       >
                         <div className="min-w-0 flex-1">
-                          <p className="text-[12px] font-medium text-ink truncate">
+                          <p className="text-[12px] font-medium text-ink truncate" title={identityDisplay.fullTitle}>
                             {c.pendingReanchor ? (
                               <span className="text-amber-ink mr-1">
                                 [{t('st.im.pendingReanchor')}]
                               </span>
                             ) : null}
-                            {providerDisplayName(c.provider_kind)} · {identityText}
+                            {providerDisplayName(c.provider_kind)} · {identityDisplay.primary}
                           </p>
-                          <p className="text-[11px] font-mono text-ink-faint truncate">
-                            {channelInfo}
-                            {c.isOccupied ? (
-                              <span className="text-amber-ink ml-1.5">
-                                ({t('st.im.occupiedBy')}: {c.currentSessionTitle || c.currentSessionId})
-                              </span>
-                            ) : null}
-                          </p>
+                          {identityDisplay.secondary !== undefined || ownerLabel !== undefined ? (
+                            <p className="text-[11px] text-ink-faint truncate">
+                              {identityDisplay.secondary !== undefined ? (
+                                <span className="font-mono" title={identityDisplay.fullTitle}>{identityDisplay.secondary}</span>
+                              ) : null}
+                              {ownerLabel !== undefined ? (
+                                <span
+                                  className={`text-amber-ink${identityDisplay.secondary !== undefined ? ' ml-1.5' : ''}`}
+                                  title={c.currentSessionId}
+                                >
+                                  {identityDisplay.secondary !== undefined
+                                    ? `(${t('st.im.occupiedBy')}: ${ownerLabel})`
+                                    : `${t('st.im.occupiedBy')}: ${ownerLabel}`}
+                                </span>
+                              ) : null}
+                            </p>
+                          ) : null}
                         </div>
 
                         <button
@@ -788,7 +825,11 @@ function SessionChannelsRailBody({
         <RebindModal
           open={rebindModalOpen}
           candidate={rebindCandidate}
-          conflict={rebindConflict}
+          conflict={rebindConflict === undefined ? undefined : {
+            ...rebindConflict,
+            previous_session_title: rebindConflict.previous_session_title
+              ?? (rebindConflict.previous_session_id ? lookupSessionName(rebindConflict.previous_session_id).title : undefined),
+          }}
           targetSessionId={sessionId}
           targetSessionTitle={sessionTitle}
           onConfirm={() => { void handleExecuteRebind(); }}

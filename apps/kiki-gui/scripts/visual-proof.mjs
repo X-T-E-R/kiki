@@ -6282,27 +6282,51 @@ async function scenarioUsageDashboard() {
     `${WEB_URL}/usage?panel=history&${query === '' ? '' : `${query}&`}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
 
   // 1. History starts today; all-history remains an explicit choice.
-  //    The partially-unknown cost chip comes from the seeded `mystery-9` model.
+  //    Verify the 4-column planar KPI band, unpriced model trigger, and + Filter popover.
   await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(`text=${S.usageEstimatedCost}`, { timeout: 15_000 });
+  for (const kpiId of ['cost', 'tokens', 'cache', 'activity']) {
+    await page.waitForSelector(`[data-usage-kpi="${kpiId}"]`, { timeout: 10_000 });
+  }
   await page.waitForSelector('[data-axis="range"] [data-axis-value="today"][aria-pressed="true"]', { timeout: 10_000 });
-  await page.waitForSelector(`text=${S.usagePartial}`, { timeout: 10_000 });
+  await page.waitForSelector('[data-usage-unpriced-trigger]', { timeout: 10_000 });
   await page.waitForSelector('text=mystery-9', { timeout: 10_000 });
   await page.waitForSelector('[data-usage-trend]', { timeout: 10_000 });
   await page.waitForTimeout(500);
   await shot('usage-today');
+
   await page.locator('[data-axis="range"] [data-axis-value="all"]').click();
-  await page.waitForSelector(`text=${S.usageAllHistory}`, { timeout: 10_000 });
+  await page.waitForSelector('[data-axis="range"] [data-axis-value="all"][aria-pressed="true"]', { timeout: 10_000 });
+  if (!page.url().includes('range=all')) {
+    throw new Error(`all-history selection missing from URL: ${page.url()}`);
+  }
+  await page.waitForTimeout(300);
   await shot('usage-all-history');
 
-  // 2. The live strip reads the remembered session rather than the selected
-  // history. Verify a known accounting subtotal keeps its amount and marker,
-  // then switch to a read-failed zero placeholder and prove it never becomes
-  // a misleading $0.00.
+  const unfilteredCost = await page.locator('[data-usage-summary-cost]').innerText();
+  await page.locator('[data-usage-add-filter]').click();
+  await page.waitForSelector('[data-usage-filter-popover]', { timeout: 10_000 });
+  await page.locator('[data-usage-facet-option="provider:kimi"]').click();
+  await page.waitForSelector('[data-usage-filter-chip="provider"]', { timeout: 10_000 });
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(
+    (prevCost) => {
+      const el = document.querySelector('[data-usage-summary-cost]');
+      return el !== null && el.textContent !== prevCost;
+    },
+    unfilteredCost,
+    { timeout: 10_000 },
+  );
+  await page.locator('[data-usage-clear-filters]').click();
+  await page.waitForSelector('[data-usage-filter-chips]', { state: 'detached', timeout: 10_000 });
+
+  // 2. The planar Activity KPI inline strip reads the remembered session rather
+  // than the selected history. Verify a known accounting subtotal keeps its
+  // amount and marker, then switch to a read-failed zero placeholder and prove
+  // it never becomes a misleading $0.00.
   await selectSession('Fixture: usage aggregation rework');
   await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
-  await page.locator('[data-usage-strip-toggle]').click();
   await page.waitForSelector('[data-usage-strip-current-cost]', { timeout: 10_000 });
   const knownStrip = await page.locator('[data-usage-strip-current-cost]').innerText();
   const knownMarkerCount = await page.locator('[data-usage-strip-current-cost] [data-usage-accounting-known-subtotal]').count();
@@ -6314,7 +6338,6 @@ async function scenarioUsageDashboard() {
   await selectSession('Fixture: reference corpus index');
   await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
-  await page.locator('[data-usage-strip-toggle]').click();
   await page.waitForSelector('[data-usage-strip-current-cost]', { timeout: 10_000 });
   const failedStrip = await page.locator('[data-usage-strip-current-cost]').innerText();
   if (failedStrip.includes('$0.00') || !failedStrip.includes('—')) {
@@ -6322,24 +6345,18 @@ async function scenarioUsageDashboard() {
   }
   await shot('usage-live-read-failed');
 
-  // ContextMeter main/child lifecycle remains covered by the dedicated
-  // context-ring proof and component tests; this UsageDashboard pass stays on
-  // the cross-session read-model and LiveStrip states.
-
-  // 3. The advanced agent dimension is a shareable query choice; the current
-  // filter bar keeps the range control and the detail dimension separate.
+  // 3. The advanced agent dimension is a shareable query choice; reliability
+  // opens as a compact AnchoredPopover from the filter bar icon.
   await page.goto(usageUrl('granularity=day&range=last_7_days&dimension=agent'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
   await page.locator('[data-usage-reliability-toggle]').click();
   await page.waitForSelector('[data-usage-reliability]', { timeout: 10_000 });
   await page.waitForSelector(`text=${S.usageDeletedExcluded}`, { timeout: 10_000 });
-  await page.waitForTimeout(500);
-  await page.locator('[data-usage-reliability]').scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
   await shot('usage-filters-reliability');
+  await page.keyboard.press('Escape');
 
-  // 3. Agent breakdown tab: parent/child tree expands to the researcher rows.
-  //    The tab switch must land in the URL so the view is shareable.
+  // Agent breakdown tab: parent/child tree expands to the researcher rows.
   await page.locator('[data-usage-tab="breakdown"]').click();
   await page.waitForSelector('[data-usage-agent-tree]', { timeout: 10_000 });
   if (!page.url().includes('view=breakdown')) {
@@ -6350,24 +6367,26 @@ async function scenarioUsageDashboard() {
   await page.waitForTimeout(300);
   await shot('usage-breakdown-agents');
 
-  // 4. 5h rhythm tab: switch granularity, then the tab itself renders the
-  //    per-window session/turn drilldown (not just the trend chart).
-  await page.locator('[data-axis="granularity"] [data-axis-value="five_hour"]').click();
-  await page.waitForTimeout(700);
-  await page.locator('[data-usage-tab="fiveHour"]').click();
-  await page.waitForSelector('[data-usage-fivehour]', { timeout: 10_000 });
-  if (!page.url().includes('view=five_hour') || await page.locator('[data-axis="granularity"] [data-axis-value="five_hour"][aria-pressed="true"]').count() !== 1) {
-    throw new Error(`5h view missing from the URL or filter state: ${page.url()}`);
-  }
-  const fiveHour = page.locator('[data-usage-fivehour]');
-  const fiveHourText = await fiveHour.innerText();
-  if (!fiveHourText.includes('session_fixture_usage_zeta')) {
-    throw new Error(`5h tab missing seeded session: ${fiveHourText}`);
-  }
-  const turnChips = await fiveHour.locator('[data-usage-turn]').count();
-  console.log(`[check] 5h windows=${await fiveHour.locator('[data-usage-fivehour-window]').count()} turnChips=${turnChips}`);
-  if (turnChips === 0) throw new Error('5h tab renders no turn locators');
+  // 4. 5h window granularity via SettingsSelect (data-axis-select) + SidePanel session trace.
+  await page.goto(usageUrl('granularity=day&range=today'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-usage-trend-card] [data-axis-select] button', { timeout: 15_000 });
+  await page.locator('[data-usage-trend-card] [data-axis-select] button').click();
+  await page.waitForSelector('[data-select-panel] [data-option-value="five_hour"]', { timeout: 10_000 });
+  await page.locator('[data-select-panel] [data-option-value="five_hour"]').click();
+  await page.waitForSelector('[data-usage-trend-card] [data-axis-select="five_hour"]', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await page.locator('[data-usage-trend] [data-bucket]').last().click();
+  await page.waitForSelector('[data-usage-clear-bucket]', { timeout: 10_000 });
+  await page.locator('[data-usage-open-sessions]').click();
+  await page.waitForSelector('[data-usage-session-panel]', { timeout: 10_000 });
+  const traceLocate = page.locator('[data-usage-session-panel] [data-usage-trace-locate="session_fixture_usage_zeta"]');
+  await traceLocate.waitFor({ timeout: 10_000 });
+  await traceLocate.click();
+  const turnChips = await page.locator('[data-usage-session-panel] [data-usage-trace-turn]').count();
+  console.log(`[check] 5h trace turnChips=${turnChips}`);
+  if (turnChips === 0) throw new Error('5h session trace renders no turn locators');
   await shot('usage-fivehour-drilldown');
+  await page.keyboard.press('Escape');
 
   // 5. Mobile: narrow viewport must not overflow; the strip and filter bar wrap.
   await resizeViewport(390);
@@ -6378,8 +6397,6 @@ async function scenarioUsageDashboard() {
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );
   if (overflow > 1) throw new Error(`390px layout overflows by ${overflow}px`);
-  // The main pane clips horizontal overflow (overflow-y auto), so also assert
-  // every axis group stays inside the viewport instead of bleeding off-edge.
   const bleeders = await page.evaluate(() => {
     const names = [];
     for (const el of document.querySelectorAll('[data-axis]')) {
@@ -6392,7 +6409,7 @@ async function scenarioUsageDashboard() {
   await shot('usage-mobile-390');
 
   // 6. Workspace breakdown over a week (names resolve from the registry), the
-  //    cache-hit trend metric, and the 820px + dark-theme passes.
+  //    cache-hit trend metric, bucket range pill, and 820px + dark-theme passes.
   await resizeViewport(1440);
   await page.goto(usageUrl('granularity=day&range=last_7_days&group_by=workspace&view=sources'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-usage-breakdown-row="wd_docs_site_000000000000"]', { timeout: 15_000 });
@@ -6407,9 +6424,9 @@ async function scenarioUsageDashboard() {
   await shot('usage-week-cache');
   await page.locator('[data-trend-metric="cost"]').click();
   await page.locator('[data-usage-trend] [data-bucket]').nth(3).click();
-  await page.waitForSelector('[data-usage-source-scope]', { timeout: 5000 });
-  const selectedScope = await page.locator('[data-usage-source-scope]').innerText();
-  if (!selectedScope.includes('Selected period')) throw new Error(`selected bucket did not scope sources: ${selectedScope}`);
+  await page.waitForSelector('[data-usage-clear-bucket] [data-usage-source-scope]', { timeout: 5000 });
+  const selectedScope = (await page.locator('[data-usage-source-scope]').innerText()).trim();
+  if (selectedScope === '') throw new Error('selected bucket rendered an empty range pill');
   await page.waitForTimeout(300);
   await shot('usage-week-drilldown');
   await resizeViewport(820);

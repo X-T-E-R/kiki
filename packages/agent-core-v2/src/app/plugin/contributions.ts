@@ -235,6 +235,7 @@ export interface PluginExtension {
   readonly panels?: readonly PluginPanel[];
   readonly guiSlots?: readonly PluginGuiSlotContribution[];
   readonly routes?: readonly PluginHttpRouteDescriptor[];
+  readonly dynamicE12?: boolean;
   readonly promptContext?: boolean;
   readonly commands?: readonly PluginDeclarativeCommand[];
   readonly entry?: string;
@@ -457,6 +458,7 @@ export async function parsePluginExtension(
     seenRoutes.add(routeKey);
     routes.push({ ...rawRoute, pluginId: ownerId, subpath: normalizedSubpath });
   }
+  const hasExplicitE12Slot = value.slots?.includes('E12:server-gui-slots') === true;
   let normalizedSlots = value.slots === undefined ? undefined : [...value.slots];
   if (hasManifestRoutes || hasPromptContext) {
     const slotSet = new Set<ExtensionSlotId>(normalizedSlots ?? []);
@@ -464,6 +466,7 @@ export async function parsePluginExtension(
     if (hasPromptContext) slotSet.add('E5:prompt-context');
     normalizedSlots = [...slotSet];
   }
+  const dynamicE12 = hasExplicitE12Slot ? true : hasManifestRoutes ? false : undefined;
   checkAborted(signal);
   return {
     engines: value.engines,
@@ -485,6 +488,7 @@ export async function parsePluginExtension(
     panels,
     guiSlots: guiSlots.length > 0 ? guiSlots : value.guiSlots !== undefined ? [] : undefined,
     routes: routes.length > 0 ? routes : value.routes !== undefined ? [] : undefined,
+    dynamicE12,
     promptContext: value.promptContext,
     commands: value.commands,
     entry: resolvedEntry,

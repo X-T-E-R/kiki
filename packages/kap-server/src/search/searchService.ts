@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
 
 import {
@@ -226,9 +226,6 @@ export class GlobalSearchService implements IGlobalSearchService {
   private sessionSourceMtimes = new Map<string, number>();
   private readonly dirtySessions = new Map<string, { workspaceId?: string }>();
   private readonly forceSessionSyncs = new Set<string>();
-  private readonly branchAgentsCache = new Map<string, { revision: number; agents: ReadonlySet<string> }>();
-  private readonly branchAgentsFlights = new Map<string, Promise<ReadonlySet<string>>>();
-  private branchCacheRevision = 0;
   private sourceWatcher: FSWatcher | null = null;
   private readonly mirrorSubscription: IDisposable | undefined;
   private nextWatchRetryAt = 0;
@@ -330,21 +327,18 @@ export class GlobalSearchService implements IGlobalSearchService {
         };
         if (parts.length === 2) {
           if (event !== 'rename') return;
-          this.invalidateBranchAgentsCache(sessionId);
           markDirty();
           this.inventoryDirty = true;
           this.requestSync();
           return;
         }
         if (parts.length === 3 && (parts[2] === 'state.json' || parts[2] === 'wire.jsonl')) {
-          if (parts[2] === 'state.json') this.invalidateBranchAgentsCache(sessionId);
           markDirty();
           this.forceSessionSyncs.add(sessionId);
           this.requestSync();
           return;
         }
         if (parts.length === 4 && parts[2] === 'session-meta' && parts[3] === 'state.json') {
-          this.invalidateBranchAgentsCache(sessionId);
           markDirty();
           this.forceSessionSyncs.add(sessionId);
           this.requestSync();
@@ -355,26 +349,10 @@ export class GlobalSearchService implements IGlobalSearchService {
           (parts.length === 5 && parts[2] === 'agents' && parts[4] === 'wire.jsonl')
         ) {
           const agentId = parts[3]!;
-          if (this.indexSubagents || agentId === 'main') {
-            markDirty();
-            this.forceSessionSyncs.add(sessionId);
-            this.requestSync();
-            return;
-          }
-          const cached = this.branchAgentsCache.get(sessionId);
-          if (cached !== undefined) {
-            if (!cached.agents.has(agentId)) return;
-            markDirty();
-            this.forceSessionSyncs.add(sessionId);
-            this.requestSync();
-            return;
-          }
-          void this.readBranchAgentsForWatch(parts[0]!, sessionId).then((agents) => {
-            if (!agents.has(agentId) || this.disposed) return;
-            markDirty();
-            this.forceSessionSyncs.add(sessionId);
-            this.requestSync();
-          });
+          if (!this.indexSubagents && agentId !== 'main') return;
+          markDirty();
+          this.forceSessionSyncs.add(sessionId);
+          this.requestSync();
         }
       });
       watcher.on('error', (error: unknown) => {
@@ -390,35 +368,6 @@ export class GlobalSearchService implements IGlobalSearchService {
     } catch {
       this.nextWatchRetryAt = Date.now() + this.sourceStatIntervalMs;
     }
-  }
-
-  private invalidateBranchAgentsCache(sessionId: string): void {
-    this.branchCacheRevision += 1;
-    this.branchAgentsCache.delete(sessionId);
-    this.branchAgentsFlights.delete(sessionId);
-  }
-
-  private readBranchAgentsForWatch(workspaceId: string, sessionId: string): Promise<ReadonlySet<string>> {
-    const cached = this.branchAgentsCache.get(sessionId);
-    if (cached !== undefined) return Promise.resolve(cached.agents);
-    const existing = this.branchAgentsFlights.get(sessionId);
-    if (existing !== undefined) return existing;
-    const observedRevision = this.branchCacheRevision;
-    const dir = sessionDirOf(
-      this.bootstrap.homeDir,
-      workspacePersistenceScope(this.bootstrap.scope('sessions'), workspaceId),
-      sessionId,
-    );
-    const flight = readSessionBranchAgents(dir).then((agents) => {
-      if (this.branchCacheRevision === observedRevision && !this.disposed) {
-        this.branchAgentsCache.set(sessionId, { revision: observedRevision, agents });
-      }
-      return agents;
-    }).finally(() => {
-      if (this.branchAgentsFlights.get(sessionId) === flight) this.branchAgentsFlights.delete(sessionId);
-    });
-    this.branchAgentsFlights.set(sessionId, flight);
-    return flight;
   }
 
   private handleSessionMirrorChange(sessionId: string, isPrivate?: boolean): void {
@@ -524,8 +473,6 @@ export class GlobalSearchService implements IGlobalSearchService {
     this.sourceWatcher = null;
     this.privateSessions.clear();
     this.sessionMirrorRevisions.clear();
-    this.branchAgentsCache.clear();
-    this.branchAgentsFlights.clear();
     this.summaries.clear();
     this.allSummaries.clear();
     if (this.syncTimer !== null) {
@@ -1055,30 +1002,6 @@ async function sessionSourceMtime(sessionDir: string): Promise<number> {
   } catch {
     return -1;
   }
-}
-
-async function readSessionBranchAgents(sessionDir: string): Promise<ReadonlySet<string>> {
-  for (const path of [join(sessionDir, 'state.json'), join(sessionDir, 'session-meta', 'state.json')]) {
-    try {
-      const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
-      if (typeof parsed !== 'object' || parsed === null || !('agents' in parsed) ||
-          typeof parsed.agents !== 'object' || parsed.agents === null) {
-        return new Set();
-      }
-      const out = new Set<string>();
-      for (const [agentId, raw] of Object.entries(parsed.agents as Record<string, unknown>)) {
-        if (typeof raw === 'object' && raw !== null && 'labels' in raw &&
-            typeof raw.labels === 'object' && raw.labels !== null &&
-            (raw.labels as Record<string, unknown>)['branch'] === 'true') {
-          out.add(agentId);
-        }
-      }
-      return out;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return new Set();
-    }
-  }
-  return new Set();
 }
 
 async function mapConcurrent<T, R>(

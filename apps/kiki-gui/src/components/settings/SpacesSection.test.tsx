@@ -39,6 +39,7 @@ const connections = {
   handshake: vi.fn(),
   createPairCode: vi.fn(),
   pair: vi.fn(),
+  verifyFingerprint: vi.fn(),
   revoke: vi.fn(),
   remove: vi.fn(),
   retry: vi.fn(),
@@ -47,6 +48,9 @@ const connections = {
 const threadBridges = {
   status: vi.fn(),
   setEnabled: vi.fn(),
+  setOperations: vi.fn(),
+  setBorrowTools: vi.fn(),
+  syncConnection: vi.fn(),
   revoke: vi.fn(),
   receipts: vi.fn(),
   retry: vi.fn(),
@@ -843,10 +847,37 @@ describe('Spaces & Access IA (#16)', () => {
         backgroundSummary: true,
         state: 'online',
         activeLeases: 1,
+        rttMs: 12,
         pinnedFingerprint: 'fedcba9876543210'.repeat(4),
         fingerprintToVerify: '0123456789abcdef'.repeat(4),
+        summary: {
+          value: {
+            online: true,
+            busy_sessions: 0,
+            needs_you_sessions: 0,
+            revision: 'r1',
+            as_of: Date.now(),
+            platform: 'win32',
+            borrowable_tool_count: 4,
+          },
+          lastSeen: Date.now(),
+          stale: false,
+        },
       },
     ]);
+    connections.verifyFingerprint.mockResolvedValue({
+      id: 'pair-b',
+      label: 'Workstation B',
+      endpoint: 'https://b.example.test',
+      target: { homeId: '0f4c6e1a-2b7d-4a3e-9c11-7d0a51b2c301', hostId: 'gpu-box', protocol: 1 },
+      credentialRef: 'pair-b',
+      purposes: ['gui'],
+      enabled: true,
+      backgroundSummary: true,
+      state: 'online',
+      activeLeases: 1,
+      pinnedFingerprint: '0123456789abcdef'.repeat(4),
+    });
     hostConnection.listSshProfiles.mockResolvedValue([
       {
         id: 'ssh-build',
@@ -861,9 +892,14 @@ describe('Spaces & Access IA (#16)', () => {
     expect(document.querySelector('[data-space-row="main"]')).not.toBeNull();
     const remoteRow = document.querySelector('[data-remote-connection="pair-b"]')!;
     expect(remoteRow.textContent).toContain('Workstation B');
+    expect(remoteRow.querySelector('[data-remote-platform="win32"]')?.textContent).toBe('Windows');
+    expect(remoteRow.querySelector('[data-remote-rtt]')?.textContent).toBe('12 ms');
+    expect(remoteRow.querySelector('[data-remote-tools]')?.textContent).toBe('4 tools');
     expect(remoteRow.querySelector('[data-remote-fingerprint-to-verify]')?.textContent).toContain('0123456789abcdef…89abcdef');
     expect(remoteRow.querySelector('[data-remote-fingerprint-to-verify]')?.getAttribute('title')).toBe('0123456789abcdef'.repeat(4));
     expect(remoteRow.querySelector('[data-remote-pinned-fingerprint]')?.textContent).toContain('fedcba9876543210…76543210');
+    await click('[data-remote-verify-fingerprint="pair-b"]');
+    expect(connections.verifyFingerprint).toHaveBeenCalledExactlyOnceWith('pair-b');
     expect(document.querySelector('#st-card-remote-connections')?.textContent).toContain('Spaces on other computers · openable from “Main space”');
     const sshRow = document.querySelector('[data-ssh-profile-row="ssh-build"]')!;
     expect(sshRow).not.toBeNull();
@@ -1058,10 +1094,16 @@ describe('Thread-message permissions on pairing rows (#20)', () => {
     expect(panel.textContent).not.toContain('0123456789ab');
     // Outbound entry lacks wake -> shows pending note.
     expect(panel.querySelector('[data-thread-message-entry="11111111-1111-4111-8111-111111111111"] [data-thread-message-no-wake]')).not.toBeNull();
-    // Inbound entry has wake -> no pending note on that card.
+    // Inbound entry has wake -> no pending note on that card; 6 op toggle pills render with active state.
     expect(panel.querySelector('[data-thread-message-entry="22222222-2222-4222-8222-222222222222"] [data-thread-message-no-wake]')).toBeNull();
-    expect(panel.querySelector('[data-thread-message-entry="22222222-2222-4222-8222-222222222222"] [data-thread-message-operations]')?.textContent)
-      .toBe('Read · Send · Wait · Wake (starts a turn) · Create sessions');
+    for (const op of ['read', 'send', 'wait', 'wake', 'create'] as const) {
+      expect(
+        panel.querySelector(`[data-bridge-op-toggle="22222222-2222-4222-8222-222222222222:${op}"]`)?.getAttribute('aria-pressed'),
+      ).toBe('true');
+    }
+    expect(
+      panel.querySelector('[data-bridge-op-toggle="22222222-2222-4222-8222-222222222222:tools"]')?.getAttribute('aria-pressed'),
+    ).toBe('false');
 
     // Revoke outbound permission alone -> calls revoke('outbound', id), updates row to incoming only, keeps pairing openable.
     const nextStatus = {
@@ -1121,13 +1163,126 @@ describe('Thread-message permissions on pairing rows (#20)', () => {
     expect(rowB.textContent).not.toContain('Thread messages: none');
     expect(rowWriter.textContent).not.toContain('Thread messages: none');
   });
+  it('renders wildcard workspace as All workspaces, syncs missing outbound bridge, toggles borrowTools, and edits inbound operations with last-op guard', async () => {
+    connections.list.mockResolvedValue([
+      {
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        label: 'GPU Lab',
+        endpoint: 'https://gpu.example.test',
+        target: targetB,
+        credentialRef: 'pair-gpu',
+        purposes: ['gui'],
+        enabled: true,
+        backgroundSummary: true,
+        state: 'online',
+        activeLeases: 0,
+      },
+    ]);
+    let currentStatus: Record<string, unknown> = {
+      identity: localIdentity,
+      inboundEnabled: true,
+      inbound: [],
+      outbound: [],
+    };
+    threadBridges.status.mockImplementation(async () => currentStatus);
+
+    const syncedOutbound = {
+      connectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      enabled: true,
+      borrowTools: true,
+      grant: {
+        id: '55555555-5555-4555-8555-555555555555',
+        revision: 1,
+        enabled: true,
+        revoked: false,
+        createdAt: Date.now() - 10_000,
+        source: localIdentity,
+        target: targetB,
+        sourceScope: { workspaceId: '*' },
+        targetScope: { workspaceId: '*' },
+        operations: ['read', 'send', 'wait', 'wake', 'create', 'tools'] as const,
+        expiresAt: futureExpiry,
+        pendingLimit: 20,
+        messagesPerMinute: 60,
+        location: 'network' as const,
+        label: 'GPU Lab',
+      },
+    };
+    const inboundGrant = {
+      id: '66666666-6666-4666-8666-666666666666',
+      revision: 1,
+      enabled: true,
+      revoked: false,
+      createdAt: Date.now() - 10_000,
+      source: targetB,
+      target: localIdentity,
+      sourceScope: { workspaceId: '*' },
+      targetScope: { workspaceId: '*' },
+      operations: ['read', 'tools'] as const,
+      expiresAt: futureExpiry,
+      pendingLimit: 20,
+      messagesPerMinute: 60,
+      location: 'network' as const,
+      label: 'GPU Lab',
+    };
+    const afterSyncStatus = {
+      identity: localIdentity,
+      inboundEnabled: true,
+      inbound: [inboundGrant],
+      outbound: [syncedOutbound],
+    };
+    threadBridges.syncConnection.mockImplementationOnce(async () => {
+      currentStatus = afterSyncStatus;
+      return currentStatus;
+    });
+    threadBridges.setBorrowTools.mockImplementationOnce(async () => {
+      currentStatus = {
+        ...afterSyncStatus,
+        outbound: [{ ...syncedOutbound, borrowTools: false }],
+      };
+      return currentStatus;
+    });
+    threadBridges.setOperations.mockImplementationOnce(async () => {
+      currentStatus = {
+        ...afterSyncStatus,
+        inbound: [{ ...inboundGrant, operations: ['read'] }],
+      };
+      return currentStatus;
+    });
+
+    await render(<SpacesSection />);
+    await click('[data-remote-menu="cccccccc-cccc-4ccc-8ccc-cccccccccccc"]');
+    await click('[data-space-menu-item="thread-messages"]');
+
+    const syncButton = document.querySelector<HTMLButtonElement>('[data-thread-messages-sync]');
+    expect(syncButton?.textContent).toBe('Enable space bridge');
+    await click('[data-thread-messages-sync]');
+    expect(threadBridges.syncConnection).toHaveBeenCalledExactlyOnceWith('cccccccc-cccc-4ccc-8ccc-cccccccccccc', { borrowTools: true });
+
+    const outEntry = document.querySelector('[data-thread-message-entry="55555555-5555-4555-8555-555555555555"]')!;
+    expect(outEntry.querySelector('[data-thread-message-local-scope]')?.textContent).toContain('All workspaces');
+    expect(outEntry.querySelector('[data-thread-message-remote-scope]')?.textContent).toContain('All workspaces');
+    expect(outEntry.textContent).not.toContain('Unregistered workspace');
+
+    const borrowCheckbox = document.querySelector<HTMLInputElement>('[data-bridge-borrow-tools="55555555-5555-4555-8555-555555555555"]')!;
+    expect(borrowCheckbox.checked).toBe(true);
+    await click('[data-bridge-borrow-tools="55555555-5555-4555-8555-555555555555"]');
+    expect(threadBridges.setBorrowTools).toHaveBeenCalledExactlyOnceWith('55555555-5555-4555-8555-555555555555', false);
+    expect(borrowCheckbox.checked).toBe(false);
+
+    // Unchecking 'tools' leaves only 'read', whose toggle pill becomes disabled so the last op cannot be removed.
+    await click('[data-bridge-op-toggle="66666666-6666-4666-8666-666666666666:tools"]');
+    expect(threadBridges.setOperations).toHaveBeenCalledExactlyOnceWith('66666666-6666-4666-8666-666666666666', ['read']);
+    const lastReadBtn = document.querySelector<HTMLButtonElement>('[data-bridge-op-toggle="66666666-6666-4666-8666-666666666666:read"]')!;
+    expect(lastReadBtn.disabled).toBe(true);
+  });
 });
 
 describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#21)', () => {
   const localIdentity = { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 };
   const peerSource = { homeId: '22222222-2222-4222-8222-222222222222', hostId: 'laptop-b', protocol: 1 };
 
-  it('sends no createPairCode request until "Turn on and generate code" is pressed, and sends allowBridge: false by default', async () => {
+  it('sends no createPairCode request until "Turn on and generate code" is pressed, defaults allowBridge & allowTools to true, and disables allowTools when bridge is unchecked', async () => {
     connections.inbound.mockResolvedValue({
       enabled: false,
       configuredEnabled: false,
@@ -1138,7 +1293,7 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
       code: 'K9F2-7X4M',
       expiresAt: Date.now() + 600_000,
       target: localIdentity,
-      suggestedEndpoints: ['http://192.168.1.20:58627'],
+      suggestedEndpoints: ['http://192.0.2.20:58627'],
     });
 
     await render(<ConnectionServicesSection />, ['/settings/connection-services?tab=kiki']);
@@ -1151,27 +1306,35 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
 
     const openCheck = document.querySelector<HTMLInputElement>('[data-inbound-consent-open]')!;
     const bridgeCheck = document.querySelector<HTMLInputElement>('[data-inbound-consent-bridge]')!;
+    const toolsCheck = document.querySelector<HTMLInputElement>('[data-inbound-consent-tools]')!;
     expect(openCheck.checked).toBe(true);
     expect(openCheck.disabled).toBe(true);
-    expect(bridgeCheck.checked).toBe(false);
+    expect(bridgeCheck.checked).toBe(true);
+    expect(toolsCheck.checked).toBe(true);
+    expect(toolsCheck.disabled).toBe(false);
     expect(document.querySelector('[data-inbound-gate-consequence]')?.textContent)
       .toContain('Allow other spaces to connect');
 
     const generateBtn = document.querySelector<HTMLButtonElement>('[data-inbound-generate-code]')!;
     expect(generateBtn.textContent).toBe('Turn on and generate code');
 
+    await click('[data-inbound-consent-bridge]');
+    expect(bridgeCheck.checked).toBe(false);
+    expect(toolsCheck.checked).toBe(false);
+    expect(toolsCheck.disabled).toBe(true);
+
     await click('[data-inbound-generate-code]');
     expect(connections.createPairCode).toHaveBeenCalledExactlyOnceWith({ allowBridge: false });
     expect(document.querySelector('[data-inbound-code]')?.textContent).toBe('K9F2-7X4M');
   });
 
-  it('shows and embeds the issued TLS fingerprint in the inbound pairing URI', async () => {
+  it('shows primary one-click pairing URI CopyField, updates it across endpoint pills, and embeds TLS fingerprint', async () => {
     const tlsFingerprint = '0123456789abcdef'.repeat(4);
     connections.createPairCode.mockResolvedValue({
       code: 'K9F2-7X4M',
       expiresAt: Date.now() + 600_000,
       target: localIdentity,
-      suggestedEndpoints: ['http://192.168.1.20:58627'],
+      suggestedEndpoints: ['http://192.0.2.20:58627', 'http://198.51.100.30:58627'],
       tlsFingerprint,
     });
 
@@ -1179,14 +1342,30 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
     await click('[data-inbound-invite]');
     await click('[data-inbound-generate-code]');
 
-    const fingerprint = document.querySelector<HTMLElement>('[data-inbound-tls-fingerprint]')!;
-    expect(fingerprint.textContent).toContain('TLS fingerprint: 0123456789abcdef…89abcdef');
-    expect(fingerprint.querySelector('[title]')?.getAttribute('title')).toBe(tlsFingerprint);
+    const fingerprintEl = document.querySelector<HTMLElement>('[data-inbound-tls-fingerprint]')!;
+    expect(fingerprintEl.textContent).toContain('TLS fingerprint: 0123456789abcdef…89abcdef');
+    expect(fingerprintEl.querySelector('[title]')?.getAttribute('title')).toBe(tlsFingerprint);
+    const pairUriField = document.querySelector('[data-copy-field="inbound-pair-uri"] code')!;
+    expect(pairUriField.textContent).toBe(
+      `kiki://pair?endpoint=${encodeURIComponent('http://192.0.2.20:58627')}&code=K9F2-7X4M&fp=${tlsFingerprint}`,
+    );
     const qr = document.querySelector<HTMLImageElement>('[data-inbound-qr]')!;
     expect(new URL(qr.dataset['inboundQrUri']!).searchParams.get('fp')).toBe(tlsFingerprint);
+
+    // Selecting the second endpoint pill updates both the primary CopyField and QR URI.
+    const addressButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-inbound-code-address]')];
+    expect(addressButtons).toHaveLength(2);
+    expect(addressButtons[0]?.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => { addressButtons[1]!.click(); });
+    await flush();
+    expect(addressButtons[1]?.getAttribute('aria-pressed')).toBe('true');
+    expect(pairUriField.textContent).toBe(
+      `kiki://pair?endpoint=${encodeURIComponent('http://198.51.100.30:58627')}&code=K9F2-7X4M&fp=${tlsFingerprint}`,
+    );
+    expect(new URL(qr.dataset['inboundQrUri']!).searchParams.get('endpoint')).toBe('http://198.51.100.30:58627');
   });
 
-  it('shows "Generate code" without gate warning when gate is already on, and sends wake when thread messages is checked', async () => {
+  it('shows "Generate code" without gate warning when gate is already on, and includes or excludes tools based on allowTools', async () => {
     connections.inbound.mockResolvedValue({
       enabled: true,
       configuredEnabled: true,
@@ -1233,7 +1412,7 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
       code: 'ABCD-2345',
       expiresAt: Date.now() + 600_000,
       target: localIdentity,
-      suggestedEndpoints: ['http://192.168.1.20:58627'],
+      suggestedEndpoints: ['http://192.0.2.20:58627'],
     });
 
     await render(<ConnectionServicesSection />, ['/settings/connection-services?tab=kiki']);
@@ -1245,7 +1424,8 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
     expect(document.querySelector('[data-inbound-gate-consequence]')).toBeNull();
     expect(document.querySelector('[data-inbound-generate-code]')?.textContent).toBe('Generate code');
 
-    await click('[data-inbound-consent-bridge]');
+    // Default includes 'tools'; unchecking allowTools excludes 'tools'.
+    await click('[data-inbound-consent-tools]');
     await click('[data-inbound-generate-code]');
     expect(connections.createPairCode).toHaveBeenCalledExactlyOnceWith({
       allowBridge: true,
@@ -1311,7 +1491,7 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
       const pairedRecord = {
         id: '99999999-9999-4999-8999-999999999999',
         label: 'Studio Mac',
-        endpoint: 'http://192.168.1.40:58627',
+        endpoint: 'https://studio.example.test:58627',
         target: peerSource,
         credentialRef: 'pair-studio',
         purposes: ['gui'] as ('gui' | 'bridge')[],
@@ -1326,15 +1506,18 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
       await click('[data-remote-add]');
       expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
 
-      await type('[data-remote-endpoint]', 'http://192.168.1.40:58627');
+      await type('[data-remote-endpoint]', 'https://studio.example.test:58627');
       await type('[data-remote-code]', 'K9F27X4M');
       await click('[data-remote-add-submit]');
 
       expect(connections.pair).toHaveBeenCalledWith({
-        endpoint: 'http://192.168.1.40:58627',
+        endpoint: 'https://studio.example.test:58627',
         code: 'K9F2-7X4M',
+        label: undefined,
         backgroundSummary: true,
-        requestBridge: false,
+        requestBridge: true,
+        borrowTools: true,
+        bridgeOperations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
         fingerprint: undefined,
       });
       // Sheet closed, window did NOT auto-switch, and toast offers Switch!
@@ -1348,12 +1531,12 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
     }
   });
 
-  it('passes a pairing URI fingerprint through to the pairing request and success toast', async () => {
+  it('passes a pairing URI fingerprint through to the pairing request, shows pinned badge, and allows clearing it', async () => {
     const tlsFingerprint = '0123456789abcdef'.repeat(4);
     connections.pair.mockResolvedValue({
       id: '99999999-9999-4999-8999-999999999999',
       label: 'Studio Mac',
-      endpoint: 'http://192.168.1.40:58627',
+      endpoint: 'https://studio.example.test:58627',
       target: peerSource,
       credentialRef: 'pair-studio',
       purposes: ['gui'],
@@ -1366,16 +1549,27 @@ describe('PairSheet pre-consent, toast Switch offer, and Access incoming rows (#
 
     await render(<SpacesSection />);
     await click('[data-remote-add]');
-    const pairingUri = `kiki://pair?endpoint=${encodeURIComponent('http://192.168.1.40:58627')}&code=K9F2-7X4M&fp=${tlsFingerprint}`;
+    const pairingUri = `kiki://pair?endpoint=${encodeURIComponent('https://studio.example.test:58627')}&code=K9F2-7X4M&fp=${tlsFingerprint}`;
     await type('[data-remote-endpoint]', pairingUri);
     expect(document.querySelector<HTMLInputElement>('[data-remote-code]')?.value).toBe('K9F2-7X4M');
+    const pinnedBadge = document.querySelector('[data-remote-tls-pinned]')!;
+    expect(pinnedBadge.textContent).toContain('TLS pinned · 01234567…cdef');
+    await click('[data-remote-tls-pinned-clear]');
+    expect(document.querySelector('[data-remote-tls-pinned]')).toBeNull();
+
+    // Paste again into code input and verify fingerprint passes through on submit.
+    await type('[data-remote-code]', pairingUri);
+    expect(document.querySelector('[data-remote-tls-pinned]')?.textContent).toContain('TLS pinned · 01234567…cdef');
     await click('[data-remote-add-submit]');
 
     expect(connections.pair).toHaveBeenCalledWith({
-      endpoint: 'http://192.168.1.40:58627',
+      endpoint: 'https://studio.example.test:58627',
       code: 'K9F2-7X4M',
+      label: undefined,
       backgroundSummary: true,
-      requestBridge: false,
+      requestBridge: true,
+      borrowTools: true,
+      bridgeOperations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
       fingerprint: tlsFingerprint,
     });
     expect(getToasts().at(-1)?.text).toBe('Paired Studio Mac. Verify its TLS fingerprint: 0123456789abcdef…89abcdef.');

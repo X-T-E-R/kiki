@@ -870,7 +870,7 @@ describe('WorkspaceFsService.suggest', () => {
   it('hides dot-prefixed entries at any depth unless show_hidden is set', async () => {
     const fs = makeSession(
       {},
-      rgLinesHandler(['visible.ts', '.env.ts', 'sub/.secret/x.ts']),
+      rgLinesHandler(['visible.ts', '.hidden-config.ts', 'sub/.secret/x.ts']),
     );
     const off = await fs.suggest({
       query: 'ts',
@@ -885,8 +885,70 @@ describe('WorkspaceFsService.suggest', () => {
       follow_gitignore: true,
       show_hidden: true,
     });
-    expect(on.items.map((i) => i.path)).toContain('.env.ts');
+    expect(on.items.map((i) => i.path)).toContain('.hidden-config.ts');
     expect(on.items.map((i) => i.path)).toContain('sub/.secret/x.ts');
+  });
+
+  it('never returns sensitive files from search or suggest even with show_hidden or follow_gitignore false', async () => {
+    const files = {
+      '.env': 'SECRET=1',
+      '.env.local': 'SECRET=2',
+      '.env.example': 'EXAMPLE=1',
+      '.aws/credentials': 'AWS=1',
+      'keys/id_rsa': 'KEY=1',
+      'keys/id_rsa.pub': 'PUB=1',
+    };
+    const fs = makeSession(
+      files,
+      rgLinesHandler(Object.keys(files)),
+    );
+    const suggestEnv = await fs.suggest({
+      query: 'env',
+      limit: 50,
+      follow_gitignore: false,
+      show_hidden: true,
+    });
+    expect(suggestEnv.items.map((i) => i.path)).toEqual(['.env.example']);
+
+    const suggestKey = await fs.suggest({
+      query: 'id_rsa',
+      limit: 50,
+      follow_gitignore: false,
+      show_hidden: true,
+    });
+    expect(suggestKey.items.map((i) => i.path)).toEqual(['keys/id_rsa.pub']);
+
+    const suggestEmpty = await fs.suggest({
+      query: '',
+      limit: 50,
+      follow_gitignore: false,
+      show_hidden: true,
+    });
+    const emptyPaths = suggestEmpty.items.map((i) => i.path);
+    expect(emptyPaths).toContain('.env.example');
+    expect(emptyPaths).not.toContain('.env');
+    expect(emptyPaths).not.toContain('.env.local');
+
+    const searchEnv = await fs.search({
+      query: 'env',
+      limit: 50,
+      follow_gitignore: false,
+    });
+    expect(searchEnv.items.map((i) => i.path)).toEqual(['.env.example']);
+
+    const searchCreds = await fs.search({
+      query: 'credentials',
+      limit: 50,
+      follow_gitignore: false,
+    });
+    expect(searchCreds.items).toEqual([]);
+
+    const searchKey = await fs.search({
+      query: 'id_rsa',
+      limit: 50,
+      follow_gitignore: false,
+    });
+    expect(searchKey.items.map((i) => i.path)).toEqual(['keys/id_rsa.pub']);
   });
 
   it('never returns VCS metadata entries even with show_hidden', async () => {

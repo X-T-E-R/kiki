@@ -1,6 +1,7 @@
 import { MutableDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import type { ILogService } from '#/_base/log/log';
+import { runWithAgentFileDiscoveryRevalidation } from '#/agent/profile/agentFileDiscoveryCache';
 import { AgentProfileContribution } from '#/app/agentProfileCatalog/agentProfileContribution';
 import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 
@@ -32,13 +33,13 @@ export abstract class AgentProfileLoaderBase extends Service {
       this.sourceId,
       this.workspaceKey,
       this.readyPromise,
-      (sourcePath) => this.enqueue({ sourcePath }),
+      (sourcePath) => this.enqueue({ validation: { sourcePath }, revalidate: true }),
     );
     void this.readyPromise.catch(() => undefined);
   }
 
   async reload(): Promise<void> {
-    this.readyPromise = this.enqueue();
+    this.readyPromise = this.enqueue({ revalidate: true });
     void this.readyPromise.catch(() => undefined);
     await this.readyPromise;
   }
@@ -74,15 +75,24 @@ export abstract class AgentProfileLoaderBase extends Service {
     this.lastGoodContribution = contribution;
   }
 
-  private enqueue(validation?: { readonly sourcePath: string | undefined }): Promise<void> {
-    const current = this.tail.catch(() => undefined).then(() => this.loadAndContribute(validation));
+  private enqueue(options?: {
+    readonly validation?: { readonly sourcePath: string | undefined };
+    readonly revalidate?: boolean;
+  }): Promise<void> {
+    const current = this.tail.catch(() => undefined).then(() => this.loadAndContribute(options));
     this.tail = current;
     return current;
   }
 
-  private async loadAndContribute(validation?: { readonly sourcePath: string | undefined }): Promise<void> {
+  private async loadAndContribute(options?: {
+    readonly validation?: { readonly sourcePath: string | undefined };
+    readonly revalidate?: boolean;
+  }): Promise<void> {
+    const validation = options?.validation;
     try {
-      const loaded = await this.load();
+      const loaded = options?.revalidate === true
+        ? await runWithAgentFileDiscoveryRevalidation(() => this.load())
+        : await this.load();
       this.publish(this.withLastGoodEntries(loaded));
       if (validation !== undefined && (loaded.skipped ?? []).some((failure) =>
         validation.sourcePath === undefined || this.matchesFailedPath(validation.sourcePath, new Set([this.pathKey(failure.path)])))) {

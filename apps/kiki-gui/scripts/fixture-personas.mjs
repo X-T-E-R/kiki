@@ -117,6 +117,49 @@ export async function handlePersonas(server, req, res, path, query) {
     const includeArchived = query.get('includeArchived') === 'true';
     return ok([...server.personas.values()].filter((record) => includeArchived || !record.archived).map(summaryOf));
   }
+  if (path === '/personas/session-heads' && method === 'GET') {
+    const perPersonaLimit = Math.max(1, Math.min(100, Number(query.get('per_persona_limit') ?? 10) || 10));
+    const includePrivate = query.get('include_private') !== 'false';
+    const homeIds = new Map(
+      [...server.personas.entries()]
+        .filter(([, rec]) => rec.state?.homeSessionId !== undefined)
+        .map(([id, rec]) => [id, rec.state.homeSessionId]),
+    );
+    const personaOf = (record) => {
+      const bound = record.agent_config?.persona?.id;
+      if (typeof bound === 'string' && bound !== '') return bound;
+      const custom = record.metadata ?? {};
+      return typeof custom.bot_persona_id === 'string' && custom.bot_persona_id !== '' ? custom.bot_persona_id
+        : typeof custom.room_persona_id === 'string' && custom.room_persona_id !== '' ? custom.room_persona_id
+        : typeof custom.persona_id === 'string' && custom.persona_id !== '' ? custom.persona_id
+        : undefined;
+    };
+    const sorted = [...(server.sessions?.values() ?? [])]
+      .map((entry) => entry.record)
+      .filter((rec) => !rec.archived && (includePrivate || !rec.private))
+      .sort((a, b) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime());
+    const buckets = new Map();
+    for (const rec of sorted) {
+      const pid = personaOf(rec);
+      if (pid === undefined) continue;
+      let bucket = buckets.get(pid);
+      if (bucket === undefined) {
+        bucket = { total: 0, nonHomeCount: 0, items: [] };
+        buckets.set(pid, bucket);
+      }
+      bucket.total += 1;
+      const isHome = homeIds.get(pid) === rec.id;
+      if (isHome || bucket.nonHomeCount < perPersonaLimit) {
+        if (!isHome) bucket.nonHomeCount += 1;
+        bucket.items.push(structuredClone(rec));
+      }
+    }
+    const out = {};
+    for (const [pid, bucket] of buckets) {
+      out[pid] = { total: bucket.total, items: bucket.items };
+    }
+    return ok(out);
+  }
   if (path === '/personas/import/preview' && method === 'POST') {
     const { file } = parseMultipart(await readRaw(req), req.headers['content-type']);
     if (file === undefined) return fail(40001, 'missing `file` field');

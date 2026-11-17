@@ -14,8 +14,10 @@ export const sshRemoteProfileSchema = z.object({
   remoteShell: z.enum(['posix', 'powershell']).default('posix'),
 }).strict();
 export type SshRemoteProfile = z.infer<typeof sshRemoteProfileSchema>;
-export const bridgeOperationSchema = z.enum(['read', 'send', 'wait', 'wake', 'create']);
-export const bridgeOperationsSchema = z.array(bridgeOperationSchema).min(1).max(5);
+export const spacePlatformSchema = z.enum(['win32', 'linux', 'darwin']);
+export type SpacePlatform = z.infer<typeof spacePlatformSchema>;
+export const bridgeOperationSchema = z.enum(['read', 'send', 'wait', 'wake', 'create', 'tools']);
+export const bridgeOperationsSchema = z.array(bridgeOperationSchema).min(1).max(6);
 export const sshRemoteTransportSchema = z.object({ kind: z.literal('ssh'), profile: sshRemoteProfileSchema }).strict();
 export type SshRemoteTransport = z.infer<typeof sshRemoteTransportSchema>;
 export const localSpaceTransportSchema = z.object({ kind: z.literal('local_space'), localSpaceId: z.string().min(1).max(128) }).strict();
@@ -118,6 +120,8 @@ export const connectionPairInputSchema = z.object({
   label: z.string().max(128).optional(),
   backgroundSummary: z.boolean().default(true),
   requestBridge: z.boolean().optional(),
+  bridgeOperations: bridgeOperationsSchema.optional(),
+  borrowTools: z.boolean().optional(),
   fingerprint: fingerprintSchema.optional(),
 }).strict();
 export type ConnectionPairInput = z.infer<typeof connectionPairInputSchema>;
@@ -134,6 +138,8 @@ export const sshConnectionConnectInputSchema = z.object({
   profile: sshRemoteProfileSchema,
   label: z.string().max(128).optional(),
   backgroundSummary: z.boolean().default(true),
+  bridgeOperations: bridgeOperationsSchema.optional(),
+  borrowTools: z.boolean().optional(),
 }).strict();
 export type SshConnectionConnectInput = z.infer<typeof sshConnectionConnectInputSchema>;
 export const connectionProvisionInputSchema = z.object({ source: connectionIdentitySchema, target: connectionIdentitySchema, label: z.string().min(1).max(128), enableInbound: z.boolean() }).strict();
@@ -143,7 +149,18 @@ export const sshConnectionRegisterInputSchema = z.discriminatedUnion('purpose', 
   z.object({ purpose: z.literal('bridge'), planId: z.string().uuid(), label: z.string().min(1).max(128) }).strict(),
 ]);
 export type SshConnectionRegisterInput = z.infer<typeof sshConnectionRegisterInputSchema>;
-export const spaceSummarySchema = z.object({ online: z.literal(true), busy_sessions: z.number().int().nonnegative(), needs_you_sessions: z.number().int().nonnegative(), revision: z.string(), as_of: z.number() });
+export const spaceSummarySchema = z.object({
+  online: z.literal(true),
+  busy_sessions: z.number().int().nonnegative(),
+  needs_you_sessions: z.number().int().nonnegative(),
+  revision: z.string(),
+  as_of: z.number(),
+  platform: spacePlatformSchema.optional(),
+  arch: z.string().min(1).max(32).optional(),
+  hostname: z.string().min(1).max(128).optional(),
+  workspace_count: z.number().int().nonnegative().optional(),
+  borrowable_tool_count: z.number().int().nonnegative().optional(),
+});
 export type SpaceSummary = z.infer<typeof spaceSummarySchema>;
 export const remoteConnectionSchema = z.object({
   id: z.string().uuid(), label: z.string(), endpoint: z.string(), target: connectionIdentitySchema,
@@ -152,10 +169,11 @@ export const remoteConnectionSchema = z.object({
   state: z.enum(['offline', 'online', 'authentication_required', 'identity_changed', 'disabled']),
   pinnedFingerprint: fingerprintSchema.optional(), fingerprintToVerify: fingerprintSchema.optional(),
   lastError: z.string().optional(), lastConnectedAt: z.number().optional(), activeLeases: z.number().int().nonnegative(),
+  rttMs: z.number().int().nonnegative().optional(),
   summary: z.object({ value: spaceSummarySchema, lastSeen: z.number(), stale: z.boolean() }).optional(),
 });
 export type RemoteConnection = z.infer<typeof remoteConnectionSchema>;
 export const connectionBrokerInputSchema = z.object({ operation: z.string().min(1).max(128), params: z.record(z.string(), z.string()).optional(), query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])).optional(), headers: z.object({ ifNoneMatch: z.string().max(1024).regex(/^[^\r\n]*$/).optional(), range: z.string().max(128).regex(/^bytes=\d*-\d*$/).optional() }).strict().optional(), body: z.unknown().optional() }).strict();
 export type ConnectionBrokerInput = z.infer<typeof connectionBrokerInputSchema>;
-export const connectionHandshakeSchema = z.object({ identity: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), serverId: z.string(), inboundEnabled: z.boolean(), tlsFingerprint: fingerprintSchema.optional(), capabilities: z.array(z.string().min(1).max(64)).max(64).optional() });
+export const connectionHandshakeSchema = z.object({ identity: connectionIdentitySchema, targetLabel: z.string().max(128).optional(), serverId: z.string(), inboundEnabled: z.boolean(), tlsFingerprint: fingerprintSchema.optional(), platform: spacePlatformSchema.optional(), capabilities: z.array(z.string().min(1).max(64)).max(64).optional() });
 export type ConnectionHandshake = z.infer<typeof connectionHandshakeSchema>;

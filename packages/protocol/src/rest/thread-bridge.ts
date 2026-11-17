@@ -29,7 +29,7 @@ export type BridgeGrant = z.infer<typeof bridgeGrantSchema>;
 export type BridgeInstall = z.infer<typeof bridgeInstallSchema>;
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeSend = z.infer<typeof bridgeSendSchema>;
-export type BridgeOperation = 'read' | 'send' | 'wait' | 'wake' | 'create';
+export type BridgeOperation = 'read' | 'send' | 'wait' | 'wake' | 'create' | 'tools';
 export const bridgeCreateSchema = bridgeRequestSchema.extend({
   workspaceId: z.string().min(1).max(512).optional(),
   idempotencyKey: z.string().min(1).max(256),
@@ -49,7 +49,48 @@ export interface BridgeCreateResult {
   profile: string;
   promptStarted: boolean;
 }
-export interface BridgeLink { connectionId: string; grant: BridgeGrant; enabled: boolean }
+export const remoteExportedToolSchema = z.object({
+  remoteName: z.string().min(1).max(256),
+  kind: z.enum(['plugin', 'mcp']),
+  pluginId: z.string().min(1).max(128).optional(),
+  serverName: z.string().min(1).max(128).optional(),
+  toolName: z.string().min(1).max(128),
+  description: z.string().max(16384),
+  parameters: z.record(z.string(), z.unknown()).optional(),
+  concurrencySafe: z.boolean().optional(),
+}).strict();
+export type RemoteExportedTool = z.infer<typeof remoteExportedToolSchema>;
+export const remoteToolMediaAttachmentSchema = z.object({
+  id: z.string().min(1).max(128),
+  mimeType: z.string().min(1).max(128),
+  filename: z.string().min(1).max(256).optional(),
+  dataBase64: z.string().min(1),
+}).strict();
+export type RemoteToolMediaAttachment = z.infer<typeof remoteToolMediaAttachmentSchema>;
+export const bridgeToolsListSchema = bridgeRequestSchema.extend({
+  workspaceId: z.string().min(1).max(512).optional(),
+}).strict();
+export type BridgeToolsList = z.infer<typeof bridgeToolsListSchema>;
+export const bridgeToolsListResultSchema = z.object({
+  spaceLabel: z.string().min(1).max(128),
+  platform: z.enum(['win32', 'linux', 'darwin']).optional(),
+  tools: z.array(remoteExportedToolSchema).max(512),
+}).strict();
+export type BridgeToolsListResult = z.infer<typeof bridgeToolsListResultSchema>;
+export const bridgeToolsCallSchema = bridgeRequestSchema.extend({
+  workspaceId: z.string().min(1).max(512).optional(),
+  remoteName: z.string().min(1).max(256),
+  arguments: z.record(z.string(), z.unknown()),
+  callId: z.string().min(1).max(256),
+}).strict();
+export type BridgeToolsCall = z.infer<typeof bridgeToolsCallSchema>;
+export const bridgeToolsCallResultSchema = z.object({
+  isError: z.boolean().optional(),
+  output: z.unknown(),
+  media: z.array(remoteToolMediaAttachmentSchema).max(32).optional(),
+}).strict();
+export type BridgeToolsCallResult = z.infer<typeof bridgeToolsCallResultSchema>;
+export interface BridgeLink { connectionId: string; grant: BridgeGrant; enabled: boolean; borrowTools?: boolean }
 export interface BridgeReceipt { id: string; bridgeId: string; connectionId: string; source: z.infer<typeof bridgeThreadRefSchema>; target: z.infer<typeof bridgeThreadRefSchema>; sourceSeq: number; createdAt: number; expiresAt: number; delivery: 'accepted' | 'delivered' | 'pending' | 'rejected' | 'undeliverable'; messageId?: string; targetSeq?: number; acceptedAt?: number; reason?: string }
 export interface BridgeStatus { identity: z.infer<typeof connectionIdentitySchema>; inboundEnabled: boolean; inbound: BridgeGrant[]; outbound: BridgeLink[] }
 export type BridgeContentRef = import('@kiki/transcript').ContentRef;
@@ -66,7 +107,7 @@ export const peerBridgeInstallSchema = z.object({
 }).strict();
 export type PeerBridgeInstall = z.infer<typeof peerBridgeInstallSchema>;
 export const peerBridgeAttachPayloadSchema = z.object({
-  operations: z.array(z.enum(['list', 'read', 'send', 'wait', 'create'])).min(1).max(5).optional(),
+  operations: z.array(z.enum(['list', 'read', 'send', 'wait', 'create', 'tools_list', 'tools_call'])).min(1).max(7).optional(),
 }).strict();
 export type PeerBridgeAttachPayload = z.infer<typeof peerBridgeAttachPayloadSchema>;
 export const peerBridgeResponsePayloadSchema = z.object({

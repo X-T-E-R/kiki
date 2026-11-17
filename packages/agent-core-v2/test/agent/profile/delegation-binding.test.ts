@@ -680,6 +680,113 @@ describe('delegation context at bind', () => {
         .activeProfile?.disallowedTools,
     ).toContain('Bash');
   });
+
+  it('allows ${base_prompt} shipped and custom SYSTEM.md profiles to consume system.* prompt field overrides', async () => {
+    const shippedAgent = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      fileDefinition: {
+        name: DEFAULT_AGENT_PROFILE_NAME,
+        definitionId: 'builtin:agent',
+        contributionRoot: '/builtin',
+        private: false,
+        description: 'Default agent',
+        override: false,
+        path: '/builtin/agent.md',
+        source: 'user',
+        prompt: '${base_prompt}\n\nMain role addendum',
+        subagents: [],
+      },
+      renderSystemPrompt: (context) =>
+        renderPromptTemplateResult(
+          '${base_prompt}\n\nMain role addendum',
+          context,
+          { skillActive: false },
+          (inner) => renderSystemPromptResult('', inner, { skillActive: false }),
+        ),
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(shippedAgent)),
+      {
+        initialConfig: {
+          prompt: {
+            overrides: {
+              fields: {
+                'system.language': '# Language\n\nGLOBAL LANGUAGE',
+                'system.coding': '# Coding\n\nGLOBAL CODING',
+                'system.reply_style': 'GLOBAL REPLY STYLE ${reply_style_guide}',
+              },
+            },
+          },
+        },
+      },
+    );
+    const model = ctx.kimiConfig.models![MOCK_MODEL]!;
+    ctx.kimiConfig = {
+      ...ctx.kimiConfig,
+      models: {
+        ...ctx.kimiConfig.models,
+        [MOCK_MODEL]: {
+          ...model,
+          promptOverrides: {
+            fields: {
+              'system.language': '# Language\n\nMODEL LANGUAGE',
+            },
+          },
+        },
+      },
+    };
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const statuses = new Map(profile.getPromptFieldSnapshot().fields.map((field) => [field.id, field.status]));
+    expect(statuses.get('system.language')).toBe('effective');
+    expect(statuses.get('system.coding')).toBe('effective');
+    expect(statuses.get('system.reply_style')).toBe('effective');
+    expect(profile.getPromptFieldSnapshot().values['system.language']).toContain('MODEL LANGUAGE');
+    expect(profile.getPromptFieldSnapshot().values['system.coding']).toContain('GLOBAL CODING');
+    expect(profile.getPromptFieldSnapshot().values['system.reply_style']).toContain('GLOBAL REPLY STYLE');
+    expect(profile.getSystemPrompt()).toContain('MODEL LANGUAGE');
+    expect(profile.getSystemPrompt()).toContain('GLOBAL CODING');
+    expect(profile.getSystemPrompt()).toContain('GLOBAL REPLY STYLE');
+    expect(profile.getSystemPrompt()).toContain('Main role addendum');
+  });
+
+  it('keeps system.* overrides effective when a file-backed SYSTEM.md delegates to ${base_prompt}', async () => {
+    const systemMdWithBase = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      sourcePath: '/home/example/SYSTEM.md',
+      fileDefinition: {
+        name: DEFAULT_AGENT_PROFILE_NAME,
+        definitionId: 'user:system',
+        contributionRoot: '/home/example',
+        private: false,
+        description: 'Default agent',
+        override: true,
+        path: '/home/example/SYSTEM.md',
+        source: 'user',
+        prompt: '${base_prompt}\n\nCustom user tail',
+        subagents: [],
+      },
+      renderSystemPrompt: (context) =>
+        renderPromptTemplateResult(
+          '${base_prompt}\n\nCustom user tail',
+          context,
+          { skillActive: false },
+          (inner) => renderSystemPromptResult('', inner, { skillActive: false }),
+        ),
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(systemMdWithBase)),
+      { initialConfig: { prompt: { overrides: { fields: { 'system.language': '# Language\n\nKEEP ME' } } } } },
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const statuses = new Map(profile.getPromptFieldSnapshot().fields.map((field) => [field.id, field.status]));
+    expect(statuses.get('system.language')).toBe('effective');
+    expect(profile.getSystemPrompt()).toContain('KEEP ME');
+    expect(profile.getSystemPrompt()).toContain('Custom user tail');
+  });
 });
 
 

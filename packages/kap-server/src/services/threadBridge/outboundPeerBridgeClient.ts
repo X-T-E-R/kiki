@@ -8,6 +8,8 @@ import {
   bridgeListSchema,
   bridgeReadSchema,
   bridgeSendSchema,
+  bridgeToolsCallSchema,
+  bridgeToolsListSchema,
   bridgeWaitSchema,
   type RemoteConnection,
 } from '@kiki/protocol';
@@ -30,7 +32,7 @@ interface StoredPeerCredential {
 interface ActivePeerTunnel {
   readonly connectionId: string;
   stop(state?: 'removed'): void;
-  wake(reason?: 'normal' | 'credential' | 'network'): void;
+  wake(reason?: 'normal' | 'credential' | 'network' | 'bridge'): void;
   pauseForNetworkLoss(): void;
 }
 
@@ -97,7 +99,7 @@ export class OutboundPeerBridgeClient {
     if (this.closed || this.shutdownSignal.aborted) return;
     this.subscriptions.push(
       this.connections.onDidChange(() => this.reconcile('credential')),
-      this.bridge.onDidChange(() => this.reconcile()),
+      this.bridge.onDidChange(() => this.reconcile('bridge')),
     );
     this.shutdownSignal.addEventListener('abort', () => { void this.close(); }, { once: true });
     this.reconcile();
@@ -124,7 +126,7 @@ export class OutboundPeerBridgeClient {
     for (const tunnel of active) tunnel.stop();
   }
 
-  private reconcile(wakeReason: 'normal' | 'credential' | 'network' = 'normal'): void {
+  private reconcile(wakeReason: 'normal' | 'credential' | 'network' | 'bridge' = 'normal'): void {
     if (this.closed || this.shutdownSignal.aborted) return;
     const records = this.connections.list();
     const eligibleIds = new Set<string>();
@@ -270,7 +272,7 @@ export class OutboundPeerBridgeClient {
       const operation = data['operation'];
       const authorization = typeof data['authorization'] === 'string' ? data['authorization'] : '';
       const body = data['body'];
-      if (operation !== 'list' && operation !== 'read' && operation !== 'send' && operation !== 'wait' && operation !== 'create') {
+      if (operation !== 'list' && operation !== 'read' && operation !== 'send' && operation !== 'wait' && operation !== 'create' && operation !== 'tools_list' && operation !== 'tools_call') {
         sendFrame(ws, {
           type: 'bridge_response',
           id,
@@ -291,6 +293,8 @@ export class OutboundPeerBridgeClient {
           : operation === 'read' ? await this.bridge.inboundRead(grant, bridgeReadSchema.parse(body), signal)
           : operation === 'send' ? await this.bridge.inboundSend(grant, bridgeSendSchema.parse(body))
           : operation === 'create' ? await this.bridge.inboundCreate(grant, bridgeCreateSchema.parse(body))
+          : operation === 'tools_list' ? await this.bridge.inboundToolsList(grant, bridgeToolsListSchema.parse(body))
+          : operation === 'tools_call' ? await this.bridge.inboundToolsCall(grant, bridgeToolsCallSchema.parse(body), signal)
           : await this.bridge.inboundWait(grant, bridgeWaitSchema.parse(body), signal);
         signal.throwIfAborted();
         sendFrame(ws, {
@@ -434,7 +438,7 @@ export class OutboundPeerBridgeClient {
         const ws = new WebSocket(wsUrl, [`${WS_BEARER_PROTOCOL_PREFIX}${credential.ownerToken}`], {
           agent: record.pinnedFingerprint === undefined ? undefined : pooledPinnedAgent(transport.endpoint, record.pinnedFingerprint),
           headers: { 'x-kiki-connection-grant': credential.grant },
-          maxPayload: 1024 * 1024,
+          maxPayload: 16 * 1024 * 1024,
           perMessageDeflate: false,
           followRedirects: false,
           handshakeTimeout: 15_000,
@@ -594,6 +598,39 @@ export class OutboundPeerBridgeClient {
       }
     };
 
+    const syncActiveReverseBridge = async (): Promise<void> => {
+      const currentSocket = socket;
+      const activeLease = socketLease;
+      if (stopped || paused || this.closed || currentSocket === undefined || activeLease === undefined) return;
+      try {
+        const record = this.connections.get(connectionId);
+        const epoch = this.connections.credentialEpoch(connectionId);
+        const { credential, transport } = await this.connections.connect(connectionId, activeLease.signal);
+        if (socket !== currentSocket || this.connections.credentialEpoch(connectionId) !== epoch) return;
+        const reverse = await this.bridge.ensureReversePeerBridge({
+          connectionId: record.id,
+          target: record.target,
+          label: machineLabel(),
+          signal: activeLease.signal,
+        });
+        if (reverse === undefined || socket !== currentSocket) return;
+        const nextKey = `${reverse.grant.id}:${reverse.grant.revision}`;
+        if (registeredKey === nextKey) return;
+        const response = await peerFetch(`${transport.endpoint}/api/thread-bridges/peer/outbound`, {
+          method: 'POST',
+          signal: AbortSignal.any([activeLease.signal, AbortSignal.timeout(15_000)]),
+          headers: {
+            authorization: `Bearer ${credential.ownerToken}`,
+            'x-kiki-connection-grant': credential.grant,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ grant: reverse.grant, credential: reverse.credential }),
+        }, record.pinnedFingerprint);
+        await response.body?.cancel().catch(() => {});
+        if (response.ok && socket === currentSocket) registeredKey = nextKey;
+      } catch {}
+    };
+
     return {
       connectionId,
       stop: () => {
@@ -615,6 +652,10 @@ export class OutboundPeerBridgeClient {
         }
         if (reason === 'credential') {
           void wakeForCredentialChange();
+          return;
+        }
+        if (reason === 'bridge' && socket !== undefined) {
+          void syncActiveReverseBridge();
           return;
         }
         if (authCooldownUntil > Date.now() || retryTimer !== undefined) return;

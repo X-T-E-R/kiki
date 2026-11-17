@@ -29,8 +29,11 @@ import {
 import {
   LEGACY_SESSION_INDEX_MANIFEST,
   SESSION_INDEX_MANIFEST,
+  SESSION_SOURCE_ROOT_KEY,
   legacySessionCollection,
   legacySessionCountersCollection,
+  legacySessionSourcesCollection,
+  legacySessionWorkspaceSourcesCollection,
   recencyColumn,
   sessionCollection,
 } from '#/app/sessionIndex/sessionIndexModel';
@@ -2795,7 +2798,7 @@ describe('FileSessionIndex (read model)', () => {
     expect(await queryStore.get<SessionSummary>('session:g1', 'legacy')).toEqual(legacySummary);
   });
 
-  it('publishes v4 before cleaning a real v3 collection layout', async () => {
+  it('publishes v6 before cleaning a real v5 collection layout', async () => {
     class UpgradeTrackingQueryStore extends MiniDbQueryStore {
       legacyPresentAtPublish = false;
       override async setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> {
@@ -2821,6 +2824,15 @@ describe('FileSessionIndex (read model)', () => {
       active: 1,
       archived: 0,
     });
+    await queryStore.put(legacySessionSourcesCollection(1), 'legacy', {
+      directMtimeMs: 1,
+      directSize: 1,
+      nestedMtimeMs: 1,
+      nestedSize: 1,
+    });
+    await queryStore.put(legacySessionWorkspaceSourcesCollection(1), SESSION_SOURCE_ROOT_KEY, {
+      workspaceIds: [workspaceId],
+    });
     await queryStore.setCheckpoint(LEGACY_SESSION_INDEX_MANIFEST, { seq: 1 });
 
     await expect(store.prepare()).resolves.toMatchObject({
@@ -2836,6 +2848,8 @@ describe('FileSessionIndex (read model)', () => {
     });
     expect(await queryStore.get<SessionSummary>(legacySessionCollection(1), 'legacy')).toBeUndefined();
     expect(await queryStore.get(legacySessionCountersCollection(1), workspaceId)).toBeUndefined();
+    expect(await queryStore.get(legacySessionSourcesCollection(1), 'legacy')).toBeUndefined();
+    expect(await queryStore.get(legacySessionWorkspaceSourcesCollection(1), SESSION_SOURCE_ROOT_KEY)).toBeUndefined();
   });
 
   it('a crashed initial projection reports building and recovers on retry', async () => {
@@ -4661,5 +4675,200 @@ describe('FileSessionIndex (read model)', () => {
     expect((await store.get('s1'))?.title).toBe('mirrored-next');
     expect(infoSpy.mock.calls.some(([msg]) => msg === 'session index reconciliation repaired drift')).toBe(false);
     infoSpy.mockRestore();
+  });
+
+  it('rebuilds an existing sessionIndex:v5 SQLite checkpoint into v6 on prepare to backfill personaId without touching state.json mtime', async () => {
+    overrideScopedService(LifecycleScope.App, IQueryStore, SqliteQueryStore, ScopeActivation.OnDemand, 'storage');
+    await seedSession('cold-main', {
+      title: 'Cold main persona',
+      createdAt: 1,
+      updatedAt: 30,
+      agents: { main: { type: 'main', personaId: 'nia-director' } },
+    });
+    await seedSession('cold-top-camel', {
+      title: 'Cold top camel',
+      createdAt: 1,
+      updatedAt: 20,
+      personaId: 'nia-fast',
+    });
+    await seedSession('cold-top-snake', {
+      title: 'Cold top snake',
+      createdAt: 1,
+      updatedAt: 10,
+      persona_id: 'kirie',
+    });
+    const fixedTime = new Date('2026-01-01T00:00:00Z');
+    const statePaths = ['cold-main', 'cold-top-camel', 'cold-top-snake'].map((id) =>
+      join(sessionsDir, workspaceId, id, 'session-meta', 'state.json'),
+    );
+    const initialStats = await Promise.all(statePaths.map(async (path) => {
+      await fsp.utimes(path, fixedTime, fixedTime);
+      return fsp.stat(path);
+    }));
+
+    const sqlite = new SqliteQueryStore(stubBootstrap(homeDir), stubLog());
+    try {
+      for (const [index, id] of ['cold-main', 'cold-top-camel', 'cold-top-snake'].entries()) {
+        const stat = initialStats[index]!;
+        await sqlite.put(legacySessionCollection(1), id, summary(id, { updatedAt: 30 - index * 10 }), {
+          columns: { [`v5:g1:updatedAt`]: 30 - index * 10 },
+        });
+        await sqlite.put(legacySessionSourcesCollection(1), id, {
+          directMtimeMs: 0,
+          directSize: 0,
+          nestedMtimeMs: stat.mtimeMs,
+          nestedSize: stat.size,
+        });
+      }
+      await sqlite.put(legacySessionCountersCollection(1), workspaceId, { active: 3, archived: 0 });
+      await sqlite.put(legacySessionWorkspaceSourcesCollection(1), workspaceId, {
+        sessionIds: ['cold-main', 'cold-top-camel', 'cold-top-snake'],
+        activeSessionIds: ['cold-main', 'cold-top-camel', 'cold-top-snake'],
+        archivedSessionIds: [],
+      });
+      await sqlite.put(legacySessionWorkspaceSourcesCollection(1), SESSION_SOURCE_ROOT_KEY, {
+        workspaceIds: [workspaceId],
+      });
+      await sqlite.setCheckpoint(LEGACY_SESSION_INDEX_MANIFEST, {
+        seq: 1,
+        sourceMaxMtimeMs: initialStats[0]!.mtimeMs,
+      });
+    } finally {
+      await sqlite.close();
+    }
+
+    const store = build();
+    expect(await store.prepare()).toMatchObject({ source: 'read-model', state: 'ready', generation: 1 });
+    const afterStats = await Promise.all(statePaths.map((path) => fsp.stat(path)));
+    for (const [index, after] of afterStats.entries()) {
+      expect(after.mtimeMs).toBe(initialStats[index]!.mtimeMs);
+      expect(after.size).toBe(initialStats[index]!.size);
+    }
+
+    const page = await store.listRecent({ workspaceIds: [workspaceId] });
+    expect(page.items.map((item) => [item.id, item.personaId])).toEqual([
+      ['cold-main', 'nia-director'],
+      ['cold-top-camel', 'nia-fast'],
+      ['cold-top-snake', 'kirie'],
+    ]);
+    expect(await store.get('cold-main')).toMatchObject({ personaId: 'nia-director' });
+    expect(await queryStore.get(legacySessionCollection(1), 'cold-main')).toBeUndefined();
+    expect(await queryStore.get(legacySessionCountersCollection(1), workspaceId)).toBeUndefined();
+    expect(await queryStore.get(legacySessionSourcesCollection(1), 'cold-main')).toBeUndefined();
+    expect(await queryStore.get(legacySessionWorkspaceSourcesCollection(1), SESSION_SOURCE_ROOT_KEY)).toBeUndefined();
+  });
+
+  it('invalidates targeted fingerprints on mirror writes, keeps forced reconcile uncached until committed, and preserves newer concurrent fingerprints', async () => {
+    class StatCountingStorage extends FileStorageService {
+      stats = 0;
+      override async mtime(scope: string, key: string): Promise<number | undefined> {
+        this.stats += 1;
+        return super.mtime(scope, key);
+      }
+      override async size(scope: string, key: string): Promise<number | undefined> {
+        this.stats += 1;
+        return super.size(scope, key);
+      }
+    }
+    await seedSession('a', { title: 'a-0', createdAt: 1, updatedAt: 1 });
+    await seedSession('b', { title: 'b-0', createdAt: 1, updatedAt: 2 });
+    const storage = new StatCountingStorage(homeDir);
+    const store = build(storage);
+    await store.prepare();
+    await store.reconcileNow({ reuseFingerprints: true });
+
+    await seedSession('a', { title: 'a-mirror', createdAt: 1, updatedAt: 10 });
+    mirror.record(summary('a', { title: 'a-mirror', createdAt: 1, updatedAt: 10 }));
+    await mirror.drain();
+    await seedSession('a', { title: 'a-external', createdAt: 1, updatedAt: 11 });
+    storage.stats = 0;
+    await store.reconcileNow({ reuseFingerprints: true });
+    expect(storage.stats).toBe(5);
+    expect((await store.get('a'))?.title).toBe('a-external');
+
+    let gateCommit = false;
+    const enteredCommit = deferred<void>();
+    const releaseCommit = deferred<void>();
+    const originalBatch = queryStore.batch.bind(queryStore);
+    const batchSpy = vi.spyOn(queryStore, 'batch').mockImplementation(async (ops) => {
+      if (gateCommit) {
+        gateCommit = false;
+        enteredCommit.resolve();
+        await releaseCommit.promise;
+      }
+      return originalBatch(ops);
+    });
+    const projector = (store as unknown as { projector: SessionIndexProjector }).projector;
+    const planOriginal = projector.planReconcile.bind(projector);
+    let failAttempt = 0;
+    const planSpy = vi.spyOn(projector, 'planReconcile').mockImplementation(async (gen, opts) => {
+      if (failAttempt === 1) {
+        failAttempt = 2;
+        return async () => {
+          throw new Error('injected forced reconcile commit failure');
+        };
+      }
+      return planOriginal(gen, opts);
+    });
+
+    try {
+      failAttempt = 1;
+      await seedSession('b', { title: 'b-forced', createdAt: 1, updatedAt: 12 });
+      const forced = store.reconcileNow();
+      await expect(forced).rejects.toThrow('injected forced reconcile commit failure');
+      await expect(store.reconcileNow()).resolves.toBeUndefined();
+      expect((await store.get('b'))?.title).toBe('b-forced');
+
+      gateCommit = true;
+      await seedSession('b', { title: 'b-slow', createdAt: 1, updatedAt: 13 });
+      const slowReconcile = store.reconcileNow();
+      await enteredCommit.promise;
+      await seedSession('b', { title: 'b-watched', createdAt: 1, updatedAt: 14 });
+      sourceChanges.fire({
+        path: join(sessionsDir, workspaceId, 'b', 'session-meta', 'state.json'),
+        action: 'modified',
+        kind: 'file',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_150));
+      releaseCommit.resolve();
+      await slowReconcile;
+      await store.reconcileNow({ reuseFingerprints: true });
+      expect((await store.get('b'))?.title).toBe('b-watched');
+    } finally {
+      releaseCommit.resolve();
+      batchSpy.mockRestore();
+      planSpy.mockRestore();
+    }
+  }, 15_000);
+
+  it('yields cooperatively to the event loop during multi-chunk initial projection and authoritative scans', async () => {
+    for (let i = 0; i < 40; i++) {
+      await seedSession(`s-yield-${i}`, { title: `session-${i}`, createdAt: i + 1, updatedAt: i + 10 });
+    }
+    let timerTicksDuringPrepare = 0;
+    const interval = setInterval(() => {
+      timerTicksDuringPrepare += 1;
+    }, 1);
+    try {
+      const store = build();
+      const projector = (store as unknown as { projector: SessionIndexProjector }).projector;
+      const originalBatch = queryStore.batch.bind(queryStore);
+      const batchSpy = vi.spyOn(queryStore, 'batch').mockImplementation(async (ops) => originalBatch(ops));
+      try {
+        const scan = await projector.scan({ fresh: true });
+        expect(scan.summaries).toHaveLength(40);
+        const manySummaries = Array.from({ length: 1_100 }, (_, index) => ({
+          ...scan.summaries[0]!,
+          id: `synthetic-${index}`,
+          updatedAt: index + 1,
+        }));
+        await projector.project(1, { ...scan, summaries: manySummaries });
+        expect(timerTicksDuringPrepare).toBeGreaterThan(0);
+      } finally {
+        batchSpy.mockRestore();
+      }
+    } finally {
+      clearInterval(interval);
+    }
   });
 });

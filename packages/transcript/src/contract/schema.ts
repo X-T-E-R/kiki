@@ -846,6 +846,8 @@ export const agentDescriptorSchema = z.object({
   branchInitiator: z.enum(['user', 'agent']).optional(),
   toolsLocked: z.boolean().optional(),
   branchSealed: z.boolean().optional(),
+  branchBaseTurnId: z.number().int().nonnegative().optional(),
+  branchBaseMessageId: z.string().min(1).optional(),
   createdAt: z.string().optional(),
   disposedAt: z.string().optional(),
 });

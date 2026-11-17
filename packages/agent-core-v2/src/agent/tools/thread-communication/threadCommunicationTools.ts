@@ -61,7 +61,7 @@ export const SendMessageToThreadToolInputSchema = z.union([
     ...ModelOutputOptions,
     thread: ThreadRefSchema,
     content: z.string().min(1).max(100_000).describe('Input for the other thread. It arrives as a peer message from this thread.'),
-    idempotency_key: z.string().min(1).max(256).describe('Retries this same content. A different message with a used key fails.'),
+    idempotency_key: z.string().min(1).max(256).optional().describe('Retries this same content. Omit it to reuse the tool call id. A different message with a used key fails.'),
   }).strict(),
   z.object({
     ...ModelOutputOptions,
@@ -288,7 +288,10 @@ export class SendMessageToThreadTool
             sessionId: this.session.sessionId, toolCallId: input.idempotency_key ?? ctx.toolCallId,
             text: input.content, mentions: input.mentions,
           });
-          return { output: JSON.stringify({ roomId: input.room, messageId: message?.id, delivery: message === undefined ? 'undeliverable' : 'delivered' }) };
+          const output = JSON.stringify({ roomId: input.room, messageId: message?.id, delivery: message === undefined ? 'undeliverable' : 'delivered' });
+          return message === undefined
+            ? { output }
+            : { allowsTurnEndWithSendMessage: true, output };
         }
         const origin = this.memory.get().findLast((message) => message.role === 'user' && ['user', 'peer_thread', 'bridged_peer'].includes(message.origin?.kind ?? 'user'))?.origin;
         const result = await peerSendCapability(this.threads)[SEND_PEER_THREAD_MESSAGE]({
@@ -298,9 +301,12 @@ export class SendMessageToThreadTool
           executingAgentId: this.agent.agentId,
           target: fromToolRef(input.thread),
           content: input.content,
-          idempotencyKey: input.idempotency_key,
+          idempotencyKey: input.idempotency_key ?? ctx.toolCallId,
         });
-        return { output: JSON.stringify(result, null, 2) };
+        const output = JSON.stringify(result, null, 2);
+        return result.delivery === 'undeliverable'
+          ? { output }
+          : { allowsTurnEndWithSendMessage: true, output };
       },
     };
   }

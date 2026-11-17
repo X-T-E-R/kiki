@@ -2069,10 +2069,8 @@ export function Sidebar({
                   archiveError={archiveErrors.get(item.key)}
                 />
                 {threads.length > 0 ? (
-                  // Children follow their parent directly: the indent lives in
-                  // the child row's own padding, so there is no spine and no
-                  // fold bar, and hover / selection stay full width.
-                  <div data-session-threads={session.id} className="mt-0.5 flex flex-col gap-0.5">
+                  <div data-session-threads={session.id} className="relative mt-0.5 flex flex-col gap-0.5">
+                    <span aria-hidden className="pointer-events-none absolute top-1.5 bottom-1.5 left-[13px] w-px bg-hairline" />
                     {threads.map((child) => renderRow(child, true))}
                   </div>
                 ) : null}
@@ -2498,7 +2496,14 @@ function SessionRow({
           : []),
       ];
   const relationNote = relation !== undefined && parentTitle !== undefined
-    ? t(relation.kind === 'branch' ? 'sidebar.thread.branchedFrom' : 'sidebar.thread.from', { title: parentTitle })
+    ? t(
+        relation.kind === 'branch'
+          ? 'sidebar.thread.branchedFrom'
+          : relation.kind === 'fork'
+            ? 'sidebar.thread.forkedFrom'
+            : 'sidebar.thread.from',
+        { title: parentTitle },
+      )
     : undefined;
   // A worktree session lives in its source repository; the checkout path is Kiki's own.
   const locationPath = session.worktree?.source_root ?? session.metadata.cwd;
@@ -2536,10 +2541,17 @@ function SessionRow({
   // Nested rows carry the relation in their accessible name and tooltip,
   // since on screen it is only the indent (plus the branch glyph).
   const nestedName = nested && relation !== undefined
-    ? t(relation.kind === 'branch' ? 'sidebar.branch.rowAria' : 'sidebar.thread.rowAria', {
-        title: label,
-        parent: parentTitle ?? t('sidebar.thread.unknownParent'),
-      })
+    ? t(
+        relation.kind === 'branch'
+          ? 'sidebar.branch.rowAria'
+          : relation.kind === 'fork'
+            ? 'sidebar.fork.rowAria'
+            : 'sidebar.thread.rowAria',
+        {
+          title: label,
+          parent: parentTitle ?? t('sidebar.thread.unknownParent'),
+        },
+      )
     : undefined;
   const emphasis = active || rowState === 'needs-me' || rowState === 'unread';
   const archiveState = archiveError !== undefined ? 'failed' : archiving ? 'archiving' : undefined;
@@ -2608,13 +2620,18 @@ function SessionRow({
                 <PersonaAvatar persona={personaAvatarOf(session.agent_config.persona)} size={16} decorative />
               </span>
             ) : null}
-            {/* The one kind glyph: a fork. Sessions a parent started carry none. */}
-            {nested && relation?.kind === 'branch' ? (
-              <span data-session-relation="branch" aria-hidden className="shrink-0 text-ink-faint">
+            {/* The one kind glyph: a fork or branch. Sessions a parent started carry none. */}
+            {nested && (relation?.kind === 'branch' || relation?.kind === 'fork') ? (
+              <span data-session-relation={relation.kind} aria-hidden className="shrink-0 text-ink-faint">
                 <Icon name="branch" size={12} />
               </span>
             ) : null}
             <span className="min-w-0 flex-1 truncate">{label}</span>
+            {nested && relation?.kind === 'fork' && session.forked_from?.turn_index !== undefined ? (
+              <span data-session-fork-turn className="shrink-0 text-[11px] font-normal text-ink-faint tabular-nums">
+                #{session.forked_from.turn_index + 1}
+              </span>
+            ) : null}
             {justRenamed ? (
               <span
                 role="status"

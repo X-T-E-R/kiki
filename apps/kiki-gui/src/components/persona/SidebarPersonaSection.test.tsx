@@ -10,12 +10,22 @@ import type { Session } from '@kiki/protocol';
 import { resetLayoutPreferencesForTests } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
-import type { PersonaDirectoryEntry } from './usePersonaDirectory';
-import { SIDEBAR_PERSONA_PREVIEW_LIMIT, SidebarPersonaSection, orderSidebarPersonas } from './SidebarPersonaSection';
+import { buildPersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
+import {
+  SIDEBAR_PERSONA_ORDER_KEY,
+  SIDEBAR_PERSONA_PREVIEW_LIMIT,
+  SidebarPersonaSection,
+  orderSidebarPersonas,
+  reorderPersonaIds,
+} from './SidebarPersonaSection';
+import { personaSwitcherQueryKey, type PersonaSessionHeadsMap } from './usePersonaSwitcherConversations';
 
 const navigate = vi.fn();
 const directory = vi.hoisted(() => ({ entries: [] as unknown[] }));
-const listSessions = vi.hoisted(() => vi.fn(async () => ({ items: [] as unknown[], has_more: false })));
+const listSessions = vi.hoisted(() => vi.fn(async (_params?: { persona?: string }) => ({ items: [] as unknown[], has_more: false })));
+const listPersonaSessionHeads = vi.hoisted(() =>
+  vi.fn(async (_params?: { per_persona_limit: number; include_private: boolean }): Promise<PersonaSessionHeadsMap> => ({})),
+);
 const updatePersona = vi.hoisted(() => vi.fn(async (_id: string, patch: { pinned?: boolean; hidden?: boolean }) => ({
   version: 1 as const,
   archived: false,
@@ -23,7 +33,7 @@ const updatePersona = vi.hoisted(() => vi.fn(async (_id: string, patch: { pinned
   hidden: patch.hidden,
 })));
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: { listSessions, updatePersona } }),
+  useConnection: () => ({ client: { listSessions, listPersonaSessionHeads, updatePersona } }),
   useOptionalConnection: () => undefined,
 }));
 vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => navigate }));
@@ -31,27 +41,6 @@ vi.mock('./usePersonaDirectory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./usePersonaDirectory')>();
   return { ...actual, usePersonaDirectory: () => ({ directory: directory.entries, isLoading: false, isError: false }) };
 });
-vi.mock('./PersonaConversationSwitcher', () => ({
-  PersonaConversationSwitcher: ({
-    persona,
-    sessions,
-    status,
-    onClose,
-  }: {
-    readonly persona: { id: string };
-    readonly sessions: readonly Session[];
-    readonly status?: { readonly loading?: boolean; readonly error?: string };
-    readonly onClose: () => void;
-  }) => createElement('div', { 'data-stub-switcher': persona.id },
-    createElement('output', { 'data-stub-switcher-sessions': '' }, JSON.stringify(sessions.map((item) => item.id))),
-    createElement('output', { 'data-stub-switcher-status': '' },
-      status === undefined
-        ? 'none'
-        : status.error !== undefined
-          ? 'failed'
-          : status.loading === true ? 'loading' : 'ready'),
-    createElement('button', { 'data-stub-switcher-close': persona.id, onClick: onClose })),
-}));
 vi.mock('../room/CreateRoomDialog', () => ({ CreateRoomDialog: () => createElement('div', { 'data-stub-room-dialog': true }) }));
 
 const mounted: Root[] = [];
@@ -64,6 +53,7 @@ beforeEach(() => {
   navigate.mockReset();
   directory.entries = [];
   listSessions.mockReset().mockResolvedValue({ items: [] as unknown[], has_more: false });
+  listPersonaSessionHeads.mockReset().mockResolvedValue({});
   updatePersona.mockClear();
 });
 afterEach(async () => {
@@ -94,18 +84,24 @@ function hers(patch: Partial<Session> & Pick<Session, 'id'>, personaId = 'xiao-y
   return { ...base, metadata: { ...base.metadata, bot_persona_id: personaId } } as Session;
 }
 
-async function render(sessions: readonly Session[] = [], activeSessionId?: string, initialPath = '/') {
+async function render(
+  sessions: readonly Session[] = [],
+  activeSessionId?: string,
+  initialPath = '/',
+  seen: Record<string, number> = {},
+  customQueryClient?: QueryClient,
+) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mounted.push(root);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = customQueryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(createElement(QueryClientProvider, { client: queryClient },
       createElement(I18nProvider, null,
         createElement(MemoryRouter, { initialEntries: [initialPath] },
           createElement(SidebarPersonaSection, {
-            sessions, activeSessionId, seen: {}, workspaceOptions: [], rooms: [],
+            sessions, activeSessionId, seen, workspaceOptions: [], rooms: [{ id: 'room_alpha', title: '发布协作室' } as never],
           })))));
   });
   return container;
@@ -117,25 +113,92 @@ async function flush() {
   }
 }
 
-const switcherSessions = (container: HTMLElement) =>
-  JSON.parse(container.querySelector('[data-stub-switcher-sessions]')?.textContent ?? '[]') as string[];
-const switcherStatus = (container: HTMLElement) =>
-  container.querySelector('[data-stub-switcher-status]')?.textContent;
+function rowIds(container: HTMLElement): string[] {
+  return [...container.querySelectorAll('[data-sidebar-persona-row]')].map(
+    (row) => row.getAttribute('data-sidebar-persona-row') ?? '',
+  );
+}
 
-async function openSwitcher(container: HTMLElement, personaId = 'xiao-you') {
-  await act(async () => { container.querySelector<HTMLElement>(`[data-persona-switcher-toggle="${personaId}"]`)!.click(); });
+function subthreadIds(container: HTMLElement, personaId = 'xiao-you'): string[] {
+  return [...container.querySelectorAll(`[data-persona-subthreads="${personaId}"] [data-persona-subthread]`)].map(
+    (el) => el.getAttribute('data-persona-subthread') ?? '',
+  );
 }
 
 describe('the sidebar persona group', () => {
-  it('gives every persona one row, pinned first, and hides the hidden ones', async () => {
+  it('keeps personas in a fixed natural order without jumping on pin/activity/unread, and hides hidden entries', async () => {
+    directory.entries = [
+      persona({ id: 'zhou', name: '小周', life: 'idle', lastActivityAt: 100 }),
+      persona({ id: 'you', name: '小柚', pinned: true, life: 'waiting', unreadCount: 2, unreadSessionIds: ['s1', 's2'], lastActivityAt: 9_000 }),
+      persona({ id: 'gui', name: '小桂', hidden: true }),
+      persona({ id: 'dou', name: '豆豆', homeSessionId: 'active_home', lastActivityAt: 5_000 }),
+    ];
+    const container = await render([session({ id: 'active_home' })], 'active_home');
+    expect(rowIds(container)).toEqual(['zhou', 'you', 'dou']);
+  });
+
+  it('reorders personas via drag-and-drop and Alt+Arrow keys and persists the custom order in localStorage', async () => {
+    expect(reorderPersonaIds(['zhou', 'you', 'dou'], 'dou', 'zhou', 'before')).toEqual(['dou', 'zhou', 'you']);
+    expect(orderSidebarPersonas([
+      persona({ id: 'zhou', name: '小周' }),
+      persona({ id: 'you', name: '小柚' }),
+      persona({ id: 'dou', name: '豆豆' }),
+    ], ['dou', 'zhou'])).toMatchObject([{ id: 'dou' }, { id: 'zhou' }, { id: 'you' }]);
+
     directory.entries = [
       persona({ id: 'zhou', name: '小周' }),
-      persona({ id: 'you', name: '小柚', pinned: true }),
-      persona({ id: 'gui', name: '小桂', hidden: true }),
+      persona({ id: 'you', name: '小柚' }),
+      persona({ id: 'dou', name: '豆豆' }),
     ];
     const container = await render();
-    expect([...container.querySelectorAll('[data-sidebar-persona-row]')].map((row) => row.getAttribute('data-sidebar-persona-row')))
-      .toEqual(['you', 'zhou']);
+    expect(rowIds(container)).toEqual(['zhou', 'you', 'dou']);
+
+    const sourceRow = container.querySelector<HTMLElement>('[data-sidebar-persona-row="dou"]')!;
+    const targetRow = container.querySelector<HTMLElement>('[data-sidebar-persona-row="zhou"]')!;
+    vi.spyOn(targetRow, 'getBoundingClientRect').mockReturnValue({
+      top: 100, bottom: 132, left: 0, right: 240, width: 240, height: 32, x: 0, y: 100, toJSON: () => ({}),
+    });
+
+    const store = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'all',
+      dropEffect: 'move',
+      setData: (type: string, val: string) => { store.set(type, val); },
+      getData: (type: string) => store.get(type) ?? '',
+    };
+
+    await act(async () => {
+      const startEvt = new Event('dragstart', { bubbles: true, cancelable: true });
+      Object.defineProperty(startEvt, 'dataTransfer', { value: dataTransfer });
+      sourceRow.dispatchEvent(startEvt);
+    });
+    await act(async () => {
+      const overEvt = new MouseEvent('dragover', { bubbles: true, cancelable: true, clientY: 104 });
+      Object.defineProperty(overEvt, 'dataTransfer', { value: dataTransfer });
+      targetRow.dispatchEvent(overEvt);
+    });
+    expect(targetRow.querySelector('[data-persona-drop-indicator="before"]')).not.toBeNull();
+
+    await act(async () => {
+      const dropEvt = new MouseEvent('drop', { bubbles: true, cancelable: true, clientY: 104 });
+      Object.defineProperty(dropEvt, 'dataTransfer', { value: dataTransfer });
+      targetRow.dispatchEvent(dropEvt);
+    });
+
+    expect(rowIds(container)).toEqual(['dou', 'zhou', 'you']);
+    expect(JSON.parse(localStorage.getItem(SIDEBAR_PERSONA_ORDER_KEY) ?? '[]')).toEqual(['dou', 'zhou', 'you']);
+
+    // Keyboard Alt+ArrowDown moves 'dou' after 'zhou' and persists.
+    const movedRow = container.querySelector<HTMLElement>('[data-sidebar-persona-row="dou"]')!;
+    await act(async () => {
+      movedRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(rowIds(container)).toEqual(['zhou', 'dou', 'you']);
+    expect(JSON.parse(localStorage.getItem(SIDEBAR_PERSONA_ORDER_KEY) ?? '[]')).toEqual(['zhou', 'dou', 'you']);
+
+    // Remounting reads the persisted order.
+    const remounted = await render();
+    expect(rowIds(remounted)).toEqual(['zhou', 'dou', 'you']);
   });
 
   it('says nothing when there are no personas: the primary nav owns that address', async () => {
@@ -143,108 +206,196 @@ describe('the sidebar persona group', () => {
     expect(container.querySelector('[data-sidebar-personas]')).toBeNull();
   });
 
+  it('sends the primary row to /p/:id/daily even when homeSessionId is not yet claimed and room/topic threads exist', async () => {
+    directory.entries = [persona({ id: 'dou-dou', name: '豆豆', homeSessionId: undefined })];
+    const container = await render([
+      hers({ id: 'room_member_1', metadata: { cwd: '/a', room_persona_id: 'dou-dou', room_member_of: 'room_alpha' }, last_seq: 0 }, 'dou-dou'),
+      hers({ id: 'topic_1', title: '豆豆 · 支线改稿', last_seq: 0 }, 'dou-dou'),
+    ]);
+    const primary = container.querySelector<HTMLElement>('[data-persona-primary="dou-dou"]')!;
+    await act(async () => { primary.click(); });
+    expect(navigate).toHaveBeenCalledWith('/p/dou-dou/daily');
+
+    // Extra threads remain reachable through the count/chevron disclosure.
+    const toggle = container.querySelector<HTMLElement>('[data-persona-switcher-toggle="dou-dou"][data-persona-thread-count="2"]')!;
+    await act(async () => { toggle.click(); });
+    expect(subthreadIds(container, 'dou-dou')).toEqual(['room_member_1', 'topic_1']);
+  });
+
   it('sends the name to the stable daily address instead of a fixed session', async () => {
     directory.entries = [persona({ homeSessionId: 'home_lin' })];
     const container = await render([session({ id: 'home_lin' })], 'home_lin');
-    const row = container.querySelector<HTMLElement>('[data-sidebar-persona-row="xiao-you"] button')!;
+    const row = container.querySelector<HTMLElement>('[data-persona-primary="xiao-you"]')!;
     expect(row.getAttribute('aria-current')).toBe('page');
     await act(async () => { row.click(); });
-    // The pointer, not the snapshot: /p/:id/daily resolves the current home.
     expect(navigate).toHaveBeenCalledWith('/p/xiao-you/daily');
   });
 
-  it('opens the shared switcher from the row-end control, and closes it again', async () => {
-    directory.entries = [persona()];
-    const container = await render();
-    const toggle = container.querySelector<HTMLElement>('[data-persona-switcher-toggle="xiao-you"]')!;
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    await act(async () => { toggle.click(); });
-    expect(container.querySelector('[data-stub-switcher="xiao-you"]')).not.toBeNull();
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    await act(async () => { container.querySelector<HTMLElement>('[data-stub-switcher-close="xiao-you"]')!.click(); });
-    expect(container.querySelector('[data-stub-switcher="xiao-you"]')).toBeNull();
+  it('starts a new conversation directly from the inline + button', async () => {
+    directory.entries = [persona({ id: 'xiao-you', name: '小柚' })];
+    const container = await render([session({ id: 'current_s', workspace_id: 'ws_main' })], 'current_s');
+    const newThreadBtn = container.querySelector<HTMLButtonElement>('[data-persona-new-thread="xiao-you"]')!;
+    await act(async () => { newThreadBtn.click(); });
+    expect(navigate).toHaveBeenCalledWith('/new?persona=xiao-you&workspace=ws_main');
   });
 
-  it('takes one unread conversation straight there and asks which one when there are several', async () => {
+  it('takes one unread conversation straight there and expands all inline subthreads when there are several', async () => {
     directory.entries = [persona({ unreadCount: 1, unreadSessionIds: ['topic_9'], life: 'done' })];
-    const single = await render();
+    const single = await render([hers({ id: 'topic_9', last_seq: 5 })]);
     const count = single.querySelector<HTMLElement>('[data-persona-unread-count="1"]')!;
     await act(async () => { count.click(); });
     expect(navigate).toHaveBeenCalledWith('/s/topic_9');
-    expect(single.querySelector('[data-stub-switcher]')).toBeNull();
+    expect(single.querySelector('[data-persona-switcher]')).toBeNull();
 
-    directory.entries = [persona({ unreadCount: 2, unreadSessionIds: ['topic_9', 'topic_8'], life: 'done' })];
-    const several = await render();
-    await act(async () => { several.querySelector<HTMLElement>('[data-persona-unread-count="2"]')!.click(); });
-    expect(several.querySelector('[data-stub-switcher="xiao-you"]')).not.toBeNull();
+    directory.entries = [persona({ unreadCount: 3, unreadSessionIds: ['topic_9', 'topic_8', 'topic_7'], life: 'done' })];
+    const several = await render([
+      hers({ id: 'topic_9', last_seq: 5 }),
+      hers({ id: 'topic_8', last_seq: 5 }),
+      hers({ id: 'topic_7', last_seq: 5 }),
+    ]);
+    await act(async () => { several.querySelector<HTMLElement>('[data-persona-unread-count="3"]')!.click(); });
+    expect(subthreadIds(several)).toEqual(['topic_9', 'topic_8', 'topic_7']);
+    expect(several.querySelector('[data-persona-switcher]')).toBeNull();
   });
 });
 
-/**
- * Which conversations belong to a persona is the server's answer. The sidebar
- * hands this component one page of every session, grown only when someone
- * presses "load more", so a persona's older conversation is usually not in it
- * — the panel has to ask, and only when it opens.
- */
-describe('the sidebar switcher list', () => {
-  it('reads the conversations from the server, including ones outside the loaded window', async () => {
-    directory.entries = [persona()];
-    // The global window holds one of hers. The other exists only on the server.
-    listSessions.mockResolvedValue({ items: [hers({ id: 'topic_loaded' }), hers({ id: 'topic_cold' })], has_more: false });
-    const container = await render([hers({ id: 'topic_loaded' })]);
+describe('reliable persona conversation discovery and unified inline expansion', () => {
+  it('fetches a single aggregate /personas/session-heads payload, stays immune to ["sessions"] invalidation storms, and expands cold conversations inline', async () => {
+    expect(personaSwitcherQueryKey('xiao-you')[0]).not.toBe('sessions');
+    directory.entries = [
+      persona({ id: 'xiao-you', name: '小柚', homeSessionId: 'home_you' }),
+      persona({ id: 'dou-dou', name: '豆豆' }),
+      persona({ id: 'mi-li', name: '米粒' }),
+    ];
+    listPersonaSessionHeads.mockResolvedValue({
+      'xiao-you': {
+        total: 4,
+        items: [
+          hers({ id: 'home_you', title: '小柚', updated_at: '2026-10-01T10:00:00Z' }),
+          hers({ id: 'topic_loaded', title: '小柚 · 已在首屏切片', updated_at: '2026-10-03T10:00:00Z' }),
+          hers({ id: 'topic_cold_1', title: '小柚 · 冷归档对话一', updated_at: '2026-09-12T10:00:00Z' }),
+          hers({ id: 'topic_cold_2', title: '小柚 · 冷归档对话二', updated_at: '2026-08-05T10:00:00Z' }),
+        ],
+      },
+      'dou-dou': {
+        total: 2,
+        items: [
+          hers({ id: 'dou_cold_1', title: '豆豆 · 改稿一', last_seq: 0 }, 'dou-dou'),
+          hers({ id: 'dou_cold_2', title: '豆豆 · 改稿二', last_seq: 0 }, 'dou-dou'),
+        ],
+      },
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = await render(
+      [hers({ id: 'topic_loaded', title: '小柚 · 已在首屏切片', updated_at: '2026-10-03T10:00:00Z' })],
+      undefined,
+      '/',
+      { home_you: 1, topic_loaded: 1, topic_cold_1: 1, topic_cold_2: 1 },
+      queryClient,
+    );
+    await flush();
+
+    // 1 single aggregate request across all 3 personas; 0 per-persona listSessions calls!
+    expect(listPersonaSessionHeads).toHaveBeenCalledTimes(1);
+    expect(listPersonaSessionHeads).toHaveBeenCalledWith({ per_persona_limit: 10, include_private: true });
     expect(listSessions).not.toHaveBeenCalled();
 
-    await openSwitcher(container);
+    // Alt+Tab `invalidateQueries({ queryKey: ['sessions'] })` must NOT trigger any persona head or switcher refetch.
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    });
     await flush();
-
-    expect(listSessions).toHaveBeenCalledWith({ persona: 'xiao-you', page_size: 100, include_private: true });
-    expect(switcherSessions(container)).toEqual(['topic_loaded', 'topic_cold']);
-    expect(switcherStatus(container)).toBe('ready');
-  });
-
-  it('keeps the loaded rows while that read is still in flight', async () => {
-    directory.entries = [persona()];
-    listSessions.mockReturnValue(new Promise(() => {}));
-    const container = await render([hers({ id: 'topic_loaded' })]);
-
-    await openSwitcher(container);
-    await flush();
-
-    // An empty panel for a beat reads as "this persona has none".
-    expect(switcherSessions(container)).toEqual(['topic_loaded']);
-    expect(switcherStatus(container)).toBe('loading');
-  });
-
-  it('does not pass an empty list off as a persona without conversations', async () => {
-    directory.entries = [persona()];
-    listSessions.mockRejectedValue(new Error('Session index is building'));
-    const container = await render();
-
-    await openSwitcher(container);
-    await flush();
-
-    expect(switcherStatus(container)).toBe('failed');
-  });
-
-  it('asks nothing until the panel is opened, and again per persona, not per row', async () => {
-    directory.entries = [persona(), persona({ id: 'zhou', name: '小周' })];
-    const container = await render([session({ id: 'topic_loaded' })]);
-
-    // Two personas on screen, panel closed: no read, no prefetch.
+    expect(listPersonaSessionHeads).toHaveBeenCalledTimes(1);
     expect(listSessions).not.toHaveBeenCalled();
-    await openSwitcher(container);
-    await flush();
-    expect(listSessions).toHaveBeenCalledTimes(1);
 
-    await openSwitcher(container, 'zhou');
+    // Total conversations = home_you (1) + 3 non-home topics = 4.
+    const toggle = container.querySelector<HTMLButtonElement>('[data-persona-switcher-toggle="xiao-you"]')!;
+    expect(toggle.getAttribute('data-persona-thread-count')).toBe('4');
+
+    // Idle persona starts collapsed; clicking the count chevron unfolds inline without any floating popover.
+    expect(container.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(document.body.querySelector('[data-persona-switcher]')).toBeNull();
+    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1']);
+
+    // Clicking "+1 · All conversations" expands the remaining cold conversation inline in place without needing listSessions when total <= head items.
+    const moreBtn = container.querySelector<HTMLButtonElement>('[data-persona-subthreads-more="xiao-you"]')!;
+    expect(moreBtn.textContent).toContain('+1');
+    await act(async () => { moreBtn.click(); });
+    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1', 'topic_cold_2']);
+    expect(listSessions).not.toHaveBeenCalled();
+
+    // Clicking Show less returns to the compact 2-thread preview, and clicking the chevron collapses completely.
+    const lessBtn = container.querySelector<HTMLButtonElement>('[data-persona-subthreads-less="xiao-you"]')!;
+    await act(async () => { lessBtn.click(); });
+    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1']);
+
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
+  });
+
+  it('preserves unread status on cold and private serverItems outside the global slice without misclassifying seen/empty historical threads', async () => {
+    const globalSlice = [
+      hers({ id: 'topic_loaded_read', title: '小柚 · 首屏已读', last_seq: 3, updated_at: '2026-11-17T10:00:00Z' }),
+    ];
+    const seen = {
+      home_you: 4,
+      topic_loaded_read: 3,
+      topic_cold_seen: 6,
+      topic_cold_unread: 2,
+    };
+    directory.entries = buildPersonaDirectory(
+      [{ id: 'xiao-you', name: '小柚', revision: 'rev-1', archived: false, homeSessionId: 'home_you' }],
+      [],
+      globalSlice,
+      seen,
+    );
+    expect((directory.entries[0] as PersonaDirectoryEntry).unreadCount).toBe(0);
+
+    listPersonaSessionHeads.mockResolvedValue({
+      'xiao-you': {
+        total: 6,
+        items: [
+          hers({ id: 'home_you', title: '小柚', last_seq: 4, updated_at: '2026-11-10T10:00:00Z' }),
+          globalSlice[0]!,
+          hers({ id: 'topic_cold_seen', title: '小柚 · 已读冷归档', last_seq: 6, updated_at: '2026-09-01T10:00:00Z' }),
+          hers({ id: 'topic_cold_empty', title: '小柚 · 空草稿归档', last_seq: 0, updated_at: '2026-08-01T10:00:00Z' }),
+          hers({ id: 'topic_cold_unread', title: '小柚 · 冷会话新回复', last_seq: 5, updated_at: '2026-10-12T10:00:00Z' }),
+          hers({ id: 'topic_private_unread', title: '小柚 · 私有未读对话', private: true, last_seq: 2, updated_at: '2026-11-16T10:00:00Z' }),
+        ],
+      },
+    });
+
+    const container = await render(globalSlice, undefined, '/', seen);
     await flush();
-    expect(listSessions).toHaveBeenCalledTimes(2);
-    expect(listSessions).toHaveBeenLastCalledWith({ persona: 'zhou', page_size: 100, include_private: true });
+
+    // Only the 2 genuinely unread server-only threads count as unread; seen/empty historical threads stay read.
+    expect(container.querySelector('[data-persona-unread-count="2"]')).not.toBeNull();
+    expect(subthreadIds(container)).toEqual(['topic_private_unread', 'topic_cold_unread']);
+    const lifeMarks = [...container.querySelectorAll('[data-persona-subthreads="xiao-you"] [data-life]')].map((el) => el.getAttribute('data-life'));
+    expect(lifeMarks).toEqual(['done', 'done']);
+    expect(container.querySelector('[data-persona-subthreads-more="xiao-you"]')?.textContent).toContain('+3');
+  });
+
+  it('keeps loaded conversations visible while server queries are still in flight or reject', async () => {
+    directory.entries = [persona({ id: 'xiao-you', name: '小柚', homeSessionId: 'home_you' })];
+    listPersonaSessionHeads.mockReturnValue(new Promise(() => {}));
+    const container = await render([
+      hers({ id: 'home_you', title: '小柚' }),
+      hers({ id: 'topic_loaded', title: '小柚 · 本地已载入' }),
+    ], 'topic_loaded');
+    await flush();
+
+    expect(container.querySelector('[data-persona-thread-count="2"]')).not.toBeNull();
+    expect(subthreadIds(container)).toEqual(['topic_loaded']);
   });
 });
 
 describe('collapsible and count-bounded persona group', () => {
-  it('removes inner scroll, caps preview at 8 with priority and recency ordering, and expands/collapses', async () => {
+  it('removes inner scroll, caps preview at 8 in fixed order, and expands/collapses cleanly', async () => {
     expect(SIDEBAR_PERSONA_PREVIEW_LIMIT).toBe(8);
     directory.entries = [
       persona({ id: 'p-alpha', name: 'Alpha', lastActivityAt: 100 }),
@@ -263,16 +414,15 @@ describe('collapsible and count-bounded persona group', () => {
     expect(wrapper.className).not.toContain('overflow-y-auto');
     expect(wrapper.className).not.toContain('max-h-');
 
-    const initialIds = [...container.querySelectorAll('[data-sidebar-persona-row]')].map((el) => el.getAttribute('data-sidebar-persona-row'));
-    expect(initialIds).toEqual([
+    expect(rowIds(container)).toEqual([
+      'p-alpha',
+      'p-bravo',
+      'p-charlie',
       'p-delta',
-      'p-foxtrot',
       'p-echo',
+      'p-foxtrot',
       'p-golf',
       'p-hotel',
-      'p-juliet',
-      'p-charlie',
-      'p-bravo',
     ]);
 
     const moreBtn = container.querySelector<HTMLButtonElement>('[data-sidebar-personas-more="more"]')!;
@@ -290,30 +440,36 @@ describe('collapsible and count-bounded persona group', () => {
     expect(container.querySelector('[data-sidebar-personas-collapsed-unread="3"]')).not.toBeNull();
   });
 
-  it('orders unread and recently active personas ahead of cold alphabetical entries', () => {
-    const ordered = orderSidebarPersonas([
-      persona({ id: 'cold-a', name: 'Alpha' }),
-      persona({ id: 'cold-b', name: 'Bravo', lastActivityAt: 1_000 }),
-      persona({ id: 'recent-fast', name: 'Helper · Fast', lastActivityAt: 9_000 }),
-      persona({ id: 'unread-z', name: 'Zulu · Fast', life: 'done', unreadCount: 1, unreadSessionIds: ['u1'], lastActivityAt: 5_000 }),
-    ]);
-    expect(ordered.map((item) => item.id)).toEqual(['unread-z', 'recent-fast', 'cold-b', 'cold-a']);
-  });
-
-  it('offers quick Pin, Hide from list, and Persona settings actions from the row menu', async () => {
-    directory.entries = [persona({ id: 'xiao-you', name: '小柚', pinned: false })];
+  it('offers New conversation, Pin (moving persona to top of savedOrder), Hide from list, and Persona settings actions from the row menu', async () => {
+    directory.entries = [
+      persona({ id: 'zhou', name: '小周', pinned: false }),
+      persona({ id: 'xiao-you', name: '小柚', pinned: false }),
+    ];
     const container = await render();
+    expect(rowIds(container)).toEqual(['zhou', 'xiao-you']);
+
     const menuToggle = container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!;
     await act(async () => { menuToggle.click(); });
     const menu = document.body.querySelector('[data-persona-row-menu]')!;
     expect(menu).not.toBeNull();
-    const hideItem = menu.querySelector<HTMLButtonElement>('[data-menu-item="hide"]')!;
+    expect(menu.querySelector('[data-menu-item="new-topic"]')).not.toBeNull();
+
+    const pinItem = menu.querySelector<HTMLButtonElement>('[data-menu-item="pin"]')!;
+    await act(async () => { pinItem.click(); });
+    await flush();
+    expect(updatePersona).toHaveBeenCalledWith('xiao-you', { pinned: true });
+    expect(rowIds(container)).toEqual(['xiao-you', 'zhou']);
+    expect(JSON.parse(localStorage.getItem(SIDEBAR_PERSONA_ORDER_KEY) ?? '[]')).toEqual(['xiao-you', 'zhou']);
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-menu-toggle="xiao-you"]')!.click(); });
+    const menu2 = document.body.querySelector('[data-persona-row-menu]')!;
+    const hideItem = menu2.querySelector<HTMLButtonElement>('[data-menu-item="hide"]')!;
     await act(async () => { hideItem.click(); });
     await flush();
     expect(updatePersona).toHaveBeenCalledWith('xiao-you', { hidden: true });
   });
 
-  it('expands inline topic threads for active or attention personas while keeping idle multi-thread personas collapsed to their count pill', async () => {
+  it('expands inline topic threads for active or attention personas while keeping idle multi-thread personas collapsed until toggled', async () => {
     directory.entries = [
       persona({ id: 'contest-coach', name: '教练 · 赛事顾问', homeSessionId: 'session_home', pinned: true }),
       persona({
@@ -339,10 +495,8 @@ describe('collapsible and count-bounded persona group', () => {
       hers({ id: 'session_idle_2', title: '归档 · 历史搭子｜九月周报', updated_at: '2026-11-09T08:00:00Z' }, 'archive-scribe'),
     ], 'session_radar');
 
-    // All three multi-thread personas retain their 3-conversation switcher count pill.
     expect(container.querySelectorAll('[data-persona-thread-count="3"]')).toHaveLength(3);
 
-    // Selected persona expands its inline topic threads.
     const activeSubthreads = [...container.querySelectorAll<HTMLButtonElement>('[data-persona-subthreads="contest-coach"] [data-persona-subthread]')];
     expect(activeSubthreads.map((item) => item.getAttribute('data-persona-subthread'))).toEqual([
       'session_radar',
@@ -351,16 +505,17 @@ describe('collapsible and count-bounded persona group', () => {
     expect(activeSubthreads[0]?.textContent).toContain('全域赛程梳理');
     expect(activeSubthreads[0]?.getAttribute('aria-current')).toBe('page');
 
-    // Unselected persona with unread activity surfaces only its unread/attention thread + overflow link.
     const unreadSubthreads = [...container.querySelectorAll<HTMLButtonElement>('[data-persona-subthreads="fact-check"] [data-persona-subthread]')];
     expect(unreadSubthreads.map((item) => item.getAttribute('data-persona-subthread'))).toEqual([
       'session_fact_unread',
     ]);
     expect(container.querySelector('[data-persona-subthreads-more="fact-check"]')?.textContent).toContain('+1');
 
-    // Unselected, completely idle multi-thread persona stays collapsed to a single row so 8+ idle personas never push Conversations off-screen.
+    // Idle persona starts collapsed, and clicking its count toggle expands inline instead of opening a popover.
     expect(container.querySelector('[data-persona-subthreads="archive-scribe"]')).toBeNull();
-    expect(container.querySelector('[data-persona-switcher-toggle="archive-scribe"][data-persona-thread-count="3"]')).not.toBeNull();
+    const idleToggle = container.querySelector<HTMLButtonElement>('[data-persona-switcher-toggle="archive-scribe"][data-persona-thread-count="3"]')!;
+    await act(async () => { idleToggle.click(); });
+    expect(subthreadIds(container, 'archive-scribe')).toEqual(['session_idle_1', 'session_idle_2']);
 
     await act(async () => { activeSubthreads[1]!.click(); });
     expect(navigate).toHaveBeenCalledWith('/s/session_review');

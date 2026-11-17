@@ -21,7 +21,7 @@ import type { Session } from '@kiki/protocol';
 
 import { isPinnedSession, type ConversationListItem, type SessionGroup } from '@kiki/session-core/sessions';
 
-export type SessionRelationKind = 'thread' | 'branch';
+export type SessionRelationKind = 'thread' | 'branch' | 'fork';
 
 export interface SessionRelation {
   readonly kind: SessionRelationKind;
@@ -30,7 +30,7 @@ export interface SessionRelation {
   readonly agentId?: string;
 }
 
-/** The session this one came from, if its metadata records one. */
+/** The session this one came from, if its metadata or fork provenance records one. */
 export function sessionRelationOf(session: Session): SessionRelation | undefined {
   const metadata = session.metadata as Record<string, unknown>;
   const createdBy = metadata['created_by_session_id'];
@@ -41,6 +41,10 @@ export function sessionRelationOf(session: Session): SessionRelation | undefined
   const parent = metadata['parent_session_id'];
   if (metadata['child_session_kind'] === 'child' && typeof parent === 'string' && parent !== '' && parent !== session.id) {
     return { kind: 'branch', parentId: parent };
+  }
+  const forkedParent = session.forked_from?.session_id;
+  if (typeof forkedParent === 'string' && forkedParent !== '' && forkedParent !== session.id) {
+    return { kind: 'fork', parentId: forkedParent };
   }
   return undefined;
 }

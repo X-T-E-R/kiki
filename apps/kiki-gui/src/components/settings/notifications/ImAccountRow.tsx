@@ -7,6 +7,7 @@ import { pluginSettingsPath } from '@kiki/session-core/settings';
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
 import { copyTextToClipboard } from '../../../lib/clipboard';
+import { compactIdentifier } from '../../../lib/compactIdentifier';
 import { FeedbackLine, Toggle } from '../../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { FORM_LABEL } from '../SettingsPrimitives';
@@ -135,7 +136,7 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
       <AdvancedDetails summary={t('st.section.advanced')} data-im-account-advanced={account.id}>
         <div className="space-y-3" data-im-account-settings={account.id}>
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="min-w-0 break-all font-mono text-[12px] text-ink-soft" data-im-adapter={account.adapter}>{account.account_id ?? account.id}</span>
+            <span className="min-w-0 break-all font-mono text-[12px] text-ink-soft" data-im-adapter={account.adapter} title={account.account_id ?? account.id}>{compactIdentifier(account.account_id ?? account.id)}</span>
             <button type="button" data-im-copy-account className="rounded px-1.5 py-0.5 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink"
               onClick={() => { void copyTextToClipboard(account.account_id ?? account.id); }}>
               {t('st.channels.copy')}
@@ -236,7 +237,7 @@ function InboundFailures({ diagnostics }: { diagnostics: NonNullable<ImInstanceS
     <ul className="mt-1 max-h-64 space-y-2 overflow-y-auto pl-4">
       {diagnostics.map((diagnostic) => <li key={`${diagnostic.source_id}:${diagnostic.code}`} data-im-inbound-code={diagnostic.code}>
         <p>{t(`st.im.inboundFailure.${diagnostic.code}`)}</p>
-        <p className="break-all font-mono text-[11px] text-ink-soft">{diagnostic.source_id} · <time dateTime={diagnostic.at}>{new Date(diagnostic.at).toLocaleString()}</time></p>
+        <p className="break-all font-mono text-[11px] text-ink-soft"><span title={diagnostic.source_id}>{compactIdentifier(diagnostic.source_id)}</span> · <time dateTime={diagnostic.at}>{new Date(diagnostic.at).toLocaleString()}</time></p>
       </li>)}
     </ul>
   </details>;

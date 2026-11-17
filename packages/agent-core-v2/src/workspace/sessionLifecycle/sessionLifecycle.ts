@@ -42,6 +42,7 @@ export interface ForkSessionOptions {
    */
   readonly turnIndex?: number;
   readonly throughUserMessage?: boolean;
+  readonly throughMessageId?: string;
   readonly externalMaterialOnly?: boolean;
   readonly seed?: SessionSeedMode;
   readonly carry?: SessionSeedCarry;

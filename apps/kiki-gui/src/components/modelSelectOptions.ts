@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { ModelCatalogItem } from '@kiki/protocol';
+import type { ModelCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
+import type { OAuthMethodStatus } from '@kiki/klient';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useConnection } from '../state/connection';
@@ -53,6 +53,17 @@ export function modelTooltip(item: ModelCatalogItem): string {
   return label === item.id ? ids : `${label}\n${ids}`;
 }
 
+const identityGroupLabel = (providerId: string): string => providerId;
+
+interface CachedCatalogOptionsEntry {
+  readonly t: Translate;
+  readonly groupLabel: (providerId: string) => string;
+  readonly currentId: string | undefined;
+  readonly options: readonly SearchableSelectOption[];
+}
+
+const catalogOptionsCache = new WeakMap<readonly ModelCatalogItem[], CachedCatalogOptionsEntry[]>();
+
 /**
  * Construct SearchableSelect options for catalog models: provider grouping,
  * an id hint, the decision facts as badges, and ids as search keywords.
@@ -61,7 +72,7 @@ export function buildCatalogModelOptions(
   models: readonly ModelCatalogItem[],
   t: Translate,
   {
-    groupLabel = (providerId: string) => providerId,
+    groupLabel = identityGroupLabel,
     currentId,
   }: {
     /** Provider display label for group headers; defaults to the provider id. */
@@ -70,7 +81,15 @@ export function buildCatalogModelOptions(
     readonly currentId?: string;
   } = {},
 ): SearchableSelectOption[] {
-  return models.map((item) => {
+  const bucket = catalogOptionsCache.get(models);
+  const hit = bucket?.find(
+    (entry) => entry.t === t && entry.groupLabel === groupLabel && entry.currentId === currentId,
+  );
+  if (hit !== undefined) {
+    return [...hit.options];
+  }
+
+  const built = models.map((item) => {
     const label = item.display_name ?? item.id;
     return {
       value: item.id,
@@ -85,6 +104,45 @@ export function buildCatalogModelOptions(
       title: modelTooltip(item),
     };
   });
+
+  if (models.length > 0) {
+    const nextBucket = bucket === undefined ? [] : bucket.slice(-3);
+    nextBucket.push({ t, groupLabel, currentId, options: built });
+    catalogOptionsCache.set(models, nextBucket);
+  }
+  return [...built];
+}
+
+let cachedGroupLabelSource: {
+  providers: readonly ProviderCatalogItem[] | undefined;
+  methods: readonly OAuthMethodStatus[] | undefined;
+  fn: (providerId: string) => string;
+} | null = null;
+
+function resolveProviderGroupLabel(
+  providers: readonly ProviderCatalogItem[] | undefined,
+  methods: readonly OAuthMethodStatus[] | undefined,
+): (providerId: string) => string {
+  if (
+    cachedGroupLabelSource !== null
+    && cachedGroupLabelSource.providers === providers
+    && cachedGroupLabelSource.methods === methods
+  ) {
+    return cachedGroupLabelSource.fn;
+  }
+  const labels = new Map<string, string>();
+  for (const method of methods ?? []) labels.set(method.provider, method.label);
+  const vendor = new Map<string, string>();
+  for (const provider of providers ?? []) {
+    const label = vendorLabelFor(provider.base_url);
+    if (label !== undefined && !labels.has(provider.id)) vendor.set(provider.id, label);
+  }
+  const counts = new Map<string, number>();
+  for (const label of vendor.values()) counts.set(label, (counts.get(label) ?? 0) + 1);
+  for (const [id, label] of vendor) if (counts.get(label) === 1) labels.set(id, label);
+  const fn = (providerId: string) => labels.get(providerId) ?? providerId;
+  cachedGroupLabelSource = { providers, methods, fn };
+  return fn;
 }
 
 /**
@@ -106,17 +164,5 @@ export function useProviderGroupLabel(): (providerId: string) => string {
     staleTime: 60_000,
     enabled: typeof client.listOAuthMethods === 'function',
   });
-  return useMemo(() => {
-    const labels = new Map<string, string>();
-    for (const method of methodsQuery.data ?? []) labels.set(method.provider, method.label);
-    const vendor = new Map<string, string>();
-    for (const provider of providersQuery.data?.items ?? []) {
-      const label = vendorLabelFor(provider.base_url);
-      if (label !== undefined && !labels.has(provider.id)) vendor.set(provider.id, label);
-    }
-    const counts = new Map<string, number>();
-    for (const label of vendor.values()) counts.set(label, (counts.get(label) ?? 0) + 1);
-    for (const [id, label] of vendor) if (counts.get(label) === 1) labels.set(id, label);
-    return (providerId: string) => labels.get(providerId) ?? providerId;
-  }, [providersQuery.data, methodsQuery.data]);
+  return resolveProviderGroupLabel(providersQuery.data?.items, methodsQuery.data);
 }

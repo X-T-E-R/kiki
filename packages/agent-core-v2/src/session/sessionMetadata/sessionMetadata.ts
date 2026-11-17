@@ -74,6 +74,55 @@ export function promotedFromOf(meta: {
   };
 }
 
+/** Origin of a session forked from another session, including optional turn/message boundary and seed mode. */
+export interface SessionForkedFrom {
+  readonly sessionId: string;
+  readonly title?: string;
+  readonly throughMessageId?: string;
+  readonly turnIndex?: number;
+  readonly throughUserMessage?: boolean;
+  readonly seed?: 'fresh' | 'compact' | 'verbatim';
+  readonly forkedAt?: number;
+}
+
+/** `custom` key mirroring fork provenance so cold index summaries carry full lineage metadata. */
+export const FORKED_FROM_KEY = 'forked_from';
+
+/** Reads fork provenance from `custom`, falling back to legacy `SessionMeta.forkedFrom`. */
+export function forkedFromOf(meta: {
+  readonly forkedFrom?: string;
+  readonly custom?: Record<string, unknown>;
+}): SessionForkedFrom | undefined {
+  const value = meta.custom?.[FORKED_FROM_KEY];
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const candidate = value as Record<string, unknown>;
+    if (typeof candidate['sessionId'] === 'string' && candidate['sessionId'].length > 0) {
+      const rawSeed = candidate['seed'];
+      const seed = rawSeed === 'fresh' || rawSeed === 'compact' || rawSeed === 'verbatim' ? rawSeed : undefined;
+      return {
+        sessionId: candidate['sessionId'],
+        title: typeof candidate['title'] === 'string' && candidate['title'].length > 0 ? candidate['title'] : undefined,
+        throughMessageId:
+          typeof candidate['throughMessageId'] === 'string' && candidate['throughMessageId'].length > 0
+            ? candidate['throughMessageId']
+            : undefined,
+        turnIndex:
+          typeof candidate['turnIndex'] === 'number' && Number.isInteger(candidate['turnIndex']) && candidate['turnIndex'] >= 0
+            ? candidate['turnIndex']
+            : undefined,
+        throughUserMessage:
+          typeof candidate['throughUserMessage'] === 'boolean' ? candidate['throughUserMessage'] : undefined,
+        seed,
+        forkedAt: typeof candidate['forkedAt'] === 'number' ? candidate['forkedAt'] : undefined,
+      };
+    }
+  }
+  if (typeof meta.forkedFrom === 'string' && meta.forkedFrom.length > 0) {
+    return { sessionId: meta.forkedFrom };
+  }
+  return undefined;
+}
+
 export const SESSION_META_VERSION = 2;
 
 export type SessionTitleKind = 'replaceable' | 'generated' | 'custom';

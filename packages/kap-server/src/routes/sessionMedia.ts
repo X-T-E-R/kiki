@@ -190,7 +190,8 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
         const etag = `"preview-v2-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
         r.header('etag', etag).header('accept-ranges', 'bytes');
         if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(undefined) as void;
-        const result = await createMediaPreview(file, req.query.media_type, signal);
+        const homeDir = core.accessor.get(IBootstrapService)?.homeDir ?? '';
+        const result = await createMediaPreview(file, req.query.media_type, signal, `${homeDir}\0${etag}`);
         if (r.raw.destroyed) return;
         r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));
         const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);

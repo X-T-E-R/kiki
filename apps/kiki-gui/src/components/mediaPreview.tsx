@@ -729,13 +729,23 @@ function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSr
   const preview = useMediaPreview();
   const hostPath = image.item.path === undefined ? undefined : resolveHostPath(image.item.path, preview?.cwd);
   const [retry, setRetry] = useState({ id: image.id, attempt: 0 });
-  const canonical = seededSrc === undefined && (image.item.fileId !== undefined || hostPath !== undefined);
-  const load = useSessionMedia(image.item, sessionId, canonical, false, retry.id === image.id ? retry.attempt : 0);
+  const hasCanonicalSource =
+    (sessionId !== undefined && image.item.fileId !== undefined && typeof (client as { readSessionMediaBytes?: unknown } | undefined)?.readSessionMediaBytes === 'function') ||
+    (hostPath !== undefined && typeof (client as { readHostFileBytes?: unknown } | undefined)?.readHostFileBytes === 'function');
+  const retryAttempt = retry.id === image.id ? retry.attempt : 0;
+  const load = useSessionMedia(image.item, sessionId, hasCanonicalSource, false, retryAttempt);
   const bytes = load.status === 'ready' ? load.bytes : undefined;
   const mime = bytes === undefined ? image.item.mime : resolveImageMime(bytes, load.status === 'ready' ? load.mime : image.item.mime) ?? image.item.mime;
-  const typedSrc = useTypedImageUrl(bytes, mime);
-  const src = seededSrc ?? typedSrc ?? (canonical ? load.status === 'ready' ? load.url : undefined : image.item.url);
+  const typedSrc = useTypedImageUrl(bytes, load.status === 'ready' ? load.mime : undefined);
+  const externalSeedSrc = hasCanonicalSource && seededSrc?.startsWith('blob:') === true ? undefined : seededSrc;
+  const previewFallbackSrc = externalSeedSrc ?? (load.status !== 'ready' ? load.thumbnailUrl : undefined);
+  const fullSrc = hasCanonicalSource
+    ? (load.status === 'ready' ? (typedSrc ?? load.url) : undefined)
+    : (externalSeedSrc ?? image.item.url);
+  const src = fullSrc ?? previewFallbackSrc;
   const size = load.status === 'ready' ? load.bytes.byteLength : image.item.size;
+  const isLoading = src === undefined && hasCanonicalSource && load.status === 'loading';
+  const isFailed = src === undefined && hasCanonicalSource && load.status === 'failed';
 
   const onSaveOriginal = useMemo(() => {
     if (client === undefined || (hostPath === undefined && (sessionId === undefined || image.item.fileId === undefined))) return undefined;
@@ -773,8 +783,8 @@ function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSr
           localKikiComputer={localKikiComputer}
           mime={mime}
           size={size}
-          loading={canonical && load.status === 'loading'}
-          failed={canonical && load.status === 'failed'}
+          loading={isLoading}
+          failed={isFailed}
           onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
           onSaveOriginal={onSaveOriginal}
           index={index}

@@ -2063,6 +2063,83 @@ describe('TranscriptService live integration', () => {
     } finally { service.dispose(); await rm(home, { recursive: true, force: true }); }
   });
 
+  it('bounds string-identified open turns and attributeless tool-result tails', async () => {
+    const home = await seedWireHome();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    const records: object[] = [];
+    for (let turnId = 0; turnId < 20; turnId++) {
+      records.push({ type: 'turn.prompt', turnId, origin: { kind: 'user' }, input: [{ type: 'text', text: `question ${turnId}` }] });
+      if (turnId < 19) records.push({ type: 'turn.ended', turnId, reason: 'completed' });
+    }
+    records.push({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '19', uuid: 'open-step', step: 1 } });
+    for (let index = 0; index < 16; index++) records.push({ type: 'context.append_loop_event', event: {
+      type: 'assistant.delta', turnId: '19', stepUuid: 'open-step', uuid: `delta-${index}`, delta: 'x'.repeat(128 << 10),
+    } });
+    for (let index = 0; index < 6; index++) records.push({ type: 'context.append_loop_event', event: {
+      type: 'tool.result', uuid: `result-${index}`, toolCallId: `call-${index}`, result: { output: 'y'.repeat(256 << 10) },
+    } });
+    await writeFixtureFile(path, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const snapshot = await service.readColdPageSnapshot('s1', 'main', value => value, undefined, false, undefined, false, true);
+      const turns = snapshot!.items.filter(item => item.kind === 'turn');
+      expect(turns.map(turn => turn.turnId)).toEqual(Array.from({ length: 20 }, (_, index) => `t${index}`));
+      expect(turns.at(-1)?.stepsPartial).toBe(true);
+      expect(service.memoryReport().coldWindowBytes).toBeLessThan(4 << 20);
+    } finally { service.dispose(); await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('attributes skipped results to the unended turn before the next opening', async () => {
+    const home = await seedWireHome();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    const records: object[] = Array.from({ length: 19 }, (_, turnId) => [
+      { type: 'turn.prompt', turnId, origin: { kind: 'user' }, input: [{ type: 'text', text: `question ${turnId}` }] },
+      { type: 'turn.ended', turnId, reason: 'completed' },
+    ]).flat();
+    records.push(
+      { type: 'turn.prompt', turnId: 19, origin: { kind: 'user' }, input: [{ type: 'text', text: 'unended turn' }] },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '19', uuid: 'old-step', step: 1 } },
+      { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'old-call', result: { output: 'x'.repeat(512 << 10) } } },
+      { type: 'turn.prompt', turnId: 20, origin: { kind: 'user' }, input: [{ type: 'text', text: 'new turn' }] },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '20', uuid: 'new-step', step: 1 } },
+      { type: 'context.append_loop_event', event: { type: 'assistant.delta', turnId: '20', stepUuid: 'new-step', uuid: 'new-text', delta: 'y'.repeat(768 << 10) } },
+      { type: 'turn.ended', turnId: 20, reason: 'completed' },
+    );
+    await writeFixtureFile(path, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const snapshot = await service.readColdPageSnapshot('s1', 'main', value => value, undefined, false, undefined, false, true);
+      const turns = snapshot!.items.filter(item => item.kind === 'turn');
+      expect(turns.map(turn => turn.turnId)).toEqual(Array.from({ length: 20 }, (_, index) => `t${index + 1}`));
+      expect(turns.find(turn => turn.turnId === 't19')?.stepsPartial).toBe(true);
+      expect(turns.find(turn => turn.turnId === 't20')?.stepsPartial).not.toBe(true);
+    } finally { service.dispose(); await rm(home, { recursive: true, force: true }); }
+  });
+
+  it.each(['prompt', 'loop event', 'compaction'])('finds twenty turns past a multi-megabyte %s record', async (kind) => {
+    const home = await seedWireHome();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    const records: object[] = [];
+    for (let turnId = 0; turnId < 25; turnId++) {
+      records.push({ type: 'turn.prompt', turnId, origin: { kind: 'user' }, input: [{ type: 'text', text: kind === 'prompt' && turnId === 24 ? 'x'.repeat(2 << 20) : `question ${turnId}` }] });
+      if (turnId === 24 && kind === 'loop event') records.push(
+        { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '24', uuid: 'large-step', step: 1 } },
+        { type: 'context.append_loop_event', event: { type: 'assistant.delta', turnId: '24', stepUuid: 'large-step', uuid: 'large-text', delta: 'x'.repeat(2 << 20) } },
+      );
+      records.push({ type: 'turn.ended', turnId, reason: 'completed' });
+    }
+    if (kind === 'compaction') records.push({ type: 'context.apply_compaction', summary: 'x'.repeat(2 << 20) });
+    await writeFixtureFile(path, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
+      const turns = baseline!.snapshot.items.filter(item => item.kind === 'turn');
+      expect(turns.map(turn => turn.turnId)).toEqual(Array.from({ length: 20 }, (_, index) => `t${index + 5}`));
+      expect(baseline?.snapshot.hasMoreOlder).toBe(true);
+      if (kind === 'loop event') expect(turns.at(-1)?.stepsPartial).toBe(true);
+    } finally { service.dispose(); await rm(home, { recursive: true, force: true }); }
+  });
+
   it('opens a small saved transcript without reading its seal or waiting for live verification', async () => {
     const home = await seedWireHomeWithTool();
     const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
@@ -6007,7 +6084,7 @@ it.each([{ turnId: 0, prepared: false, warmed: false }, { turnId: 7, prepared: t
         promptId: `request-${id}`, input: [{ type: 'text', text: `opening-${id}` }], origin: { kind: 'user' }, time: 1000 + id });
     }
     for (let index = 0; index < 145; index += 1) records.push({ type: 'fixture.padding', padding: 'x'.repeat(64 << 10) });
-    if (warmed) records.push({ type: 'fixture.padding', padding: 'x'.repeat(2 << 20) });
+    if (warmed) records.push({ type: 'fixture.padding', padding: 'x'.repeat(9 << 20) });
     records.push({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId, uuid: 'tail-step', step: 1 }, time: 2000 },
       { type: 'turn.ended', turnId, reason: 'completed', time: 3000 });
     await writeFile(wirePath, `${records.map(record => JSON.stringify(record)).join('\n')}\n`);

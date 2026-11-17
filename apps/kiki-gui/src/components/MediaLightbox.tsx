@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { formatBytes } from '@kiki/session-core/composer/media';
 
 import { useHost } from '../host';
@@ -13,7 +13,7 @@ import { Icon } from './icons';
 import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageDownloadSink, imageDownloadStep, imageMenuEntries, isOnKikiComputer, noteMediaReady, saveMediaToDisk } from './imageActions';
 import { imagePreviewDownloadName, imagePreviewLabel } from './imagePreviewName';
 import { useDevicePixelRatio, useDragPan, MAX_ZOOM, MIN_ZOOM, ZOOM_STEPS, zoomPercentOf } from './ImageViewport';
-import { ImageViewportAnnotations, renderAnnotatedImage, type AnnotationTool, type ImageAnnotation } from './ImageViewportAnnotations';
+import { ImageViewportAnnotations, renderAnnotatedImage, scaleAnnotationMarks, type AnnotationTool, type ImageAnnotation } from './ImageViewportAnnotations';
 import { errorToText } from '@kiki/session-core/util';
 import { pushToast } from '../lib/toasts';
 
@@ -40,6 +40,32 @@ export function mediaSourceLabel(value: string | undefined): string | undefined 
   }
 }
 
+interface AnnotationRecord {
+  readonly baseWidth: number;
+  readonly baseHeight: number;
+  readonly marks: readonly ImageAnnotation[];
+}
+
+function projectAnnotations(
+  record: AnnotationRecord | undefined,
+  targetWidth: number | undefined,
+  targetHeight: number | undefined,
+): readonly ImageAnnotation[] {
+  if (record === undefined || record.marks.length === 0) return [];
+  if (
+    targetWidth === undefined ||
+    targetHeight === undefined ||
+    targetWidth <= 0 ||
+    targetHeight <= 0 ||
+    record.baseWidth <= 0 ||
+    record.baseHeight <= 0 ||
+    (record.baseWidth === targetWidth && record.baseHeight === targetHeight)
+  ) {
+    return record.marks;
+  }
+  return scaleAnnotationMarks(record.marks, targetWidth / record.baseWidth, targetHeight / record.baseHeight);
+}
+
 export function MediaLightbox({ src, name, identity = src ?? 'image', loading = false, failed: sourceFailed = false, onRetry, index = 0, count = 1, onSelect, onClose, sourcePath, linkUrl, outcomeKey, localKikiComputer, remote, mime, size, onSaveOriginal }: {
   src?: string; name?: string; identity?: string; loading?: boolean; failed?: boolean; onRetry?: () => void;
   index?: number; count?: number; onSelect?: (index: number) => void; onClose: () => void;
@@ -64,13 +90,17 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const [editing, setEditing] = useState(false);
   const [tool, setTool] = useState<AnnotationTool>('arrow');
   const [selected, setSelected] = useState<number>();
-  const [annotations, setAnnotations] = useState<Record<string, readonly ImageAnnotation[]>>({});
-  const [history, setHistory] = useState<(readonly ImageAnnotation[])[]>([]);
+  const [annotations, setAnnotations] = useState<Record<string, AnnotationRecord>>({});
+  const [history, setHistory] = useState<AnnotationRecord[]>([]);
   const [saveFailed, setSaveFailed] = useState(false);
   const [transfer, setTransfer] = useState<{ status: 'idle' | 'downloading' | 'saving' | 'saved' | 'failed'; bytes?: number; total?: number; message?: string }>({ status: 'idle' });
   const downloadController = useRef<AbortController | null>(null);
-  const editStart = useRef<readonly ImageAnnotation[]>([]);
-  const marks = annotations[identity] ?? [];
+  const editStart = useRef<AnnotationRecord | undefined>(undefined);
+  const currentAnnotationRecord = annotations[identity];
+  const marks = useMemo(
+    () => projectAnnotations(currentAnnotationRecord, natural?.width, natural?.height),
+    [currentAnnotationRecord, natural?.width, natural?.height],
+  );
   const scroller = useRef<HTMLDivElement>(null);
   const image = useRef<HTMLImageElement>(null);
   const zoomAnchor = useRef<{ fx: number; fy: number; px: number; py: number } | null>(null);
@@ -124,7 +154,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     if (anchor === null || scroller.current === null || image.current === null) return;
     scroller.current.scrollLeft = image.current.offsetLeft + anchor.fx * image.current.offsetWidth - anchor.px;
     scroller.current.scrollTop = image.current.offsetTop + anchor.fy * image.current.offsetHeight - anchor.py;
-  }, [zoom]);
+  }, [zoom, natural]);
 
   const anchorAt = (point?: { x: number; y: number }) => {
     if (scroller.current === null || image.current === null) return;
@@ -154,8 +184,16 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     applyZoom(ZOOM_STEPS.toReversed().find((step) => step < current) ?? MIN_ZOOM);
   };
   const changeMarks = (next: readonly ImageAnnotation[]) => {
-    setHistory((previous) => [...previous, marks]);
-    setAnnotations((previous) => ({ ...previous, [identity]: next }));
+    const baseWidth = natural?.width ?? currentAnnotationRecord?.baseWidth ?? 1;
+    const baseHeight = natural?.height ?? currentAnnotationRecord?.baseHeight ?? 1;
+    setHistory((previous) => [
+      ...previous,
+      currentAnnotationRecord ?? { baseWidth, baseHeight, marks: [] },
+    ]);
+    setAnnotations((previous) => ({
+      ...previous,
+      [identity]: { baseWidth, baseHeight, marks: next },
+    }));
     setSaveFailed(false);
   };
   const finishEdit = () => {
@@ -164,7 +202,14 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     setHistory([]);
   };
   const cancelEdit = () => {
-    setAnnotations((previous) => ({ ...previous, [identity]: editStart.current }));
+    setAnnotations((previous) => {
+      if (editStart.current === undefined) {
+        const next = { ...previous };
+        delete next[identity];
+        return next;
+      }
+      return { ...previous, [identity]: editStart.current };
+    });
     setEditing(false);
     setSelected(undefined);
     setHistory([]);
@@ -176,13 +221,19 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     else onClose();
   };
   const save = async (annotated: boolean) => {
-    if (src === undefined && onSaveOriginal === undefined) return;
+    if (src === undefined && (annotated || onSaveOriginal === undefined)) return;
     setSaveFailed(false);
     const downloadName = imagePreviewDownloadName({ name });
     if (annotated) {
       if (src === undefined) return;
       try {
-        const blob = await renderAnnotatedImage(src, marks);
+        const blob = await renderAnnotatedImage(
+          src,
+          currentAnnotationRecord?.marks ?? marks,
+          currentAnnotationRecord === undefined
+            ? undefined
+            : { width: currentAnnotationRecord.baseWidth, height: currentAnnotationRecord.baseHeight },
+        );
         const filename = `${downloadName.replace(/\.[^.]+$/, '')}-annotated.png`;
         if (host.saveBlob !== undefined) await host.saveBlob(blob, filename);
         else {
@@ -262,7 +313,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     revealPath: host.revealPath,
     openPath: host.openPath,
     canCopyImage: src !== undefined && !loading && !failed && !sourceFailed,
-    canSave: true,
+    canSave: src !== undefined || onSaveOriginal !== undefined,
     annotated: marks.length > 0,
     onCopyImage: copyImage,
     onSave: () => save(false),
@@ -419,7 +470,26 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
           : failed || sourceFailed ? <div role="alert" data-lightbox-failure className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-shell-ink"><span>{t('media.unavailable', { name: label })}</span><button type="button" onClick={() => { setFailed(false); setNatural(undefined); setAttempt((value) => value + 1); onRetry?.(); }} className={controlClass}>{t('transcript.detail.retry')}</button></div>
             : <div className="relative mx-auto" style={{ width: displayWidth, maxWidth: zoom === 'fit' ? '100%' : 'none' }}>
               <img ref={image} key={`${identity}:${attempt}`} src={src} alt={label} referrerPolicy="no-referrer" tabIndex={0} draggable={false} decoding="async"
-                onError={() => { setFailed(true); }} onLoad={(event) => { setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); noteMediaReady(outcomeKey ?? (src === undefined ? undefined : `url:${src}`)); }}
+                onError={() => { setFailed(true); }} onLoad={(event) => {
+                  const nextWidth = event.currentTarget.naturalWidth;
+                  const nextHeight = event.currentTarget.naturalHeight;
+                  if (
+                    natural !== undefined &&
+                    natural.width > 0 &&
+                    natural.height > 0 &&
+                    nextWidth > 0 &&
+                    nextHeight > 0 &&
+                    (nextWidth !== natural.width || nextHeight !== natural.height) &&
+                    zoom !== 'fit'
+                  ) {
+                    anchorAt();
+                    const nextFitScale = Math.min(1, (viewportDims.width * 0.92) / nextWidth, (viewportDims.height * 0.75) / nextHeight);
+                    const nextSliderMin = Math.min(MIN_ZOOM, Math.max(1, Math.floor(zoomPercentOf(nextFitScale, dpr))));
+                    setZoom(Math.min(MAX_ZOOM, Math.max(nextSliderMin, Math.round(zoom * (natural.width / nextWidth)))));
+                  }
+                  setNatural({ width: nextWidth, height: nextHeight });
+                  noteMediaReady(outcomeKey ?? (src === undefined ? undefined : `url:${src}`));
+                }}
                 onClick={(event) => { if (!editing && !pan.consumePan()) switchZoom({ x: event.clientX, y: event.clientY }); }} className="block h-auto w-full rounded-lg" />
               {natural === undefined ? null : <ImageViewportAnnotations key={`${identity}:${editing}`} width={natural.width} height={natural.height} marks={marks} tool={tool} editing={editing} selected={selected} onSelect={setSelected} onChange={changeMarks} />}
             </div>}
@@ -431,7 +501,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
           <button
             type="button"
             disabled={natural === undefined || loading || failed || sourceFailed}
-            onClick={() => { editStart.current = marks; setHistory([]); setEditing(true); }}
+            onClick={() => { editStart.current = currentAnnotationRecord; setHistory([]); setEditing(true); }}
             className={controlClass}
           >
             {t('media.startAnnotation')}

@@ -38,6 +38,7 @@ const FsWireErrorCode = {
 import ignore, { type Ignore } from 'ignore';
 import type { WorkspacePathIndex } from '#/os/backends/node-local/workspacePathIndex';
 
+import { isSensitiveFile } from '#/_base/security/sensitiveFile';
 import { classifyTextSample, decodeUtfText } from '#/_base/text/encoding';
 import {
   buildEtag,
@@ -469,6 +470,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       offset = cursor.offset;
     }
     const candidates = index.fuzzy(req.query, false)!.filter(entry =>
+      !entry.sensitive &&
       (req.include_globs === undefined || matchesAnyGlob(entry.path, req.include_globs)) &&
       (req.exclude_globs === undefined || !matchesAnyGlob(entry.path, req.exclude_globs)));
     const items = candidates.slice(offset, offset + req.limit).map(entry => ({ path: entry.path, name: entry.name,
@@ -536,7 +538,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       visited += 1;
       const relPath = frame.path === '' ? entry.name : `${frame.path}/${entry.name}`;
       const isDir = entry.isDirectory && !entry.isSymbolicLink;
-      if (entry.name === '.git' || (query === '' && isHidden(entry.name))) continue;
+      if (entry.name === '.git' || (query === '' && isHidden(entry.name)) || (!isDir && isSensitiveFile(relPath))) continue;
       if (matcher?.ignores(isDir ? `${relPath}/` : relPath)) continue;
       if (isDir && query !== '') stack.push({ path: relPath, offset: 0 });
       if (req.include_globs && !matchesAnyGlob(relPath, req.include_globs)) continue;
@@ -601,7 +603,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
         include_git_status: false,
       });
       const filtered = listed.items
-        .filter((entry) => !VCS_METADATA_DIRS.has(entry.name))
+        .filter((entry) => !VCS_METADATA_DIRS.has(entry.name) && (entry.kind === 'directory' || !isSensitiveFile(entry.path)))
         .filter(
           (entry) =>
             req.include_globs === undefined || matchesAnyGlob(entry.path, req.include_globs),

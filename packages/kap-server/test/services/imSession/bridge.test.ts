@@ -2,7 +2,7 @@ import { createFeishuSessionAdapter, createTelegramSessionAdapter, type SessionS
 import type { UserMessageChannel } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ImInboundIdentity } from '../../../src/services/imSession/adapter';
+import { ImSendError, type ImInboundIdentity } from '../../../src/services/imSession/adapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { FakeImAdapter, fakeAdapterFactory } from '../../../src/services/imSession/fakeAdapter';
 import { HubSessionAdapter } from '../../../src/services/imSession/hubAdapter';
@@ -2082,6 +2082,275 @@ describe('IM group wake and reply routing', () => {
         { type: 'text', text: 'Telegram caption survives failed download' },
         { type: 'text', text: '[Unavailable external image: download_failed]' },
       ]);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it('tags text_failed vs attachment_partial on partial sendUserMessage receipts for empty or failed text vs empty messageIds', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    let failText = false;
+    let emptyTextIds = false;
+    let mediaStatus: 'delivered' | 'unsupported' | 'failed' = 'delivered';
+    const origSendTextParts = adapter.sendTextParts.bind(adapter);
+    adapter.sendTextParts = async (message) => {
+      if (message.code === 'send_message' && failText) {
+        throw new ImSendError('send_failed', [], 0, 'failed');
+      }
+      const res = await origSendTextParts(message);
+      return emptyTextIds ? { messageId: '', messageIds: [] } : res;
+    };
+    adapter.sendMedia = async () => {
+      if (mediaStatus === 'unsupported') return { status: 'unsupported', unsupported: ['voice'] };
+      if (mediaStatus === 'failed') return { status: 'failed', messageIds: [] };
+      return { status: 'delivered', messageIds: ['img_1'] };
+    };
+    const base = ports({
+      readAttachment: async ({ blobId }) => ({
+        name: blobId === 'voice' ? 'voice.ogg' : 'pic.png',
+        mediaType: blobId === 'voice' ? 'audio/ogg' : 'image/png',
+        bytes: Buffer.from('data'),
+      }),
+    });
+    const harness = bridgeFor(adapter, base);
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: 'pair', identity, kind: 'text', text: 'pair' });
+      const discovery = (await harness.bridge.snapshot()).discoveries[0]!;
+      await harness.bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'sess' } });
+
+      failText = true;
+      mediaStatus = 'delivered';
+      const failedTextReceipt = await harness.bridge.sendUserMessage({
+        sessionId: 'sess',
+        toolCallId: 'partial-text-failed',
+        text: 'hello',
+        attachments: [{ blobId: 'pic', path: 'pic.png', kind: 'image', mimeType: 'image/png' }],
+      });
+      expect(failedTextReceipt.channels?.find((ch) => ch.channelId.startsWith('im:'))).toMatchObject({
+        status: 'partial',
+        messageIds: ['img_1'],
+        detail: 'text_failed:send_failed',
+      });
+
+      failText = false;
+      emptyTextIds = true;
+      mediaStatus = 'unsupported';
+      const unsupportedVoiceReceipt = await harness.bridge.sendUserMessage({
+        sessionId: 'sess',
+        toolCallId: 'partial-voice-unsupported',
+        text: 'hello without id',
+        attachments: [{ blobId: 'voice', path: 'voice.ogg', kind: 'voice', mimeType: 'audio/ogg' }],
+      });
+      expect(unsupportedVoiceReceipt.channels?.find((ch) => ch.channelId.startsWith('im:'))).toMatchObject({
+        status: 'partial',
+        messageIds: [],
+        unsupported: ['voice'],
+      });
+
+      mediaStatus = 'failed';
+      const attachmentPartialReceipt = await harness.bridge.sendUserMessage({
+        sessionId: 'sess',
+        toolCallId: 'partial-attachment-failed-empty-ids',
+        text: 'hello without id',
+        attachments: [{ blobId: 'pic', path: 'pic.png', kind: 'image', mimeType: 'image/png' }],
+      });
+      expect(attachmentPartialReceipt.channels?.find((ch) => ch.channelId.startsWith('im:'))).toMatchObject({
+        status: 'partial',
+        messageIds: [],
+        detail: 'attachment_partial',
+      });
+    } finally {
+      await harness.bridge.close();
+    }
+  });
+
+  it('isolates text_failed per instance token, preserves partial detail across replay/restart, and skips snapshot on sendUserMessage', async () => {
+    const secrets = new Map<string, string>();
+    let stored = '';
+    let ownsShouldThrow = false;
+    const adapterA = new FakeImAdapter('telegram', 'acct_a');
+    const adapterB = new FakeImAdapter('telegram', 'acct_b');
+    const origSendTextA = adapterA.sendTextParts.bind(adapterA);
+    adapterA.sendTextParts = async (message) => {
+      if (message.code === 'send_message') {
+        throw new ImSendError('send_failed', [], 0, 'failed');
+      }
+      return origSendTextA(message);
+    };
+    adapterA.sendMedia = async () => ({ status: 'delivered', messageIds: ['img_a'] });
+
+    const origSendTextB = adapterB.sendTextParts.bind(adapterB);
+    adapterB.sendTextParts = async (message) => {
+      if (message.code === 'send_message') {
+        return { messageId: '', messageIds: [] };
+      }
+      return origSendTextB(message);
+    };
+    adapterB.sendMedia = async () => ({ status: 'unsupported', unsupported: ['voice'] });
+
+    const makeBridge = () => {
+      const base = ports({
+        owns: async (sessionId) => {
+          if (ownsShouldThrow) throw new Error('index_io_failure');
+          return sessionId === 'sess' || sessionId === 'home';
+        },
+        readAttachment: async ({ blobId }) => ({
+          name: blobId === 'voice' ? 'voice.ogg' : 'pic.png',
+          mediaType: blobId === 'voice' ? 'audio/ogg' : 'image/png',
+          bytes: Buffer.from('data'),
+        }),
+      });
+      return new ImSessionBridge({
+        ports: {
+          ...base.ports,
+          credentials: {
+            list: () => [...secrets.keys()].map((id) => ({ id, providerId: 'telegram', configured: true })),
+            read: (id) => secrets.get(id),
+            write: async (id, value) => { secrets.set(id, value); },
+            check: async (instanceId) => ({
+              ok: true,
+              accountId: (secrets.get(instanceId) ?? '').startsWith('111111:') ? 'acct_a' : 'acct_b',
+            }),
+            create: async ({ credential }) => {
+              const id = credential.startsWith('111111:') ? 'inst_a' : 'inst_b';
+              secrets.set(id, credential);
+              return { instanceId: id };
+            },
+          },
+          load: async () => stored === '' ? undefined : stored,
+          save: async (value) => { stored = value; },
+        },
+        factories: [{
+          providerKind: 'telegram',
+          inbound: true,
+          outbound: true,
+          create: ({ credential }) => credential.startsWith('111111:') ? adapterA : adapterB,
+        }],
+        editIntervalMs: 0,
+        now: () => 1_700_000_000_000,
+        wait: () => Promise.resolve(),
+      });
+    };
+
+    const bridge = makeBridge();
+    try {
+      await bridge.paste({ text: '111111:aaaaaaaaaaaaaaaaaaaaaaaaaa' });
+      await bridge.paste({ text: '222222:bbbbbbbbbbbbbbbbbbbbbbbbbb' });
+      await bridge.setListening('inst_a', true);
+      await bridge.setListening('inst_b', true);
+
+      await adapterA.emit({ eventId: 'pair-a', identity, kind: 'text', text: 'pair a' });
+      const discA = (await bridge.snapshot()).discoveries.find((d) => d.provider_instance_id === 'inst_a')!;
+      await bridge.confirm(discA.id, { target: { kind: 'session', session_id: 'sess' } });
+
+      await adapterB.emit({ eventId: 'pair-b', identity, kind: 'text', text: 'pair b' });
+      const discB = (await bridge.snapshot()).discoveries.find((d) => d.provider_instance_id === 'inst_b')!;
+      await bridge.confirm(discB.id, { target: { kind: 'session', session_id: 'sess' } });
+
+      const bindings = (await bridge.snapshot()).bindings;
+      const bindingA = bindings.find((b) => b.provider_instance_id === 'inst_a')!;
+      const bindingB = bindings.find((b) => b.provider_instance_id === 'inst_b')!;
+
+      ownsShouldThrow = true;
+      const input = {
+        sessionId: 'sess',
+        toolCallId: 'multi-instance-partial',
+        text: 'hello both',
+        attachments: [{ blobId: 'voice', path: 'voice.ogg', kind: 'voice', mimeType: 'audio/ogg' }],
+      };
+      const first = await bridge.sendUserMessage(input);
+      expect(first.channels?.find((c) => c.channelId === `im:${bindingA.id}`)).toMatchObject({
+        status: 'partial',
+        messageIds: ['img_a'],
+        detail: 'text_failed:send_failed',
+      });
+      expect(first.channels?.find((c) => c.channelId === `im:${bindingB.id}`)).toMatchObject({
+        status: 'partial',
+        messageIds: [],
+        unsupported: ['voice'],
+      });
+      expect(first.channels?.find((c) => c.channelId === `im:${bindingB.id}`)?.detail).toBeUndefined();
+
+      const inMemoryReplay = await bridge.sendUserMessage(input);
+      expect(inMemoryReplay).toEqual(first);
+      ownsShouldThrow = false;
+      await bridge.setPolicy(bridge.policy());
+    } finally {
+      await bridge.close();
+    }
+
+    ownsShouldThrow = false;
+    const restarted = makeBridge();
+    try {
+      await restarted.whenReady();
+      ownsShouldThrow = true;
+      const coldReplay = await restarted.sendUserMessage({
+        sessionId: 'sess',
+        toolCallId: 'multi-instance-partial',
+        text: 'hello both',
+        attachments: [{ blobId: 'voice', path: 'voice.ogg', kind: 'voice', mimeType: 'audio/ogg' }],
+      });
+      const bindings = (JSON.parse(stored) as { bindings: Array<{ id: string; providerInstanceId: string }> }).bindings;
+      const bindingA = bindings.find((b) => b.providerInstanceId === 'inst_a')!;
+      expect(coldReplay.channels?.find((c) => c.channelId === `im:${bindingA.id}`)).toMatchObject({
+        status: 'partial',
+        messageIds: ['img_a'],
+        detail: 'text_failed:send_failed',
+      });
+    } finally {
+      await restarted.close();
+    }
+  });
+
+  it('passes raw state straight through ports.save without JSON.parse on routine inbound cursor persists', async () => {
+    const adapter = new FakeImAdapter('telegram', 'acct_cursor');
+    const savedPayloads: string[] = [];
+    const base = ports({ owns: async () => true });
+    const bridge = new ImSessionBridge({
+      ports: {
+        ...base.ports,
+        save: async (raw) => {
+          savedPayloads.push(raw);
+          await base.ports.save(raw);
+        },
+      },
+      factories: [fakeAdapterFactory(adapter)],
+      editIntervalMs: 0,
+      now: () => 1_700_000_000_000,
+      wait: () => Promise.resolve(),
+    });
+    try {
+      await bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      const instId = (await bridge.snapshot()).instances[0]!.id;
+      await bridge.setListening(instId, true);
+      await adapter.emit({
+        eventId: 'evt-pair-cursor',
+        cursor: 1,
+        identity,
+        kind: 'text',
+        text: 'hello',
+      });
+      const disc = (await bridge.snapshot()).discoveries[0]!;
+      await bridge.confirm(disc.id, { target: { kind: 'session', session_id: 'sess' } });
+
+      const savesBefore = savedPayloads.length;
+      const parseSpy = vi.spyOn(JSON, 'parse');
+      try {
+        await adapter.emit({
+          eventId: 'evt-cursor-2',
+          cursor: 2,
+          identity,
+          kind: 'text',
+          text: 'next message',
+        });
+        expect(savedPayloads.length).toBeGreaterThan(savesBefore);
+        const rawCursorSave = savedPayloads.at(-1)!;
+        expect(parseSpy.mock.calls.some(([input]) => input === rawCursorSave)).toBe(false);
+      } finally {
+        parseSpy.mockRestore();
+      }
     } finally {
       await bridge.close();
     }

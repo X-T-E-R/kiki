@@ -7,7 +7,7 @@ export interface ContextSourceReloadResult {
 
 export interface ISessionContextSourceReloader {
   readonly _serviceBrand: undefined;
-  reload(): Promise<ContextSourceReloadResult>;
+  reload(trigger?: string): Promise<ContextSourceReloadResult>;
 }
 
 export const ISessionContextSourceReloader: ServiceIdentifier<ISessionContextSourceReloader> =

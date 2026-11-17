@@ -152,7 +152,11 @@ describe('local workspace search indexes', () => {
       expect(files).toContain('src/keep.ts');
       expect(files).toContain('src/visible.txt');
       expect(files).toContain('.env.example');
-      for (const hidden of ['src/drop.ts', 'src/extra.txt', 'src/trace.log', 'ignored/file.ts', '.git/config', '.env', '.aws/credentials']) expect(files).not.toContain(hidden);
+      for (const hidden of ['src/drop.ts', 'src/extra.txt', 'src/trace.log', 'ignored/file.ts', '.git/config']) expect(files).not.toContain(hidden);
+      expect(inventory.entries.find(entry => entry.path === '.env')).toMatchObject({ path: '.env', sensitive: true });
+      expect(inventory.entries.find(entry => entry.path === '.aws/credentials')).toMatchObject({ path: '.aws/credentials', sensitive: true });
+      const searchableFiles = inventory.entries.filter(entry => entry.kind === 'file' && !entry.sensitive).map(entry => entry.path);
+      for (const secret of ['.env', '.aws/credentials']) expect(searchableFiles).not.toContain(secret);
       expect(inventory.entries).toContainEqual(expect.objectContaining({ path: 'empty', kind: 'directory' }));
       expect(workspacePathInventory(root, 2)).toEqual({ entries: [], overflow: true });
       await rm(join(root, '.git'), { recursive: true });

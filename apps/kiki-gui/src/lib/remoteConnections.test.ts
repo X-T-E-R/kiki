@@ -7,7 +7,7 @@ import type { RemoteConnection } from '@kiki/protocol';
 import {
   browsableRemote, completeConnectionEndpoint, connectionAddress, connectionIdOfSpaceKey, endpointIssue, fingerprint, formatPairingCode, formatPairingUri, identityBlock, pairingCodeIssue, parsePairingUri,
   invitationBlock, labelIssue, readIdentityBlock, readInvitationBlock, remoteSpaceKey, remoteSpaceScope,
-  remoteSummaryView, purposeKeys,
+  remoteSummaryView, purposeKeys, spacePlatformLabel,
 } from './remoteConnections';
 import { configureSpaceStorage } from './spaceStorage';
 import { readHomeViewRoute, writeSpaceViewRoute } from './spaceViewState';
@@ -77,8 +77,31 @@ describe('readings that survive an offline peer', () => {
     expect(remoteSummaryView(record(), 30_000)).toBeNull();
   });
 
-  it('keeps the server’s own stale flag', () => {
+  it('keeps the server’s own stale flag and surfaces platform, borrowable tools, and rtt', () => {
     expect(remoteSummaryView(record({ summary: { ...summary, stale: true } }), 1_100)?.stale).toBe(true);
+    const enriched = remoteSummaryView(
+      record({
+        rttMs: 14,
+        summary: {
+          ...summary,
+          value: { ...summary.value, platform: 'win32', borrowable_tool_count: 4 },
+        },
+      }),
+      1_100,
+    );
+    expect(enriched).toEqual({
+      busy: 3,
+      needsYou: 2,
+      asOf: 1_000,
+      stale: false,
+      platform: 'win32',
+      borrowableTools: 4,
+      rttMs: 14,
+    });
+    expect(spacePlatformLabel('win32')).toBe('Windows');
+    expect(spacePlatformLabel('linux')).toBe('Linux');
+    expect(spacePlatformLabel('darwin')).toBe('macOS');
+    expect(spacePlatformLabel(undefined)).toBeUndefined();
   });
 
   it('reads an address without the scheme or path', () => {

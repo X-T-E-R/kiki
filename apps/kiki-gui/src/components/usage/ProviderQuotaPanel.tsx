@@ -772,14 +772,18 @@ function EngineQuotaSection({
           })}
         </ul>
       ) : null}
-      <p className="mt-2 text-[11.5px] text-ink-faint">
-        {hidden > 0 ? (
-          <span data-quota-hidden-engines={hidden} className="mr-1.5">{t(q('usage.quota.engines.hidden'), { n: hidden })}</span>
-        ) : null}
-        <span data-quota-engines-auto-note={anyQuotaSelectorShown ? 'true' : undefined}>
-          {t(q(anyQuotaSelectorShown ? 'usage.quota.engines.autoScheduleNote' : 'usage.quota.engines.note'))}
-        </span>
-      </p>
+      {hidden > 0 || anyQuotaSelectorShown ? (
+        <p className="mt-2 text-[11.5px] text-ink-faint">
+          {hidden > 0 ? (
+            <span data-quota-hidden-engines={hidden} className="mr-1.5">{t(q('usage.quota.engines.hidden'), { n: hidden })}</span>
+          ) : null}
+          {anyQuotaSelectorShown ? (
+            <span data-quota-engines-auto-note="true">
+              {t(q('usage.quota.engines.autoScheduleNote'))}
+            </span>
+          ) : null}
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -1026,21 +1030,23 @@ function EngineQuotaRow({
               </button>
             </div>
           ) : pStatus === 'expired' ? (
-            <div className="flex flex-wrap items-center gap-2 text-[12px] text-amber-ink" data-engine-quota-expired={engineId}>
-              <span data-engine-quota-read-at={selectedPluginSnapshot?.readAt} title={selectedPluginSnapshot?.readAt}>
-                {t(q('usage.quota.engines.pluginExpired'), {
-                  time: selectedPluginSnapshot?.readAt ? time.relativeTime(selectedPluginSnapshot.readAt) : '',
-                })}
-              </span>
-              <span aria-hidden className="text-ink-faint">·</span>
+            <div className="flex items-center gap-1.5" data-engine-quota-expired={engineId}>
               <button
                 type="button"
                 data-engine-quota-query={engineId}
+                data-engine-quota-read-at={selectedPluginSnapshot?.readAt}
                 disabled={isRefreshingPlugin}
                 onClick={() => { void runPluginRefresh(); }}
-                className="font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink disabled:opacity-50"
+                aria-label={`${t(q('usage.quota.engines.pluginExpired'), {
+                  time: selectedPluginSnapshot?.readAt ? time.relativeTime(selectedPluginSnapshot.readAt) : '',
+                })} · ${t('usage.quota.refresh')}`}
+                title={`${t(q('usage.quota.engines.pluginExpired'), {
+                  time: selectedPluginSnapshot?.readAt ? time.relativeTime(selectedPluginSnapshot.readAt) : '',
+                })} · ${t('usage.quota.refresh')}`}
+                className="inline-flex h-7 items-center gap-1 rounded border border-amber-rule/40 bg-amber-card px-2 text-[11px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/15 disabled:opacity-50"
               >
-                {t('usage.quota.refresh')}
+                <Icon name="refresh" size={12} className={isRefreshingPlugin ? 'animate-spin' : undefined} />
+                <span>{t('usage.quota.status.expired')}</span>
               </button>
             </div>
           ) : accountGroups.length === 0 ? (
@@ -1188,12 +1194,14 @@ function UnsupportedQuotaSection({ sources, providerById }: {
   return (
     <details data-quota-unsupported={sources.length} open={open} onToggle={(event) => { setOpen(event.currentTarget.open); }}
       className="rounded-lg border border-hairline">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-[12.5px] text-ink-soft hover:text-ink [&::-webkit-details-marker]:hidden">
+      <summary
+        title={t(q('usage.quota.unsupported.note'))}
+        className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-[12.5px] text-ink-soft hover:text-ink [&::-webkit-details-marker]:hidden"
+      >
         <DisclosureChevron open={open} />
         <span>{t(q('usage.quota.unsupported.summary'), { n: sources.length })}</span>
       </summary>
-      <div className="border-t border-hairline px-3 pt-2 pb-3">
-        <p className="mb-1.5 text-[11.5px] text-ink-faint">{t(q('usage.quota.unsupported.note'))}</p>
+      <div className="border-t border-hairline px-3 py-2.5">
         <ul className="grid gap-x-6 sm:grid-cols-2">
           {ordered.map((source) => (
             <li key={source.id} data-quota-unsupported-item={source.id} className="flex min-w-0 items-center gap-2 py-0.5">

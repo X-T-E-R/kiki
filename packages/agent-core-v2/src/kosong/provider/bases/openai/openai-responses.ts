@@ -5,6 +5,7 @@ import { addDiagnosticCount, attachStreamDiagnostics, createStreamDiagnostics, s
 import {
   APIConnectionError,
   APIContextOverflowError,
+  APIProviderOverloadedError,
   APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
   APIStatusError,
@@ -384,10 +385,41 @@ function errorFromOpenAIResponsesEvent(
   if (isOpenAIInsufficientQuotaCode(code)) {
     return withEventDetails(new APIProviderQuotaExhaustedError(fullMessage));
   }
+  const bodyObj = asRawObject(body);
+  const rawType = bodyObj === null ? undefined : readStringField(bodyObj, 'type');
+  const retryAfterMs = readEmbeddedBodyRetryAfterMs(bodyObj);
   if (code === 'rate_limit_exceeded' || readEmbeddedStatusCode(message) === 429) {
-    return withEventDetails(new APIProviderRateLimitError(fullMessage));
+    return withEventDetails(new APIProviderRateLimitError(fullMessage, null, retryAfterMs));
+  }
+  if (
+    code === 'overloaded_error' ||
+    rawType === 'service_unavailable_error' ||
+    rawType === 'overloaded_error' ||
+    (code === 'server_error' && /overload|unavailable|capacity/i.test(message))
+  ) {
+    return withEventDetails(new APIProviderOverloadedError(503, fullMessage, null, retryAfterMs));
+  }
+  if (code === 'server_error' || rawType === 'server_error') {
+    return withEventDetails(new APIStatusError(500, fullMessage, null, retryAfterMs));
   }
   return withEventDetails(new ChatProviderError(fullMessage));
+}
+
+function readEmbeddedBodyRetryAfterMs(body: unknown): number | null {
+  const object = asRawObject(body);
+  const headers = object === null ? undefined : readObjectField(object, 'headers');
+  if (headers === undefined) return null;
+  const msRaw = readStringField(headers, 'retry-after-ms') ?? readStringField(headers, 'Retry-After-Ms');
+  if (msRaw !== undefined) {
+    const parsedMs = Number(msRaw);
+    if (Number.isFinite(parsedMs) && parsedMs > 0) return parsedMs;
+  }
+  const secRaw = readStringField(headers, 'retry-after') ?? readStringField(headers, 'Retry-After');
+  if (secRaw !== undefined) {
+    const parsedSec = Number(secRaw);
+    if (Number.isFinite(parsedSec) && parsedSec > 0) return parsedSec * 1_000;
+  }
+  return null;
 }
 
 function parseNestedGatewayStreamError(message: string):

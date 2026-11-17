@@ -97,6 +97,8 @@ export interface AgentRosterDescriptor {
   readonly branchInitiator?: 'user' | 'agent';
   readonly toolsLocked?: boolean;
   readonly branchSealed?: boolean;
+  readonly branchBaseTurnId?: number;
+  readonly branchBaseMessageId?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly thinkingEffortExplicit?: boolean;
@@ -186,6 +188,8 @@ export interface AgentTreeNode {
   readonly branchInitiator?: 'user' | 'agent';
   readonly toolsLocked?: boolean;
   readonly branchSealed?: boolean;
+  readonly branchBaseTurnId?: number;
+  readonly branchBaseMessageId?: string;
   readonly nameSource?: SnapshotNameSource;
   readonly statusSource?: SnapshotSubagent['status_source'];
   readonly model?: string;
@@ -285,6 +289,8 @@ interface DraftNode {
   branchInitiator: ('user' | 'agent') | undefined;
   toolsLocked: boolean | undefined;
   branchSealed: boolean | undefined;
+  branchBaseTurnId: number | undefined;
+  branchBaseMessageId: string | undefined;
   model: string | undefined;
   thinkingEffort: string | undefined;
   thinkingEffortExplicit: boolean | undefined;
@@ -400,6 +406,8 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.branchInitiator === b.branchInitiator &&
     a.toolsLocked === b.toolsLocked &&
     a.branchSealed === b.branchSealed &&
+    a.branchBaseTurnId === b.branchBaseTurnId &&
+    a.branchBaseMessageId === b.branchBaseMessageId &&
     a.nameSource === b.nameSource &&
     a.statusSource === b.statusSource &&
     a.model === b.model &&
@@ -594,6 +602,8 @@ export function buildAgentForest(
       branchInitiator: draft.branchInitiator,
       toolsLocked: draft.toolsLocked,
       branchSealed: draft.branchSealed,
+      branchBaseTurnId: draft.branchBaseTurnId,
+      branchBaseMessageId: draft.branchBaseMessageId,
       model: draft.model,
       thinkingEffort: draft.thinkingEffort,
       thinkingEffortExplicit: draft.thinkingEffortExplicit,
@@ -800,6 +810,8 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     branchInitiator: undefined,
     toolsLocked: undefined,
     branchSealed: undefined,
+    branchBaseTurnId: undefined,
+    branchBaseMessageId: undefined,
     model: undefined,
     thinkingEffort: undefined,
     thinkingEffortExplicit: undefined,
@@ -893,6 +905,8 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   if (entry.branchInitiator !== undefined) draft.branchInitiator = entry.branchInitiator;
   if (entry.toolsLocked !== undefined) draft.toolsLocked = entry.toolsLocked;
   if (entry.branchSealed !== undefined) draft.branchSealed = entry.branchSealed;
+  if (entry.branchBaseTurnId !== undefined) draft.branchBaseTurnId = entry.branchBaseTurnId;
+  if (entry.branchBaseMessageId !== undefined) draft.branchBaseMessageId = entry.branchBaseMessageId;
   draft.description = firstPresent(entry.description) ?? draft.description;
   applyToolCallCount(
     draft,

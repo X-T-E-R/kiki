@@ -2325,3 +2325,66 @@ it.each(['default', 'cockpit'] as const)('settles visible agents with an undrain
   expect(element.textContent).toContain('60%');
   expect(element.querySelector('[data-metrics-counting]')).toBeNull();
 });
+
+it('defers metrics_settle on a non-main branch/subagent view until its first-screen transcript has loaded, and scopes cockpit settle to the branch itself', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live',
+    owner: { agent_id: 'branch-1' },
+    available: true,
+    targets: [],
+    tools: [],
+    skills: [],
+    metrics: {
+      'branch-1': { ...countedMetrics(600, 0.04), usageComplete: false, usagePartial: true },
+      'sub-1': { ...countedMetrics(300, 0.02), usageComplete: false, usagePartial: true },
+    },
+  });
+  const branchForest: AgentForest = {
+    roots: [
+      { agentId: 'main', name: 'main', label: 'main', status: 'idle', busy: false, toolCallCount: 0, childIds: ['branch-1'] },
+    ],
+    byId: {
+      main: { agentId: 'main', name: 'main', label: 'main', status: 'idle', busy: false, toolCallCount: 0, childIds: ['branch-1'] },
+      'branch-1': { agentId: 'branch-1', parentAgentId: 'main', isBranch: true, name: 'branch-1', label: 'Polish rail', status: 'running', busy: true, toolCallCount: 2, childIds: ['sub-1'] },
+      'sub-1': { agentId: 'sub-1', parentAgentId: 'branch-1', name: 'sub-1', label: 'Reviewer', status: 'running', busy: true, toolCallCount: 1, childIds: [] },
+    },
+  };
+  harness.agents['branch-1'] = viewState({ loaded: false });
+
+  await act(async () => root.render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <I18nProvider>
+          <AgentPanelContainer
+            state={routedState()}
+            forest={branchForest}
+            agentId="branch-1"
+            scopeRootId="branch-1"
+            part="overview"
+            overviewMode="cockpit"
+          />
+        </I18nProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  ));
+  await flushRender();
+
+  // While branch-1 first screen is still loading (`loaded: false`), heavy metrics_settle must wait.
+  expect(getAgentCapabilities.mock.calls.some(([q]) => q.metrics_settle === true)).toBe(false);
+  expect(getAgentCapabilities.mock.calls.every(([q]) => q.agent_id === 'branch-1')).toBe(true);
+  expect(harness.sessionUsageAccounting).not.toHaveBeenCalled();
+
+  // Once branch-1's first screen finishes loading, metrics_settle runs scoped to branch-1 + sub-1 (never main).
+  harness.agents['branch-1'] = viewState({ loaded: true });
+  await act(async () => { harness.emit(); });
+  await flushRender();
+
+  const settled = getAgentCapabilities.mock.calls.find(([q]) => q.metrics_settle === true)?.[0];
+  expect(settled).toEqual({
+    session_id: 'session',
+    agent_id: 'branch-1',
+    metrics_settle: true,
+    metrics_only: true,
+    metrics_agent_ids: ['branch-1', 'sub-1'],
+  });
+});

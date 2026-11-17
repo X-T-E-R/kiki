@@ -166,12 +166,14 @@ describe('the SSH way into the add-connection form', () => {
       endpoint: 'http://192.168.1.40:5523',
       code: 'K9F2-7X4M',
       backgroundSummary: true,
-      requestBridge: false,
+      requestBridge: true,
+      borrowTools: true,
+      bridgeOperations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
     }));
     expect(onAdded).toHaveBeenCalledTimes(1);
   });
 
-  it('sends requestBridge: true when the thread-message checkbox is ticked and maps each pairing failure reason', async () => {
+  it('defaults requestBridge & borrowTools to true, updates payload when toggled, and maps each pairing failure reason', async () => {
     const pair = vi.fn()
       .mockRejectedValueOnce(new Error('invalid_pairing_code'))
       .mockRejectedValueOnce(new TypeError('fetch failed'))
@@ -200,12 +202,18 @@ describe('the SSH way into the add-connection form', () => {
     const endpoint = document.querySelector('[data-remote-endpoint]') as HTMLInputElement;
     const code = document.querySelector('[data-remote-code]') as HTMLInputElement;
     const requestBridgeBox = document.querySelector('[data-remote-request-bridge]') as HTMLInputElement;
-    expect(requestBridgeBox.checked).toBe(false);
+    const borrowToolsBox = document.querySelector('[data-remote-borrow-tools]') as HTMLInputElement;
+    expect(requestBridgeBox.checked).toBe(true);
+    expect(borrowToolsBox.checked).toBe(true);
+    expect(borrowToolsBox.disabled).toBe(false);
     await act(async () => {
       setValue(endpoint, 'http://192.168.1.40:5523');
       setValue(code, 'k9f27x4m');
       requestBridgeBox.click();
     });
+    expect(requestBridgeBox.checked).toBe(false);
+    expect(borrowToolsBox.checked).toBe(false);
+    expect(borrowToolsBox.disabled).toBe(true);
     const submit = document.querySelector('[data-remote-add-submit]') as HTMLButtonElement;
 
     await act(async () => { submit.click(); });
@@ -225,7 +233,9 @@ describe('the SSH way into the add-connection form', () => {
       endpoint: 'http://192.168.1.40:5523',
       code: 'K9F2-7X4M',
       backgroundSummary: true,
-      requestBridge: true,
+      requestBridge: false,
+      borrowTools: false,
+      bridgeOperations: undefined,
     }));
     expect(onAdded).toHaveBeenCalledTimes(1);
   });

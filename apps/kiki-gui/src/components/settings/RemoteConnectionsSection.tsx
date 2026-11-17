@@ -19,7 +19,7 @@ import { useI18n } from '../../i18n';
 import { isLocalOwnerRequiredError, isPeerConnectionSource } from '../../lib/peerAccess';
 import {
   browsableRemote, connectionAddress, connectionsApi, fingerprint, hasGuiPurpose,
-  remoteConnectionKeys, remoteSummaryView, useRemoteConnections,
+  remoteConnectionKeys, remoteSummaryView, spacePlatformLabel, useRemoteConnections,
 } from '../../lib/remoteConnections';
 import {
   hasThreadBridgesApi,
@@ -170,6 +170,13 @@ export function RemoteConnectionsSection() {
                   busy={busyId === record.id}
                   threadFact={threadFact}
                   onEnter={() => { void enterRemoteSpace(record.id, record.label); }}
+                  onVerifyFingerprint={api === null ? undefined : () => {
+                    run(
+                      record,
+                      (connection) => connection.verifyFingerprint(record.id),
+                      { tone: 'success', text: t('st.remote.fingerprintVerified', { name: record.label }) },
+                    );
+                  }}
                   onMenu={(anchor, element) => { setMenu({ record, anchor, anchorElement: element }); }}
                 />
               );
@@ -329,14 +336,15 @@ function OwnerSshProfileRow({ profile, onConnect }: {
   );
 }
 
-function RemoteConnectionRow({ record, busy, threadFact, onEnter, onMenu }: {
+function RemoteConnectionRow({ record, busy, threadFact, onEnter, onVerifyFingerprint, onMenu }: {
   record: RemoteConnection;
   busy: boolean;
   threadFact: ThreadMessageFact | null;
   onEnter: () => void;
+  onVerifyFingerprint?: () => void;
   onMenu: (anchor: DOMRect, element: HTMLElement) => void;
 }) {
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const summary = remoteSummaryView(record);
   const canOpen = hasGuiPurpose(record) && record.enabled;
   const enterable = browsableRemote(record);
@@ -345,6 +353,10 @@ function RemoteConnectionRow({ record, busy, threadFact, onEnter, onMenu }: {
     : undefined;
   const failure = record.lastError === undefined ? null : connectionFailureText(record.lastError);
   const hasCounts = summary !== null && (summary.busy > 0 || summary.needsYou > 0);
+  const platformLabel = spacePlatformLabel(summary?.platform);
+  const rttMs = record.state === 'online' ? (summary?.rttMs ?? record.rttMs) : undefined;
+  const borrowableTools = summary?.borrowableTools;
+  const hasHardwareMeta = platformLabel !== undefined || rttMs !== undefined || (borrowableTools !== undefined && borrowableTools > 0);
   return (
     <div role="listitem" data-remote-connection={record.id} data-remote-purpose={record.purposes.join('+')}
       data-remote-stale={summary !== null && summary.stale ? '' : undefined}
@@ -360,9 +372,20 @@ function RemoteConnectionRow({ record, busy, threadFact, onEnter, onMenu }: {
           {record.lastConnectedAt !== undefined ? ` · ${relativeTime(new Date(record.lastConnectedAt).toISOString(), locale)}` : ''}
         </p>
         {record.fingerprintToVerify !== undefined ? (
-          <p className="mt-0.5 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] text-ink-faint" data-remote-fingerprint-to-verify title={record.fingerprintToVerify}>
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-ink-faint" data-remote-fingerprint-to-verify title={record.fingerprintToVerify}>
             <span className="shrink-0">{t('st.remote.fingerprintToVerify')}:</span>
             <span className="whitespace-nowrap font-mono text-ink-soft">{fingerprint(record.fingerprintToVerify, 16, 8)}</span>
+            {onVerifyFingerprint !== undefined ? (
+              <button
+                type="button"
+                data-remote-verify-fingerprint={record.id}
+                disabled={busy}
+                onClick={onVerifyFingerprint}
+                className="rounded px-1.5 py-0.5 text-[11px] font-medium text-ink underline decoration-hairline-strong underline-offset-2 hover:text-accent disabled:opacity-50"
+              >
+                {t('st.remote.verifyFingerprint')}
+              </button>
+            ) : null}
           </p>
         ) : null}
         {record.pinnedFingerprint !== undefined ? (
@@ -372,6 +395,24 @@ function RemoteConnectionRow({ record, busy, threadFact, onEnter, onMenu }: {
           </p>
         ) : null}
         <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-ink-faint" data-remote-facts>
+          {platformLabel !== undefined ? (
+            <span className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-ink-soft" data-remote-platform={summary?.platform}>
+              {platformLabel}
+            </span>
+          ) : null}
+          {rttMs !== undefined ? (
+            <>
+              {platformLabel !== undefined ? <span aria-hidden>·</span> : null}
+              <span className="tabular-nums" data-remote-rtt>{rttMs} ms</span>
+            </>
+          ) : null}
+          {borrowableTools !== undefined && borrowableTools > 0 ? (
+            <>
+              {platformLabel !== undefined || rttMs !== undefined ? <span aria-hidden>·</span> : null}
+              <span className="tabular-nums" data-remote-tools>{tp('st.remote.borrowableTools', borrowableTools)}</span>
+            </>
+          ) : null}
+          {hasHardwareMeta ? <span aria-hidden>·</span> : null}
           <span data-remote-openable={canOpen ? 'yes' : 'no'}>
             {t(canOpen ? 'st.remote.canOpen' : 'st.remote.cantOpen')}
           </span>

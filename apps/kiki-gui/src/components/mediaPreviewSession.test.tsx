@@ -1844,4 +1844,149 @@ describe('lazy preview and lightbox chunk boundaries (#34)', () => {
       consoleError.mockRestore();
     }
   });
+
+  it('shows the cached thumbnail on frame 0 when opening the lightbox, upgrades to full resolution, and reopens with 0 network reads', async () => {
+    let urlCounter = 0;
+    vi.mocked(URL.createObjectURL).mockImplementation((blob: Blob | MediaSource) => `blob:kiki-${++urlCounter}-${blob instanceof Blob ? blob.size : 0}`);
+    const pngPreview = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const pngFull = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: pngPreview, mime: 'image/png', name: 'chart.png' });
+    let resolveFull!: (value: { bytes: Uint8Array; mime: string; name?: string }) => void;
+    mocks.readSessionMediaBytes.mockImplementation(
+      () => new Promise((resolve) => { resolveFull = resolve; }),
+    );
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider cwd="/work" sessionId="session_instant_lightbox">
+        <MediaPartList
+          media={[{ kind: 'image', fileId: 'file_instant_1', name: 'chart.png', mime: 'image/png', size: pngFull.byteLength }]}
+        />
+      </MediaPreviewProvider>,
+    );
+    await vi.waitFor(() => expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBeTruthy());
+
+    await act(async () => {
+      container.querySelector<HTMLElement>('img')!.closest('button')!.click();
+      await Promise.resolve();
+    });
+
+    const lightboxImgBeforeFull = document.querySelector<HTMLImageElement>('[role="dialog"] [data-lightbox-viewport] img');
+    expect(lightboxImgBeforeFull).not.toBeNull();
+    expect(lightboxImgBeforeFull!.getAttribute('src')).toMatch(/^blob:kiki-\d+-9$/);
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFull({ bytes: pngFull, mime: 'image/png', name: 'chart.png' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => {
+      const upgraded = document.querySelector<HTMLImageElement>('[role="dialog"] [data-lightbox-viewport] img');
+      expect(upgraded?.getAttribute('src')).toMatch(/^blob:kiki-\d+-12$/);
+    });
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Close"]')!.click();
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLElement>('img')!.closest('button')!.click();
+      await Promise.resolve();
+    });
+    expect(document.querySelector<HTMLImageElement>('[role="dialog"] [data-lightbox-viewport] img')).not.toBeNull();
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the lightbox from AttachmentTabView eye button with an independent preview blob and surfaces full-res failures', async () => {
+    let urlCounter = 0;
+    const revoked = new Set<string>();
+    vi.mocked(URL.createObjectURL).mockImplementation((blob: Blob | MediaSource) => `blob:att-${++urlCounter}-${blob instanceof Blob ? blob.size : 0}`);
+    vi.mocked(URL.revokeObjectURL).mockImplementation((url: string) => { revoked.add(url); });
+    const pngPreview = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9]);
+    const pngFull = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 8, 7, 6]);
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: pngPreview, mime: 'image/png', name: 'diagram.png' });
+    let resolveFull!: (value: { bytes: Uint8Array; mime: string; name?: string }) => void;
+    const fullPromise = new Promise<{ bytes: Uint8Array; mime: string; name?: string }>((resolve) => {
+      resolveFull = resolve;
+    });
+    mocks.readSessionMediaBytes.mockImplementation((_sid: string, fileId: string) =>
+      fileId === 'file_att_fail' ? Promise.reject(new Error('network boom')) : fullPromise,
+    );
+
+    const apiRef = { current: null as MediaPreviewApi | null };
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider cwd="/work" sessionId="session_att_eye" apiRef={apiRef}>
+        <MediaPartList
+          media={[{ kind: 'image', fileId: 'file_att_1', name: 'diagram.png', mime: 'image/png', size: pngFull.byteLength }]}
+        />
+      </MediaPreviewProvider>,
+    );
+    await vi.waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBeTruthy());
+
+    await act(async () => {
+      apiRef.current!.openAttachmentInWorkspace!({
+        kind: 'image',
+        fileId: 'file_att_1',
+        name: 'diagram.png',
+        mime: 'image/png',
+        size: pngFull.byteLength,
+      });
+      await Promise.resolve();
+    });
+
+    const tabPanel = await vi.waitFor(() => {
+      const el = document.querySelector<HTMLElement>('[data-preview-tabpanel]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    const tabThumbSrc = tabPanel.querySelector<HTMLImageElement>('img')?.getAttribute('src');
+    expect(tabThumbSrc).toMatch(/^blob:att-\d+-9$/);
+
+    const eyeBtn = tabPanel.querySelector<HTMLButtonElement>('button[aria-label="View image"]');
+    expect(eyeBtn).not.toBeNull();
+    await act(async () => {
+      eyeBtn!.click();
+      await Promise.resolve();
+    });
+
+    const lightboxImg = document.querySelector<HTMLImageElement>('[role="dialog"] [data-lightbox-viewport] img');
+    expect(lightboxImg).not.toBeNull();
+    const lightboxThumbSrc = lightboxImg!.getAttribute('src')!;
+    expect(lightboxThumbSrc).toMatch(/^blob:att-\d+-9$/);
+    expect(lightboxThumbSrc).not.toBe(tabThumbSrc);
+    expect(revoked.has(lightboxThumbSrc)).toBe(false);
+
+    await act(async () => {
+      resolveFull({ bytes: pngFull, mime: 'image/png', name: 'diagram.png' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLImageElement>('[role="dialog"] [data-lightbox-viewport] img')?.getAttribute('src')).toMatch(/^blob:att-\d+-12$/);
+      expect(tabPanel.querySelector<HTMLImageElement>('img')?.getAttribute('src')).toMatch(/^blob:att-\d+-12$/);
+    });
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Close"]')!.click();
+      apiRef.current!.openAttachmentInWorkspace!({
+        kind: 'image',
+        fileId: 'file_att_fail',
+        name: 'broken.png',
+        mime: 'image/png',
+        size: pngFull.byteLength,
+      });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-preview-attachment-error]')).not.toBeNull();
+    });
+  });
 });
+

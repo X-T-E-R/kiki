@@ -34,11 +34,19 @@ describe('sessionRelationOf', () => {
       .toEqual({ kind: 'thread', parentId: 'a', agentId: 'agent-3' });
   });
 
-  it('reads a forked child, and only when the child kind says so', () => {
+  it('reads a forked child, and only when the child kind or typed forked_from says so', () => {
     expect(sessionRelationOf(session('b', { parent_session_id: 'a', child_session_kind: 'child' })))
       .toEqual({ kind: 'branch', parentId: 'a' });
     expect(sessionRelationOf(session('b', { parent_session_id: 'a' }))).toBeUndefined();
     expect(sessionRelationOf(session('b', { parent_session_id: 'a', child_session_kind: 'thread' }))).toBeUndefined();
+    expect(sessionRelationOf({
+      ...session('b'),
+      forked_from: { session_id: 'a', turn_index: 2, seed: 'verbatim' },
+    })).toEqual({ kind: 'fork', parentId: 'a' });
+    expect(sessionRelationOf({
+      ...session('b'),
+      forked_from: { session_id: 'b' },
+    })).toBeUndefined();
   });
 
   it('ignores missing, empty, and self-referential parents', () => {

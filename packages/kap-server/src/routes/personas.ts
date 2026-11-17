@@ -1,7 +1,7 @@
 import { IPersonaStore, type PersonaCardFormat, type PersonaImportPreview } from '@kiki/agent-core-v2/app/persona/personaStore';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
-import { personaHomeInputSchema, personaHomeResponseSchema, personaStateUpdateSchema } from '@kiki/protocol';
-import { IWorkspaceService, type Scope } from '@kiki/agent-core-v2';
+import { personaHomeInputSchema, personaHomeResponseSchema, personaStateUpdateSchema, sessionSchema, type Session } from '@kiki/protocol';
+import { ISessionIndex, IWorkspacePersistence, IWorkspaceService, type Scope, type SessionSummary } from '@kiki/agent-core-v2';
 import {
   ErrorCode as ProtocolErrorCode,
   PERSONA_AVATAR_MAX_BYTES,
@@ -30,6 +30,29 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
+import { boundedListPreview } from '../transport/klient/boundedContent';
+import { resolveSessionPersonaId } from './sessionPersona';
+import { resolveSessionFacts, toWireSession } from './sessions';
+
+interface PersonaCursorReader {
+  getCursor(sessionId: string): Promise<{ readonly seq: number } | undefined> | { readonly seq: number } | undefined;
+}
+
+const personaSessionHeadsQuerySchema = z.object({
+  per_persona_limit: z.coerce.number().int().min(1).max(100).default(10),
+  include_private: z.preprocess(
+    (value) => (value === 'false' || value === false ? false : value === 'true' || value === true ? true : undefined),
+    z.boolean().default(true),
+  ),
+});
+
+const personaSessionHeadsResponseSchema = z.record(
+  z.string(),
+  z.object({
+    total: z.number().int().nonnegative(),
+    items: z.array(sessionSchema),
+  }),
+);
 
 interface PersonasRouteHost {
   get(
@@ -80,7 +103,7 @@ interface PersonaRequestFile {
   readonly fields: Record<string, unknown>;
 }
 
-export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope): void {
+export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broadcaster?: PersonaCursorReader): void {
   const listRoute = defineRoute({
     method: 'GET',
     path: '/personas',
@@ -99,6 +122,102 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope): voi
     }
   });
   app.get(listRoute.path, listRoute.options, listRoute.handler as unknown as Parameters<PersonasRouteHost['get']>[2]);
+
+  const sessionHeadsRoute = defineRoute({
+    method: 'GET',
+    path: '/personas/session-heads',
+    querystring: personaSessionHeadsQuerySchema,
+    success: { data: personaSessionHeadsResponseSchema },
+    errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'List aggregated conversation counts and recent head sessions per persona in one index scan',
+    tags: ['personas'],
+    operationId: 'listPersonaSessionHeads',
+  }, async (req, reply) => {
+    try {
+      const perPersonaLimit = req.query.per_persona_limit;
+      const includePrivate = req.query.include_private;
+      const [catalog, personaList] = await Promise.all([
+        core.accessor.get(IWorkspacePersistence).load(),
+        core.accessor.get(IPersonaStore).list({ includeArchived: true }),
+      ]);
+      const roots = new Map((catalog?.workspaces ?? []).map((w) => [w.id, w.root]));
+      const personaNames = new Map(personaList.map((p) => [p.id, p.name]));
+      const homeSessionIds = new Map<string, string>();
+      for (const persona of personaList) {
+        if (persona.homeSessionId !== undefined) {
+          homeSessionIds.set(persona.id, persona.homeSessionId);
+        }
+      }
+
+      const index = core.accessor.get(ISessionIndex);
+      const buckets = new Map<string, {
+        total: number;
+        nonHomeCount: number;
+        entries: Array<{ readonly summary: SessionSummary; readonly cwd: string }>;
+      }>();
+
+      let before: string | undefined;
+      for (;;) {
+        const page = await index.listRecent({ includeArchived: false, limit: 1000, before });
+        if (page.items.length === 0) break;
+        for (const summary of page.items) {
+          if (summary.archived) continue;
+          if (!includePrivate && summary.private === true) continue;
+          const cwd = summary.cwd ?? roots.get(summary.workspaceId);
+          if (cwd === undefined) continue;
+          const personaId = resolveSessionPersonaId(core, summary);
+          if (personaId === undefined) continue;
+          let bucket = buckets.get(personaId);
+          if (bucket === undefined) {
+            bucket = { total: 0, nonHomeCount: 0, entries: [] };
+            buckets.set(personaId, bucket);
+          }
+          bucket.total += 1;
+          const isHome = homeSessionIds.get(personaId) === summary.id;
+          if (isHome || bucket.nonHomeCount < perPersonaLimit) {
+            if (!isHome) bucket.nonHomeCount += 1;
+            bucket.entries.push({ summary, cwd });
+          }
+        }
+        if (page.nextCursor === undefined) break;
+        before = page.nextCursor;
+      }
+
+      const data: Record<string, { total: number; items: Session[] }> = {};
+      await Promise.all([...buckets.entries()].map(async ([personaId, bucket]) => {
+        const items = await Promise.all(bucket.entries.map(async ({ summary, cwd }) => {
+          let facts = resolveSessionFacts(core, summary.id, summary.usage);
+          if (facts.agentConfig?.persona === undefined) {
+            let name = personaNames.get(personaId);
+            if (name === undefined) {
+              name = (await core.accessor.get(IPersonaStore).get(personaId))?.definition.name ?? personaId;
+              personaNames.set(personaId, name);
+            }
+            facts = {
+              ...facts,
+              agentConfig: {
+                ...facts.agentConfig,
+                model: facts.agentConfig?.model ?? '',
+                persona: {
+                  id: personaId,
+                  name,
+                  avatarUrl: `/api/personas/${encodeURIComponent(personaId)}/avatar`,
+                },
+              },
+            };
+          }
+          const cursor = await broadcaster?.getCursor(summary.id);
+          return boundedListPreview(toWireSession(summary, cwd, facts, cursor?.seq));
+        }));
+        data[personaId] = { total: bucket.total, items };
+      }));
+
+      reply.send(okEnvelope(data, req.id));
+    } catch (error) {
+      sendPersonaError(reply as unknown as PersonaReply, req.id, error);
+    }
+  });
+  app.get(sessionHeadsRoute.path, sessionHeadsRoute.options, sessionHeadsRoute.handler as unknown as Parameters<PersonasRouteHost['get']>[2]);
 
   const homeRoute = defineRoute({
     method: 'POST', path: '/personas/{id}/home', params: personaIdParamsSchema,

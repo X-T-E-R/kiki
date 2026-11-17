@@ -80,4 +80,24 @@ describe('source-generated media preview', () => {
     await expect(createMediaPreview({ name: 'isolated.png', mediaType: 'image/png', size: 1024, stream: async function* () { try { yield new Uint8Array(512); abort.abort(); yield new Uint8Array(512); } finally { closed = true; } } }, undefined, abort.signal)).rejects.toThrow();
     expect(closed).toBe(true);
   });
+
+  it('reuses cached server preview bytes for matching cacheKey without reading or resampling the source twice', async () => {
+    const original = bitmap(640, 480);
+    let sourceReads = 0;
+    const makeSource = () => ({
+      name: 'cached.bmp',
+      mediaType: 'image/bmp',
+      size: original.byteLength,
+      stream: async function* () {
+        sourceReads += 1;
+        yield original;
+      },
+    });
+    const first = await createMediaPreview(makeSource(), undefined, new AbortController().signal, '"etag-cached-bmp-1"');
+    const second = await createMediaPreview(makeSource(), undefined, new AbortController().signal, '"etag-cached-bmp-1"');
+    expect(sourceReads).toBe(1);
+    expect(second.mime).toBe(first.mime);
+    expect(second.bytes).toEqual(first.bytes);
+  });
 });
+

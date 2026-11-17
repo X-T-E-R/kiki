@@ -21,17 +21,17 @@ import { formatCostUsd } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import {
-  buildUsageApiQuery,
   cacheHitRateOf,
   totalTokensOf,
   usageTokenTotalIsUnknown,
-  type UsageFilters,
   type UsageGroupBy,
   type UsageResponseWire,
   type UsageWindow,
 } from '../../lib/usageV2';
+import { SidePanel } from '../SidePanel';
 import { ThreadTitle } from '../ThreadTitle';
 import { SECONDARY_BUTTON } from '../ui';
+import { buildUsageMultiApiQuery, type UsageMultiFilters } from './usageFilterModel';
 import { KnownSubtotalMarker, formatPercent } from './usageShared';
 
 const PAGE_SIZE = 25;
@@ -58,7 +58,7 @@ export interface UsageSessionTraceRequest {
  * had it. An unknown row has no raw value to send, so it keeps the base
  * conditions and offers the common time-window trace instead of inventing one.
  */
-function traceFilters(base: UsageFilters, request: UsageSessionTraceRequest): UsageFilters {
+function traceFilters(base: UsageMultiFilters, request: UsageSessionTraceRequest): UsageMultiFilters {
   const filter = request.filter;
   return {
     ...base,
@@ -68,10 +68,10 @@ function traceFilters(base: UsageFilters, request: UsageSessionTraceRequest): Us
     startAt: request.window.startAt,
     endAt: request.window.endAt,
     granularity: base.granularity,
-    model: filter?.field === 'model' ? filter.value : base.model,
-    provider: filter?.field === 'provider' ? filter.value : base.provider,
+    models: filter?.field === 'model' ? [filter.value] : base.models,
+    providers: filter?.field === 'provider' ? [filter.value] : base.providers,
     profiles: filter?.field === 'profile' ? [filter.value] : base.profiles,
-    workspaceId: filter?.field === 'workspace.id' ? filter.value : base.workspaceId,
+    workspaceIds: filter?.field === 'workspace.id' ? [filter.value] : base.workspaceIds,
   };
 }
 
@@ -83,7 +83,7 @@ export function UsageSessionPanel({
   onClose,
 }: {
   readonly request: UsageSessionTraceRequest;
-  readonly baseFilters: UsageFilters;
+  readonly baseFilters: UsageMultiFilters;
   readonly timezoneOffsetMinutes: number;
   readonly workspaceName: (id: string) => string | undefined;
   readonly onClose: () => void;
@@ -98,7 +98,7 @@ export function UsageSessionPanel({
     queryKey: ['usage-v2', 'trace', filters, timezoneOffsetMinutes],
     queryFn: ({ pageParam, signal }) =>
       client.getUsage(
-        buildUsageApiQuery(filters, { timezoneOffsetMinutes, pageSize: PAGE_SIZE, pageToken: pageParam }),
+        buildUsageMultiApiQuery(filters, { timezoneOffsetMinutes, pageSize: PAGE_SIZE, pageToken: pageParam }),
         { signal },
       ),
     initialPageParam: undefined as string | undefined,
@@ -128,17 +128,14 @@ export function UsageSessionPanel({
   }, [first]);
 
   return (
-    <section aria-label={t('usage.sessions.panelTitle')} data-usage-session-panel="true" className="space-y-4">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="font-display text-[17px] font-semibold text-ink">{t('usage.sessions.panelTitle')}</h3>
-          <p className="mt-0.5 truncate text-[12.5px] text-ink-faint">{request.label}</p>
-        </div>
-        <button type="button" onClick={onClose}
-          className={`${SECONDARY_BUTTON} shrink-0`}>
-          {t('common.close')}
-        </button>
-      </div>
+    <SidePanel
+      title={t('usage.sessions.panelTitle')}
+      description={request.label}
+      overlayId="usage-session-panel"
+      width="lg"
+      onClose={onClose}
+      data={{ 'data-usage-session-panel': 'true' }}
+    >
       <div className="space-y-4">
         {request.filter !== undefined ? (
           <p className="text-[12.5px] leading-relaxed text-ink-faint">
@@ -234,7 +231,7 @@ export function UsageSessionPanel({
           </button>
         ) : null}
       </div>
-    </section>
+    </SidePanel>
   );
 }
 
@@ -258,6 +255,7 @@ function SessionTraceRow({
 }) {
   const { t, time } = useI18n();
   const unknownTotal = usageTokenTotalIsUnknown(item.usage);
+  const hasTurns = turns !== undefined && turns.turnIds.length > 0;
   return (
     <li className="py-2.5">
       <div className="flex items-baseline gap-3">
@@ -290,52 +288,45 @@ function SessionTraceRow({
       <button
         type="button"
         data-usage-trace-locate={item.id}
-        aria-expanded={expanded}
+        aria-expanded={hasTurns ? expanded : false}
+        disabled={!hasTurns}
+        title={hasTurns ? undefined : t('usage.sessions.noTurnAttribution')}
         onClick={onToggle}
-        className="mt-1.5 text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+        className="mt-1.5 text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline"
       >
-        {expanded ? t('usage.sessions.hideRaw') : t('usage.sessions.locateRaw')}
+        {expanded && hasTurns ? t('usage.sessions.hideRaw') : t('usage.sessions.locateRaw')}
       </button>
-      {expanded ? (
-        turns !== undefined && turns.turnIds.length > 0 ? (
-          <div data-usage-trace-turns className="mt-1.5 flex flex-wrap items-center gap-1">
-            {/* A busy session can carry hundreds of turns in a week. Showing
-                every id turns the locator into a wall of buttons, so the first
-                page is offered and the rest counted rather than hidden. */}
-            {turns.turnIds.slice(0, TURN_PAGE).map((turnId) => (
-              <button
-                key={turnId}
-                type="button"
-                data-usage-trace-turn={turnId}
-                onClick={() => { onOpenTurn(turnId); }}
-                title={t('usage.drilldown.turnHint')}
-                className="min-h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[11px] text-ink-soft tabular-nums transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-              >
-                {t('usage.drilldown.turnId', { id: turnId })}
-              </button>
-            ))}
-            {turns.turnIds.length > TURN_PAGE ? (
-              <span data-usage-trace-turns-more className="text-[11.5px] text-ink-faint">
-                {t('usage.sessions.moreTurns', { count: turns.turnIds.length - TURN_PAGE })}
-              </span>
-            ) : null}
-            {turns.truncated ? (
-              <span className="text-[11.5px] text-amber-ink">{t('usage.drilldown.turnIdsTruncated')}</span>
-            ) : null}
-            {turns.unknown > 0 ? (
-              <span className="text-[11.5px] text-amber-ink">
-                {t('usage.drilldown.unknownTurns', { count: turns.unknown })}
-              </span>
-            ) : null}
-          </div>
-        ) : (
-          // No turn attribution in this window: the session itself is the
-          // accurate target, so say that instead of offering a locator that
-          // would land nowhere.
-          <p data-usage-trace-no-turns className="mt-1 text-[11.5px] text-ink-faint">
-            {t('usage.sessions.noTurnAttribution')}
-          </p>
-        )
+      {expanded && hasTurns ? (
+        <div data-usage-trace-turns className="mt-1.5 flex flex-wrap items-center gap-1">
+          {/* A busy session can carry hundreds of turns in a week. Showing
+              every id turns the locator into a wall of buttons, so the first
+              page is offered and the rest counted rather than hidden. */}
+          {turns.turnIds.slice(0, TURN_PAGE).map((turnId) => (
+            <button
+              key={turnId}
+              type="button"
+              data-usage-trace-turn={turnId}
+              onClick={() => { onOpenTurn(turnId); }}
+              title={t('usage.drilldown.turnHint')}
+              className="min-h-8 rounded-md border border-hairline bg-paper px-2 font-mono text-[11px] text-ink-soft tabular-nums transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+            >
+              {t('usage.drilldown.turnId', { id: turnId })}
+            </button>
+          ))}
+          {turns.turnIds.length > TURN_PAGE ? (
+            <span data-usage-trace-turns-more className="text-[11.5px] text-ink-faint">
+              {t('usage.sessions.moreTurns', { count: turns.turnIds.length - TURN_PAGE })}
+            </span>
+          ) : null}
+          {turns.truncated ? (
+            <span className="text-[11.5px] text-amber-ink">{t('usage.drilldown.turnIdsTruncated')}</span>
+          ) : null}
+          {turns.unknown > 0 ? (
+            <span className="text-[11.5px] text-amber-ink">
+              {t('usage.drilldown.unknownTurns', { count: turns.unknown })}
+            </span>
+          ) : null}
+        </div>
       ) : null}
     </li>
   );

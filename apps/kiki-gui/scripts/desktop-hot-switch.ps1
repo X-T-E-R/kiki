@@ -6,14 +6,17 @@ param(
     [string]$ExpectedCommit,
     [switch]$Recover,
     [switch]$Background,
-    [ValidateRange(1, 86400)][int]$SettleSeconds = 300,
-    [ValidateRange(1, 3600)][int]$StartupSeconds = 90
+    [ValidateRange(1, 86400)][int]$SettleSeconds = 600,
+    [ValidateRange(1, 3600)][int]$StartupSeconds = 90,
+    [bool]$InterruptAfterSettle = $true,
+    [switch]$NoInterruptAfterSettle
 )
 
 $runtime = [IO.Path]::GetFullPath($RuntimeRoot)
 $homePath = [IO.Path]::GetFullPath($KikiHome)
 $candidate = $CandidateRoot
 $commit = $ExpectedCommit
+$allowInterruptAfterSettle = $InterruptAfterSettle -and (-not $NoInterruptAfterSettle)
 $entryScript = $PSCommandPath
 . (Join-Path $PSScriptRoot 'desktop-release.ps1') -Action Launch
 
@@ -36,15 +39,15 @@ function Call-Local([object]$Server, [string]$Path, [object]$Body, [int]$Timeout
 }
 
 function Execution([object]$Server, [string]$Id, [string]$Method, [object[]]$Arguments = @()) {
-    $timeout = if ($Method -in @('resume', 'cancelPause')) { 0 } else { 60 }
+    $timeout = if ($Method -in @('resume', 'cancelPause')) { 120 } else { 60 }
     Call-Local $Server 'klient/call' @{
         procedure = @{ scope = 'session'; sessionId = $Id; service = 'sessionExecutionControl'; method = $Method }
         params = $Arguments
     } $timeout
 }
 
-function Lifecycle([object]$Server, [string]$Action) {
-    $body = if ($Action) { @{ action = $Action; server_id = $Server.server_id; consent = $true; interrupt_work = $false } } else { $null }
+function Lifecycle([object]$Server, [string]$Action, [bool]$InterruptWork = $false) {
+    $body = if ($Action) { @{ action = $Action; server_id = $Server.server_id; consent = $true; interrupt_work = $InterruptWork } } else { $null }
     Call-Local $Server 'desktop-lifecycle' $body
 }
 
@@ -92,6 +95,15 @@ function Find-Shells {
 
 function Save-State { Write-AtomicUtf8Json $statePath $state }
 
+function Stop-ProcessBounded([object]$Proc, [int]$WaitMilliseconds = 5000) {
+    if ($null -eq $Proc) { return }
+    try { $Proc.Refresh() } catch {}
+    if ($Proc.HasExited) { return }
+    Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+    try { $null = $Proc.WaitForExit($WaitMilliseconds) } catch {}
+    try { $Proc.Refresh() } catch {}
+}
+
 function Close-DesktopShell([object]$Shell) {
     if ($Shell.HasExited) { return }
     $prefsPath = Join-Path $homePath 'desktop.json'
@@ -105,8 +117,19 @@ function Close-DesktopShell([object]$Shell) {
     }
     try {
         $Shell.Refresh()
-        if (!$Shell.HasExited -and (!$Shell.CloseMainWindow() -or !$Shell.WaitForExit($StartupSeconds * 1000))) {
-            throw 'The desktop did not accept its normal window-close request.'
+        if (!$Shell.HasExited) {
+            $gracefulWaitMs = [Math]::Max(1000, [Math]::Min($StartupSeconds * 1000, 10000))
+            $closedGracefully = $Shell.CloseMainWindow() -and $Shell.WaitForExit($gracefulWaitMs)
+            if (-not $closedGracefully) {
+                $Shell.Refresh()
+                if (!$Shell.HasExited) {
+                    Write-Verbose "Desktop shell $($Shell.Id) did not close via MainWindow (tray or hidden); terminating process."
+                    Stop-ProcessBounded $Shell 5000
+                }
+            }
+            if (!$Shell.HasExited) {
+                throw 'The desktop did not exit after window-close and process termination.'
+            }
         }
     } finally {
         if ($previous -ne $false) {
@@ -126,17 +149,32 @@ function Wait-ForExit([object]$Old, [object[]]$Shells) {
         throw 'The original service did not confirm a clean shutdown. Inspect its exit before recovering.'
     }
     foreach ($shell in $Shells) { Close-DesktopShell $shell }
+    $oldReleaseDir = Get-ReleasePath $runtime $Old.releaseId
+    $oldDesktopExe = Join-Path $oldReleaseDir 'kiki-desktop.exe'
+    $oldServerExe = Join-Path $oldReleaseDir 'kiki-server.exe'
+    foreach ($lingeringShell in @(Find-Shells | Where-Object { $_.Path -ieq $oldDesktopExe })) {
+        Close-DesktopShell $lingeringShell
+    }
+    foreach ($lingeringWorker in @(Get-Process -Name 'kiki-server' -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $Old.process.Id -and $_.Path -ieq $oldServerExe })) {
+        Stop-ProcessBounded $lingeringWorker 5000
+    }
     if (@(Find-Shells).Count -gt 0 -or $null -ne (Find-Server)) { throw 'Another desktop or managed service appeared before launch.' }
 }
 
-function Await-Release([string]$ReleaseId, [string]$BuildId, [object]$Launcher) {
+function Await-Release([string]$ReleaseId, [string]$ExpectedBuildId, [object]$Launcher) {
+    if ([string]::IsNullOrWhiteSpace($ExpectedBuildId)) {
+        throw 'Expected build commit is required when awaiting a switched release.'
+    }
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupSeconds)
     do {
         $new = Find-Server
         if ($null -ne $new) {
-            if ($new.releaseId -cne $ReleaseId -or $new.meta.build_id -cne $BuildId -or $new.meta.server_id -ceq $state.oldServerId `
+            if ($new.releaseId -cne $ReleaseId -or $new.meta.server_id -ceq $state.oldServerId `
                 -or $new.meta.server_home_id -cne $state.serverHomeId -or $new.meta.current_space_id -cne $state.spaceId) {
                 throw 'The service that started does not match the selected release and home.'
+            }
+            if ($new.meta.build_id -cne $ExpectedBuildId -or $new.instance.build_id -cne $ExpectedBuildId) {
+                throw ("The started service reported build_id '{0}' instead of expected commit '{1}'." -f $new.meta.build_id, $ExpectedBuildId)
             }
             if ($state.hadDesktop -and @((Find-Shells) | Where-Object { $_.Path -ieq (Join-Path (Get-ReleasePath $runtime $ReleaseId) 'kiki-desktop.exe') }).Count -ne 1) {
                 throw 'The new service is ready, but the selected desktop shell is not running.'
@@ -164,19 +202,37 @@ function Restore-OriginalRelease {
 }
 
 function Release-OurPauses([object]$Target, [bool]$AllowCancel) {
+    $failures = @()
     foreach ($item in $state.sessions) {
-        $actual = Execution $Target.instance $item.id 'read'
-        if ((Get-ObjectProperty $actual 'pauseOperationId') -cne $item.pauseId) { continue }
-        $action = switch ($actual.phase) {
-            'running' { continue }
-            'paused' { 'resume' }
-            'pausing' { if ($AllowCancel) { 'cancelPause' } else { throw "Session $($item.id) is still pausing." } }
-            default { throw "Session $($item.id) needs inspection: $($actual.phase)." }
+        try {
+            $actual = Execution $Target.instance $item.id 'read'
+            if ((Get-ObjectProperty $actual 'pauseOperationId') -cne $item.pauseId) { continue }
+            $action = switch ($actual.phase) {
+                'running' { continue }
+                'idle' { if ($AllowCancel) { continue } else { throw "Session $($item.id) needs inspection: $($actual.phase)." } }
+                'paused' { 'resume' }
+                'pausing' { if ($AllowCancel) { 'cancelPause' } else { throw "Session $($item.id) is still pausing." } }
+                'failed' {
+                    if ($null -ne (Get-ObjectProperty $actual 'pausedAt')) { 'resume' }
+                    elseif ($AllowCancel) { 'cancelPause' }
+                    else { throw "Session $($item.id) needs inspection: $($actual.phase)." }
+                }
+                default { throw "Session $($item.id) needs inspection: $($actual.phase)." }
+            }
+            if (!$action) { continue }
+            $result = Execution $Target.instance $item.id $action @(@{ operationId = "$($item.pauseId):$action"; pauseOperationId = $item.pauseId })
+            if ($result.phase -ne 'running' -and (-not ($AllowCancel -and $result.phase -eq 'idle'))) {
+                throw "Session $($item.id) did not return to running."
+            }
+            Write-Host "Continued $($item.id)"
+        } catch {
+            $msg = $_.Exception.Message
+            Write-Warning "Failed to release pause on $($item.id): $msg"
+            $failures += "$($item.id): $msg"
         }
-        if (!$action) { continue }
-        $result = Execution $Target.instance $item.id $action @(@{ operationId = "$($item.pauseId):$action"; pauseOperationId = $item.pauseId })
-        if ($result.phase -ne 'running') { throw "Session $($item.id) did not return to running." }
-        Write-Host "Continued $($item.id)"
+    }
+    if (-not $AllowCancel -and $failures.Count -gt 0) {
+        throw ("Failed to release $($failures.Count) paused session(s): " + ($failures -join '; '))
     }
 }
 
@@ -194,6 +250,10 @@ try {
         }
         $target = Find-Server
         if ($null -eq $target) {
+            foreach ($lingeringShell in @(Find-Shells)) {
+                try { $lingeringShell.EnableRaisingEvents = $true; $null = $lingeringShell.Handle } catch {}
+                Close-DesktopShell $lingeringShell
+            }
             if (@(Find-Shells).Count -gt 0) { throw 'Quit the remaining desktop from its tray before retrying recovery.' }
             Restore-OriginalRelease
             $launcher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
@@ -215,6 +275,7 @@ try {
     if ($null -ne $state -and $state.phase -notin @('complete', 'pausing')) { throw 'A switch is unfinished. Run this command with -Recover first.' }
     if (!$candidate) { throw 'Pass -CandidateRoot with the verified desktop build directory.' }
     $verified = Read-PromotionCandidate $candidate $commit
+    $expectedBuildId = [string]$verified.GitSha
     $targetRelease = $verified.ReleaseId
     $old = Find-Server
     if ($null -eq $old) { throw 'No authenticated managed service is running from this runtime and home.' }
@@ -237,7 +298,7 @@ try {
         $state = [pscustomobject]@{
             schemaVersion = 1; phase = 'pausing'; kikiHome = $homePath; oldReleaseId = $old.releaseId; oldBuildId = $old.meta.build_id
             oldServerId = $old.meta.server_id; serverHomeId = $old.meta.server_home_id; spaceId = $old.meta.current_space_id
-            priorPointerReleaseId = $current.releaseId; targetReleaseId = $targetRelease; targetBuildId = $commit; hadDesktop = $shells.Count -gt 0
+            priorPointerReleaseId = $current.releaseId; targetReleaseId = $targetRelease; targetBuildId = $expectedBuildId; hadDesktop = $shells.Count -gt 0
             fenceOperationId = 'hot-switch:' + [guid]::NewGuid().ToString('N')
             sessions = @()
         }
@@ -245,6 +306,7 @@ try {
     }
     $pauseOwner = $old
     Try-RuntimeSwitch $old.instance $state.fenceOperationId 'fence'
+    $interruptedAfterSettle = $false
     $deadline = [DateTime]::UtcNow.AddSeconds($SettleSeconds)
     do {
         $lifecycle = Lifecycle $old.instance ''
@@ -260,11 +322,25 @@ try {
         }
         $pending = @($lifecycle.work_pending)
         if ($pending.Count -eq 0) { break }
-        if ([DateTime]::UtcNow -ge $deadline) { throw ('Still settling: ' + ($pending -join ', ')) }
+        if ([DateTime]::UtcNow -ge $deadline) {
+            if (-not $allowInterruptAfterSettle) {
+                throw ('Still settling: ' + ($pending -join ', '))
+            }
+            Write-Warning ('Settle deadline ({0}s) expired with active work ({1}); interrupting remaining work to complete hot switch.' -f $SettleSeconds, ($pending -join ', '))
+            $interruptedAfterSettle = $true
+            break
+        }
         Start-Sleep -Milliseconds 400
     } while ($true)
     # The explicit exit record blocks reconnect recovery while the shell drains the backend pipes.
-    Lifecycle $old.instance 'update' | Out-Null
+    if ($interruptedAfterSettle) {
+        if ((Get-ObjectProperty $lifecycle 'hot_switch_prepared') -eq $true) {
+            Lifecycle $old.instance 'cancel-update' | Out-Null
+        }
+        Lifecycle $old.instance 'update' $true | Out-Null
+    } else {
+        Lifecycle $old.instance 'update' | Out-Null
+    }
     $state.phase = 'stopping'; Save-State
     Wait-ForExit $old $shells
     $state.phase = 'promoting'; Save-State
@@ -272,9 +348,9 @@ try {
     if ((Read-CurrentManifest $runtime).releaseId -cne $targetRelease) { throw 'Promotion did not select the verified candidate.' }
     $state.phase = 'starting'; Save-State
     $launcher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
-    $target = Await-Release $targetRelease $commit $launcher
+    $target = Await-Release $targetRelease $expectedBuildId $launcher
     $state.phase = 'resuming'; Save-State
-    Release-OurPauses $target $false
+    Release-OurPauses $target $interruptedAfterSettle
     $state.phase = 'complete'; Save-State
     Write-Host "Running $targetRelease ($($target.meta.server_id))"
 } catch {

@@ -78,8 +78,30 @@ describe('pairing codes', () => {
     const claimed = await target.claimPair(live.code, source, 'Source');
     expect(claimed.peerToken).toHaveLength(43);
     expect(claimed.allowBridge).toBe(true);
+    expect(claimed.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create', 'tools']);
     await expect(target.claimPair(live.code, source, 'Source')).rejects.toThrow('invalid_pairing_code');
     expect(target.matchBearer(claimed.peerToken)?.id).toBe(claimed.grantId);
+  });
+
+  it('defaults bridgeOperations to all six operations and preserves explicit subsets across createPairCode, claimPair, and approvePeer', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-pair-ops-')); homes.push(home);
+    const target = new ConnectionAdmission(home, identity('target'));
+    const sourceA = identity('source-a');
+    const sourceB = identity('source-b');
+    const defaultCode = await target.createPairCode();
+    expect(defaultCode.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create', 'tools']);
+    const claimedDefault = await target.claimPair(defaultCode.code, sourceA, 'Source A');
+    expect(claimedDefault.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create', 'tools']);
+
+    const subsetCode = await target.createPairCode({ bridgeOperations: ['read', 'send', 'tools'] });
+    expect(subsetCode.bridgeOperations).toEqual(['read', 'send', 'tools']);
+    const claimedSubset = await target.claimPair(subsetCode.code, sourceB, 'Source B', true, ['read', 'tools', 'wake']);
+    expect(claimedSubset.bridgeOperations).toEqual(['read', 'tools']);
+
+    const approvedDefault = await target.approvePeer(identity('source-c'), 'Source C');
+    expect(approvedDefault.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create', 'tools']);
+    const approvedSubset = await target.approvePeer(identity('source-d'), 'Source D', true, ['read', 'wait']);
+    expect(approvedSubset.bridgeOperations).toEqual(['read', 'wait']);
   });
 
   it('refuses to issue a code when authentication is bypassed', async () => {
@@ -230,11 +252,16 @@ describe('TLS identity and pinning', () => {
       const first = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: false, requestBridge: false }, undefined);
       expect(first.pinnedFingerprint).toBe(tls.tlsFingerprint);
       expect(first.fingerprintToVerify).toBe(tls.tlsFingerprint);
+      const verified = await manager.verifyFingerprint(first.id);
+      expect(verified.pinnedFingerprint).toBe(tls.tlsFingerprint);
+      expect(verified.fingerprintToVerify).toBeUndefined();
+      expect(manager.get(first.id).fingerprintToVerify).toBeUndefined();
       const second = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: false, requestBridge: false }, undefined);
       expect(second.id).toBe(first.id);
       expect(second.pinnedFingerprint).toBe(tls.tlsFingerprint);
+      expect(second.fingerprintToVerify).toBeUndefined();
       const lease = manager.lease(second.id);
-      try { await manager.connect(second.id, lease.signal); expect(manager.get(second.id).state).toBe('online'); }
+      try { await manager.connect(second.id, lease.signal); expect(manager.get(second.id).state).toBe('online'); expect(manager.get(second.id).rttMs).toBeGreaterThanOrEqual(1); }
       finally { lease.release(); }
     } finally { await manager.close(); await admission.close(); peer.closeAllConnections(); await new Promise<void>((resolve) => peer.close(() => resolve())); }
   });
@@ -629,5 +656,129 @@ describe('paired peer surface parity and host boundaries', () => {
         }
       } finally { lease.release(); }
     } finally { await manager.close(); await admission.close(); peer.closeAllConnections(); await new Promise<void>((resolve) => peer.close(() => resolve())); }
+  });
+
+  it('does not replay non-idempotent POST requests on disconnect unless idempotentRetry is enabled', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-no-post-replay-')); homes.push(home);
+    const tls = await loadPeerTlsIdentity(home);
+    const fingerprint = spkiFingerprint(new X509Certificate(tls.cert).publicKey);
+    const admission = new ConnectionAdmission(join(home, 'target'), identity('target'));
+    const manager = new RemoteConnectionManager(join(home, 'source'), identity('source'));
+    let sessionCreateHits = 0;
+    let directPostHits = 0;
+    let optInPostHits = 0;
+    let dropNextSessionCreate = false;
+    let dropNextDirectPost = false;
+    let dropFirstOptInPost = false;
+    const peer = createHttpsServer(tls, (req, res) => {
+      void (async () => {
+        if (req.url === '/api/remote-connections/pair/claim') {
+          let body = ''; for await (const part of req) body += part;
+          const input = JSON.parse(body);
+          const claim = await admission.claimPair(input.code, input.source, input.sourceLabel);
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { target: claim.target, targetLabel: 'Target', peerToken: claim.peerToken, grantId: claim.grantId, revision: claim.revision } }));
+          return;
+        }
+        if (req.url === '/api/remote-connections/handshake') {
+          const proof = admission.inspectHandshakeProof({ nonce: String(req.headers['x-kiki-handshake-nonce']), proof: String(req.headers['x-kiki-handshake-proof']), grantId: String(req.headers['x-kiki-handshake-grant']) });
+          if (proof !== undefined) { res.setHeader('x-kiki-handshake-status', proof.status); res.setHeader('x-kiki-handshake-proof', proof.proof); }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { identity: admission.identity, serverId: 'peer', inboundEnabled: true } }));
+          return;
+        }
+        if (req.method === 'POST' && req.url === '/api/sessions') {
+          sessionCreateHits += 1;
+          if (dropNextSessionCreate) {
+            dropNextSessionCreate = false;
+            req.socket.destroy();
+            return;
+          }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ code: 0, data: { id: 'created-session' } }));
+          return;
+        }
+        if (req.method === 'POST' && req.url === '/api/direct-post') {
+          directPostHits += 1;
+          if (dropNextDirectPost) {
+            dropNextDirectPost = false;
+            req.socket.destroy();
+            return;
+          }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+        if (req.method === 'POST' && req.url === '/api/opt-in-post') {
+          optInPostHits += 1;
+          if (dropFirstOptInPost) {
+            dropFirstOptInPost = false;
+            req.socket.destroy();
+            return;
+          }
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ code: 0, data: { server_home_id: admission.identity.homeId } }));
+      })().catch((error) => res.destroy(error));
+    });
+    peer.listen(0, '127.0.0.1'); await once(peer, 'listening');
+    const address = peer.address(); if (address === null || typeof address === 'string') throw new Error('No peer address');
+    const endpoint = `https://127.0.0.1:${address.port}`;
+    try {
+      const paired = await pairOutbound(manager, { endpoint, code: (await admission.createPairCode()).code, backgroundSummary: false, requestBridge: false }, undefined);
+      const lease = manager.lease(paired.id);
+      try {
+        const warmup = await manager.forward(paired.id, { operation: 'meta' }, lease.signal);
+        expect(warmup.status).toBe(200);
+        await warmup.json();
+
+        dropNextSessionCreate = true;
+        await expect(manager.forward(paired.id, { operation: 'sessionCreate', body: { work_dir: '/tmp/work' } }, lease.signal)).rejects.toThrow();
+        expect(sessionCreateHits).toBe(1);
+
+        sessionCreateHits = 0;
+        dropNextSessionCreate = true;
+        const optInForward = await manager.forward(
+          paired.id,
+          { operation: 'sessionCreate', body: { work_dir: '/tmp/work' } },
+          lease.signal,
+          undefined,
+          undefined,
+          { idempotentRetry: true },
+        );
+        expect(optInForward.status).toBe(200);
+        expect(sessionCreateHits).toBe(2);
+
+        const directWarmup = await peerFetch(`${endpoint}/api/meta`, {}, fingerprint);
+        expect(directWarmup.status).toBe(200);
+        await directWarmup.json();
+
+        dropNextDirectPost = true;
+        await expect(peerFetch(`${endpoint}/api/direct-post`, { method: 'POST', body: JSON.stringify({ x: 1 }) }, fingerprint)).rejects.toThrow();
+        expect(directPostHits).toBe(1);
+
+        const secondWarmup = await peerFetch(`${endpoint}/api/meta`, {}, fingerprint);
+        expect(secondWarmup.status).toBe(200);
+        await secondWarmup.json();
+
+        dropFirstOptInPost = true;
+        const retriedDirect = await peerFetch(
+          `${endpoint}/api/opt-in-post`,
+          { method: 'POST', body: JSON.stringify({ x: 1 }), idempotentRetry: true },
+          fingerprint,
+        );
+        expect(retriedDirect.status).toBe(200);
+        expect(optInPostHits).toBe(2);
+      } finally { lease.release(); }
+    } finally {
+      evictPinnedAgent(endpoint, fingerprint);
+      await manager.close();
+      await admission.close();
+      peer.closeAllConnections();
+      await new Promise<void>((resolve) => peer.close(() => resolve()));
+    }
   });
 });

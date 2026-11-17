@@ -17,6 +17,7 @@ import type { ManagedUsageResult } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { compactIdentifier } from '../../lib/compactIdentifier';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
@@ -47,7 +48,7 @@ function AccountHeading({ method }: { method: OAuthMethodStatus }) {
   return (
     <p className="flex min-w-0 items-baseline gap-2">
       <span className="text-[12.5px] font-medium text-ink">{method.label}</span>
-      {method.account.state === 'known' ? <span className="truncate font-mono text-[11px] text-ink-faint">{method.account.id}</span> : null}
+      {method.account.state === 'known' ? <span className="truncate font-mono text-[11px] text-ink-faint" title={method.account.id}>{compactIdentifier(method.account.id)}</span> : null}
     </p>
   );
 }

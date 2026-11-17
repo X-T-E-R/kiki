@@ -83,6 +83,20 @@ const VIEWPORT_MARGIN = 8;
 const PANEL_MIN_WIDTH = 224;
 const PANEL_MAX_HEIGHT = 340;
 
+const EMPTY_OPTIONS: readonly SearchableSelectOption[] = [];
+/** Option lists above this count render a bounded virtual slice inside the listbox. */
+export const VIRTUALIZE_THRESHOLD = 120;
+const VIRTUAL_WINDOW_SIZE = 80;
+const VIRTUAL_OVERSCAN = 20;
+const VIRTUAL_SCROLL_HYSTERESIS = 8;
+
+function windowStartForIndex(targetIndex: number, total: number): number {
+  if (total <= VIRTUAL_WINDOW_SIZE) return 0;
+  const maxStart = total - VIRTUAL_WINDOW_SIZE;
+  if (targetIndex < VIRTUAL_WINDOW_SIZE - VIRTUAL_OVERSCAN) return 0;
+  return Math.max(0, Math.min(targetIndex - VIRTUAL_OVERSCAN, maxStart));
+}
+
 /**
  * Viewport-fixed placement for a panel this component owns.
  *
@@ -269,6 +283,8 @@ export function SearchableSelect(props: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
+  const [windowStart, setWindowStart] = useState(0);
+  const keyboardNavRef = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -280,20 +296,37 @@ export function SearchableSelect(props: SearchableSelectProps) {
 
   const ownerId = open && isPortaled ? owningModalId(triggerRef.current) : undefined;
   const floatingOwners = open && isPortaled ? resolveFloatingOwners(triggerRef.current) : undefined;
+
+  const openSelect = () => {
+    let initialActive = 0;
+    let initialWindow = 0;
+    if (!isMultiple && singleValue !== '' && options.length > VIRTUALIZE_THRESHOLD) {
+      const idx = options.findIndex((option) => option.value === singleValue && option.disabled !== true);
+      if (idx >= 0) {
+        initialActive = idx;
+        initialWindow = windowStartForIndex(idx, options.length);
+      }
+    }
+    keyboardNavRef.current = true;
+    setActiveIndex(initialActive);
+    setWindowStart(initialWindow);
+    setOpen(true);
+  };
+
   const openSignalRef = useRef(openSignal);
   useEffect(() => {
     if (openSignal === undefined || openSignal === openSignalRef.current) return;
     openSignalRef.current = openSignal;
     if (disabled) return;
-    setActiveIndex(0);
-    setOpen(true);
-  }, [openSignal, disabled]);
+    openSelect();
+  }, [openSignal, disabled]); // eslint-disable-line react-hooks/exhaustive-deps
   const closeSignalRef = useRef(closeSignal);
   useEffect(() => {
     if (closeSignal === undefined || closeSignal === closeSignalRef.current) return;
     closeSignalRef.current = closeSignal;
     setOpen(false);
     setQuery('');
+    setWindowStart(0);
   }, [closeSignal]);
 
   const panelStyle = useViewportPlacement(
@@ -316,31 +349,46 @@ export function SearchableSelect(props: SearchableSelectProps) {
   const isValueSelected = (candidate: string) =>
     isMultiple ? selectedSet.has(candidate) : candidate === singleValue;
 
-  const selected = isMultiple ? undefined : options.find((option) => option.value === singleValue);
-  const multiSummary = useMemo(() => {
-    if (!isMultiple || multiValues.length === 0) return undefined;
-    const labelFor = (val: string) => options.find((opt) => opt.value === val)?.label ?? val;
-    const first = labelFor(multiValues[0]!);
-    return multiValues.length === 1
-      ? first
-      : t('select.summaryMore', { first, count: multiValues.length - 1 });
-  }, [isMultiple, multiValues, options, t]);
-  const multiTooltip = useMemo(() => {
-    if (!isMultiple || multiValues.length === 0) return undefined;
-    return multiValues.map((val) => options.find((opt) => opt.value === val)?.label ?? val).join(', ');
-  }, [isMultiple, multiValues, options]);
-
-  const visible = useMemo(
-    () => (showFilter ? filterSelectOptions(options, query) : options),
-    [options, query, showFilter],
+  const selected = useMemo(
+    () => (isMultiple ? undefined : options.find((option) => option.value === singleValue)),
+    [isMultiple, options, singleValue],
   );
-  const customValue = query.trim();
-  const customRow = showFilter
+  const multiLabels = useMemo(() => {
+    if (!isMultiple || multiValues.length === 0) return undefined;
+    if (multiValues.length <= 2) {
+      return multiValues.map((val) => options.find((opt) => opt.value === val)?.label ?? val);
+    }
+    const byValue = new Map<string, string>();
+    for (const opt of options) byValue.set(opt.value, opt.label);
+    return multiValues.map((val) => byValue.get(val) ?? val);
+  }, [isMultiple, multiValues, options]);
+  const multiSummary = useMemo(() => {
+    if (multiLabels === undefined || multiLabels.length === 0) return undefined;
+    const first = multiLabels[0]!;
+    return multiLabels.length === 1
+      ? first
+      : t('select.summaryMore', { first, count: multiLabels.length - 1 });
+  }, [multiLabels, t]);
+  const multiTooltip = useMemo(
+    () => (multiLabels === undefined || multiLabels.length === 0 ? undefined : multiLabels.join(', ')),
+    [multiLabels],
+  );
+
+  const visible = useMemo(() => {
+    if (!open) return EMPTY_OPTIONS;
+    if (!showFilter || query.trim() === '') return options;
+    return filterSelectOptions(options, query);
+  }, [open, options, query, showFilter]);
+  const customValue = open ? query.trim() : '';
+  const customRow = useMemo(() => (
+    open
+    && showFilter
     && allowCustomValue
     && customValue !== ''
     && !options.some((option) => option.value === customValue)
-    ? customValue
-    : undefined;
+      ? customValue
+      : undefined
+  ), [open, showFilter, allowCustomValue, customValue, options]);
   const rowCount = visible.length + (customRow === undefined ? 0 : 1);
   const rowEnabled = (index: number) => index >= 0 && (visible[index] !== undefined
     ? visible[index].disabled !== true : customRow !== undefined && index === visible.length);
@@ -353,17 +401,34 @@ export function SearchableSelect(props: SearchableSelectProps) {
   };
   useEffect(() => {
     if (!open) return;
-    setActiveIndex((index) => rowEnabled(index) ? index : nextEnabledIndex(-1, 1));
+    setActiveIndex((index) => {
+      if (rowEnabled(index)) return index;
+      const next = nextEnabledIndex(-1, 1);
+      if (visible.length > VIRTUALIZE_THRESHOLD && next >= 0) {
+        setWindowStart((ws) => (
+          next < ws || next >= ws + VIRTUAL_WINDOW_SIZE
+            ? windowStartForIndex(next, visible.length)
+            : ws
+        ));
+        keyboardNavRef.current = true;
+      }
+      return next;
+    });
   }, [open, visible, customRow]);
 
-  const showGroups = useMemo(
-    () => new Set(options.map((option) => option.group)).size > 1,
-    [options],
-  );
+  const showGroups = useMemo(() => {
+    if (!open || options.length <= 1) return false;
+    const firstGroup = options[0]!.group;
+    for (let i = 1; i < options.length; i++) {
+      if (options[i]!.group !== firstGroup) return true;
+    }
+    return false;
+  }, [open, options]);
 
   const close = () => {
     setOpen(false);
     setQuery('');
+    setWindowStart(0);
   };
 
   useLayerHistory(surfaceOwnerId, open && asSheet, () => {
@@ -411,11 +476,27 @@ export function SearchableSelect(props: SearchableSelectProps) {
     };
   }, [open, surfaceOwnerId, asSheet]);
 
-  useEffect(() => {
+  const estRowHeight = asSheet ? 52 : density === 'compact' ? 40 : 52;
+
+  useLayoutEffect(() => {
     if (!open) return;
-    const row = listRef.current?.querySelector(`[data-index="${activeIndex}"]`);
-    (row as HTMLElement | null | undefined)?.scrollIntoView?.({ block: 'nearest' });
-  }, [open, activeIndex]);
+    if (!keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
+    const list = listRef.current;
+    const row = list?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
+    if (list !== null && row !== null && row !== undefined) {
+      if (visible.length > VIRTUALIZE_THRESHOLD && list.clientHeight > 0) {
+        const rowTop = row.offsetTop;
+        const rowBottom = rowTop + row.offsetHeight;
+        if (rowTop < list.scrollTop) {
+          list.scrollTop = rowTop;
+        } else if (rowBottom > list.scrollTop + list.clientHeight) {
+          list.scrollTop = rowBottom - list.clientHeight;
+        }
+      }
+      row.scrollIntoView?.({ block: 'nearest' });
+    }
+  }, [open, activeIndex, visible.length]);
 
   const toggleMultiValue = (val: string) => {
     if (!props.multiple) return;
@@ -458,12 +539,18 @@ export function SearchableSelect(props: SearchableSelectProps) {
 
   const onNavKeyDown = (event: React.KeyboardEvent) => {
     if (isImeKeyEvent(event)) return;
-    if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
-      setActiveIndex((index) => nextEnabledIndex(index, 1));
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      setActiveIndex((index) => nextEnabledIndex(index, -1));
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      const next = nextEnabledIndex(activeIndex, direction);
+      keyboardNavRef.current = true;
+      setActiveIndex(next);
+      if (visible.length > VIRTUALIZE_THRESHOLD && next >= 0) {
+        const clampedStart = Math.min(Math.max(0, windowStart), Math.max(0, visible.length - VIRTUAL_WINDOW_SIZE));
+        if (next < clampedStart + 4 || next >= clampedStart + VIRTUAL_WINDOW_SIZE - 4) {
+          setWindowStart(windowStartForIndex(next, visible.length));
+        }
+      }
     } else if (event.key === 'Enter') {
       if (!showFilter && event.target instanceof HTMLElement && event.target.getAttribute('role') === 'option') {
         const indexAttr = Number(event.target.getAttribute('data-index'));
@@ -483,192 +570,234 @@ export function SearchableSelect(props: SearchableSelectProps) {
     }
   };
 
+  const onListScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    if (visible.length <= VIRTUALIZE_THRESHOLD) return;
+    const el = event.currentTarget;
+    const viewportH = el.clientHeight > 0 ? el.clientHeight : PANEL_MAX_HEIGHT;
+    const firstVisible = Math.floor(el.scrollTop / estRowHeight);
+    const lastVisible = Math.ceil((el.scrollTop + viewportH) / estRowHeight);
+    const maxStart = Math.max(0, visible.length - VIRTUAL_WINDOW_SIZE);
+    setWindowStart((current) => {
+      const clamped = Math.min(Math.max(0, current), maxStart);
+      const needUp = clamped > 0 && firstVisible < clamped + VIRTUAL_SCROLL_HYSTERESIS;
+      const needDown = clamped < maxStart && lastVisible > clamped + VIRTUAL_WINDOW_SIZE - VIRTUAL_SCROLL_HYSTERESIS;
+      if (!needUp && !needDown) return clamped;
+      return Math.max(0, Math.min(firstVisible - VIRTUAL_OVERSCAN, maxStart));
+    });
+  };
+
   const listId = `${id ?? 'searchable-select'}-list`;
   const rowPadClass = asSheet ? 'min-h-11 py-2.5 text-[14px]' : 'py-1.5 text-[13px]';
 
-  const panel = (
-    <>
-      {panelHeader}
-      {!showFilter ? null : (
-      <div className="border-b border-hairline px-3 py-2">
-        <input
-          type="text"
-          data-autofocus
-          ref={(input) => { if (!isCoarsePointer()) input?.focus(); }}
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setActiveIndex(0);
-          }}
-          onKeyDown={onNavKeyDown}
-          placeholder={searchPlaceholder ?? t('select.search')}
+  const renderPanel = () => {
+    const isVirtualized = visible.length > VIRTUALIZE_THRESHOLD;
+    const maxWindowStart = isVirtualized ? Math.max(0, visible.length - VIRTUAL_WINDOW_SIZE) : 0;
+    const sliceStart = isVirtualized ? Math.min(Math.max(0, windowStart), maxWindowStart) : 0;
+    const sliceEnd = isVirtualized ? Math.min(visible.length, sliceStart + VIRTUAL_WINDOW_SIZE) : visible.length;
+    const topSpacerHeight = isVirtualized ? sliceStart * estRowHeight : 0;
+    const bottomSpacerHeight = isVirtualized ? (visible.length - sliceEnd) * estRowHeight : 0;
+    const slicedOptions = isVirtualized ? visible.slice(sliceStart, sliceEnd) : visible;
+
+    return (
+      <>
+        {panelHeader}
+        {!showFilter ? null : (
+        <div className="border-b border-hairline px-3 py-2">
+          <input
+            type="text"
+            data-autofocus
+            ref={(input) => { if (!isCoarsePointer()) input?.focus(); }}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setActiveIndex(0);
+              setWindowStart(0);
+              if (listRef.current !== null) listRef.current.scrollTop = 0;
+            }}
+            onKeyDown={onNavKeyDown}
+            placeholder={searchPlaceholder ?? t('select.search')}
+            aria-label={ariaLabel}
+            aria-labelledby={ariaLabel === undefined ? ariaLabelledBy : undefined}
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={listId}
+            aria-activedescendant={
+              rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined
+            }
+            className={`w-full bg-transparent text-ink outline-none placeholder:text-ink-faint ${asSheet ? 'min-h-8 text-[15px]' : 'text-[13px]'}`}
+          />
+        </div>
+        )}
+        {hideFilter === true && options.length === 0 && (panelHeader !== undefined || panelFooter !== undefined) ? null : (
+        <div
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          tabIndex={showFilter ? undefined : -1}
           aria-label={ariaLabel}
           aria-labelledby={ariaLabel === undefined ? ariaLabelledBy : undefined}
-          role="combobox"
-          aria-expanded="true"
-          aria-controls={listId}
-          aria-activedescendant={
-            rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined
-          }
-          className={`w-full bg-transparent text-ink outline-none placeholder:text-ink-faint ${asSheet ? 'min-h-8 text-[15px]' : 'text-[13px]'}`}
-        />
-      </div>
-      )}
-      {hideFilter === true && options.length === 0 && (panelHeader !== undefined || panelFooter !== undefined) ? null : (
-      <div
-        ref={listRef}
-        id={listId}
-        role="listbox"
-        tabIndex={showFilter ? undefined : -1}
-        aria-label={ariaLabel}
-        aria-labelledby={ariaLabel === undefined ? ariaLabelledBy : undefined}
-        aria-multiselectable={isMultiple ? true : undefined}
-        aria-activedescendant={!showFilter && rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined}
-        onKeyDown={showFilter ? undefined : onNavKeyDown}
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5 outline-none ${
-          isPortaled ? '' : 'max-h-[min(340px,55vh)]'
-        }`}
-      >
-        {rowCount === 0 ? (
-          <p className="px-2 py-4 text-center text-[12px] text-ink-faint">
-            {options.length === 0
-              ? (emptyText ?? t('select.empty'))
-              : (noMatchText ?? ((q: string) => t('select.noMatches', { query: q })))(query.trim())}
-          </p>
-        ) : (
-          <>
-            {visible.map((option, index) => {
-              const active = index === activeIndex;
-              const isSelected = isValueSelected(option.value);
-              const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
-              const groupHeader =
-                showGroups && option.group !== undefined && option.group !== previousGroup
-                  ? option.group
-                  : undefined;
-              return (
-                <div key={`${option.value}-${index}`} role="presentation">
-                  {groupHeader !== undefined ? (
-                    <p
-                      className={`px-3 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
-                    >
-                      {groupHeader}
-                    </p>
-                  ) : null}
-                  {density === 'compact' && !asSheet ? (
-                    <CompactOptionRow
-                      id={`${listId}-option-${index}`}
-                      index={index}
-                      option={option}
-                      active={active}
-                      selected={isSelected}
-                      multiple={isMultiple}
-                      onCommit={() => { commit(option); }}
-                      onHover={() => { if (!active && !option.disabled) setActiveIndex(index); }}
-                    />
-                  ) : (
-                  <button
-                    type="button"
-                    id={`${listId}-option-${index}`}
-                    data-index={index}
-                    role="option"
-                    data-option-value={option.value}
-                    {...option.dataAttrs}
-                    aria-selected={isSelected}
-                    aria-disabled={option.disabled ? true : undefined}
-                    disabled={option.disabled}
-                    title={option.title ?? option.label}
-                    onClick={() => { commit(option); }}
-                    onMouseMove={() => { if (!active && !option.disabled) setActiveIndex(index); }}
-                    className={`flex w-full flex-col justify-center gap-0.5 rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:min-h-11 disabled:cursor-not-allowed ${rowPadClass} ${
-                      isSelected && !isMultiple
-                        ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
-                        : isSelected && isMultiple
-                          ? 'bg-ink/[0.05]'
-                          : active ? 'bg-ink/[0.04]' : ''
-                    }`}
-                  >
-                    <span className="flex w-full min-w-0 items-center gap-2">
-                      {isMultiple ? (
-                        <span
-                          aria-hidden
-                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
-                            isSelected ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
-                          }`}
-                        >
-                          <Icon name="check" size={12} />
-                        </span>
-                      ) : null}
-                      <span
-                        className={`min-w-0 flex-1 truncate ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
-                          isSelected ? 'font-medium' : ''
-                        }`}
+          aria-multiselectable={isMultiple ? true : undefined}
+          aria-activedescendant={!showFilter && rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined}
+          onKeyDown={showFilter ? undefined : onNavKeyDown}
+          onScroll={isVirtualized ? onListScroll : undefined}
+          className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5 outline-none ${
+            isPortaled ? '' : 'max-h-[min(340px,55vh)]'
+          }`}
+        >
+          {rowCount === 0 ? (
+            <p className="px-2 py-4 text-center text-[12px] text-ink-faint">
+              {options.length === 0
+                ? (emptyText ?? t('select.empty'))
+                : (noMatchText ?? ((q: string) => t('select.noMatches', { query: q })))(query.trim())}
+            </p>
+          ) : (
+            <>
+              {topSpacerHeight > 0 ? (
+                <div aria-hidden data-virtual-spacer="top" style={{ height: topSpacerHeight }} />
+              ) : null}
+              {slicedOptions.map((option, offset) => {
+                const index = sliceStart + offset;
+                const active = index === activeIndex;
+                const isSelected = isValueSelected(option.value);
+                const previousGroup = index > 0 ? visible[index - 1]?.group : undefined;
+                const groupHeader =
+                  showGroups && option.group !== undefined && option.group !== previousGroup
+                    ? option.group
+                    : undefined;
+                return (
+                  <div key={`${option.value}-${index}`} role="presentation">
+                    {groupHeader !== undefined ? (
+                      <p
+                        className={`px-3 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-3'}`}
                       >
-                        {option.label}
-                      </span>
-                      {!isMultiple && isSelected ? (
-                        <Icon name="check" size={12} className="ml-auto shrink-0 text-ink-soft" />
-                      ) : null}
-                    </span>
-                    {option.description !== undefined ? (
-                      <span className={`line-clamp-2 text-[12px] leading-snug text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
-                        {option.description}
-                      </span>
+                        {groupHeader}
+                      </p>
                     ) : null}
-                    {option.hint !== undefined ? (
-                      <span className={`truncate font-mono text-[11px] text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
-                        {option.hint}
-                      </span>
-                    ) : null}
-                    {option.badges !== undefined && option.badges.length > 0 ? (
-                      <span className={`mt-0.5 flex flex-wrap items-center gap-1 ${isMultiple ? 'pl-6' : ''}`}>
-                        {option.badges.map((badge) => (
+                    {density === 'compact' && !asSheet ? (
+                      <CompactOptionRow
+                        id={`${listId}-option-${index}`}
+                        index={index}
+                        option={option}
+                        active={active}
+                        selected={isSelected}
+                        multiple={isMultiple}
+                        ariaSetSize={isVirtualized ? rowCount : undefined}
+                        ariaPosInSet={isVirtualized ? index + 1 : undefined}
+                        onCommit={() => { commit(option); }}
+                        onHover={() => { if (!active && !option.disabled) setActiveIndex(index); }}
+                      />
+                    ) : (
+                    <button
+                      type="button"
+                      id={`${listId}-option-${index}`}
+                      data-index={index}
+                      role="option"
+                      data-option-value={option.value}
+                      {...option.dataAttrs}
+                      aria-selected={isSelected}
+                      aria-disabled={option.disabled ? true : undefined}
+                      aria-setsize={isVirtualized ? rowCount : undefined}
+                      aria-posinset={isVirtualized ? index + 1 : undefined}
+                      disabled={option.disabled}
+                      title={option.title ?? option.label}
+                      onClick={() => { commit(option); }}
+                      onMouseMove={() => { if (!active && !option.disabled) setActiveIndex(index); }}
+                      className={`flex w-full flex-col justify-center gap-0.5 rounded-md px-3 text-left transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:min-h-11 disabled:cursor-not-allowed ${rowPadClass} ${
+                        isSelected && !isMultiple
+                          ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]'
+                          : isSelected && isMultiple
+                            ? 'bg-ink/[0.05]'
+                            : active ? 'bg-ink/[0.04]' : ''
+                      }`}
+                    >
+                      <span className="flex w-full min-w-0 items-center gap-2">
+                        {isMultiple ? (
                           <span
-                            key={badge.label}
-                            className={`rounded-[4px] py-px text-[11px] leading-4 ${
-                              badge.accent === true
-                                ? 'font-medium text-accent-ink'
-                                : badge.tone === 'caution'
-                                  ? 'bg-amber-ink/10 px-1.5 text-amber-ink'
-                                  : 'bg-ink/[0.05] px-1.5 text-ink-faint'
+                            aria-hidden
+                            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                              isSelected ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
                             }`}
                           >
-                            {badge.label}
+                            <Icon name="check" size={12} />
                           </span>
-                        ))}
+                        ) : null}
+                        <span
+                          className={`min-w-0 flex-1 truncate ${option.disabled ? 'text-ink-faint' : 'text-ink'} ${
+                            isSelected ? 'font-medium' : ''
+                          }`}
+                        >
+                          {option.label}
+                        </span>
+                        {!isMultiple && isSelected ? (
+                          <Icon name="check" size={12} className="ml-auto shrink-0 text-ink-soft" />
+                        ) : null}
                       </span>
-                    ) : null}
-                  </button>
-                  )}
-                </div>
-              );
-            })}
-            {customRow !== undefined ? (
-              <button
-                type="button"
-                id={`${listId}-option-${visible.length}`}
-                data-index={visible.length}
-                role="option"
-                aria-selected={isValueSelected(customRow)}
-                title={customRow}
-                onClick={() => { commitCustom(customRow); }}
-                onMouseMove={() => { setActiveIndex(visible.length); }}
-                className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:min-h-11 ${
-                  activeIndex === visible.length ? 'bg-ink/[0.04]' : 'hover:bg-ink/[0.04]'
-                }`}
-              >
-                <Icon name="plus" size={12} className="text-ink-faint" />
-                <span className="min-w-0 truncate">
-                  {(customValueLabel ?? ((custom) => custom))(customRow)}
-                </span>
-              </button>
-            ) : null}
-          </>
+                      {option.description !== undefined ? (
+                        <span className={`line-clamp-2 text-[12px] leading-snug text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
+                          {option.description}
+                        </span>
+                      ) : null}
+                      {option.hint !== undefined ? (
+                        <span className={`truncate font-mono text-[11px] text-ink-faint ${isMultiple ? 'pl-6' : ''}`}>
+                          {option.hint}
+                        </span>
+                      ) : null}
+                      {option.badges !== undefined && option.badges.length > 0 ? (
+                        <span className={`mt-0.5 flex flex-wrap items-center gap-1 ${isMultiple ? 'pl-6' : ''}`}>
+                          {option.badges.map((badge) => (
+                            <span
+                              key={badge.label}
+                              className={`rounded-[4px] py-px text-[11px] leading-4 ${
+                                badge.accent === true
+                                  ? 'font-medium text-accent-ink'
+                                  : badge.tone === 'caution'
+                                    ? 'bg-amber-ink/10 px-1.5 text-amber-ink'
+                                    : 'bg-ink/[0.05] px-1.5 text-ink-faint'
+                              }`}
+                            >
+                              {badge.label}
+                            </span>
+                          ))}
+                        </span>
+                      ) : null}
+                    </button>
+                    )}
+                  </div>
+                );
+              })}
+              {bottomSpacerHeight > 0 ? (
+                <div aria-hidden data-virtual-spacer="bottom" style={{ height: bottomSpacerHeight }} />
+              ) : null}
+              {customRow !== undefined ? (
+                <button
+                  type="button"
+                  id={`${listId}-option-${visible.length}`}
+                  data-index={visible.length}
+                  role="option"
+                  aria-selected={isValueSelected(customRow)}
+                  aria-setsize={isVirtualized ? rowCount : undefined}
+                  aria-posinset={isVirtualized ? visible.length + 1 : undefined}
+                  title={customRow}
+                  onClick={() => { commitCustom(customRow); }}
+                  onMouseMove={() => { setActiveIndex(visible.length); }}
+                  className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left font-mono text-[12px] text-ink transition-colors duration-[var(--kiki-motion-quick)] pointer-coarse:min-h-11 ${
+                    activeIndex === visible.length ? 'bg-ink/[0.04]' : 'hover:bg-ink/[0.04]'
+                  }`}
+                >
+                  <Icon name="plus" size={12} className="text-ink-faint" />
+                  <span className="min-w-0 truncate">
+                    {(customValueLabel ?? ((custom) => custom))(customRow)}
+                  </span>
+                </button>
+              ) : null}
+            </>
+          )}
+        </div>
         )}
-      </div>
-      )}
-      {panelFooter}
-    </>
-  );
+        {panelFooter}
+      </>
+    );
+  };
 
   const resolvedTriggerText = triggerLabel ?? (
     isMultiple
@@ -707,8 +836,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
           if (open) {
             close();
           } else {
-            setActiveIndex(0);
-            setOpen(true);
+            openSelect();
           }
         }}
         className={
@@ -763,7 +891,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
                 }}
                 className="kiki-action-sheet flex flex-col overflow-hidden"
               >
-                {panel}
+                {renderPanel()}
               </div>
             </div>,
             document.body,
@@ -789,7 +917,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
                 className={`anim-enter fixed flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
                 style={{ ...panelStyle, zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
               >
-                {panel}
+                {renderPanel()}
               </div>,
               document.body,
             )
@@ -800,7 +928,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
                 {...panelData}
                 className={panelClassName}
               >
-                {panel}
+                {renderPanel()}
               </div>
             )
         : null}
@@ -821,6 +949,8 @@ function CompactOptionRow({
   active,
   selected,
   multiple,
+  ariaSetSize,
+  ariaPosInSet,
   onCommit,
   onHover,
 }: {
@@ -830,6 +960,8 @@ function CompactOptionRow({
   readonly active: boolean;
   readonly selected: boolean;
   readonly multiple: boolean;
+  readonly ariaSetSize?: number;
+  readonly ariaPosInSet?: number;
   readonly onCommit: () => void;
   readonly onHover: () => void;
 }) {
@@ -848,6 +980,8 @@ function CompactOptionRow({
       role="option"
       aria-selected={selected}
       aria-disabled={option.disabled ? true : undefined}
+      aria-setsize={ariaSetSize}
+      aria-posinset={ariaPosInSet}
       disabled={option.disabled}
       title={tooltip}
       onClick={onCommit}

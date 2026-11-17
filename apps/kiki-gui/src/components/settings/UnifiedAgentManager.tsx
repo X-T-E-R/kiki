@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -40,6 +40,8 @@ const profileKey = (profile: NamedAgentProfile) => `${profile.source}:${profile.
 export const AGENT_QUERY_PARAM = 'agent';
 /** The `?workspace=` query: the workspace this page is filtered to. */
 const WORKSPACE_QUERY_PARAM = 'workspace';
+/** Bounded HTTP concurrency when resolving a deep-linked `?agent=` across other workspaces. */
+const MAX_ELSEWHERE_CONCURRENCY = 2;
 
 /** The create flow, in a side panel; `source` prefills a duplicate. */
 type Creating = { source?: string } | null;
@@ -130,32 +132,80 @@ export function UnifiedAgentManager() {
   };
   // A name is the address when it is unique on this page; two files with one
   // name (a shadowed copy) fall back to the full file identity.
-  const paramOf = (row: TeamRow) => rows.filter((other) => other.profile.name === row.profile.name).length === 1 ? row.profile.name : row.key;
+  const nameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row.profile.name, (counts.get(row.profile.name) ?? 0) + 1);
+    return counts;
+  }, [rows]);
+  const paramOf = (row: TeamRow) => (nameCounts.get(row.profile.name) ?? 0) === 1 ? row.profile.name : row.key;
   const editing = detail.selected === null ? undefined
     : rows.find((row) => paramOf(row) === detail.selected) ?? rows.find((row) => row.key === detail.selected);
   // `?agent=` resolves across every workspace, not only the one in view: a
   // deep link taken while another workspace is filtered names where the
   // profile lives instead of reading as "not found". Only asked while the
-  // current catalog cannot answer.
+  // current catalog cannot answer, with strict concurrency <= 2 and early exit
+  // so machines with dozens of registered workspaces never saturate the connection pool.
   const workspaces = workspacesQuery.data?.items ?? [];
-  const elsewhereQueries = useQueries({
-    queries: workspaces
-      .filter((workspace) => workspace.id !== selectedWorkspaceId)
-      .map((workspace) => ({
-        queryKey: ['named-agent-profiles', workspace.id],
-        queryFn: () => loadAgentProfileCatalog(client, { mode: 'workspace', workspaceId: workspace.id }),
-        enabled: detail.selected !== null && editing === undefined && profilesQuery.isSuccess && !profilesQuery.data.items.some((item) => item.name === detail.selected),
-        staleTime: 15_000,
-      })),
+  const otherWorkspaces = useMemo(
+    () => sortWorkspacesByRecency(workspaces.filter((workspace) => workspace.id !== selectedWorkspaceId)),
+    [workspaces, selectedWorkspaceId],
+  );
+  const missingSelectedName = detail.selected !== null
+    && !detail.selected.includes(':')
+    && editing === undefined
+    && profilesQuery.isSuccess
+    && !profilesQuery.data.items.some((item) => item.name === detail.selected)
+      ? detail.selected
+      : null;
+  const elsewhereQuery = useQuery({
+    queryKey: [
+      'named-agent-profiles',
+      'elsewhere',
+      selectedWorkspaceId ?? 'global',
+      missingSelectedName,
+      otherWorkspaces.map((workspace) => workspace.id).join(','),
+    ],
+    enabled: missingSelectedName !== null && otherWorkspaces.length > 0,
+    staleTime: 30_000,
+    queryFn: async ({ signal }) => {
+      if (missingSelectedName === null) return null;
+      for (const workspace of otherWorkspaces) {
+        const cached = queryClient.getQueryData<{ items: readonly NamedAgentProfile[] }>(['named-agent-profiles', workspace.id]);
+        if (cached?.items.some((item) => item.name === missingSelectedName)) {
+          return workspace.id;
+        }
+      }
+      let nextIndex = 0;
+      let foundId: string | null = null;
+      const worker = async () => {
+        while (foundId === null && !signal.aborted) {
+          const current = nextIndex++;
+          if (current >= otherWorkspaces.length) return;
+          const workspace = otherWorkspaces[current]!;
+          try {
+            const catalog = await queryClient.fetchQuery({
+              queryKey: ['named-agent-profiles', workspace.id],
+              queryFn: () => loadAgentProfileCatalog(client, { mode: 'workspace', workspaceId: workspace.id }),
+              staleTime: 30_000,
+            });
+            if (foundId === null && catalog.items.some((item) => item.name === missingSelectedName)) {
+              foundId = workspace.id;
+              return;
+            }
+          } catch {
+            // Skip unreadable workspaces while continuing to probe remaining candidates.
+          }
+        }
+      };
+      const workerCount = Math.min(MAX_ELSEWHERE_CONCURRENCY, otherWorkspaces.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      return foundId;
+    },
   });
   const elsewhere = useMemo(() => {
-    if (detail.selected === null || editing !== undefined) return undefined;
-    for (let i = 0; i < elsewhereQueries.length; i++) {
-      const items = elsewhereQueries[i]?.data?.items;
-      if (items !== undefined && items.some((item) => item.name === detail.selected)) return workspaces.filter((workspace) => workspace.id !== selectedWorkspaceId)[i];
-    }
-    return undefined;
-  }, [elsewhereQueries, workspaces, selectedWorkspaceId, editing, detail.selected]);
+    if (missingSelectedName === null || !elsewhereQuery.data) return undefined;
+    return otherWorkspaces.find((workspace) => workspace.id === elsewhereQuery.data);
+  }, [missingSelectedName, elsewhereQuery.data, otherWorkspaces]);
   // A deliberate workspace switch keeps the open detail when the same name
   // resolves there too.
   const openName = editing !== undefined && detail.selected === editing.profile.name ? detail.selected : null;

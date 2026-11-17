@@ -1670,6 +1670,7 @@ describe('SessionLifecycleService active-turn fork', () => {
       id: 'main',
       accessor: accessor([
         [IAgentActivityView, { state: () => ({ turn: { id: 2 } }) }],
+        [IAgentLoopService, { tryAcquireQuiescence: () => ({ dispose: () => {} }) }],
         [IEventDispatcher, { flush: async () => {} }],
       ]),
     } as unknown as IAgentScopeHandle;
@@ -1677,6 +1678,7 @@ describe('SessionLifecycleService active-turn fork', () => {
       id: 'child-1',
       accessor: accessor([
         [IAgentActivityView, { state: () => ({ turn: { id: 1 } }) }],
+        [IAgentLoopService, { tryAcquireQuiescence: () => ({ dispose: () => {} }) }],
         [IEventDispatcher, { flush: async () => {} }],
       ]),
     } as unknown as IAgentScopeHandle;
@@ -1810,6 +1812,7 @@ describe('SessionLifecycleService active-turn fork', () => {
       id: 'main',
       accessor: accessor([
         [IAgentActivityView, { state: () => ({ turn: { id: 2 } }) }],
+        [IAgentLoopService, { tryAcquireQuiescence: () => ({ dispose: () => {} }) }],
         [IEventDispatcher, { flush: async () => {} }],
       ]),
     } as unknown as IAgentScopeHandle;
@@ -1905,6 +1908,7 @@ describe('SessionLifecycleService active-turn fork', () => {
       id: 'main',
       accessor: accessor([
         [IAgentActivityView, { state: () => ({ turn: currentTurn }) }],
+        [IAgentLoopService, { tryAcquireQuiescence: () => ({ dispose: () => {} }) }],
         [IEventDispatcher, { flush: async () => {} }],
       ]),
     } as unknown as IAgentScopeHandle;
@@ -2033,6 +2037,7 @@ describe('SessionLifecycleService active-turn fork', () => {
       id: 'main',
       accessor: accessor([
         [IAgentActivityView, { state: () => ({ turn: currentTurn }) }],
+        [IAgentLoopService, { tryAcquireQuiescence: () => ({ dispose: () => {} }) }],
         [IEventDispatcher, { flush: async () => {} }],
       ]),
     } as unknown as IAgentScopeHandle;
@@ -2093,6 +2098,126 @@ describe('SessionLifecycleService active-turn fork', () => {
       });
       expect(JSON.stringify(copied)).not.toContain('live-thread-9');
     } finally {
+      materialize.mockRestore();
+      announce.mockRestore();
+      await fx.service.dispose();
+    }
+  });
+
+  it('freezes source prompt admission across fork wire snapshot and releases quiescence afterward', async () => {
+    const fx = fixture();
+    const settledRecords: Array<Record<string, unknown>> = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'turn.started', turnId: 1, time: 2 },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 3 },
+    ];
+    let quiescenceHeld = false;
+    let releaseReadGate: () => void = () => {};
+    let resolveRead: () => void = () => {};
+    const readEntered = new Promise<void>((resolve) => {
+      resolveRead = resolve;
+    });
+    const origGate = new Promise<void>((resolveGate) => {
+      releaseReadGate = resolveGate;
+    });
+    const events: string[] = [];
+    const tryAcquireQuiescence = vi.fn((options?: { readonly pendingSteps?: string }) => {
+      expect(options).toEqual({ pendingSteps: 'preserve' });
+      if (quiescenceHeld) return undefined;
+      quiescenceHeld = true;
+      events.push('acquire');
+      return {
+        dispose: () => {
+          if (quiescenceHeld) {
+            quiescenceHeld = false;
+            events.push('release');
+          }
+        },
+      };
+    });
+    const rewrite = vi.fn(async () => {
+      expect(quiescenceHeld).toBe(false);
+      events.push('rewrite');
+    });
+    const target = {
+      id: 'frozen-fork',
+      dispose: vi.fn(),
+      accessor: accessor([
+        [ISessionContext, { sessionId: 'frozen-fork' }],
+        [ISessionMetadata, { drain: async () => {}, registerAgent: async () => {}, update: async () => {} }],
+        [IAgentLifecycleService, { list: () => [], create: async () => {} }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const liveMain = {
+      id: 'main',
+      accessor: accessor([
+        [IAgentActivityView, { state: () => ({ turn: undefined }) }],
+        [IAgentLoopService, { tryAcquireQuiescence }],
+        [IEventDispatcher, { flush: async () => {} }],
+      ]),
+    } as unknown as IAgentScopeHandle;
+    const source = {
+      ...fx.handle,
+      accessor: accessor([
+        [ISessionMetadata, {
+          drain: async () => {
+            expect(quiescenceHeld).toBe(true);
+            events.push('drain');
+          },
+          read: async () => ({ title: 'Frozen source', agents: { main: { type: 'main' } } }),
+        }],
+        [IAgentLifecycleService, { list: () => [liveMain], get: () => liveMain }],
+        [ISessionContext, makeSessionContext({
+          sessionId: 'session-1', workspaceId: 'workspace-1', sessionDir: '/home/workspace-1/session-1',
+          sessionScope: 'workspace-1/session-1', cwd: '/workspace',
+        })],
+      ]),
+    };
+    const internals = fx.service as unknown as {
+      sessions: Map<string, ISessionScopeHandle>;
+      materializeSession(opts: { sessionId: string; workDir: string }): Promise<ISessionScopeHandle>;
+      announceCreated(event: unknown): Promise<void>;
+    };
+    internals.sessions.set('session-1', source);
+    const materialize = vi.spyOn(internals, 'materializeSession').mockResolvedValue(target);
+    const announce = vi.spyOn(internals, 'announceCreated').mockResolvedValue();
+    let readCalls = 0;
+    Object.assign(fx.service, {
+      appendLogStore: {
+        append: vi.fn(),
+        flush: async () => {},
+        read: async function* () {
+          readCalls += 1;
+          if (readCalls === 1) {
+            resolveRead();
+            await origGate;
+          }
+          yield* settledRecords;
+        },
+        rewrite,
+      },
+      readPromotedTaskDocuments: async () => new Map(),
+      copySessionFiles: async () => {},
+      pruneTruncatedForkFiles: async () => {},
+      acquireSessionLock: async () => {},
+      releaseSessionLock: async () => {},
+      appendSessionIndexEntry: async () => {},
+    });
+
+    try {
+      const forkPromise = fx.service.fork({ sourceSessionId: 'session-1', newSessionId: target.id });
+      await readEntered;
+      expect(quiescenceHeld).toBe(true);
+      expect(liveMain.accessor.get(IAgentLoopService).tryAcquireQuiescence({ pendingSteps: 'preserve' })).toBeUndefined();
+      releaseReadGate();
+      await forkPromise;
+      expect(quiescenceHeld).toBe(false);
+      expect(events).toEqual(['acquire', 'drain', 'release', 'rewrite']);
+      const afterFork = liveMain.accessor.get(IAgentLoopService).tryAcquireQuiescence({ pendingSteps: 'preserve' });
+      expect(afterFork).toBeDefined();
+      afterFork?.dispose();
+    } finally {
+      releaseReadGate();
       materialize.mockRestore();
       announce.mockRestore();
       await fx.service.dispose();

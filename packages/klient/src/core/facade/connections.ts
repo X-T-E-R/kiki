@@ -10,6 +10,7 @@ export interface ConnectionsFacade {
   remove(connectionId: string): Promise<void>;
   setEnabled(connectionId: string, enabled: boolean): Promise<RemoteConnection>;
   retry(connectionId: string): Promise<RemoteConnection>;
+  verifyFingerprint(connectionId: string, options?: HttpRestRequestOptions): Promise<RemoteConnection>;
   summary(connectionId: string, options?: HttpRestRequestOptions): Promise<SpaceSummary>;
   handshake(): Promise<ConnectionHandshake>;
   createPairCode(input?: { label?: string; expiresInMs?: number; allowBridge?: boolean; bridgeOperations?: BridgeOperation[] }): Promise<PairCodeCreateOutput>;

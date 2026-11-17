@@ -1,20 +1,18 @@
 /**
  * SidebarPersonaSection: the sidebar's persona group.
  *
- * One row per persona, at the same density as a conversation row: the 7px
- * status slot, a 20px face, the name, the unread count, and trailing controls
- * for quick actions and the conversation switcher. The row's own click is the
- * person ("go talk to them"), not a conversation, so it always lands on the
- * stable `/p/:id/daily` address and lets the daily pointer decide where that
- * is. The group header folds into `LayoutPreferences` without introducing an
- * inner scroll container, and caps the default preview slice to eight rows.
+ * One row per persona in a fixed, user-draggable order persisted in
+ * `localStorage` (`kiki.sidebar.personaOrder`). Conversations are resolved per
+ * persona from the server merged with live client sessions so cold threads
+ * outside the global sidebar page remain visible, and expanding a persona's
+ * conversations always unfolds inline right beneath its row without opening a
+ * duplicate floating popover.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
 import type { PersonaSummary, RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
-import { errorText } from '@kiki/session-core/i18n';
 import { isPinnedSession, sessionRowState } from '@kiki/session-core/sessions';
 import { setSidebarPersonaSectionCollapsed, type SessionSeenMap } from '@kiki/session-core/settings';
 
@@ -28,21 +26,25 @@ import { LifeMark } from '../LifeMark';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { CreateRoomDialog } from '../room/CreateRoomDialog';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
-import { PersonaConversationSwitcher } from './PersonaConversationSwitcher';
+import { personaNewConversationUrl } from './personaNavigation';
 import {
   compactPersonaThreadTitle,
   mergePersonaConversations,
-  sessionBelongsToPersona,
   sessionPersonaId,
 } from './personaSessionUtils';
-import { usePersonaSwitcherConversations } from './usePersonaSwitcherConversations';
-import { sortAndFilterDirectory, usePersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
+import {
+  personaSwitcherQueryKey,
+  usePersonaSessionHeads,
+} from './usePersonaSwitcherConversations';
+import { usePersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
 import { invalidatePersonas } from './usePersonas';
 
 /** Default preview cap when the persona section is expanded. */
 export const SIDEBAR_PERSONA_PREVIEW_LIMIT = 8;
-/** Inline non-home topic/room conversations surfaced beneath a multi-thread persona. */
+/** Inline non-home topic/room conversations surfaced by default before "+N more". */
 export const SIDEBAR_PERSONA_INLINE_THREAD_LIMIT = 2;
+/** Persisted user-chosen sidebar persona ordering. */
+export const SIDEBAR_PERSONA_ORDER_KEY = 'kiki.sidebar.personaOrder';
 
 interface InlinePersonaThread {
   readonly id: string;
@@ -70,8 +72,8 @@ function rawThreadTitle(session: Session, untitled: string): string {
 const GROUP_HEAD = 'flex h-7 items-center gap-0.5 pr-1 pl-1';
 const HEAD_BUTTON =
   'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
-const ROW_BUTTON =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint opacity-60 transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink';
+const HOVER_ICON_BUTTON =
+  'flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink';
 
 function activeRoutePersonaId(pathname: string, search: string): string | undefined {
   const dailyMatch = /^\/p\/([^/]+)\/daily(?:\/|$)/.exec(pathname);
@@ -85,28 +87,73 @@ function activeRoutePersonaId(pathname: string, search: string): string | undefi
   return undefined;
 }
 
-function personaPreviewPriority(item: PersonaDirectoryEntry, activePersonaId: string | undefined): number {
-  if (item.pinned) return 0;
-  if (activePersonaId !== undefined && item.id === activePersonaId) return 1;
-  if (item.life === 'waiting') return 2;
-  if (item.life === 'working') return 3;
-  if (item.life === 'done' || item.unreadCount > 0) return 4;
-  return 5;
+export function readSavedPersonaOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_PERSONA_ORDER_KEY);
+    if (raw === null || raw === '') return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const entry of parsed) {
+      if (typeof entry === 'string' && entry.trim() !== '' && !seen.has(entry)) {
+        seen.add(entry);
+        out.push(entry);
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
+function writeSavedPersonaOrder(order: readonly string[]): void {
+  try {
+    localStorage.setItem(SIDEBAR_PERSONA_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // Ignore storage quota or sandbox errors.
+  }
+}
+
+/**
+ * Order visible sidebar personas deterministically without jumping rows when
+ * activity, unread count, pin state, or active selection changes. Respects the
+ * user's persisted drag order and appends newly discovered personas at the end.
+ */
 export function orderSidebarPersonas(
   items: readonly PersonaDirectoryEntry[],
-  activePersonaId?: string,
+  savedOrder: readonly string[] = [],
 ): PersonaDirectoryEntry[] {
-  return sortAndFilterDirectory(items).sort((a, b) => {
-    const pa = personaPreviewPriority(a, activePersonaId);
-    const pb = personaPreviewPriority(b, activePersonaId);
-    if (pa !== pb) return pa - pb;
-    if (a.lastActivityAt !== b.lastActivityAt) {
-      return (b.lastActivityAt ?? -Infinity) - (a.lastActivityAt ?? -Infinity);
-    }
-    return a.name.localeCompare(b.name);
-  });
+  const visible = items.filter((item) => !item.hidden);
+  if (savedOrder.length === 0) return visible;
+  const rank = new Map<string, number>();
+  savedOrder.forEach((id, index) => { rank.set(id, index); });
+  const prioritized: PersonaDirectoryEntry[] = [];
+  const rest: PersonaDirectoryEntry[] = [];
+  for (const item of visible) {
+    if (rank.has(item.id)) prioritized.push(item);
+    else rest.push(item);
+  }
+  prioritized.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  return [...prioritized, ...rest];
+}
+
+export function reorderPersonaIds(
+  currentIds: readonly string[],
+  draggedId: string,
+  targetId: string,
+  position: 'before' | 'after',
+): string[] {
+  if (draggedId === targetId) return [...currentIds];
+  const fromIndex = currentIds.indexOf(draggedId);
+  const toIndex = currentIds.indexOf(targetId);
+  if (fromIndex < 0 || toIndex < 0) return [...currentIds];
+  const next = currentIds.filter((id) => id !== draggedId);
+  const anchorIndex = next.indexOf(targetId);
+  if (anchorIndex < 0) return [...currentIds];
+  const insertAt = position === 'before' ? anchorIndex : anchorIndex + 1;
+  next.splice(insertAt, 0, draggedId);
+  return next;
 }
 
 export interface SidebarPersonaSectionProps {
@@ -114,7 +161,7 @@ export interface SidebarPersonaSectionProps {
   readonly activeSessionId?: string;
   readonly seen: SessionSeenMap;
   readonly workspaceOptions?: readonly WorkspaceCatalogEntry[];
-  /** Room names for the switcher's member rows; the ids are what the row opens. */
+  /** Room names for member rows; the ids are what the row opens. */
   readonly rooms?: readonly RoomListItem[];
 }
 
@@ -122,10 +169,9 @@ export function SidebarPersonaSection({
   sessions,
   activeSessionId,
   seen,
-  workspaceOptions = [],
   rooms = [],
 }: SidebarPersonaSectionProps) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -134,6 +180,104 @@ export function SidebarPersonaSection({
   const collapsed = layoutPrefs.sidebarPersonaSectionCollapsed === true;
 
   const { directory } = usePersonaDirectory({ sessions, seen });
+  const [savedOrder, setSavedOrder] = useState<readonly string[]>(readSavedPersonaOrder);
+  const [showAllPersonas, setShowAllPersonas] = useState(false);
+  const [expandedOverrides, setExpandedOverrides] = useState<Readonly<Record<string, boolean>>>({});
+  const [showAllThreadsFor, setShowAllThreadsFor] = useState<Readonly<Record<string, boolean>>>({});
+  const [rowMenu, setRowMenu] = useState<{ persona: PersonaDirectoryEntry; x: number; y: number } | null>(null);
+  const [creatingRoom, setCreatingRoom] = useState(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
+
+  const visiblePersonas = useMemo(
+    () => orderSidebarPersonas(directory, savedOrder),
+    [directory, savedOrder],
+  );
+  const hasOverflow = visiblePersonas.length > SIDEBAR_PERSONA_PREVIEW_LIMIT;
+  const shownPersonas = useMemo(
+    () => (!hasOverflow || showAllPersonas
+      ? visiblePersonas
+      : visiblePersonas.slice(0, SIDEBAR_PERSONA_PREVIEW_LIMIT)),
+    [hasOverflow, showAllPersonas, visiblePersonas],
+  );
+  const hiddenMoreCount = Math.max(0, visiblePersonas.length - SIDEBAR_PERSONA_PREVIEW_LIMIT);
+
+  const headsQuery = usePersonaSessionHeads({
+    enabled: !collapsed && visiblePersonas.length > 0,
+    perPersonaLimit: 10,
+  });
+
+  const overflowPersonaIds = useMemo(() => {
+    if (collapsed) return [];
+    const heads = headsQuery.data;
+    return shownPersonas
+      .filter((persona) => {
+        if (showAllThreadsFor[persona.id] !== true) return false;
+        const head = heads?.[persona.id];
+        return head !== undefined && head.total > head.items.length;
+      })
+      .map((persona) => persona.id);
+  }, [collapsed, headsQuery.data, showAllThreadsFor, shownPersonas]);
+
+  const canQueryPersonaSessions = typeof client?.listSessions === 'function';
+  const overflowQueries = useQueries({
+    queries: overflowPersonaIds.map((personaId) => ({
+      queryKey: personaSwitcherQueryKey(personaId),
+      queryFn: () => client.listSessions({ persona: personaId, page_size: 100, include_private: true }),
+      enabled: !collapsed && canQueryPersonaSessions && personaId.trim() !== '',
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+    })),
+  });
+
+  const serverSessionsByPersona = useMemo(() => {
+    const map = new Map<string, readonly Session[] | undefined>();
+    const heads = headsQuery.data;
+    if (heads !== undefined) {
+      for (const persona of visiblePersonas) {
+        const head = heads[persona.id];
+        if (head !== undefined) map.set(persona.id, head.items);
+      }
+    }
+    overflowPersonaIds.forEach((personaId, index) => {
+      const fullItems = overflowQueries[index]?.data?.items;
+      if (fullItems !== undefined) map.set(personaId, fullItems);
+    });
+    return map;
+  }, [headsQuery.data, overflowPersonaIds, overflowQueries, visiblePersonas]);
+
+  const personaMembershipSig = useMemo(() => {
+    if (sessions.length === 0) return null;
+    const tokens: string[] = [];
+    for (const item of sessions) {
+      const pid = sessionPersonaId(item);
+      if (pid !== undefined) {
+        tokens.push(`${pid}:${item.id}:${item.archived === true ? 1 : 0}`);
+      }
+    }
+    tokens.sort();
+    return tokens.join('|');
+  }, [sessions]);
+
+  const prevMembershipSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (personaMembershipSig === null) return;
+    if (prevMembershipSigRef.current === null) {
+      prevMembershipSigRef.current = personaMembershipSig;
+      return;
+    }
+    if (prevMembershipSigRef.current !== personaMembershipSig) {
+      prevMembershipSigRef.current = personaMembershipSig;
+      void queryClient.invalidateQueries({ queryKey: ['persona-session-heads'] });
+      void queryClient.invalidateQueries({ queryKey: ['persona-switcher-sessions'] });
+    }
+  }, [personaMembershipSig, queryClient]);
+
+  const currentWorkspaceId = useMemo(
+    () => sessions.find((item) => item.id === activeSessionId)?.workspace_id,
+    [activeSessionId, sessions],
+  );
+
   const activePersonaId = useMemo(() => {
     const fromRoute = activeRoutePersonaId(location.pathname, location.search);
     if (fromRoute !== undefined) return fromRoute;
@@ -141,101 +285,179 @@ export function SidebarPersonaSection({
     const byHome = directory.find((entry) => entry.homeSessionId === activeSessionId);
     if (byHome !== undefined) return byHome.id;
     const openSession = sessions.find((session) => session.id === activeSessionId);
-    return openSession === undefined ? undefined : sessionPersonaId(openSession);
-  }, [location.pathname, location.search, activeSessionId, directory, sessions]);
+    if (openSession !== undefined) return sessionPersonaId(openSession);
+    for (const [personaId, serverItems] of serverSessionsByPersona) {
+      if (serverItems?.some((item) => item.id === activeSessionId)) return personaId;
+    }
+    return undefined;
+  }, [location.pathname, location.search, activeSessionId, directory, sessions, serverSessionsByPersona]);
 
-  const visiblePersonas = useMemo(
-    () => orderSidebarPersonas(directory, activePersonaId),
-    [directory, activePersonaId],
-  );
   const roomNames = useMemo(() => new Map(rooms.map((room) => [room.id, room.title])), [rooms]);
+  const globalSessionIds = useMemo(() => new Set(sessions.map((item) => item.id)), [sessions]);
 
-  const [showAllPersonas, setShowAllPersonas] = useState(false);
-  const [switcher, setSwitcher] = useState<{ persona: PersonaDirectoryEntry; anchor: HTMLElement } | null>(null);
-  const [rowMenu, setRowMenu] = useState<{ persona: PersonaDirectoryEntry; x: number; y: number } | null>(null);
-  const [creatingRoom, setCreatingRoom] = useState(false);
-  const switcherToggleRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
-
-  const conversationsQuery = usePersonaSwitcherConversations(switcher?.persona.id, switcher !== null);
-  const personaConversations = useMemo(() => {
-    if (switcher === null) return [];
-    return mergePersonaConversations(conversationsQuery.data?.items, sessions, switcher.persona.id);
-  }, [conversationsQuery.data?.items, sessions, switcher]);
-
-  const extraThreadsByPersona = useMemo(() => {
-    const map = new Map<string, readonly InlinePersonaThread[]>();
-    if (visiblePersonas.length === 0 || sessions.length === 0) return map;
+  const personaThreadStats = useMemo(() => {
+    const map = new Map<string, {
+      readonly extraThreads: readonly InlinePersonaThread[];
+      readonly totalConversations: number;
+      readonly totalNonHomeConversations: number;
+      readonly unreadIds: readonly string[];
+      readonly unreadCount: number;
+      readonly life: PersonaDirectoryEntry['life'];
+    }>();
+    if (visiblePersonas.length === 0) return map;
     const untitled = t('sidebar.untitled');
+    const heads = headsQuery.data;
     for (const persona of visiblePersonas) {
-      const unreadIds = new Set(persona.unreadSessionIds);
-      const threads = sessions
-        .filter((item) => !item.archived && item.id !== persona.homeSessionId && sessionBelongsToPersona(item, persona.id))
-        .map((item): InlinePersonaThread => {
-          const roomId = typeof item.metadata?.['room_member_of'] === 'string'
-            ? item.metadata['room_member_of']
-            : undefined;
-          const fullTitle = roomId === undefined
-            ? rawThreadTitle(item, untitled)
-            : roomNames.get(roomId) ?? rawThreadTitle(item, untitled);
-          const rawState = sessionRowState(item, seen);
-          const state = rawState === 'unread' && (persona.unreadCount === 0 || (unreadIds.size > 0 && !unreadIds.has(item.id)))
-            ? 'read'
-            : rawState;
-          return {
-            id: item.id,
-            kind: roomId === undefined ? 'topic' : 'room',
-            shortTitle: roomId === undefined ? compactPersonaThreadTitle(fullTitle, persona.name) : fullTitle,
-            fullTitle,
-            life: threadLifeOf(state),
-            isCurrent: item.id === activeSessionId,
-            needsYou: state === 'needs-me',
-            pinned: isPinnedSession(item),
-            updatedAt: item.updated_at,
-            targetUrl: roomId === undefined ? `/s/${encodeURIComponent(item.id)}` : `/rooms/${encodeURIComponent(roomId)}`,
-          };
-        })
-        .sort((a, b) => {
-          if (a.needsYou !== b.needsYou) return a.needsYou ? -1 : 1;
-          if ((a.life === 'working') !== (b.life === 'working')) return a.life === 'working' ? -1 : 1;
-          if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-          return new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime();
+      const headBucket = heads?.[persona.id];
+      const serverItems = serverSessionsByPersona.get(persona.id);
+      const merged = mergePersonaConversations(serverItems, sessions, persona.id).filter((item) => !item.archived);
+      const directoryUnreadIds = new Set(persona.unreadSessionIds);
+      const extraThreads: InlinePersonaThread[] = [];
+      const computedUnreadIds: string[] = [...persona.unreadSessionIds];
+      const computedUnreadSet = new Set(computedUnreadIds);
+      let hasWaiting = persona.life === 'waiting';
+      let hasWorking = persona.life === 'working';
+
+      for (const item of merged) {
+        const rawState = sessionRowState(item, seen);
+        const state = globalSessionIds.has(item.id)
+          && rawState === 'unread'
+          && (persona.unreadCount === 0 || !directoryUnreadIds.has(item.id))
+          ? 'read'
+          : rawState;
+        if (state === 'needs-me') hasWaiting = true;
+        else if (state === 'running') hasWorking = true;
+        else if (state === 'unread' && !computedUnreadSet.has(item.id)) {
+          computedUnreadSet.add(item.id);
+          computedUnreadIds.push(item.id);
+        }
+        if (item.id === persona.homeSessionId) continue;
+        const roomId = typeof item.metadata?.['room_member_of'] === 'string'
+          ? item.metadata['room_member_of']
+          : undefined;
+        const fullTitle = roomId === undefined
+          ? rawThreadTitle(item, untitled)
+          : roomNames.get(roomId) ?? rawThreadTitle(item, untitled);
+        extraThreads.push({
+          id: item.id,
+          kind: roomId === undefined ? 'topic' : 'room',
+          shortTitle: roomId === undefined ? compactPersonaThreadTitle(fullTitle, persona.name) : fullTitle,
+          fullTitle,
+          life: threadLifeOf(state),
+          isCurrent: item.id === activeSessionId,
+          needsYou: state === 'needs-me',
+          pinned: isPinnedSession(item),
+          updatedAt: item.updated_at,
+          targetUrl: roomId === undefined ? `/s/${encodeURIComponent(item.id)}` : `/rooms/${encodeURIComponent(roomId)}`,
         });
-      if (threads.length > 0) map.set(persona.id, threads);
+      }
+
+      extraThreads.sort((a, b) => {
+        if (a.needsYou !== b.needsYou) return a.needsYou ? -1 : 1;
+        if ((a.life === 'working') !== (b.life === 'working')) return a.life === 'working' ? -1 : 1;
+        if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        return new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime();
+      });
+
+      const unreadCount = Math.max(persona.unreadCount, computedUnreadIds.length);
+      const life: PersonaDirectoryEntry['life'] = hasWaiting
+        ? 'waiting'
+        : hasWorking
+          ? 'working'
+          : unreadCount > 0 || persona.life === 'done'
+            ? 'done'
+            : 'idle';
+      const hasHomeSlot = persona.homeSessionId !== undefined ? 1 : 0;
+      let serverTotal = 0;
+      if (headBucket !== undefined) {
+        const headIds = new Set(headBucket.items.map((item) => item.id));
+        const newestTailTime = headBucket.items.length > 0
+          ? new Date(headBucket.items.at(-1)?.updated_at ?? 0).getTime()
+          : 0;
+        const addedLocal = sessions.filter((item) =>
+          !item.archived
+          && sessionPersonaId(item) === persona.id
+          && !headIds.has(item.id)
+          && (headBucket.items.length < 10 || new Date(item.updated_at ?? 0).getTime() >= newestTailTime),
+        ).length;
+        const archivedFromHead = headBucket.items.filter(
+          (item) => sessions.find((local) => local.id === item.id)?.archived === true,
+        ).length;
+        const homeMissingFromIndex = persona.homeSessionId !== undefined
+          && !headIds.has(persona.homeSessionId)
+          && !merged.some((item) => item.id === persona.homeSessionId)
+          ? 1
+          : 0;
+        serverTotal = Math.max(0, headBucket.total + addedLocal - archivedFromHead) + homeMissingFromIndex;
+      }
+      const totalConversations = Math.max(extraThreads.length + hasHomeSlot, serverTotal);
+      const totalNonHomeConversations = Math.max(extraThreads.length, totalConversations - hasHomeSlot);
+      map.set(persona.id, {
+        extraThreads,
+        totalConversations,
+        totalNonHomeConversations,
+        unreadIds: computedUnreadIds,
+        unreadCount,
+        life,
+      });
     }
     return map;
-  }, [activeSessionId, roomNames, seen, sessions, t, visiblePersonas]);
+  }, [activeSessionId, globalSessionIds, headsQuery.data, roomNames, seen, serverSessionsByPersona, sessions, t, visiblePersonas]);
+
+  const commitPersonaOrder = useCallback((nextIds: readonly string[]) => {
+    setSavedOrder(nextIds);
+    writeSavedPersonaOrder(nextIds);
+  }, []);
+
+  const allVisibleIds = useMemo(() => visiblePersonas.map((item) => item.id), [visiblePersonas]);
 
   if (visiblePersonas.length === 0) return null;
 
-  const hasOverflow = visiblePersonas.length > SIDEBAR_PERSONA_PREVIEW_LIMIT;
-  const shownPersonas = !hasOverflow || showAllPersonas
-    ? visiblePersonas
-    : visiblePersonas.slice(0, SIDEBAR_PERSONA_PREVIEW_LIMIT);
-  const hiddenMoreCount = Math.max(0, visiblePersonas.length - SIDEBAR_PERSONA_PREVIEW_LIMIT);
-
-  const collapsedLife: 'idle' | 'working' | 'waiting' | 'done' = visiblePersonas.some((item) => item.life === 'waiting')
+  const collapsedLife: 'idle' | 'working' | 'waiting' | 'done' = visiblePersonas.some((item) => (personaThreadStats.get(item.id)?.life ?? item.life) === 'waiting')
     ? 'waiting'
-    : visiblePersonas.some((item) => item.life === 'working')
+    : visiblePersonas.some((item) => (personaThreadStats.get(item.id)?.life ?? item.life) === 'working')
       ? 'working'
-      : visiblePersonas.some((item) => item.unreadCount > 0 || item.life === 'done')
+      : visiblePersonas.some((item) => {
+          const stats = personaThreadStats.get(item.id);
+          return (stats?.unreadCount ?? item.unreadCount) > 0 || (stats?.life ?? item.life) === 'done';
+        })
         ? 'done'
         : 'idle';
-  const collapsedUnreadTotal = visiblePersonas.reduce((sum, item) => sum + item.unreadCount, 0);
+  const collapsedUnreadTotal = visiblePersonas.reduce(
+    (sum, item) => sum + (personaThreadStats.get(item.id)?.unreadCount ?? item.unreadCount),
+    0,
+  );
 
-  const openSwitcher = (persona: PersonaDirectoryEntry, anchor: HTMLElement) => {
+  const toggleInlineExpand = (personaId: string, currentlyExpanded: boolean) => {
     setRowMenu(null);
-    setSwitcher((current) => (current?.persona.id === persona.id ? null : { persona, anchor }));
+    const next = !currentlyExpanded;
+    setExpandedOverrides((prev) => ({ ...prev, [personaId]: next }));
+    if (!next) {
+      setShowAllThreadsFor((prev) => {
+        if (!prev[personaId]) return prev;
+        const copy = { ...prev };
+        delete copy[personaId];
+        return copy;
+      });
+    }
   };
 
-  const openUnread = (event: React.MouseEvent, persona: PersonaDirectoryEntry, anchor: HTMLElement) => {
+  const openUnread = (event: React.MouseEvent, persona: PersonaDirectoryEntry, unreadIds: readonly string[], hasExtraThreads: boolean) => {
     event.stopPropagation();
-    if (persona.unreadSessionIds.length === 1) {
-      void navigate(`/s/${encodeURIComponent(persona.unreadSessionIds[0]!)}`);
+    setRowMenu(null);
+    if (unreadIds.length === 1) {
+      void navigate(`/s/${encodeURIComponent(unreadIds[0]!)}`);
       return;
     }
-    setRowMenu(null);
-    setSwitcher({ persona, anchor });
+    if (hasExtraThreads) {
+      setExpandedOverrides((prev) => ({ ...prev, [persona.id]: true }));
+      setShowAllThreadsFor((prev) => ({ ...prev, [persona.id]: true }));
+      return;
+    }
+    if (unreadIds[0] !== undefined) {
+      void navigate(`/s/${encodeURIComponent(unreadIds[0])}`);
+    }
   };
 
   const patchPersonaState = async (persona: PersonaDirectoryEntry, patch: { pinned?: boolean; hidden?: boolean }) => {
@@ -262,9 +484,24 @@ export function SidebarPersonaSection({
     ? []
     : [
         {
+          key: 'new-topic',
+          label: t('persona.newTopic'),
+          run: () => { void navigate(personaNewConversationUrl(rowMenu.persona.id, currentWorkspaceId)); },
+        },
+        { separator: true },
+        {
           key: 'pin',
           label: rowMenu.persona.pinned ? t('persona.unpin') : t('persona.pin'),
-          run: () => patchPersonaState(rowMenu.persona, { pinned: !rowMenu.persona.pinned }),
+          run: async () => {
+            const nextPinned = !rowMenu.persona.pinned;
+            if (nextPinned) {
+              commitPersonaOrder([
+                rowMenu.persona.id,
+                ...allVisibleIds.filter((id) => id !== rowMenu.persona.id),
+              ]);
+            }
+            await patchPersonaState(rowMenu.persona, { pinned: nextPinned });
+          },
         },
         {
           key: 'hide',
@@ -340,9 +577,15 @@ export function SidebarPersonaSection({
           <>
             <ul className="flex flex-col gap-px">
               {shownPersonas.map((persona) => {
-                const extraThreads = extraThreadsByPersona.get(persona.id) ?? [];
-                const hasExtraThreads = extraThreads.length > 0;
-                const totalConversations = extraThreads.length + 1;
+                const stats = personaThreadStats.get(persona.id);
+                const extraThreads = stats?.extraThreads ?? [];
+                const totalNonHomeConversations = stats?.totalNonHomeConversations ?? extraThreads.length;
+                const hasExtraThreads = totalNonHomeConversations > 0;
+                const totalConversations = stats?.totalConversations ?? (persona.homeSessionId !== undefined ? 1 : 0);
+                const unreadCount = stats?.unreadCount ?? persona.unreadCount;
+                const unreadIds = stats?.unreadIds ?? persona.unreadSessionIds;
+                const effectiveLife = stats?.life ?? persona.life;
+
                 const inlineSubthreadActive = extraThreads.some((item) => item.isCurrent);
                 const isSelectedPersona = activePersonaId === persona.id
                   || inlineSubthreadActive
@@ -350,9 +593,16 @@ export function SidebarPersonaSection({
                 const attentionThreads = extraThreads.filter(
                   (item) => item.needsYou || item.life === 'working' || item.life === 'done',
                 );
+
+                const overrideExpanded = expandedOverrides[persona.id];
+                const defaultExpanded = hasExtraThreads && (isSelectedPersona || attentionThreads.length > 0);
+                const isExpanded = hasExtraThreads && (overrideExpanded ?? defaultExpanded);
+                const showAllThreads = showAllThreadsFor[persona.id] === true;
+
                 const inlineThreads = (() => {
-                  if (!hasExtraThreads) return [];
-                  if (isSelectedPersona) {
+                  if (!isExpanded || !hasExtraThreads) return [];
+                  if (showAllThreads) return extraThreads;
+                  if (overrideExpanded === true || isSelectedPersona) {
                     const top = extraThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
                     if (extraThreads.length > SIDEBAR_PERSONA_INLINE_THREAD_LIMIT) {
                       const current = extraThreads.find((item) => item.isCurrent);
@@ -365,46 +615,118 @@ export function SidebarPersonaSection({
                   if (attentionThreads.length > 0) {
                     return attentionThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
                   }
-                  return [];
+                  return extraThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
                 })();
                 const overflowThreadCount = inlineThreads.length > 0
-                  ? Math.max(0, extraThreads.length - inlineThreads.length)
+                  ? Math.max(0, totalNonHomeConversations - inlineThreads.length)
                   : 0;
                 const atDaily = (persona.homeSessionId !== undefined && persona.homeSessionId === activeSessionId)
                   || (activePersonaId === persona.id && !inlineSubthreadActive);
-                const emphasis = atDaily || inlineSubthreadActive || persona.life === 'waiting' || persona.life === 'done';
+                const emphasis = atDaily || inlineSubthreadActive || effectiveLife === 'waiting' || effectiveLife === 'done';
                 const menuOpenForRow = rowMenu?.persona.id === persona.id;
-                const switcherOpenForRow = switcher?.persona.id === persona.id;
+                const isDragging = draggingId === persona.id;
+                const dropEdge = dropTarget?.id === persona.id ? dropTarget.position : undefined;
+
                 return (
                   <li
                     key={persona.id}
-                    className="group relative"
+                    draggable
+                    className={`group relative transition-opacity ${isDragging ? 'opacity-55' : ''}`}
                     data-sidebar-persona-row={persona.id}
+                    data-persona-dragging={isDragging || undefined}
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = 'move';
+                      try { event.dataTransfer.setData('text/plain', persona.id); } catch { /* ignore */ }
+                      setDraggingId(persona.id);
+                      setRowMenu(null);
+                    }}
+                    onDragOver={(event) => {
+                      const sourceId = draggingId ?? (() => {
+                        try { return event.dataTransfer.getData('text/plain') || null; } catch { return null; }
+                      })();
+                      if (sourceId === null || sourceId === persona.id || !allVisibleIds.includes(sourceId)) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = 'move';
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      const position: 'before' | 'after' = rect.height > 0
+                        ? (event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
+                        : (allVisibleIds.indexOf(sourceId) < allVisibleIds.indexOf(persona.id) ? 'after' : 'before');
+                      if (dropTarget?.id !== persona.id || dropTarget.position !== position) {
+                        setDropTarget({ id: persona.id, position });
+                      }
+                    }}
+                    onDragLeave={(event) => {
+                      if (dropTarget?.id === persona.id && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                        setDropTarget(null);
+                      }
+                    }}
+                    onDrop={(event) => {
+                      const sourceId = draggingId ?? (() => {
+                        try { return event.dataTransfer.getData('text/plain') || null; } catch { return null; }
+                      })();
+                      if (sourceId === null || !allVisibleIds.includes(sourceId)) return;
+                      event.preventDefault();
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      const fallbackPos: 'before' | 'after' = rect.height > 0
+                        ? (event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
+                        : (allVisibleIds.indexOf(sourceId) < allVisibleIds.indexOf(persona.id) ? 'after' : 'before');
+                      const position = dropTarget?.id === persona.id ? dropTarget.position : fallbackPos;
+                      const nextOrder = reorderPersonaIds(allVisibleIds, sourceId, persona.id, position);
+                      commitPersonaOrder(nextOrder);
+                      setDraggingId(null);
+                      setDropTarget(null);
+                    }}
+                    onDragEnd={() => {
+                      setDraggingId(null);
+                      setDropTarget(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+                      const idx = allVisibleIds.indexOf(persona.id);
+                      if (idx < 0) return;
+                      const neighborId = event.key === 'ArrowUp' ? allVisibleIds[idx - 1] : allVisibleIds[idx + 1];
+                      if (neighborId === undefined) return;
+                      event.preventDefault();
+                      commitPersonaOrder(reorderPersonaIds(
+                        allVisibleIds,
+                        persona.id,
+                        neighborId,
+                        event.key === 'ArrowUp' ? 'before' : 'after',
+                      ));
+                    }}
                     onContextMenu={(event) => {
                       event.preventDefault();
-                      setSwitcher(null);
                       setRowMenu({ persona, x: event.clientX, y: event.clientY });
                     }}
                   >
-                    <div className="relative">
+                    {dropEdge !== undefined ? (
+                      <span
+                        aria-hidden
+                        data-persona-drop-indicator={dropEdge}
+                        className={`pointer-events-none absolute right-2 left-2 z-20 h-[2px] rounded-full bg-accent ${
+                          dropEdge === 'before' ? 'top-0' : 'bottom-0'
+                        }`}
+                      />
+                    ) : null}
+
+                    <div className="row-interactive flex h-8 items-center gap-1 pr-1 pl-2">
                       <button
                         type="button"
+                        data-persona-primary={persona.id}
                         aria-current={atDaily ? 'page' : undefined}
                         aria-label={t('persona.openDaily', { name: persona.name })}
                         title={t('persona.openDaily', { name: persona.name })}
-                        onClick={() => { void navigate(`/p/${encodeURIComponent(persona.id)}/daily`); }}
-                        className={`row-interactive flex h-8 w-full items-center gap-2 py-0 pl-2 text-left ${
-                          persona.unreadCount > 0
-                            ? (hasExtraThreads ? 'pr-[92px]' : 'pr-[78px]')
-                            : (hasExtraThreads ? 'pr-[68px]' : 'pr-14')
-                        }`}
+                        onClick={() => {
+                          void navigate(`/p/${encodeURIComponent(persona.id)}/daily`);
+                        }}
+                        className="flex h-full min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                       >
                         <span className="flex h-[19px] w-[7px] shrink-0 items-center">
                           <LifeMark
                             markId={`persona:${persona.id}`}
-                            life={persona.life}
+                            life={effectiveLife}
                             still
-                            tone={persona.life === 'waiting' ? 'bg-attention' : undefined}
+                            tone={effectiveLife === 'waiting' ? 'bg-attention' : undefined}
                           />
                         </span>
                         <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
@@ -421,77 +743,80 @@ export function SidebarPersonaSection({
                         ) : null}
                       </button>
 
-                      {persona.unreadCount > 0 ? (
-                        <button
-                          type="button"
-                          data-persona-unread-count={persona.unreadCount}
-                          aria-label={t('persona.unreadCountTitle', { count: persona.unreadCount })}
-                          title={t('persona.unreadCountTitle', { count: persona.unreadCount })}
-                          onClick={(event) => { openUnread(event, persona, event.currentTarget); }}
-                          className={`absolute top-0 flex h-8 min-w-4 items-center px-1 text-[12px] leading-4 font-medium text-accent-ink tabular-nums ${
-                            hasExtraThreads ? 'right-[68px]' : 'right-[54px]'
-                          }`}
-                        >
-                          {persona.unreadCount}
-                        </button>
-                      ) : null}
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        {unreadCount > 0 ? (
+                          <button
+                            type="button"
+                            data-persona-unread-count={unreadCount}
+                            aria-label={t('persona.unreadCountTitle', { count: unreadCount })}
+                            title={t('persona.unreadCountTitle', { count: unreadCount })}
+                            onClick={(event) => { openUnread(event, persona, unreadIds, hasExtraThreads); }}
+                            className="flex h-6 min-w-4 items-center justify-center rounded px-1 text-[12px] leading-4 font-medium text-accent-ink tabular-nums hover:bg-ink/[0.06]"
+                          >
+                            {unreadCount}
+                          </button>
+                        ) : null}
 
-                      <button
-                        type="button"
-                        data-persona-menu-toggle={persona.id}
-                        aria-haspopup="menu"
-                        aria-expanded={menuOpenForRow}
-                        aria-label={t('persona.rowActionsAria', { name: persona.name })}
-                        title={t('persona.rowActionsAria', { name: persona.name })}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          const rect = event.currentTarget.getBoundingClientRect();
-                          setSwitcher(null);
-                          setRowMenu((current) =>
-                            current?.persona.id === persona.id ? null : { persona, x: rect.right + 4, y: rect.top });
-                        }}
-                        className={`absolute top-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.06] hover:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-selected-ink ${
-                          hasExtraThreads ? 'right-10' : 'right-7'
-                        } ${
-                          menuOpenForRow ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100'
-                        }`}
-                      >
-                        <Icon name="more" size={14} />
-                      </button>
+                        <span className={`flex items-center gap-0.5 transition-opacity duration-[var(--kiki-motion-quick)] ${
+                          menuOpenForRow
+                            ? 'w-auto overflow-visible opacity-100'
+                            : 'w-0 overflow-hidden opacity-0 group-hover:w-auto group-hover:overflow-visible group-hover:opacity-100 group-focus-within:w-auto group-focus-within:overflow-visible group-focus-within:opacity-100 [@media(hover:none)]:w-auto [@media(hover:none)]:overflow-visible [@media(hover:none)]:opacity-100'
+                        }`}>
+                          <button
+                            type="button"
+                            data-persona-new-thread={persona.id}
+                            aria-label={`${persona.name} · ${t('persona.newTopic')}`}
+                            title={t('persona.newTopic')}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void navigate(personaNewConversationUrl(persona.id, currentWorkspaceId));
+                            }}
+                            className={HOVER_ICON_BUTTON}
+                          >
+                            <Icon name="plus" size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            data-persona-menu-toggle={persona.id}
+                            aria-haspopup="menu"
+                            aria-expanded={menuOpenForRow}
+                            aria-label={t('persona.rowActionsAria', { name: persona.name })}
+                            title={t('persona.rowActionsAria', { name: persona.name })}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              setRowMenu((current) =>
+                                current?.persona.id === persona.id ? null : { persona, x: rect.right + 4, y: rect.top });
+                            }}
+                            className={HOVER_ICON_BUTTON}
+                          >
+                            <Icon name="more" size={14} />
+                          </button>
+                        </span>
 
-                      <button
-                        ref={(node) => {
-                          if (node !== null) switcherToggleRefs.current.set(persona.id, node);
-                          else switcherToggleRefs.current.delete(persona.id);
-                        }}
-                        type="button"
-                        data-persona-switcher-toggle={persona.id}
-                        data-persona-thread-count={hasExtraThreads ? totalConversations : undefined}
-                        aria-haspopup="menu"
-                        aria-expanded={switcherOpenForRow}
-                        aria-label={t('persona.openSwitcherAria', { name: persona.name })}
-                        title={t('persona.openSwitcherAria', { name: persona.name })}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openSwitcher(persona, event.currentTarget);
-                        }}
-                        className={hasExtraThreads
-                          ? `absolute top-1 right-0.5 flex h-6 min-w-8 shrink-0 items-center justify-center gap-0.5 rounded-md px-1.5 text-[11px] leading-none font-medium tabular-nums transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink ${
-                              switcherOpenForRow
-                                ? 'bg-ink/[0.09] text-ink'
-                                : 'bg-ink/[0.045] text-ink-soft hover:bg-ink/[0.08] hover:text-ink'
-                            }`
-                          : `absolute top-0.5 right-0.5 ${ROW_BUTTON}`}
-                      >
                         {hasExtraThreads ? (
-                          <>
+                          <button
+                            type="button"
+                            data-persona-switcher-toggle={persona.id}
+                            data-persona-thread-count={totalConversations}
+                            aria-expanded={isExpanded}
+                            aria-label={t('persona.openSwitcherAria', { name: persona.name })}
+                            title={t('persona.openSwitcherAria', { name: persona.name })}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleInlineExpand(persona.id, isExpanded);
+                            }}
+                            className={`flex h-6 min-w-8 shrink-0 items-center justify-center gap-0.5 rounded-md px-1.5 text-[11px] leading-none font-medium tabular-nums transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink ${
+                              isExpanded
+                                ? 'bg-ink/[0.08] text-ink'
+                                : 'bg-ink/[0.045] text-ink-soft hover:bg-ink/[0.08] hover:text-ink'
+                            }`}
+                          >
                             <span>{totalConversations}</span>
-                            <DisclosureChevron open={switcherOpenForRow} size={12} className="shrink-0 text-ink-faint" />
-                          </>
-                        ) : (
-                          <Icon name="chevron" size={12} />
-                        )}
-                      </button>
+                            <DisclosureChevron open={isExpanded} size={12} className="shrink-0 text-ink-faint" />
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
 
                     {inlineThreads.length > 0 ? (
@@ -537,14 +862,32 @@ export function SidebarPersonaSection({
                               data-persona-subthreads-more={persona.id}
                               onClick={(event) => {
                                 event.stopPropagation();
-                                const anchor = switcherToggleRefs.current.get(persona.id) ?? event.currentTarget;
-                                openSwitcher(persona, anchor);
+                                setExpandedOverrides((prev) => ({ ...prev, [persona.id]: true }));
+                                setShowAllThreadsFor((prev) => ({ ...prev, [persona.id]: true }));
                               }}
                               className="row-interactive flex h-6 w-full items-center pr-2 pl-[23px] text-left text-[11px] leading-4 text-ink-faint transition-colors hover:text-ink"
                             >
                               <span className="min-w-0 truncate">
                                 +{overflowThreadCount} · {t('persona.allConversations')}
                               </span>
+                            </button>
+                          </li>
+                        ) : showAllThreads && extraThreads.length > SIDEBAR_PERSONA_INLINE_THREAD_LIMIT ? (
+                          <li>
+                            <button
+                              type="button"
+                              data-persona-subthreads-less={persona.id}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setShowAllThreadsFor((prev) => {
+                                  const copy = { ...prev };
+                                  delete copy[persona.id];
+                                  return copy;
+                                });
+                              }}
+                              className="row-interactive flex h-6 w-full items-center pr-2 pl-[23px] text-left text-[11px] leading-4 text-ink-faint transition-colors hover:text-ink"
+                            >
+                              <span className="min-w-0 truncate">{t('persona.showLess')}</span>
                             </button>
                           </li>
                         ) : null}
@@ -584,24 +927,6 @@ export function SidebarPersonaSection({
           ariaLabel={t('persona.rowActionsAria', { name: rowMenu.persona.name })}
           overlayId="persona-sidebar-row-menu"
           dataAttribute="data-persona-row-menu"
-        />
-      ) : null}
-
-      {switcher !== null ? (
-        <PersonaConversationSwitcher
-          anchor={switcher.anchor}
-          align="end"
-          persona={switcher.persona}
-          sessions={personaConversations}
-          status={{
-            loading: conversationsQuery.isPending,
-            error: conversationsQuery.isError ? errorText(locale, conversationsQuery.error) : undefined,
-          }}
-          activeSessionId={activeSessionId}
-          workspaceOptions={workspaceOptions}
-          seen={seen}
-          roomNames={roomNames}
-          onClose={() => { setSwitcher(null); }}
         />
       ) : null}
     </div>

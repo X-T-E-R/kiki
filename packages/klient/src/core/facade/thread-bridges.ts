@@ -1,4 +1,4 @@
-import type { BridgePolicy, BridgeGrant, BridgeInstall, BridgeLink, BridgeReceipt, BridgeStatus, BridgeTargetInput, LocalBridgePolicy, RemoteConnection } from '@kiki/protocol';
+import type { BridgeOperation, BridgePolicy, BridgeGrant, BridgeInstall, BridgeLink, BridgeReceipt, BridgeStatus, BridgeTargetInput, LocalBridgePolicy, RemoteConnection } from '@kiki/protocol';
 import type { HttpRestRequestOptions } from './http-rest.js';
 export interface ThreadBridgesFacade {
   status(options?: HttpRestRequestOptions): Promise<BridgeStatus>;
@@ -7,6 +7,9 @@ export interface ThreadBridgesFacade {
   provisionLocal(input: LocalBridgePolicy, options?: HttpRestRequestOptions): Promise<BridgeLink>;
   install(input: BridgeInstall, options?: HttpRestRequestOptions): Promise<BridgeLink>;
   setEnabled(direction: 'inbound' | 'outbound', bridgeId: string, enabled: boolean, options?: HttpRestRequestOptions): Promise<BridgeStatus>;
+  setOperations(bridgeId: string, operations: BridgeOperation[], options?: HttpRestRequestOptions): Promise<BridgeStatus>;
+  setBorrowTools(bridgeId: string, borrowTools: boolean, options?: HttpRestRequestOptions): Promise<BridgeStatus>;
+  syncConnection(connectionId: string, input?: { operations?: BridgeOperation[]; borrowTools?: boolean }, options?: HttpRestRequestOptions): Promise<BridgeStatus>;
   revoke(direction: 'inbound' | 'outbound', bridgeId: string, options?: HttpRestRequestOptions): Promise<BridgeStatus>;
   receipts(query?: { cursor?: string; limit?: number }, options?: HttpRestRequestOptions): Promise<{ items: BridgeReceipt[]; nextCursor?: string }>;
   retry(options?: HttpRestRequestOptions): Promise<{ items: BridgeReceipt[]; nextCursor?: string }>;

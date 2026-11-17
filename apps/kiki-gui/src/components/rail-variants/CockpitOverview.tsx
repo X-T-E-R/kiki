@@ -38,6 +38,7 @@ import {
   age,
   axisTicks,
   compactionTimes,
+  descendantIds,
   firstLevelBranchIds,
   sessionGraph,
   sessionWindow,
@@ -267,10 +268,13 @@ function useSessionTaskProjection(input: {
   readonly sessionId: string;
   readonly forest: AgentForest;
   readonly fallbackTasks: readonly Task[];
+  readonly fallbackOwnerId?: string;
+  /** Non-null when scoped to a branch/subagent subtree rather than the whole session. */
+  readonly subtreeOwners?: ReadonlySet<string> | null;
   /** The server's whole-tree summary, plus how that read went. */
   readonly summary: SessionTaskRead | undefined;
 }): SessionTaskProjection {
-  const { sessionId, forest, fallbackTasks, summary } = input;
+  const { sessionId, forest, fallbackTasks, fallbackOwnerId = MAIN_AGENT_ID, subtreeOwners = null, summary } = input;
   const registry = useOptionalControllerRegistry();
   const subscribeRegistry = useCallback(
     (listener: () => void) => (registry === null ? noop() : registry.subscribe(listener)),
@@ -293,6 +297,7 @@ function useSessionTaskProjection(input: {
     const ownerStates: Record<string, readonly Task[] | undefined> = {};
     const coverage: Record<string, { returned: number; total: number; hasMore: boolean } | undefined> = {};
     for (const id of Object.keys(forest.byId)) {
+      if (subtreeOwners !== null && !subtreeOwners.has(id)) continue;
       const state = controller?.getAgentState(id);
       if (state === undefined) continue;
       ownerStates[id] = state.tasks;
@@ -301,7 +306,53 @@ function useSessionTaskProjection(input: {
     }
     // The routed state is the one collection guaranteed to be in hand, so it
     // stands in for the root rather than leaving the session looking empty.
-    if (ownerStates[MAIN_AGENT_ID] === undefined) ownerStates[MAIN_AGENT_ID] = fallbackTasks;
+    if ((subtreeOwners === null || subtreeOwners.has(fallbackOwnerId)) && ownerStates[fallbackOwnerId] === undefined) {
+      ownerStates[fallbackOwnerId] = fallbackTasks;
+    }
+    if (subtreeOwners !== null) {
+      const subtreeTotal = subtreeOwners.size;
+      const readySummary = summary?.status === 'ready' ? summary.value : undefined;
+      if (readySummary !== undefined) {
+        const settledSet = new Set(readySummary.ownersSettled ?? []);
+        const allSettled =
+          !readySummary.hasMore &&
+          !readySummary.inventoryIncomplete &&
+          !readySummary.readFailed &&
+          (readySummary.pendingOwners ?? 0) === 0;
+        const subtreeRows = readySummary.rows.filter((row) => subtreeOwners.has(row.ownerAgentId));
+        if (!settledSet.has(fallbackOwnerId) && fallbackTasks.length > 0) {
+          const existingIds = new Set(subtreeRows.map((row) => row.task.id));
+          for (const task of fallbackTasks) {
+            if (existingIds.has(task.id)) continue;
+            subtreeRows.push({ task, ownerAgentId: fallbackOwnerId, ownerUnknown: false, source: 'live' });
+          }
+          settledSet.add(fallbackOwnerId);
+        }
+        const coveredOwners = allSettled
+          ? subtreeTotal
+          : [...subtreeOwners].filter((id) => settledSet.has(id)).length;
+        const scopedSummary: SessionTaskSummary = {
+          ...readySummary,
+          rows: subtreeRows,
+          agentsReported: coveredOwners,
+          agentsTotal: subtreeTotal,
+        };
+        return projectSessionTasks({
+          forest,
+          summary: scopedSummary,
+          ownerStates,
+          coverage,
+          agentTotal: subtreeTotal,
+        });
+      }
+      return projectSessionTasks({
+        forest,
+        summary: undefined,
+        ownerStates,
+        coverage,
+        agentTotal: subtreeTotal,
+      });
+    }
     // The session's own agent inventory, when the server has sent one. It is
     // counted over every agent the session dispatched, not over the roster
     // this client has loaded, so it is the denominator a cold or
@@ -310,7 +361,7 @@ function useSessionTaskProjection(input: {
     const agentTotal = controller?.getState().agentCounts?.total;
     return projectSessionTasks({ forest, summary: summary?.status === 'ready' ? summary.value : undefined, ownerStates, coverage, agentTotal });
     // `version` is the republish signal; the forest carries structure changes.
-  }, [controller, forest, fallbackTasks, version, summary]);
+  }, [controller, forest, fallbackTasks, fallbackOwnerId, subtreeOwners, version, summary]);
 }
 
 function tokens(count: number | undefined): string {
@@ -987,9 +1038,11 @@ function ExecutionGraph({ rows, agentCount, sessionCounts, branchTotal, composit
   );
 }
 
-export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentId, forest, blocks, contextUsed, contextLimit, compactPoint, figures, treeFigures, turns, toolCalls, onOpenAgent, onToggleBranch, expandedBranches, sessionPending, mainBusy, turnStartedAt, mainLabel, sessionTasks, agentCounts }: {
+export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentId, rootAgentId = MAIN_AGENT_ID, forest, blocks, contextUsed, contextLimit, compactPoint, figures, treeFigures, turns, toolCalls, onOpenAgent, onToggleBranch, expandedBranches, sessionPending, mainBusy, turnStartedAt, mainLabel, sessionTasks, agentCounts }: {
   sessionId: string;
   agentId: string;
+  /** Graph root: `main` on the main session page, or the routed branch/subagent id on its own page. */
+  rootAgentId?: string;
   forest: AgentForest;
   blocks: readonly Block[];
   contextUsed?: number;
@@ -1005,7 +1058,7 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
   onToggleBranch: (branchId: string) => void;
   /** Every pending approval / question in the session, any depth. */
   sessionPending: readonly (ApprovalBlock | QuestionBlock)[];
-  /** The main agent's own turn state, for the root lane. */
+  /** The root agent's own turn state, for the root lane. */
   mainBusy: boolean;
   turnStartedAt: number | undefined;
   mainLabel: string;
@@ -1021,24 +1074,57 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
 }) {
   const { t, locale } = useI18n();
   const now = useNow();
+  const isSessionSubject = rootAgentId === MAIN_AGENT_ID;
   const compactions = useMemo(() => compactionTimes(blocks), [blocks]);
   const graph = useMemo(
-    () => sessionGraph({ forest, pending: sessionPending, mainState: { busy: mainBusy, turnStartedAt }, expanded: expandedBranches, mainLabel }),
-    [forest, sessionPending, mainBusy, turnStartedAt, expandedBranches, mainLabel],
+    () => sessionGraph({ forest, pending: sessionPending, mainState: { busy: mainBusy, turnStartedAt }, expanded: expandedBranches, mainLabel, rootAgentId }),
+    [forest, sessionPending, mainBusy, turnStartedAt, expandedBranches, mainLabel, rootAgentId],
   );
   // The context arc is one agent's real window; the default subject is main.
   const ctx = contextUsed !== undefined && contextLimit !== undefined && contextLimit > 0 ? contextUsed / contextLimit : undefined;
   const warnAt = compactPoint !== undefined && contextLimit !== undefined && contextLimit > 0 ? (compactPoint / contextLimit) * 0.8 : 0.8;
   const cache = treeFigures?.cacheRate ?? figures.cacheRate;
   const cost = treeFigures?.costUsd ?? figures.costUsd;
+  const aggregateScopeLabel = isSessionSubject || treeFigures !== undefined
+    ? t('rail.cockpit.scope.tree')
+    : t('rail.cockpit.scope.agent');
   const select = (id: string) => { onOpenAgent?.(id); };
   const toggle = (id: string) => { onToggleBranch(id); };
   const expandedList = [...expandedBranches];
-  const { read: taskRead, retry: retryTaskRead } = useSessionTaskRead(sessionId, true);
-  const tasks = useSessionTaskProjection({ sessionId, forest, fallbackTasks: sessionTasks, summary: taskRead });
-  const backgroundRows = useMemo(() => backgroundRowsOf(tasks.rows), [tasks.rows]);
+  const subtreeOwners = useMemo(
+    () => (isSessionSubject ? null : new Set([rootAgentId, ...descendantIds(forest, rootAgentId)])),
+    [isSessionSubject, forest, rootAgentId],
+  );
+  const needsSubtreeTaskRead = isSessionSubject || (subtreeOwners !== null && subtreeOwners.size > 1);
+  const { read: taskRead, retry: retryTaskRead } = useSessionTaskRead(sessionId, needsSubtreeTaskRead);
+  const tasks = useSessionTaskProjection({
+    sessionId,
+    forest,
+    fallbackTasks: sessionTasks,
+    fallbackOwnerId: rootAgentId,
+    subtreeOwners,
+    summary: needsSubtreeTaskRead ? taskRead : undefined,
+  });
+  const backgroundRows = useMemo(() => {
+    const allRows = backgroundRowsOf(tasks.rows);
+    if (subtreeOwners === null) return allRows;
+    return allRows.filter((row) => subtreeOwners.has(row.ownerAgentId));
+  }, [tasks.rows, subtreeOwners]);
+  const effectiveCoverage: SessionTaskCoverage = tasks.coverage;
+  const scopedBackgroundRead = useMemo((): SessionTaskSummary | undefined => {
+    if (!needsSubtreeTaskRead || taskRead.status !== 'ready') return undefined;
+    if (subtreeOwners === null) return taskRead.value;
+    const subtreeRows = taskRead.value.rows.filter((row) => subtreeOwners.has(row.ownerAgentId));
+    return {
+      ...taskRead.value,
+      rows: subtreeRows,
+      agentsReported: effectiveCoverage.covered,
+      agentsTotal: subtreeOwners.size,
+      pendingOwners: taskRead.value.hasMore ? Math.max(0, subtreeOwners.size - effectiveCoverage.covered) : 0,
+    };
+  }, [needsSubtreeTaskRead, taskRead, subtreeOwners, effectiveCoverage.covered]);
   // Counted from the forest, so opening a branch cannot change it.
-  const branchTotal = useMemo(() => firstLevelBranchIds(forest).length, [forest]);
+  const branchTotal = useMemo(() => firstLevelBranchIds(forest, rootAgentId).length, [forest, rootAgentId]);
   // A task row names its owner with the tree's own label. The lookup is
   // memoized on the forest so the rows are not re-rendered on every tick.
   const ownerNames = useMemo(() => {
@@ -1047,11 +1133,11 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
     return (agentId: string) => byId.get(agentId);
   }, [forest]);
   return (
-    <div data-cockpit-overview data-cockpit-subject="session" data-cockpit-agent={agentId} className="space-y-3">
+    <div data-cockpit-overview data-cockpit-subject={isSessionSubject ? 'session' : 'agent'} data-cockpit-agent={agentId} className="space-y-3">
       <ExecutionGraph
         rows={graph.rows}
         agentCount={graph.agentCount}
-        sessionCounts={agentCounts}
+        sessionCounts={isSessionSubject ? agentCounts : undefined}
         branchTotal={branchTotal}
         composition={graph.composition}
         from={graph.from}
@@ -1065,9 +1151,9 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
         onCollapseAll={expandedList.length === 0 ? undefined : () => { for (const id of expandedList) toggle(id); }}
         collapseAllLabel={t('rail.cockpit.collapseAll', { count: expandedList.length })}
         backgroundRows={backgroundRows}
-        backgroundCoverage={tasks.coverage}
-        backgroundRead={taskRead.status === 'ready' ? taskRead.value : undefined}
-        backgroundReadState={taskRead.status}
+        backgroundCoverage={effectiveCoverage}
+        backgroundRead={scopedBackgroundRead}
+        backgroundReadState={needsSubtreeTaskRead ? taskRead.status : 'ready'}
         ownerNameOf={ownerNames}
         onRetryTaskRead={retryTaskRead}
       />
@@ -1084,7 +1170,7 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
           ratio={cache === undefined ? undefined : cache / 100}
           label={t('rail.cockpit.cacheHit')}
           value={cache === undefined ? '—' : `${Math.round(cache)}%`}
-          scope={t('rail.cockpit.scope.tree')}
+          scope={aggregateScopeLabel}
           scopeStatus={(treeFigures?.counting ?? figures.counting) === true
             ? { kind: 'loading', label: t('usage.strip.counting') }
             : treeFigures?.incomplete === true
@@ -1100,7 +1186,7 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
           <dd className="font-mono text-[14px] text-ink tabular-nums">{tokens(treeFigures?.totalTokens ?? figures.totalTokens)}</dd>
         </div>
         <div data-cockpit-fact="cost">
-          <dt className="text-[11.5px] text-ink-faint">{t('rail.cockpit.scope.tree')} · {t('inspector.cost')}</dt>
+          <dt className="text-[11.5px] text-ink-faint">{aggregateScopeLabel} · {t('inspector.cost')}</dt>
           <dd className="font-mono text-[14px] text-ink tabular-nums">{money(cost)}</dd>
         </div>
         <div data-cockpit-fact="turns">

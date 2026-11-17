@@ -48,8 +48,14 @@ export async function resolveProfilePromptFields(
     if (layer !== undefined) return { ...source, surface: layer.source === 'lease' ? 'caller-lease-model' as const : 'profile-model' as const, path: source.kind === 'inline' ? layer.path ?? source.path : source.path };
     return (source.surface === 'profile' || source.surface === 'system') && index >= 0 ? { ...source, declarationIndex: index - profileRecipes.length } : source;
   }) }));
+  const template = profile.fileDefinition?.prompt;
+  const delegatesToBase = template !== undefined && (
+    template.includes('${base_prompt}') ||
+    template.includes('${parent_prompt}') ||
+    template.includes('${builtin_prompt}')
+  );
   const customBody = profile.fileDefinition !== undefined || sourcePath?.endsWith('/SYSTEM.md') === true;
-  const profileShadowsSystem = customBody && profile.systemPromptMode !== 'prepend' && profile.systemPromptMode !== 'append' && profile.systemPromptMode !== 'inherit';
+  const profileShadowsSystem = customBody && !delegatesToBase && profile.systemPromptMode !== 'prepend' && profile.systemPromptMode !== 'append' && profile.systemPromptMode !== 'inherit';
   const cognition = selectCognitionConfig(model?.cognition, position);
   const cognitionShadowsSystem = (profile.executor ?? 'native') === 'native' && cognition?.overlayMode === 'replace' && hasCognitionContent(cognition.overlay);
   const intentOverride = fields.find((field) => field.id === 'system.intent_tool_use')?.value;

@@ -19,6 +19,8 @@ export interface AgentDescriptor {
   readonly branchInitiator?: 'user' | 'agent';
   readonly toolsLocked?: boolean;
   readonly branchSealed?: boolean;
+  readonly branchBaseTurnId?: number;
+  readonly branchBaseMessageId?: string;
   /** Immutable entity birth as a UTC ISO timestamp; absent for legacy identities, never a run/attach time. */
   readonly createdAt?: string;
   readonly disposedAt?: string;

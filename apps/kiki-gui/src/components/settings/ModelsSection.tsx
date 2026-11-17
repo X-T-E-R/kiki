@@ -50,9 +50,8 @@ import { GlobalCompactionCard, ModelContextFields, CompactPointTrack, useModelCo
 import { CompactPointField } from './CompactPointField';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { REQUEST_IDENTITY_QUERY_KEY, useCustomIdentityChoices } from './identityCatalog';
-import { SearchableSelect } from '../SearchableSelect';
+import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { ModelPicker } from '../ModelPicker';
-import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { useRequestGovernance } from '../../lib/useRequestGovernance';
 import { ConcurrencyRulesEditor } from '../usage/ConcurrencyRulesEditor';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
@@ -128,6 +127,8 @@ import { OriginBadge } from './spaces/OriginBadge';
 import { DetailBack, DetailRailGroup, DetailRailItem, DetailSplit, useDetailParam } from '../overlays';
 import { LIST_ROW_HEIGHT, ListBody, type ListDensity } from './list';
 import { isImeKeyEvent } from '../../lib/shortcuts';
+
+const EMPTY_CATALOG_MODELS: readonly ModelCatalogItem[] = [];
 
 function requestIdentityDraftsEqual(
   a: RequestIdentityLayerDraft,
@@ -337,11 +338,23 @@ export function ModelDetailSplit({ list, models, providers, ready, providerLabel
     if (ready && detail.selected !== null && item === undefined) detail.close();
   }, [ready, detail.selected, item, detail.close]);
 
-  const groups = useMemo(() => [...new Set(models.map((model) => model.provider_id))].map((id) => ({
-    id,
-    models: models.filter((model) => model.provider_id === id)
-      .toSorted((a, b) => (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
-  })), [models]);
+  const groups = useMemo(() => {
+    const byProvider = new Map<string, ModelCatalogItem[]>();
+    for (const model of models) {
+      const list = byProvider.get(model.provider_id);
+      if (list !== undefined) list.push(model);
+      else byProvider.set(model.provider_id, [model]);
+    }
+    return [...byProvider.entries()].map(([id, providerModels]) => ({
+      id,
+      models: providerModels.toSorted((a, b) => (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
+    }));
+  }, [models]);
+
+  const inheritedImageTypes = useMemo(
+    () => (item === undefined ? undefined : providers.find((provider) => provider.id === item.provider_id)?.images?.accepted_types),
+    [providers, item?.provider_id],
+  );
 
   const setDefault = async (target: ModelCatalogItem) => {
     setBusy(true);
@@ -386,7 +399,7 @@ export function ModelDetailSplit({ list, models, providers, ready, providerLabel
         <ModelCatalogRowEditor
           key={item.id}
           item={item}
-          inheritedImageTypes={providers.find((provider) => provider.id === item.provider_id)?.images?.accepted_types}
+          inheritedImageTypes={inheritedImageTypes}
           isDefault={item.id === defaultModel}
           defaultBusy={busy}
           roles={roles.get(item.id)}
@@ -425,7 +438,7 @@ export function GlobalDefaultsCard() {
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
-  const models = modelsQuery.data?.items ?? [];
+  const models = modelsQuery.data?.items ?? EMPTY_CATALOG_MODELS;
   const titleModel = configQuery.data?.session_title?.model ?? '';
   const subagentModel = configQuery.data?.subagent?.defaultModel ?? '';
   const fastModel = configQuery.data?.fast_model ?? '';
@@ -579,7 +592,16 @@ export function ThinkingCard() {
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const defaultModel = configQuery.data?.default_model;
-  const defaultItem = (modelsQuery.data?.items ?? []).find((item) => item.id === defaultModel);
+  const defaultItem = useMemo(
+    () => (modelsQuery.data?.items ?? EMPTY_CATALOG_MODELS).find((item) => item.id === defaultModel),
+    [modelsQuery.data, defaultModel],
+  );
+  const effortChoices = useMemo(
+    () => (defaultItem?.support_efforts === undefined
+      ? []
+      : sortThinkingEffortsForDisplay(defaultItem.support_efforts).map((level) => ({ value: level, label: effortLabel(level, t) }))),
+    [defaultItem?.support_efforts, t],
+  );
   const thinking = asRecord(configQuery.data?.thinking);
 
   const syncThinking = useCallback(() => {
@@ -623,13 +645,13 @@ export function ThinkingCard() {
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} disabled={busy} onChange={(checked) => void saveThinking(checked, effort)} />
-          {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
+          {effortChoices.length > 0 ? (
             <SettingsSegmented
               ariaLabel={t('st.thinking.title')}
               value={effort}
               disabled={!thinkingEnabled || busy}
               onChange={(value) => void saveThinking(thinkingEnabled, value)}
-              choices={sortThinkingEffortsForDisplay(defaultItem.support_efforts).map((level) => ({ value: level, label: effortLabel(level, t) }))}
+              choices={effortChoices}
             />
           ) : (
             <input
@@ -669,11 +691,11 @@ function ThinkingKeepField({ stored }: { stored: string | undefined }) {
   const queryClient = useQueryClient();
   const save = useInstantSave();
   const current = stored === undefined ? 'all' : THINKING_KEEP_OFF.has(stored.trim().toLowerCase()) ? 'none' : stored;
-  const choices = [
+  const choices = useMemo(() => [
     { value: 'all', label: t('st.thinking.keepAll') },
     { value: 'none', label: t('st.thinking.keepNone') },
     ...(current !== 'all' && current !== 'none' ? [{ value: current, label: current }] : []),
-  ];
+  ], [current, t]);
   return (
     <>
       <SettingField label={t('st.thinking.keep')} help={t('st.thinking.keepHelp')}>
@@ -734,13 +756,34 @@ export function CatalogRefreshCard() {
   // wins, and only a model that reports none starts from the low/high pair.
   const [efforts, setEfforts] = useState<string[]>([...DEFAULT_MODEL_SUPPORT_EFFORTS]);
   const [protocol, setProtocol] = useState<ModelProtocolChoice>('inherit');
-  const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
-  const choices = (discovered.data?.items ?? []).flatMap((group) => group.models.map((model) => ({
-    value: JSON.stringify([group.provider_id, model.remote_id]),
-    providerId: group.provider_id,
-    model,
-  })));
-  const choice = choices.find((item) => item.value === selected);
+  const discovered = useQuery({
+    queryKey: ['discovered-models'],
+    queryFn: () => client.listDiscoveredModels(),
+    staleTime: 30_000,
+  });
+  const choices = useMemo(
+    () => (discovered.data?.items ?? []).flatMap((group) => group.models.map((model) => ({
+      value: JSON.stringify([group.provider_id, model.remote_id]),
+      providerId: group.provider_id,
+      model,
+    }))),
+    [discovered.data],
+  );
+  const choiceByValue = useMemo(
+    () => new Map(choices.map((item) => [item.value, item] as const)),
+    [choices],
+  );
+  const suggestedOptions = useMemo<readonly SearchableSelectOption[]>(() => {
+    const badges = [{ label: t('st.providers.catalogGroupSuggested'), accent: true }] as const;
+    return choices.map((item) => ({
+      value: item.value,
+      label: item.model.remote_id,
+      description: item.model.display_name,
+      group: item.providerId,
+      badges,
+    }));
+  }, [choices, t]);
+  const choice = choiceByValue.get(selected);
   useDirtyReporter('discovered-model-draft', choice !== undefined);
 
   const fetchModels = async () => {
@@ -795,10 +838,10 @@ export function CatalogRefreshCard() {
         </button>
         <SearchableSelect
           value={selected}
-          options={choices.map((item) => ({ value: item.value, label: item.model.remote_id, description: item.model.display_name, group: item.providerId, badges: [{ label: t('st.providers.catalogGroupSuggested'), accent: true }] }))}
+          options={suggestedOptions}
           onChange={(value) => {
             setSelected(value);
-            const item = choices.find((candidate) => candidate.value === value);
+            const item = choiceByValue.get(value);
             setAlias(item === undefined ? '' : `${item.providerId}/${item.model.remote_id}`);
             setContext(item?.model.max_context_size ?? 250000);
             setCapabilities(defaultCapabilitiesFor(item?.model.capabilities));
@@ -1290,12 +1333,13 @@ function ModelCatalogRowEditor({
    * here: choosing a mode never rewrites words, and typing words never changes
    * what the source currently does.
    */
-  const setSteerSource = (source: ModelSteeringSource, next: SteerSourceDraft) => {
-    if (steerSources === null) return;
+  const setSteerSource = useCallback((source: ModelSteeringSource, next: SteerSourceDraft) => {
     const scope = steerScopeFor(editScope);
-    if (steerSources[scope][source] === undefined) return;
-    setSteerSources({ ...steerSources, [scope]: { ...steerSources[scope], [source]: next } });
-  };
+    setSteerSources((current) => {
+      if (current === null || current[scope][source] === undefined) return current;
+      return { ...current, [scope]: { ...current[scope], [source]: next } };
+    });
+  }, [editScope]);
 
   // Prompt prose for the scope on screen. Kept as text rather than written
   // straight into cognition: converting a file-backed slot into model-owned
@@ -1317,14 +1361,21 @@ function ModelCatalogRowEditor({
    * Switching scope must show what that identity stores, not the words typed
    * into another one, so each scope's slots are projected out of the shared map.
    */
-  const scopedBodyDraft: Record<string, string> = {};
-  for (const [key, text] of Object.entries(bodyDraft)) {
-    if (key.startsWith(`${editScope}:`)) scopedBodyDraft[key.slice(editScope.length + 1)] = text;
-  }
+  const scopedBodyDraft = useMemo(() => {
+    const out: Record<string, string> = {};
+    const prefix = `${editScope}:`;
+    for (const [key, text] of Object.entries(bodyDraft)) {
+      if (key.startsWith(prefix)) out[key.slice(prefix.length)] = text;
+    }
+    return out;
+  }, [bodyDraft, editScope]);
   /** Identities whose prompts differ from the shared ones, for the "Applies to" marker. */
-  const customizedScopes = new Set<EditScope>(prompts === null ? [] : PROMPT_POSITIONS.filter((position) =>
-    prompts.cognition[position].kind === 'custom' || prompts.cognition[position].kind === 'off'
-    || prompts.fields[position].kind === 'custom' || prompts.fields[position].kind === 'off'));
+  const customizedScopes = useMemo(
+    () => new Set<EditScope>(prompts === null ? [] : PROMPT_POSITIONS.filter((position) =>
+      prompts.cognition[position].kind === 'custom' || prompts.cognition[position].kind === 'off'
+      || prompts.fields[position].kind === 'custom' || prompts.fields[position].kind === 'off')),
+    [prompts],
+  );
   // The shared scope of the parameter group writes the model's own generation
   // parameters, which live in `parameters` rather than on the entity root.
   const [sharedGeneration, setSharedGeneration] = useState<GenerationParametersWire>({});
@@ -1351,7 +1402,11 @@ function ModelCatalogRowEditor({
   }, [entity, protocolDirty]);
   // What the provider reported, for the Model ID picker. Read-only: picking
   // one only fills the draft, and any other ID can still be typed.
-  const discoveredQuery = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
+  const discoveredQuery = useQuery({
+    queryKey: ['discovered-models'],
+    queryFn: () => client.listDiscoveredModels(),
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
     if (entity === undefined) return;
@@ -1430,6 +1485,234 @@ function ModelCatalogRowEditor({
   const dirty = modelDirty || recipeDraftDirty;
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
 
+  // Pre-build and memoize heavy option lists and subviews before the loading
+  // guard so controlled text edits (e.g. typing long prompts or display names)
+  // never re-map thousands of discovered models or unrelated tab subtrees.
+  const providerDiscoveredOptions = useMemo(() => {
+    if (entity === undefined) return { options: [] as SearchableSelectOption[], ids: new Set<string>() };
+    const ids = new Set<string>();
+    const options: SearchableSelectOption[] = [];
+    for (const group of discoveredQuery.data?.items ?? []) {
+      if (group.provider_id !== entity.provider_id) continue;
+      for (const model of group.models) {
+        ids.add(model.remote_id);
+        options.push({
+          value: model.remote_id,
+          label: model.remote_id,
+          description: model.display_name,
+          keywords: model.display_name,
+        });
+      }
+    }
+    return { options, ids };
+  }, [discoveredQuery.data, entity?.provider_id]);
+
+  const remoteIdOptions = useMemo(() => {
+    const remoteId = draft?.remoteId ?? '';
+    if (remoteId.trim() === '' || providerDiscoveredOptions.ids.has(remoteId)) {
+      return providerDiscoveredOptions.options;
+    }
+    return [{ value: remoteId, label: remoteId }, ...providerDiscoveredOptions.options];
+  }, [draft?.remoteId, providerDiscoveredOptions]);
+
+  const efforts = useMemo(
+    () => (draft === null ? [] : sortThinkingEffortsForDisplay([...draft.supportEfforts])),
+    [draft?.supportEfforts],
+  );
+
+  const usageView = useMemo(
+    () => (entity === undefined || usage === null || engine === null
+      ? null
+      : usagePolicyView(entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration)),
+    [entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration],
+  );
+
+  const contextStrategyChoices = useMemo(() => [
+    { value: 'inherit' as const, label: t('context.strategy.reset') },
+    ...(['auto', 'summarize', 'fresh'] as const).map((value) => ({
+      value,
+      label: t(`context.strategy.option.${value}`),
+      hint: t(`context.strategy.hint.${value}`),
+    })),
+  ], [t]);
+
+  const applySharedUsageEdit = useCallback((edit: SharedUsageEdit) => {
+    if (edit['auto_compact'] !== undefined) {
+      setAutoCompact(edit['auto_compact'] === '' ? undefined : Number(edit['auto_compact']));
+    }
+    if (edit['context_budget'] !== undefined) {
+      setEngine((current) => (current === null ? null : { ...current, contextBudget: edit['context_budget']! }));
+      setEngineIssue(null);
+    }
+    if (edit['thinking_effort'] !== undefined) {
+      setSharedGeneration((current) => ({
+        ...current,
+        thinking_effort: edit['thinking_effort'] === '' ? undefined : edit['thinking_effort'],
+      }));
+    }
+    if (edit['service_tier'] !== undefined) {
+      setSharedGeneration((current) => ({
+        ...current,
+        service_tier: edit['service_tier'] === '' ? undefined : edit['service_tier'] as never,
+      }));
+    }
+    if (edit['max_completion_tokens'] !== undefined) {
+      const text = edit['max_completion_tokens'];
+      setSharedGeneration((current) => ({
+        ...current,
+        max_completion_tokens: text === '' ? undefined : Number(text),
+      }));
+    }
+    setUsageIssue(null);
+  }, []);
+
+  const cognitionBodies = entity?.cognition_bodies;
+  const onBodyDraftChange = useCallback((slot: CognitionSlot, text: string) => {
+    const key = bodyKey(editScope, slot);
+    const initial = initialSlotText(slotView(cognitionBodies, editScope, slot));
+    setBodyDraft((current) => (current[key] === text ? current : { ...current, [key]: text }));
+    setBodySaves((current) => {
+      if (text === initial) {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      }
+      if (current[key] === text) return current;
+      return { ...current, [key]: text };
+    });
+  }, [editScope, cognitionBodies]);
+
+  const saveRef = useRef<(recipeReference?: string | null, recipeOptions?: import('@kiki/protocol').RecipeOptionValues) => Promise<void>>(
+    async () => {},
+  );
+  const commitRecipe = useCallback(
+    (recipeReference?: string | null, recipeOptions?: import('@kiki/protocol').RecipeOptionValues) =>
+      saveRef.current(recipeReference, recipeOptions),
+    [],
+  );
+
+  const promptsAdvancedContent = useMemo(() => {
+    if (entity === undefined || engine === null) return null;
+    const branchSel = branchSelectionFor(editScope, prompts);
+    return (
+      <div className="space-y-1">
+        <AdvancedDisclosure id={`model-steer-${entity.id}`} label={t('st.steerSource.disclosure')} summary={t('st.steerSource.summary')}>
+          <div className="space-y-3">
+            <ModelSteerSources
+              bodies={entity.cognition_bodies}
+              scope={editScope}
+              draft={steerSources}
+              branchOff={branchSel === 'off'}
+              identityInheritsShared={editScope !== 'shared' && branchSel === 'common'}
+              onDraftChange={setSteerSource}
+              disabled={saving}
+            />
+            {steerIssue !== undefined ? (
+              <p role="alert" className="text-[12px] leading-5 text-danger" data-steer-source-issue>
+                {t('st.steerSource.cadenceCount')}
+              </p>
+            ) : null}
+          </div>
+        </AdvancedDisclosure>
+        <AdvancedDisclosure id={`model-prompt-structure-${entity.id}`} label={t('st.modelEditor.group.promptStructure')}
+          defaultOpen={engineIssue?.field === 'cognition' || engineIssue?.field === 'promptOverrides'}>
+          <ModelEngineFields part="prompts" modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
+            onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
+        </AdvancedDisclosure>
+      </div>
+    );
+  }, [entity?.id, entity?.cognition_bodies, editScope, prompts, steerSources, steerIssue, setSteerSource, engine, engineIssue, saving, t]);
+
+  const effectiveModelName = draft === null ? '' : (draft.displayName.trim() === '' ? (entity?.id ?? '') : draft.displayName.trim());
+  const recipeSelected = entity?.issues.some((issue) => issue.code === 'recipe-selected') ?? false;
+
+  const recipePanelContent = useMemo(() => {
+    if (entity === undefined) return null;
+    return (
+      <>
+        {recipeSelected ? (
+          <p className="rounded-md bg-selected-ink/[0.07] px-3 py-2 text-[12px] leading-5 text-selected-ink" data-model-recipe-issue>
+            {t('st.models.issue.recipeSelected')}
+          </p>
+        ) : null}
+        <ModelRecipeField
+          modelId={entity.id}
+          modelName={effectiveModelName}
+          onCommitRecipe={commitRecipe}
+          appliedId={entity.recipe}
+          disabled={saving}
+          onDraftChange={setRecipeDraftDirty}
+        />
+        <RecipeOptionsField recipe={entity.recipe} values={entity.recipe_options} options={entity.recipe_model_binding?.options}
+          disabled={saving} onChange={(values) => commitRecipe(entity.recipe, values)} />
+      </>
+    );
+  }, [entity?.id, entity?.recipe, entity?.recipe_options, entity?.recipe_model_binding?.options, effectiveModelName, recipeSelected, commitRecipe, saving, t]);
+
+  const hasDraft = draft !== null;
+  const requestIdentityChoice = draft?.requestIdentityChoice ?? 'inherit';
+  const requestIdentityOverridesJson = draft?.requestIdentityOverridesJson ?? '';
+  const imageAcceptedTypes = draft?.imageAcceptedTypes ?? null;
+  const imageConvertUnsupported = draft?.imageConvertUnsupported ?? null;
+
+  const identityAndImageAdvancedContent = useMemo(() => {
+    if (entity === undefined || !hasDraft) return null;
+    const identityValue = { requestIdentityChoice, requestIdentityOverridesJson };
+    const imageValue = { imageAcceptedTypes, imageConvertUnsupported };
+    return (
+      <>
+        <AdvancedDisclosure id={`model-${entity.id}`} label={t('st.modelEditor.group.requestIdentity')}
+          defaultOpen={requestIdentityChoice !== 'inherit'}>
+          <RequestIdentityLayerEditor
+            value={identityValue}
+            onChange={(identity) => { setDraft((cur) => (cur === null ? null : { ...cur, ...identity })); }}
+            label={t('st.models.requestIdentity')}
+            inheritLabel={t('st.requestIdentity.inheritProvider')}
+          />
+        </AdvancedDisclosure>
+        <AdvancedDisclosure id={`model-images-${entity.id}`} label={t('st.modelEditor.group.images')}>
+          <ImagePolicyEditor
+            value={imageValue}
+            onChange={(images) => { setDraft((cur) => (cur === null ? null : { ...cur, ...images })); }}
+            inheritLabel={t('st.images.inheritProvider')}
+          />
+        </AdvancedDisclosure>
+      </>
+    );
+  }, [entity?.id, hasDraft, requestIdentityChoice, requestIdentityOverridesJson, imageAcceptedTypes, imageConvertUnsupported, t]);
+
+  const engineAndGuardAdvancedContent = useMemo(() => {
+    if (entity === undefined || engine === null) return null;
+    return (
+      <>
+        <AdvancedDisclosure id={`model-sampling-${entity.id}`} label={t('st.modelEditor.group.sampling')}>
+          <SavedGenerationParametersEditor scope="model" id={entity.id} onSaved={onSaved} keys={['temperature', 'top_p']} />
+        </AdvancedDisclosure>
+        <AdvancedDisclosure id={`model-engine-${entity.id}`} label={t('st.modelEditor.group.engine')}
+          defaultOpen={engineIssue !== null && engineIssue.field !== 'contextBudget'
+            && engineIssue.field !== 'cognition' && engineIssue.field !== 'promptOverrides'}>
+          <ModelEngineFields modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
+            onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
+        </AdvancedDisclosure>
+        <AdvancedDisclosure id={`model-guard-${entity.id}`} label={t('st.modelEditor.group.questionGuard')}>
+          <div data-model-behavior={entity.id}>
+            <QuestionGuardFields
+              scope="model"
+              draft={behavior}
+              enabled={guardEffective(globalGuard, behavior).enabled}
+              disabled={saving}
+              inherited={(field) => guardInherited(field, globalGuard, behavior)}
+              onEnabledChange={(choice) => { setBehavior((cur) => ({ ...cur, enabled: choice })); }}
+              onNumberCommit={(field: GuardNumberField, text) => { setBehavior((cur) => setGuardNumber(cur, field, text)); }}
+              onNumberClear={(field) => { setBehavior((cur) => clearGuardNumber(cur, field)); }}
+            />
+          </div>
+        </AdvancedDisclosure>
+      </>
+    );
+  }, [entity?.id, engine, engineIssue, behavior, globalGuard, saving, onSaved, t]);
+
   if (entityQuery.isError) return <InlineError error={entityQuery.error} />;
   if (entity === undefined || draft === null || baseline === null || engine === null || engineBaseline === null) {
     return <Hint>{t('st.models.loading')}</Hint>;
@@ -1452,33 +1735,6 @@ function ModelCatalogRowEditor({
       onChange={(tokens) => { if (!saving) setAutoCompact(tokens); }}
     />
   );
-
-  /**
-   * Editing a shared row writes the model's own value. Each field goes to the
-   * draft that already owns it, so one Save writes every layer and no value is
-   * held in two places. `thinking_effort`, `service_tier` and
-   * `max_completion_tokens` live in `parameters`, written as a sparse patch.
-   */
-  const applySharedUsageEdit = (edit: SharedUsageEdit) => {
-    if (edit['auto_compact'] !== undefined) {
-      setAutoCompact(edit['auto_compact'] === '' ? undefined : Number(edit['auto_compact']));
-    }
-    if (edit['context_budget'] !== undefined) {
-      setEngine({ ...engine, contextBudget: edit['context_budget'] });
-      setEngineIssue(null);
-    }
-    if (edit['thinking_effort'] !== undefined) {
-      setSharedGeneration({ ...sharedGeneration, thinking_effort: edit['thinking_effort'] === '' ? undefined : edit['thinking_effort'] });
-    }
-    if (edit['service_tier'] !== undefined) {
-      setSharedGeneration({ ...sharedGeneration, service_tier: edit['service_tier'] === '' ? undefined : edit['service_tier'] as never });
-    }
-    if (edit['max_completion_tokens'] !== undefined) {
-      const text = edit['max_completion_tokens'];
-      setSharedGeneration({ ...sharedGeneration, max_completion_tokens: text === '' ? undefined : Number(text) });
-    }
-    setUsageIssue(null);
-  };
 
   const save = async (recipeReference?: string | null, recipeOptions?: import('@kiki/protocol').RecipeOptionValues) => {
     const refuse = (text: string) => {
@@ -1689,22 +1945,8 @@ function ModelCatalogRowEditor({
     setFeedback(null);
   };
 
-  // The IDs this provider reported, plus whatever the draft holds now so the
-  // trigger always reads the value that will be saved.
-  const reportedModels = (discoveredQuery.data?.items ?? [])
-    .filter((group) => group.provider_id === entity.provider_id)
-    .flatMap((group) => group.models);
-  const remoteIdOptions = [
-    ...(draft.remoteId.trim() === '' || reportedModels.some((model) => model.remote_id === draft.remoteId)
-      ? []
-      : [{ value: draft.remoteId, label: draft.remoteId }]),
-    ...reportedModels.map((model) => ({
-      value: model.remote_id,
-      label: model.remote_id,
-      description: model.display_name,
-      keywords: model.display_name,
-    })),
-  ];
+  saveRef.current = save;
+
   // While the stored value inherits, the server's resolved format is the
   // provider's, and the inherit option can name it.
   const resolvedProtocol: ModelProtocol | undefined = protocolBaseline === 'inherit' ? entity.effective_protocol : undefined;
@@ -1714,9 +1956,7 @@ function ModelCatalogRowEditor({
   // Known server issues get their own copy and lose the field path, which is
   // a config key rather than something a person reads. The Recipe notice is
   // stated in the Recipe tab, so it is not repeated as a page-wide banner.
-  const recipeSelected = entity.issues.some((issue) => issue.code === 'recipe-selected');
   const bannerIssues = entity.issues.filter((issue) => issue.code !== 'recipe-selected');
-  const efforts = sortThinkingEffortsForDisplay([...draft.supportEfforts]);
   const tabs: readonly { id: EditorTab; label: string; badge?: string }[] = [
     { id: 'basics', label: t('st.modelEditor.tab.basics') },
     { id: 'prompts', label: t('st.modelEditor.tab.prompts') },
@@ -1872,10 +2112,10 @@ function ModelCatalogRowEditor({
           </div>
         </EditorSection>
         <EditorSection id={sectionId('usage')} title={t('st.modelEditor.section.usage')}>
-          {usage !== null ? (
+          {usageView !== null ? (
             <MainUsagePolicyFields
               modelId={entity.id}
-              view={usagePolicyView(entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration)}
+              view={usageView}
               efforts={efforts}
               onSharedChange={applySharedUsageEdit}
               onChange={(next) => { setUsage(next); setUsageIssue(null); }}
@@ -1910,14 +2150,7 @@ function ModelCatalogRowEditor({
               dataAttr="data-model-context-strategy-select"
               value={draft.contextStrategy ?? 'inherit'}
               disabled={saving}
-              choices={[
-                { value: 'inherit', label: t('context.strategy.reset') },
-                ...(['auto', 'summarize', 'fresh'] as const).map((value) => ({
-                  value,
-                  label: t(`context.strategy.option.${value}`),
-                  hint: t(`context.strategy.hint.${value}`),
-                })),
-              ]}
+              choices={contextStrategyChoices}
               onChange={(next) => {
                 setDraft({
                   ...draft,
@@ -1975,117 +2208,18 @@ function ModelCatalogRowEditor({
           scope={editScope}
           branchSelection={branchSelectionFor(editScope, prompts)}
           draft={scopedBodyDraft}
-          // Typing is the decision: a slot backed by an author file converts to
-          // a body on the model when this page saves, like any other field.
-          onDraftChange={(slot, text) => {
-            const key = bodyKey(editScope, slot);
-            setBodyDraft((current) => ({ ...current, [key]: text }));
-            setBodySaves((current) => {
-              const next = { ...current };
-              if (text === initialSlotText(slotView(entity.cognition_bodies, editScope, slot))) delete next[key];
-              else next[key] = text;
-              return next;
-            });
-          }}
+          onDraftChange={onBodyDraftChange}
           disabled={saving}
         />
-        <div className="space-y-1">
-          {/*
-            The sources that can start a turn without a person typing. Most are
-            simply off, so they stay folded; the body stays mounted so an edit
-            survives collapsing it.
-          */}
-          <AdvancedDisclosure id={`model-steer-${entity.id}`} label={t('st.steerSource.disclosure')} summary={t('st.steerSource.summary')}>
-            <div className="space-y-3">
-              <ModelSteerSources
-                bodies={entity.cognition_bodies}
-                scope={editScope}
-                draft={steerSources}
-                branchOff={branchSelectionFor(editScope, prompts) === 'off'}
-                identityInheritsShared={editScope !== 'shared' && branchSelectionFor(editScope, prompts) === 'common'}
-                onDraftChange={setSteerSource}
-                disabled={saving}
-              />
-              {steerIssue !== undefined ? (
-                <p role="alert" className="text-[12px] leading-5 text-danger" data-steer-source-issue>
-                  {t('st.steerSource.cadenceCount')}
-                </p>
-              ) : null}
-            </div>
-          </AdvancedDisclosure>
-          <AdvancedDisclosure id={`model-prompt-structure-${entity.id}`} label={t('st.modelEditor.group.promptStructure')}
-            defaultOpen={engineIssue?.field === 'cognition' || engineIssue?.field === 'promptOverrides'}>
-            <ModelEngineFields part="prompts" modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
-              onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
-          </AdvancedDisclosure>
-        </div>
+        {promptsAdvancedContent}
       </div>
       <div id={panelId('recipe')} role="tabpanel" aria-labelledby={tabId('recipe')} hidden={activeEditorTab !== 'recipe'} className="space-y-4">
-        {recipeSelected ? (
-          <p className="rounded-md bg-selected-ink/[0.07] px-3 py-2 text-[12px] leading-5 text-selected-ink" data-model-recipe-issue>
-            {t('st.models.issue.recipeSelected')}
-          </p>
-        ) : null}
-        <ModelRecipeField
-          modelId={entity.id}
-          modelName={draft.displayName.trim() === '' ? entity.id : draft.displayName.trim()}
-          onCommitRecipe={save}
-          appliedId={entity.recipe}
-          disabled={saving}
-          onDraftChange={setRecipeDraftDirty}
-        />
-        <RecipeOptionsField recipe={entity.recipe} values={entity.recipe_options} options={entity.recipe_model_binding?.options}
-          disabled={saving} onChange={(values) => save(entity.recipe, values)} />
+        {recipePanelContent}
       </div>
       <div id={panelId('advanced')} role="tabpanel" aria-labelledby={tabId('advanced')} hidden={activeEditorTab !== 'advanced'}
         className="space-y-1" data-model-advanced-groups>
-        {/*
-          Named groups, each folded. A group opens on its own when the last
-          save was refused for a field inside it, so the error is never hidden.
-        */}
-        <AdvancedDisclosure id={`model-${entity.id}`} label={t('st.modelEditor.group.requestIdentity')}
-          defaultOpen={draft.requestIdentityChoice !== 'inherit'}>
-          <RequestIdentityLayerEditor
-            value={draft}
-            onChange={(identity) => { setDraft({ ...draft, ...identity }); }}
-            label={t('st.models.requestIdentity')}
-            inheritLabel={t('st.requestIdentity.inheritProvider')}
-          />
-        </AdvancedDisclosure>
-        <AdvancedDisclosure id={`model-images-${entity.id}`} label={t('st.modelEditor.group.images')}>
-          <ImagePolicyEditor
-            value={draft}
-            onChange={(images) => { setDraft({ ...draft, ...images }); }}
-            inheritLabel={t('st.images.inheritProvider')}
-          />
-        </AdvancedDisclosure>
-        <AdvancedDisclosure id={`model-sampling-${entity.id}`} label={t('st.modelEditor.group.sampling')}>
-          {/*
-            Effort, tier and the token cap have their one entrance in Basics;
-            only temperature and top_p remain here.
-          */}
-          <SavedGenerationParametersEditor scope="model" id={entity.id} onSaved={onSaved} keys={['temperature', 'top_p']} />
-        </AdvancedDisclosure>
-        <AdvancedDisclosure id={`model-engine-${entity.id}`} label={t('st.modelEditor.group.engine')}
-          defaultOpen={engineIssue !== null && engineIssue.field !== 'contextBudget'
-            && engineIssue.field !== 'cognition' && engineIssue.field !== 'promptOverrides'}>
-          <ModelEngineFields modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
-            onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
-        </AdvancedDisclosure>
-        <AdvancedDisclosure id={`model-guard-${entity.id}`} label={t('st.modelEditor.group.questionGuard')}>
-          <div data-model-behavior={entity.id}>
-            <QuestionGuardFields
-              scope="model"
-              draft={behavior}
-              enabled={guardEffective(globalGuard, behavior).enabled}
-              disabled={saving}
-              inherited={(field) => guardInherited(field, globalGuard, behavior)}
-              onEnabledChange={(choice) => { setBehavior({ ...behavior, enabled: choice }); }}
-              onNumberCommit={(field: GuardNumberField, text) => { setBehavior(setGuardNumber(behavior, field, text)); }}
-              onNumberClear={(field) => { setBehavior(clearGuardNumber(behavior, field)); }}
-            />
-          </div>
-        </AdvancedDisclosure>
+        {identityAndImageAdvancedContent}
+        {engineAndGuardAdvancedContent}
       </div>
       {/*
         The actions stay pinned to the bottom of the detail: on a form this long

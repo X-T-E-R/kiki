@@ -151,11 +151,16 @@ import {
   hasReaderDisclosure,
   installTranscriptAnchoring,
   landAtEnd,
-  measureTranscriptRow,
   noteReaderDisclosure,
-  observeRowMutations,
   reconcileMountedRows,
 } from './transcriptVirtualizer';
+import {
+  guardTranscriptRowMeasure,
+  isInTranscriptBatchDomSync,
+  syncTranscriptVirtualDom,
+  syncTranscriptVirtualPositions,
+  virtualWindowSignature,
+} from './timeline/virtualLayoutSync';
 import { ApprovalCard, InteractionRecord, MergedInteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
 import { ExternalTextRow } from './timeline/ExternalTextRow';
@@ -1189,7 +1194,7 @@ const AssistantMessage = memo(function AssistantMessage({
       ) : null}
       {/* No leading marker: the right-aligned user bubble already carries
           the turn boundary, so the answer sits on the page as prose. */}
-      <div data-assistant-prose className="kiki-prose min-w-0">
+      <div data-assistant-prose className="kiki-prose min-w-0 [&_.kiki-md:not(.kiki-md--edges)>*:first-child]:!mt-0 [&_.kiki-md:not(.kiki-md--edges)>*:last-child]:!mb-0 [&_.kiki-md:not(.kiki-md--edges)>div>*:first-child]:!mt-0 [&_.kiki-md:not(.kiki-md--edges)>div>*:last-child]:!mb-0">
         <RenderedImageScope>
         {isOutputLayerActive && block.text !== '' ? (
           <AssistantOutputContent
@@ -3374,7 +3379,12 @@ function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode
   }
   if (node.kind === 'user') return 'mt-2';
   const lane = timelineLane(node);
-  return lane === 'activity' && timelineLane(previous) === 'activity' ? '-mt-3' : '';
+  const previousLane = timelineLane(previous);
+  if (lane === 'activity' && previousLane === 'activity') return '-mt-3';
+  if ((lane === 'activity' && previous.kind === 'assistant') || (node.kind === 'assistant' && previousLane === 'activity')) {
+    return '-mt-0.5';
+  }
+  return '';
 }
 
 /** Message-view rows that are a single status line rather than speech. */
@@ -3971,8 +3981,9 @@ function captureTranscriptAnchor(
   };
 }
 
-function MeasuredTranscriptRow({ index, virtualizer, onDetach, arriving, children }: {
+function MeasuredTranscriptRow({ index, rowKey, virtualizer, onDetach, arriving, children }: {
   index: number;
+  rowKey: string;
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
   onDetach: (element: HTMLDivElement) => void;
   /** The row was appended after the previous commit's last row. Read once, at mount. */
@@ -3980,13 +3991,6 @@ function MeasuredTranscriptRow({ index, virtualizer, onDetach, arriving, childre
   children: ReactNode;
 }) {
   const rowRef = useRef<HTMLDivElement | null>(null);
-  // A virtualized row remounts each time it scrolls back into the window, and
-  // the rows of a session being opened mount all at once; neither is content
-  // arriving, so the entrance rise the row's content carries (`anim-enter`)
-  // is stopped before it is first styled and plays only for a row that has
-  // just arrived. Decided at mount: a later render must neither replay nor cut
-  // short an entrance. Anything that appears inside the row afterwards (a fold
-  // opened, a status line) keeps its own.
   const [entering] = useState(arriving);
   const measure = useCallback((element: HTMLDivElement | null) => {
     if (element === null && rowRef.current !== null) onDetach(rowRef.current);
@@ -3996,7 +4000,26 @@ function MeasuredTranscriptRow({ index, virtualizer, onDetach, arriving, childre
     rowRef.current = element;
     virtualizer.measureElement(element);
   }, [onDetach, virtualizer, entering]);
-  return <div ref={measure} data-index={index} data-transcript-virtual-item className="absolute left-0 w-full">{children}</div>;
+  return (
+    <div
+      ref={measure}
+      data-index={index}
+      data-row-key={rowKey}
+      data-transcript-virtual-item
+      onAnimationEnd={(event) => {
+        if (
+          event.target instanceof HTMLElement
+          && event.target.classList.contains('anim-enter')
+          && event.target.closest('[data-row-actions]') === null
+        ) {
+          event.target.style.animation = 'none';
+        }
+      }}
+      className="absolute left-0 w-full hover:z-20 focus-within:z-20 has-[[data-actions-open]]:z-20 has-[[data-row-menu-open]]:z-20"
+    >
+      {children}
+    </div>
+  );
 }
 
 type TranscriptRowProps = {
@@ -5313,6 +5336,11 @@ export const Transcript = memo(function Transcript({
     return [...indexes].sort((left, right) => left - right);
   }, [pinnedIndexes]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
+  const handleScrollRef = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node;
+    setScrollElement((previous) => (previous === node ? previous : node));
+  }, []);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const olderIntentRef = useRef(false);
   const olderIntentAtRef = useRef(0);
@@ -5572,7 +5600,7 @@ export const Transcript = memo(function Transcript({
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('scroll', loadAtTop);
     };
-  }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible, requestOlderAtReadingAnchor]);
+  }, [scrollElement, state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible, requestOlderAtReadingAnchor]);
   useEffect(() => {
     const scroll = scrollRef.current;
     if (!loaded || !visible || scroll === null || underfillStartedRef.current) return;
@@ -5596,7 +5624,7 @@ export const Transcript = memo(function Transcript({
     if (content !== null) observer.observe(content);
     check();
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [loaded, visible, state.blocks, state.hasMoreHistory, state.loadingOlder, state.olderError, state.transcriptResetVersion, requestOlderAtReadingAnchor]);
+  }, [scrollElement, loaded, visible, state.blocks, state.hasMoreHistory, state.loadingOlder, state.olderError, state.transcriptResetVersion, requestOlderAtReadingAnchor]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,
     key: undefined,
@@ -5632,7 +5660,7 @@ export const Transcript = memo(function Transcript({
     count: virtualNodes.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => TRANSCRIPT_ESTIMATED_ROW_HEIGHT,
-    measureElement: measureTranscriptRow,
+    measureElement: guardTranscriptRowMeasure,
     getItemKey: (index) => virtualNodeKey(virtualNodes[index]),
     anchorTo: 'end',
     followOnAppend: true,
@@ -5649,17 +5677,22 @@ export const Transcript = memo(function Transcript({
     directDomUpdates: true,
     directDomUpdatesMode: 'position',
     onChange: (instance) => {
+      if (isInTranscriptBatchDomSync()) return;
       // `@tanstack/react-virtual`'s `directDomUpdates` only updates `prevRange`
       // inside `onChange`, not during React prop renders. If a prop render
       // narrows the range and a measurement widens it back to `prevRange`,
       // `directDomUpdates` skips rerendering and leaves the tail unmounted.
       const range = instance.range;
       const renderedRange = renderedVirtualRangeRef.current;
+      if (visibleRef.current && scrollRef.current !== null) {
+        syncTranscriptVirtualPositions(scrollRef.current, instance);
+      }
       if (
         (range === null) !== (renderedRange === null) ||
         (range !== null &&
           renderedRange !== null &&
-          (range.startIndex !== renderedRange.startIndex || range.endIndex !== renderedRange.endIndex))
+          (range.startIndex !== renderedRange.startIndex || range.endIndex !== renderedRange.endIndex)) ||
+        virtualWindowSignature(instance) !== renderedVirtualSignatureRef.current
       ) {
         rerenderVirtualWindow();
       }
@@ -5679,15 +5712,19 @@ export const Transcript = memo(function Transcript({
     virtualizer.range === null
       ? null
       : { startIndex: virtualizer.range.startIndex, endIndex: virtualizer.range.endIndex };
-  renderedVirtualSignatureRef.current = virtualItems.map((item) => `${item.index}:${String(item.key)}`).join('\n');
-  useLayoutEffect(() => installTranscriptAnchoring(virtualizer), [loaded, loadError, virtualizer]);
-  // Reconcile mounted row heights synchronously when turns fold, hydrate, or
-  // gain a tail status line, and preserve end-pinning across mid-turn hydration
-  // or turn-end folding without requiring a manual fold toggle.
+  const renderedSignature = virtualWindowSignature(virtualizer);
+  renderedVirtualSignatureRef.current = renderedSignature;
+  const sigSyncPassRef = useRef<{ epoch: string; count: number }>({ epoch: '', count: 0 });
+  useLayoutEffect(() => installTranscriptAnchoring(virtualizer), [scrollElement, loaded, loadError, virtualizer]);
+  // Reconcile mounted row heights and absolute `style.top` positions synchronously
+  // after window/node commits, preserving end-pinning across mid-turn hydration or
+  // turn-end folding without re-measuring on unrelated state ticks.
   useLayoutEffect(() => {
-    if (!loaded || loadError !== undefined || !visible || scrollRef.current === null || olderInflightRef.current) return;
-    reconcileMountedRows(virtualizer);
+    if (!loaded || loadError !== undefined || !visible || scrollRef.current === null) return;
+    const scroll = scrollRef.current;
+    syncTranscriptVirtualDom(scroll, virtualizer);
     if (
+      !olderInflightRef.current &&
       initialScrollDoneRef.current &&
       wasAtEndBeforeRender &&
       !navRestorePendingRef.current &&
@@ -5695,17 +5732,24 @@ export const Transcript = memo(function Transcript({
       rekeyedFoldAnchorRef.current === null &&
       !hasReaderDisclosure(virtualizer)
     ) {
-      const scroll = scrollRef.current;
       if (scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > 0.5) {
         landAtEnd(virtualizer);
+        syncTranscriptVirtualPositions(scroll, virtualizer);
       }
       viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
-      const afterSignature = virtualizer.getVirtualItems().map((item) => `${item.index}:${String(item.key)}`).join('\n');
-      if (afterSignature !== renderedVirtualSignatureRef.current) {
+    }
+    const afterSignature = virtualWindowSignature(virtualizer);
+    if (afterSignature !== renderedVirtualSignatureRef.current) {
+      const epoch = `${virtualNodes.length}:${Math.round(scroll.scrollTop)}`;
+      if (sigSyncPassRef.current.epoch !== epoch) {
+        sigSyncPassRef.current = { epoch, count: 1 };
+        rerenderVirtualWindow();
+      } else if (sigSyncPassRef.current.count < 4) {
+        sigSyncPassRef.current.count += 1;
         rerenderVirtualWindow();
       }
     }
-  }, [loaded, loadError, visible, virtualNodes, state.busy, state.turnTail, virtualizer, wasAtEndBeforeRender]);
+  }, [loaded, loadError, visible, scrollElement, virtualizer, virtualNodes.length, renderedSignature, state.transcriptResetVersion, wasAtEndBeforeRender]);
   // ---- incomplete turns read their own structure while they are in view ----
   // A turn the window cut (its step list does not reach back to its opening)
   // reads its structure as soon as any of its rows is in the virtual window,
@@ -5857,34 +5901,77 @@ export const Transcript = memo(function Transcript({
     rekeyedFoldAnchorRef.current?.controller.abort();
     noteReaderDisclosure(virtualizer, target);
   }, [virtualizer]);
-  // Settle pass: re-read mounted rows once scrolling goes idle. A resize the
-  // observer delivered mid-scroll can be skipped by virtual-core, and the
-  // observer never repeats it; this is the only path that heals such a row.
+  // Settle pass: re-read mounted rows and sync `style.top` on scroll frames,
+  // media decode/load completions, and once scrolling goes idle.
   useEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let frame: number | null = null;
     const onScroll = () => {
+      if (frame === null) {
+        frame = requestAnimationFrame(() => {
+          frame = null;
+          syncTranscriptVirtualDom(element, virtualizer);
+        });
+      }
       if (timer !== null) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        reconcileMountedRows(virtualizer);
+        syncTranscriptVirtualDom(element, virtualizer);
       }, 160);
     };
+    let mediaFrame: number | null = null;
+    const onMediaSettled = (event: Event) => {
+      if (!(event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement)) return;
+      if (mediaFrame !== null) return;
+      mediaFrame = requestAnimationFrame(() => {
+        mediaFrame = null;
+        if (element.isConnected) syncTranscriptVirtualDom(element, virtualizer);
+      });
+    };
     element.addEventListener('scroll', onScroll, { passive: true });
+    element.addEventListener('load', onMediaSettled, true);
+    element.addEventListener('error', onMediaSettled, true);
     return () => {
       element.removeEventListener('scroll', onScroll);
+      element.removeEventListener('load', onMediaSettled, true);
+      element.removeEventListener('error', onMediaSettled, true);
+      if (frame !== null) cancelAnimationFrame(frame);
+      if (mediaFrame !== null) cancelAnimationFrame(mediaFrame);
       if (timer !== null) clearTimeout(timer);
     };
-  }, [loaded, loadError, virtualizer]);
+  }, [scrollElement, loaded, loadError, virtualizer]);
   // Content that grows a mounted row after it painted (a tool card's output,
   // a code block finishing highlighting, a nested disclosure) is re-measured
   // in the same frame as the mutation, so the rows below it never paint inside
   // it while the size observer catches up a frame later.
   useLayoutEffect(() => {
     if (!loaded || loadError !== undefined) return;
-    return observeRowMutations(scrollRef.current, virtualizer);
-  }, [loadError, loaded, virtualizer]);
+    const element = scrollRef.current;
+    if (element === null) return;
+    let queued = false;
+    let active = true;
+    const observer = new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      queueMicrotask(() => {
+        queued = false;
+        if (active && element.isConnected) syncTranscriptVirtualDom(element, virtualizer);
+      });
+    });
+    observer.observe(element, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'hidden', 'open'],
+    });
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+  }, [scrollElement, loadError, loaded, virtualizer]);
 
   useLayoutEffect(() => {
     if (!loaded || loadError !== undefined) return;
@@ -6721,7 +6808,7 @@ export const Transcript = memo(function Transcript({
         </button>
       ) : null}
       <div
-        ref={scrollRef}
+        ref={handleScrollRef}
         data-transcript-scroll
         role="log"
         tabIndex={-1}
@@ -6764,6 +6851,7 @@ export const Transcript = memo(function Transcript({
             return (
               <MeasuredTranscriptRow
                 key={virtualItem.key}
+                rowKey={String(virtualItem.key)}
                 virtualizer={virtualizer}
                 index={virtualItem.index}
                 arriving={previousLastIndex !== undefined && virtualItem.index > previousLastIndex}

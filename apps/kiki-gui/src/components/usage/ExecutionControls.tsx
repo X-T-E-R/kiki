@@ -297,7 +297,12 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, phaseHintShar
               {t('usage.execution.pauseSession')}
             </button>
           ) : null}
-          {phase === 'pausing' && state.pauseOperationId !== undefined ? (
+          {phase === 'failed' ? (
+            <button type="button" data-execution-action="retry-read" className={ROW_BUTTON} disabled={busy} onClick={() => { onRetryRead(); }}>
+              {t('usage.execution.retryRead')}
+            </button>
+          ) : null}
+          {(phase === 'pausing' || (phase === 'failed' && state.pausedAt === undefined)) && state.pauseOperationId !== undefined ? (
             <button
               type="button"
               data-execution-action="cancel-pause"
@@ -310,18 +315,10 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, phaseHintShar
               {t('usage.execution.cancelPause')}
             </button>
           ) : null}
-          {phase === 'paused' ? (
+          {phase === 'paused' || (phase === 'failed' && state.pausedAt !== undefined && state.pauseOperationId !== undefined) ? (
             <button type="button" data-execution-action="resume" className={ROW_BUTTON} disabled={busy} onClick={() => { resume.reset(); resume.run(); }}>
               <Icon name="refresh" size={12} />
               {t('usage.execution.resumeSession')}
-            </button>
-          ) : null}
-          {phase === 'failed' ? (
-            // The contract resumes only a durably paused phase. A failed row's
-            // recovery re-reads the real state from the server, so the next action
-            // the row offers is truthful — never an implicit resume.
-            <button type="button" data-execution-action="retry-read" className={ROW_BUTTON} disabled={busy} onClick={() => { onRetryRead(); }}>
-              {t('usage.execution.retryRead')}
             </button>
           ) : null}
         </span>

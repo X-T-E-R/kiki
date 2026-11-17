@@ -23,7 +23,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IBashTool } from '#/agent/tools/os/bash/bash';
 import { ITaskWaitTool } from '#/agent/tools/task/task-wait/task-wait';
-import { compileToolArgsValidator, validateToolArgs, type JsonType } from '#/tool/args-validator';
+import { compileToolArgsValidator, validateToolArgs, validateToolArgsWithCoercion, type JsonType } from '#/tool/args-validator';
 import { compactProfileDescriptions } from '#/agent/tools/agent/subagentDescription';
 import { GENERIC_SUBAGENT_PROFILE } from '#/session/subagent/genericProfile';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -2100,6 +2100,18 @@ describe('AgentRun tool execution contract', () => {
     else expect(execution).toMatchObject({ isError: true, output: message });
   });
 
+  it('rejects unknown properties on AgentRun schema validation', () => {
+    const lifecycle = createAgentLifecycleStub();
+    const context = createAgentToolContext(lifecycle);
+    const tool = agentTool(context);
+    const error = validateToolArgsWithCoercion(
+      compileToolArgsValidator(tool.parameters ?? {}),
+      tool.parameters ?? {},
+      { prompt: 'Go', description: 'Go', unknown_flag: true },
+    );
+    expect(error.error).toContain("must NOT have additional property 'unknown_flag'");
+  });
+
   it('spawns a foreground subagent and returns its summary', async () => {
     const lifecycle = createAgentLifecycleStub({
       createAgentIds: ['agent-child'],
@@ -3853,7 +3865,6 @@ describe('Agent tools', () => {
       const snapshot = createEventSnapshotter();
       const stableEvents = (entries: readonly EventSnapshotEntry[]) => snapshot(entries.filter((entry) => entry.type !== '[wire]' || (entry.event !== 'llm.tools_snapshot' && entry.event !== 'llm.request')));
       expect(stableEvents(first.filter((entry) => !isToolCallWire(entry)))).toMatchInlineSnapshot(`
-        [wire] plugin.session_start        { "content": null, "time": "<time>" }
         [wire] permission.set_mode         { "mode": "auto", "source": "runtime", "time": "<time>" }
         [emit] agent.status.updated        { "time": "<time>", "permission": "auto" }
         [wire] tools.register_user_tool    { "name": "Lookup", "description": "Look up a short test value.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": [ "query" ], "additionalProperties": false }, "time": "<time>" }
@@ -3873,6 +3884,7 @@ describe('Agent tools', () => {
         [emit] context.append_message      { "time": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "<auto-mode-enter-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "permission_mode" }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" } }
         [emit] context.spliced             { "time": "<time>", "start": 1, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "<auto-mode-enter-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "permission_mode" }, "id": "<msg-2>" } ] }
         [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "<auto-mode-enter-reminder>" } ], "toolCalls": [], "origin": { "kind": "injection", "variant": "permission_mode" }, "id": "<msg-2>" }, "delivery": { "deliveryId": "<dlv-2>", "messageId": "<msg-2>", "deliveredAt": "<time>", "origin": "injection" }, "time": "<time>" }
+        [wire] plugin.session_start        { "content": null, "time": "<time>" }
         [emit] turn.step.started           { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-2>" }
         [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
         [emit] context.append_loop_event   { "time": "<time>", "event": { "type": "step.begin", "uuid": "<uuid-2>", "turnId": "0", "step": 1 } }

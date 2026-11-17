@@ -10,6 +10,7 @@ import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { compactMiddle } from '../../lib/compactIdentifier';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -363,7 +364,7 @@ export function ExternalConnectionSection() {
         title={t('st.conn.ext.installConfirmTitle')}
         body={
           installPlan
-            ? `${installPlan.id}${installPlan.version === undefined ? '' : ` (${installPlan.version})`}\n${t('st.conn.ext.installConfirmBody', { id: installPlan.id, fingerprint: installPlan.fingerprint.slice(0, 16) })}`
+            ? `${installPlan.id}${installPlan.version === undefined ? '' : ` (${installPlan.version})`}\n${t('st.conn.ext.installConfirmBody', { id: installPlan.id, fingerprint: compactMiddle(installPlan.fingerprint, 6, 6) })}`
             : t('st.conn.ext.installPlugin')
         }
         confirmLabel={t('st.conn.ext.installPlugin')}

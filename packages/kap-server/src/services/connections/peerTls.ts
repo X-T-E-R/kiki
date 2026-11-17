@@ -116,14 +116,18 @@ function attachVerifiedConnection(
     if (signal !== undefined) signals.push(signal);
     if (callerSignal !== undefined) signals.push(callerSignal);
     const deadline = signals.length === 1 ? signals[0]! : AbortSignal.any(signals);
+    let settled = false;
     const abort = () => socket.destroy(deadline.reason instanceof Error ? deadline.reason : new Error('TLS handshake cancelled'));
     const closed = () => fail(new Error('TLS handshake closed'));
     const cleanup = () => {
       handshakes?.delete(socket);
       deadline.removeEventListener('abort', abort);
       socket.off('close', closed);
+      socket.off('error', fail);
     };
     const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
       cleanup();
       callback!(error, socket);
     };
@@ -132,15 +136,15 @@ function attachVerifiedConnection(
     deadline.addEventListener('abort', abort, { once: true });
     if (deadline.aborted) abort();
     socket.once('secureConnect', () => {
-      if (deadline.aborted) return;
+      if (settled || deadline.aborted) return;
       const certificate = socket.getPeerX509Certificate();
       const actual = certificate === undefined ? undefined : spkiFingerprint(certificate.publicKey);
       if (actual === undefined || (fingerprint !== undefined && actual !== fingerprint)) {
         socket.destroy(new AdmissionError(409, 'identity_changed'));
         return;
       }
+      settled = true;
       cleanup();
-      socket.off('error', fail);
       observed?.(actual);
       callback!(null, socket);
     });
@@ -249,11 +253,20 @@ export function isRetryableTransportError(error: unknown): boolean {
   return /socket hang up|TLS handshake closed|network socket disconnected|other side closed/i.test(error.message);
 }
 
+export interface PeerFetchInit extends RequestInit {
+  readonly idempotentRetry?: boolean;
+}
+
+export function isIdempotentHttpMethod(method: string | undefined): boolean {
+  const normalized = (method ?? 'GET').trim().toUpperCase();
+  return normalized === 'GET' || normalized === 'HEAD';
+}
+
 function isReplayableBody(body: RequestInit['body']): boolean {
   return body === undefined || body === null || typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array;
 }
 
-function dispatchPinnedRequest(url: string | URL, init: RequestInit, agent: Agent): Promise<{ response: Response } | { retryableReusedError: Error }> {
+function dispatchPinnedRequest(url: string | URL, init: PeerFetchInit, agent: Agent): Promise<{ response: Response } | { retryableReusedError: Error }> {
   return new Promise((resolve, reject) => {
     const callerSignal = init.signal ?? undefined;
     if (callerSignal?.aborted) {
@@ -303,7 +316,7 @@ function dispatchPinnedRequest(url: string | URL, init: RequestInit, agent: Agen
         finish({ error: callerSignal.reason instanceof Error ? callerSignal.reason : error });
         return;
       }
-      if (!responded && req.reusedSocket && isReplayableBody(init.body) && isRetryableTransportError(error)) {
+      if (!responded && req.reusedSocket && (init.idempotentRetry === true || isIdempotentHttpMethod(init.method)) && isReplayableBody(init.body) && isRetryableTransportError(error)) {
         finish({ retryableReusedError: error });
         return;
       }
@@ -321,15 +334,16 @@ function dispatchPinnedRequest(url: string | URL, init: RequestInit, agent: Agen
   });
 }
 
-export async function peerFetch(url: string | URL, init: RequestInit = {}, fingerprint?: string, observed?: (fingerprint: string) => void): Promise<Response> {
+export async function peerFetch(url: string | URL, init: PeerFetchInit = {}, fingerprint?: string, observed?: (fingerprint: string) => void): Promise<Response> {
   requirePinnedTls(url, fingerprint);
-  if (fingerprint === undefined && observed === undefined) return fetch(url, { ...init, redirect: 'error' });
+  const { idempotentRetry: _idempotentRetry, ...requestInit } = init;
+  if (fingerprint === undefined && observed === undefined) return fetch(url, { ...requestInit, redirect: 'error' });
   const usePool = fingerprint !== undefined && observed === undefined;
-  const agent = usePool ? pooledPinnedAgent(url, fingerprint) : pinnedAgent(fingerprint, observed, init.signal ?? undefined);
+  const agent = usePool ? pooledPinnedAgent(url, fingerprint) : pinnedAgent(fingerprint, observed, requestInit.signal ?? undefined);
   const first = await dispatchPinnedRequest(url, init, agent);
   if ('response' in first) return first.response;
   evictPinnedAgent(url, fingerprint);
-  const retryAgent = usePool ? pooledPinnedAgent(url, fingerprint) : pinnedAgent(fingerprint, observed, init.signal ?? undefined);
+  const retryAgent = usePool ? pooledPinnedAgent(url, fingerprint) : pinnedAgent(fingerprint, observed, requestInit.signal ?? undefined);
   const second = await dispatchPinnedRequest(url, init, retryAgent);
   if ('response' in second) return second.response;
   throw second.retryableReusedError;

@@ -74,6 +74,35 @@ function agentTask(
   );
 }
 
+function controlledProcessTask(
+  description: string,
+): {
+  readonly task: ProcessTask;
+  resolve(exitCode?: number, text?: string): void;
+} {
+  const exit = createControlledPromise<number>();
+  const stdout = new Readable({ read() {} });
+  const proc = {
+    _serviceBrand: undefined,
+    pid: 61099,
+    exitCode: null,
+    stdout,
+    stderr: Readable.from([]),
+    stdin: { write: vi.fn(), end: vi.fn() },
+    wait: () => exit,
+    kill: async () => { exit.resolve(1); },
+    dispose: async () => {},
+  } as unknown as IHostProcess;
+  return {
+    task: new ProcessTask(proc, 'example-command', description),
+    resolve: (exitCode = 0, text?: string) => {
+      if (text !== undefined) stdout.push(text);
+      stdout.push(null);
+      exit.resolve(exitCode);
+    },
+  };
+}
+
 function notifiedCount(ctx: TestAgentContext): number {
   return ctx.allEvents.filter((e) => e.type === '[rpc]' && e.event === 'task.notified').length;
 }
@@ -969,11 +998,11 @@ describe('task notification → main agent (real Agent instance)', () => {
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-    it('ACTIVE GOAL: cancelling the notification turn holds the next completion', async () => {
+    it('ACTIVE GOAL: cancelling the notification turn holds the next non-agent completion', async () => {
       const goals = ctx.get(IAgentGoalService);
       await goals.createGoal({ objective: 'finish delegated work' });
       const first = createControlledPromise<{ result: string }>();
-      const second = createControlledPromise<{ result: string }>();
+      const second = controlledProcessTask('completion from cancelled turn');
       const sibling = createControlledPromise<{ result: string }>();
       const firstId = background.registerTask(agentTask(first, 'first completion'));
       background.registerTask(new SubagentTask(
@@ -986,11 +1015,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       const hook = loop.hooks.onDidFinishStep.register('test.goal-notification-cancel', async (step, next) => {
         if (armCancel && step.firstStepOfTurn) {
           armCancel = false;
-          secondId = background.registerTask(new SubagentTask(
-            { agentId: 'agent-second', profileName: 'coder', completion: second },
-            'completion from cancelled turn',
-            new AbortController(),
-          ));
+          secondId = background.registerTask(second.task);
           loop.cancel();
         }
         await next();
@@ -1009,7 +1034,7 @@ describe('task notification → main agent (real Agent instance)', () => {
         expect(loop.status().lastTurnResult).toBe('cancelled');
         expect(goals.getGoal().goal?.status).toBe('active');
         const enqueue = vi.spyOn(loop, 'enqueue');
-        second.resolve({ result: 'held receipt' });
+        second.resolve(0, 'held receipt');
         await background.wait(secondId);
         await vi.waitFor(() => expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true));
         expect(enqueue.mock.calls.find(([request]) => request.kind === 'task_notification')![0].admission).toBe('activeOrNextTurn');
@@ -1024,7 +1049,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       } finally {
         armCancel = false;
         first.resolve({ result: 'cleanup' });
-        second.resolve({ result: 'cleanup' });
+        second.resolve(0);
         sibling.resolve({ result: 'cleanup' });
         await hook.dispose();
       }
@@ -1310,13 +1335,13 @@ describe('task notification → main agent (real Agent instance)', () => {
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it.each(['issuing turn', 'earlier task', 'new task'] as const)(
-      'CANCELLED TURN: applies wake protection only to its own task (%s)', async (owner) => {
-        const completion = createControlledPromise<{ result: string }>();
+      'CANCELLED TURN: applies wake protection only to its own shell task (%s)', async (owner) => {
+        const proc = controlledProcessTask('shell task');
         let taskId = owner === 'earlier task'
-          ? background.registerTask(agentTask(completion, 'independently started task')) : '';
+          ? background.registerTask(proc.task) : '';
         const hook = loop.hooks.onDidFinishStep.register('test.task-owner-cancel', async (_step, next) => {
           await hook.dispose();
-          if (owner === 'issuing turn') taskId = background.registerTask(agentTask(completion, 'task from cancelled turn'));
+          if (owner === 'issuing turn') taskId = background.registerTask(proc.task);
           loop.cancel();
           await next();
         });
@@ -1326,11 +1351,11 @@ describe('task notification → main agent (real Agent instance)', () => {
           await ctx.untilTurnEnd();
           await loop.settled();
           expect(loop.status().lastTurnResult).toBe('cancelled');
-          if (owner === 'new task') taskId = background.registerTask(agentTask(completion, 'task started after cancellation'));
+          if (owner === 'new task') taskId = background.registerTask(proc.task);
           expect(background.getTask(taskId)?.ownerTurnId).toBe(owner === 'issuing turn' ? 0 : undefined);
           const enqueue = vi.spyOn(loop, 'enqueue');
           ctx.mockNextResponse({ type: 'text', text: 'completion received' });
-          completion.resolve({ result: 'receipt after cancellation' });
+          proc.resolve(0, 'receipt after cancellation');
           await background.wait(taskId);
           await vi.waitFor(() => expect(enqueue.mock.calls.some(([r]) => r.kind === 'task_notification')).toBe(true));
           expect(enqueue.mock.calls.find(([r]) => r.kind === 'task_notification')![0].admission)
@@ -1346,11 +1371,43 @@ describe('task notification → main agent (real Agent instance)', () => {
           expect(ctx.llmCalls).toHaveLength(2);
           expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('receipt after cancellation');
         } finally {
-          completion.resolve({ result: 'cleanup' });
+          proc.resolve(0);
           await hook.dispose();
         }
       }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
     );
+
+    it('CANCELLED TURN: detached background subagent wakes idle main even when its issuing turn was cancelled', async () => {
+      const completion = createControlledPromise<{ result: string }>();
+      let taskId = '';
+      const hook = loop.hooks.onDidFinishStep.register('test.subagent-owner-cancel', async (_step, next) => {
+        await hook.dispose();
+        taskId = background.registerTask(agentTask(completion, 'detached subagent from cancelled turn'));
+        loop.cancel();
+        await next();
+      });
+      try {
+        ctx.mockNextResponse({ type: 'text', text: 'cancel this response' });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start subagent' }] });
+        await ctx.untilTurnEnd();
+        await loop.settled();
+        expect(loop.status().lastTurnResult).toBe('cancelled');
+        expect(background.getTask(taskId)?.ownerTurnId).toBe(0);
+        const enqueue = vi.spyOn(loop, 'enqueue');
+        ctx.mockNextResponse({ type: 'text', text: 'subagent completion received' });
+        completion.resolve({ result: 'detached subagent finished after owner cancel' });
+        await background.wait(taskId);
+        await vi.waitFor(() => expect(enqueue.mock.calls.some(([r]) => r.kind === 'task_notification')).toBe(true));
+        expect(enqueue.mock.calls.find(([r]) => r.kind === 'task_notification')![0].admission).toBe('activeOrNewTurn');
+        await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+        await loop.settled();
+        expect(ctx.llmCalls).toHaveLength(2);
+        expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('detached subagent finished after owner cancel');
+      } finally {
+        completion.resolve({ result: 'cleanup' });
+        await hook.dispose();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it('IDLE: completed bg agent notification auto-launches a turn that consumes it', async () => {
       expect(loop.status().activeTurnId).toBeUndefined();
@@ -1497,10 +1554,12 @@ describe('task notification → main agent (real Agent instance)', () => {
       ctx.mockNextResponse({ type: 'text', text: 'second ack' });
       ctx.mockNextResponse({ type: 'text', text: 'third ack' });
       let taskId = '';
+      const proc = controlledProcessTask('exit race');
       const enqueue = vi.spyOn(loop, 'enqueue');
       const hook = loop.hooks.onDidFinishStep.register('test.exit-race', async (step, next) => {
         await hook.dispose();
-        taskId = background.registerTask(agentTask(Promise.resolve({ result: 'durable child report' }), 'exit race'));
+        taskId = background.registerTask(proc.task);
+        proc.resolve(0, 'durable shell report');
         await background.wait(taskId);
         await vi.waitFor(() => expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true));
         if (outcome === 'cancelled') loop.cancel();
@@ -1522,13 +1581,41 @@ describe('task notification → main agent (real Agent instance)', () => {
           });
           await loop.settled();
           expect(ctx.llmCalls).toHaveLength(2);
-          expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('durable child report');
+          expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('durable shell report');
         }
         expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);
         expect(notifiedCount(ctx)).toBe(1);
         await ctx.rpc.prompt({ input: [{ type: 'text', text: 'another prompt' }] });
         await ctx.untilTurnEnd();
         expect(notifiedCount(ctx)).toBe(1);
+      } finally {
+        proc.resolve(0);
+        await hook.dispose();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('readmits an unconsumed subagent notification after cancelled turn exit and wakes idle main', async () => {
+      ctx.mockNextResponse({ type: 'text', text: 'first ack' });
+      ctx.mockNextResponse({ type: 'text', text: 'woken ack' });
+      let taskId = '';
+      const enqueue = vi.spyOn(loop, 'enqueue');
+      const hook = loop.hooks.onDidFinishStep.register('test.subagent-exit-race', async (_step, next) => {
+        await hook.dispose();
+        taskId = background.registerTask(agentTask(Promise.resolve({ result: 'unconsumed subagent report' }), 'subagent exit race'));
+        await background.wait(taskId);
+        await vi.waitFor(() => expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true));
+        loop.cancel();
+        await next();
+      });
+      try {
+        const ended = ctx.untilTurnEnd();
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first prompt' }] });
+        await ended;
+        await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+        await loop.settled();
+        expect(ctx.llmCalls).toHaveLength(2);
+        expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('unconsumed subagent report');
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);
       } finally {
         await hook.dispose();
       }
@@ -2068,5 +2155,53 @@ describe('interrupted background subagent recovery', () => {
     await restart(options);
     await ctx.get(IAgentLoopService).settled();
     expect(ctx.llmCalls).toHaveLength(0);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('clears stale terminalNotificationSuppressed when a ghost task is re-attached via registerTask', async () => {
+    const records = await ctx.persistedWireRecords();
+    const session = ctx.get(ISessionContext);
+    const agentScope = session.scope('agents/main');
+    const persistence = new AgentTaskPersistence(join(session.sessionDir, 'agents', 'main'), agentScope,
+      ctx.get(IAtomicDocumentStore), ctx.get(IFileSystemStorageService));
+    const taskId = 'agent-resumed1';
+    await persistence.writeTask({
+      kind: 'agent', taskId, agentId: 'child-resumed',
+      description: 'resumed paused child', executorId: 'native', executorProtocol: 'native',
+      status: 'running', detached: true, ownerAgentId: 'main', startedAt: 1, endedAt: null,
+      terminalNotificationSuppressed: true,
+    });
+    await ctx.dispose();
+    ctx = createTestAgent(homeDirServices(home), taskServices());
+    await ctx.restore(records);
+    const tasks = ctx.get(IAgentTaskService) as TaskServiceTestManager;
+    await tasks.loadFromDisk();
+    expect(tasks.getTask(taskId)?.terminalNotificationSuppressed).toBe(true);
+    ctx.mockNextResponse({ type: 'text', text: 'Acknowledged resumed child.' });
+    const completion = createControlledPromise<{ result: string }>();
+    tasks.registerTask(new SubagentTask({
+      agentId: 'child-resumed', profileName: 'coder', completion,
+    }, 'resumed paused child', new AbortController()), { taskId, detached: true });
+    expect(tasks.getTask(taskId)?.terminalNotificationSuppressed).toBeUndefined();
+    completion.resolve({ result: 'fresh resumed receipt' });
+    await tasks.wait(taskId);
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await ctx.get(IAgentLoopService).settled();
+    expect(JSON.stringify(ctx.contextData())).toContain('fresh resumed receipt');
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('does not emit a duplicate task.terminated record when recordCompletedTask runs for an already-lost task', async () => {
+    const tasks = await restart();
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await ctx.get(IAgentLoopService).settled();
+    const before = (await ctx.persistedWireRecords()).filter(
+      (record) => record.type === 'task.terminated' && (record['info'] as { taskId?: string })?.taskId === 'agent-restart0',
+    );
+    expect(before).toHaveLength(1);
+    const existing = tasks.getTask('agent-restart0')!;
+    await tasks.recordCompletedTask({ ...existing, status: 'completed', endedAt: 99 }, 'late output');
+    const after = (await ctx.persistedWireRecords()).filter(
+      (record) => record.type === 'task.terminated' && (record['info'] as { taskId?: string })?.taskId === 'agent-restart0',
+    );
+    expect(after).toHaveLength(1);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 });

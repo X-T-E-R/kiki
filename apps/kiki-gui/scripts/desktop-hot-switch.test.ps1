@@ -766,7 +766,7 @@ try {
             return @{ code = 0; data = $TimeoutSec }
         }
         $server = @{ port = 1; server_id = 'fixture' }
-        foreach ($method in @('resume', 'cancelPause')) { Assert-Equal 0 (Execution $server 'session' $method) "Cold $method retained a request timeout." }
+        foreach ($method in @('resume', 'cancelPause')) { Assert-Equal 120 (Execution $server 'session' $method) "Cold $method lost its bounded request timeout." }
         foreach ($method in @('read', 'pause')) { Assert-Equal 60 (Execution $server 'session' $method) "$method lost its request timeout." }
         Assert-Equal 60 (Lifecycle $server 'update') 'The lifecycle action lost its request timeout.'
 
@@ -1076,7 +1076,7 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     $blockedExit = Join-Path $homePath 'fixture-block-exit'
     [IO.File]::WriteAllText($blockedExit, 'pending task')
     $timeoutOutput = Invoke-Script $hotSwitch @('-RuntimeRoot', $runtimeRoot, '-KikiHome', $homePath,
-        '-CandidateRoot', $oldCandidate, '-ExpectedCommit', $oldCommit, '-SettleSeconds', '1') 1
+        '-CandidateRoot', $oldCandidate, '-ExpectedCommit', $oldCommit, '-SettleSeconds', '1', '-NoInterruptAfterSettle') 1
     Assert-Contains 'Still settling' $timeoutOutput 'The pending exit did not reach its settle deadline.'
     Assert-Equal 'running' ([string](Read-FixtureExecution $recoveredServer $runningSessionId).phase) 'A failed switch left its session paused.'
     Assert-Equal 'paused' ([string](Read-FixtureExecution $recoveredServer $priorPausedSessionId).phase) 'Failed-switch cleanup resumed an earlier pause.'

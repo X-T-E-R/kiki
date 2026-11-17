@@ -19,7 +19,7 @@ const claimedSchema = z.object({
 export interface PairingHooks {
   workspaces(): Promise<readonly string[]>;
   issueBridges(input: { grantId: string; source: ConnectionIdentity; sourceLabel: string; sourceWorkspaces: readonly string[]; approvedOperations?: readonly BridgeOperation[]; requestedOperations?: readonly BridgeOperation[] }): Promise<{ grant: BridgeGrant; credential: string }[]>;
-  installBridge(connectionId: string, grant: BridgeGrant, credential: string, connectionGrantId?: string): Promise<void>;
+  installBridge(connectionId: string, grant: BridgeGrant, credential: string, connectionGrantId?: string, borrowTools?: boolean): Promise<void>;
   revokeBridge(id: string, source: ConnectionIdentity): Promise<void>;
   revokedBridges?(source: ConnectionIdentity): string[];
   retireBridges?(connectionId: string, ids: readonly string[]): Promise<void>;
@@ -167,7 +167,7 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
   if (code === undefined) throw new AdmissionError(401, 'invalid_pairing_code');
   const requestBridge = input.requestBridge ?? true;
   const sourceWorkspaces = hooks === undefined || !requestBridge ? [] : await hooks.workspaces();
-  const init: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json', 'x-kiki-pairing-rotation': '1' }, body: JSON.stringify({ code, source: manager.identity, sourceLabel: machineLabel(), requestBridge, sourceWorkspaces }), signal: AbortSignal.timeout(15000) };
+  const init: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json', 'x-kiki-pairing-rotation': '1' }, body: JSON.stringify({ code, source: manager.identity, sourceLabel: machineLabel(), requestBridge, bridgeOperations: input.bridgeOperations, sourceWorkspaces }), signal: AbortSignal.timeout(15000) };
   const original = endpoint;
   const direct = isDirectConnectionHost(new URL(endpoint).hostname);
   let response: Response;
@@ -192,7 +192,7 @@ export async function pairOutbound(manager: RemoteConnectionManager, input: Conn
     await hooks?.retireBridges?.(saved.id, claimed.revokedBridgeIds ?? []);
     if (hooks !== undefined && bridges.length > 0) {
       await hooks.enableThreads().catch(() => undefined);
-      for (const bundle of bridges) await hooks.installBridge(saved.id, bundle.grant, bundle.credential, claimed.grantId);
+      for (const bundle of bridges) await hooks.installBridge(saved.id, bundle.grant, bundle.credential, claimed.grantId, input.borrowTools);
     }
     return saved;
   } catch (error) {

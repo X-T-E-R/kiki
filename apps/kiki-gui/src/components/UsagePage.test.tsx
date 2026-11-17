@@ -52,12 +52,17 @@ const getRequestGovernance = vi.fn().mockResolvedValue({ domainId: 'this-service
 const setRequestGovernanceRules = vi.fn().mockResolvedValue({});
 const listModels = vi.fn().mockResolvedValue({ items: [] });
 const listProviders = vi.fn().mockResolvedValue({ items: [] });
+const listNamedAgentProfiles = vi.fn().mockResolvedValue({ items: [] });
+const getUsagePricing = vi.fn().mockResolvedValue({ items: [] });
+const getProviderQuotas = vi.fn().mockResolvedValue({ generated_at: '2026-01-01T00:00:00Z', sources: [] });
+
+let currentScopeId = 'test-domain';
 
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => undefined,
   // `klient` without the export route: the export view renders its own
   // "not offered by this server" state when a test opens it.
-  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', klient: {}, meta: {}, config: { url: '' }, sshLabel: null, client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, listWorkspaceCatalog, getRequestGovernance, setRequestGovernanceRules, listModels, listProviders } }),
+  useConnection: () => ({ scopeId: currentScopeId, wsStatus: 'open', klient: {}, meta: {}, config: { url: '' }, sshLabel: null, client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, listWorkspaceCatalog, getRequestGovernance, setRequestGovernanceRules, listModels, listProviders, listNamedAgentProfiles, getUsagePricing, getProviderQuotas } }),
 }));
 
 function tokens(inputOther: number, cacheRead = 0) {
@@ -244,20 +249,17 @@ async function renderPage(entry = '/usage?panel=history', options: { flush?: boo
   return { container, root, queryClient };
 }
 
-async function openLiveStrip(container: HTMLElement) {
-  const toggle = container.querySelector<HTMLButtonElement>('[data-usage-strip-toggle]')!;
-  if (toggle.getAttribute('aria-expanded') === 'false') {
-    await act(async () => { toggle.click(); });
-  }
+async function openLiveStrip(_container: HTMLElement) {
+  // Burn rate and current session are now rendered inline in the Activity & Pace KPI column.
 }
 
 async function openReliability(container: HTMLElement) {
   const toggle = container.querySelector<HTMLButtonElement>('[data-usage-reliability-toggle]')!;
   expect(toggle.getAttribute('aria-expanded')).toBe('false');
-  expect(container.querySelector('[data-usage-reliability]')).toBeNull();
+  expect(document.body.querySelector('[data-usage-reliability]')).toBeNull();
   await act(async () => { toggle.click(); });
   expect(toggle.getAttribute('aria-expanded')).toBe('true');
-  expect(container.querySelector('[data-usage-reliability]')?.id).toBe(toggle.getAttribute('aria-controls'));
+  expect(document.body.querySelector('[data-usage-reliability]')?.id).toBe(toggle.getAttribute('aria-controls'));
 }
 
 /** Calls to the main paged query (it requests the 25-row session page). */
@@ -268,6 +270,7 @@ function mainCalls() {
 }
 
 beforeEach(() => {
+  currentScopeId = 'test-domain';
   configureSpaceStorage(null);
   localStorage.clear();
   getUsage.mockReset();
@@ -280,6 +283,12 @@ beforeEach(() => {
   getRequestGovernance.mockClear();
   listModels.mockClear();
   listProviders.mockClear();
+  listNamedAgentProfiles.mockReset();
+  listNamedAgentProfiles.mockResolvedValue({ items: [] });
+  getUsagePricing.mockReset();
+  getUsagePricing.mockResolvedValue({ items: [] });
+  getProviderQuotas.mockReset();
+  getProviderQuotas.mockResolvedValue({ generated_at: '2026-01-01T00:00:00Z', sources: [] });
   getUsage.mockImplementation(async (query: Record<string, unknown>) =>
     usageResponse({ defaulted: query['range'] === undefined }),
   );
@@ -318,18 +327,11 @@ describe('UsagePage (V2)', () => {
     expect(getUsage.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
     await act(async () => { complete(usageResponse({ summaryCost: 12 })); });
     for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('12.00');
-    await openLiveStrip(container);
-    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(getUsage).toHaveBeenCalledTimes(2);
     expect(getUsage.mock.calls[1]?.[0]).toMatchObject({ range: 'today', page_size: 1 });
     expect(getUsage.mock.calls[1]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('12.00');
     expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('4.50');
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-strip-toggle]')!.click(); });
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-strip-toggle]')!.click(); });
-    for (let i = 0; i < 2; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(getUsage).toHaveBeenCalledTimes(2);
     await act(async () => { root.unmount(); });
     queryClient.clear();
   });
@@ -422,7 +424,7 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('11');
     expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('$2.00');
     expect(container.querySelector('[data-usage-strip-incomplete]')?.textContent).toBe('Counting 3/7');
-    expect(container.querySelector('[data-usage-strip-burn-rate]')?.textContent).toContain('Counting 3/7');
+    expect(container.querySelector('[data-usage-strip-burn-rate]')?.textContent).toContain('tok/h');
 
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -467,17 +469,17 @@ describe('UsagePage (V2)', () => {
       const { container } = await renderPage(`/usage?panel=history&range=${range}`);
       expect(container.querySelector('[data-usage-scan-pending]')).not.toBeNull();
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
-      expect(getUsage).toHaveBeenCalledTimes(2);
-      expect(getUsage.mock.calls[1]?.[0]).toEqual(getUsage.mock.calls[0]?.[0]);
+      expect(mainCalls()).toHaveLength(2);
+      expect(mainCalls()[1]?.[0]).toEqual(mainCalls()[0]?.[0]);
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
       expect(signal?.aborted).toBe(false);
-      expect(getUsage).toHaveBeenCalledTimes(2);
+      expect(mainCalls()).toHaveLength(2);
       await act(async () => { complete(usageResponse({ summaryCost: 8.5 })); });
       for (let index = 0; index < 5; index++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       expect(container.querySelector('[data-usage-scan-pending]')).toBeNull();
       expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('8.50');
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
-      expect(getUsage).toHaveBeenCalledTimes(2);
+      expect(mainCalls()).toHaveLength(2);
     },
   );
 
@@ -485,7 +487,7 @@ describe('UsagePage (V2)', () => {
     getUsage.mockResolvedValue(usageResponse({ incompleteReason: 'session_cap' }));
     await renderPage('/usage?panel=history&range=last_7_days');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
-    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(mainCalls()).toHaveLength(1);
   });
 
   it('refreshes the current dashboard, strip and session automatically on settled usage', async () => {
@@ -802,17 +804,16 @@ describe('UsagePage (V2)', () => {
     });
     expect(container.querySelector('[data-usage-all-history]')).toBeNull();
     await openReliability(container);
-    expect(container.textContent).toContain('Deleted sessions are not included');
+    expect(document.body.querySelector('[data-usage-reliability]')?.textContent).toContain('Deleted sessions are not included');
   });
 
-  it('keeps explicit all-history URL semantics', async () => {
+  it('keeps explicit all-history URL semantics without an all-history defensive banner', async () => {
     const { container } = await renderPage('/usage?range=all');
     const main = mainCalls();
     expect(main[0]?.[0]).toMatchObject({ granularity: 'five_hour', dimension: 'model' });
     expect((main[0]?.[0] as Record<string, unknown>)['range']).toBeUndefined();
-    expect(container.querySelector('[data-usage-all-history]')?.textContent).toContain(
-      'All history',
-    );
+    expect(container.querySelector('[data-usage-all-history]')).toBeNull();
+    expect(container.textContent).not.toContain('no time filter applied');
   });
 
   it.each([
@@ -929,9 +930,9 @@ describe('UsagePage (V2)', () => {
   });
 
   it.each([
-    ['en', 'About these totals', 'Rescan all'],
-    ['zh', '统计说明', '全量重扫'],
-  ])('keeps the reliability status as a compact disclosure in %s', async (locale, label, action) => {
+    ['en', 'Partial', 'Rescan all'],
+    ['zh', '部分统计', '全量重扫'],
+  ])('keeps the reliability status as a compact icon button and popover in %s', async (locale, label, action) => {
     localStorage.setItem('kiki.locale', locale);
     getUsage.mockImplementation(async () => usageResponse({
       costUnknown: true,
@@ -943,21 +944,21 @@ describe('UsagePage (V2)', () => {
     }));
     const { container, root } = await renderPage();
     const toggle = container.querySelector<HTMLButtonElement>('[data-usage-reliability-toggle]')!;
-    expect(toggle.textContent).toBe(label);
-    expect(container.textContent?.split(label).length).toBe(2);
+    expect(toggle.textContent).toBe('');
+    expect(toggle.getAttribute('aria-label')).toContain(label);
     expect(container.querySelector('[data-usage-rescan-start]')?.textContent).toBe(action);
     expect(container.textContent).not.toContain('example-model-a');
     expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
     expect(container.querySelector('[data-usage-accounting-missing]')).toBeNull();
     expect(container.querySelector('[data-usage-accounting-notices]')).toBeNull();
     await openReliability(container);
-    expect(container.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('example-model-a');
-    expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
-    expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
-    expect(container.querySelector('[data-usage-reliability] [data-usage-accounting-known-subtotal]')).toBeNull();
+    expect(document.body.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('example-model-a');
+    expect(document.body.querySelector('[data-usage-incomplete]')).toBeNull();
+    expect(document.body.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
+    expect(document.body.querySelector('[data-usage-reliability] [data-usage-accounting-known-subtotal]')).toBeNull();
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(container.textContent).not.toContain('example-model-a');
+    expect(document.body.querySelector('[data-usage-reliability]')).toBeNull();
     expect(container.querySelector('[data-usage-accounting-notices]')).toBeNull();
     await act(async () => { root.unmount(); });
   });
@@ -1002,7 +1003,7 @@ describe('UsagePage (V2)', () => {
         expect(sessionCost).not.toContain('—');
         expect(container.querySelector('[data-usage-trend] [data-bucket]')?.getAttribute('title')).toContain('—');
         await openReliability(container);
-        expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
+        expect(document.body.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
       } else {
         expect(summaryTokens).not.toContain('—');
         expect(summaryTokens).toContain('0');
@@ -1010,7 +1011,7 @@ describe('UsagePage (V2)', () => {
         expect(stripTokens).not.toContain('—');
         expect(sessionTokens).not.toContain('—');
         expect(sessionCost).not.toContain('—');
-        expect(container.querySelector('[data-usage-accounting-missing]')).toBeNull();
+        expect(document.body.querySelector('[data-usage-accounting-missing]')).toBeNull();
       }
     },
   );
@@ -1047,7 +1048,7 @@ describe('UsagePage (V2)', () => {
     const { container } = await renderPage();
     expect(container.querySelector('[data-usage-accounting-missing]')).toBeNull();
     await openReliability(container);
-    expect(container.querySelector('[data-usage-accounting-legacy-zero]')).not.toBeNull();
+    expect(document.body.querySelector('[data-usage-accounting-legacy-zero]')).not.toBeNull();
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).toContain('—');
   });
 
@@ -1066,7 +1067,7 @@ describe('UsagePage (V2)', () => {
     );
     const { container } = await renderPage();
     await openReliability(container);
-    expect(container.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
+    expect(document.body.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
     expect(container.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).not.toContain('—');
@@ -1076,33 +1077,33 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-breakdown-cost="mixed"]')?.textContent).not.toContain('—');
   });
 
-  it('shows positive token and cost subtotals when pricing is unknown', async () => {
+  it('shows positive token and cost subtotals with an unpriced quick-fix trigger when pricing is unknown', async () => {
     getUsage.mockImplementation(async () =>
       usageResponse({ defaulted: true, costUnknown: true, unknownPriceModels: ['mystery-1'] }),
     );
     const { container } = await renderPage();
-    expect(container.querySelector('[data-usage-reliability-toggle]')?.textContent).toContain('About these totals');
+    expect(container.querySelector('[data-usage-reliability-toggle]')?.getAttribute('aria-label')).toContain('Partial');
     expect(container.textContent).not.toContain('mystery-1');
     expect(container.textContent).not.toContain('partially unknown');
-    // Cost and token provenance are judged separately, so the priced part is
-    // still labelled and shown rather than blanked by a missing token record.
-    expect(container.textContent).toContain('Recorded estimated cost');
+    expect(container.textContent).not.toContain('Some records have no price');
+    expect(container.textContent).toContain('Estimated cost');
+    expect(container.querySelector('[data-usage-unpriced-trigger]')?.textContent).toContain('1 unpriced model');
     await openReliability(container);
-    expect(container.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('mystery-1');
+    expect(document.body.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('mystery-1');
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).not.toContain('—');
   });
 
-  it('keeps incomplete accounting as a compact disclosure state', async () => {
+  it('keeps incomplete accounting as a compact icon status with popover', async () => {
     getUsage.mockImplementation(async () =>
       usageResponse({ defaulted: true, incompleteReason: 'session_cap', incompleteSessions: 4 }),
     );
     const { container } = await renderPage();
     const toggle = container.querySelector<HTMLButtonElement>('[data-usage-reliability-toggle]')!;
     expect(toggle.querySelector('[data-icon="partial"]')).not.toBeNull();
-    expect(toggle.textContent).toContain('About these totals');
+    expect(toggle.textContent).toBe('');
     await openReliability(container);
-    expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
+    expect(document.body.querySelector('[data-usage-incomplete]')).toBeNull();
   });
 
   it('does not present an unfinished zero scan as empty usage and resumes counting on demand', async () => {
@@ -1261,8 +1262,8 @@ describe('UsagePage (V2)', () => {
     const query = priorCall![0] as Record<string, unknown>;
     const DAY = 86_400_000;
     // The prior window is the same seven-day span moved back by its own length,
-    // asked for as an explicit range rather than a re-read of a preset.
-    expect(query['range']).toBe('last_7_days');
+    // asked for as an explicit custom window rather than a preset.
+    expect(query['range']).toBe('custom');
     expect(Number(query['start_at'])).toBeGreaterThan(0);
     const priorLength = Number(query['end_at']) - Number(query['start_at']);
     expect(priorLength).toBeLessThan(7 * DAY);
@@ -1291,7 +1292,7 @@ describe('UsagePage (V2)', () => {
     await act(async () => { container.querySelector<HTMLElement>('[data-usage-compare]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    const points = container.querySelector('[data-usage-compare="delta"]');
+    const points = container.querySelector('[data-usage-kpi="cache"] [data-usage-compare="delta"]');
     expect(points).not.toBeNull();
     expect(points!.textContent).toBe('+10.0 pp');
     expect(points!.textContent).not.toContain('1000');
@@ -1315,11 +1316,13 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('refuses a comparison for unbounded all-history', async () => {
+  it('refuses a comparison for unbounded all-history via disabled tooltip only', async () => {
     const { container, root } = await renderPage('/usage?range=all');
     const toggle = container.querySelector<HTMLElement>('[data-usage-compare]')!;
+    const wrap = container.querySelector<HTMLElement>('[data-usage-compare-wrap]')!;
     expect(toggle.getAttribute('aria-disabled')).toBe('true');
-    expect(container.textContent).toContain('Comparison needs a bounded range');
+    expect(wrap.getAttribute('title')).toContain('Comparison needs a bounded range');
+    expect(container.textContent).not.toContain('Comparison needs a bounded range');
     await act(async () => { root.unmount(); });
   });
 
@@ -1378,6 +1381,7 @@ describe('UsagePage (V2)', () => {
     const compareCalls = getUsage.mock.calls.filter(([q]) => (q as Record<string, unknown>)['start_at'] !== undefined);
     expect(compareCalls.length).toBeGreaterThan(0);
     const wholeRangeCompare = compareCalls[0]?.[0] as Record<string, unknown>;
+    expect(wholeRangeCompare['range']).toBe('custom');
     expect(wholeRangeCompare['start_at']).toBe(serverStart - (serverEnd - serverStart));
     expect(wholeRangeCompare['end_at']).toBe(serverStart);
 
@@ -1394,6 +1398,7 @@ describe('UsagePage (V2)', () => {
     });
     expect(bucketCompareCalls.length).toBeGreaterThan(0);
     const bucketCompare = bucketCompareCalls[0]?.[0] as Record<string, unknown>;
+    expect(bucketCompare['range']).toBe('custom');
     expect(bucketCompare['start_at']).toBe(bucketStart - (serverEnd - serverStart));
     expect(bucketCompare['end_at']).toBe(bucketEnd - (serverEnd - serverStart));
 
@@ -1434,11 +1439,11 @@ describe('UsagePage (V2)', () => {
     const unknownRow = container.querySelector<HTMLElement>('[data-usage-breakdown-row="unknown"]')!;
     expect(unknownRow).not.toBeNull();
     await act(async () => { unknownRow.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click(); });
-    // The unknown row keeps its amount and explains why it has no filter.
+    // The unknown row keeps its amount without defensive prose and exposes no exact filter.
     expect(container.querySelector('[data-usage-breakdown-cost="unknown"]')?.textContent).not.toContain('—');
-    const detailsId = unknownRow.querySelector('button[aria-expanded]')!.getAttribute('aria-controls')!;
-    expect(container.querySelector(`#${detailsId}`)?.textContent).toContain('no exact filter');
     expect(unknownRow.querySelector('[data-usage-source-filter]')).toBeNull();
+    expect(unknownRow.querySelector('[data-usage-row-filter]')).toBeNull();
+    expect(container.textContent).not.toContain('no exact filter');
     await act(async () => { root.unmount(); });
   });
 
@@ -1504,16 +1509,25 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('keeps the page filters when the trace is opened without a row', async () => {
+  it('keeps the page filters when the trace is opened without a row for a selected bucket, and switches whole-range View sessions directly to the Sessions tab', async () => {
     const { container, root } = await renderPage('/usage?range=last_7_days&provider=kimi&model=k2-thinking');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // Whole-range View sessions switches to view=sessions without opening a duplicate trace sheet.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
+    expect(container.querySelector('[data-usage-sessions]')).not.toBeNull();
+    expect(document.body.querySelector('[data-usage-session-panel]')).toBeNull();
+
+    // Back on Sources with a selected bucket, View sessions in this period opens the SidePanel trace with base filters preserved.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="sources"]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!.click(); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const trace = getUsage.mock.calls.at(-1)![0] as Record<string, unknown>;
-    // No row means no narrowing: the trace is the page's own read.
     expect(trace['provider']).toBe('kimi');
     expect(trace['model']).toBe('k2-thinking');
     expect(trace['range']).toBe('custom');
+    expect(container.querySelector('[data-usage-sessions]')).toBeNull();
+    expect(document.body.querySelector('[data-usage-session-panel]')).not.toBeNull();
     await act(async () => { root.unmount(); });
   });
 
@@ -1542,11 +1556,15 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('opens the real record from the trace and comes back to the same period', async () => {
+  it('opens the real record from a source row trace SidePanel without leaving Sources, and closes back to Sources', async () => {
     const { container, root } = await renderPage('/usage?range=last_7_days');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-row-sessions]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // Main page stays on Sources rather than stacking SessionsTab above UsageSessionPanel.
+    expect(container.querySelector('[data-usage-sources]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-sessions]')).toBeNull();
+    expect(container.querySelector('[data-location-probe]')?.textContent).not.toContain('view=sessions');
     const sheet = [...document.body.querySelectorAll<HTMLElement>('[data-usage-session-panel]')].at(-1)!;
     const locate = sheet.querySelector<HTMLButtonElement>('[data-usage-trace-locate="s_1"]')!;
     await act(async () => { locate.click(); });
@@ -1565,7 +1583,7 @@ describe('UsagePage (V2)', () => {
     );
     const { container, root } = await renderPage('/usage?range=last_7_days');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-row-sessions]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const sheet = [...document.body.querySelectorAll<HTMLElement>('[data-usage-session-panel]')].at(-1)!;
     // The attributed session offers real turn locators.
@@ -1573,13 +1591,13 @@ describe('UsagePage (V2)', () => {
     await act(async () => { attributed.click(); });
     expect(attributed.closest('li')!.querySelector('[data-usage-trace-turns]')).not.toBeNull();
 
-    // The one without attribution says so, instead of a locator that would
-    // land nowhere.
+    // The one without attribution disables the locator cleanly without defensive prose.
     const unattributed = sheet.querySelector<HTMLButtonElement>('[data-usage-trace-locate="s_no_turns"]')!;
-    await act(async () => { unattributed.click(); });
+    expect(unattributed.disabled).toBe(true);
+    expect(unattributed.title).toContain('No turn attribution');
     const row = unattributed.closest('li')!;
     expect(row.querySelector('[data-usage-trace-turns]')).toBeNull();
-    expect(row.querySelector('[data-usage-trace-no-turns]')?.textContent).toContain('Open the session');
+    expect(row.querySelector('[data-usage-trace-no-turns]')).toBeNull();
     await act(async () => { root.unmount(); });
   });
 
@@ -1600,29 +1618,45 @@ describe('UsagePage (V2)', () => {
   it('still reuses the today summary for a grouped but unscoped read', async () => {
     const { container, root } = await renderPage('/usage?group_by=profile&granularity=day');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    // Grouping and granularity do not narrow records, so one request serves both
-    // and opening the strip issues none.
+    // Grouping and granularity do not narrow records, so no separate today-strip
+    // request is issued (only the model-attribution check when grouped by profile).
     await openLiveStrip(container);
-    expect(getUsage.mock.calls.filter(([query]) => (query as Record<string, unknown>)['page_size'] === 1)).toHaveLength(0);
+    expect(
+      getUsage.mock.calls.filter(
+        ([query]) =>
+          (query as Record<string, unknown>)['page_size'] === 1 &&
+          (query as Record<string, unknown>)['dimension'] !== 'model',
+      ),
+    ).toHaveLength(0);
     expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('3.25');
     await act(async () => { root.unmount(); });
   });
 
-  it('opens the session trace on request and scopes it to the selected period', async () => {
+  it('opens the session trace SidePanel on row request, scopes it to the range, and closes cleanly on Escape back to Sources', async () => {
     const { container, root } = await renderPage('/usage?range=last_7_days');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const panelsBefore = document.body.querySelectorAll('[data-usage-session-panel]').length;
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-row-sessions]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    // The trace opens as a side sheet, which portals outside the page tree.
+    // The trace opens as a side sheet, which portals outside the page tree while Sources stays active.
     expect(document.body.querySelectorAll('[data-usage-session-panel]')).toHaveLength(panelsBefore + 1);
+    expect(container.querySelector('[data-usage-sources]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-sessions]')).toBeNull();
     const traceCall = getUsage.mock.calls.at(-1)![0] as Record<string, unknown>;
     expect(getUsage.mock.calls.at(-1)?.[1]).toEqual({ signal: expect.any(AbortSignal) });
-    // An explicit [A,B) custom window, so the sessions behind the number are
-    // the ones that produced it rather than a whole preset re-read.
     expect(traceCall['range']).toBe('custom');
     expect(Number(traceCall['start_at'])).toBeGreaterThan(0);
-    expect(Number(traceCall['end_at']) - Number(traceCall['start_at'])).toBe(7 * 86_400_000);
+    expect(Number(traceCall['end_at']) - Number(traceCall['start_at'])).toBe(
+      new Date(Number(traceCall['end_at'])).getTime() - new Date(Number(traceCall['start_at'])).getTime(),
+    );
+
+    const sheet = [...document.body.querySelectorAll<HTMLElement>('[data-usage-session-panel]')].at(-1)!;
+    await act(async () => {
+      sheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.body.querySelectorAll('[data-usage-session-panel]')).toHaveLength(panelsBefore);
+    expect(container.querySelector('[data-usage-sources]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-sessions]')).toBeNull();
     await act(async () => { root.unmount(); });
   });
 
@@ -1630,7 +1664,7 @@ describe('UsagePage (V2)', () => {
     getUsage.mockImplementation(async () => usageResponse({ costUnknown: true, tokensUnknown: true, summaryCost: 2, unknownPriceModels: ['example-model'] }));
     const { container, root } = await renderPage('/usage?range=last_7_days');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-row-sessions]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const total = document.body.querySelector('[data-usage-trace-total]');
     expect(total?.textContent).toContain('$2.00');
@@ -1674,20 +1708,12 @@ describe('UsagePage (V2)', () => {
     expect(JSON.parse(stored!)).toMatchObject({ range: 'this_month' });
   });
 
-  it('switches detail tabs and offers the 5h granularity from the rhythm tab', async () => {
-    const { container } = await renderPage('/usage?granularity=day');
-    const rhythm = container.querySelector<HTMLButtonElement>('[data-usage-tab="fiveHour"]');
-    expect(rhythm).not.toBeNull();
-    await act(async () => { rhythm!.click(); });
-    expect(container.querySelector('[data-usage-fivehour-hint]')).not.toBeNull();
-    const switcher = container.querySelector<HTMLButtonElement>(
-      '[data-usage-fivehour-hint] button',
-    );
-    await act(async () => { switcher!.click(); });
-    for (let i = 0; i < 5; i += 1) {
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    }
-    expect(mainCalls().at(-1)?.[0]).toMatchObject({ granularity: 'five_hour' });
+  it('consolidates detail tabs to Sources and Sessions and degrades legacy ?view=five_hour gracefully', async () => {
+    const { container } = await renderPage('/usage?view=five_hour&granularity=day');
+    const tabs = [...container.querySelectorAll<HTMLElement>('[data-usage-tab]')].map((el) => el.dataset['usageTab']);
+    expect(tabs).toEqual(['sources', 'sessions']);
+    expect(container.querySelector('[data-usage-fivehour-hint]')).toBeNull();
+    expect(container.querySelector('[data-usage-sources]')).not.toBeNull();
   });
 
   it.each(['agent', 'session'])(
@@ -1728,10 +1754,6 @@ describe('UsagePage (V2)', () => {
     expect(probe()).toContain('view=breakdown');
     expect(probe()).toContain('dimension=agent');
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-usage-tab="fiveHour"]')!.click();
-    });
-    expect(probe()).toContain('view=five_hour');
-    await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-usage-tab="sessions"]')!.click();
     });
     expect(probe()).toContain('view=sessions');
@@ -1753,48 +1775,24 @@ describe('UsagePage (V2)', () => {
     expect(chapter.querySelector('[data-usage-source-scope]')).toBeNull();
   });
 
-  it('renders the 5h rhythm tab with per-window session and turn detail', async () => {
-    const { container } = await renderPage('/usage?view=five_hour&granularity=five_hour');
-    expect(
-      container.querySelector('[data-usage-tab="fiveHour"]')?.getAttribute('aria-selected'),
-    ).toBe('true');
-    const view = container.querySelector('[data-usage-fivehour]');
-    expect(view).not.toBeNull();
-    expect(view!.querySelector('[data-usage-fivehour-window]')).not.toBeNull();
-    // The seeded bucket drilldown renders the session and its turn locators.
-    expect(view!.textContent).toContain('s_1');
-    expect(view!.querySelector('[data-usage-turn="1"]')).not.toBeNull();
-    expect(view!.querySelector('[data-usage-turn="2"]')).not.toBeNull();
-    expect(view!.textContent).toContain('2 turns');
-  });
-
-  it('turn locators navigate to the session at the turn', async () => {
-    const { container } = await renderPage('/usage?view=five_hour&granularity=five_hour');
-    const probe = () => container.querySelector('[data-location-probe]')?.textContent ?? '';
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-usage-turn="2"]')!.click();
-    });
-    expect(probe()).toBe('/s/s_1?turn=2');
-  });
-
   it('scopes the source table to a selected bar and leaves the headline total alone', async () => {
     const { container } = await renderPage();
     const headline = container.querySelector('[data-usage-summary-cost]')?.textContent;
-    expect(container.querySelector('[data-usage-source-scope]')?.textContent).toContain('the whole range');
+    expect(container.querySelector('[data-usage-source-scope]')).toBeNull();
     expect(container.querySelector('[data-usage-drilldown]')).toBeNull();
     const tracesBefore = document.body.querySelectorAll('[data-usage-session-panel]').length;
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!.click();
     });
-    // The period title and its own clear action appear; the cost headline and
+    // The period pill and its own clear action appear; the cost headline and
     // the bar selection both survive.
-    expect(container.querySelector('[data-usage-source-scope]')?.textContent).toContain('Selected period');
     expect(container.querySelector('[data-usage-clear-bucket]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-source-scope]')).not.toBeNull();
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toBe(headline);
     // Selecting a bar never opens a session trace on its own.
     expect(document.body.querySelectorAll('[data-usage-session-panel]')).toHaveLength(tracesBefore);
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-clear-bucket]')!.click(); });
-    expect(container.querySelector('[data-usage-source-scope]')?.textContent).toContain('the whole range');
+    expect(container.querySelector('[data-usage-source-scope]')).toBeNull();
   });
 
   it('keeps the bar selection in the URL and in the visit snapshot', async () => {
@@ -1853,12 +1851,10 @@ describe('UsagePage (V2)', () => {
 });
 
 describe('UsagePage manual full rescan', () => {
-  it('places view tabs under the page header, KPIs before secondary metadata, granularity in TrendChart, and rescan in the filter panel', async () => {
+  it('places view tabs under the page header, granularity in TrendChart, and rescan + reliability in the 1-row filter bar', async () => {
     const { container, root } = await renderPage();
     const header = container.querySelector('[data-page-header-inner="dashboard"]')!;
     expect(header).not.toBeNull();
-    // The views are an underline tab strip in the content below the header;
-    // the header itself keeps only the ⋯ with prices and export.
     expect(header.querySelector('[data-usage-panel]')).toBeNull();
     expect(header.querySelector('[data-usage-more]')).not.toBeNull();
     const nav = container.querySelector('[data-usage-nav]')!;
@@ -1866,34 +1862,18 @@ describe('UsagePage manual full rescan', () => {
     expect(header.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(nav.querySelector('[data-usage-panel="history"]')).not.toBeNull();
 
-    const kpiCost = container.querySelector('[data-usage-summary-cost]')!;
-    const secondaryMeta = container.querySelector('[data-usage-secondary-meta]')!;
-    expect(kpiCost.compareDocumentPosition(secondaryMeta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(secondaryMeta.querySelector('[data-usage-strip]')).not.toBeNull();
-    expect(secondaryMeta.querySelector('[data-usage-reliability-toggle]')).not.toBeNull();
-
+    expect(container.querySelector('[data-usage-filters] [data-usage-reliability-toggle]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-filters] [data-usage-rescan]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-summary-activity]')).not.toBeNull();
     expect(container.querySelector('[data-usage-filters] [data-axis="granularity"]')).toBeNull();
-    // Granularity stays with the chart, demoted to a compact select whose
-    // wrapper carries the current value.
     expect(container.querySelector('[data-usage-trend-card] [data-axis="granularity"]')).toBeNull();
     expect(container.querySelector('[data-usage-trend-card] [data-axis-select]')).not.toBeNull();
-
-    const panel = container.querySelector<HTMLElement>('[data-usage-filters-panel]')!;
-    expect(panel.className).toContain('hidden');
-    expect(panel.querySelector('[data-usage-rescan] [role="switch"]')).not.toBeNull();
-    expect(panel.querySelector('[data-usage-rescan-start]')).not.toBeNull();
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-usage-filters-toggle]')!.click();
-    });
-    expect(panel.className).not.toContain('hidden');
     await act(async () => { root.unmount(); });
   });
 
-  it('places the action beside archived sessions without a standalone hint', async () => {
+  it('keeps the rescan action in the utility slot outside filter chips without a standalone hint', async () => {
     const { container, root } = await renderPage();
     const control = container.querySelector('[data-usage-filters] [data-usage-rescan]')!;
-    expect(control.querySelector('[role="switch"]')).not.toBeNull();
     expect(control.querySelector('[data-usage-rescan-start]')?.textContent).toBe('Rescan all');
     expect(container.querySelectorAll('[data-usage-rescan-start]')).toHaveLength(1);
     expect(container.textContent).not.toContain('this may take a while');
@@ -1975,6 +1955,744 @@ describe('UsagePage manual full rescan', () => {
     const { container, root } = await renderPage('/usage?panel=quota');
     expect(container.querySelector('[data-provider-quota-panel]')).not.toBeNull();
     expect(container.querySelector('[data-usage-nav-item="quota"]')?.getAttribute('aria-current')).toBe('page');
+    await act(async () => { root.unmount(); });
+  });
+});
+
+describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defensive prose', () => {
+  it('supports unified searchable + Filter popover, multi-select chips, URL sync and 1-click Clear', async () => {
+    listModels.mockResolvedValue({
+      items: [
+        { id: 'acme/model-alpha', provider_id: 'acme', display_name: 'Model Alpha' },
+        { id: 'k2-thinking', provider_id: 'kimi', display_name: 'Kimi K2 Thinking' },
+      ],
+    });
+    listProviders.mockResolvedValue({ items: [{ id: 'acme' }, { id: 'kimi' }] });
+    const { container, root } = await renderPage('/usage?panel=history');
+
+    // Open + Filter composer
+    const addBtn = container.querySelector<HTMLButtonElement>('[data-usage-add-filter]')!;
+    expect(addBtn).not.toBeNull();
+    await act(async () => { addBtn.click(); });
+    const popover = document.body.querySelector('[data-usage-filter-popover]')!;
+    expect(popover).not.toBeNull();
+
+    // Instant unified search across Model / Provider / Profile / Workspace without firing API calls
+    const callsBeforeSearch = getUsage.mock.calls.length;
+    const search = popover.querySelector<HTMLInputElement>('[data-usage-filter-search]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(search, 'alpha');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(getUsage.mock.calls.length).toBe(callsBeforeSearch);
+
+    const modelOption = popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:acme/model-alpha"]')!;
+    expect(modelOption).not.toBeNull();
+    await act(async () => { modelOption.click(); });
+
+    // Clear search and select a second model + an observed profile
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(search, '');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const k2Option = popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:k2-thinking"]')!;
+    await act(async () => { k2Option.click(); });
+    const profileOption = popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="profile:explore"]')!;
+    await act(async () => { profileOption.click(); });
+
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // Repeated arrays sent to URL & API
+    const probeText = container.querySelector('[data-location-probe]')?.textContent ?? '';
+    expect(probeText).toContain('model=acme%2Fmodel-alpha');
+    expect(probeText).toContain('model=k2-thinking');
+    expect(probeText).toContain('profile=explore');
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({
+      model: ['acme/model-alpha', 'k2-thinking'],
+      profile: ['explore'],
+    });
+
+    // 3-part interactive chips rendered
+    const modelChip = container.querySelector('[data-usage-filter-chip="model"]')!;
+    expect(modelChip.textContent).toContain('Model Alpha +1');
+    expect(container.querySelector('[data-usage-filter-chip="profile"]')?.textContent).toContain('explore');
+
+    // 1-click Clear resets all scope filters while preserving range & groupBy
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-clear-filters]')!.click();
+    });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-usage-filter-chips]')).toBeNull();
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ range: 'today', dimension: 'model' });
+    expect((mainCalls().at(-1)?.[0] as Record<string, unknown>)['model']).toBeUndefined();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('toggles multi-value filters directly from Sources quick-filter buttons and opens PricingPanel from unpriced badge', async () => {
+    const { container, root } = await renderPage('/usage?panel=history&range=last_7_days');
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-row-filter="k2-thinking"]')!.click();
+    });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ model: 'k2-thinking' });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-row-filter="claude-sonnet-4.5"]')!.click();
+    });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ model: ['k2-thinking', 'claude-sonnet-4.5'] });
+
+    // Toggling k2 off leaves only sonnet
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-row-filter="k2-thinking"]')!.click();
+    });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ model: 'claude-sonnet-4.5' });
+
+    // Unpriced amber badge opens PricingPanel directly
+    getUsage.mockResolvedValue(usageResponse({ costUnknown: true, unknownPriceModels: ['mystery-9'] }));
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-clear-filters]')!.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const unpricedTrigger = container.querySelector<HTMLButtonElement>('[data-usage-unpriced-trigger]')!;
+    expect(unpricedTrigger).not.toBeNull();
+    await act(async () => { unpricedTrigger.click(); });
+    expect(document.body.querySelector('[data-usage-pricing-panel]')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('renders honest turns/requests in Activity & Pace and omits all resident defensive prose in EN and ZH', async () => {
+    const day = new Date(2026, 8, 1).getTime();
+    getUsage.mockResolvedValue(usageResponse({
+      costUnknown: true,
+      unknownPriceModels: ['mystery-9'],
+      trendBuckets: [{
+        key: String(day),
+        start_at: day,
+        end_at: day + 24 * 3600_000,
+        turn_count: 14,
+        request_count: 23,
+        groups: [{
+          key: 'k2-thinking',
+          tokens: tokens(5000, 2500),
+          cost_usd_estimated: 1.4,
+          cost_unknown: false,
+          provider: 'kimi',
+          model_alias: 'k2-thinking',
+          agent_id: null,
+          parent_agent_id: null,
+          profile_name: 'general',
+        }],
+        drilldown: { sessions: [], sessions_truncated: false },
+      }],
+    }));
+
+    for (const locale of ['en', 'zh'] as const) {
+      localStorage.setItem('kiki.locale', locale);
+      const { container, root } = await renderPage('/usage?panel=history&range=all');
+      const activity = container.querySelector('[data-usage-summary-activity]')?.textContent ?? '';
+      expect(activity).toContain('14');
+      expect(activity).toContain('23');
+      const text = container.textContent ?? '';
+      for (const banned of [
+        'Comparison needs a bounded range',
+        'Some records have no price',
+        '部分记录缺价',
+        'Highest cost first',
+        '按费用从高到低排列',
+        'About these totals',
+        '统计说明',
+        'Select a period to read its sources',
+        '点一根柱子',
+        'no time filter applied',
+        '未套用时间过滤',
+        'Cache hit rate for the prior period',
+        '前期的缓存命中率',
+      ]) {
+        expect(text).not.toContain(banned);
+      }
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  it('shows cache savings only when USD base and cache-read rates resolve for all cache-read models', async () => {
+    getUsagePricing.mockResolvedValue({
+      items: [
+        {
+          model: 'k2-thinking',
+          source: 'catalog',
+          prices: {
+            currency: 'USD',
+            input_cost_per_token: 0.000003,
+            output_cost_per_token: 0.000015,
+            cache_read_input_token_cost: 0.0000003,
+          },
+        },
+        {
+          model: 'claude-sonnet-4.5',
+          source: 'catalog',
+          prices: {
+            currency: 'USD',
+            input_cost_per_token: 0.000003,
+            output_cost_per_token: 0.000015,
+            cache_read_input_token_cost: 0.0000003,
+          },
+        },
+      ],
+    });
+    const { container, root } = await renderPage('/usage?panel=history&range=last_7_days');
+    expect(container.querySelector('[data-usage-cache-savings]')?.textContent).toContain('$0.013');
+    await act(async () => { root.unmount(); });
+
+    // Partial pricing (missing one model) hides savings rather than fabricating a number
+    getUsagePricing.mockResolvedValue({
+      items: [
+        {
+          model: 'k2-thinking',
+          source: 'catalog',
+          prices: {
+            currency: 'USD',
+            input_cost_per_token: 0.000003,
+            output_cost_per_token: 0.000015,
+            cache_read_input_token_cost: 0.0000003,
+          },
+        },
+      ],
+    });
+    const second = await renderPage('/usage?panel=history&range=last_7_days');
+    expect(second.container.querySelector('[data-usage-cache-savings]')).toBeNull();
+    await act(async () => { second.root.unmount(); });
+  });
+
+  it('renders QuotaHeadroomStrip sorted by lowest remaining and navigates to quota panel on click', async () => {
+    getProviderQuotas.mockResolvedValue({
+      schema_version: '1',
+      generated_at: '2026-01-01T00:00:00Z',
+      sources: [
+        {
+          id: 'src_high',
+          label: 'HighQuota',
+          kind: 'provider',
+          enabled: true,
+          supported: true,
+          status: 'ready',
+          refreshing: false,
+          refresh_mode: 'explicit',
+          auth: { action: 'none' },
+          source: { label: 'API' },
+          meters: [{ id: 'm1', label: 'Daily', unit: 'percent', used: 20, limit: 100, remaining: 80, scope: 'account', window: { duration_seconds: 86400 } }],
+        },
+        {
+          id: 'src_low',
+          label: 'LowQuota',
+          kind: 'provider',
+          enabled: true,
+          supported: true,
+          status: 'ready',
+          refreshing: false,
+          refresh_mode: 'explicit',
+          auth: { action: 'none' },
+          source: { label: 'API' },
+          meters: [{ id: 'm2', label: '5h', unit: 'percent', used: 95, limit: 100, remaining: 5, scope: 'account', window: { duration_seconds: 18000 } }],
+        },
+      ],
+    });
+    const { container, root } = await renderPage('/usage?panel=history');
+    const strip = container.querySelector('[data-usage-quota-strip]');
+    expect(strip).not.toBeNull();
+    const pills = [...strip!.querySelectorAll<HTMLButtonElement>('[data-usage-quota-pill]')];
+    expect(pills.map((el) => el.getAttribute('data-usage-quota-pill'))).toEqual(['src_low:m2', 'src_high:m1']);
+    await act(async () => { pills[0]!.click(); });
+    expect(container.querySelector('[data-location-probe]')?.textContent).toContain('panel=quota');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('displays session primary_model and profile_names and filters Sessions tab locally', async () => {
+    const base = usageResponse({
+      sessions: [
+        { id: 's_alpha', title: 'Design pass', cost: 2.1 },
+        { id: 's_beta', title: 'Fix query', cost: 0.9 },
+      ],
+    });
+    base.sessions.items[0]!.primary_model = 'claude-opus-4-6';
+    base.sessions.items[0]!.profile_names = ['frontend'];
+    base.sessions.items[1]!.primary_model = 'k2-thinking';
+    base.sessions.items[1]!.profile_names = ['explore'];
+    getUsage.mockResolvedValue(base);
+
+    const { container, root } = await renderPage('/usage?panel=history&view=sessions');
+    const alphaRow = container.querySelector('[data-usage-session="s_alpha"]')!;
+    expect(alphaRow.textContent).toContain('claude-opus-4-6');
+    expect(alphaRow.textContent).toContain('frontend');
+
+    const search = container.querySelector<HTMLInputElement>('[data-usage-sessions-search]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(search, 'explore');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(container.querySelector('[data-usage-session="s_alpha"]')).toBeNull();
+    expect(container.querySelector('[data-usage-session="s_beta"]')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('renders dash + KnownSubtotalMarker instead of $0.00 * on unpriced zero-cost source and session rows', async () => {
+    const base = usageResponse({
+      costUnknown: true,
+      unknownPriceModels: ['mystery-9'],
+      sessions: [
+        { id: 's_unpriced', title: 'Unpriced run', cost: 0 },
+        { id: 's_partial', title: 'Partial run', cost: 1.5 },
+      ],
+      trendGroups: [
+        { key: 'mystery-9', cost: 0, provider: 'local', profile: 'default' },
+        { key: 'k2-thinking', cost: 1.5, provider: 'kimi', profile: 'default' },
+      ],
+    });
+    base.sessions.items[1]!.usage.cost_unknown = true;
+    getUsage.mockResolvedValue(base);
+
+    const { container, root } = await renderPage('/usage?panel=history');
+    const sourceCost = container.querySelector('[data-usage-breakdown-cost="mystery-9"]')!;
+    expect(sourceCost.textContent).toContain('—');
+    expect(sourceCost.textContent).not.toContain('$0.00');
+    expect(sourceCost.textContent).not.toContain('*');
+    expect(sourceCost.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
+
+    const partialSourceCost = container.querySelector('[data-usage-breakdown-cost="k2-thinking"]')!;
+    expect(partialSourceCost.textContent).toContain('$1.50');
+    expect(partialSourceCost.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="sessions"]')!.click(); });
+    const unpricedSessionCost = container.querySelector('[data-usage-session-cost="s_unpriced"]')!;
+    expect(unpricedSessionCost.textContent).toContain('—');
+    expect(unpricedSessionCost.textContent).not.toContain('$0.00');
+    expect(unpricedSessionCost.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-session-cost="s_partial"]')?.textContent).toContain('$1.50');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('uses axis-aware unknown labels and preserves cache savings across Group by tabs via model attribution', async () => {
+    getUsagePricing.mockResolvedValue({
+      items: [
+        {
+          model: 'k2-thinking',
+          source: 'catalog',
+          prices: { currency: 'USD', input_cost_per_token: 0.000003, output_cost_per_token: 0.000015, cache_read_input_token_cost: 0.0000003 },
+        },
+        {
+          model: 'claude-sonnet-4.5',
+          source: 'catalog',
+          prices: { currency: 'USD', input_cost_per_token: 0.000003, output_cost_per_token: 0.000015, cache_read_input_token_cost: 0.0000003 },
+        },
+      ],
+    });
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['dimension'] === 'project') {
+        return usageResponse({
+          trendGroups: [
+            { key: 'wd_1', cost: 2.0, provider: null, profile: null },
+            { key: 'unknown', cost: 0.5, provider: null, profile: null },
+          ],
+        });
+      }
+      return usageResponse();
+    });
+
+    const { container, root } = await renderPage('/usage?panel=history&dimension=project');
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ dimension: 'project' });
+    expect(container.querySelector('[data-usage-breakdown-row="unknown"]')?.textContent).toContain('unknown workspace');
+    expect(container.querySelector('[data-usage-cache-savings]')?.textContent).toContain('$0.013');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('supports keyboard ArrowDown/Enter selection and Escape focus return for + Filter and chip triggers', async () => {
+    listModels.mockResolvedValue({
+      items: [{ id: 'k2-thinking', provider_id: 'kimi', display_name: 'Kimi K2 Thinking' }],
+    });
+    const { container, root } = await renderPage('/usage?panel=history');
+
+    // Open via + Filter, navigate with ArrowDown + Enter, then Escape returns focus to + Filter
+    const addBtn = container.querySelector<HTMLButtonElement>('[data-usage-add-filter]')!;
+    addBtn.focus();
+    await act(async () => { addBtn.click(); });
+    const search = document.body.querySelector<HTMLInputElement>('[data-usage-filter-search]')!;
+    expect(document.activeElement).toBe(search);
+
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const popover = document.body.querySelector<HTMLElement>('[data-usage-filter-popover]')!;
+    await act(async () => {
+      popover.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.body.querySelector('[data-usage-filter-popover]')).toBeNull();
+    expect(document.activeElement).toBe(addBtn);
+
+    // Open via the rendered filter chip button, then Escape returns focus to that chip button
+    const chipBtn = container.querySelector<HTMLButtonElement>('[data-usage-filter-chip="model"] button')!;
+    expect(chipBtn).not.toBeNull();
+    chipBtn.focus();
+    await act(async () => { chipBtn.click(); });
+    const reopened = document.body.querySelector<HTMLElement>('[data-usage-filter-popover]')!;
+    expect(reopened).not.toBeNull();
+    await act(async () => {
+      reopened.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(document.body.querySelector('[data-usage-filter-popover]')).toBeNull();
+    expect(document.activeElement).toBe(chipBtn);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('uses dialog ActionSheet in phone mode with container initial focus, listbox keyboard navigation, and fallback focus return', async () => {
+    const originalMatchMedia = window.matchMedia;
+    const matchMediaMock = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(pointer: coarse) and (max-width: 639px)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: matchMediaMock });
+
+    try {
+      listModels.mockResolvedValue({
+        items: [
+          { id: 'k2-thinking', provider_id: 'kimi', display_name: 'Kimi K2 Thinking' },
+          { id: 'claude-sonnet-4.5', provider_id: 'anthropic', display_name: 'Claude Sonnet 4.5' },
+        ],
+      });
+      const { container, root } = await renderPage('/usage?panel=history');
+
+      const addBtn = container.querySelector<HTMLButtonElement>('[data-usage-add-filter]')!;
+      addBtn.focus();
+      await act(async () => { addBtn.click(); });
+
+      const sheet = document.body.querySelector<HTMLElement>('[data-usage-filter-popover] .kiki-action-sheet')!;
+      expect(sheet).not.toBeNull();
+      expect(sheet.getAttribute('role')).toBe('dialog');
+      // Focus moves off + Filter onto the dialog container so pressing Enter selects an option instead of closing.
+      expect(document.activeElement).toBe(sheet);
+      expect(document.activeElement).not.toBe(addBtn);
+
+      await act(async () => {
+        sheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      });
+      for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(document.body.querySelector('[data-usage-filter-popover] .kiki-action-sheet')).not.toBeNull();
+      expect(container.querySelector('[data-usage-filter-chip="model"]')).not.toBeNull();
+
+      await act(async () => {
+        sheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      await act(async () => { await Promise.resolve(); });
+      expect(document.body.querySelector('[data-usage-filter-popover] .kiki-action-sheet')).toBeNull();
+      expect(document.activeElement).toBe(addBtn);
+
+      // Open via the model chip, remove the only selected model so the chip unmounts, then Escape falls back to + Filter.
+      const chipBtn = container.querySelector<HTMLButtonElement>('[data-usage-filter-chip="model"] button')!;
+      chipBtn.focus();
+      await act(async () => { chipBtn.click(); });
+      const reopenedSheet = document.body.querySelector<HTMLElement>('[data-usage-filter-popover] .kiki-action-sheet')!;
+      await act(async () => {
+        reopenedSheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      });
+      for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(container.querySelector('[data-usage-filter-chip="model"]')).toBeNull();
+
+      await act(async () => {
+        reopenedSheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      await act(async () => { await Promise.resolve(); });
+      expect(document.activeElement).toBe(addBtn);
+      await act(async () => { root.unmount(); });
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('formats QuotaHeadroomStrip without duplicate left/expired text, highlights <=0 money meters first, and sorts ties by duration_seconds ascending', async () => {
+    const pastIso = new Date(Date.now() - 10 * 60_000).toISOString();
+    const futureIso = new Date(Date.now() + 2 * 3600_000).toISOString();
+    getProviderQuotas.mockResolvedValue({
+      schema_version: '1',
+      generated_at: new Date().toISOString(),
+      sources: [
+        {
+          id: 'src_wallet',
+          label: 'Zero Wallet',
+          kind: 'provider',
+          enabled: true,
+          supported: true,
+          status: 'ready',
+          refreshing: false,
+          refresh_mode: 'explicit',
+          auth: { action: 'none' },
+          source: { label: 'API' },
+          meters: [
+            {
+              id: 'balance',
+              label: 'Balance',
+              unit: 'money',
+              currency: 'USD',
+              used: 10,
+              limit: null,
+              remaining: 0,
+              scope: 'account',
+            },
+          ],
+        },
+        {
+          id: 'src_windows',
+          label: 'Rate Windows',
+          kind: 'provider',
+          enabled: true,
+          supported: true,
+          status: 'ready',
+          refreshing: false,
+          refresh_mode: 'explicit',
+          auth: { action: 'none' },
+          source: { label: 'API' },
+          meters: [
+            {
+              id: 'daily',
+              label: 'Daily',
+              unit: 'percent',
+              used: 50,
+              limit: 100,
+              remaining: 50,
+              scope: 'account',
+              window: { duration_seconds: 86_400, label: '1d', reset_at: futureIso },
+            },
+            {
+              id: 'minute',
+              label: 'Minute',
+              unit: 'percent',
+              used: 50,
+              limit: 100,
+              remaining: 50,
+              scope: 'account',
+              window: { duration_seconds: 60, label: '1m', reset_at: pastIso },
+            },
+            {
+              id: 'five_hour',
+              label: '5h',
+              unit: 'percent',
+              used: 50,
+              limit: 100,
+              remaining: 50,
+              scope: 'account',
+              window: { duration_seconds: 18_000, label: '5h', reset_at: futureIso },
+            },
+            {
+              id: 'unwindowed',
+              label: 'Total',
+              unit: 'percent',
+              used: 50,
+              limit: 100,
+              remaining: 50,
+              scope: 'account',
+            },
+          ],
+        },
+      ],
+    });
+
+    const { container, root } = await renderPage('/usage?panel=history');
+    const strip = container.querySelector('[data-usage-quota-strip]')!;
+    expect(strip).not.toBeNull();
+    const pills = [...strip.querySelectorAll<HTMLButtonElement>('[data-usage-quota-pill]')];
+
+    // QuotaHeadroomStrip renders up to 4 pills: $0 money balance is exhausted (sorted first),
+    // followed by 50% ties ordered 1m (60s) -> 5h (18000s) -> 1d (86400s), pushing unwindowed out of the top 4.
+    expect(pills.map((el) => el.getAttribute('data-usage-quota-pill'))).toEqual([
+      'src_wallet:balance',
+      'src_windows:minute',
+      'src_windows:five_hour',
+      'src_windows:daily',
+    ]);
+    expect(pills[0]!.className).toContain('border-danger/40');
+
+    for (const pill of pills) {
+      const text = pill.textContent ?? '';
+      expect(text).not.toMatch(/left.*left/i);
+      expect(text).not.toMatch(/expired|已过期/i);
+    }
+
+    // Expired reset_at omits tooltip/reset suffix; future reset_at places reset hint in title & aria-label.
+    const expiredMinutePill = pills[1]!;
+    expect(expiredMinutePill.getAttribute('title')).toBeNull();
+    expect(expiredMinutePill.getAttribute('aria-label')).not.toMatch(/Resets in|expired/i);
+
+    const futureFiveHourPill = pills[2]!;
+    expect(futureFiveHourPill.getAttribute('title')).toMatch(/^Resets in /);
+    expect(futureFiveHourPill.getAttribute('aria-label')).toContain('Resets in ');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('keeps cache savings badge steady without flicker or redundant model queries when switching Group by tabs', async () => {
+    getUsagePricing.mockResolvedValue({
+      items: [
+        {
+          model: 'k2-thinking',
+          source: 'catalog',
+          prices: { currency: 'USD', input_cost_per_token: 0.000003, output_cost_per_token: 0.000015, cache_read_input_token_cost: 0.0000003 },
+        },
+        {
+          model: 'claude-sonnet-4.5',
+          source: 'catalog',
+          prices: { currency: 'USD', input_cost_per_token: 0.000003, output_cost_per_token: 0.000015, cache_read_input_token_cost: 0.0000003 },
+        },
+      ],
+    });
+    const { container, root } = await renderPage('/usage?panel=history&range=last_7_days');
+    expect(container.querySelector('[data-usage-cache-savings]')?.textContent).toContain('$0.013');
+    getUsage.mockClear();
+
+    for (const nextGroup of ['provider', 'profile', 'workspace'] as const) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(`[data-usage-grouping="${nextGroup}"]`)!.click();
+      });
+      // Immediately after switching Group by (even before async refetch settles), cache savings stays visible.
+      expect(container.querySelector('[data-usage-cache-savings]')?.textContent).toContain('$0.013');
+      for (let i = 0; i < 4; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(container.querySelector('[data-usage-cache-savings]')?.textContent).toContain('$0.013');
+    }
+
+    // Because groupBy=model seeded the groupBy-independent modelAttributionQuery key, zero extra page_size=1&dimension=model calls were needed.
+    const modelAttributionCalls = getUsage.mock.calls.filter(
+      ([q]) => (q as Record<string, unknown>)['page_size'] === 1 && (q as Record<string, unknown>)['dimension'] === 'model',
+    );
+    expect(modelAttributionCalls).toHaveLength(0);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('supports legacy ?session_id= deep links and clears observed filter facets when switching Space scopeId', async () => {
+    getUsage.mockImplementation(async () =>
+      usageResponse({
+        sessions: [
+          { id: 's_1', title: 'Alpha session', cost: 1.5 },
+          { id: 's_legacy', title: 'Legacy linked session', cost: 0.75 },
+        ],
+        trendGroups: [
+          { key: currentScopeId === 'space-a' ? 'space-a-exclusive-model' : 'space-b-model', cost: 1.5, provider: 'kimi', profile: 'default' },
+        ],
+      }),
+    );
+
+    const legacyRender = await renderPage('/usage?session_id=s_legacy');
+    expect(legacyRender.container.querySelector('[data-usage-panel="history"]')?.getAttribute('aria-current')).toBe('page');
+    expect(legacyRender.container.textContent).toContain('Located session');
+    expect(legacyRender.container.querySelector('[data-usage-session="s_legacy"]')).not.toBeNull();
+    expect(legacyRender.container.querySelector('[data-usage-session="s_1"]')).toBeNull();
+    await act(async () => { legacyRender.root.unmount(); });
+
+    currentScopeId = 'space-a';
+    listModels.mockResolvedValue({ items: [] });
+    const spaceRender = await renderPage('/usage?panel=history');
+    await act(async () => {
+      spaceRender.container.querySelector<HTMLButtonElement>('[data-usage-add-filter]')!.click();
+    });
+    expect(document.body.querySelector('[data-usage-filter-popover]')?.textContent).toContain('space-a-exclusive-model');
+
+    // Switch Space scopeId and rerender in place: stale observed facets from space-a are purged.
+    currentScopeId = 'space-b';
+    await act(async () => {
+      spaceRender.root.render(
+        <QueryClientProvider client={spaceRender.queryClient}>
+          <I18nProvider>
+            <MemoryRouter initialEntries={['/usage?panel=history']}>
+              <UsagePage onToggleSidebar={() => {}} />
+              <LocationProbe />
+            </MemoryRouter>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(document.body.querySelector('[data-usage-filter-popover]')?.textContent).not.toContain('space-a-exclusive-model');
+    await act(async () => { spaceRender.root.unmount(); });
+  });
+
+  it('renders Total Token KPI and full-width Chinese colons on filter chips in zh locale', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    const { container, root } = await renderPage('/usage?panel=history&model=k2-thinking&include_archived=false');
+    const tokenKpi = container.querySelector('[data-usage-kpi="tokens"]')!;
+    expect(tokenKpi.textContent).toContain('总 Token');
+    expect(tokenKpi.textContent).not.toContain('总 tokens');
+
+    const modelChipBtn = container.querySelector<HTMLButtonElement>('[data-usage-filter-chip="model"] button')!;
+    expect(modelChipBtn.textContent).toContain('模型：');
+    expect(modelChipBtn.getAttribute('title')).toBe('模型：k2-thinking');
+
+    const archivedChipBtn = container.querySelector<HTMLButtonElement>('[data-usage-filter-chip="archived"] button')!;
+    expect(archivedChipBtn.textContent).toBe('归档：已排除');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('pauses secondary today, compare, and model-attribution queries while main usageQuery is still importing', async () => {
+    let mainReady = false;
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['page_size'] === 25) {
+        return mainReady
+          ? usageResponse({ summaryCost: 9 })
+          : usageResponse({ incompleteReason: 'deadline', summaryCost: 3 });
+      }
+      return usageResponse({ summaryCost: 4 });
+    });
+
+    const { container, root } = await renderPage('/usage?panel=history&range=last_7_days&group_by=provider&compare=previous');
+    // While reliability.complete === false, only the primary page_size=25 query has fired.
+    const secondaryWhileImporting = getUsage.mock.calls.filter(
+      ([q]) => (q as Record<string, unknown>)['page_size'] === 1,
+    );
+    expect(secondaryWhileImporting).toHaveLength(0);
+    expect(container.querySelector('[data-usage-scan-pending]')).not.toBeNull();
+
+    // Advance main query to complete: secondary today, compare, and model-attribution queries now fire.
+    mainReady = true;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    for (let i = 0; i < 6; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const secondaryAfterReady = getUsage.mock.calls.filter(
+      ([q]) => (q as Record<string, unknown>)['page_size'] === 1,
+    );
+    expect(secondaryAfterReady.length).toBeGreaterThanOrEqual(3);
+    expect(container.querySelector('[data-usage-scan-pending]')).toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('caps sessionLocator auto-pagination at 4 follow-up pages instead of draining unbounded history', async () => {
+    let pageNum = 1;
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['page_size'] === 1) return usageResponse();
+      const current = pageNum;
+      pageNum += 1;
+      return usageResponse({
+        hasMore: current < 18,
+        nextPageToken: `tok_${current + 1}`,
+        sessions: [{ id: `s_page_${current}` }],
+      });
+    });
+
+    const { container, root } = await renderPage('/usage?session=s_very_old');
+    for (let i = 0; i < 15; i += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+
+    const pageTokens = getUsage.mock.calls
+      .map(([q]) => (q as Record<string, unknown>)['page_token'])
+      .filter((tok) => tok !== undefined);
+    expect(pageTokens).toEqual(['tok_2', 'tok_3', 'tok_4', 'tok_5']);
+    expect(container.querySelector('[data-usage-locating]')?.textContent)
+      .toContain('outside the current result set');
+    expect(container.querySelector('[data-usage-load-more]')).not.toBeNull();
     await act(async () => { root.unmount(); });
   });
 });

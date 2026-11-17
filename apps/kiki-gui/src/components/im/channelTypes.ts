@@ -7,6 +7,15 @@ import {
   type OptionalCapabilitySessionResponse,
 } from '@kiki/protocol';
 
+import {
+  compactIdentifier,
+  formatImIdentityDisplay,
+  formatSessionOwnerLabel,
+  type ImIdentityDisplay,
+} from '../../lib/compactIdentifier';
+
+export { formatImIdentityDisplay, formatSessionOwnerLabel, type ImIdentityDisplay };
+
 export const IM_IDENTITY_ALREADY_BOUND_CODE = 40949;
 
 export interface RebindConflictDetails {
@@ -63,27 +72,19 @@ export function stripNotifyPrefix(channelId: string): string {
 }
 
 export function formatIdentityChannel(chatId: string, topicId?: string): string {
+  const compactChat = compactIdentifier(chatId);
   if (topicId !== undefined && topicId !== '' && topicId !== '0') {
-    return `${chatId} / topic:${topicId}`;
+    return `${compactChat} / topic:${compactIdentifier(topicId)}`;
   }
-  return chatId;
+  return compactChat;
 }
 
 /**
  * Format human-readable identity variant.
- * Prefers chat_title and sender_name as primary labels, reserving raw chat_id / topic_id for secondary metadata.
+ * Prefers chat_title and sender_name as primary labels and middle-ellipsizes raw machine IDs.
  */
 export function formatIdentityVariant(identity: ImIdentity): string {
-  const channel = identity.chat_title && identity.chat_title.trim() !== ''
-    ? identity.chat_title
-    : identity.chat_id;
-  const sender = identity.sender_name && identity.sender_name.trim() !== ''
-    ? identity.sender_name
-    : identity.sender_id;
-  if (channel === sender) {
-    return channel;
-  }
-  return `${channel} · ${sender}`;
+  return formatImIdentityDisplay(identity).primary;
 }
 
 /**

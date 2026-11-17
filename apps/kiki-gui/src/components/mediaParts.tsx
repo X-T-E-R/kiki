@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { openExternalUrl, useHost } from '../host';
@@ -12,7 +12,7 @@ import { Icon } from './icons';
 import { imagePreviewDownloadName, imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { useMediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
-import { copyImageBitmap, hostActionPath, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isOnKikiComputer, mediaOutcomeKey, saveMediaToDisk, useMediaReady } from './imageActions';
+import { copyImageBitmap, hostActionPath, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isOnKikiComputer, mediaOutcomeKey, resolveImageMime, saveMediaToDisk, useMediaReady } from './imageActions';
 import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
 import { canonicalGalleryItem, galleryImageId, galleryOccurrenceId } from './mediaGallery';
@@ -43,8 +43,8 @@ export function useGalleryImage(item: MediaRef, attachmentIndex = 0, agentId?: s
 import { useTranscriptDetail } from './transcriptDetail';
 
 type SessionMediaLoad =
-  | { readonly status: 'loading' }
-  | { readonly status: 'failed' }
+  | { readonly status: 'loading'; readonly thumbnailUrl?: string }
+  | { readonly status: 'failed'; readonly thumbnailUrl?: string }
   | {
       readonly status: 'ready';
       readonly bytes: Uint8Array;
@@ -53,6 +53,167 @@ type SessionMediaLoad =
       readonly url: string;
       readonly thumbnailUrl?: string;
     };
+
+interface CachedMediaEntry {
+  readonly bytes: Uint8Array;
+  readonly mime: string;
+  readonly name?: string;
+  readonly etag?: string;
+}
+
+class SessionMediaLruCache {
+  private readonly entries = new Map<string, CachedMediaEntry>();
+  private totalBytes = 0;
+  private static readonly MAX_ENTRIES = 256;
+  private static readonly MAX_BYTES = 32 * 1024 * 1024;
+  private static readonly MAX_ITEM_BYTES = 16 * 1024 * 1024;
+
+  get(key: string): CachedMediaEntry | undefined {
+    const hit = this.entries.get(key);
+    if (hit === undefined) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, hit);
+    return hit;
+  }
+
+  set(key: string, entry: CachedMediaEntry): void {
+    if (entry.bytes.byteLength === 0 || entry.bytes.byteLength > SessionMediaLruCache.MAX_ITEM_BYTES) return;
+    const previous = this.entries.get(key);
+    if (previous !== undefined) {
+      this.entries.delete(key);
+      this.totalBytes -= previous.bytes.byteLength;
+    }
+    this.entries.set(key, entry);
+    this.totalBytes += entry.bytes.byteLength;
+    while (this.entries.size > SessionMediaLruCache.MAX_ENTRIES || this.totalBytes > SessionMediaLruCache.MAX_BYTES) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.totalBytes -= this.entries.get(oldest)!.bytes.byteLength;
+      this.entries.delete(oldest);
+    }
+  }
+}
+
+const providerMediaCaches = new WeakMap<object, SessionMediaLruCache>();
+
+function sessionMediaCacheKey(
+  scopeKey: string,
+  sessionId: string | undefined,
+  fileId: string | undefined,
+  hostPath: string | undefined,
+  previewOnly: boolean,
+  mime: string | undefined,
+): string | undefined {
+  if (sessionId !== undefined && fileId !== undefined) {
+    return `${scopeKey}\0session\0${sessionId}\0${fileId}\0${previewOnly ? 'preview' : 'full'}\0${previewOnly ? (mime ?? '') : ''}`;
+  }
+  if (hostPath !== undefined) {
+    return `${scopeKey}\0host\0${hostPath}\0${previewOnly ? 'preview' : 'full'}\0${previewOnly ? (mime ?? '') : ''}`;
+  }
+  return undefined;
+}
+
+function clientOwnsPreviewCache(client: unknown): client is {
+  peekSessionMediaPreviewBytes: (sid: string, fid: string, mediaType?: string) => CachedMediaEntry | undefined;
+  peekHostMediaPreviewBytes: (path: string, mediaType?: string) => CachedMediaEntry | undefined;
+} {
+  if (client === undefined || client === null || typeof client !== 'object') return false;
+  const typed = client as Record<string, unknown>;
+  return typeof typed['peekSessionMediaPreviewBytes'] === 'function' && typeof typed['peekHostMediaPreviewBytes'] === 'function';
+}
+
+function peekMediaCache(
+  client: unknown,
+  providerOwner: object | undefined,
+  key: string | undefined,
+  options: {
+    readonly previewOnly: boolean;
+    readonly sessionId: string | undefined;
+    readonly fileId: string | undefined;
+    readonly hostPath: string | undefined;
+    readonly mime: string | undefined;
+  },
+): CachedMediaEntry | undefined {
+  if (client === undefined) return undefined;
+  if (options.previewOnly && clientOwnsPreviewCache(client)) {
+    const direct = options.sessionId !== undefined && options.fileId !== undefined
+      ? client.peekSessionMediaPreviewBytes(options.sessionId, options.fileId, options.mime)
+      : options.hostPath !== undefined
+        ? client.peekHostMediaPreviewBytes(options.hostPath, options.mime)
+        : undefined;
+    if (direct !== undefined) return direct;
+  }
+  if (key === undefined) return undefined;
+  const typed = client as { peekUiMediaCache?: (cacheKey: string) => CachedMediaEntry | undefined };
+  if (typeof typed.peekUiMediaCache === 'function') {
+    return typed.peekUiMediaCache(key);
+  }
+  if (providerOwner === undefined) return undefined;
+  return providerMediaCaches.get(providerOwner)?.get(key);
+}
+
+function storeMediaCache(
+  client: unknown,
+  providerOwner: object | undefined,
+  key: string | undefined,
+  entry: CachedMediaEntry,
+  skipClientDuplicatePreview: boolean,
+): void {
+  if (key === undefined || client === undefined || skipClientDuplicatePreview) return;
+  const typed = client as { storeUiMediaCache?: (cacheKey: string, value: CachedMediaEntry) => void };
+  if (typeof typed.storeUiMediaCache === 'function') {
+    typed.storeUiMediaCache(key, entry);
+    return;
+  }
+  if (providerOwner === undefined) return;
+  let cache = providerMediaCaches.get(providerOwner);
+  if (cache === undefined) {
+    cache = new SessionMediaLruCache();
+    providerMediaCaches.set(providerOwner, cache);
+  }
+  cache.set(key, entry);
+}
+
+function peekPreviewFallback(
+  client: unknown,
+  providerOwner: object | undefined,
+  scopeKey: string,
+  sessionId: string | undefined,
+  fileId: string | undefined,
+  hostPath: string | undefined,
+  mime: string | undefined,
+): CachedMediaEntry | undefined {
+  const previewKey = sessionMediaCacheKey(scopeKey, sessionId, fileId, hostPath, true, mime);
+  return peekMediaCache(client, providerOwner, previewKey, {
+    previewOnly: true,
+    sessionId,
+    fileId,
+    hostPath,
+    mime,
+  });
+}
+
+function effectiveMediaMime(
+  bytes: Uint8Array,
+  responseMime: string,
+  declaredMime: string | undefined,
+  kind: MediaRef['kind'],
+): string {
+  const baseMime = responseMime === 'application/octet-stream' ? (declaredMime ?? responseMime) : responseMime;
+  if (kind === 'image' || baseMime.startsWith('image/')) {
+    return resolveImageMime(bytes, baseMime) ?? baseMime;
+  }
+  return baseMime;
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left === right) return true;
+  if (left.byteLength !== right.byteLength) return false;
+  for (let i = 0; i < left.byteLength; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
 
 export function isMediaPreviewUnavailable(error: unknown): boolean {
   return error instanceof ApiError && (error.code === API_CODES.REQUEST_INVALID || error.code === 413 || error.reason === 'preview_budget_exceeded') ||
@@ -66,60 +227,131 @@ export function useSessionMedia(
   previewOnly = true,
   attempt = 0,
 ): SessionMediaLoad {
-  const client = useOptionalConnection()?.client;
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const scopeId = (connection as { scopeId?: string } | undefined)?.scopeId ?? '';
+  const baseUrl = (client as { baseUrl?: string } | undefined)?.baseUrl ?? '';
+  const scopeKey = `${scopeId}\0${baseUrl}`;
   const preview = useMediaPreview();
+  const providerOwner = preview?.registerGalleryImage as object | undefined;
   const hostPath = item.path === undefined ? undefined : resolveHostPath(item.path, preview?.cwd);
-  const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, path: hostPath, attempt }), [client, sessionId, item.fileId, hostPath, item.mime, item.kind, item.blobHash, previewOnly, attempt]);
+  const source = useMemo(
+    () => ({ client, scopeKey, sessionId, fileId: item.fileId, path: hostPath, attempt }),
+    [client, scopeKey, sessionId, item.fileId, hostPath, item.mime, item.kind, item.blobHash, previewOnly, attempt],
+  );
   const [loaded, setLoaded] = useState<{ source: typeof source; load: SessionMediaLoad }>({ source, load: { status: 'loading' } });
   const setLoad = useCallback((load: SessionMediaLoad) => { setLoaded({ source, load }); }, [source]);
   const load: SessionMediaLoad = loaded.source === source ? loaded.load : { status: 'loading' };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!enabled) { setLoad({ status: 'loading' }); return; }
     const hasSessionMedia = sessionId !== undefined && item.fileId !== undefined;
     if (client === undefined || (!hasSessionMedia && hostPath === undefined) || (previewOnly && item.kind !== 'image' && item.kind !== 'video')) {
       setLoad({ status: 'failed' });
       return;
     }
-    const controller = new AbortController();
+    const cacheKey = sessionMediaCacheKey(scopeKey, sessionId, item.fileId, hostPath, previewOnly, item.mime);
     let objectUrl: string | undefined;
-    setLoad({ status: 'loading' });
+    let thumbnailUrl: string | undefined;
+    const cached = attempt === 0
+      ? peekMediaCache(client, providerOwner, cacheKey, {
+          previewOnly,
+          sessionId,
+          fileId: item.fileId,
+          hostPath,
+          mime: item.mime,
+        })
+      : undefined;
+    if (cached !== undefined) {
+      const cachedMime = effectiveMediaMime(cached.bytes, cached.mime, item.mime, item.kind);
+      objectUrl = URL.createObjectURL(new Blob([cached.bytes as BlobPart], { type: cachedMime }));
+      setLoad({ status: 'ready', bytes: cached.bytes, mime: cachedMime, name: cached.name, url: objectUrl });
+      if (hasSessionMedia) {
+        return () => {
+          if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+        };
+      }
+    } else if (attempt === 0 && !previewOnly && item.kind === 'image') {
+      const previewHit = peekPreviewFallback(client, providerOwner, scopeKey, sessionId, item.fileId, hostPath, item.mime);
+      if (previewHit !== undefined && previewHit.bytes.byteLength > 0) {
+        const previewMime = effectiveMediaMime(
+          previewHit.bytes,
+          previewHit.mime === 'application/octet-stream' ? (item.mime ?? 'image/jpeg') : previewHit.mime,
+          item.mime,
+          item.kind,
+        );
+        thumbnailUrl = URL.createObjectURL(new Blob([previewHit.bytes as BlobPart], { type: previewMime }));
+      }
+    }
+    const controller = new AbortController();
+    if (cached === undefined) {
+      setLoad(thumbnailUrl === undefined ? { status: 'loading' } : { status: 'loading', thumbnailUrl });
+    }
     const options = { ...client.readingOptions(), signal: controller.signal, mediaType: item.mime };
-    const readSession = (): Promise<{ bytes: Uint8Array; mime: string; name?: string }> => {
+    let storedByClientPreviewCache = previewOnly && clientOwnsPreviewCache(client);
+    const readSession = (): Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }> => {
       const primary = previewOnly
         ? client.readSessionMediaPreviewBytes(sessionId!, item.fileId!, options)
         : client.readSessionMediaBytes(sessionId!, item.fileId!, options);
       return primary.catch((error: unknown) => {
         if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !isMediaPreviewUnavailable(error)) throw error;
+        storedByClientPreviewCache = false;
         return client.readSessionMediaBytes(sessionId!, item.fileId!, options);
       });
     };
-    const readHost = (): Promise<{ bytes: Uint8Array; mime: string; name?: string }> => {
+    const readHost = (): Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }> => {
       const primary = previewOnly
         ? client.readHostMediaPreviewBytes(hostPath!, options)
-        : client.readHostFileBytes(hostPath!, options);
+        : client.readHostFileBytes(hostPath!, cached?.etag === undefined ? options : { ...options, ifNoneMatch: cached.etag });
       return primary.catch((error: unknown) => {
         if (!previewOnly || item.kind !== 'image' || controller.signal.aborted || !isMediaPreviewUnavailable(error)) throw error;
-        return client.readHostFileBytes(hostPath!, options);
+        storedByClientPreviewCache = false;
+        return client.readHostFileBytes(hostPath!, cached?.etag === undefined ? options : { ...options, ifNoneMatch: cached.etag });
       });
     };
-    const resolved: Promise<{ bytes: Uint8Array; mime: string; name?: string }> = hasSessionMedia
-      ? readSession()
-      : readHost();
-    resolved.then(({ bytes, mime, name }) => {
+    const resolved = hasSessionMedia ? readSession() : readHost();
+    resolved.then((result) => {
       if (controller.signal.aborted) return;
-      if (bytes.byteLength === 0) { setLoad({ status: 'failed' }); return; }
-      const mediaType = mime === 'application/octet-stream' ? item.mime ?? mime : mime;
+      if (result.notModified === true && cached !== undefined && objectUrl !== undefined) {
+        return;
+      }
+      const { bytes, mime, name, etag } = result;
+      if (bytes.byteLength === 0) {
+        if (objectUrl !== undefined) {
+          URL.revokeObjectURL(objectUrl);
+          objectUrl = undefined;
+        }
+        setLoad(thumbnailUrl === undefined ? { status: 'failed' } : { status: 'failed', thumbnailUrl });
+        return;
+      }
+      const mediaType = effectiveMediaMime(bytes, mime, item.mime, item.kind);
+      storeMediaCache(client, providerOwner, cacheKey, { bytes, mime: mediaType, name, etag }, storedByClientPreviewCache && etag !== undefined);
+      if (
+        cached !== undefined &&
+        objectUrl !== undefined &&
+        ((cached.etag !== undefined && etag === cached.etag) ||
+          (etag === undefined && mediaType === cached.mime && sameBytes(bytes, cached.bytes)))
+      ) {
+        return;
+      }
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
       objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
       setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl });
     }, () => {
-      if (!controller.signal.aborted) setLoad({ status: 'failed' });
+      if (!controller.signal.aborted) {
+        if (objectUrl !== undefined) {
+          URL.revokeObjectURL(objectUrl);
+          objectUrl = undefined;
+        }
+        setLoad(thumbnailUrl === undefined ? { status: 'failed' } : { status: 'failed', thumbnailUrl });
+      }
     });
     return () => {
       controller.abort();
+      if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [client, enabled, previewOnly, item.blobHash, item.fileId, hostPath, item.mime, item.kind, sessionId, setLoad]);
+  }, [attempt, client, enabled, previewOnly, providerOwner, scopeKey, item.blobHash, item.fileId, hostPath, item.mime, item.kind, sessionId, setLoad]);
 
   return load;
 }

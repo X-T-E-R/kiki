@@ -2676,10 +2676,10 @@ class FixtureServer {
     const dimension = query.get('dimension') ?? 'model';
     const range = query.get('range') ?? 'all';
     const includeArchived = query.get('include_archived') !== 'false';
-    const workspace = query.get('workspace.id');
-    const modelFilter = query.getAll('model');
-    const providerFilter = query.getAll('provider');
-    const profileFilter = query.getAll('profile');
+    const workspaceFilter = query.getAll('workspace.id').filter((id) => id !== '');
+    const modelFilter = query.getAll('model').filter((id) => id !== '');
+    const providerFilter = query.getAll('provider').filter((id) => id !== '');
+    const profileFilter = query.getAll('profile').filter((id) => id !== '');
     const pageSize = Math.min(100, Math.max(1, Number(query.get('page_size') ?? 25) || 25));
     const offset = Math.max(0, Number(query.get('page_token') ?? 0) || 0);
 
@@ -2689,9 +2689,10 @@ class FixtureServer {
 
     // One filter set (summary, trend and sessions) narrows every part of the
     // response, the way the record-level server does.
-    let items = range === 'today' ? (seed.sessionsToday ?? seed.sessions) : seed.sessions;
+    const baseItems = range === 'today' ? (seed.sessionsToday ?? seed.sessions) : seed.sessions;
+    let items = baseItems;
     if (!includeArchived) items = items.filter((item) => item.archived !== true);
-    if (workspace !== null) items = items.filter((item) => item.workspace_id === workspace);
+    if (workspaceFilter.length > 0) items = items.filter((item) => workspaceFilter.includes(item.workspace_id));
     if (modelFilter.length > 0) items = items.filter((item) => modelFilter.includes(item.primary_model ?? ''));
     if (providerFilter.length > 0) items = items.filter((item) => providerFilter.includes(seed.providerByModel?.[item.primary_model ?? ''] ?? ''));
     if (profileFilter.length > 0) items = items.filter((item) => item.profile_names?.some((name) => profileFilter.includes(name)));
@@ -2719,7 +2720,7 @@ class FixtureServer {
     if (modelFilter.length > 0) {
       allTrend = allTrend.map((bucket) => ({
         ...bucket,
-        groups: bucket.groups.filter((entry) => modelFilter.includes(entry.model_alias ?? '')),
+        groups: bucket.groups.filter((entry) => modelFilter.includes(entry.model_alias ?? entry.key ?? '')),
       }));
     }
     if (providerFilter.length > 0) {
@@ -2734,6 +2735,49 @@ class FixtureServer {
         groups: bucket.groups.filter((entry) => profileFilter.includes(entry.profile_name ?? '')),
       }));
     }
+    if (workspaceFilter.length > 0) {
+      if (dimension === 'project') {
+        allTrend = allTrend.map((bucket) => ({
+          ...bucket,
+          groups: bucket.groups.filter((entry) => workspaceFilter.includes(entry.key)),
+        }));
+      } else {
+        const baseTotalCost = baseItems.reduce((sum, item) => sum + (item.usage?.cost_usd_estimated ?? 0), 0);
+        const wsItems = baseItems.filter((item) => workspaceFilter.includes(item.workspace_id));
+        const wsCost = wsItems.reduce((sum, item) => sum + (item.usage?.cost_usd_estimated ?? 0), 0);
+        const fallbackShare = baseTotalCost > 0
+          ? wsCost / baseTotalCost
+          : (baseItems.length > 0 ? wsItems.length / baseItems.length : 0);
+        const projectBuckets = new Map(
+          (seed.trendByDimension?.project?.[granularity] ?? seed.trendByDimension?.project?.day ?? []).map((b) => [b.key, b]),
+        );
+        allTrend = allTrend.map((bucket) => {
+          const proj = projectBuckets.get(bucket.key);
+          let share = fallbackShare;
+          if (proj !== undefined) {
+            const projTotal = proj.groups.reduce((sum, g) => sum + (g.cost_usd_estimated ?? 0), 0);
+            const projMatch = proj.groups
+              .filter((g) => workspaceFilter.includes(g.key))
+              .reduce((sum, g) => sum + (g.cost_usd_estimated ?? 0), 0);
+            share = projTotal > 0 ? projMatch / projTotal : 0;
+          }
+          if (share <= 0) return { ...bucket, groups: [] };
+          return {
+            ...bucket,
+            groups: bucket.groups.map((entry) => ({
+              ...entry,
+              tokens: {
+                input_other: Math.round((entry.tokens?.input_other ?? 0) * share),
+                output: Math.round((entry.tokens?.output ?? 0) * share),
+                input_cache_read: Math.round((entry.tokens?.input_cache_read ?? 0) * share),
+                input_cache_creation: Math.round((entry.tokens?.input_cache_creation ?? 0) * share),
+              },
+              cost_usd_estimated: Math.round((entry.cost_usd_estimated ?? 0) * share * 10000) / 10000,
+            })),
+          };
+        });
+      }
+    }
     // An explicit window narrows the buckets the way a record-level server
     // would, so a prior-period read returns that period and not the whole range.
     const startAt = query.get('start_at') !== null ? Number(query.get('start_at')) : null;
@@ -2742,8 +2786,53 @@ class FixtureServer {
       ? allTrend.filter((bucket) => bucket.end_at > todayStart && bucket.start_at < todayStart + dayMs)
       : allTrend;
     if (startAt !== null && endAt !== null) {
-      trend = allTrend.filter((bucket) => bucket.start_at >= startAt && bucket.start_at < endAt);
+      trend = allTrend.filter((bucket) => bucket.end_at > startAt && bucket.start_at < endAt);
     }
+
+    const hasScopeFilter =
+      modelFilter.length > 0 ||
+      providerFilter.length > 0 ||
+      profileFilter.length > 0 ||
+      workspaceFilter.length > 0 ||
+      (startAt !== null && endAt !== null);
+
+    const summaryFromTrend = () => {
+      const tokens = { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0 };
+      let cost = 0;
+      let costUnknown = false;
+      let tokensUnknown = false;
+      for (const bucket of trend) {
+        for (const entry of bucket.groups) {
+          tokens.input_other += entry.tokens?.input_other ?? 0;
+          tokens.output += entry.tokens?.output ?? 0;
+          tokens.input_cache_read += entry.tokens?.input_cache_read ?? 0;
+          tokens.input_cache_creation += entry.tokens?.input_cache_creation ?? 0;
+          cost += entry.cost_usd_estimated ?? 0;
+          if (entry.cost_unknown) costUnknown = true;
+          if (entry.tokens_unknown) tokensUnknown = true;
+        }
+      }
+      return {
+        tokens,
+        cost_usd_estimated: Math.round(cost * 10000) / 10000,
+        cost_unknown: costUnknown,
+        ...(tokensUnknown ? { tokens_unknown: true } : {}),
+        session_count: items.length,
+      };
+    };
+
+    const summary = hasScopeFilter
+      ? summaryFromTrend()
+      : range === 'today'
+        ? seed.summaryToday
+        : { ...seed.summary, session_count: items.length };
+
+    const reliability = modelFilter.length > 0 && Array.isArray(seed.reliability?.unknown_price_models)
+      ? {
+          ...seed.reliability,
+          unknown_price_models: seed.reliability.unknown_price_models.filter((id) => modelFilter.includes(id)),
+        }
+      : seed.reliability;
 
     return this.envelope(res, {
       query: {
@@ -2759,13 +2848,11 @@ class FixtureServer {
         providers: providerFilter,
         profiles: profileFilter,
         agent_ids: query.getAll('agent.id'),
-        workspace_ids: workspace !== null ? [workspace] : [],
+        workspace_ids: workspaceFilter,
         include_archived: includeArchived,
         timezone_offset_minutes: Number(query.get('timezone_offset_minutes') ?? 0) || 0,
       },
-      summary: range === 'today'
-        ? seed.summaryToday
-        : { ...seed.summary, session_count: items.length },
+      summary,
       trend,
       sessions: {
         items: pageItems,
@@ -2773,7 +2860,7 @@ class FixtureServer {
         has_more: hasMore,
         next_page_token: hasMore ? String(offset + pageItems.length) : null,
       },
-      reliability: seed.reliability,
+      reliability,
     });
   }
 

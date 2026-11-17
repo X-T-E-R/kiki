@@ -1459,6 +1459,7 @@ it.each([
   await act(async () => { resolveSend(null); });
   await settle();
   expect(userRows()).toHaveLength(1);
+  expect(userRows()[0]!.getAttribute('data-timeline-optimistic')).toBeNull();
 
   await act(async () => {
     childState = { ...childState, blocks: [{ kind: 'user', id: promptId, promptId, userMessageId: promptId,
@@ -1468,6 +1469,38 @@ it.each([
   await settle();
   expect(userRows()).toHaveLength(1);
   expect(userRows()[0]!.getAttribute('data-timeline-optimistic')).toBeNull();
+});
+
+it('skips getAgentExecutor on branch workspaces and wakes a cold session view when a branch send settles', async () => {
+  harness.sendAgentMessage.mockResolvedValue(null);
+  const resync = vi.fn(async () => {});
+  const branchForest = testForest('completed', false, { isBranch: true });
+  const coldSessionState = {
+    ...createViewState('session'),
+    loaded: true,
+    cursor: { seq: 0, epoch: 'cold:session' },
+  };
+  const controller = Object.assign(
+    controllerStub({
+      forest: branchForest,
+      agentStates: { child: { ...createViewState('session'), loaded: true, transcriptReady: true } },
+    }),
+    { resync },
+  );
+  await renderWorkspace({ forest: branchForest, controller, sessionState: coldSessionState });
+  await settle();
+
+  expect(harness.getAgentExecutor).not.toHaveBeenCalled();
+  expect(composerInput(dock).disabled).toBe(false);
+
+  await typeText(composerInput(dock), 'branch follow-up');
+  await clickComposerSend();
+  await settle();
+
+  expect(resync).toHaveBeenCalledTimes(1);
+  const row = container.querySelector('[data-timeline-user="branch follow-up"]');
+  expect(row).not.toBeNull();
+  expect(row?.getAttribute('data-timeline-optimistic')).toBeNull();
 });
 
 it('drops the child send echo when the server rejects the message, and keeps an unknown outcome marked', async () => {

@@ -156,18 +156,27 @@ describe('inboundGrantThreadMessageDirection & listing helpers', () => {
     const status = makeStatus([revokedInbound, activeInbound], [pausedOutbound]);
 
     const entries = listRemotePairingBridges(record, status, NOW);
-    expect(entries.map((entry) => ({ id: entry.id, direction: entry.direction, enabled: entry.enabled }))).toEqual([
-      { id: pausedOutbound.grant.id, direction: 'outbound', enabled: false },
-      { id: activeInbound.id, direction: 'inbound', enabled: true },
+    expect(entries.map((entry) => ({
+      id: entry.id,
+      direction: entry.direction,
+      enabled: entry.enabled,
+      borrowTools: entry.borrowTools,
+    }))).toEqual([
+      { id: pausedOutbound.grant.id, direction: 'outbound', enabled: false, borrowTools: true },
+      { id: activeInbound.id, direction: 'inbound', enabled: true, borrowTools: undefined },
     ]);
+
+    const disabledBorrow = { ...makeOutboundLink(record.id), borrowTools: false };
+    expect(listRemotePairingBridges(record, makeStatus([], [disabledBorrow]), NOW)[0]?.borrowTools).toBe(false);
 
     const inboundEntries = listInboundGrantBridges({ source: PEER_B }, status, NOW);
     expect(inboundEntries).toHaveLength(2);
   });
 
-  it('maps fact keys including unreadable and strips raw wd_ hashes from remote workspace labels', () => {
+  it('maps fact keys including unreadable and strips raw wd_ hashes or wildcards from remote workspace labels', () => {
     expect(threadMessageFactKey('unreadable')).toBe('st.remote.threadMessages.unreadable');
     expect(sanitizeRemoteWorkspaceLabel('wd_kiki-app_0123456789ab')).toBe('kiki-app');
     expect(sanitizeRemoteWorkspaceLabel('22222222-2222-4222-8222-222222222222')).toBeNull();
+    expect(sanitizeRemoteWorkspaceLabel('*')).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useHost } from '../../../host';
 import { useI18n } from '../../../i18n';
 import { type KikiClient } from '../../../lib/client';
+import { compactIdentifier } from '../../../lib/compactIdentifier';
 import {
   MAIN_SPACE_ID,
   currentSpaceId,
@@ -134,7 +135,7 @@ function CopySshHereDialog({ client, onClose, onCopied }: { client: KikiClient; 
                     onChange={() => {
                       setSelected((current) => { const next = new Set(current); if (next.has(host.id)) next.delete(host.id); else next.add(host.id); return next; });
                     }} />
-                  <span className="min-w-0 truncate text-[13px] text-ink">{host.id}</span>
+                  <span className="min-w-0 truncate text-[13px] text-ink" title={host.id}>{compactIdentifier(host.id)}</span>
                 </label>
               </li>
             ))}

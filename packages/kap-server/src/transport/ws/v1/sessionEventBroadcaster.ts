@@ -817,7 +817,12 @@ export class SessionEventBroadcaster {
         }
       };
       await timeSessionViewPhase('seed_drain', fields, async () => target.drain?.(), timing);
-      await Promise.all([...priority].map(async (agentId) => {
+      const isUrgentSubagent = (agentId: string): boolean => agentId !== 'main' && (
+        seed.transcriptSince?.[agentId] === undefined ||
+        needsResetOnTransition(gradeFor(seed.prev, agentId), gradeFor(seed.spec, agentId))
+      );
+      const orderedPriority = [...priority].toSorted((left, right) => Number(isUrgentSubagent(right)) - Number(isUrgentSubagent(left)));
+      await Promise.all(orderedPriority.map(async (agentId) => {
         if (!await deliverAgent(agentId)) {
           stopped = true;
           delivered.clear();

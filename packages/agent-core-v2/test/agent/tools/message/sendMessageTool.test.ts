@@ -9,6 +9,7 @@ import { Event } from '#/_base/event';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE, MESSAGE_DELIVERY_SENT_GUIDANCE } from '#/agent/delivery/deliveryReminder';
 import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
+import { MessageStepRequest, ThinkingOnlyContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { ISessionExecutionControl, type ExecutionResumePoint } from '#/session/executionControl/executionControl';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { readGenerateFailureFacts } from '#/kosong/contract/generate';
@@ -845,6 +846,67 @@ describe('SendMessage completion guidance', () => {
     }
   });
 
+  it.each([
+    { kind: 'normal', sendFirst: true }, { kind: 'normal', sendFirst: false },
+    { kind: 'classified', sendFirst: true }, { kind: 'classified', sendFirst: false },
+  ] as const)('silently completes $kind receipt review after explicit final delivery (sendFirst=$sendFirst)', async ({ kind, sendFirst }) => {
+    await messageAgent({ initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    declareNormalCompletions();
+    const read = ctx.get(IAgentToolRegistryService).register({
+      name: 'Read', description: 'Read the final receipt.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'Read', execute: async () => ({ output: 'Receipt verified successfully.' }) }),
+    });
+    try {
+      const send = { type: 'function' as const, id: 'final-send', name: 'SendMessage', arguments: '{"text":"Complete answer.","end_turn":true}' };
+      const receipt = { type: 'function' as const, id: 'receipt-read', name: 'Read', arguments: '{}' };
+      ctx.mockNextResponse(...(sendFirst ? [send, receipt] : [receipt, send]));
+      ctx.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'The receipt is green; the answer was delivered.', encrypted: 'sig-receipt-review' }],
+        finishReason: 'completed',
+        error: kind === 'classified' ? markProviderEventError(new ChatProviderError('Clean thinking-only stop.'), 'antigravity_thinking_only') : undefined,
+      });
+      const outcome = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Deliver and verify the receipt.' }] });
+      expect(outcome).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(historyText(1)).toContain('Receipt verified successfully.');
+      expect(ctx.contextData().history.some(message => message.role === 'user' && message.content.some(part => part.type === 'text' && part.text === 'Continue.'))).toBe(false);
+      expect(sendCalls()).toEqual(['final-send']);
+      await ctx.expectResumeMatches();
+    } finally { await read.dispose(); }
+  });
+
+  it.each([
+    { kind: 'normal', invalidation: 'error' }, { kind: 'classified', invalidation: 'error' },
+    { kind: 'normal', invalidation: 'later-work' }, { kind: 'classified', invalidation: 'later-work' },
+  ] as const)('continues $kind thinking after explicit final delivery is invalidated by $invalidation', async ({ kind, invalidation }) => {
+    await messageAgent();
+    declareNormalCompletions();
+    const read = ctx.get(IAgentToolRegistryService).register({
+      name: 'Read', description: 'Read required evidence.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'Read', execute: async () => invalidation === 'error'
+        ? { output: 'Receipt verification failed.', isError: true }
+        : { output: 'New evidence requires a revised answer.' } }),
+    });
+    try {
+      ctx.mockNextResponse(
+        { type: 'function', id: 'earlier-final', name: 'SendMessage', arguments: '{"text":"Current answer.","end_turn":true}' },
+        { type: 'function', id: 'receipt-read', name: 'Read', arguments: '{}' },
+      );
+      if (invalidation === 'later-work') ctx.mockNextResponse({ type: 'function', id: 'new-evidence', name: 'Read', arguments: '{}' });
+      ctx.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'The result still needs to be reported.', encrypted: 'sig-invalidated-review' }],
+        finishReason: 'completed',
+        error: kind === 'classified' ? markProviderEventError(new ChatProviderError('Clean thinking-only stop.'), 'antigravity_thinking_only') : undefined,
+      });
+      ctx.mockNextResponse({ type: 'function', id: 'revised-final', name: 'SendMessage', arguments: '{"text":"Updated answer.","end_turn":true}' });
+      expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Verify the answer.' }] })).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(invalidation === 'error' ? 3 : 4);
+      expect(historyText(invalidation === 'error' ? 2 : 3)).toContain('Continue.');
+      expect(sendCalls()).toEqual(['earlier-final', 'revised-final']);
+      await ctx.expectResumeMatches();
+    } finally { await read.dispose(); }
+  });
+
   it('converges an antigravity_empty_response post-delivery continuation to completed when SendMessage omitted end_turn', async () => {
     await messageAgent();
     ctx.mockNextResponse({ type: 'function', id: 'send-without-flag', name: 'SendMessage', arguments: '{"text":"Delivered without end_turn."}' });
@@ -892,7 +954,7 @@ describe('SendMessage completion guidance', () => {
     } finally { await read.dispose(); }
   });
 
-  it('continues thinking-only recovery after a failed SendMessage invalidates an earlier delivery', async () => {
+  it.each([false, true])('continues thinking-only recovery after a failed SendMessage invalidates an earlier delivery (end_turn=%s)', async endTurn => {
     await messageAgent();
     declareNormalCompletions();
     const rejected = ctx.get(IAgentToolExecutorService).onBeforeExecuteTool(event => {
@@ -900,7 +962,7 @@ describe('SendMessage completion guidance', () => {
     });
     try {
       ctx.mockNextResponse(
-        { type: 'function', id: 'progress-send', name: 'SendMessage', arguments: '{"text":"Checking..."}' },
+        { type: 'function', id: 'progress-send', name: 'SendMessage', arguments: JSON.stringify({ text: 'Checking...', end_turn: endTurn }) },
         { type: 'function', id: 'failed-send', name: 'SendMessage', arguments: '{"text":"Unsent answer."}' },
       );
       ctx.mockNextProviderResponse({
@@ -914,6 +976,102 @@ describe('SendMessage completion guidance', () => {
       expect(sendCalls()).toEqual(['progress-send', 'failed-send', 'final-send']);
       await ctx.expectResumeMatches();
     } finally { await rejected.dispose(); }
+  });
+
+  it.each([true, false])('invalidates an explicit final delivery when paired with an unconfirmed SendMessage in either order (unconfirmedFirst=%s)', async (unconfirmedFirst) => {
+    await messageAgent();
+    declareNormalCompletions();
+    const unconfirmed = ctx.get(IAgentToolExecutorService).onBeforeExecuteTool(event => {
+      if (event.toolCall.id === 'unconfirmed-send') event.veto({ output: 'Delivery still pending.' });
+    });
+    try {
+      const confirmedCall = { type: 'function' as const, id: 'confirmed-in-batch', name: 'SendMessage', arguments: '{"text":"Current answer.","end_turn":true}' };
+      const unconfirmedCall = { type: 'function' as const, id: 'unconfirmed-send', name: 'SendMessage', arguments: '{"text":"Pending answer.","end_turn":true}' };
+      ctx.mockNextResponse(...(unconfirmedFirst ? [unconfirmedCall, confirmedCall] : [confirmedCall, unconfirmedCall]));
+      ctx.mockNextResponse({ type: 'think', think: 'One reply in the batch has not been delivered.', encrypted: 'sig-unconfirmed-delivery' });
+      ctx.mockNextResponse({ type: 'function', id: 'confirmed-final', name: 'SendMessage', arguments: '{"text":"Final delivered answer.","end_turn":true}' });
+      expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Deliver the complete answer.' }] })).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(3);
+      expect(historyText(2)).toContain('Continue.');
+      await ctx.expectResumeMatches();
+    } finally { await unconfirmed.dispose(); }
+  });
+
+  it('does not arm silent post-delivery turn end when SendMessage explicitly passes end_turn=false', async () => {
+    await messageAgent();
+    declareNormalCompletions();
+    ctx.mockNextResponse({ type: 'function', id: 'intermediate-progress', name: 'SendMessage', arguments: '{"text":"Working on step 1...","end_turn":false}' });
+    ctx.mockNextResponse({ type: 'think', think: 'Still working before sending final reply.', encrypted: 'sig-intermediate' });
+    ctx.mockNextResponse({ type: 'function', id: 'final-after-progress', name: 'SendMessage', arguments: '{"text":"All steps complete.","end_turn":true}' });
+    const outcome = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Report progress then finish.' }] });
+    expect(outcome).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 3 } });
+    expect(ctx.llmCalls).toHaveLength(3);
+    expect(historyText(2)).toContain('Continue.');
+    expect(sendCalls()).toEqual(['intermediate-progress', 'final-after-progress']);
+    await ctx.expectResumeMatches();
+  });
+
+  it('retains allowsSilentPostDelivery across a transient provider retry on a background notification step and silently ends idle background wakeup turns', async () => {
+    await messageAgent({ initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    declareNormalCompletions();
+    const loop = ctx.get(IAgentLoopService);
+    const prompts = ctx.get(IAgentPromptService);
+    let retriedOnce = false;
+    let driverKindOnRetry: string | undefined;
+    let driverStateOnRetry: string | undefined;
+    const retryTrigger = new Error('transient-loop-step-retry-trigger');
+    const retryHandler = loop.registerLoopErrorHandler({
+      id: 'retry-materialized-bg-step',
+      match: (context) =>
+        !retriedOnce &&
+        context.failedDriver !== undefined &&
+        String((context.error as { cause?: unknown })?.cause ?? context.error).includes('transient-loop-step-retry-trigger'),
+      handle: async (context) => {
+        retriedOnce = true;
+        driverKindOnRetry = context.failedDriver?.kind;
+        driverStateOnRetry = context.failedDriver?.state;
+        context.retry(context.failedDriver!, { at: 'head' });
+        return true;
+      },
+    }, { before: 'step-retry' });
+    try {
+      ctx.mockNextProviderResponse({
+        parts: [],
+        error: retryTrigger,
+      });
+      ctx.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'Retried Turn 1 task notification step still ends silently.', encrypted: 'sig-wakeup-task' }],
+        finishReason: 'completed',
+      });
+      const wakeupAssignment = loop.enqueue(new TaskNotificationStepRequest({
+        role: 'user',
+        content: [{ type: 'text', text: 'Detached job completed with expected exit 0.' }],
+        toolCalls: [],
+        origin: { kind: 'task', taskId: 'task-turn1-bg', status: 'completed', notificationId: 'notif-turn1-bg' },
+      }));
+      const { turn: wakeupTurn } = await wakeupAssignment.assigned;
+      expect(await wakeupTurn.result).toMatchObject({ type: 'completed', steps: 2 });
+      expect(retriedOnce).toBe(true);
+      expect(driverKindOnRetry).toBe('task_notification');
+      expect(driverStateOnRetry).toBe('materialized');
+
+      ctx.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'Turn 2 agent_message wakeup also ends silently.', encrypted: 'sig-wakeup-agent-msg' }],
+        finishReason: 'completed',
+      });
+      const agentWakeup = await prompts.enqueue({
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'Message from agent "worker" (agent-bg):\n\nAll good.' }],
+          toolCalls: [],
+          origin: { kind: 'agent_message', messageId: 'msg-turn2', senderAgentId: 'agent-bg', senderTaskName: 'worker' },
+        },
+      });
+      expect(await agentWakeup.completion).toMatchObject({ state: 'completed' });
+      expect(ctx.contextData().history.some(message => message.role === 'user' && message.content.some(part => part.type === 'text' && part.text === 'Continue.'))).toBe(false);
+    } finally {
+      retryHandler.dispose();
+    }
   });
 
   it.each(['normal', 'classified'] as const)('still silently accepts %s thinking after delivery paired only with compatible tools', async kind => {
@@ -1047,6 +1205,223 @@ describe('SendMessage completion guidance', () => {
     } finally {
       release();
       await hook.dispose();
+    }
+  });
+
+  it.each([false, true])('retains explicit final delivery and tool error flags across a pending-step restore (error=%s)', async hasError => {
+    await messageAgent();
+    declareNormalCompletions();
+    const loop = ctx.get(IAgentLoopService);
+    const control = ctx.get(ISessionExecutionControl);
+    let reached!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { reached = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let appended = 0;
+    const hook = loop.hooks.onDidAppendToolResult.register('pause-final-delivery-batch', async (event, next) => {
+      await next();
+      if (event.toolCallId !== 'final-before-park' && event.toolCallId !== 'receipt-before-park') return;
+      appended += 1;
+      if (appended === 2) reached();
+    });
+    let waits = 0;
+    const receipt = ctx.get(IAgentToolRegistryService).register({
+      name: 'Read', description: 'Inspect the current receipt.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'Read', execute: async () => hasError
+        ? { output: 'Receipt failed.', isError: true }
+        : { output: 'Receipt succeeded.' } }),
+    });
+    const wait = ctx.get(IAgentToolRegistryService).register({
+      name: 'WaitWork', description: 'Wait across an execution pause.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'WaitWork', execute: async () => {
+        waits += 1;
+        await held;
+        return { output: '', executionWait: { kind: 'task', taskIds: ['example-receipt-task'], startedAt: Date.now(), timeoutMs: 5_000 } };
+      } }),
+      resumeExecutionWait: async () => {
+        waits += 1;
+        return { output: 'Wait finished.' };
+      },
+    });
+    ctx.mockNextResponse(
+      { type: 'function', id: 'final-before-park', name: 'SendMessage', arguments: '{"text":"Complete answer.","end_turn":true}' },
+      { type: 'function', id: 'receipt-before-park', name: 'Read', arguments: '{}' },
+      { type: 'function', id: 'wait-before-park', name: 'WaitWork', arguments: '{}' },
+    );
+    ctx.mockNextProviderResponse({ parts: [{ type: 'think', think: 'Receipt inspected after resume.', encrypted: 'sig-pending-receipt' }], finishReason: 'completed' });
+    if (hasError) ctx.mockNextResponse({ type: 'function', id: 'corrected-final', name: 'SendMessage', arguments: '{"text":"Corrected answer.","end_turn":true}' });
+    try {
+      await ctx.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Deliver and check.' }], toolCalls: [] } });
+      await entered;
+      await control.pause({ operationId: 'pause-final-batch' });
+      release();
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+      const point = JSON.parse(JSON.stringify(control.resumePoint('main'))) as ExecutionResumePoint;
+      expect(point.pendingStep).toMatchObject({ stopTurn: true, sendMessageCompletionBlocked: true, anyToolError: hasError, userDeliveryConfirmed: true });
+      expect(loop.preservePausedForExit?.()).toBe(true);
+      await loop.settled();
+      const internal = loop as unknown as {
+        parkedForExit: boolean;
+        resumeExecution(point: ExecutionResumePoint): Promise<Turn | undefined>;
+        pumpTurns(): void;
+      };
+      internal.parkedForExit = false;
+      const resumed = await internal.resumeExecution(point);
+      expect(resumed).toBeDefined();
+      await control.cancelPause({ operationId: 'release-final-batch', pauseOperationId: 'pause-final-batch' });
+      internal.pumpTurns();
+      expect(await resumed!.result).toMatchObject({ type: 'completed', steps: hasError ? 3 : 2 });
+      expect(ctx.llmCalls).toHaveLength(hasError ? 3 : 2);
+      expect(waits).toBe(2);
+      expect(ctx.contextData().history.some(message => message.role === 'user' && message.content.some(part => part.type === 'text' && part.text === 'Continue.'))).toBe(hasError);
+      await ctx.expectResumeMatches();
+    } finally {
+      release();
+      await hook.dispose();
+      await receipt.dispose();
+      await wait.dispose();
+    }
+  });
+
+  it.each([
+    { source: 'task_notification', kind: 'normal' },
+    { source: 'task_notification', kind: 'classified' },
+    { source: 'agent_notify', kind: 'normal' },
+    { source: 'agent_notify', kind: 'classified' },
+  ] as const)('silently ends in 2 steps when $source merges into continuation after SendMessage ($kind)', async ({ source, kind }) => {
+    await messageAgent({ initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    declareNormalCompletions();
+    const loop = ctx.get(IAgentLoopService);
+    const pending = loop.hooks.onDidAppendToolResult.register('merged-background-notification', async (event, next) => {
+      await next();
+      if (event.toolCallId !== 'send-1') return;
+      if (source === 'task_notification') {
+        loop.enqueue(new TaskNotificationStepRequest({
+          role: 'user',
+          content: [{ type: 'text', text: 'Background task finished; no user reply needed.' }],
+          toolCalls: [],
+          origin: { kind: 'task', taskId: 'task-bg-1', status: 'completed', notificationId: 'notif-bg-1' },
+        }));
+      } else {
+        loop.enqueue(new MessageStepRequest({
+          role: 'user',
+          content: [{ type: 'text', text: 'Message from agent "worker" (worker-1):\n\nRoutine status note.' }],
+          toolCalls: [],
+          origin: { kind: 'agent_message', messageId: 'msg-notify-1', senderAgentId: 'worker-1', senderTaskName: 'worker' },
+        }, { kind: 'steer', mergeable: true, turnScoped: false, admission: 'activeTurnOnly', deliveryOrigin: 'mailbox' }));
+      }
+    });
+    try {
+      ctx.mockNextResponse({ type: 'function', id: 'send-1', name: 'SendMessage', arguments: '{"text":"Delivered answer."}' });
+      ctx.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'Notification read; the delivered reply still stands.', encrypted: 'sig-merged-bg' }],
+        finishReason: 'completed',
+        error: kind === 'classified' ? markProviderEventError(new ChatProviderError('Clean thinking-only stop.'), 'antigravity_thinking_only') : undefined,
+      });
+      const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Deliver and handle notifications.' }] });
+      expect(result).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(historyText(1)).toContain(source === 'task_notification' ? 'Background task finished' : 'Routine status note.');
+      expect(ctx.contextData().history.some(message => message.role === 'user' && message.content.some(part => part.type === 'text' && part.text === 'Continue.'))).toBe(false);
+      await ctx.expectResumeMatches();
+    } finally {
+      await pending.dispose();
+    }
+  });
+
+  it('invalidates userDeliveryConfirmed when user steer merges into continuation after SendMessage', async () => {
+    await messageAgent();
+    declareNormalCompletions();
+    const loop = ctx.get(IAgentLoopService);
+    const prompts = ctx.get(IAgentPromptService);
+    let steerCompletion: Promise<unknown> | undefined;
+    const hook = loop.hooks.onDidAppendToolResult.register('steer-invalidates-delivery', async (event, next) => {
+      await next();
+      if (event.toolCallId !== 'send-1') return;
+      const handle = await prompts.enqueue({
+        message: { role: 'user', content: [{ type: 'text', text: 'Also check this follow-up.' }], toolCalls: [], origin: { kind: 'user' } },
+        waitForLaunch: false,
+      });
+      steerCompletion = Promise.all([handle.completion, prompts.steer([handle.id])]);
+    });
+    try {
+      ctx.mockNextResponse({ type: 'function', id: 'send-1', name: 'SendMessage', arguments: '{"text":"First answer."}' });
+      ctx.mockNextResponse({ type: 'think', think: 'Thinking before answering the new user steer.' });
+      ctx.mockNextResponse({ type: 'function', id: 'send-2', name: 'SendMessage', arguments: '{"text":"Follow-up answer.","end_turn":true}' });
+      const outcome = await prompts.submitAndWait({ input: [{ type: 'text', text: 'Answer first.' }] });
+      await steerCompletion;
+      await loop.settled();
+      expect(outcome.state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(3);
+      expect(historyText(1)).toContain('Also check this follow-up.');
+      expect(historyText(2)).toContain('Continue.');
+      expect(sendCalls()).toEqual(['send-1', 'send-2']);
+      await ctx.expectResumeMatches();
+    } finally {
+      await hook.dispose();
+    }
+  });
+
+  it('does not throw thinkingOnlyContinuationExhausted on a thinking-only followup when userDeliveryConfirmed is true with normal completionAuthority', async () => {
+    await messageAgent();
+    declareNormalCompletions();
+    const loop = ctx.get(IAgentLoopService);
+    const hook = loop.hooks.onDidAppendToolResult.register('enqueue-thinking-only-followup', async (event, next) => {
+      await next();
+      if (event.toolCallId === 'send-final') {
+        loop.enqueue(new ThinkingOnlyContinuationStepRequest());
+      }
+    });
+    try {
+      ctx.mockNextResponse({ type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"Final answer.","end_turn":true}' });
+      ctx.mockNextResponse({ type: 'think', think: 'Confirmed delivery already stands.', encrypted: 'sig-followup-converge' });
+      const outcome = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Deliver once.' }] });
+      expect(outcome).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(ctx.llmCalls).toHaveLength(2);
+      await ctx.expectResumeMatches();
+    } finally {
+      await hook.dispose();
+    }
+  });
+
+  it('does not trigger silentPostDeliveryTurnEnd when completionAuthority is not normal during active goal mode', async () => {
+    await messageAgent();
+    const loop = ctx.get(IAgentLoopService);
+    const goals = ctx.get(IAgentGoalService);
+    const requester = ctx.get(IAgentLLMRequesterService);
+    const start = requester.start.bind(requester);
+    let stepIndex = 0;
+    vi.spyOn(requester, 'start').mockImplementation((...args) => {
+      const task = start(...args);
+      const current = stepIndex++;
+      if (current === 1) {
+        return { ...task, result: task.result.then(response => ({ ...response, completionAuthority: undefined })) };
+      }
+      return { ...task, result: task.result.then(response => ({ ...response, completionAuthority: 'normal' as const })) };
+    });
+    const createGoal = loop.hooks.onDidAppendToolResult.register('goal-on-send', async (event, next) => {
+      await next();
+      if (event.toolCallId === 'send-goal-step') await goals.createGoal({ objective: 'Finish remaining goal work' });
+    });
+    const finishGoal = loop.hooks.onWillBeginStep.register('finish-goal-turn', async (event, next) => {
+      if (event.turnId !== 0) {
+        expect(goals.getGoal().goal?.status).toBe('active');
+        await goals.markComplete();
+      }
+      await next();
+    });
+    try {
+      ctx.mockNextResponse({ type: 'function', id: 'send-goal-step', name: 'SendMessage', arguments: '{"text":"Working on goal."}' });
+      ctx.mockNextResponse({ type: 'think', think: 'Non-normal authority should not silently close.' });
+      ctx.mockNextResponse({ type: 'text', text: 'Goal continuation evaluated.' });
+      const outcome = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Start goal.' }] });
+      await loop.settled();
+      expect(outcome.state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(3);
+      expect(goals.getGoal().goal).toBeNull();
+    } finally {
+      await finishGoal.dispose();
+      await createGoal.dispose();
     }
   });
 
@@ -2119,7 +2494,7 @@ describe('SendMessage native TTS synthesis and voice routing', () => {
       end_turn: true,
     }, { turnId: 0, toolCallId: 'discord-append', signal: new AbortController().signal });
     const appendWire = JSON.parse(appendResult.output as string);
-    expect(mediaMock.start).toHaveBeenCalledOnce();
+    expect(mediaMock.start).not.toHaveBeenCalled();
     expect(discordSent).toHaveLength(1);
     expect(discordSent[0]?.input.text).toBe('Deliverable text body');
     expect(discordSent[0]?.input.attachments).toEqual([]);
@@ -2134,9 +2509,129 @@ describe('SendMessage native TTS synthesis and voice routing', () => {
           unsupported: ['voice'],
         },
       ],
-      attachments: [expect.objectContaining({ kind: 'voice', mime_type: 'audio/ogg' })],
     });
-    expect(appendResult.stopTurn).toBeUndefined();
+    expect(appendWire.attachments).toBeUndefined();
+    expect(appendResult.userDeliveryConfirmed).toBe(true);
+    expect(appendResult.stopTurn).toBe(true);
+  });
+
+  it('delivers text and marks partial with unsupported voice for voice_mode=append on a non-voice channel without TTS configured', async () => {
+    const wechatSent: { input: Parameters<UserMessageChannel['send']>[0]; skipped: readonly string[] }[] = [];
+    const wechatChannel: UserMessageChannel = {
+      id: 'im:wechat-1',
+      kind: 'im',
+      bound: true,
+      enabled: true,
+      capabilities: [{ kind: 'image', mimeTypes: ['image/*'] }, { kind: 'file' }],
+      send: async (input, skipped) => {
+        wechatSent.push({ input, skipped });
+        return { status: 'delivered', messageIds: ['wx_msg_1'] };
+      },
+    };
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => [wechatChannel],
+          sendMessage: async (input) => routeUserMessage(input, [wechatChannel]),
+        });
+      }),
+    );
+
+    const implicitResult = await execute({
+      text: 'Plain WeChat reply even with append mode.',
+      voice_mode: 'append',
+      end_turn: true,
+    }, { turnId: 0, toolCallId: 'wechat-append-implicit', signal: new AbortController().signal });
+    const implicitWire = JSON.parse(implicitResult.output as string);
+    expect(wechatSent).toHaveLength(1);
+    expect(wechatSent[0]?.input.text).toBe('Plain WeChat reply even with append mode.');
+    expect(wechatSent[0]?.input.attachments).toEqual([]);
+    expect(implicitWire).toMatchObject({
+      delivered_to: ['user'],
+      delivery: 'delivered',
+      channels: [
+        {
+          channel_id: 'im:wechat-1',
+          status: 'partial',
+          message_ids: ['wx_msg_1'],
+          unsupported: ['voice'],
+        },
+      ],
+    });
+    expect(implicitWire.attachments).toBeUndefined();
+    expect(implicitResult.userDeliveryConfirmed).toBe(true);
+    expect(implicitResult.stopTurn).toBe(true);
+
+    const explicitResult = await execute({
+      text: 'Explicit WeChat reply with append mode.',
+      channel: 'im:wechat-1',
+      voice_mode: 'append',
+      end_turn: true,
+    }, { turnId: 0, toolCallId: 'wechat-append-explicit', signal: new AbortController().signal });
+    expect(explicitResult.userDeliveryConfirmed).toBe(true);
+    expect(explicitResult.stopTurn).toBe(true);
+  });
+
+  it('falls back to text delivery with partial receipt and TTS detail when TTS synthesis throws in voice_mode=append, while voice_mode=only still fails', async () => {
+    const failingMedia = {
+      ...mockTtsMediaService(),
+      start: vi.fn(async () => {
+        throw new Error('tts_provider_unavailable');
+      }),
+    };
+    const voiceSent: Parameters<UserMessageChannel['send']>[0][] = [];
+    const voiceChannel: UserMessageChannel = {
+      id: 'im:telegram-1',
+      kind: 'im',
+      bound: true,
+      enabled: true,
+      capabilities: [{ kind: 'voice', mimeTypes: ['audio/ogg'], rendering: 'native_voice' }],
+      send: async (input) => {
+        voiceSent.push(input);
+        return { status: 'delivered', messageIds: ['tg_msg_1'] };
+      },
+    };
+    await messageAgent(
+      appServices((reg) => {
+        reg.definePartialInstance(IPluginMediaService, failingMedia);
+        reg.definePartialInstance(IUserMessageRouter, {
+          listChannels: async () => [voiceChannel],
+          sendMessage: async (input) => routeUserMessage(input, [voiceChannel]),
+        });
+      }),
+    );
+
+    const appendRes = await execute({
+      text: 'Text still delivers when TTS errors.',
+      voice_mode: 'append',
+      end_turn: true,
+    }, { turnId: 0, toolCallId: 'tts-error-append', signal: new AbortController().signal });
+    const appendWire = JSON.parse(appendRes.output as string);
+    expect(failingMedia.start).toHaveBeenCalledOnce();
+    expect(voiceSent).toHaveLength(1);
+    expect(voiceSent[0]?.text).toBe('Text still delivers when TTS errors.');
+    expect(voiceSent[0]?.attachments).toEqual([]);
+    expect(appendWire).toMatchObject({
+      delivered_to: ['user'],
+      delivery: 'delivered',
+      channels: [
+        {
+          channel_id: 'im:telegram-1',
+          status: 'partial',
+          message_ids: ['tg_msg_1'],
+          unsupported: ['voice'],
+          detail: 'tts_provider_unavailable',
+        },
+      ],
+    });
+    expect(appendRes.userDeliveryConfirmed).toBe(true);
+    expect(appendRes.stopTurn).toBe(true);
+
+    await expect(execute({
+      text: 'Voice-only never downgrades to text.',
+      voice_mode: 'only',
+    }, { turnId: 0, toolCallId: 'tts-error-only', signal: new AbortController().signal })).rejects.toThrow(/tts_provider_unavailable/);
+    expect(voiceSent).toHaveLength(1);
   });
 
   it('fans out voice_mode=only to supported channels without sending fallback text to unsupported channels', async () => {

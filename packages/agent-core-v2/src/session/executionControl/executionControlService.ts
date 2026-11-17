@@ -11,7 +11,7 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ISessionExecutionControl, type ExecutionControlState, type ExecutionPauseParticipant, type ExecutionResumePoint } from './executionControl';
-import { resumeAgentTask } from './resumeAgentTask';
+import { resumeAgentTask, settleUnresumedAgentTask } from './resumeAgentTask';
 
 interface ControlDocument {
   readonly version: 1 | 2;
@@ -179,7 +179,13 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
       const state: ExecutionControlState = { ...this.document.state, phase: failure === undefined ? 'paused' : 'failed', pausedAt: failure === undefined ? new Date().toISOString() : undefined, agents, error: failure };
       try {
         for (const agent of this.lifecycle.list()) {
-          if (agent.accessor.get(IAgentPromptService).hasQueuedWork() || agent.accessor.get(IAgentTaskService).hasUnfinishedWork(false)) requiredAgents.add(agent.id);
+          const tasks = agent.accessor.get(IAgentTaskService);
+          if (agent.accessor.get(IAgentPromptService).hasQueuedWork() || tasks.hasUnfinishedWork(false)) requiredAgents.add(agent.id);
+          for (const task of tasks.list?.(true) ?? []) {
+            if (task.kind === 'agent' && task.agentId !== undefined && this.lifecycle.get(task.agentId) !== undefined) {
+              requiredAgents.add(task.agentId);
+            }
+          }
         }
         await this.save({ ...this.document, checkpointComplete: failure === undefined, requiredAgents: [...requiredAgents], state, points, receipts: { ...this.document.receipts, [operationId]: { action: 'pause', state } } });
       } catch (error) {
@@ -213,11 +219,26 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
         const liveCheckpoint = current.phase === 'paused' && queuedOwners.every(agentId => this.participants.has(agentId)) &&
           Object.entries(this.document.points).every(([agentId, point]) =>
             this.resumePoint(agentId) === undefined || (!this.parked.has(agentId) && this.participants.get(agentId)?.turnId?.() === point.turnId));
-        if (alreadyCanceled || current.phase === 'pausing' || liveCheckpoint) {
+        const failedIncomplete = current.phase === 'failed' && !this.document.checkpointComplete;
+        if (alreadyCanceled || current.phase === 'pausing' || liveCheckpoint || failedIncomplete) {
+          if (failedIncomplete && !alreadyCanceled) {
+            for (const agentId of this.requiredOwners(queuedOwners)) {
+              if (!this.participants.has(agentId)) await this.lifecycle.create({ agentId });
+            }
+          }
           const state: ExecutionControlState = alreadyCanceled ? current
-            : { ...current, phase: 'running', agents: [], cancelPauseOperationId: input.operationId };
+            : { ...current, phase: 'running', agents: [], cancelPauseOperationId: input.operationId, error: undefined };
           await this.save({ ...this.document, checkpointComplete: false, state, points: {}, receipts: { ...this.document.receipts,
             [input.pauseOperationId]: { action: 'pause', state }, [input.operationId]: { action, state } } });
+          if (failedIncomplete && !alreadyCanceled) {
+            for (const [agentId, participant] of this.participants) {
+              this.parked.delete(agentId);
+              if (participant.turnId?.() === undefined) {
+                const agent = this.lifecycle.get(agentId);
+                if (agent !== undefined) await settleUnresumedAgentTask(agent);
+              }
+            }
+          }
           return state;
         }
       }
@@ -242,12 +263,16 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
       try {
         await this.save(pending);
         for (const [agentId, participant] of this.participants) {
+          this.parked.delete(agentId);
           const turn = await participant.resume(this.resumePoint(agentId));
           if (turn !== undefined && !this.attachedTurns.has(turn)) {
             const agent = this.lifecycle.get(agentId)!;
             await resumeAgentTask(agent, turn);
             agent.accessor.get(IAgentPromptService).attachPausedTurn?.(turn);
             this.attachedTurns.add(turn);
+          } else if (turn === undefined && participant.turnId?.() === undefined) {
+            const agent = this.lifecycle.get(agentId);
+            if (agent !== undefined) await settleUnresumedAgentTask(agent);
           }
         }
         const resumed: ExecutionControlState = { ...state, phase: 'running', resumedAt: new Date().toISOString(), agents: [] };
@@ -309,6 +334,7 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
       this.settleController?.abort(abortError('Pause request withdrawn'));
       this.settleController = undefined;
       this.invalidatedTurns.clear();
+      this.parked.clear();
     } else this.pauseController.abort(abortError('Execution pause requested'));
     this.changed.fire(structuredClone(document.state));
   }

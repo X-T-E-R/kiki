@@ -557,6 +557,10 @@ class NotificationSessionPorts implements ImSessionPorts {
     attachmentsDir: string;
   }): Promise<string | undefined> {
     const policy = this.readPolicy();
+    if (policy.asr_mode === 'off') {
+      this.warnAsr('off');
+      return undefined;
+    }
     if (input.originalPath === undefined) {
       this.warnAsr('audio_path_missing');
       return undefined;
@@ -569,10 +573,6 @@ class NotificationSessionPorts implements ImSessionPorts {
       const wavPath = audioWavAttachmentPath(input.attachmentsDir, input.fileId);
       const convertedPath = await convertAudioToWav(input.originalPath, wavPath, signal, this.core.accessor.get(IHostProcessService), configuredFfmpeg || 'ffmpeg');
       signal.throwIfAborted();
-      if (policy.asr_mode === 'off') {
-        this.warnAsr('off');
-        return undefined;
-      }
       const plugins = this.core.accessor.get(IPluginHostService);
       const requested = policy.asr_provider?.trim();
       let providerRef = requested;
@@ -881,6 +881,25 @@ export function replyChannelIds(sessionId: string, metadata: ImMessageMetadata, 
   }).map(binding => `im:${binding.id}`);
 }
 
+function isDeliveredUserChannelReceipt(channel: Record<string, unknown> | undefined): boolean {
+  if (channel === undefined || channel['borrowed'] === true) return false;
+  if (channel['status'] === 'delivered') return true;
+  if (channel['status'] !== 'partial') return false;
+  const detail = typeof channel['detail'] === 'string' ? channel['detail'] : undefined;
+  if (
+    detail === 'text_failed' ||
+    detail?.startsWith('text_failed:') ||
+    detail === 'text_empty' ||
+    detail?.startsWith('text_empty:')
+  ) {
+    return false;
+  }
+  if (Array.isArray(channel['unsupported']) && channel['unsupported'].length > 0) return true;
+  if (detail !== undefined && detail.length > 0) return true;
+  const messageIds = channel['message_ids'];
+  return !Array.isArray(messageIds) || messageIds.some((id) => typeof id === 'string' && id.length > 0);
+}
+
 function deliveredUserChannels(output: string): Set<string> {
   let value: unknown;
   try {
@@ -892,12 +911,19 @@ function deliveredUserChannels(output: string): Set<string> {
   const messages = Array.isArray(receipt?.['messages']) ? receipt['messages'].map(recordOf) : [receipt];
   let delivered: Set<string> | undefined;
   for (const message of messages) {
-    if (!Array.isArray(message?.['delivered_to']) || !message['delivered_to'].includes('user') || !Array.isArray(message['channels'])) return new Set();
+    if (
+      !Array.isArray(message?.['delivered_to']) ||
+      !message['delivered_to'].includes('user') ||
+      !Array.isArray(message['channels'])
+    ) {
+      return new Set();
+    }
+    if (message['voice_only'] === true) continue;
     const channels = new Set<string>();
     for (const item of message['channels']) {
       const channel = recordOf(item);
       if (typeof channel?.['channel_id'] === 'string' && channel['channel_id'].startsWith('im:') &&
-          channel['status'] === 'delivered' && channel['borrowed'] !== true) channels.add(channel['channel_id']);
+          isDeliveredUserChannelReceipt(channel)) channels.add(channel['channel_id']);
     }
     delivered = delivered === undefined ? channels : new Set([...delivered].filter(channel => channels.has(channel)));
   }

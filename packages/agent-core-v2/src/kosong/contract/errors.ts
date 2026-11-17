@@ -410,6 +410,22 @@ export function isRetryableMissingTerminalError(error: unknown): boolean {
   return isRetryableUncommittedProviderError(error, (_cause, code) => code === 'antigravity_missing_terminal');
 }
 
+export function isRetryableUncommittedStreamOverloadError(error: unknown): boolean {
+  return isRetryableUncommittedProviderError(error, (cause, code) => {
+    if (cause instanceof APIProviderOverloadedError || cause instanceof APIProviderRateLimitError) return true;
+    if (cause instanceof APIStatusError && !(cause instanceof APIProviderQuotaExhaustedError) &&
+      (cause.statusCode === 429 || (cause.statusCode >= 500 && cause.statusCode <= 599))) {
+      return true;
+    }
+    const details = providerErrorMetadata(cause);
+    const type = details['upstreamErrorType'];
+    return details['errorSource'] === 'provider_event' && (
+      code === 'server_error' || code === 'overloaded_error' || code === 'service_unavailable' ||
+      type === 'service_unavailable_error' || type === 'server_error' || type === 'overloaded_error'
+    );
+  });
+}
+
 function isRetryableUncommittedProviderError(error: unknown, matches: (cause: object, code: unknown) => boolean): boolean {
   if (isAbortError(error)) return false;
   const visited = new Set<object>();

@@ -34,6 +34,7 @@ import type { Task } from '@kiki/protocol';
 
 import {
   MAIN_AGENT_ID,
+  mergeAgentViewIntoForest,
   type ApprovalBlock,
   type QuestionBlock,
 } from '@kiki/session-core/session';
@@ -62,7 +63,7 @@ import {
 import { InspectorNow, NowAction, pendingBlocks } from '../agent-panel/InspectorNow';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
-import { INSPECTOR_HEAD, INSPECTOR_LINK, InspectorRow, InspectorSection } from '../agent-panel/InspectorSection';
+import { INSPECTOR_HEAD, INSPECTOR_LINK, InspectorChevron, InspectorRow, InspectorSection } from '../agent-panel/InspectorSection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useInspectorPeek } from '../inspectorFocus';
 import { RelativeTime } from '../RelativeTime';
@@ -79,7 +80,7 @@ import { SessionCronSection } from './SessionCronSection';
 import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 import { resolvePluginLocalizedText, selectInspectorTabSlots } from '@kiki/session-core';
-import { PluginPanelHost } from '../capabilities/PluginPanelHost';
+import { requestSessionPluginPanelOpen, useSessionPluginPanelSnapshot } from '../../lib/pluginPanelPreview';
 import { usePluginGuiSlots } from '../plugins/PluginComposerSlots';
 
 /**
@@ -272,7 +273,7 @@ function useLazyPanelSlot() {
 
 export function Rail({
   state,
-  forest,
+  forest: forestProp,
   selectedAgentId,
   subagent,
   taskOwnerAgentId,
@@ -292,6 +293,7 @@ export function Rail({
   const navigate = useNavigate();
   const [mode, chooseMode] = useRailMode();
   const preview = useMediaPreview();
+  const pluginPanelSnapshot = useSessionPluginPanelSnapshot();
   const session = state.session;
   const { slots: pluginGuiSlots } = usePluginGuiSlots({
     sessionId: state.sessionId,
@@ -307,6 +309,11 @@ export function Rail({
   const panelSlot = useLazyPanelSlot();
   const peekAgentId = useInspectorPeek();
   const focusedAgentId = selectedAgentId ?? MAIN_AGENT_ID;
+  const isRoutedChildPage = focusedAgentId !== MAIN_AGENT_ID && onInspectMain === undefined;
+  const forest = useMemo(
+    () => (isRoutedChildPage ? mergeAgentViewIntoForest(forestProp, focusedAgentId, state) : forestProp),
+    [forestProp, focusedAgentId, isRoutedChildPage, state],
+  );
   // A session driven from outside Kiki names that client instead of a model.
   const externalDriver = useMemo(
     () => readExternalClientMark(session?.metadata)?.clientName,
@@ -354,7 +361,7 @@ export function Rail({
     () => extractBranchFoldSummaries(state.blocks),
     [state.blocks],
   );
-  const showBranches = sessionBranches.all.length > 0;
+  const showBranches = !isRoutedChildPage && sessionBranches.all.length > 0;
   const viewingBranch = isSessionBranchNode(focusedNode);
   const showTasks = backgroundTasks.length > 0;
   const showTerminateAll = show.stopAll && onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
@@ -415,7 +422,7 @@ export function Rail({
     try {
       const results = await Promise.allSettled(
         snapshot.map((task) =>
-          onStopAgentTask(forest.byId[task.agent_id ?? '']?.parentAgentId ?? MAIN_AGENT_ID, task.id),
+          onStopAgentTask(forest.byId[task.agent_id ?? '']?.parentAgentId ?? focusedAgentId, task.id),
         ),
       );
       const failed = results.filter((result) => result.status === 'rejected');
@@ -601,12 +608,12 @@ export function Rail({
     </div>
   );
   // One entry for this conversation's schedule; it renders nothing when the
-  // conversation has none.
-  const cronSection = (
+  // conversation has none, and stays off routed child/branch pages.
+  const cronSection = !isRoutedChildPage ? (
     <div className={`${SECTION} empty:hidden`} data-rail-section="cron">
       <SessionCronSection sessionId={state.sessionId} />
     </div>
-  );
+  ) : null;
   const terminateAllAction = showTerminateAll ? (
     <button
       type="button"
@@ -682,28 +689,36 @@ export function Rail({
       {pluginInspectorTabs.map((panel) => {
         const panelKey = `${panel.pluginId}:${panel.panelId}`;
         const title = resolvePluginLocalizedText(panel.title, locale);
+        const isActive =
+          preview?.activePluginPanelKey === panelKey ||
+          (pluginPanelSnapshot.activePluginPanelKey === panelKey &&
+            (pluginPanelSnapshot.sessionId === undefined || pluginPanelSnapshot.sessionId === state.sessionId));
         return (
-          <RailSection
-            key={panelKey}
-            title={title}
-            defaultOpen={false}
-            data-plugin-inspector-tab={panelKey}
-          >
-            <div className="pt-1.5">
-              <PluginPanelHost
-                pluginId={panel.pluginId}
-                panelId={panel.panelId}
-                label={title}
-                sessionId={state.sessionId}
-                target={
-                  session?.workspace_id !== undefined
-                    ? { workspace_id: session.workspace_id }
-                    : { session_id: state.sessionId }
+          <div key={panelKey} data-plugin-inspector-tab={panelKey} className="flex min-h-7 items-center">
+            <button
+              type="button"
+              aria-pressed={isActive}
+              data-plugin-inspector-open={panelKey}
+              data-plugin-panel-active={isActive ? 'true' : undefined}
+              onClick={() => {
+                if (preview?.openPluginPanel !== undefined) {
+                  preview.openPluginPanel(panel.pluginId, panel.panelId, title);
+                  return;
                 }
-                className="h-64 w-full rounded-lg border border-hairline bg-paper"
-              />
-            </div>
-          </RailSection>
+                requestSessionPluginPanelOpen(
+                  { pluginId: panel.pluginId, panelId: panel.panelId, title },
+                  state.sessionId,
+                );
+              }}
+              className={`group -mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+                isActive ? 'bg-ink/[0.06] text-ink' : 'hover:bg-ink/[0.04]'
+              }`}
+            >
+              <span className={isActive ? 'shrink-0 text-[12px] font-medium text-ink' : INSPECTOR_HEAD}>{title}</span>
+              <span className="ml-auto" />
+              <InspectorChevron open={false} />
+            </button>
+          </div>
         );
       })}
       <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
@@ -713,7 +728,7 @@ export function Rail({
         </RailSection>
       ) : null}
       {show.comms && session !== undefined ? <InspectorComms sessionId={session.id} /> : null}
-      {session !== undefined ? (
+      {!isRoutedChildPage && session !== undefined ? (
         <div className="empty:hidden">
           <SessionChannelsRail
             sessionId={state.sessionId}
@@ -724,9 +739,11 @@ export function Rail({
           />
         </div>
       ) : null}
-      <div className="empty:hidden">
-        <PersonaSettingsUpdate sessionId={state.sessionId} />
-      </div>
+      {!isRoutedChildPage ? (
+        <div className="empty:hidden">
+          <PersonaSettingsUpdate sessionId={state.sessionId} />
+        </div>
+      ) : null}
       {session !== undefined ? (
         <RailSection
           title={t('rail.group.session')}
@@ -768,7 +785,7 @@ export function Rail({
       <div data-rail-overview-well>
         {panelSlot.mounted ? (
           <AgentPanelContainer
-            key={`overview:${mode === 'cockpit' ? state.sessionId : agentPanelKey}`}
+            key={`overview:${mode === 'cockpit' && !isRoutedChildPage ? state.sessionId : agentPanelKey}`}
             state={state}
             forest={forest}
             agentId={focusedAgentId}
@@ -782,6 +799,10 @@ export function Rail({
             onToggleBranch={toggleBranch}
             sessionPending={pending}
             mainLabel={t('rail.ownerMain')}
+            scopeRootId={isRoutedChildPage ? focusedAgentId : MAIN_AGENT_ID}
+            rootBusy={isRoutedChildPage ? busy : undefined}
+            rootTurnStartedAt={isRoutedChildPage ? runStartedAt : undefined}
+            rootLabel={isRoutedChildPage ? (focusedNode?.label ?? focusedAgentId) : undefined}
           />
         ) : renderOverview(null, null)}
       </div>
@@ -861,7 +882,7 @@ export function Rail({
         sessionId={state.sessionId}
         agentId={focusedAgentId}
         label={focusedNode?.label ?? focusedAgentId}
-        fallbackModel={focusedNode?.model ?? (focusedAgentId === MAIN_AGENT_ID ? state.model : undefined)}
+        fallbackModel={focusedNode?.model ?? (focusedAgentId === MAIN_AGENT_ID || isRoutedChildPage ? state.model : undefined)}
         workspaceId={session?.workspace_id}
         cwd={session?.metadata.cwd}
         // Only the main is driven; a sub agent under it runs a real model.

@@ -64,7 +64,7 @@ export function classifyOutboundPairFailure(error: unknown): I18nKey | null {
   return connectionFailureText(message);
 }
 
-const BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create'];
+const BASE_BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create'];
 
 function remainingLabel(expiresAt: number, now: number): string {
   const remaining = Math.max(0, expiresAt - now);
@@ -137,7 +137,8 @@ function OutboundPairSheet({
   const [label, setLabel] = useState('');
   const [endpoint, setEndpoint] = useState('');
   const [pairingFingerprint, setPairingFingerprint] = useState('');
-  const [requestBridge, setRequestBridge] = useState(false);
+  const [requestBridge, setRequestBridge] = useState(true);
+  const [borrowTools, setBorrowTools] = useState(true);
   const [background, setBackground] = useState(true);
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<Feedback>(null);
@@ -160,12 +161,17 @@ function OutboundPairSheet({
     setSaving(true);
     setFailure(null);
     try {
+      const effectiveBorrowTools = requestBridge && borrowTools;
       const record = await connectionsApi(client).pair({
         endpoint: completedEndpoint,
         code: code.trim(),
-        ...(label.trim() === '' ? {} : { label: label.trim() }),
+        label: label.trim() === '' ? undefined : label.trim(),
         backgroundSummary: background,
         requestBridge,
+        borrowTools: effectiveBorrowTools,
+        bridgeOperations: requestBridge
+          ? (effectiveBorrowTools ? [...BASE_BRIDGE_OPERATIONS, 'tools'] : [...BASE_BRIDGE_OPERATIONS])
+          : undefined,
         fingerprint: pairingFingerprint || undefined,
       });
       onPaired?.(record);
@@ -294,6 +300,27 @@ function OutboundPairSheet({
               setTouched((state) => ({ ...state, endpoint: true }));
             }}
           />
+          {pairingFingerprint !== '' ? (
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <span
+                data-remote-tls-pinned
+                title={pairingFingerprint}
+                className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-ink/[0.04] px-2.5 py-0.5 font-mono text-[11px] text-ink-soft"
+              >
+                <Icon name="lock" size={12} className="shrink-0 text-success" />
+                <span>{t('st.remote.tlsPinnedBadge', { fingerprint: fingerprint(pairingFingerprint, 8, 4) })}</span>
+                <button
+                  type="button"
+                  data-remote-tls-pinned-clear
+                  aria-label={t('st.remote.tlsPinnedClear')}
+                  onClick={() => { setPairingFingerprint(''); }}
+                  className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.08] hover:text-ink"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </span>
+            </div>
+          ) : null}
           {touched.endpoint && endpointProblem !== null ? (
             <p className="text-[12px] text-danger" role="alert" data-remote-endpoint-problem>
               {t(endpointProblem)}
@@ -359,20 +386,38 @@ function OutboundPairSheet({
         </SettingField>
 
         <div className="space-y-3 border-t border-hairline pt-4">
-          <label className="flex cursor-pointer items-start gap-2.5 text-[13px] text-ink" htmlFor="remote-connection-request-bridge">
-            <input
-              id="remote-connection-request-bridge"
-              type="checkbox"
-              data-remote-request-bridge
-              checked={requestBridge}
-              onChange={(event) => { setRequestBridge(event.target.checked); }}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
-            />
-            <span className="min-w-0 flex-1">
-              <span className="block font-medium text-ink">{t('st.remote.requestBridge')}</span>
-              <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t('st.remote.requestBridgeHint')}</span>
-            </span>
-          </label>
+          <div className="space-y-2.5">
+            <label className="flex cursor-pointer items-start gap-2.5 text-[13px] text-ink" htmlFor="remote-connection-request-bridge">
+              <input
+                id="remote-connection-request-bridge"
+                type="checkbox"
+                data-remote-request-bridge
+                checked={requestBridge}
+                onChange={(event) => { setRequestBridge(event.target.checked); }}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium text-ink">{t('st.remote.requestBridge')}</span>
+                <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t('st.remote.requestBridgeHint')}</span>
+              </span>
+            </label>
+
+            <label
+              className={`ml-6 flex items-start gap-2.5 text-[12.5px] ${requestBridge ? 'cursor-pointer text-ink' : 'cursor-not-allowed text-ink-faint opacity-60'}`}
+              htmlFor="remote-connection-borrow-tools"
+            >
+              <input
+                id="remote-connection-borrow-tools"
+                type="checkbox"
+                data-remote-borrow-tools
+                checked={requestBridge && borrowTools}
+                disabled={!requestBridge}
+                onChange={(event) => { setBorrowTools(event.target.checked); }}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
+              />
+              <span className="font-medium">{t('st.remote.borrowTools')}</span>
+            </label>
+          </div>
 
           <label className="flex cursor-pointer items-start gap-2.5 text-[13px] text-ink" htmlFor="remote-connection-background">
             <input
@@ -412,7 +457,8 @@ function InboundPairSheet({
   const gateAlreadyOn = inboundStatus.data?.enabled === true;
   const devBypass = inboundStatus.data?.unavailableReason === 'dangerous_auth_bypass';
 
-  const [allowBridge, setAllowBridge] = useState(false);
+  const [allowBridge, setAllowBridge] = useState(true);
+  const [allowTools, setAllowTools] = useState(true);
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<Feedback>(null);
   const [issued, setIssued] = useState<PairCodeCreateOutput | null>(null);
@@ -440,7 +486,12 @@ function InboundPairSheet({
     try {
       const created = await connectionsApi(client).createPairCode(
         allowBridge
-          ? { allowBridge: true, bridgeOperations: [...BRIDGE_OPERATIONS] }
+          ? {
+              allowBridge: true,
+              bridgeOperations: allowTools
+                ? [...BASE_BRIDGE_OPERATIONS, 'tools']
+                : [...BASE_BRIDGE_OPERATIONS],
+            }
           : { allowBridge: false },
       );
       setBaselineGrantIds(knownGrants);
@@ -506,17 +557,35 @@ function InboundPairSheet({
               <span className="font-medium text-ink">{t('st.inbound.consentOpen')}</span>
             </label>
 
-            <label className="flex cursor-pointer items-start gap-2.5 text-[13px] text-ink" htmlFor="inbound-consent-bridge">
-              <input
-                id="inbound-consent-bridge"
-                type="checkbox"
-                data-inbound-consent-bridge
-                checked={allowBridge}
-                onChange={(event) => { setAllowBridge(event.target.checked); }}
-                className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
-              />
-              <span className="font-medium text-ink">{t('st.inbound.consentBridge')}</span>
-            </label>
+            <div className="space-y-2">
+              <label className="flex cursor-pointer items-start gap-2.5 text-[13px] text-ink" htmlFor="inbound-consent-bridge">
+                <input
+                  id="inbound-consent-bridge"
+                  type="checkbox"
+                  data-inbound-consent-bridge
+                  checked={allowBridge}
+                  onChange={(event) => { setAllowBridge(event.target.checked); }}
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
+                />
+                <span className="font-medium text-ink">{t('st.inbound.consentBridge')}</span>
+              </label>
+
+              <label
+                className={`ml-6 flex items-start gap-2.5 text-[12.5px] ${allowBridge ? 'cursor-pointer text-ink-soft' : 'cursor-not-allowed text-ink-faint opacity-60'}`}
+                htmlFor="inbound-consent-tools"
+              >
+                <input
+                  id="inbound-consent-tools"
+                  type="checkbox"
+                  data-inbound-consent-tools
+                  checked={allowBridge && allowTools}
+                  disabled={!allowBridge}
+                  onChange={(event) => { setAllowTools(event.target.checked); }}
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-hairline-strong accent-selected-ink"
+                />
+                <span>{t('st.inbound.consentTools')}</span>
+              </label>
+            </div>
           </div>
 
           {!gateAlreadyOn && !devBypass ? (
@@ -578,6 +647,17 @@ function InboundPairSheet({
           </div>
         ) : null}
 
+        {qrUri !== undefined ? (
+          <CopyField
+            id="inbound-pair-uri-value"
+            dataAttr="inbound-pair-uri"
+            label={t('st.inbound.pairUriLabel')}
+            value={qrUri}
+            copyLabel={t('st.inbound.pairUriCopy')}
+            copiedLabel={t('st.inbound.pairUriCopied')}
+          />
+        ) : null}
+
         <div className="flex flex-wrap items-start justify-between gap-5">
           <div className="min-w-[14rem] flex-1 space-y-3">
             <p data-inbound-code className="font-mono text-[1.75rem] leading-none tracking-[0.14em] text-ink">
@@ -631,19 +711,29 @@ function InboundPairSheet({
           {issued.suggestedEndpoints.length === 0 ? (
             <p className="mt-1 text-[12px] text-ink-faint">{t('st.inbound.codeNoAddress')}</p>
           ) : (
-            <ul className="mt-1.5 space-y-1">
-              {issued.suggestedEndpoints.map((address) => (
-                <li
-                  key={address}
-                  data-inbound-code-address
-                  data-inbound-code-address-active={address === activeEndpoint ? '' : undefined}
-                  onClick={issued.suggestedEndpoints.length > 1 ? () => { setSelectedEndpoint(address); } : undefined}
-                  className={`break-all font-mono text-[12px] ${issued.suggestedEndpoints.length > 1 ? 'cursor-pointer' : ''} ${address === activeEndpoint && issued.suggestedEndpoints.length > 1 ? 'font-medium text-ink' : 'text-ink-soft'}`}
-                >
-                  {address}
-                </li>
-              ))}
-            </ul>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {issued.suggestedEndpoints.map((address) => {
+                const active = address === activeEndpoint;
+                return (
+                  <button
+                    key={address}
+                    type="button"
+                    data-inbound-code-address
+                    data-inbound-code-address-active={active ? '' : undefined}
+                    aria-pressed={active}
+                    onClick={() => { setSelectedEndpoint(address); }}
+                    className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2.5 py-1 text-left font-mono text-[12px] transition-colors ${
+                      active
+                        ? 'border-selected-ink/40 bg-selected font-medium text-selected-ink'
+                        : 'border-hairline bg-ink/[0.02] text-ink-soft hover:border-hairline-strong hover:text-ink'
+                    }`}
+                  >
+                    {active ? <Icon name="check" size={12} className="shrink-0" /> : null}
+                    <span className="break-all">{address}</span>
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
 

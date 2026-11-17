@@ -749,7 +749,7 @@ function ChildAgentWorkspace({
   // The sent message stays on this timeline from the keypress until the
   // projection owns a row under the same prompt id, or until the send settles
   // when the server does not use the key as the prompt id.
-  const [sendEcho, setSendEcho] = useState<OptimisticSubmission & { readonly scope: string }>();
+  const [sendEcho, setSendEcho] = useState<OptimisticSubmission & { readonly scope: string; readonly settledOnServer?: boolean }>();
   const clearSendEcho = (id: string) => { setSendEcho((current) => current?.id === id ? undefined : current); };
   const pendingSendRef = useRef<{
     scope: string; payload: string; key: string; afterModelSwitch: string | undefined;
@@ -796,15 +796,6 @@ function ChildAgentWorkspace({
     setSendNotice(null);
   };
 
-  // The model catalog backing the composer's effort ladder. Same query key as
-  // the main session and the composer itself, so one `/models` fetch feeds
-  // every surface instead of one per workspace.
-  const modelsQuery = useQuery({
-    queryKey: ['models'],
-    queryFn: () => client.listModels(),
-    staleTime: 60_000,
-  });
-
   const {
     state: agentTimelineState,
     actions: timelineActions,
@@ -816,6 +807,18 @@ function ChildAgentWorkspace({
     forest,
   });
   const agentLiveState = agentTimelineState;
+
+  // The model catalog backing the composer's effort ladder. Same query key as
+  // the main session and the composer itself, so one `/models` fetch feeds
+  // every surface instead of one per workspace. Defer until the first-screen
+  // transcript is ready so cold subagent/branch opens never compete in the
+  // browser's 6-connection HTTP/1.1 pool.
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: () => client.listModels(),
+    enabled: controller === null || agentLiveState.transcriptReady || agentLiveState.loaded,
+    staleTime: 60_000,
+  });
   const parentAgentId =
     (controller?.getForest() ?? sessionAgentForest(sessionState)).byId[agentId]?.parentAgentId;
   const subscribeParentAgent = useCallback(
@@ -901,7 +904,7 @@ function ChildAgentWorkspace({
     subagent: selectedSubagent,
     state: agentLiveState,
   });
-  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId;
+  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId ?? (selectedNode?.isBranch === true ? 'native' : undefined);
   const executorBindingQuery = useQuery({
     queryKey: ['agentExecutor', scopeId, sessionId, agentId],
     queryFn: async () => await klient.session(sessionId).getAgentExecutor(agentId) ?? null,
@@ -910,6 +913,14 @@ function ChildAgentWorkspace({
     retry: false,
   });
   const executorId = reportedExecutorId ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
+  const confirmedNativeExecutor =
+    (selectedNode?.executorId ?? selectedSubagent?.executorId) === 'native' ||
+    (executorBindingQuery.isSuccess && (executorBindingQuery.data ?? 'native') === 'native');
+  useEffect(() => {
+    if (confirmedNativeExecutor) {
+      (client as { noteNativeAgent?: (sid: string, aid: string) => void }).noteNativeAgent?.(sessionId, agentId);
+    }
+  }, [agentId, client, confirmedNativeExecutor, sessionId]);
   const externalExecutor = executorId !== undefined && !isNativeExecutor(executorId);
   const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
     executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
@@ -1057,8 +1068,11 @@ function ChildAgentWorkspace({
       throw new Error(t('agentMessage.payloadConflict'));
     }
     if (keyedEcho) {
-      setSendEcho((current) => current?.id === submission.key ? { ...current, status: 'sending' } : current);
+      setSendEcho((current) => current?.id === submission.key ? { ...current, settledOnServer: true } : current);
     } else clearSendEcho(submission.key);
+    if (controller !== null && sessionState.cursor.epoch?.startsWith('cold:') === true) {
+      void controller.resync();
+    }
     if (pendingSendRef.current !== submission) return;
     // A settled acceptance releases the key. Rejected attempts keep it so the
     // composer retry button can recover a response lost after durable accept.
@@ -1320,7 +1334,7 @@ function ChildAgentWorkspace({
   // This agent's own compaction point: a child never inherits its parent's
   // session override, so the read and write address this agent id.
   const contextAutoCompact = useContextMeterAutoCompact({
-    sessionId: !composerDisabled ? sessionId : undefined,
+    sessionId: !composerDisabled && (controller === null || agentLiveState.transcriptReady) ? sessionId : undefined,
     agentId,
     modelId: displayModel,
     modelLabel: resolvedDisplayModel?.display_name ?? displayModel,
@@ -1406,15 +1420,24 @@ function ChildAgentWorkspace({
     [capturedBlocks, forest, agentId],
   );
   const scopedEcho = sendEcho?.scope === sendScope ? sendEcho : undefined;
-  const echoOwned = scopedEcho !== undefined &&
-    agentBlocks.some((block) => block.kind === 'user' && block.promptId === scopedEcho.id);
+  const echoOwned = scopedEcho !== undefined && (
+    agentBlocks.some((block) => block.kind === 'user' && block.promptId === scopedEcho.id) ||
+    agentLiveState.queuedPromptIds.includes(scopedEcho.id)
+  );
   useEffect(() => {
     if (echoOwned) clearSendEcho(scopedEcho.id);
   }, [echoOwned, scopedEcho?.id]);
-  const timelineBlocks = useMemo(
-    () => withOptimisticUserBlock(agentBlocks, scopedEcho),
-    [agentBlocks, scopedEcho],
-  );
+  const timelineBlocks = useMemo(() => {
+    const blocks = withOptimisticUserBlock(agentBlocks, echoOwned ? undefined : scopedEcho);
+    if (scopedEcho?.settledOnServer !== true || blocks === agentBlocks) return blocks;
+    let changed = false;
+    const settled = blocks.map((block) => {
+      if (block.kind !== 'user' || block.promptId !== scopedEcho.id || block.optimisticStatus === undefined) return block;
+      changed = true;
+      return { ...block, optimisticStatus: undefined };
+    });
+    return changed ? settled : blocks;
+  }, [agentBlocks, echoOwned, scopedEcho]);
   // Memoised like the main session's `timelineState`: `Transcript` and its
   // rows compare the state and the callbacks below by identity, so rebuilding
   // them on every render (each composer keystroke) re-rendered the timeline.

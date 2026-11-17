@@ -180,13 +180,14 @@ export function sourceKeyLabel(
   return value;
 }
 
-export function KnownSubtotalMarker() {
+export function KnownSubtotalMarker({ label }: { readonly label?: string } = {}) {
   const { t } = useI18n();
+  const text = label ?? t('usage.accounting.knownSubtotal');
   return (
     <span
       data-usage-accounting-known-subtotal
-      title={t('usage.accounting.knownSubtotal')}
-      aria-label={t('usage.accounting.knownSubtotal')}
+      title={text}
+      aria-label={text}
       className="ml-1 inline-flex align-[-1px] text-amber-ink"
     >
       <Icon name="partial" size={12} />

@@ -15,6 +15,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
 import type { KikiClient } from '../../../lib/client';
+import { remoteConnectionKeys } from '../../../lib/remoteConnections';
 import {
   listInboundGrantBridges,
   listRemotePairingBridges,
@@ -27,7 +28,8 @@ import {
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { SidePanel } from '../../SidePanel';
 import { FeedbackLine, Hint, type Feedback } from '../../controls';
-import { DANGER_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { Icon } from '../../icons';
+import { DANGER_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { connectionFailureText } from './parts';
 
 export type ThreadMessagesSubject =
@@ -40,9 +42,10 @@ const OPERATION_KEYS: Readonly<Record<BridgeOperation, I18nKey>> = {
   wait: 'st.remote.threadMessages.op.wait',
   wake: 'st.remote.threadMessages.op.wake',
   create: 'st.remote.threadMessages.op.create',
+  tools: 'st.remote.threadMessages.op.tools',
 };
 
-const OPERATION_ORDER: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create'];
+const OPERATION_ORDER: readonly BridgeOperation[] = ['read', 'send', 'wait', 'wake', 'create', 'tools'];
 
 function formatExpiryDate(expiresAt: number, locale: string): string {
   try {
@@ -89,6 +92,7 @@ export function ThreadMessagesPanel({
   });
 
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<PairingBridgeEntry | null>(null);
 
@@ -107,6 +111,31 @@ export function ThreadMessagesPanel({
     void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
   };
 
+  const applyStatus = (nextStatus: BridgeStatus, successText: string) => {
+    queryClient.setQueryData([...threadBridgeKeys.status(), client.baseUrl ?? null], nextStatus);
+    refresh();
+    setFeedback({ tone: 'success', text: successText });
+  };
+
+  const handleError = (error: unknown) => {
+    const reason = connectionFailureText(error instanceof Error ? error.message : '');
+    setFeedback({ tone: 'error', text: reason === null ? errorText(locale, error) : t(reason) });
+  };
+
+  const runSync = () => {
+    if (subject.kind !== 'outbound') return;
+    setSyncing(true);
+    setFeedback(null);
+    void threadBridgesApi(client)
+      .syncConnection(subject.record.id, { borrowTools: true })
+      .then((nextStatus: BridgeStatus) => {
+        void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+        applyStatus(nextStatus, t('st.remote.threadMessages.synced'));
+      })
+      .catch(handleError)
+      .finally(() => { setSyncing(false); });
+  };
+
   const runToggle = (entry: PairingBridgeEntry) => {
     const nextEnabled = !entry.enabled;
     setBusyId(entry.id);
@@ -114,17 +143,42 @@ export function ThreadMessagesPanel({
     void threadBridgesApi(client)
       .setEnabled(entry.direction, entry.id, nextEnabled)
       .then((nextStatus: BridgeStatus) => {
-        queryClient.setQueryData([...threadBridgeKeys.status(), client.baseUrl ?? null], nextStatus);
-        refresh();
-        setFeedback({
-          tone: 'success',
-          text: t(nextEnabled ? 'st.remote.threadMessages.turnedOn' : 'st.remote.threadMessages.turnedOff'),
-        });
+        applyStatus(nextStatus, t(nextEnabled ? 'st.remote.threadMessages.turnedOn' : 'st.remote.threadMessages.turnedOff'));
       })
-      .catch((error: unknown) => {
-        const reason = connectionFailureText(error instanceof Error ? error.message : '');
-        setFeedback({ tone: 'error', text: reason === null ? errorText(locale, error) : t(reason) });
+      .catch(handleError)
+      .finally(() => { setBusyId(null); });
+  };
+
+  const runSetBorrowTools = (entry: PairingBridgeEntry, nextBorrowTools: boolean) => {
+    setBusyId(entry.id);
+    setFeedback(null);
+    void threadBridgesApi(client)
+      .setBorrowTools(entry.id, nextBorrowTools)
+      .then((nextStatus: BridgeStatus) => {
+        applyStatus(nextStatus, t(nextBorrowTools ? 'st.remote.threadMessages.borrowToolsOn' : 'st.remote.threadMessages.borrowToolsOff'));
       })
+      .catch(handleError)
+      .finally(() => { setBusyId(null); });
+  };
+
+  const runToggleOperation = (entry: PairingBridgeEntry, op: BridgeOperation) => {
+    const activeSet = new Set<BridgeOperation>(entry.operations);
+    if (activeSet.has(op)) {
+      if (activeSet.size <= 1) return;
+      activeSet.delete(op);
+    } else {
+      activeSet.add(op);
+    }
+    const nextOperations = OPERATION_ORDER.filter((candidate) => activeSet.has(candidate));
+    if (nextOperations.length === 0) return;
+    setBusyId(entry.id);
+    setFeedback(null);
+    void threadBridgesApi(client)
+      .setOperations(entry.id, nextOperations)
+      .then((nextStatus: BridgeStatus) => {
+        applyStatus(nextStatus, t('st.remote.threadMessages.operationsUpdated'));
+      })
+      .catch(handleError)
       .finally(() => { setBusyId(null); });
   };
 
@@ -135,14 +189,9 @@ export function ThreadMessagesPanel({
     void threadBridgesApi(client)
       .revoke(entry.direction, entry.id)
       .then((nextStatus: BridgeStatus) => {
-        queryClient.setQueryData([...threadBridgeKeys.status(), client.baseUrl ?? null], nextStatus);
-        refresh();
-        setFeedback({ tone: 'success', text: t('st.remote.threadMessages.revoked') });
+        applyStatus(nextStatus, t('st.remote.threadMessages.revoked'));
       })
-      .catch((error: unknown) => {
-        const reason = connectionFailureText(error instanceof Error ? error.message : '');
-        setFeedback({ tone: 'error', text: reason === null ? errorText(locale, error) : t(reason) });
-      })
+      .catch(handleError)
       .finally(() => { setBusyId(null); });
   };
 
@@ -175,28 +224,46 @@ export function ThreadMessagesPanel({
           ) : null}
 
           {bridgesQuery.isSuccess && entries.length === 0 ? (
-            <p className="text-[13px] text-ink-soft" data-thread-messages-empty>
-              {t('st.remote.threadMessages.empty', { name: peerName })}
-            </p>
+            <div className="space-y-3" data-thread-messages-empty>
+              <p className="text-[13px] text-ink-soft">
+                {t('st.remote.threadMessages.empty', { name: peerName })}
+              </p>
+              {subject.kind === 'outbound' ? (
+                <button
+                  type="button"
+                  className={PRIMARY_BUTTON}
+                  disabled={syncing || busyId !== null}
+                  data-thread-messages-sync
+                  onClick={() => { runSync(); }}
+                >
+                  {syncing ? t('st.remote.threadMessages.syncing') : t('st.remote.threadMessages.syncAction')}
+                </button>
+              ) : null}
+            </div>
           ) : null}
 
           {entries.length > 0 ? (
             <div className="space-y-3" data-thread-messages-list>
               {entries.map((entry) => {
-                const localWsName = localWorkspaceNames.get(entry.localScope.workspaceId)
-                  ?? sanitizeRemoteWorkspaceLabel(entry.localScope.workspaceId)
-                  ?? t('st.remote.threadMessages.scopeUnknownLocal');
-                const remoteWsName = sanitizeRemoteWorkspaceLabel(entry.remoteScope.workspaceId)
-                  ?? t('st.remote.threadMessages.scopeRemoteWorkspace');
+                const localWsName = entry.localScope.workspaceId === '*'
+                  ? t('st.remote.threadMessages.scopeAllWorkspaces')
+                  : (localWorkspaceNames.get(entry.localScope.workspaceId)
+                    ?? sanitizeRemoteWorkspaceLabel(entry.localScope.workspaceId)
+                    ?? t('st.remote.threadMessages.scopeUnknownLocal'));
+                const remoteWsName = entry.remoteScope.workspaceId === '*'
+                  ? t('st.remote.threadMessages.scopeAllWorkspaces')
+                  : (sanitizeRemoteWorkspaceLabel(entry.remoteScope.workspaceId)
+                    ?? t('st.remote.threadMessages.scopeRemoteWorkspace'));
                 const localThreadScope = entry.localScope.sessionId !== undefined
                   ? t('st.remote.threadMessages.scopeOneThread')
                   : t('st.remote.threadMessages.scopeAllThreads');
                 const remoteThreadScope = entry.remoteScope.sessionId !== undefined
                   ? t('st.remote.threadMessages.scopeOneThread')
                   : t('st.remote.threadMessages.scopeAllThreads');
-                const providedOperations = new Set<string>(entry.operations);
+                const providedOperations = new Set<BridgeOperation>(entry.operations);
                 const orderedOps = OPERATION_ORDER.filter((op) => providedOperations.has(op));
                 const hasWake = entry.operations.includes('wake');
+                const canBorrowTools = entry.direction === 'outbound' && entry.operations.includes('tools');
                 const statusChip = entry.expired
                   ? { label: t('st.remote.threadMessages.stateExpired'), dot: 'bg-attention', text: 'text-amber-ink' }
                   : entry.enabled
@@ -236,13 +303,61 @@ export function ThreadMessagesPanel({
                           <span className="text-ink-faint">{` · ${remoteThreadScope}`}</span>
                         </dd>
                       </div>
-                      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-                        <dt className="text-ink-faint">{t('st.remote.threadMessages.operationsLabel')}</dt>
-                        <dd className="text-ink" data-thread-message-operations>
-                          {orderedOps.map((op) => t(OPERATION_KEYS[op])).join(' · ')}
-                        </dd>
-                      </div>
+                      {entry.direction === 'inbound' ? (
+                        <div className="space-y-1.5 pt-0.5">
+                          <dt className="text-ink-faint">{t('st.remote.threadMessages.operationsLabel')}</dt>
+                          <dd className="flex flex-wrap gap-1.5" data-thread-message-operations>
+                            {OPERATION_ORDER.map((op) => {
+                              const active = providedOperations.has(op);
+                              const lastRemaining = active && entry.operations.length <= 1;
+                              return (
+                                <button
+                                  key={op}
+                                  type="button"
+                                  data-bridge-op-toggle={`${entry.id}:${op}`}
+                                  aria-pressed={active}
+                                  disabled={isBusy || entry.expired || lastRemaining}
+                                  onClick={() => { runToggleOperation(entry, op); }}
+                                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                    active
+                                      ? 'border-selected-ink/40 bg-selected font-medium text-selected-ink'
+                                      : 'border-hairline bg-paper text-ink-faint hover:border-hairline-strong hover:text-ink-soft'
+                                  }`}
+                                >
+                                  {active ? <Icon name="check" size={12} className="shrink-0" /> : null}
+                                  <span>{t(OPERATION_KEYS[op])}</span>
+                                </button>
+                              );
+                            })}
+                          </dd>
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                          <dt className="text-ink-faint">{t('st.remote.threadMessages.operationsLabel')}</dt>
+                          <dd className="text-ink" data-thread-message-operations>
+                            {orderedOps.map((op) => t(OPERATION_KEYS[op])).join(' · ')}
+                          </dd>
+                        </div>
+                      )}
                     </dl>
+
+                    {canBorrowTools ? (
+                      <label
+                        className={`flex items-center gap-2 pt-0.5 text-[12px] ${isBusy || entry.expired ? 'cursor-not-allowed text-ink-faint opacity-60' : 'cursor-pointer text-ink'}`}
+                        htmlFor={`bridge-borrow-tools-${entry.id}`}
+                      >
+                        <input
+                          id={`bridge-borrow-tools-${entry.id}`}
+                          type="checkbox"
+                          data-bridge-borrow-tools={entry.id}
+                          checked={entry.borrowTools ?? true}
+                          disabled={isBusy || entry.expired}
+                          onChange={(event) => { runSetBorrowTools(entry, event.target.checked); }}
+                          className="h-3.5 w-3.5 shrink-0 rounded border-hairline-strong accent-selected-ink"
+                        />
+                        <span>{t('st.remote.threadMessages.borrowToolsLabel')}</span>
+                      </label>
+                    ) : null}
 
                     {!hasWake ? (
                       <p className="text-[11.5px] leading-snug text-ink-faint" data-thread-message-no-wake>

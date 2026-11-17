@@ -2,36 +2,14 @@
  * UsagePage (/usage) — the Activity & cross-session usage surface. A bare
  * `/usage` visit opens Live (`realtime`), with Usage (`history`) and Quotas
  * (`quota`) as sibling tabs, while model prices and export sit behind the
- * header's `⋯`. On the Usage tab (`GET /api/usage` V2 aggregation), reading
- * order is one path, not a set of cards:
- *
- *   - while requests run or wait, one line says so and leads to Live;
- *   - pick a range and conditions (time first, then workspace and filters);
- *   - read the total: estimated cost is the headline, tokens and cache hit
- *     rate are supporting numbers;
- *   - read the trend: one metric over time, where a bar is a time selector;
- *   - read the consumption sources: one axis at a time, scoped to the whole
- *     range or to the selected period;
- *   - trace to sessions only on request, in a SidePanel.
- *
- * Reliability has one disclosure above the totals; details and missing-price
- * model lists stay collapsed until requested. Full rescans live in the range
- * bar. The live line moved to a collapsible "current run" section at the
- * bottom so the running cost is never read as part of the selected history.
- *
- * Honesty rules: the no-query state is local today at the 5h rhythm; an
- * explicit all-history query surfaces `defaulted_to_all_history`; cost is an
- * estimate flagged whenever `cost_unknown` is set; unknown sources keep their
- * amount and share instead of rendering as zero; a comparison is only ever
- * read after the reader asks for it, and a zero or incomplete prior period is
- * its own short state. Nothing here derives a number the server did not send.
+ * header's `⋯`.
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
-import { ErrorCode, type ModelCatalogItem, type Session, type WorkspaceCatalogEntry } from '@kiki/protocol';
+import { ErrorCode, type Session } from '@kiki/protocol';
 
 import { formatBytes } from '@kiki/session-core/composer/media';
 import { readLastSessionId } from '@kiki/session-core/settings';
@@ -39,41 +17,29 @@ import { spaceStorageKey } from '@kiki/session-core/storage';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { ApiError } from '../lib/client';
-import { usePhoneMode } from '../lib/layoutHooks';
-import { RequestGovernanceView } from './RequestGovernanceView';
-import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
-import { UsageExportPanel } from './usage/export/UsageExportPanel';
-import { ProviderQuotaPanel } from './usage/ProviderQuotaPanel';
-import { useThreadTitleResolver } from '../lib/threadTitles';
-import { ThreadTitle } from './ThreadTitle';
-import { Icon } from './icons';
 import { getCurrentVisit, getUiSnapshot, saveScrollPosition, saveUiSnapshot } from '../lib/navHistory';
+import { useThreadTitleResolver } from '../lib/threadTitles';
 import {
-  bucketLabel,
+  aggregateSourceRows,
   browserTimezoneOffsetMinutes,
-  buildUsageApiQuery,
+  bucketLabel,
   burnRatePerHour,
   cacheHitRateOf,
   parseUsageDetailView,
-  parseUsageFilters,
-  searchHasUsageParams,
   totalTokensOf,
-  aggregateSourceRows,
   usageBucketCompareWindow,
   usageCompareWindow,
   usageDetailViewToSearch,
-  usageFiltersHaveScope,
-  usageFiltersToSearch,
+  usagePointChange,
   usageRangeWindow,
+  usageRatioChange,
   usageSourceFilterValue,
   usageSourceKey,
   usageTokenTotalIsUnknown,
   usageWindowLabel,
   writeStoredUsageFilters,
-  USAGE_RANGE_PRESETS,
   USAGE_SOURCE_KEY_UNKNOWN,
   type UsageDetailView,
-  type UsageFilters,
   type UsageGroupBy,
   type UsageMetric,
   type UsageResponseWire,
@@ -82,63 +48,63 @@ import {
   type UsageWindow,
 } from '../lib/usageV2';
 import { useConnection } from '../state/connection';
-import { Toggle } from './controls';
-import { ModelPicker } from './ModelPicker';
-import { SearchableSelect } from './SearchableSelect';
-import { SettingsSelect } from './settings/SettingsPrimitives';
-import { SECONDARY_BUTTON } from './ui';
+import { Icon } from './icons';
 import { PAGE_WIDTH, PageHeader, PageMoreMenu } from './PageChrome';
+import { RequestGovernanceView } from './RequestGovernanceView';
+import { ThreadTitle } from './ThreadTitle';
+import { SECONDARY_BUTTON } from './ui';
+import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
+import { UsageExportPanel } from './usage/export/UsageExportPanel';
 import { PricingPanel } from './usage/PricingPanel';
-import { UsageRescanControl } from './usage/UsageRescanControl';
+import { ProviderQuotaPanel } from './usage/ProviderQuotaPanel';
+import { QuotaHeadroomStrip } from './usage/QuotaHeadroomStrip';
+import { DimensionBreakdown } from './usage/UsageBreakdown';
+import { UsageFilterBar } from './usage/UsageFilterBar';
 import { UsageReliabilityDetails } from './usage/UsageReliabilityDetails';
+import { UsageRescanControl } from './usage/UsageRescanControl';
 import { UsageSessionPanel, type UsageSessionTraceRequest } from './usage/UsageSessionPanel';
 import { UsageSources, type UsageSourcePrior } from './usage/UsageSources';
-import { DrilldownSessionList, TrendChart } from './usage/UsageTrend';
-import { DimensionBreakdown } from './usage/UsageBreakdown';
+import { TrendChart } from './usage/UsageTrend';
 import {
-  AxisGroup,
+  buildUsageMultiApiQuery,
+  isSourceRowFilterActive,
+  parseUsageMultiFilters,
+  searchHasUsageMultiParams,
+  toggleSourceRowFilter,
+  toSingleUsageFilters,
+  USAGE_MULTI_FILTER_DEFAULTS,
+  usageMultiFiltersHaveScope,
+  usageMultiFiltersToSearch,
+  type UsageMultiFilters,
+} from './usage/usageFilterModel';
+import { avgCostPerTurn, computeCacheSavingsUsd, summarizeActivityCounts } from './usage/usageMetrics';
+import {
   bucketCost,
-  bucketTokens,
+  CompareCell,
   formatPercent,
   KnownSubtotalMarker,
 } from './usage/usageShared';
 
 const SESSION_PAGE_SIZE = 25;
-const DAY_MS = 24 * 3600_000;
+const SESSION_LOCATOR_MAX_AUTO_PAGES = 4;
 
-type DetailTab = 'sources' | 'sessions' | 'breakdown' | 'fiveHour';
+type DetailTab = 'sources' | 'sessions' | 'breakdown';
 
 const DETAIL_TAB_TO_VIEW: Record<DetailTab, UsageDetailView> = {
   sources: 'sources',
   sessions: 'sessions',
   breakdown: 'breakdown',
-  fiveHour: 'five_hour',
 };
+
 const VIEW_TO_DETAIL_TAB: Record<UsageDetailView, DetailTab> = {
   sources: 'sources',
   sessions: 'sessions',
   breakdown: 'breakdown',
-  five_hour: 'fiveHour',
+  five_hour: 'sources',
 };
 
 const NOTICE_AMBER = 'rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-2 text-[12.5px] leading-relaxed text-amber-ink';
 const NOTICE_SOFT = 'rounded-lg border border-hairline bg-panel px-3 py-2 text-[12.5px] leading-relaxed text-ink-soft';
-
-function toDateInputValue(ms: number | undefined): string {
-  if (ms === undefined) return '';
-  const date = new Date(ms);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
-    date.getDate(),
-  ).padStart(2, '0')}`;
-}
-
-function fromDateInputValue(value: string): number | undefined {
-  if (value === '') return undefined;
-  const [year, month, day] = value.split('-').map(Number);
-  if (year === undefined || month === undefined || day === undefined) return undefined;
-  const date = new Date(year, month - 1, day);
-  return Number.isNaN(date.getTime()) ? undefined : date.getTime();
-}
 
 function localDateKey(nowMs: number): string {
   const date = new Date(nowMs);
@@ -151,173 +117,9 @@ function importProgressOf(response: UsageResponseWire | undefined): UsageRespons
   return response?.reliability.import_progress;
 }
 
-/**
- * The collapsed live line at the foot of the page: current session, today,
- * burn rate. It is a reference, not part of the selected history, so it stays
- * behind a disclosure and only reads when the reader opens it.
- */
-function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWire; enabled: boolean }) {
-  const { client } = useConnection();
-  const queryClient = useQueryClient();
-  const { t, time } = useI18n();
-  const [open, setOpen] = useState(false);
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const [lastSessionId, setLastSessionId] = useState<string | undefined>(() => readLastSessionId());
-  useEffect(() => {
-    if (!open) return;
-    const timer = window.setInterval(() => { setNowMs(Date.now()); }, 60_000);
-    return () => { window.clearInterval(timer); };
-  }, [open]);
-  useEffect(() => {
-    const syncLastSession = (event?: StorageEvent) => {
-      const key = event?.key;
-      const currentKey = spaceStorageKey('kiki.lastSessionId');
-      if (key !== undefined && key !== null && key !== 'kiki.lastSessionId' && key !== currentKey && !key.startsWith('kiki.space.')) return;
-      const next = readLastSessionId();
-      setLastSessionId((current) => current === next ? current : next);
-    };
-    const onStorage = (event: StorageEvent) => { syncLastSession(event); };
-    window.addEventListener('storage', onStorage);
-    syncLastSession();
-    return () => { window.removeEventListener('storage', onStorage); };
-  }, []);
-
-  const todayQuery = useQuery({
-    queryKey: ['usage-v2-strip', localDateKey(nowMs), browserTimezoneOffsetMinutes()],
-    enabled: enabled && open && todayResponse === undefined,
-    queryFn: ({ signal }) =>
-      client.getUsage(
-        buildUsageApiQuery(
-          { ...USAGE_FILTER_DEFAULTS_SCOPED, range: 'today', includeArchived: true },
-          { timezoneOffsetMinutes: browserTimezoneOffsetMinutes(), pageSize: 1 },
-        ),
-        { signal },
-      ),
-    refetchInterval: (query) => {
-      if (!enabled || !open) return false;
-      const response = query.state.data;
-      const continueCounting = response !== undefined && !response.reliability.complete &&
-        (response.reliability.incomplete_reason === 'deadline' || response.reliability.incomplete_reason === 'record_budget');
-      return continueCounting ? 250 : 60_000;
-    },
-    staleTime: 30_000,
-  });
-  const sessionQuery = useQuery({
-    queryKey: ['usage-v2-strip-session', lastSessionId],
-    queryFn: ({ signal }) => client.getSession(lastSessionId!, { signal }),
-    enabled: open && lastSessionId !== undefined,
-    retry: false,
-    staleTime: 30_000,
-  });
-  useEffect(() => {
-    return () => { void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', lastSessionId] }); };
-  }, [lastSessionId, queryClient]);
-  useEffect(() => {
-    if (open) return;
-    void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', lastSessionId] });
-  }, [lastSessionId, open, queryClient]);
-
-  const todayResponseData = todayResponse ?? todayQuery.data;
-  const today = todayResponseData?.summary;
-  const todayIncomplete = todayResponseData?.reliability.complete === false;
-  const todayProgress = importProgressOf(todayResponseData);
-  const todayCountingLabel = todayProgress === undefined
-    ? t('usage.strip.counting')
-    : t('usage.strip.countingProgress', {
-        verified: formatGrouped(todayProgress.verified_sources),
-        total: formatGrouped(todayProgress.total_sources),
-      });
-  const todayTokenTotalUnknown = today !== undefined && usageTokenTotalIsUnknown(today);
-  const todayKnownTokenTotal = today === undefined ? undefined : totalTokensOf(today);
-  const todayEmptyPartial = todayIncomplete === true && todayKnownTokenTotal === 0 && today?.cost_usd_estimated === 0;
-  const todayHasNoKnownTokens = todayTokenTotalUnknown || (todayIncomplete === true && todayKnownTokenTotal === 0);
-  const todayHasUnknownSubtotal = today !== undefined && !todayTokenTotalUnknown && today.tokens_unknown === true;
-  const todayHasUnknownCost = today !== undefined && today.cost_unknown === true;
-  const knownTodayTokens = today === undefined || todayHasNoKnownTokens ? undefined : todayKnownTokenTotal;
-  const rate = knownTodayTokens !== undefined ? burnRatePerHour(knownTodayTokens, nowMs) : undefined;
-  const current: Session | undefined = open && sessionQuery.data?.id === lastSessionId ? sessionQuery.data : undefined;
-  const currentAccounting = current?.usage?.accounting;
-  const currentCost = currentAccounting?.cost_usd_estimated ?? (typeof current?.usage?.total_cost_usd === 'number' ? current.usage.total_cost_usd : undefined);
-  const currentUsageError = currentAccounting === undefined ? current?.usage_error : undefined;
-  const currentCostUnknown = currentAccounting?.cost_unknown === true || currentAccounting?.complete === false || currentUsageError === 'agent-read-failed';
-
-  const item = (label: string, value: ReactNode) => (
-    <span className="flex min-w-0 items-baseline gap-1.5">
-      <span className="shrink-0 text-ink-faint">{label}</span>
-      {value}
-    </span>
-  );
-
-  return (
-    <div data-usage-strip>
-      <button
-        type="button"
-        data-usage-strip-toggle
-        aria-expanded={open}
-        onClick={() => { setOpen(!open); }}
-        className="inline-flex min-h-8 items-center gap-1.5 rounded-sm text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-      >
-        <IconChevron open={open} />
-        {t('usage.live.reference')}
-      </button>
-      {open ? (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 pt-2 text-[12.5px]">
-          {item(t('usage.strip.currentSession'), current !== undefined ? (
-            <>
-              <span className="min-w-0 max-w-64 truncate text-ink">
-                <ThreadTitle text={current.title.trim() !== '' ? current.title : t('sidebar.untitled')} />
-              </span>
-              <span data-usage-strip-current-cost className="shrink-0 text-ink-soft tabular-nums">
-                {currentUsageError === 'read-failed' || currentCost === undefined ? '—' : formatCostUsd(currentCost)}
-                {currentCostUnknown && currentCost !== undefined ? <KnownSubtotalMarker /> : null}
-              </span>
-            </>
-          ) : (
-            <span className="text-ink-faint">—</span>
-          ))}
-          {item(t('usage.strip.today'), today !== undefined ? todayEmptyPartial ? (
-            <span data-usage-strip-tokens data-usage-strip-incomplete className="text-ink-soft">
-              {todayCountingLabel}
-            </span>
-          ) : (
-            <span data-usage-strip-tokens className="text-ink tabular-nums">
-              {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(today))}
-              {' · '}
-              {todayTokenTotalUnknown ? '—' : formatCostUsd(today.cost_usd_estimated)}
-              {todayIncomplete ? (
-                <span data-usage-strip-incomplete className="ml-1 text-amber-ink">{todayCountingLabel}</span>
-              ) : null}
-              {todayHasUnknownSubtotal || todayHasUnknownCost ? <KnownSubtotalMarker /> : null}
-            </span>
-          ) : (
-            <span className="text-ink-faint">…</span>
-          ))}
-          {item(t('usage.strip.burnRate'), (
-            <span data-usage-strip-burn-rate className="text-ink tabular-nums">
-              {todayEmptyPartial ? todayCountingLabel : rate !== undefined ? t('usage.strip.burnRateValue', { rate: formatGrouped(rate) }) : '…'}
-              {todayIncomplete && !todayEmptyPartial ? (
-                <span data-usage-strip-incomplete className="ml-1 text-amber-ink">{todayCountingLabel}</span>
-              ) : null}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 /** How old a shared governance read may be and still be told as "now". */
 const LIVE_BAND_FRESH_MS = 5_000;
 
-/**
- * "Now: 3 model requests running, 1 queued" above the history, only while
- * something runs or waits, with the longest wait named. It starts no read of
- * its own: it watches the governance snapshot that the sidebar's Usage badge
- * (or the Live tab) already polls, and says nothing when that read is absent,
- * failing or older than a few seconds. So on a screen where nothing polls —
- * a phone with the drawer shut — the band stays away rather than report a
- * stale "now".
- */
 function LiveBand({ onOpen }: { readonly onOpen: () => void }) {
   const { client, scopeId } = useConnection();
   const { t, time } = useI18n();
@@ -356,295 +158,12 @@ function LiveBand({ onOpen }: { readonly onOpen: () => void }) {
   );
 }
 
-/** The strip's own today query is unscoped by definition. */
-const USAGE_FILTER_DEFAULTS_SCOPED: UsageFilters = {
-  granularity: 'five_hour',
-  range: 'today',
-  groupBy: 'model',
-  advancedDimension: undefined,
-  workspaceId: undefined,
-  model: undefined,
-  provider: undefined,
-  profiles: [],
-  agentIds: [],
-  includeArchived: true,
-  startAt: undefined,
-  endAt: undefined,
-};
-
-function IconChevron({ open }: { open: boolean }) {
-  const { t } = useI18n();
-  return (
-    <span className="text-ink-faint" aria-hidden>
-      <span className={`inline-block transition-transform duration-[var(--kiki-motion-quick)] ${open ? 'rotate-90' : ''}`}>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
-      </span>
-      <span className="sr-only">{t(open ? 'usage.live.hide' : 'usage.live.show')}</span>
-    </span>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Range bar — time first, then workspace and the real API filters
+// Planar 4-column KPI band
 // ---------------------------------------------------------------------------
 
-function FilterBar({
-  filters,
-  workspaces,
-  models,
-  providers,
-  comparing,
-  compareAvailable,
-  onCompareChange,
-  onChange,
-}: {
-  filters: UsageFilters;
-  workspaces: readonly WorkspaceCatalogEntry[];
-  models: readonly ModelCatalogItem[];
-  providers: readonly { id: string }[];
-  comparing: boolean;
-  compareAvailable: boolean;
-  onCompareChange: (next: boolean) => void;
-  onChange: (next: UsageFilters) => void;
-}) {
-  const { t } = useI18n();
-  const phone = usePhoneMode();
-  // Field-level guard for the custom range: an inverted pair is rejected
-  // locally with an inline error instead of being sent (the server answers
-  // 40001 and the page would degrade to a load failure).
-  const [rangeInvalid, setRangeInvalid] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const dateInput = 'h-9 rounded-md border border-hairline bg-paper px-2 text-[13px] text-ink tabular-nums outline-none focus:border-selected-ink aria-[invalid=true]:border-danger pointer-coarse:min-h-11';
-
-  const chips: { key: string; label: string; clear: () => void }[] = [];
-  if (filters.model !== undefined) {
-    chips.push({ key: 'model', label: t('usage.filter.modelChip', { value: filters.model }), clear: () => { onChange({ ...filters, model: undefined }); } });
-  }
-  if (filters.provider !== undefined) {
-    chips.push({ key: 'provider', label: t('usage.filter.providerChip', { value: filters.provider }), clear: () => { onChange({ ...filters, provider: undefined }); } });
-  }
-  for (const profile of filters.profiles) {
-    chips.push({ key: `profile:${profile}`, label: t('usage.filter.profileChip', { value: profile }), clear: () => { onChange({ ...filters, profiles: filters.profiles.filter((entry) => entry !== profile) }); } });
-  }
-
-  const selectClass = 'flex h-8 max-w-44 min-w-0 items-center justify-between gap-2 rounded-md border border-hairline bg-paper px-3 text-[13px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink pointer-coarse:min-h-11';
-  const changeRange = (range: UsageFilters['range']) => {
-    setRangeInvalid(false);
-    if (range === 'custom') {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      onChange({
-        ...filters,
-        range,
-        startAt: filters.startAt ?? today.getTime() - 6 * DAY_MS,
-        endAt: filters.endAt ?? today.getTime() + DAY_MS,
-      });
-    } else {
-      onChange({ ...filters, range, startAt: undefined, endAt: undefined });
-    }
-  };
-
-  return (
-    <div data-anchor="usage-filter" data-usage-filters className="flex flex-wrap items-center gap-x-5 gap-y-2.5 border-b border-hairline pt-1 pb-3">
-      {/* Six range presets fold into two rows on a phone; there it is one
-          dropdown on the same line as the workspace. */}
-      {phone ? (
-        <label className="flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[13px] text-ink">{t('usage.axis.range')}</span>
-          <span className="min-w-0 max-w-44">
-            <SettingsSelect<UsageFilters['range']>
-              ariaLabel={t('usage.axis.range')}
-              value={filters.range}
-              dataAttr="data-usage-range-select"
-              onChange={changeRange}
-              choices={USAGE_RANGE_PRESETS.map((option) => ({ value: option, label: t(`usage.range.${option}`) }))}
-            />
-          </span>
-        </label>
-      ) : (
-        <AxisGroup
-          label={t('usage.axis.range')}
-          dataAxis="range"
-          options={USAGE_RANGE_PRESETS}
-          value={filters.range}
-          onChange={changeRange}
-          labelFor={(option) => t(`usage.range.${option}`)}
-        />
-      )}
-      {filters.range === 'custom' ? (
-        <div className="flex flex-wrap items-center gap-1.5" data-usage-custom-range>
-          <input
-            type="date"
-            aria-label={t('usage.customRange.start')}
-            aria-invalid={rangeInvalid}
-            value={toDateInputValue(filters.startAt)}
-            max={toDateInputValue(filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined)}
-            onChange={(event) => {
-              const startAt = fromDateInputValue(event.target.value);
-              if (startAt === undefined) return;
-              if (filters.endAt !== undefined && startAt >= filters.endAt) {
-                setRangeInvalid(true);
-                return;
-              }
-              setRangeInvalid(false);
-              onChange({ ...filters, startAt });
-            }}
-            className={dateInput}
-          />
-          <Icon name="arrowRight" size={12} className="text-ink-faint" />
-          <input
-            type="date"
-            aria-label={t('usage.customRange.end')}
-            aria-invalid={rangeInvalid}
-            value={toDateInputValue(filters.endAt !== undefined ? filters.endAt - DAY_MS : undefined)}
-            min={toDateInputValue(filters.startAt)}
-            onChange={(event) => {
-              const day = fromDateInputValue(event.target.value);
-              if (day === undefined) return;
-              const endAt = day + DAY_MS;
-              if (filters.startAt !== undefined && endAt <= filters.startAt) {
-                setRangeInvalid(true);
-                return;
-              }
-              setRangeInvalid(false);
-              onChange({ ...filters, endAt });
-            }}
-            className={dateInput}
-          />
-          {rangeInvalid ? (
-            <p role="alert" data-usage-range-error className="text-[12px] text-danger">
-              {t('usage.customRange.invalid')}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      <label className="flex min-w-0 items-center gap-2">
-        <span className="shrink-0 text-[13px] text-ink">{t('usage.workspace.label')}</span>
-        <span className="min-w-0 max-w-44">
-          <SettingsSelect<string>
-            ariaLabel={t('usage.workspace.label')}
-            value={filters.workspaceId ?? ''}
-            dataAttr="data-usage-workspace"
-            onChange={(next) => { onChange({ ...filters, workspaceId: next === '' ? undefined : next }); }}
-            choices={[
-              { value: '', label: t('usage.workspace.all') },
-              ...workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })),
-            ]}
-          />
-        </span>
-      </label>
-      <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
-        <button
-          type="button"
-          data-usage-filters-toggle
-          aria-expanded={filtersOpen}
-          onClick={() => { setFiltersOpen(!filtersOpen); }}
-          className={`inline-flex min-h-8 items-center gap-1.5 rounded-sm text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
-            chips.length > 0 ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
-          }`}
-        >
-          {t('usage.filter.open')}
-          {chips.length > 0 ? <span className="text-[12px] tabular-nums">{chips.length}</span> : null}
-        </button>
-        <span data-usage-compare-wrap className="inline-flex min-h-8 items-center gap-2 text-[12.5px] text-ink-soft pointer-coarse:min-h-11">
-          <Toggle
-            layout="bare"
-            label={t('usage.compare.enable')}
-            checked={comparing}
-            disabled={!compareAvailable}
-            onChange={onCompareChange}
-            dataAttr="data-usage-compare"
-          />
-          {compareAvailable ? t('usage.compare.enable') : t('usage.compare.unavailable')}
-        </span>
-      </div>
-      <div
-        data-usage-filters-panel
-        className={
-          filtersOpen || chips.length > 0
-            ? 'w-full'
-            : 'hidden w-full has-[[data-usage-rescan]_[role=status]]:block has-[[data-usage-rescan]_[role=alert]]:block'
-        }
-      >
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <label htmlFor="usage-filter-model" className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.model')}</label>
-            <ModelPicker
-              id="usage-filter-model"
-              triggerData={{ 'data-usage-filter-model': '' }}
-              ariaLabel={t('usage.filter.model')}
-              models={models}
-              allowCustomValue={false}
-              unsetLabel={t('usage.filter.any')}
-              value={filters.model ?? ''}
-              onChange={(next) => { onChange({ ...filters, model: next === '' ? undefined : next }); }}
-              buttonClassName={selectClass}
-            />
-          </div>
-          <div className="flex min-w-0 items-center gap-2">
-            <label htmlFor="usage-filter-provider" className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.provider')}</label>
-            <SearchableSelect
-              id="usage-filter-provider"
-              triggerData={{ 'data-usage-filter-provider': '' }}
-              ariaLabel={t('usage.filter.provider')}
-              value={filters.provider ?? ''}
-              onChange={(next) => { onChange({ ...filters, provider: next === '' ? undefined : next }); }}
-              options={[
-                { value: '', label: t('usage.filter.any') },
-                ...providers.map((provider) => ({ value: provider.id, label: provider.id })),
-              ]}
-              buttonClassName={selectClass}
-            />
-          </div>
-          <label className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.filter.profile')}</span>
-            <input
-              type="text"
-              data-usage-filter-profile
-              value={filters.profiles[0] ?? ''}
-              placeholder={t('usage.filter.profilePlaceholder')}
-              onChange={(event) => {
-                const value = event.target.value.trim();
-                onChange({ ...filters, profiles: value === '' ? [] : [value] });
-              }}
-              className="h-8 max-w-44 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink pointer-coarse:min-h-11"
-            />
-          </label>
-          <UsageRescanControl>
-            <Toggle
-              label={t('usage.includeArchived')}
-              checked={filters.includeArchived}
-              onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
-            />
-          </UsageRescanControl>
-        </div>
-        {chips.length > 0 ? (
-          <ul data-usage-filter-chips className="flex flex-wrap items-center gap-1.5 pt-2">
-            {chips.map((chip) => (
-              <li key={chip.key}>
-                <button
-                  type="button"
-                  data-usage-filter-chip={chip.key}
-                  onClick={chip.clear}
-                  className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-selected-ink/40 bg-panel px-2.5 text-[12px] text-ink transition-colors hover:border-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-                >
-                  <span className="max-w-56 truncate">{chip.label}</span>
-                  <Icon name="close" size={12} />
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Headline numbers — cost is the read, tokens and cache are the support
-// ---------------------------------------------------------------------------
-
-function Kpi({ label, value, hint, dataValue, children }: {
+function Kpi({ id, label, value, hint, dataValue, children }: {
+  readonly id: string;
   readonly label: string;
   readonly value: ReactNode;
   readonly hint?: ReactNode;
@@ -653,29 +172,107 @@ function Kpi({ label, value, hint, dataValue, children }: {
 }) {
   const valueProps = dataValue === undefined ? {} : { [dataValue]: true };
   return (
-    <section className="flex min-w-0 flex-col py-2">
+    <section data-usage-kpi={id} className="flex min-w-0 flex-col py-1.5">
       <p className="text-[11.5px] text-ink-faint">{label}</p>
-      <p {...valueProps} className="mt-2 truncate text-[26px] leading-none tracking-tight text-ink tabular-nums">
+      <div {...valueProps} className="mt-1.5 flex min-w-0 items-baseline gap-2 truncate text-[26px] leading-none tracking-tight text-ink tabular-nums">
         {value}
-      </p>
+      </div>
       {hint !== undefined ? <div className="mt-2 text-[12px] leading-snug">{hint}</div> : null}
       {children}
     </section>
   );
 }
 
-function KpiRow({
+function UsageKpiBand({
   summary,
+  trend,
   incomplete,
   comparing,
   prior,
+  unpricedCount,
+  onOpenPricing,
+  cacheSavingsUsd,
+  todayResponse,
+  reuseTodaySummary,
+  enabled,
 }: {
   readonly summary: UsageResponseWire['summary'];
+  readonly trend: readonly UsageTrendBucketWire[];
   readonly incomplete: boolean;
   readonly comparing: boolean;
   readonly prior: UsageResponseWire['summary'] | undefined;
+  readonly unpricedCount: number;
+  readonly onOpenPricing: () => void;
+  readonly cacheSavingsUsd: number | undefined;
+  readonly todayResponse: UsageResponseWire | undefined;
+  readonly reuseTodaySummary: boolean;
+  readonly enabled: boolean;
 }) {
-  const { t, time } = useI18n();
+  const { client, scopeId } = useConnection();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { t, tp, time } = useI18n();
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [lastSessionId, setLastSessionId] = useState<string | undefined>(() => readLastSessionId());
+
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setInterval(() => { setNowMs(Date.now()); }, 60_000);
+    return () => { window.clearInterval(timer); };
+  }, [enabled]);
+
+  useEffect(() => {
+    const syncLastSession = (event?: StorageEvent) => {
+      const key = event?.key;
+      const currentKey = spaceStorageKey('kiki.lastSessionId');
+      if (key !== undefined && key !== null && key !== 'kiki.lastSessionId' && key !== currentKey && !key.startsWith('kiki.space.')) return;
+      const next = readLastSessionId();
+      setLastSessionId((current) => (current === next ? current : next));
+    };
+    const onStorage = (event: StorageEvent) => { syncLastSession(event); };
+    window.addEventListener('storage', onStorage);
+    syncLastSession();
+    return () => { window.removeEventListener('storage', onStorage); };
+  }, [scopeId]);
+
+  const todayQuery = useQuery({
+    queryKey: ['usage-v2-strip', scopeId, localDateKey(nowMs), browserTimezoneOffsetMinutes()],
+    enabled: enabled && !incomplete && !reuseTodaySummary && todayResponse === undefined,
+    queryFn: ({ signal }) =>
+      client.getUsage(
+        buildUsageMultiApiQuery(
+          { ...USAGE_MULTI_FILTER_DEFAULTS, range: 'today', includeArchived: true },
+          { timezoneOffsetMinutes: browserTimezoneOffsetMinutes(), pageSize: 1 },
+        ),
+        { signal },
+      ),
+    refetchInterval: (query) => {
+      if (!enabled || incomplete || reuseTodaySummary) return false;
+      const response = query.state.data;
+      const continueCounting = response !== undefined && !response.reliability.complete &&
+        (response.reliability.incomplete_reason === 'deadline' || response.reliability.incomplete_reason === 'record_budget');
+      return continueCounting ? 250 : 60_000;
+    },
+    staleTime: 30_000,
+  });
+
+  const sessionQuery = useQuery({
+    queryKey: ['usage-v2-strip-session', scopeId, lastSessionId],
+    queryFn: ({ signal }) => client.getSession(lastSessionId!, { signal }),
+    enabled: enabled && lastSessionId !== undefined,
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  useEffect(() => {
+    return () => { void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', scopeId, lastSessionId] }); };
+  }, [scopeId, lastSessionId, queryClient]);
+
+  useEffect(() => {
+    if (enabled) return;
+    void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', scopeId, lastSessionId] });
+  }, [enabled, scopeId, lastSessionId, queryClient]);
+
   const costUnknown = summary.cost_unknown || incomplete;
   const tokensUnknown = usageTokenTotalIsUnknown(summary) || (incomplete && totalTokensOf(summary) === 0);
   const cacheHit = cacheHitRateOf(summary);
@@ -685,17 +282,77 @@ function KpiRow({
     { key: 'write', label: t('usage.tokens.cacheWrite'), value: summary.tokens.input_cache_creation, fill: 'bg-amber-rule' },
     { key: 'fresh', label: t('usage.composition.fresh'), value: summary.tokens.input_other, fill: 'bg-hairline-strong' },
   ];
+
+  const costOutcome = comparing && prior !== undefined
+    ? (summary.cost_unknown && summary.cost_usd_estimated === 0) || (prior.cost_unknown && prior.cost_usd_estimated === 0)
+      ? usageRatioChange(Number.NaN, Number.NaN)
+      : usageRatioChange(summary.cost_usd_estimated, prior.cost_usd_estimated)
+    : undefined;
+  const cacheOutcome = comparing && prior !== undefined
+    ? usagePointChange(cacheHit, cacheHitRateOf(prior))
+    : undefined;
+
+  const activity = useMemo(() => summarizeActivityCounts(trend), [trend]);
+  const perTurnCost = avgCostPerTurn(summary, activity);
+
+  const todayData = todayResponse ?? todayQuery.data;
+  const todaySummary = todayData?.summary;
+  const todayIncomplete = todayData?.reliability.complete === false;
+  const todayProgress = importProgressOf(todayData);
+  const todayCountingLabel = todayProgress === undefined
+    ? t('usage.strip.counting')
+    : t('usage.strip.countingProgress', {
+        verified: formatGrouped(todayProgress.verified_sources),
+        total: formatGrouped(todayProgress.total_sources),
+      });
+  const todayTokenTotalUnknown = todaySummary !== undefined && usageTokenTotalIsUnknown(todaySummary);
+  const todayKnownTokenTotal = todaySummary === undefined ? undefined : totalTokensOf(todaySummary);
+  const todayEmptyPartial = todayIncomplete && todayKnownTokenTotal === 0 && todaySummary?.cost_usd_estimated === 0;
+  const todayHasNoKnownTokens = todayTokenTotalUnknown || (todayIncomplete && todayKnownTokenTotal === 0);
+  const todayHasUnknownSubtotal = todaySummary !== undefined && !todayTokenTotalUnknown && todaySummary.tokens_unknown === true;
+  const todayHasUnknownCost = todaySummary !== undefined && todaySummary.cost_unknown === true;
+  const knownTodayTokens = todaySummary === undefined || todayHasNoKnownTokens ? undefined : todayKnownTokenTotal;
+  const burnRate = knownTodayTokens !== undefined ? burnRatePerHour(knownTodayTokens, nowMs) : undefined;
+
+  const current: Session | undefined = sessionQuery.data?.id === lastSessionId ? sessionQuery.data : undefined;
+  const currentAccounting = current?.usage?.accounting;
+  const currentCost = currentAccounting?.cost_usd_estimated ?? (typeof current?.usage?.total_cost_usd === 'number' ? current.usage.total_cost_usd : undefined);
+  const currentUsageError = currentAccounting === undefined ? current?.usage_error : undefined;
+  const currentCostUnknown = currentAccounting?.cost_unknown === true || currentAccounting?.complete === false || currentUsageError === 'agent-read-failed';
+
+  const activityHeadline = activity.hasTurns && activity.hasRequests
+    ? t('usage.kpi.turnsRequests', { turns: formatGrouped(activity.turns), requests: formatGrouped(activity.requests) })
+    : activity.hasTurns
+      ? t('usage.kpi.turnsOnly', { turns: formatGrouped(activity.turns) })
+      : tp('usage.sessionChip', summary.session_count);
+
   return (
-    <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-x-6 gap-y-4 border-b border-hairline pb-4 sm:grid-cols-2 lg:grid-cols-4">
       <Kpi
-        label={costUnknown ? t('usage.kpi.recordedCost') : t('usage.kpi.estimatedCost')}
+        id="cost"
+        label={t('usage.kpi.estimatedCost')}
         dataValue="data-usage-summary-cost"
         value={costUnknown && tokensUnknown && summary.cost_usd_estimated === 0 ? '—' : formatCostUsd(summary.cost_usd_estimated)}
-        hint={summary.cost_unknown ? (
-          <span className="text-ink-faint">{t('usage.kpi.costPartiallyUnknown')}</span>
+        hint={(costOutcome !== undefined || unpricedCount > 0) ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {costOutcome !== undefined ? <CompareCell outcome={costOutcome} /> : null}
+            {unpricedCount > 0 ? (
+              <button
+                type="button"
+                data-usage-unpriced-trigger
+                onClick={onOpenPricing}
+                className="inline-flex items-center gap-1 rounded-full border border-amber-rule/45 bg-amber-card px-2 py-0.5 text-[11px] font-medium text-amber-ink transition-colors hover:border-amber-rule focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                <Icon name="partial" size={12} />
+                <span>{tp('usage.kpi.unpricedCount', unpricedCount)}</span>
+              </button>
+            ) : null}
+          </div>
         ) : undefined}
       />
+
       <Kpi
+        id="tokens"
         label={t('usage.card.tokens')}
         dataValue="data-usage-summary-tokens"
         value={tokensUnknown ? '—' : time.formatTokens(totalTokensOf(summary))}
@@ -709,16 +366,6 @@ function KpiRow({
                 })}
           </span>
         )}
-      />
-      <Kpi
-        label={t('usage.kpi.cacheHit')}
-        dataValue="data-usage-summary-cache"
-        value={tokensUnknown ? '—' : formatPercent(cacheHit)}
-        hint={comparing && prior !== undefined ? (
-          <span className="text-ink-faint">{t('usage.compare.priorCacheHint')}</span>
-        ) : cacheHit === null && !tokensUnknown ? (
-          <span className="text-ink-faint">{t('usage.kpi.cacheHitNone')}</span>
-        ) : undefined}
       >
         {!tokensUnknown && input > 0 ? (
           <div className="mt-2" title={t('usage.cacheHitHint')}>
@@ -727,7 +374,7 @@ function KpiRow({
                 <span key={part.key} className={part.fill} style={{ width: `${(part.value / input) * 100}%` }} />
               ))}
             </div>
-            <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-ink-faint">
+            <ul className="mt-1.5 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[11px] text-ink-faint">
               {composition.map((part) => (
                 <li key={part.key} className="inline-flex items-center gap-1">
                   <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${part.fill}`} />
@@ -738,12 +385,110 @@ function KpiRow({
           </div>
         ) : null}
       </Kpi>
+
+      <Kpi
+        id="cache"
+        label={t('usage.kpi.cacheHit')}
+        dataValue="data-usage-summary-cache"
+        value={tokensUnknown ? '—' : formatPercent(cacheHit)}
+        hint={(
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ink-faint">
+            {cacheOutcome !== undefined ? <CompareCell outcome={cacheOutcome} points /> : null}
+            {!tokensUnknown && summary.tokens.input_cache_read > 0 ? (
+              <span className="tabular-nums">
+                {t('usage.kpi.cacheReadVolume', { tokens: time.formatTokens(summary.tokens.input_cache_read) })}
+              </span>
+            ) : cacheHit === null && !tokensUnknown ? (
+              <span>{t('usage.kpi.cacheHitNone')}</span>
+            ) : null}
+            {cacheSavingsUsd !== undefined ? (
+              <span data-usage-cache-savings className="font-medium text-success tabular-nums">
+                {t('usage.kpi.cacheSaved', { cost: formatCostUsd(cacheSavingsUsd) })}
+              </span>
+            ) : null}
+          </div>
+        )}
+      />
+
+      <Kpi
+        id="activity"
+        label={t('usage.kpi.activity')}
+        dataValue="data-usage-summary-activity"
+        value={<span className="truncate text-[21px] font-normal leading-tight tracking-normal">{activityHeadline}</span>}
+        hint={(
+          <div data-usage-strip className="space-y-1 text-[11.5px] text-ink-faint">
+            {perTurnCost !== undefined ? (
+              <div className="tabular-nums">{t('usage.kpi.avgPerTurn', { cost: formatCostUsd(perTurnCost) })}</div>
+            ) : null}
+            {todaySummary !== undefined ? (
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 tabular-nums">
+                {todayEmptyPartial ? (
+                  <>
+                    <span data-usage-strip-tokens>
+                      <span data-usage-strip-incomplete className="text-amber-ink">{todayCountingLabel}</span>
+                    </span>
+                    <span data-usage-strip-burn-rate className="sr-only">{todayCountingLabel}</span>
+                  </>
+                ) : reuseTodaySummary ? (
+                  <>
+                    {burnRate !== undefined ? (
+                      <span data-usage-strip-burn-rate>
+                        {t('usage.kpi.todayBurn', { rate: t('usage.strip.burnRateValue', { rate: formatGrouped(burnRate) }) })}
+                      </span>
+                    ) : null}
+                    {todayIncomplete ? (
+                      <span data-usage-strip-incomplete className="text-amber-ink">{todayCountingLabel}</span>
+                    ) : null}
+                    <span data-usage-strip-tokens className="sr-only">
+                      {`${todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(todaySummary))} · ${todayTokenTotalUnknown ? '—' : formatCostUsd(todaySummary.cost_usd_estimated)}`}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span data-usage-strip-tokens>
+                      {t('usage.strip.today')}{' '}
+                      {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(todaySummary))}
+                      {' · '}
+                      {todayTokenTotalUnknown ? '—' : formatCostUsd(todaySummary.cost_usd_estimated)}
+                      {todayHasUnknownSubtotal || todayHasUnknownCost ? <KnownSubtotalMarker /> : null}
+                    </span>
+                    {burnRate !== undefined ? (
+                      <>
+                        <span aria-hidden>·</span>
+                        <span data-usage-strip-burn-rate>{t('usage.strip.burnRateValue', { rate: formatGrouped(burnRate) })}</span>
+                      </>
+                    ) : null}
+                    {todayIncomplete ? (
+                      <span data-usage-strip-incomplete className="text-amber-ink">{todayCountingLabel}</span>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : null}
+            {current !== undefined ? (
+              <div className="flex min-w-0 items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => void navigate(`/s/${current.id}`)}
+                  className="min-w-0 truncate text-left text-ink-soft underline-offset-2 hover:text-ink hover:underline"
+                >
+                  <ThreadTitle text={current.title.trim() !== '' ? current.title : t('sidebar.untitled')} />
+                </button>
+                <span data-usage-strip-current-cost className="shrink-0 text-ink-faint tabular-nums">
+                  {currentUsageError === 'read-failed' || currentCost === undefined ? '—' : formatCostUsd(currentCost)}
+                  {currentCostUnknown && currentCost !== undefined ? <KnownSubtotalMarker /> : null}
+                </span>
+              </div>
+            ) : null}
+          </div>
+        )}
+      />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Sessions tab — the legacy flat reading, still reachable by deep link
+// Sessions tab — enriched with primary model, profiles, and instant local search
 // ---------------------------------------------------------------------------
 
 function SessionsTab({
@@ -769,12 +514,28 @@ function SessionsTab({
 }) {
   const { t, time } = useI18n();
   const navigate = useNavigate();
+  const [search, setSearch] = useState('');
   const items = useMemo(() => data.pages.flatMap((page) => page.sessions.items), [data.pages]);
   const total = data.pages[0]?.sessions.total ?? items.length;
   const located = sessionLocator !== undefined && items.some((item) => item.id === sessionLocator);
-  const visible = sessionLocator !== undefined && located
-    ? items.filter((item) => item.id === sessionLocator)
-    : items;
+  const needle = search.trim().toLocaleLowerCase();
+  const visible = useMemo(() => {
+    const base = sessionLocator !== undefined && located
+      ? items.filter((item) => item.id === sessionLocator)
+      : items;
+    if (needle === '') return base;
+    return base.filter((item) => {
+      const ws = workspaceName(item.workspace_id) ?? item.workspace_id;
+      const hay = [
+        item.title ?? '',
+        item.primary_model ?? '',
+        ws,
+        ...(item.profile_names ?? []),
+      ].join(' ').toLocaleLowerCase();
+      return hay.includes(needle);
+    });
+  }, [items, located, needle, sessionLocator, workspaceName]);
+
   const grid = 'grid grid-cols-[1.75rem_minmax(0,1fr)_5.5rem] items-center gap-x-3 sm:grid-cols-[1.75rem_minmax(0,1fr)_8rem_4.5rem_4rem_5rem_5.5rem]';
 
   return (
@@ -789,6 +550,19 @@ function SessionsTab({
           <p data-usage-locating className={`mb-3 ${NOTICE_AMBER}`}>{t('usage.sessions.notInPage')}</p>
         )
       ) : null}
+      {items.length > 0 && sessionLocator === undefined ? (
+        <div className="mb-2.5 flex justify-end">
+          <input
+            type="search"
+            data-usage-sessions-search
+            aria-label={t('usage.sessions.searchPlaceholder')}
+            value={search}
+            placeholder={t('usage.sessions.searchPlaceholder')}
+            onChange={(event) => { setSearch(event.target.value); }}
+            className="h-8 w-56 max-w-full rounded-md border border-hairline bg-paper px-2.5 text-[12.5px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink"
+          />
+        </div>
+      ) : null}
       <div aria-hidden className={`${grid} px-2 pb-2 text-[11px] text-ink-faint`}>
         <span className="text-right">#</span>
         <span>{t('usage.col.session')}</span>
@@ -799,13 +573,19 @@ function SessionsTab({
         <span className="text-right">{t('usage.col.cost')}</span>
       </div>
       {visible.length === 0 ? (
-        <p className="py-8 text-center text-[13px] text-ink-faint">{t('usage.empty')}</p>
+        <p className="py-8 text-center text-[13px] text-ink-faint">
+          {items.length > 0 && needle !== '' ? t('usage.sessions.noMatch') : t('usage.empty')}
+        </p>
       ) : (
         <ol className="divide-y divide-hairline border-t border-hairline">
           {visible.map((item) => {
             const rank = items.indexOf(item) + 1;
+            const itemTokens = totalTokensOf(item.usage);
             const unknownTotal = usageTokenTotalIsUnknown(item.usage);
+            const unpricedZero = item.usage.cost_unknown && item.usage.cost_usd_estimated === 0 && (itemTokens > 0 || unknownTotal);
             const share = summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0;
+            const profiles = item.profile_names ?? [];
+            const updatedLabel = time.relativeTime(new Date(item.updated_at).toISOString());
             return (
               <li key={item.id}>
                 <button
@@ -818,8 +598,18 @@ function SessionsTab({
                     {rank}
                   </span>
                   <span className="min-w-0">
-                    <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="flex min-w-0 flex-wrap items-center gap-1.5">
                       <span className="min-w-0 truncate text-[13px] text-ink"><ThreadTitle text={item.title ?? t('sidebar.untitled')} /></span>
+                      {item.primary_model !== undefined && item.primary_model !== null && item.primary_model !== '' ? (
+                        <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-px font-mono text-[10.5px] text-ink-soft">
+                          {item.primary_model}
+                        </span>
+                      ) : null}
+                      {profiles.slice(0, 2).map((profile) => (
+                        <span key={profile} className="shrink-0 rounded border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
+                          {profile}
+                        </span>
+                      ))}
                       {item.archived ? (
                         <span className="shrink-0 rounded-full border border-hairline px-1.5 text-[10.5px] text-ink-faint">{t('sidebar.archived')}</span>
                       ) : null}
@@ -831,23 +621,32 @@ function SessionsTab({
                       ) : null}
                     </span>
                     <span className="mt-1 block w-full max-w-48"><ShareBarSmall ratio={share} /></span>
+                    <span className="mt-1 block text-[11px] text-ink-faint tabular-nums sm:hidden">
+                      {unknownTotal ? '—' : time.formatTokens(itemTokens)}
+                      {' · '}
+                      {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
+                      {' · '}
+                      {updatedLabel}
+                    </span>
                   </span>
                   <span className="hidden truncate text-[12px] text-ink-soft sm:block" title={item.workspace_id}>
                     {workspaceName(item.workspace_id) ?? item.workspace_id}
                   </span>
                   <span data-usage-session-tokens={item.id} className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
-                    {unknownTotal ? '—' : time.formatTokens(totalTokensOf(item.usage))}
+                    {unknownTotal ? '—' : time.formatTokens(itemTokens)}
                     {item.usage.tokens_unknown === true && !unknownTotal ? <KnownSubtotalMarker /> : null}
                   </span>
                   <span className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
                     {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
                   </span>
                   <span className="hidden text-right text-[12px] text-ink-faint sm:block">
-                    {time.relativeTime(new Date(item.updated_at).toISOString())}
+                    {updatedLabel}
                   </span>
                   <span data-usage-session-cost={item.id} className="text-right text-[13px] font-semibold text-ink tabular-nums">
-                    {formatCostUsd(item.usage.cost_usd_estimated)}
-                    {item.usage.cost_unknown ? <KnownSubtotalMarker /> : null}
+                    {unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
+                    {item.usage.cost_unknown ? (
+                      <KnownSubtotalMarker label={unpricedZero ? t('usage.reliability.costUnknown') : undefined} />
+                    ) : null}
                   </span>
                 </button>
               </li>
@@ -879,81 +678,12 @@ function ShareBarSmall({ ratio }: { ratio: number }) {
   );
 }
 
-/**
- * 5h rhythm tab: each window lists its sessions and per-turn locators from
- * the bucket's server drilldown, newest first. Without the 5h granularity
- * there is no honest data, so the tab offers the switch instead.
- */
-function FiveHourTab({
-  trend,
-  filters,
-  onSwitchGranularity,
-  sessionTitle,
-}: {
-  trend: readonly UsageTrendBucketWire[];
-  filters: UsageFilters;
-  onSwitchGranularity: () => void;
-  sessionTitle: (id: string) => string | undefined;
-}) {
-  const { t, locale, time } = useI18n();
-  if (filters.granularity !== 'five_hour') {
-    return (
-      <div className="flex flex-col items-start gap-2 py-6" data-usage-fivehour-hint>
-        <p className="text-[13px] text-ink-soft">{t('usage.fiveHour.hint')}</p>
-        <button
-          type="button"
-          onClick={onSwitchGranularity}
-          className="h-9 rounded-md border border-hairline bg-paper px-3 text-[13px] font-medium text-ink transition-colors hover:border-hairline-strong hover:text-ink pointer-coarse:min-h-11"
-        >
-          {t('usage.fiveHour.switch')}
-        </button>
-      </div>
-    );
-  }
-  const windows = [...trend].reverse();
-  if (windows.length === 0) {
-    return <p className="py-8 text-center text-[13px] text-ink-faint">{t('usage.empty')}</p>;
-  }
-  return (
-    <ol className="divide-y divide-hairline border-t border-hairline" data-usage-fivehour>
-      {windows.map((bucket) => (
-        <li
-          key={bucket.key}
-          data-usage-fivehour-window={bucket.key}
-          className="px-1 pt-3 pb-1"
-        >
-          <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-            <h3 className="text-[13px] font-medium text-ink tabular-nums">
-              {bucketLabel(bucket, 'five_hour', locale)}
-            </h3>
-            <span className="ml-auto text-[12px] text-ink-soft tabular-nums">
-              {time.formatTokens(bucketTokens(bucket))} {t('usage.col.tokens')}
-              {bucket.groups.some((group) => group.tokens_unknown === true) ? <KnownSubtotalMarker /> : null}
-            </span>
-            <span className="text-[13px] font-semibold text-ink tabular-nums">
-              {formatCostUsd(bucketCost(bucket))}
-            </span>
-          </header>
-          {bucket.drilldown.sessions.length === 0 ? (
-            <p className="py-2 text-[12.5px] text-ink-faint">{t('usage.empty')}</p>
-          ) : (
-            <DrilldownSessionList sessions={bucket.drilldown.sessions} sessionTitle={sessionTitle} />
-          )}
-          {bucket.drilldown.sessions_truncated ? (
-            <p className="pb-2 text-[12px] text-amber-ink">{t('usage.drilldown.sessionsTruncated')}</p>
-          ) : null}
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
-  const { client } = useConnection();
+  const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
   const { t, tp, locale } = useI18n();
   const location = useLocation();
@@ -971,20 +701,15 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     return () => { window.clearInterval(timer); };
   }, []);
 
-  // URL query is the canonical filter state (deep-linkable). A query-less
-  // visit always uses the local-today defaults; persisted selections never
-  // silently widen or hide this bounded result set.
-  const filters = useMemo<UsageFilters>(
-    () => (searchHasUsageParams(location.search) ? parseUsageFilters(location.search) : USAGE_FILTER_DEFAULTS_SCOPED),
+  const filters = useMemo<UsageMultiFilters>(
+    () => (searchHasUsageMultiParams(location.search) ? parseUsageMultiFilters(location.search) : USAGE_MULTI_FILTER_DEFAULTS),
     [location.search],
   );
+  const singleFilters = useMemo(() => toSingleUsageFilters(filters), [filters]);
   useEffect(() => {
-    writeStoredUsageFilters(filters);
-  }, [filters]);
+    writeStoredUsageFilters(singleFilters);
+  }, [singleFilters]);
 
-  // Today and local bucket boundaries change with the wall clock and browser
-  // timezone: read the offset on every render; the minute tick makes
-  // midnight/zone changes observable.
   const localUsageDate = localDateKey(usageNowMs);
   const timezoneOffsetMinutes = browserTimezoneOffsetMinutes();
 
@@ -992,7 +717,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const metric: UsageMetric = METRIC_SEARCH_TO_METRIC[searchParams.get('metric') ?? ''] ?? 'cost';
   const comparing = searchParams.get('compare') === 'previous';
   const compareAvailable = usageCompareWindow(
-    usageRangeWindow(filters, timezoneOffsetMinutes, usageNowMs) ?? { startAt: 0, endAt: 0 },
+    usageRangeWindow(singleFilters, timezoneOffsetMinutes, usageNowMs) ?? { startAt: 0, endAt: 0 },
     timezoneOffsetMinutes,
     usageNowMs,
   ) !== null;
@@ -1015,24 +740,23 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     else params.set('trace', JSON.stringify(next));
     setSearchParams(params, { replace: true });
   };
-  const sessionParam = searchParams.get('session') ?? undefined;
+  const rawSessionParam = searchParams.get('session') ?? searchParams.get('session_id');
+  const sessionParam = rawSessionParam !== null && rawSessionParam !== '' ? rawSessionParam : undefined;
   const [dismissedLocator, setDismissedLocator] = useState<string | null>(null);
   const sessionLocator = panel === 'history' && sessionParam !== undefined && sessionParam !== dismissedLocator
     ? sessionParam
     : undefined;
 
-  // The detail tab rides the URL (`view=`); the default is the source table,
-  // and a session locator without an explicit view pins the sessions tab.
   const hasExplicitView = searchParams.has('view');
+  const parsedDetailView = parseUsageDetailView(location.search);
   const tab: DetailTab = sessionLocator !== undefined && !hasExplicitView
     ? 'sessions'
-    : VIEW_TO_DETAIL_TAB[parseUsageDetailView(location.search)];
+    : VIEW_TO_DETAIL_TAB[parsedDetailView];
 
   const scrollRef = useRef<HTMLElement | null>(null);
   const restoredVisitRef = useRef<string | null>(null);
   const [pendingScrollRestore, setPendingScrollRestore] = useState<number | null>(null);
 
-  // Read the target visit after App's layout transition, not the visit left.
   useEffect(() => {
     const visit = getCurrentVisit();
     if (!visit || restoredVisitRef.current === visit.visitId) return;
@@ -1065,10 +789,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const selectTab = (next: DetailTab) => {
     setSearchParams(new URLSearchParams(usageDetailViewToSearch(DETAIL_TAB_TO_VIEW[next], location.search)), { replace: true });
   };
-  const filterKey = usageFiltersToSearch(filters);
+  const filterKey = usageMultiFiltersToSearch(filters);
   const previousFilters = useRef<{ key: string; visitId?: string }>({ key: filterKey });
-  // Only a real filter change within this visit invalidates a bucket, not
-  // mount/POP restoration or a panel/tab change with the same query conditions.
   useEffect(() => {
     const visit = getCurrentVisit();
     const changed = previousFilters.current.key !== filterKey;
@@ -1080,11 +802,9 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     if (visit) saveUiSnapshot(visit.visitId, { selectedBucketKey: null });
   }, [filterKey, location.key]);
 
-  const applyFilters = (next: UsageFilters) => {
-    writeStoredUsageFilters(next);
-    // New conditions → new result set → the old page token drops with the
-    // react-query key; the session locator survives in the URL.
-    setSearchParams(new URLSearchParams(usageFiltersToSearch(next, location.search)), { replace: true });
+  const applyFilters = (next: UsageMultiFilters) => {
+    writeStoredUsageFilters(toSingleUsageFilters(next));
+    setSearchParams(new URLSearchParams(usageMultiFiltersToSearch(next, location.search)), { replace: true });
   };
 
   const applyMetric = (next: UsageMetric) => {
@@ -1103,19 +823,17 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     setSearchParams(params, { replace: true });
   };
 
-  // Reuse holds only when the main query really is all of today. A summary
-  // narrowed by a model, provider, profile, workspace or agent filter is not
-  // the same reading, so the strip reads on its own instead.
-  const reuseTodaySummary = filters.range === 'today' && filters.includeArchived && !usageFiltersHaveScope(filters);
   const usageQuery = useInfiniteQuery({
-    queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes],
+    queryKey: ['usage-v2', scopeId, filters, localUsageDate, timezoneOffsetMinutes],
     enabled: panel === 'history',
     queryFn: ({ pageParam, signal }) =>
       client.getUsage(
-        buildUsageApiQuery(filters, { timezoneOffsetMinutes, pageSize: SESSION_PAGE_SIZE, pageToken: pageParam }),
+        buildUsageMultiApiQuery(filters, { timezoneOffsetMinutes, pageSize: SESSION_PAGE_SIZE, pageToken: pageParam }),
         { signal },
       ),
     initialPageParam: undefined as string | undefined,
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[1] === scopeId ? previousData : undefined,
     retry: false,
     getNextPageParam: (lastPage) =>
       lastPage.sessions.has_more ? (lastPage.sessions.next_page_token ?? undefined) : undefined,
@@ -1123,44 +841,53 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       if (panel !== 'history' || query.state.status === 'error') return false;
       const unfinished = query.state.data?.pages.some(({ reliability }) => !reliability.complete &&
         (reliability.incomplete_reason === 'deadline' || reliability.incomplete_reason === 'record_budget'));
-      return unfinished ? 250 : reuseTodaySummary ? 60_000 : false;
+      if (unfinished) return 250;
+      const isTodayDefault = filters.range === 'today' && filters.includeArchived && !usageMultiFiltersHaveScope(filters);
+      return isTodayDefault ? 60_000 : false;
     },
   });
+  const isRefetchingScope = usageQuery.isPlaceholderData && usageQuery.isFetching;
+  const reuseTodaySummary =
+    filters.range === 'today' &&
+    filters.includeArchived &&
+    !usageMultiFiltersHaveScope(filters) &&
+    !usageQuery.isPlaceholderData;
   const recoveredPageError = useRef<unknown>(undefined);
   useEffect(() => {
     const error = usageQuery.error;
     if (!usageQuery.isFetchNextPageError || !(error instanceof ApiError) || error.code !== ErrorCode.PAGE_TOKEN_MISMATCH || recoveredPageError.current === error) return;
     recoveredPageError.current = error;
-    void queryClient.resetQueries({ queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes], exact: true });
-  }, [usageQuery.error, usageQuery.isFetchNextPageError, queryClient, filters, localUsageDate, timezoneOffsetMinutes]);
-  // A session locator must find its target beyond the first page: keep
-  // pulling pages until it appears or the set is exhausted (a failed page
-  // stops the walk).
+    void queryClient.resetQueries({ queryKey: ['usage-v2', scopeId, filters, localUsageDate, timezoneOffsetMinutes], exact: true });
+  }, [usageQuery.error, usageQuery.isFetchNextPageError, queryClient, scopeId, filters, localUsageDate, timezoneOffsetMinutes]);
+
+  const loadedPageCount = usageQuery.data?.pages.length ?? 0;
   const locatedSession =
     sessionLocator !== undefined &&
     (usageQuery.data?.pages.some((page) => page.sessions.items.some((item) => item.id === sessionLocator)) ?? false);
+  const locatorCanAutoPage = usageQuery.hasNextPage && loadedPageCount <= SESSION_LOCATOR_MAX_AUTO_PAGES;
   const locatorSearching =
     sessionLocator !== undefined &&
     !locatedSession &&
     !usageQuery.isFetchNextPageError &&
-    (usageQuery.hasNextPage || usageQuery.isFetchingNextPage);
+    (locatorCanAutoPage || usageQuery.isFetchingNextPage);
   useEffect(() => {
-    if (sessionLocator === undefined || locatedSession || usageQuery.isFetchNextPageError) return;
-    if (usageQuery.hasNextPage && !usageQuery.isFetchingNextPage) {
+    if (sessionLocator === undefined || locatedSession || usageQuery.isFetchNextPageError || usageQuery.isPlaceholderData) return;
+    if (locatorCanAutoPage && !usageQuery.isFetchingNextPage) {
       void usageQuery.fetchNextPage();
     }
   }, [
     sessionLocator,
     locatedSession,
+    locatorCanAutoPage,
     usageQuery.data,
-    usageQuery.hasNextPage,
     usageQuery.isFetchingNextPage,
     usageQuery.isFetchNextPageError,
+    usageQuery.isPlaceholderData,
     usageQuery.fetchNextPage,
   ]);
 
-  // Trend / summary / reliability are page-invariant; read them off page one.
   const firstPage = usageQuery.data?.pages[0];
+  const mainComplete = firstPage?.reliability.complete === true;
   const trend = useMemo(() => firstPage?.trend ?? [], [firstPage]);
   const selectedBucket = trend.find((bucket) => bucket.key === selectedBucketKey);
   useLayoutEffect(() => {
@@ -1170,8 +897,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     setPendingScrollRestore(null);
   }, [pendingScrollRestore, panel, firstPage, selectedBucketKey, usageQuery.isError]);
 
-  // The comparison is read only after the reader asks for it, and for exactly
-  // the period in view: the whole range, or the selected bucket's own window.
   const serverRange = firstPage?.query.range;
   const rangeWindow = useMemo(() => {
     if (
@@ -1182,8 +907,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     ) {
       return { startAt: serverRange.start_at, endAt: serverRange.end_at };
     }
-    return usageRangeWindow(filters, timezoneOffsetMinutes, usageNowMs);
-  }, [serverRange?.start_at, serverRange?.end_at, filters, timezoneOffsetMinutes, usageNowMs]);
+    return usageRangeWindow(singleFilters, timezoneOffsetMinutes, usageNowMs);
+  }, [serverRange?.start_at, serverRange?.end_at, singleFilters, timezoneOffsetMinutes, usageNowMs]);
   const compareWindow = useMemo(() => {
     if (!comparing || rangeWindow === null) return null;
     return selectedBucket === undefined || selectedBucket === null
@@ -1191,12 +916,12 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       : usageBucketCompareWindow(rangeWindow, selectedBucket, timezoneOffsetMinutes, usageNowMs);
   }, [comparing, rangeWindow, selectedBucket, timezoneOffsetMinutes, usageNowMs]);
   const compareQuery = useQuery({
-    queryKey: ['usage-v2', 'compare', filters, compareWindow, localUsageDate, timezoneOffsetMinutes],
-    enabled: panel === 'history' && compareWindow !== null && firstPage !== undefined,
+    queryKey: ['usage-v2', scopeId, 'compare', filters, compareWindow, localUsageDate, timezoneOffsetMinutes],
+    enabled: panel === 'history' && compareWindow !== null && mainComplete && !usageQuery.isPlaceholderData && !usageQuery.isError,
     retry: false,
     queryFn: ({ signal }) =>
       client.getUsage(
-        buildUsageApiQuery(filters, {
+        buildUsageMultiApiQuery(filters, {
           timezoneOffsetMinutes,
           pageSize: 1,
           window: compareWindow ?? undefined,
@@ -1218,26 +943,141 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     : undefined;
 
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces', 'catalog'],
+    queryKey: ['workspaces', 'catalog', scopeId],
     queryFn: () => client.listWorkspaceCatalog(),
-    staleTime: 30_000,
+    staleTime: 60_000,
     enabled: panel === 'history',
   });
   const workspaces = useMemo(() => workspacesQuery.data?.items ?? [], [workspacesQuery.data]);
   const modelsQuery = useQuery({
-    queryKey: ['models'],
+    queryKey: ['models', scopeId],
     queryFn: () => client.listModels(),
-    staleTime: 30_000,
+    staleTime: 60_000,
     enabled: panel === 'history',
   });
   const providersQuery = useQuery({
-    queryKey: ['providers'],
+    queryKey: ['providers', scopeId],
     queryFn: () => client.listProviders(),
-    staleTime: 30_000,
+    staleTime: 60_000,
     enabled: panel === 'history',
   });
+  const profilesQuery = useQuery({
+    queryKey: ['named-agent-profiles', scopeId],
+    queryFn: () => client.listNamedAgentProfiles(),
+    staleTime: 60_000,
+    retry: false,
+    enabled: panel === 'history' && typeof client.listNamedAgentProfiles === 'function',
+  });
+
   const models = useMemo(() => modelsQuery.data?.items ?? [], [modelsQuery.data]);
   const providers = useMemo(() => providersQuery.data?.items ?? [], [providersQuery.data]);
+  const namedProfiles = useMemo(() => profilesQuery.data?.items ?? [], [profilesQuery.data]);
+
+  const mainIsModelDimension = filters.groupBy === 'model' && filters.advancedDimension === undefined;
+  const modelAttributionScope = useMemo(
+    () => ({
+      granularity: filters.granularity,
+      range: filters.range,
+      workspaceIds: filters.workspaceIds,
+      models: filters.models,
+      providers: filters.providers,
+      profiles: filters.profiles,
+      agentIds: filters.agentIds,
+      includeArchived: filters.includeArchived,
+      startAt: filters.startAt,
+      endAt: filters.endAt,
+    }),
+    [
+      filters.granularity,
+      filters.range,
+      filters.workspaceIds,
+      filters.models,
+      filters.providers,
+      filters.profiles,
+      filters.agentIds,
+      filters.includeArchived,
+      filters.startAt,
+      filters.endAt,
+    ],
+  );
+  const modelAttributionQueryKey = useMemo(
+    () => ['usage-v2', scopeId, 'model-attribution', modelAttributionScope, localUsageDate, timezoneOffsetMinutes] as const,
+    [scopeId, modelAttributionScope, localUsageDate, timezoneOffsetMinutes],
+  );
+
+  useEffect(() => {
+    if (mainIsModelDimension && mainComplete && !usageQuery.isPlaceholderData && !usageQuery.isError && firstPage !== undefined) {
+      queryClient.setQueryData(modelAttributionQueryKey, firstPage);
+    }
+  }, [mainIsModelDimension, mainComplete, firstPage, usageQuery.isPlaceholderData, usageQuery.isError, queryClient, modelAttributionQueryKey]);
+
+  const modelAttributionQuery = useQuery<UsageResponseWire>({
+    queryKey: modelAttributionQueryKey,
+    enabled:
+      panel === 'history' &&
+      !mainIsModelDimension &&
+      mainComplete &&
+      !usageQuery.isError,
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[1] === scopeId ? previousData : undefined,
+    staleTime: 30_000,
+    retry: false,
+    queryFn: ({ signal }) =>
+      client.getUsage(
+        buildUsageMultiApiQuery(
+          { ...filters, groupBy: 'model', advancedDimension: undefined },
+          { timezoneOffsetMinutes, pageSize: 1 },
+        ),
+        { signal },
+      ),
+  });
+
+  const modelTrend = useMemo(
+    () =>
+      mainIsModelDimension && !usageQuery.isPlaceholderData
+        ? trend
+        : (modelAttributionQuery.data?.trend ?? []),
+    [mainIsModelDimension, usageQuery.isPlaceholderData, trend, modelAttributionQuery.data],
+  );
+  const pricingTrendSource = modelTrend.length > 0 ? modelTrend : trend;
+  const pricingTrendGroupBy: UsageGroupBy = modelTrend.length > 0 ? 'model' : filters.groupBy;
+
+  const observedPricingModels = useMemo(() => {
+    const names = new Set<string>();
+    for (const bucket of pricingTrendSource) {
+      for (const group of bucket.groups) {
+        if (group.tokens.input_cache_read <= 0) continue;
+        const modelId = group.model_alias ?? (
+          pricingTrendGroupBy === 'model' &&
+          group.key !== USAGE_SOURCE_KEY_UNKNOWN &&
+          !group.key.startsWith('provider:') &&
+          !group.key.startsWith('profile:')
+            ? group.key
+            : null
+        );
+        if (modelId !== null) names.add(modelId);
+      }
+    }
+    return [...names].toSorted((a, b) => a.localeCompare(b));
+  }, [pricingTrendSource, pricingTrendGroupBy]);
+
+  const pricingQuery = useQuery<Awaited<ReturnType<typeof client.getUsagePricing>>>({
+    queryKey: ['usage-pricing-summary', scopeId, observedPricingModels],
+    queryFn: () => client.getUsagePricing(observedPricingModels),
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[1] === scopeId ? previousData : undefined,
+    staleTime: 60_000,
+    retry: false,
+    enabled:
+      panel === 'history' &&
+      typeof client.getUsagePricing === 'function' &&
+      observedPricingModels.length > 0,
+  });
+
+  const cacheSavingsUsd = useMemo(
+    () => computeCacheSavingsUsd(pricingTrendSource, pricingQuery.data?.items, pricingTrendGroupBy),
+    [pricingTrendSource, pricingQuery.data?.items, pricingTrendGroupBy],
+  );
 
   const workspaceNames = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace.name])), [workspaces]);
   const sessionTitles = useMemo(() => {
@@ -1253,13 +1093,12 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     const title = sessionTitles.get(id);
     return title === undefined ? undefined : resolveTitle(title);
   };
-  const sourceLookups = { unknownLabel: t('usage.sources.unknownProviderProfile'), workspaceName };
+  const sourceLookups = { unknownLabel: t(`usage.sources.unknown.${filters.groupBy}`), workspaceName };
 
   const summary = firstPage?.summary;
   const reliability = firstPage?.reliability;
   const unpricedCount = reliability?.unknown_price_models.length ?? 0;
   const [pricingOpen, setPricingOpen] = useState(false);
-  const showAllHistoryChip = firstPage?.query.range.defaulted_to_all_history === true;
 
   const groupBy = filters.groupBy;
   const sourceTrend = selectedBucket === undefined ? trend : [selectedBucket];
@@ -1278,8 +1117,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             endAt: Math.min(selectedBucket.end_at, rangeWindow.endAt),
           };
     if (window === null) return;
-    // A trace is the same sessions list narrowed to its provenance, so it
-    // opens as the sessions tab's own detail, not as a panel over the page.
     const request: UsageSessionTraceRequest = {
       window,
       filter: row?.filter ?? undefined,
@@ -1288,9 +1125,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     };
     const params = new URLSearchParams(location.search);
     params.set('panel', 'history');
-    params.set('view', 'sessions');
     params.set('trace', JSON.stringify(request));
-    setSearchParams(params, { replace: false });
+    setSearchParams(params, { replace: true });
   };
 
   const legacyDimension = filters.advancedDimension;
@@ -1300,15 +1136,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     ...(legacyDimension !== undefined
       ? ([['breakdown', t(`usage.dimension.${legacyDimension}`)]] as const)
       : []),
-    ['fiveHour', t('usage.tab.fiveHour')],
   ];
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} width="dashboard">
-        {/* Model prices is a panel over the page and export a one-off action
-            on the data; neither is a view, so both sit behind the header's
-            `⋯` and the tab strip below holds only the views. */}
         <PageMoreMenu
           menuId="usage-more"
           entries={[
@@ -1325,7 +1157,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-6">
-        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-6`} data-usage-page>
+        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-5`} data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} />
           {panel === 'export' ? (
             <UsageExportPanel />
@@ -1334,229 +1166,257 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           ) : panel !== 'history' ? (
             <RequestGovernanceView view={rawPanel === 'limits' ? 'limits' : 'realtime'} />
           ) : <>
-          <LiveBand onOpen={() => { selectPanel('realtime'); }} />
-          <FilterBar
-            filters={filters}
-            workspaces={workspaces}
-            models={models}
-            providers={providers}
-            comparing={comparing}
-            compareAvailable={compareAvailable}
-            onCompareChange={applyCompare}
-            onChange={applyFilters}
-          />
-          {usageQuery.isPending && firstPage === undefined ? (
-            <div role="status" className="flex items-center gap-2 py-6 text-[13px] text-ink-faint">
-              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-              {t('usage.loading')}
-            </div>
-          ) : null}
-          {usageQuery.isError && isUnsupportedUsageRead(usageQuery.error) ? (
-            <p data-usage-unsupported role="status" className="py-6 text-[13px] text-ink-soft">{t('usage.unsupported')}</p>
-          ) : usageQuery.isError ? (
-            <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[13px] text-danger">
-              <p className="font-medium">{t('usage.loadFailedKeep')}</p>
-              <button
-                type="button"
-                onClick={() => void usageQuery.refetch()}
-                className={SECONDARY_BUTTON}
-              >
-                {t('common.reload')}
-              </button>
-            </div>
-          ) : null}
-          {usageQuery.data !== undefined && firstPage !== undefined ? (
-            <>
-              {!firstPage.reliability.complete ? (() => {
-                const progress = importProgressOf(firstPage);
-                const countingLabel = progress === undefined
-                  ? t('usage.strip.counting')
-                  : t('usage.strip.countingProgress', {
-                      verified: formatGrouped(progress.verified_sources),
-                      total: formatGrouped(progress.total_sources),
-                    });
-                return (
-                  <div data-usage-scan-pending role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-rule/30 bg-amber-card/40 px-3 py-2 text-[12px] text-amber-ink">
-                    <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-                      <p data-usage-scan-counting>{countingLabel}</p>
-                      {progress !== undefined ? (
-                        <span data-usage-scan-bytes className="text-[11.5px] text-amber-ink/75 tabular-nums">
-                          {formatBytes(progress.read_bytes)} / {formatBytes(progress.total_bytes)}
-                        </span>
-                      ) : null}
-                    </div>
-                    <button type="button" data-usage-continue-scan disabled={usageQuery.isFetching} onClick={() => void usageQuery.refetch()} className="rounded-md border border-amber-rule/40 px-3 py-1.5 font-medium disabled:opacity-50">
-                      {t(usageQuery.isFetching ? 'usage.loading' : 'usage.continueScan')}
-                    </button>
-                  </div>
-                );
-              })() : null}
-              {summary !== undefined ? <KpiRow summary={summary} incomplete={!firstPage.reliability.complete} comparing={comparing} prior={compareQuery.data?.summary} /> : null}
-
-              <div data-usage-secondary-meta className="flex flex-wrap items-start gap-x-5 gap-y-1 text-[12px] text-ink-soft">
-                <LiveStrip todayResponse={reuseTodaySummary ? firstPage : undefined} enabled={!reuseTodaySummary && !usageQuery.isPending} />
-                <UsageReliabilityDetails summary={firstPage.summary} reliability={firstPage.reliability} />
-                {showAllHistoryChip ? (
-                  <span data-usage-all-history className="inline-flex min-h-8 items-center text-[11.5px] text-ink-faint">
-                    {t('usage.allHistoryChip')}
-                  </span>
-                ) : null}
-                {rangeWindow !== null ? (
-                  <p data-usage-range-note className="ml-auto flex min-h-8 flex-wrap items-center gap-x-3 text-[11.5px] text-ink-faint">
-                    <span>{usageWindowLabel(rangeWindow, locale)}</span>
-                    <span>{t('usage.timezoneNote', { offset: formatOffset(timezoneOffsetMinutes) })}</span>
-                  </p>
-                ) : null}
-              </div>
-
-              {trend.length === 0 ? (firstPage.reliability.complete ? (
-                <p data-usage-empty className="py-8 text-center text-[13px] text-ink-faint">
-                  {/* Only an unscoped all-history read can say there has never
-                      been any usage; any narrower read says "not in this range". */}
-                  {filters.range === 'all' && !usageFiltersHaveScope(filters) ? t('usage.emptyAll') : t('usage.empty')}
-                </p>
-              ) : null) : (
-                <div className="border-t border-hairline pt-3">
-                  <TrendChart
-                    trend={trend}
-                    filters={filters}
-                    groupBy={groupBy}
-                    metric={metric}
-                    onMetricChange={applyMetric}
-                    onGranularityChange={(granularity) => { applyFilters({ ...filters, granularity }); }}
-                    selectedKey={selectedBucketKey}
-                    onSelect={selectBucketKeyWithSnapshot}
-                    labelForKey={(key) => sourceKeyToLabel(key, groupBy, trend, sourceLookups)}
+            <LiveBand onOpen={() => { selectPanel('realtime'); }} />
+            <QuotaHeadroomStrip enabled={panel === 'history'} onOpenQuota={() => { selectPanel('quota'); }} />
+            <UsageFilterBar
+              filters={filters}
+              workspaces={workspaces}
+              models={models}
+              providers={providers}
+              namedProfiles={namedProfiles}
+              response={firstPage}
+              modelResponse={modelAttributionQuery.data}
+              comparing={comparing}
+              compareAvailable={compareAvailable}
+              onCompareChange={applyCompare}
+              onChange={applyFilters}
+              reliabilitySlot={
+                firstPage !== undefined ? (
+                  <UsageReliabilityDetails
+                    summary={firstPage.summary}
+                    reliability={firstPage.reliability}
+                    onOpenPricing={() => { setPricingOpen(true); }}
                   />
-                </div>
-              )}
-
-              {firstPage.reliability.complete || trend.length > 0 ? <section data-usage-detail>
-                {/* One chapter, one switcher: the views are the chapter's own
-                    titles, so the content always sits directly under the tab
-                    that chose it and no view leaves an empty shell behind. */}
-                <div className="flex flex-wrap items-baseline gap-x-5 gap-y-2 border-b border-hairline">
-                  <div role="tablist" aria-label={t('usage.sources.title')} className="flex flex-wrap items-baseline gap-1" data-usage-tabs>
-                    {tabs.map(([id, label]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        role="tab"
-                        aria-selected={tab === id}
-                        data-usage-tab={id}
-                        onClick={() => { selectTab(id); }}
-                        className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
-                          tab === id ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
+                ) : undefined
+              }
+              utilitySlot={<UsageRescanControl />}
+            />
+            {usageQuery.isPending && firstPage === undefined ? (
+              <div role="status" className="flex items-center gap-2 py-6 text-[13px] text-ink-faint">
+                <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+                {t('usage.loading')}
+              </div>
+            ) : null}
+            {usageQuery.isError && isUnsupportedUsageRead(usageQuery.error) ? (
+              <p data-usage-unsupported role="status" className="py-6 text-[13px] text-ink-soft">{t('usage.unsupported')}</p>
+            ) : usageQuery.isError ? (
+              <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[13px] text-danger">
+                <p className="font-medium">{t('usage.loadFailedKeep')}</p>
+                <button
+                  type="button"
+                  onClick={() => void usageQuery.refetch()}
+                  className={SECONDARY_BUTTON}
+                >
+                  {t('common.reload')}
+                </button>
+              </div>
+            ) : null}
+            {!usageQuery.isError && usageQuery.data !== undefined && firstPage !== undefined ? (
+              <div className={isRefetchingScope ? 'space-y-5 opacity-65 transition-opacity' : 'space-y-5'}>
+                {isRefetchingScope ? (
+                  <div data-usage-refetching role="status" className="flex items-center gap-2 text-[12px] text-ink-faint">
+                    <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+                    <span>{t('usage.loading')}</span>
                   </div>
-                  {tab === 'sources' ? (
-                    <span data-usage-source-scope className="pb-1.5 text-[12px] text-ink-faint">{sourceScopeLabel}</span>
-                  ) : null}
-                  {tab === 'sources' && selectedBucket !== undefined ? (
-                    <span data-usage-source-subtotal className="ml-auto pb-1.5 text-[13px] font-semibold text-ink tabular-nums">
-                      {formatCostUsd(sourceSubtotal)}
-                    </span>
-                  ) : null}
-                  {tab === 'sources' && selectedBucket !== undefined ? (
-                    <button
-                      type="button"
-                      data-usage-clear-bucket
-                      onClick={() => { selectBucketKeyWithSnapshot(null); }}
-                      className="inline-flex min-h-8 items-center rounded-md border border-hairline px-2.5 text-[12.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-                    >
-                      {t('usage.sources.viewWholeRange')}
-                    </button>
-                  ) : null}
-                  {tab === 'sessions' && sessionLocator !== undefined ? (
-                    <p className="ml-auto flex items-center gap-2 text-[12px] text-ink-soft">
-                      <span className="rounded-md bg-ink/[0.05] px-2 py-0.5 font-medium text-ink-soft">
-                        {t('usage.sessions.deepLinkChip')}
-                      </span>
-                      <button type="button" className="text-ink-faint underline hover:text-ink" onClick={() => { setDismissedLocator(sessionLocator); }}>
-                        {t('common.close')}
-                      </button>
-                    </p>
-                  ) : null}
-                </div>
-                {compareQuery.isError ? (
-                  <p data-usage-compare-error className={`mt-2 ${NOTICE_AMBER}`}>
-                    {t('usage.compare.loadFailed')}{' '}
-                    <button
-                      type="button"
-                      onClick={() => { void compareQuery.refetch(); }}
-                      className="underline underline-offset-2"
-                    >
-                      {t('usage.compare.retry')}
-                    </button>
-                  </p>
                 ) : null}
-                {tab === 'sources' ? (
-                  <div className="mt-3">
-                    <UsageSources
-                      trend={sourceTrend}
+                {!firstPage.reliability.complete ? (() => {
+                  const progress = importProgressOf(firstPage);
+                  const countingLabel = progress === undefined
+                    ? t('usage.strip.counting')
+                    : t('usage.strip.countingProgress', {
+                        verified: formatGrouped(progress.verified_sources),
+                        total: formatGrouped(progress.total_sources),
+                      });
+                  return (
+                    <div data-usage-scan-pending role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-rule/30 bg-amber-card/40 px-3 py-2 text-[12px] text-amber-ink">
+                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+                        <p data-usage-scan-counting>{countingLabel}</p>
+                        {progress !== undefined ? (
+                          <span data-usage-scan-bytes className="text-[11.5px] text-amber-ink/75 tabular-nums">
+                            {formatBytes(progress.read_bytes)} / {formatBytes(progress.total_bytes)}
+                          </span>
+                        ) : null}
+                      </div>
+                      <button type="button" data-usage-continue-scan disabled={usageQuery.isFetching} onClick={() => void usageQuery.refetch()} className="rounded-md border border-amber-rule/40 px-3 py-1.5 font-medium disabled:opacity-50">
+                        {t(usageQuery.isFetching ? 'usage.loading' : 'usage.continueScan')}
+                      </button>
+                    </div>
+                  );
+                })() : null}
+
+                {summary !== undefined ? (
+                  <UsageKpiBand
+                    summary={summary}
+                    trend={trend}
+                    incomplete={!firstPage.reliability.complete}
+                    comparing={comparing}
+                    prior={compareQuery.data?.summary}
+                    unpricedCount={unpricedCount}
+                    onOpenPricing={() => { setPricingOpen(true); }}
+                    cacheSavingsUsd={cacheSavingsUsd}
+                    todayResponse={reuseTodaySummary ? firstPage : undefined}
+                    reuseTodaySummary={reuseTodaySummary}
+                    enabled={panel === 'history' && !usageQuery.isPending}
+                  />
+                ) : null}
+
+                {trend.length === 0 ? (firstPage.reliability.complete ? (
+                  <p data-usage-empty className="py-8 text-center text-[13px] text-ink-faint">
+                    {filters.range === 'all' && !usageMultiFiltersHaveScope(filters) ? t('usage.emptyAll') : t('usage.empty')}
+                  </p>
+                ) : null) : (
+                  <div className="pt-1">
+                    <TrendChart
+                      trend={trend}
+                      filters={singleFilters}
                       groupBy={groupBy}
                       metric={metric}
-                      prior={priorSource}
-                      lookups={sourceLookups}
-                      onFilterSource={(row) => {
-                        if (row.filter === null) return;
-                        applyFilters(filtersForSourceFilter(filters, row.filter));
+                      onMetricChange={applyMetric}
+                      onGranularityChange={(granularity) => { applyFilters({ ...filters, granularity }); }}
+                      selectedKey={selectedBucketKey}
+                      onSelect={selectBucketKeyWithSnapshot}
+                      labelForKey={(key) => {
+                        if (legacyDimension !== undefined) {
+                          const group = trend.flatMap((bucket) => bucket.groups).find((entry) => entry.key === key);
+                          return dimensionKeyLabelLegacy(
+                            {
+                              key,
+                              modelAlias: group?.model_alias ?? null,
+                              profileName: group?.profile_name ?? null,
+                              agentId: group?.agent_id ?? null,
+                            },
+                            legacyDimension,
+                            sourceLookups,
+                            sessionTitle,
+                          );
+                        }
+                        return sourceKeyToLabel(key, groupBy, trend, sourceLookups);
                       }}
-                      onOpenSessions={openTrace}
-                      onSwitchGrouping={(next) => { applyFilters({ ...filters, groupBy: next, advancedDimension: undefined }); }}
                     />
-                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-                      <button
-                        type="button"
-                        data-usage-open-sessions
-                        onClick={() => { openTrace(undefined); }}
-                        className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-1 text-[13px] text-ink underline underline-offset-4 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-                      >
-                        {t('usage.sources.openSessions')}
-                      </button>
+                  </div>
+                )}
+
+                {firstPage.reliability.complete || trend.length > 0 ? (
+                  <section data-usage-detail>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline">
+                      <div role="tablist" aria-label={t('usage.sources.title')} className="flex flex-wrap items-baseline gap-1" data-usage-tabs>
+                        {tabs.map(([id, label]) => (
+                          <button
+                            key={id}
+                            type="button"
+                            role="tab"
+                            aria-selected={tab === id}
+                            data-usage-tab={id}
+                            onClick={() => { selectTab(id); }}
+                            className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                              tab === id ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      {tab === 'sources' && selectedBucket !== undefined ? (
+                        <button
+                          type="button"
+                          data-usage-clear-bucket
+                          onClick={() => { selectBucketKeyWithSnapshot(null); }}
+                          className="inline-flex h-7 items-center gap-1.5 rounded-full border border-selected-ink/40 bg-panel px-2.5 text-[11.5px] text-ink transition-colors hover:border-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                        >
+                          <span data-usage-source-scope>{bucketLabel(selectedBucket, filters.granularity, locale)}</span>
+                          <Icon name="close" size={12} className="text-ink-faint" />
+                        </button>
+                      ) : null}
+                      {tab === 'sources' && selectedBucket !== undefined ? (
+                        <span data-usage-source-subtotal className="ml-auto pb-1 text-[13px] font-semibold text-ink tabular-nums">
+                          {formatCostUsd(sourceSubtotal)}
+                        </span>
+                      ) : rangeWindow !== null ? (
+                        <span data-usage-range-note className="ml-auto pb-1 text-[11.5px] text-ink-faint tabular-nums">
+                          {usageWindowLabel(rangeWindow, locale)}
+                        </span>
+                      ) : null}
+                      {tab === 'sessions' && sessionLocator !== undefined ? (
+                        <p className="ml-auto flex items-center gap-2 text-[12px] text-ink-soft">
+                          <span className="rounded-md bg-ink/[0.05] px-2 py-0.5 font-medium text-ink-soft">
+                            {t('usage.sessions.deepLinkChip')}
+                          </span>
+                          <button type="button" className="text-ink-faint underline hover:text-ink" onClick={() => { setDismissedLocator(sessionLocator); }}>
+                            {t('common.close')}
+                          </button>
+                        </p>
+                      ) : null}
                     </div>
-                  </div>
-                ) : tab === 'sessions' ? (
-                  <div className="mt-3">
-                    <SessionsTab
-                      data={{ pages: usageQuery.data.pages }}
-                      fetchNextPage={() => void usageQuery.fetchNextPage()}
-                      hasNextPage={usageQuery.hasNextPage}
-                      isFetchingNextPage={usageQuery.isFetchingNextPage}
-                      isFetchNextPageError={usageQuery.isFetchNextPageError}
-                      sessionLocator={sessionLocator}
-                      locatorSearching={locatorSearching}
-                      workspaceName={(id) => workspaceName(id) ?? id}
-                      summaryCost={summary?.cost_usd_estimated ?? 0}
-                    />
-                  </div>
-                ) : tab === 'breakdown' && legacyDimension !== undefined ? (
-                  <div className="mt-3">
-                    <DimensionBreakdown
-                      trend={trend}
-                      dimension={legacyDimension}
-                      labelFor={(row) => dimensionKeyLabelLegacy(row, legacyDimension, sourceLookups, sessionTitle)}
-                    />
-                  </div>
-                ) : tab === 'fiveHour' ? (
-                  <div className="mt-3">
-                    <FiveHourTab
-                      trend={trend}
-                      filters={filters}
-                      sessionTitle={sessionTitle}
-                      onSwitchGranularity={() => { applyFilters({ ...filters, granularity: 'five_hour' }); }}
-                    />
-                  </div>
+                    {compareQuery.isError ? (
+                      <p data-usage-compare-error className={`mt-2 ${NOTICE_AMBER}`}>
+                        {t('usage.compare.loadFailed')}{' '}
+                        <button
+                          type="button"
+                          onClick={() => { void compareQuery.refetch(); }}
+                          className="underline underline-offset-2"
+                        >
+                          {t('usage.compare.retry')}
+                        </button>
+                      </p>
+                    ) : null}
+                    {tab === 'sources' ? (
+                      <div className="mt-3">
+                        <UsageSources
+                          trend={sourceTrend}
+                          groupBy={groupBy}
+                          metric={metric}
+                          prior={priorSource}
+                          lookups={sourceLookups}
+                          isFilterActive={(row) => isSourceRowFilterActive(filters, row.filter)}
+                          onFilterSource={(row) => {
+                            if (row.filter === null) return;
+                            applyFilters(toggleSourceRowFilter(filters, row.filter));
+                          }}
+                          onOpenSessions={openTrace}
+                          onSwitchGrouping={(next) => { applyFilters({ ...filters, groupBy: next, advancedDimension: undefined }); }}
+                        />
+                        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+                          <button
+                            type="button"
+                            data-usage-open-sessions
+                            onClick={() => {
+                              if (selectedBucket !== undefined) openTrace(undefined);
+                              else selectTab('sessions');
+                            }}
+                            className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-1 text-[13px] text-ink underline underline-offset-4 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                          >
+                            {t('usage.sources.openSessions')}
+                          </button>
+                        </div>
+                      </div>
+                    ) : tab === 'sessions' ? (
+                      <div className="mt-3">
+                        <SessionsTab
+                          data={{ pages: usageQuery.data.pages }}
+                          fetchNextPage={() => void usageQuery.fetchNextPage()}
+                          hasNextPage={usageQuery.hasNextPage}
+                          isFetchingNextPage={usageQuery.isFetchingNextPage}
+                          isFetchNextPageError={usageQuery.isFetchNextPageError}
+                          sessionLocator={sessionLocator}
+                          locatorSearching={locatorSearching}
+                          workspaceName={(id) => workspaceName(id) ?? id}
+                          summaryCost={summary?.cost_usd_estimated ?? 0}
+                        />
+                      </div>
+                    ) : tab === 'breakdown' && legacyDimension !== undefined ? (
+                      <div className="mt-3">
+                        <DimensionBreakdown
+                          trend={trend}
+                          dimension={legacyDimension}
+                          labelFor={(row) => dimensionKeyLabelLegacy(row, legacyDimension, sourceLookups, sessionTitle)}
+                        />
+                      </div>
+                    ) : null}
+                  </section>
                 ) : null}
-              </section> : null}
-            </>
-          ) : null}
-          {trace !== undefined ? (
-            <div className="mt-3" data-usage-trace-detail>
+              </div>
+            ) : null}
+            {trace !== undefined ? (
               <UsageSessionPanel
                 request={trace}
                 baseFilters={filters}
@@ -1564,8 +1424,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                 workspaceName={workspaceName}
                 onClose={() => { setTrace(undefined); }}
               />
-            </div>
-          ) : null}
+            ) : null}
           </>}
         </div>
       </main>
@@ -1573,11 +1432,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   );
 }
 
-/**
- * A server that predates the usage route answers "not found" (40401), the
- * same reading `executionControls` gives an older server. That is a fact
- * about the server, not a failure to retry.
- */
 function isUnsupportedUsageRead(error: unknown): boolean {
   return error instanceof ApiError && error.code === 40401;
 }
@@ -1587,26 +1441,6 @@ const METRIC_SEARCH_TO_METRIC: Record<string, UsageMetric> = {
   tokens: 'tokens',
   cache: 'cache',
 };
-
-function formatOffset(offsetMinutes: number): string {
-  const sign = offsetMinutes < 0 ? '−' : '+';
-  const absolute = Math.abs(offsetMinutes);
-  return `UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`;
-}
-
-/** Turn a row's exact filter into the API filter it corresponds to. */
-function filtersForSourceFilter(
-  filters: UsageFilters,
-  filter: NonNullable<UsageSourceRow['filter']>,
-): UsageFilters {
-  return {
-    ...filters,
-    model: filter.field === 'model' ? filter.value : undefined,
-    provider: filter.field === 'provider' ? filter.value : undefined,
-    profiles: filter.field === 'profile' ? [filter.value] : [],
-    workspaceId: filter.field === 'workspace.id' ? filter.value : filters.workspaceId,
-  };
-}
 
 function sourceRowLabel(
   row: UsageSourceRow,

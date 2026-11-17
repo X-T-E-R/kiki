@@ -19,6 +19,8 @@ import {
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
 import { copyTextToClipboard } from '../../../lib/clipboard';
+import { compactIdentifier, formatSessionOwnerLabel } from '../../../lib/compactIdentifier';
+import { useSessionNamesWithClient } from '../../../lib/threadTitles';
 import { pushUndoToast } from '../../../lib/toasts';
 import { isImeKeyEvent } from '../../../lib/shortcuts';
 import { FeedbackLine, type Feedback } from '../../controls';
@@ -256,7 +258,7 @@ function GroupBindingOptions({
                       className="inline-flex items-center gap-1.5 rounded-md border border-hairline-strong bg-panel px-2 py-0.5 text-[12px] text-ink"
                     >
                       {name ? <span className="font-medium">{name}</span> : null}
-                      <span className="font-mono text-[11.5px] text-ink-soft">{senderId}</span>
+                      <span className="font-mono text-[11.5px] text-ink-soft" title={senderId}>{compactIdentifier(senderId)}</span>
                       <button
                         type="button"
                         disabled={disabled}
@@ -296,7 +298,7 @@ function GroupBindingOptions({
                   >
                     <span>+</span>
                     {member.senderName ? <span>{member.senderName}</span> : null}
-                    <span className="font-mono text-[11px] text-ink-faint">{member.senderId}</span>
+                    <span className="font-mono text-[11px] text-ink-faint" title={member.senderId}>{compactIdentifier(member.senderId)}</span>
                   </button>
                 ))}
               </div>
@@ -384,7 +386,22 @@ export function BindingRow({ binding, snapshot, policy, catalog, setupPlatform, 
     queryFn: () => client.imSessions.channelViews(binding.session_id!),
     enabled: expanded && binding.session_id !== undefined && typeof client.imSessions.channelViews === 'function',
   });
-  const targetCatalog = catalog === undefined ? undefined : { ...catalog, sessions: [...new Map([...catalog.sessions, ...(sessions.data ?? []).map((item) => ({ id: item.id, title: item.title?.trim() || item.id }))].map((item) => [item.id, item])).values()] };
+  const missingBoundSessionId = binding.session_id !== undefined
+    && !(catalog?.sessions.some((item) => item.id === binding.session_id) ?? false)
+    ? [binding.session_id]
+    : [];
+  const lookupSessionName = useSessionNamesWithClient(missingBoundSessionId, client);
+  const resolvedBoundSessionTitle = binding.session_id !== undefined ? lookupSessionName(binding.session_id).title : undefined;
+  const targetCatalog = catalog === undefined ? undefined : {
+    ...catalog,
+    sessions: [...new Map([
+      ...catalog.sessions,
+      ...(binding.session_id !== undefined && resolvedBoundSessionTitle !== undefined
+        ? [{ id: binding.session_id, title: resolvedBoundSessionTitle }]
+        : []),
+      ...(sessions.data ?? []).map((item) => ({ id: item.id, title: item.title?.trim() || item.id })),
+    ].map((item) => [item.id, item])).values()],
+  };
   const identity = identityLabel(binding.identity, t);
   const on = binding.enabled && !binding.pending_reanchor && imSessionAdmitted({ allowed: policy.allowed, defaultEnabled: policy.default_enabled, sessionEnabled: binding.session_enabled });
   const blocked = !policy.allowed || !binding.enabled || binding.pending_reanchor;
@@ -547,7 +564,7 @@ export function BindingRow({ binding, snapshot, policy, catalog, setupPlatform, 
       <div className="max-w-md space-y-1.5">
         <span className={FORM_LABEL}>{t('st.im.target')}</span>
         <SettingsSelect id={`im-binding-target-${binding.id}`} variant="form" ariaLabel={`${identity}: ${t('st.im.target')}`} value={targetValue}
-          choices={bindingTargetChoices(targetCatalog, binding, t)} emptyText={binding.session_id} disabled={action.saving}
+          choices={bindingTargetChoices(targetCatalog, binding, t)} emptyText={binding.session_id ? formatSessionOwnerLabel(binding.session_id, resolvedBoundSessionTitle) : undefined} disabled={action.saving}
           onChange={onSelectTarget} dataAttr="data-im-binding-target" />
         <input type="search" data-im-binding-target-search value={search} aria-label={t('st.im.searchTarget')} placeholder={t('st.im.searchTarget')} className={INPUT} onChange={(event) => { setSearch(event.target.value); }} />
         {sessions.isError ? <p role="alert" className="text-[13px] text-danger">{t('st.im.searchError')}</p> : null}
@@ -607,9 +624,10 @@ export function BindingRow({ binding, snapshot, policy, catalog, setupPlatform, 
 /** Raw chat/sender ids, once, with a copy action: the 高级 fold's content. */
 function IdentityIds({ identity }: { identity: ImIdentity }) {
   const { t } = useI18n();
+  const sameEndpoint = identity.sender_id.trim() === '' || identity.sender_id.trim() === identity.chat_id.trim();
   const parts = [
     { label: t('st.im.chatId'), value: identity.chat_id },
-    { label: t('st.im.senderId'), value: identity.sender_id },
+    ...(!sameEndpoint ? [{ label: t('st.im.senderId'), value: identity.sender_id }] : []),
     ...(identity.topic_id !== '0' ? [{ label: t('st.im.topicId'), value: identity.topic_id }] : []),
   ];
   return (
@@ -621,7 +639,7 @@ function IdentityIds({ identity }: { identity: ImIdentity }) {
           <button type="button" data-im-copy-id={part.value} title={t('st.channels.copyHint', { value: part.value })}
             onClick={() => { void copyTextToClipboard(part.value); }}
             className="min-w-0 break-all font-mono text-[11.5px] text-ink-soft underline decoration-dotted decoration-ink-faint/60 underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink">
-            {part.value}
+            {compactIdentifier(part.value)}
           </button>
         </span>
       ))}
@@ -744,10 +762,18 @@ export function TargetPicker({ id, value, onChange, catalog, disabled, attrPrefi
     queryFn: async () => (await client.listSessions({ q: query, page_size: 20 })).items,
     enabled: query !== '' && kind === 'session',
   });
+  const selectedSessionId = value.startsWith('session:') && value.length > 8 ? value.slice(8) : undefined;
+  const lookupSelectedSession = useSessionNamesWithClient(selectedSessionId !== undefined ? [selectedSessionId] : [], client);
   const choices = [...(catalog?.personas ?? []).map((item) => ({ value: `persona:${item.id}`, label: `${t('st.im.kindPersona')} · ${item.name}` })),
     ...[...new Map([...(catalog?.sessions ?? []), ...(sessions.data ?? []).map((item) => ({ id: item.id, title: item.title?.trim() || item.id }))].map((item) => [item.id, item])).values()]
-      .map((item) => ({ value: `session:${item.id}`, label: `${t('st.im.kindSession')} · ${item.title}` }))];
-  if (value.length > 8 && !choices.some((item) => item.value === value)) choices.unshift({ value, label: value.slice(8) });
+      .map((item) => ({ value: `session:${item.id}`, label: `${t('st.im.kindSession')} · ${formatSessionOwnerLabel(item.id, item.title)}` }))];
+  if (value.length > 8 && !choices.some((item) => item.value === value)) {
+    const rawTargetId = value.slice(8);
+    const fallbackLabel = selectedSessionId !== undefined
+      ? formatSessionOwnerLabel(selectedSessionId, lookupSelectedSession(selectedSessionId).title)
+      : compactIdentifier(rawTargetId);
+    choices.unshift({ value, label: fallbackLabel });
+  }
   const filtered = choices.filter((item) => item.value === value || (item.value.startsWith(`${kind}:`) && item.label.toLowerCase().includes(query.toLowerCase())));
   return <div className="space-y-2" {...{ [`${attrPrefix}-editor`]: id }}>
     <div className="flex flex-wrap items-center gap-2">

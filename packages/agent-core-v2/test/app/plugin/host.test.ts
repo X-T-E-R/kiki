@@ -982,4 +982,78 @@ describe('PluginHostService extension port bridge', () => {
       await harness.dispose();
     }
   });
+
+  it('skips E12 describe probes for static-route plugins and caches dynamic E12 slot discovery across reconciles', async () => {
+    const harness = await createExtensionBridgeHarness();
+    try {
+      await harness.hosts.ready;
+      const staticCounterFile = join(harness.root, 'static-e12-probe-count.txt');
+      const staticSource = join(harness.root, 'static-route-plugin');
+      await mkdir(staticSource, { recursive: true });
+      await writeFile(join(staticSource, 'entry.mjs'), `
+        import { appendFileSync } from 'node:fs';
+        export const slots = {
+          'E12:server-gui-slots': async (payload) => {
+            if (payload?.kind === 'describe' || payload?.action === 'describe') {
+              appendFileSync(${JSON.stringify(staticCounterFile)}, '1\\n');
+              return { guiSlots: [] };
+            }
+            return { status: 200, data: { ok: true } };
+          },
+        };
+      `);
+      await writeFile(join(staticSource, 'kimi.plugin.json'), JSON.stringify({
+        name: 'static-route-plugin',
+        version: '1.0.0',
+        'x-kiki': {
+          engines: { kiki: '^0.4.3' },
+          entry: './entry.mjs',
+          routes: [{ method: 'GET', subpath: '/ping', scopeAcl: 'space' }],
+        },
+      }));
+      const staticPlan = await harness.plugins.previewPlugin({ source: staticSource });
+      await harness.plugins.installPlugin({ source: staticSource, fingerprint: staticPlan.fingerprint, consent: true });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const staticRaw = await readFile(staticCounterFile, 'utf8').catch(() => '');
+      expect(staticRaw).toBe('');
+      expect(harness.registry.resolveHttpRoute('static-route-plugin', 'GET', '/ping')).toBeDefined();
+
+      const dynamicCounterFile = join(harness.root, 'dynamic-e12-probe-count.txt');
+      const dynamicSource = join(harness.root, 'dynamic-e12-plugin');
+      await mkdir(dynamicSource, { recursive: true });
+      await writeFile(join(dynamicSource, 'entry.mjs'), `
+        import { appendFileSync } from 'node:fs';
+        export const slots = {
+          'E12:server-gui-slots': async () => {
+            appendFileSync(${JSON.stringify(dynamicCounterFile)}, '1\\n');
+            return { guiSlots: [] };
+          },
+        };
+      `);
+      await writeFile(join(dynamicSource, 'kimi.plugin.json'), JSON.stringify({
+        name: 'dynamic-e12-plugin',
+        version: '1.0.0',
+        'x-kiki': {
+          engines: { kiki: '^0.4.3' },
+          entry: './entry.mjs',
+          slots: ['E12:server-gui-slots'],
+        },
+      }));
+      const dynamicPlan = await harness.plugins.previewPlugin({ source: dynamicSource });
+      await harness.plugins.installPlugin({ source: dynamicSource, fingerprint: dynamicPlan.fingerprint, consent: true });
+
+      await vi.waitFor(async () => {
+        const raw = await readFile(dynamicCounterFile, 'utf8').catch(() => '');
+        expect(raw.trim().split('\n').filter(Boolean)).toHaveLength(1);
+      });
+
+      await (harness.hosts as unknown as { reconcileExtensionPorts: () => Promise<void> }).reconcileExtensionPorts();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const rawAfter = await readFile(dynamicCounterFile, 'utf8');
+      expect(rawAfter.trim().split('\n').filter(Boolean)).toHaveLength(1);
+    } finally {
+      await harness.dispose();
+    }
+  });
 });
+

@@ -29,15 +29,16 @@ export function runningSubagentStatus(
   parentAgentId: string,
   excludedAgentId?: string,
   locale: Locale = environmentLocale(),
+  excludedTaskId?: string,
 ): string | undefined {
   const running = new Map<string, string>();
   for (const task of tasks.list(true)) {
-    if (task.kind === 'agent' && task.agentId !== undefined && task.agentId !== excludedAgentId) {
-      running.set(task.agentId, task.collaborationTaskName ?? task.agentId);
-    }
+    if (task.kind !== 'agent' || task.agentId === undefined) continue;
+    if (excludedTaskId !== undefined ? task.taskId === excludedTaskId : task.agentId === excludedAgentId) continue;
+    running.set(task.agentId, task.collaborationTaskName ?? task.agentId);
   }
   for (const handle of lifecycle.list()) {
-    if (handle.id === excludedAgentId) continue;
+    if (handle.id === excludedAgentId && (excludedTaskId === undefined || !running.has(handle.id))) continue;
     if (handle.accessor.get(IAgentScopeContext).parentAgentId !== parentAgentId) continue;
     const state = handle.accessor.get(IAgentExecutionService).status().state;
     const savingFailed = handle.accessor.get(IAgentLoopService)?.status().persistenceFailure !== undefined;

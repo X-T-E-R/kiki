@@ -12,7 +12,7 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { formatCostUsd } from '@kiki/session-core/util';
+import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
@@ -22,7 +22,6 @@ import {
   usageSeriesKeys,
   usageSourceKey,
   USAGE_GRANULARITIES,
-  USAGE_SOURCE_KEY_UNKNOWN,
   type UsageDrilldownSessionWire,
   type UsageFilters,
   type UsageGranularity,
@@ -123,7 +122,6 @@ export function TrendChart({
             />
           </span>
         ) : null}
-        <span className="ml-auto text-[12px] text-ink-faint">{t('usage.trend.clickHint')}</span>
       </div>
       <div className="overflow-x-auto">
         <div className="relative" style={chartWidth > 0 ? { minWidth: chartWidth } : undefined}>
@@ -150,6 +148,8 @@ export function TrendChart({
                 `${unknownTotal ? '—' : time.formatTokens(bucketTokens(bucket))} ${t('usage.col.tokens')}`,
                 unknownTotal ? '—' : formatCostUsd(bucketCost(bucket)),
                 `${t('usage.trend.metric.cache')} ${formatPercent(bucketCacheHit(bucket))}`,
+                ...(typeof bucket.turn_count === 'number' ? [t('usage.drilldown.turns', { count: bucket.turn_count })] : []),
+                ...(typeof bucket.request_count === 'number' ? [t('usage.trend.requests', { count: formatGrouped(bucket.request_count) })] : []),
                 ...(bucket.groups.some((group) => group.tokens_unknown === true) ? [t('usage.kpi.partialUnknown')] : []),
               ].join(' · ');
               const heightPct = total > 0 && max > 0 ? Math.max(3, (total / max) * 100) : 0;
@@ -248,9 +248,6 @@ export function TrendChart({
           </>
         )}
       </div>
-      {series.some((key) => key === USAGE_SOURCE_KEY_UNKNOWN) ? (
-        <p className="mt-2 text-[11.5px] text-ink-faint">{t('usage.sources.unknownNote')}</p>
-      ) : null}
     </section>
   );
 }

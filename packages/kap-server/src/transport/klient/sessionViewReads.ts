@@ -395,7 +395,7 @@ async function readSessionViewTranscriptPageRaw(
       const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection, 'derived');
       if (loaded === undefined) return undefined;
       const query = loaded.query;
-      const skipFullMerge = loaded.preparing || (loaded.page.items.length === 0 && loaded.snapshot.hasMoreOlder === true && typeof transcriptService.coldWindowBoundary === 'function');
+      const skipFullMerge = !anchored || loaded.preparing || (loaded.page.items.length === 0 && loaded.snapshot.hasMoreOlder === true && typeof transcriptService.coldWindowBoundary === 'function');
       const cold = skipFullMerge ? loaded.snapshot : await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
         (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection), query.beforeTurn, loaded.snapshot);
       if (cold === undefined) return undefined;
@@ -473,7 +473,7 @@ async function readSessionViewTranscriptPageRaw(
       ? await transcriptService.coldHistoryTruncated(sessionId, input.agentId) : false;
   const hasMore = page.hasMore || truncated || snapshot.hasMoreOlder === true;
   const continuationAnchor = page.items.length > 0 ? undefined : requestedAnchor({ ...input, ...loaded.query });
-  const roster = (await transcriptService.readColdRoster(sessionId)) ?? [];
+  const roster = (await transcriptService.readColdRoster(sessionId, input.signal)) ?? [];
   if (!roster.some((descriptor) => descriptor.agentId === input.agentId) &&
       (snapshot.items.length > 0 || snapshot.tasks.length > 0 || input.agentId === MAIN_AGENT_ID)) {
     roster.push({ agentId: input.agentId, type: input.agentId === MAIN_AGENT_ID ? 'main' : 'sub' });

@@ -113,6 +113,7 @@ const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 
 export function ImageViewport({
   src,
+  identity,
   alt,
   caption,
   meta,
@@ -122,6 +123,7 @@ export function ImageViewport({
   onContextMenu,
 }: {
   readonly src: string;
+  readonly identity?: string;
   readonly alt: string;
   /** Leading header text (the file path). */
   readonly caption: ReactNode;
@@ -136,6 +138,7 @@ export function ImageViewport({
   const { t } = useI18n();
   const phoneMode = usePhoneMode();
   const dpr = useDevicePixelRatio();
+  const effectiveIdentity = identity ?? src;
   const [zoom, setZoom] = useState<'fit' | number>('fit');
   const [natural, setNatural] = useState<{ readonly width: number; readonly height: number } | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -146,9 +149,10 @@ export function ImageViewport({
   useEffect(() => {
     setNatural(null);
     setZoom('fit');
-  }, [src]);
+    anchor.current = null;
+  }, [effectiveIdentity]);
 
-  // After a zoom switch, scroll so the anchored image point stays put.
+  // After a zoom switch or resolution upgrade, scroll so the anchored image point stays put.
   useLayoutEffect(() => {
     const target = anchor.current;
     const scroller = scrollerRef.current;
@@ -157,7 +161,7 @@ export function ImageViewport({
     if (target === null || scroller === null || image === null) return;
     scroller.scrollLeft = image.offsetLeft + target.fx * image.offsetWidth - target.px;
     scroller.scrollTop = image.offsetTop + target.fy * image.offsetHeight - target.py;
-  }, [zoom]);
+  }, [zoom, natural]);
 
   const switchZoom = (next: 'fit' | number, point?: { readonly x: number; readonly y: number }) => {
     const scroller = scrollerRef.current;
@@ -257,7 +261,33 @@ export function ImageViewport({
           decoding="async"
           onLoad={(event) => {
             const image = event.currentTarget;
-            setNatural({ width: image.naturalWidth, height: image.naturalHeight });
+            const nextWidth = image.naturalWidth;
+            const nextHeight = image.naturalHeight;
+            if (
+              natural !== null &&
+              natural.width > 0 &&
+              natural.height > 0 &&
+              nextWidth > 0 &&
+              nextHeight > 0 &&
+              (nextWidth !== natural.width || nextHeight !== natural.height) &&
+              zoom !== 'fit'
+            ) {
+              const scroller = scrollerRef.current;
+              if (scroller !== null) {
+                const box = scroller.getBoundingClientRect();
+                const rect = image.getBoundingClientRect();
+                const cx = box.left + box.width / 2;
+                const cy = box.top + box.height / 2;
+                anchor.current = {
+                  fx: rect.width > 0 ? clamp01((cx - rect.left) / rect.width) : 0.5,
+                  fy: rect.height > 0 ? clamp01((cy - rect.top) / rect.height) : 0.5,
+                  px: box.width / 2,
+                  py: box.height / 2,
+                };
+              }
+              setZoom(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(zoom * (natural.width / nextWidth)))));
+            }
+            setNatural({ width: nextWidth, height: nextHeight });
           }}
           onError={onError}
           style={displayWidth === undefined ? undefined : { width: displayWidth, maxWidth: 'none' }}

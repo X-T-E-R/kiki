@@ -149,8 +149,37 @@ function describeValidationError(schema: SchemaObject, args: unknown, error: Err
     if (described !== undefined) return described;
   }
   const condition = thenCondition(schema, error.schemaPath);
-  const message = formatValidationError(error);
+  const message = additionalPropertyMessage(schema, args, error) ?? formatValidationError(error);
   return condition === undefined ? message : `${message} when ${condition.text}`;
+}
+
+function additionalPropertyMessage(
+  schema: SchemaObject,
+  args: unknown,
+  error: ErrorObject,
+): string | undefined {
+  if (error.keyword !== 'additionalProperties' || typeof error.params['additionalProperty'] !== 'string') {
+    return undefined;
+  }
+  const extraName = error.params['additionalProperty'];
+  const hint = nearMissHint(schema, args, error.instancePath, extraName);
+  if (hint === undefined) return undefined;
+  const path = error.instancePath ? `${error.instancePath} ` : '';
+  return `${path}must NOT have additional property '${extraName}' (did you mean '${hint}'?)`;
+}
+
+function nearMissHint(
+  schema: SchemaObject,
+  args: unknown,
+  pointer: string,
+  name: string,
+): string | undefined {
+  const owner = valueAtPointer(args, pointer);
+  const supplied = isSchemaValueObject(owner) ? new Set(Object.keys(owner)) : new Set<string>();
+  const segments = pointerSegments(pointer);
+  const declared = [...new Set(schemaNodesAt(schema, segments).flatMap(declaredPropertyNames))];
+  const intended = declared.find((candidate) => !supplied.has(candidate) && isNearMiss(name, candidate));
+  return intended === undefined ? undefined : [...segments, intended].join('.');
 }
 
 function describeExclusion(schema: SchemaObject, args: unknown, error: ErrorObject): string | undefined {
@@ -269,8 +298,6 @@ function quotedList(names: readonly string[], conjunction: 'and' | 'or'): string
 export interface ToolArgsValidation {
   readonly args: unknown;
   readonly error: string | null;
-  /** Arguments the schema does not declare anywhere that were removed so the call could run, as dotted paths. */
-  readonly ignored?: readonly string[];
 }
 
 export function validateToolArgsWithCoercion(
@@ -288,73 +315,7 @@ export function validateToolArgsWithCoercion(
     return { args: coerced, error: null };
   }
 
-  const stripped = stripUnknownArguments(validator, schema, coerced);
-  if (stripped === undefined) return { args, error: originalError };
-  if (stripped.suggestions.length > 0) {
-    const remaining = validateToolArgs(validator, stripped.args as JsonType);
-    return { args, error: [...stripped.suggestions, ...(remaining === null ? [] : [remaining])].join('; ') };
-  }
-  if (validateToolArgs(validator, stripped.args as JsonType) !== null) return { args, error: originalError };
-  return { args: stripped.args, error: null, ignored: stripped.ignored };
-}
-
-interface StrippedArguments {
-  readonly args: unknown;
-  readonly ignored: readonly string[];
-  readonly suggestions: readonly string[];
-}
-
-function stripUnknownArguments(
-  validator: ToolArgsValidator,
-  schema: SchemaObject,
-  value: unknown,
-): StrippedArguments | undefined {
-  if (validator(value as JsonType)) return undefined;
-  const unknown: Array<{ readonly pointer: string; readonly name: string }> = [];
-  for (const error of validator.errors ?? []) {
-    if (error.keyword !== 'additionalProperties' || typeof error.params['additionalProperty'] !== 'string') continue;
-    const name = error.params['additionalProperty'];
-    if (unknown.some((entry) => entry.pointer === error.instancePath && entry.name === name)) continue;
-    const nodes = schemaNodesAt(schema, pointerSegments(error.instancePath));
-    if (nodes.some((node) => declaresProperty(node, name))) continue;
-    unknown.push({ pointer: error.instancePath, name });
-  }
-  if (unknown.length === 0) return undefined;
-  let args = value;
-  const ignored: string[] = [];
-  const suggestions: string[] = [];
-  for (const { pointer, name } of unknown) {
-    const owner = valueAtPointer(value, pointer);
-    const supplied = isSchemaValueObject(owner) ? new Set(Object.keys(owner)) : new Set<string>();
-    const declared = [...new Set(schemaNodesAt(schema, pointerSegments(pointer)).flatMap(declaredPropertyNames))];
-    const label = [...pointerSegments(pointer), name].join('.');
-    const intended = declared.find((candidate) => !supplied.has(candidate) && isNearMiss(name, candidate));
-    if (intended !== undefined) {
-      const intendedLabel = [...pointerSegments(pointer), intended].join('.');
-      suggestions.push(`unknown argument '${label}'; did you mean '${intendedLabel}'?`);
-    }
-    args = withoutProperty(args, pointerSegments(pointer), name);
-    ignored.push(label);
-  }
-  return { args, ignored, suggestions };
-}
-
-function withoutProperty(value: unknown, segments: readonly string[], name: string): unknown {
-  if (segments.length === 0) {
-    if (!isSchemaValueObject(value)) return value;
-    const copy = { ...value };
-    Reflect.deleteProperty(copy, name);
-    return copy;
-  }
-  const [head, ...rest] = segments;
-  if (Array.isArray(value)) {
-    const index = Number(head);
-    const copy = [...value];
-    copy[index] = withoutProperty(value[index], rest, name);
-    return copy;
-  }
-  if (!isSchemaValueObject(value)) return value;
-  return { ...value, [head!]: withoutProperty(value[head!], rest, name) };
+  return { args, error: originalError };
 }
 
 function pointerSegments(pointer: string): string[] {
@@ -416,11 +377,6 @@ function expandSchemaNode(node: SchemaObject, root: SchemaObject, seen = new Set
     if (branch !== undefined) nodes.push(...expandSchemaNode(branch, root, seen));
   }
   return nodes;
-}
-
-function declaresProperty(node: SchemaObject, name: string): boolean {
-  if (Object.hasOwn(asSchemaObject(node['properties']) ?? {}, name)) return true;
-  return Object.keys(asSchemaObject(node['patternProperties']) ?? {}).some((pattern) => matchesPattern(pattern, name));
 }
 
 function declaredPropertyNames(node: SchemaObject): string[] {

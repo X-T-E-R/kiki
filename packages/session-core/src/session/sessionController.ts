@@ -564,6 +564,7 @@ export class SessionController {
   private readonly agentViews = new Map<string, { readonly agentId: string; readonly grade: TranscriptGrade }>();
   private readonly catchupByAgent = new Map<string, Promise<void>>();
   private readonly catchupControllers = new Map<string, AbortController>();
+  private readonly firstScreenSeedControllers = new Map<string, AbortController>();
   private readonly detailReads = new Map<string, Promise<boolean>>();
   /**
    * Serialized size of each transcript value the body budget counts, measured
@@ -592,6 +593,7 @@ export class SessionController {
   private latestSnapshot: SessionSnapshotResponse | undefined;
   private durableIngressReadInFlight: Promise<void> | undefined;
   private readonly durableSteerReads = new Map<string, { agentId: string; promptId: string }>();
+  private readonly durablePromptReads = new Map<string, string>();
   private durableSteerReadTimer: ReturnType<typeof setTimeout> | undefined;
   private durableSteerReadInFlight = false;
   private durableSteerReadGeneration = 0;
@@ -1067,6 +1069,7 @@ export class SessionController {
     this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
+    this.cancelAllFirstScreenSeeds();
     this.clearResyncTimer();
     this.clearRosterLeaseTimer();
     this.clearRewriteHold();
@@ -1102,6 +1105,7 @@ export class SessionController {
     if (this.closed) return;
     this.isParked = true;
     this.olderLoads.cancelAll();
+    this.cancelAllFirstScreenSeeds();
     const agents = new Set<string>([MAIN_AGENT_ID, ...this.timelines.keys()]);
     for (const agentId of agents) {
       const view = this.viewOf(agentId);
@@ -1229,6 +1233,8 @@ export class SessionController {
     this.finishBootstrapOpening();
     this.pauseDurableSteerReads();
     this.durableSteerReads.clear();
+    this.durablePromptReads.clear();
+    this.cancelAllFirstScreenSeeds();
     this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
     this.snapshotControllers.clear();
@@ -1478,6 +1484,12 @@ export class SessionController {
       }
     }
     this.transcriptGrades = nextGrades;
+    for (const [seededId, controller] of this.firstScreenSeedControllers) {
+      if (GRADE_RANK[gradeFor(nextGrades, seededId)] < GRADE_RANK.block) {
+        this.firstScreenSeedControllers.delete(seededId);
+        controller.abort();
+      }
+    }
     for (const timeline of this.storeTimelines) {
       const before = GRADE_RANK[gradeFor(previous, timeline.agentId)];
       const after = GRADE_RANK[gradeFor(nextGrades, timeline.agentId)];
@@ -1499,7 +1511,124 @@ export class SessionController {
         Object.entries(this.transcriptGrades).every(([id, grade]) => scheduled.previous[id] === grade)) return;
       this.lowerBaselinesTo(this.transcriptGrades);
       handle.setTranscriptGrades(this.transcriptGrades);
+      if (this.view.bootstrap !== undefined && this.bootstrapOpening === undefined) {
+        for (const [id, grade] of Object.entries(this.transcriptGrades)) {
+          if (id === '*' || id === MAIN_AGENT_ID || grade === undefined) continue;
+          if (GRADE_RANK[grade] >= GRADE_RANK.block && !this.transcriptPresentable(id)) {
+            void this.seedAgentFirstScreen(id);
+          }
+        }
+      }
     });
+  }
+
+  private cancelFirstScreenSeed(agentId: string): void {
+    const controller = this.firstScreenSeedControllers.get(agentId);
+    if (controller === undefined) return;
+    this.firstScreenSeedControllers.delete(agentId);
+    controller.abort();
+  }
+
+  private cancelAllFirstScreenSeeds(): void {
+    for (const controller of this.firstScreenSeedControllers.values()) controller.abort();
+    this.firstScreenSeedControllers.clear();
+  }
+
+  private async seedAgentFirstScreen(agentId: string): Promise<void> {
+    if (this.closed || this.isSuspended || this.firstScreenSeedControllers.has(agentId)) return;
+    if (typeof this.view.transcript?.page !== 'function') return;
+    const controller = new AbortController();
+    this.firstScreenSeedControllers.set(agentId, controller);
+    const signal = controller.signal;
+    const backoff = new PreparingBackoff();
+    let beforeItem: string | undefined;
+    try {
+      for (;;) {
+        if (this.closed || this.isSuspended || signal.aborted || this.hasTranscriptBaseline(agentId)) return;
+        const requested = gradeFor(this.transcriptGrades, agentId);
+        if (GRADE_RANK[requested] < GRADE_RANK.block) return;
+        const page = await this.readPreparedContent(
+          () => this.view.transcript.page({ agentId, beforeItem, pageSize: 20 }, { signal }),
+          signal,
+          'high',
+        );
+        if (this.closed || this.isSuspended || signal.aborted || this.hasTranscriptBaseline(agentId)) return;
+        const currentRequested = gradeFor(this.transcriptGrades, agentId);
+        if (GRADE_RANK[currentRequested] < GRADE_RANK.block || page.agent_id !== agentId) return;
+        const emptyPreparing = page.has_more && page.items.length === 0 &&
+          (page.read?.readiness === 'preparing' || page.read?.readiness === 'partial');
+        if (emptyPreparing) {
+          if (page.next_cursor !== undefined && page.next_cursor !== beforeItem) {
+            backoff.progressed();
+            beforeItem = page.next_cursor;
+          }
+          await backoff.wait(signal);
+          continue;
+        }
+        const timeline = this.timeline(agentId);
+        if (timeline.paging > 0) return;
+        this.pendingTranscriptBatches.delete(agentId);
+        this.pendingTranscriptAgents.delete(agentId);
+        this.catchupReplay.delete(agentId);
+        const store = this.ensureAgentTranscript(agentId);
+        this.bumpHistoryGeneration(agentId);
+        const coverage: TranscriptCoverage = page.coverage ?? {
+          kind: page.has_more ? 'tail' : 'full',
+          hasMoreOlder: page.has_more,
+        };
+        const snapshot: AgentTranscriptSnapshot = {
+          items: page.items as TranscriptItem[],
+          hasMoreOlder: page.has_more,
+          olderCursor: page.next_cursor,
+          toolCallCount: page.tool_call_count,
+          toolCallCountKnown: coverage.kind !== 'unknown',
+          tasks: page.tasks ?? [],
+          interactions: page.interactions ?? [],
+          attachments: page.attachments ?? [],
+          todos: page.todos ?? [],
+          prompts: page.prompts ?? [],
+          meta: page.meta ?? {},
+        };
+        const mark = page.read?.watermark?.transcript ?? page.cursor;
+        store.apply([{
+          op: 'reset',
+          agentId,
+          snapshot,
+          coverage,
+          grade: currentRequested === 'off' ? undefined : currentRequested,
+          read: page.read,
+        }]);
+        timeline.olderCursor = page.next_cursor;
+        timeline.olderTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
+        timeline.marks = new Map(
+          page.items.flatMap((item) => mark === undefined ? [] : [[windowItemKey(item as TranscriptItem), mark] as const]),
+        );
+        timeline.stale.clear();
+        timeline.joins.clear();
+        timeline.windowGrade = currentRequested;
+        timeline.windowEpoch = mark?.epoch;
+        if (mark !== undefined && mark.epoch?.startsWith('cold:') !== true) {
+          timeline.cursor = mark;
+        }
+        timeline.appliedGrade ??= 'turn';
+        timeline.refreshing = this.viewHandle !== undefined;
+        if (page.read !== undefined) timeline.historyRead = page.read;
+        this.forestDirtyAgents.add(agentId);
+        this.publishProjectedAgent(agentId, store, {
+          loadingOlder: false,
+          olderError: undefined,
+          retainPendingPrompts: true,
+          historyCoverageKind: coverage.kind === 'full' ? 'full' : coverage.kind === 'unknown' ? 'unknown' : 'tail',
+        });
+        return;
+      }
+    } catch {
+      // Authoritative WebSocket seeding remains in flight; ignore transient fast-seed errors.
+    } finally {
+      if (this.firstScreenSeedControllers.get(agentId) === controller) {
+        this.firstScreenSeedControllers.delete(agentId);
+      }
+    }
   }
 
   /** The raised baseline an agent was waiting for has landed (or will not come): stop showing it as refreshing. */
@@ -2067,7 +2196,13 @@ export class SessionController {
     const first = this.durableSteerReads.entries().next().value;
     if (first === undefined || this.closed || this.isSuspended) return;
     const [key, target] = first;
-    if (this.findPendingSteer(target.agentId, target.promptId) === undefined) {
+    const promptFallbackText = target.agentId === MAIN_AGENT_ID ? this.durablePromptReads.get(target.promptId) : undefined;
+    const promptOwned = promptFallbackText !== undefined && (
+      this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(target.promptId) !== undefined ||
+      this.viewOf(MAIN_AGENT_ID).blocks.some((block) => block.kind === 'user' && block.promptId === target.promptId)
+    );
+    if (promptOwned) this.durablePromptReads.delete(target.promptId);
+    if (this.findPendingSteer(target.agentId, target.promptId) === undefined && (promptFallbackText === undefined || promptOwned)) {
       this.durableSteerReads.delete(key);
       this.scheduleDurableSteerRead();
       return;
@@ -2078,7 +2213,14 @@ export class SessionController {
       const result = await this.client.getDurableIngress!(this.sessionId, target.promptId, target.agentId);
       if (this.closed || this.isSuspended || generation !== this.durableSteerReadGeneration) return;
       this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== result.prompt_id), result], target.agentId);
-      if (result.admission !== 'restoring' && result.admission !== 'waiting_switch') this.durableSteerReads.delete(key);
+      if (result.admission !== 'restoring' && result.admission !== 'waiting_switch') {
+        this.durableSteerReads.delete(key);
+        this.durablePromptReads.delete(target.promptId);
+        if (result.admission === 'admitted') {
+          if (promptFallbackText !== undefined) this.adoptAdmittedMainPrompt(result, promptFallbackText);
+          if (this.shell.cursor.epoch?.startsWith('cold:') === true) void this.resync();
+        }
+      }
     } catch {
       // Retry only the receipt read; a missing response never replays the submission.
     } finally {
@@ -2153,6 +2295,15 @@ export class SessionController {
         ...this.getDurableIngress().filter((item) => item.prompt_id !== promptId),
         result,
       ]);
+    }
+    const coreAdmitted = result.admission === undefined || result.admission === 'admitted';
+    if (coreAdmitted && this.shell.cursor.epoch?.startsWith('cold:') === true) {
+      void this.resync();
+    }
+    if (result.admission === 'restoring' || result.admission === 'waiting_switch') {
+      const targetAgent = body.agent_id ?? agentId;
+      this.durablePromptReads.set(result.prompt_id, projectMessageContent(result.content).text);
+      this.observeDurableSteer(targetAgent, result.prompt_id);
     }
     if (admissionRejected || result.admission === 'restoring' || result.admission === 'waiting_switch' || result.admission === 'held') return result;
     const main = this.viewOf(MAIN_AGENT_ID);
@@ -2309,6 +2460,7 @@ export class SessionController {
 
   /** An older read (a page run or a locate); the window is not trimmed while one runs (`trimWindow`). */
   private async loadOlderTranscript(agentId: string, signal: AbortSignal, targetTurnId?: string): Promise<OlderLoadResult> {
+    this.cancelFirstScreenSeed(agentId);
     const timeline = this.timeline(agentId);
     timeline.paging += 1;
     try {
@@ -2589,6 +2741,7 @@ export class SessionController {
     grade: TranscriptGrade,
     read?: TranscriptRead,
   ): void {
+    this.cancelFirstScreenSeed(agentId);
     this.pendingTranscriptBatches.delete(agentId);
     this.pendingTranscriptAgents.delete(agentId);
     this.catchupReplay.delete(agentId);
@@ -4557,26 +4710,46 @@ export class SessionController {
       ]);
     }
     const coreAdmitted = result.admission === undefined || result.admission === 'admitted';
+    if (coreAdmitted && this.shell.cursor.epoch?.startsWith('cold:') === true) {
+      void this.resync();
+    }
+    if (result.admission === 'restoring' || result.admission === 'waiting_switch') {
+      this.durablePromptReads.set(result.prompt_id, input.text);
+      this.observeDurableSteer(MAIN_AGENT_ID, result.prompt_id);
+    }
     const canonical = this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(result.prompt_id);
     if (coreAdmitted && result.status === 'queued' && canonical === undefined) {
       this.unprojectedQueueReceipts.set(result.prompt_id, result);
     }
     if (!coreAdmitted || admissionRejected || canonical !== undefined) return result;
+    this.adoptAdmittedMainPrompt(result, input.text, input.appendTiming);
+    return result;
+  }
+
+  private adoptAdmittedMainPrompt(
+    result: PromptItem,
+    fallbackText: string,
+    fallbackAppendTiming?: DeferredAppendTiming,
+  ): void {
+    const canonical = this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(result.prompt_id);
+    if (result.status === 'queued' && canonical === undefined) {
+      this.unprojectedQueueReceipts.set(result.prompt_id, result);
+    }
+    if (canonical !== undefined) return;
     const projection = projectMessageContent(result.content);
     this.publishView(MAIN_AGENT_ID,
       appendLocalUserMessage(this.viewOf(MAIN_AGENT_ID), {
         userMessageId: result.user_message_id,
         promptId: result.prompt_id,
-        text: projection.text === '' ? input.text : projection.text,
+        text: projection.text === '' ? fallbackText : projection.text,
         createdAt: result.created_at,
         status: result.status,
         origin: result.origin,
         media: projection.media,
         content: result.content,
-        appendTiming: result.append_timing ?? input.appendTiming,
+        appendTiming: result.append_timing ?? fallbackAppendTiming,
       }),
     );
-    return result;
   }
 
   /**
@@ -5130,6 +5303,9 @@ export class SessionController {
       return { promptId: result.prompt_id, outcome: admission === 'waiting_switch' ? 'restoring' : admission };
     }
     if (durable || result.delivery_state !== undefined) {
+      if (admission === 'admitted' && this.shell.cursor.epoch?.startsWith('cold:') === true) {
+        void this.resync();
+      }
       const outcome = result.delivery_state ?? (result.status === 'queued' ? 'queued' : 'started');
       const retained = this.findPendingSteer(agentId, promptId);
       if (outcome === 'accepted' || outcome === 'steered') {

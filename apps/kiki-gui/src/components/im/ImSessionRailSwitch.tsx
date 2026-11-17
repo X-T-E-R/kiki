@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { imSessionAdmitted, type ImProviderKind, type ImSessionSnapshot } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
+import { compactIdentifier } from '../../lib/compactIdentifier';
 import { useOptionalConnection } from '../../state/connection';
 
 export function ImSessionRailSwitch({ sessionId }: { sessionId: string }) {
@@ -53,6 +54,7 @@ function ImSessionRailBody({ sessionId }: { sessionId: string }) {
     if (discoveries.length === 1) {
       const item = discoveries[0]!;
       const identityText = chatIdentityLabel(item.provider_kind, item.identity, t);
+      const identityFullTitle = chatIdentityFullTitle(item.provider_kind, item.identity, t);
       const busy = busyId === item.id;
       return (
         <div data-im-rail={sessionId} data-im-rail-on="no" className="min-w-0 text-[12px] text-ink-soft">
@@ -69,7 +71,7 @@ function ImSessionRailBody({ sessionId }: { sessionId: string }) {
               }));
             }}
           >
-            {t('st.im.sessionSwitch')}: {busy ? t('st.im.railBusy') : <>{t('st.im.railBind')} (<span data-im-rail-identity={item.id} className="text-ink">{identityText}</span>)</>}
+            {t('st.im.sessionSwitch')}: {busy ? t('st.im.railBusy') : <>{t('st.im.railBind')} (<span data-im-rail-identity={item.id} title={identityFullTitle} className="text-ink">{identityText}</span>)</>}
           </button>
           {error !== undefined ? <p data-im-rail-error className="mt-1 text-ink">{error}</p> : null}
         </div>
@@ -81,10 +83,11 @@ function ImSessionRailBody({ sessionId }: { sessionId: string }) {
         <p className="font-medium text-ink">{t('st.im.sessionSwitch')}</p>
         {discoveries.map((item) => {
           const identityText = chatIdentityLabel(item.provider_kind, item.identity, t);
+          const identityFullTitle = chatIdentityFullTitle(item.provider_kind, item.identity, t);
           const busy = busyId === item.id;
           return (
             <div key={item.id} data-im-rail-discovery={item.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-              <span data-im-rail-identity={item.id} className="min-w-0 truncate text-ink">{identityText}</span>
+              <span data-im-rail-identity={item.id} title={identityFullTitle} className="min-w-0 truncate text-ink">{identityText}</span>
               <button
                 type="button"
                 disabled={busyId !== undefined}
@@ -116,9 +119,10 @@ function ImSessionRailBody({ sessionId }: { sessionId: string }) {
         const connectionState = instances.find((instance) => instance.id === binding.provider_instance_id)?.connection;
         const busy = busyId === binding.id;
         const identityText = chatIdentityLabel(binding.provider_kind, binding.identity, t);
+        const identityFullTitle = chatIdentityFullTitle(binding.provider_kind, binding.identity, t);
         return (
           <div key={binding.id} data-im-rail-binding={binding.id} data-im-rail-binding-on={on ? 'yes' : 'no'} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span data-im-rail-identity={binding.id} className="min-w-0 flex-1 truncate text-ink" title={identityText}>{identityText}</span>
+            <span data-im-rail-identity={binding.id} className="min-w-0 flex-1 truncate text-ink" title={identityFullTitle}>{identityText}</span>
             {blocked === undefined ? (
               <button
                 type="button"
@@ -175,7 +179,7 @@ function providerName(kind: ImProviderKind, t: ReturnType<typeof useI18n>['t']):
   return kind;
 }
 
-function chatIdentityLabel(
+function chatIdentityFullTitle(
   kind: ImProviderKind,
   identity: { chat_id: string; sender_id: string; topic_id?: string; chat_title?: string; sender_name?: string },
   t: ReturnType<typeof useI18n>['t'],
@@ -186,5 +190,21 @@ function chatIdentityLabel(
   const channel = identity.topic_id !== undefined && identity.topic_id !== '' && identity.topic_id !== '0'
     ? `${identity.chat_id}/${identity.topic_id}`
     : identity.chat_id;
+  return [platform, named || sender, channel].filter(Boolean).join(' · ');
+}
+
+function chatIdentityLabel(
+  kind: ImProviderKind,
+  identity: { chat_id: string; sender_id: string; topic_id?: string; chat_title?: string; sender_name?: string },
+  t: ReturnType<typeof useI18n>['t'],
+): string {
+  const platform = providerName(kind, t);
+  const named = [identity.chat_title, identity.sender_name].filter(Boolean).join(' · ');
+  const compactChat = compactIdentifier(identity.chat_id);
+  const compactSender = compactIdentifier(identity.sender_id);
+  const sender = named === '' && identity.sender_id !== identity.chat_id ? compactSender : undefined;
+  const channel = identity.topic_id !== undefined && identity.topic_id !== '' && identity.topic_id !== '0'
+    ? `${compactChat}/${compactIdentifier(identity.topic_id)}`
+    : compactChat;
   return [platform, named || sender, channel].filter(Boolean).join(' · ');
 }

@@ -661,3 +661,71 @@ describe('SettingsSelect shared SearchableSelect wrapper', () => {
     }
   });
 });
+
+describe('SearchableSelect large option catalog virtualization', () => {
+  const LARGE_CATALOG: readonly SearchableSelectOption[] = Array.from({ length: 3000 }, (_, index) => ({
+    value: `gateway/model-${index}`,
+    label: `Model ${index}`,
+    hint: `vendor-${index % 10}/model-${index}`,
+    description: `Catalog description for model ${index}`,
+    group: `provider-${Math.floor(index / 500)}`,
+    badges: [{ label: '256k' }, { label: 'tools' }],
+  }));
+
+  it('bounds mounted DOM rows for 3,000+ options, centers on a deep selection, filters full catalog, and wraps keyboard navigation', async () => {
+    const { container: deepContainer, onChange: onDeepChange } = await renderSelect({
+      id: 'large-deep',
+      options: LARGE_CATALOG,
+      value: 'gateway/model-1850',
+    });
+    expect(trigger(deepContainer).textContent).toContain('Model 1850');
+    expect(document.querySelector('[data-select-panel]')).toBeNull();
+
+    await act(async () => { trigger(deepContainer).click(); });
+    const deepMounted = options(deepContainer);
+    expect(deepMounted.length).toBeLessThanOrEqual(80);
+    const selectedNode = deepMounted.find((row) => row.getAttribute('data-option-value') === 'gateway/model-1850');
+    expect(selectedNode).toBeDefined();
+    expect(selectedNode?.getAttribute('aria-selected')).toBe('true');
+    expect(selectedNode?.getAttribute('aria-setsize')).toBe('3000');
+    expect(selectedNode?.getAttribute('aria-posinset')).toBe('1851');
+
+    // ArrowDown from the selected deep option advances to 1851 and commits cleanly.
+    const deepInput = searchInput(deepContainer);
+    await press(deepInput, 'ArrowDown');
+    await press(deepInput, 'Enter');
+    expect(onDeepChange).toHaveBeenCalledWith('gateway/model-1851');
+
+    // Open at index 0: wrap around with ArrowUp to 2999, scroll mid-list, and search full 3,000 options.
+    const { container, onChange } = await renderSelect({
+      id: 'large-top',
+      options: LARGE_CATALOG,
+      value: 'gateway/model-0',
+    });
+    await act(async () => { trigger(container).click(); });
+    expect(options(container).length).toBeLessThanOrEqual(80);
+
+    const input = searchInput(container);
+    await press(input, 'ArrowUp');
+    expect(input.getAttribute('aria-activedescendant')).toBe('large-top-list-option-2999');
+    expect(options(container).length).toBeLessThanOrEqual(80);
+    expect(openPanel().querySelector('#large-top-list-option-2999')).not.toBeNull();
+
+    // Scroll to the middle of the list and verify window shifts while staying bounded.
+    const listbox = openPanel().querySelector<HTMLElement>('[role="listbox"]')!;
+    await act(async () => {
+      listbox.scrollTop = 52_000;
+      listbox.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+    expect(options(container).length).toBeLessThanOrEqual(80);
+    expect(openPanel().querySelector('[data-option-value="gateway/model-1000"]')).not.toBeNull();
+
+    // Search filters across the entire 3,000-item source array, not just the active slice.
+    await typeIn(input, 'model-2456');
+    const matched = options(container);
+    expect(matched).toHaveLength(1);
+    expect(matched[0]?.getAttribute('data-option-value')).toBe('gateway/model-2456');
+    await press(input, 'Enter');
+    expect(onChange).toHaveBeenCalledWith('gateway/model-2456');
+  });
+});

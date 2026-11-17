@@ -166,7 +166,7 @@ export function DecisionConnectionsCard({ providers, configuredIds, onChanged }:
             <div data-decision-list className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-panel">
               {providers.map((provider) => (
                 <DecisionConnectionEditor key={provider.id} provider={provider}
-                  defaultOpen={requested === provider.id} onChanged={onChanged} />
+                  defaultOpen={requested === null || requested === provider.id} onChanged={onChanged} />
               ))}
             </div>
           )}
@@ -384,7 +384,9 @@ export function DecisionConnectionEditor({
   const [confirming, setConfirming] = useState(false);
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<{ result?: DecisionConnectionProbeResult; error?: unknown }>();
+  const [isOpen, setIsOpen] = useState(() => defaultOpen || openFocusKeySignal > 0);
   const dirty = !sameDraft(draft, baseline) || key.mode !== 'keep';
+  const shouldMountBody = isOpen || defaultOpen || openFocusKeySignal > 0 || dirty;
   useDirtyReporter(`decision-connection:${provider.id}`, dirty);
 
   const readKey = JSON.stringify(read);
@@ -400,7 +402,7 @@ export function DecisionConnectionEditor({
   live.current = { draft, baseline };
   const baselineKey = JSON.stringify(baseline);
   useEffect(() => {
-    if (revision !== undefined) return;
+    if (!shouldMountBody || revision !== undefined) return;
     let current = true;
     void client.getProviderEntity(provider.id).then((entity) => {
       if (!current) return;
@@ -417,15 +419,17 @@ export function DecisionConnectionEditor({
       }
     }).catch(() => {});
     return () => { current = false; };
-  }, [baselineKey, revision, provider.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [shouldMountBody, baselineKey, revision, provider.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!defaultOpen) return;
+    setIsOpen(true);
     if (detailsRef.current !== null) detailsRef.current.open = true;
   }, [defaultOpen]);
 
   useEffect(() => {
     if (openFocusKeySignal === 0) return;
+    setIsOpen(true);
     const details = detailsRef.current;
     if (details === null) return;
     details.open = true;
@@ -557,6 +561,7 @@ export function DecisionConnectionEditor({
       data-decision-health={state}
       className="group/provider [&[open]]:bg-paper"
       open={defaultOpen || undefined}
+      onToggle={(event) => { setIsOpen(event.currentTarget.open); }}
     >
       <summary style={{ minHeight: LIST_ROW_HEIGHT[density] }}
         className={`flex cursor-pointer list-none items-center gap-3 px-3 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden ${density === 'compact' ? 'py-1' : 'py-2'}`}>
@@ -588,43 +593,47 @@ export function DecisionConnectionEditor({
         {phone ? null : statusBadge}
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/provider:rotate-90" />
       </summary>
-      <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
-        {destination !== undefined ? (
-          <div data-decision-test className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <button type="button" data-decision-test-button className={SECONDARY_BUTTON} disabled={testing || saving || dirty}
-              aria-busy={testing} onClick={() => void runTest()}>
-              {testing ? t('st.decision.testing') : t('st.decision.test')}
-            </button>
-            <p data-decision-test-result={test?.result === undefined && test?.error === undefined ? 'none' : test.result?.ok === true ? 'ok' : 'error'}
-              aria-live="polite" className="min-w-0 break-all text-[12px] leading-4 text-ink-faint">{testLine}</p>
+      {shouldMountBody ? (
+        <>
+          <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
+            {destination !== undefined ? (
+              <div data-decision-test className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <button type="button" data-decision-test-button className={SECONDARY_BUTTON} disabled={testing || saving || dirty}
+                  aria-busy={testing} onClick={() => void runTest()}>
+                  {testing ? t('st.decision.testing') : t('st.decision.test')}
+                </button>
+                <p data-decision-test-result={test?.result === undefined && test?.error === undefined ? 'none' : test.result?.ok === true ? 'ok' : 'error'}
+                  aria-live="polite" className="min-w-0 break-all text-[12px] leading-4 text-ink-faint">{testLine}</p>
+              </div>
+            ) : null}
+            <fieldset disabled={saving} className="min-w-0 disabled:opacity-60">
+              <ConnectionFields idPrefix={idPrefix} draft={draft} onChange={(next) => { setDraft(next); setFeedback(null); }}
+                keyDraft={key} onKeyChange={setKey} keySource={keySource} keyEnv={provider.api_key_env}
+                reveal={provider.has_api_key ? reveal : undefined} keyHint={keyHint} protocol={protocol} />
+            </fieldset>
+            <SettingsDraftFooter id={`decision-connection-${provider.id}`} dirty={dirty} saving={saving} saved={saved}
+              saveDisabled={!draftValid(draft) || revision === undefined} saveLabel={t('st.decision.save')}
+              onSave={() => void save()} onDiscard={() => { setDraft(baseline); setKey(KEEP_SECRET); setFeedback(null); setConflicts(null); }} />
+            <FeedbackLine feedback={feedback} />
+            {conflicts !== null ? (
+              <p data-decision-conflict={conflicts.fields.join(' ')} role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">
+                {t('st.decision.conflictFields', {
+                  fields: conflicts.fields.map((field) => t(FIELD_LABEL_KEYS[field])).join(', '),
+                  saved: conflicts.fields.map((field) => conflicts.saved[field] || '—').join(', '),
+                })}
+              </p>
+            ) : null}
+            <div className="flex justify-end">
+              <button type="button" data-decision-remove className={DANGER_GHOST_BUTTON} disabled={saving}
+                onClick={() => { setConfirming(true); }}>{t('st.decision.remove')}</button>
+            </div>
           </div>
-        ) : null}
-        <fieldset disabled={saving} className="min-w-0 disabled:opacity-60">
-          <ConnectionFields idPrefix={idPrefix} draft={draft} onChange={(next) => { setDraft(next); setFeedback(null); }}
-            keyDraft={key} onKeyChange={setKey} keySource={keySource} keyEnv={provider.api_key_env}
-            reveal={provider.has_api_key ? reveal : undefined} keyHint={keyHint} protocol={protocol} />
-        </fieldset>
-        <SettingsDraftFooter id={`decision-connection-${provider.id}`} dirty={dirty} saving={saving} saved={saved}
-          saveDisabled={!draftValid(draft) || revision === undefined} saveLabel={t('st.decision.save')}
-          onSave={() => void save()} onDiscard={() => { setDraft(baseline); setKey(KEEP_SECRET); setFeedback(null); setConflicts(null); }} />
-        <FeedbackLine feedback={feedback} />
-        {conflicts !== null ? (
-          <p data-decision-conflict={conflicts.fields.join(' ')} role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">
-            {t('st.decision.conflictFields', {
-              fields: conflicts.fields.map((field) => t(FIELD_LABEL_KEYS[field])).join(', '),
-              saved: conflicts.fields.map((field) => conflicts.saved[field] || '—').join(', '),
-            })}
-          </p>
-        ) : null}
-        <div className="flex justify-end">
-          <button type="button" data-decision-remove className={DANGER_GHOST_BUTTON} disabled={saving}
-            onClick={() => { setConfirming(true); }}>{t('st.decision.remove')}</button>
-        </div>
-      </div>
-      <ConfirmDialog open={confirming} title={t('st.decision.removeTitle', { id: provider.id })} body={t('st.decision.removeBody')}
-        confirmLabel={t('st.decision.removeConfirm')} busy={saving}
-        onConfirm={() => { setConfirming(false); void remove(); }}
-        onCancel={() => { setConfirming(false); }} />
+          <ConfirmDialog open={confirming} title={t('st.decision.removeTitle', { id: provider.id })} body={t('st.decision.removeBody')}
+            confirmLabel={t('st.decision.removeConfirm')} busy={saving}
+            onConfirm={() => { setConfirming(false); void remove(); }}
+            onCancel={() => { setConfirming(false); }} />
+        </>
+      ) : null}
     </details>
   );
 }
@@ -703,6 +712,7 @@ export function ProviderDecisionCapabilitiesEditor({
   const query = useQuery({
     queryKey: ['provider-entity', provider.id],
     queryFn: () => client.getProviderEntity(provider.id),
+    staleTime: 30_000,
   });
   const entity = query.data;
   const sourceWire = entity?.decision_capabilities ?? provider.decision_capabilities;

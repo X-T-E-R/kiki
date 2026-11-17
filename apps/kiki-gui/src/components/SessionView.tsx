@@ -347,14 +347,15 @@ function useActiveController(
 ): { controller: SessionController | null; leaseReady: boolean } {
   const { client } = useConnection();
   const registry = useControllerRegistry();
-  const [active, setActive] = useState<{ controller: SessionController | null; leaseReady: boolean }>({
+  const [active, setActive] = useState<{ sessionId: string | undefined; controller: SessionController | null; leaseReady: boolean }>({
+    sessionId: undefined,
     controller: null,
     leaseReady: false,
   });
 
   useLayoutEffect(() => {
     if (sessionId === undefined) {
-      setActive({ controller: null, leaseReady: false });
+      setActive({ sessionId: undefined, controller: null, leaseReady: false });
       return;
     }
     // The registry keeps a recently left view parked (bounded LRU), so coming
@@ -371,25 +372,26 @@ function useActiveController(
     const next = lease.controller;
     let activeLease = true;
     next.setPersistenceHint?.(persistenceHint);
-    setActive({ controller: next, leaseReady: false });
+    setActive({ sessionId, controller: next, leaseReady: false });
     void lease.ready.then(
       () => {
-        if (activeLease) setActive({ controller: next, leaseReady: true });
+        if (activeLease) setActive({ sessionId, controller: next, leaseReady: true });
       },
       () => {
         // Snapshot failure leaves the controller unloaded; the transcript shows
         // "Opening session…" until a resync succeeds, but the lease is settled.
-        if (activeLease) setActive({ controller: next, leaseReady: true });
+        if (activeLease) setActive({ sessionId, controller: next, leaseReady: true });
       },
     );
     return () => {
       activeLease = false;
       lease.release();
-      setActive({ controller: null, leaseReady: false });
+      setActive({ sessionId: undefined, controller: null, leaseReady: false });
     };
   }, [client, sessionId, registry]);
 
-  const currentController = active.controller !== null && active.controller.sessionId === sessionId
+  const currentController = active.controller !== null && active.sessionId === sessionId &&
+    active.controller.sessionId === sessionId
     ? active.controller
     : null;
   const currentLeaseReady = currentController !== null && active.leaseReady;
@@ -4508,6 +4510,7 @@ boundExecution,
     void (async () => {
       try {
         const agentId = await client.startSideQuestion(sessionId);
+        (client as { noteNativeAgent?: (sid: string, aid: string) => void }).noteNativeAgent?.(sessionId, agentId);
         const title = t('btw.tabTitle');
         if (previewRef.current !== null) {
           previewRef.current.openAgentPanel(agentId, title);

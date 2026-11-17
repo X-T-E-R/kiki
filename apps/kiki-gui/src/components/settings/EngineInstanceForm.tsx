@@ -4,6 +4,7 @@ import { executorInstancePatchSchema, sameExecutorProxyAddress, supportsExecutor
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { compactIdentifier } from '../../lib/compactIdentifier';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -180,7 +181,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
               triggerData={{ 'data-instance-account-source': '' }} value={account.source} disabled={saving || unsupported}
               onChange={(next) => setConfiguration({ kind: 'plugin_account', source: next, account_id: '' })}
               choices={[
-                ...(!knownSource && account.source ? [{ value: account.source, label: account.source, disabled: true }] : []),
+                ...(!knownSource && account.source ? [{ value: account.source, label: compactIdentifier(account.source), disabled: true }] : []),
                 ...accountSources.map((entry) => ({ value: entry.id, label: entry.label })),
               ]} />
             <label htmlFor={`${id}-account`} className="text-[12px] font-medium text-ink-soft">{t('st.engines.instance.account.label')}</label>
@@ -190,7 +191,7 @@ export function EngineInstanceForm({ item, source, onCreated, onCancel, onSaved 
               onChange={(next) => setConfiguration({ ...account, account_id: next })}
               choices={[
                 { value: '', label: t('st.engines.instance.account.choose') },
-                ...(!selectedAccount && account.account_id ? [{ value: account.account_id, label: account.account_id, disabled: true }] : []),
+                ...(!selectedAccount && account.account_id ? [{ value: account.account_id, label: compactIdentifier(account.account_id), disabled: true }] : []),
                 ...accounts.map((entry) => ({
                   value: entry.id,
                   label: `${entry.label}${entry.status !== 'ready' ? ` · ${t(`st.engines.instance.account.${entry.status}`)}` : ''}`,

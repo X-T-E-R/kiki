@@ -581,6 +581,10 @@ describe('ProviderEditor save channel', () => {
   it('preserves a dirty draft and its original revision through refresh and background catalog updates', async () => {
     const { container, client } = await renderSurface(<ConnectionsTab />);
     const first = container.querySelector<HTMLDetailsElement>('#st-card-providers details')!;
+    expect(first.querySelectorAll('input')).toHaveLength(0);
+    expect(getProviderEntity).not.toHaveBeenCalled();
+    await act(async () => { first.open = true; });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const baseUrl = [...first.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
     await act(async () => { setInputValue(baseUrl, 'https://draft.example.test/v1'); });
     const external = { ...COLON_PROVIDER, base_url: 'https://external.example.test/v1' };

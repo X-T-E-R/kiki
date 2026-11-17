@@ -32,6 +32,7 @@ import {
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { RetryStepRequest } from '#/agent/prompt/promptStepRequests';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { TaskNotificationStepRequest } from '#/agent/task/taskService';
 import type { ExecutableTool } from '#/tool/toolContract';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentUsageService } from '#/agent/usage/usage';
@@ -2747,6 +2748,46 @@ describe('post-delivery thinking-only completion', () => {
       expect(history.some(message => message.role === 'user' && message.content.some(part => part.type === 'text' && part.text === 'Continue.'))).toBe(followup === 'synchronous');
       expect(history.some(message => message.role === 'assistant' && message.content.some(part => part.type === 'text' && part.text === 'Report the follow-up result.'))).toBe(followup === 'synchronous');
       await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('silently ends a Google no-prefill Turn 1 background task wakeup on completed thinking-only without swallowing truncated MAX_TOKENS', async () => {
+    const local = createTestAgent(permissionModeServices('manual'));
+    const requester = local.get(IAgentLLMRequesterService);
+    const start = requester.start.bind(requester);
+    vi.spyOn(requester, 'start').mockImplementation((...args) => {
+      const request = start(...args);
+      return { ...request, result: request.result.then(response => ({ ...response, completionAuthority: 'normal' as const })) };
+    });
+    vi.spyOn(requester, 'supportsAssistantPrefill').mockReturnValue(false);
+    try {
+      local.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'Background task finished; previous user answer already stands.', encrypted: 'sig-google-wakeup' }],
+        finishReason: 'completed',
+      });
+      const loop = local.get(IAgentLoopService);
+      const { turn: cleanTurn } = await loop.enqueue(new TaskNotificationStepRequest({
+        role: 'user',
+        content: [{ type: 'text', text: 'Background verification succeeded.' }],
+        toolCalls: [],
+        origin: { kind: 'task', taskId: 'task-google-bg1', status: 'completed', notificationId: 'notif-google-bg1' },
+      })).assigned;
+      expect(await cleanTurn.result).toMatchObject({ type: 'completed', steps: 1, truncated: false });
+      expect(local.llmCalls).toHaveLength(1);
+
+      local.mockNextProviderResponse({
+        parts: [{ type: 'think', think: 'Truncated mid-thought', encrypted: 'sig-google-truncated' }],
+        finishReason: 'truncated',
+      });
+      const { turn: truncatedTurn } = await loop.enqueue(new TaskNotificationStepRequest({
+        role: 'user',
+        content: [{ type: 'text', text: 'Second notification.' }],
+        toolCalls: [],
+        origin: { kind: 'task', taskId: 'task-google-bg2', status: 'completed', notificationId: 'notif-google-bg2' },
+      })).assigned;
+      expect(await truncatedTurn.result).toMatchObject({ type: 'failed' });
     } finally {
       await local.dispose();
     }

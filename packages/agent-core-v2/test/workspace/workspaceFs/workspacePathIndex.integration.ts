@@ -237,7 +237,7 @@ describe('indexed workspace search with real files, workers and ripgrep', () => 
     }
   }, 60_000);
 
-  it('keeps fuzzy candidates positive across ASCII, digits, whitespace, accents, CJK, and sensitive entries', async () => {
+  it('keeps fuzzy candidates positive across ASCII, digits, whitespace, accents, and CJK while excluding sensitive entries', async () => {
     await withLocalIndex(
       async (root) => {
         await Promise.all([
@@ -246,19 +246,22 @@ describe('indexed workspace search with real files, workers and ripgrep', () => 
           writeFile(join(root, 'café.txt'), 'accent'),
           writeFile(join(root, '日本語.md'), 'cjk'),
           writeFile(join(root, '.env'), 'sensitive'),
+          writeFile(join(root, '.env.example'), 'safe-example'),
         ]);
       },
       async ({ index }) => {
-        for (const [query, expected] of [['alpha', 'Alpha README.txt'], ['42', 'build 42 log.txt'], ['alpha r', 'Alpha README.txt'], ['café', 'café.txt'], ['日本語', '日本語.md'], ['env', '.env']] as const) {
+        for (const [query, expected] of [['alpha', 'Alpha README.txt'], ['42', 'build 42 log.txt'], ['alpha r', 'Alpha README.txt'], ['café', 'café.txt'], ['日本語', '日本語.md'], ['env', '.env.example']] as const) {
           const matches = index.fuzzy(query, false) ?? [];
           expect(matches.length).toBeGreaterThan(0);
           expect(matches.every((entry) => computeFuzzyScore(entry.name, query.toLowerCase()) > 0)).toBe(true);
           expect(matches.some((entry) => entry.name === expected)).toBe(true);
+          expect(matches.some((entry) => entry.path === '.env')).toBe(false);
         }
+        expect((index.fuzzy('', false) ?? []).some((entry) => entry.path === '.env')).toBe(false);
         expect(index.snapshot()?.entries.find((entry) => entry.path === '.env')).toMatchObject({ path: '.env', sensitive: true });
       },
     );
-  });
+  }, 60_000);
 
   it('updates glob and trigram candidates through runtime filesystem and Write/Edit operations without polling', async () => {
     await withLocalIndex(
@@ -317,6 +320,7 @@ describe('indexed workspace search with real files, workers and ripgrep', () => 
 
           const edit = ix.get(IEditTool);
           await execute(await edit.resolveExecution({ path: 'src/tool-created.txt', old_string: 'toolNeedle', new_string: 'editedNeedle' }));
+          await index.whenSettled();
           await index.trigram!.whenReady();
           expect(await index.trigram!.candidates(index.snapshot()!, 'editedNeedle', true, false)).toContain('src/tool-created.txt');
         } finally {
@@ -454,4 +458,58 @@ describe('indexed workspace search with real files, workers and ripgrep', () => 
       },
     );
   }, 60_000);
+
+  it('clears stale snapshots on inventory overflow and stays overflowed across watch mutations until refreshed', async () => {
+    await mkdir(resolve('.tmp'), { recursive: true });
+    const fixture = await mkdtemp(resolve('.tmp', 'workspace-overflow-'));
+    const root = join(fixture, 'root');
+    await mkdir(root);
+    await writeFile(join(root, 'kept.ts'), 'export const kept = 1;\n');
+    let overflow = false;
+    let inventoryCalls = 0;
+    const cpu: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      request: async <T>(operation: unknown) => {
+        const op = operation as { readonly type?: string };
+        if (op.type === 'workspace.paths') {
+          inventoryCalls += 1;
+          return (overflow
+            ? { entries: [], overflow: true }
+            : {
+                entries: [{ path: 'kept.ts', name: 'kept.ts', kind: 'file', mtimeMs: 1, size: 1, ino: 1, sensitive: false }],
+                overflow: false,
+              }) as T;
+        }
+        return undefined as T;
+      },
+    };
+    const index = new WorkspacePathIndex(root, cpu);
+    try {
+      await index.refresh();
+      expect(index.isOverflowed).toBe(false);
+      expect(index.snapshot()?.entries.map((entry) => entry.path)).toEqual(['kept.ts']);
+      expect(index.fuzzy('kept', false)?.map((entry) => entry.path)).toEqual(['kept.ts']);
+
+      overflow = true;
+      await index.refresh();
+      expect(index.isOverflowed).toBe(true);
+      expect(index.snapshot()).toBeUndefined();
+      expect(index.fuzzy('kept', false)).toBeUndefined();
+      expect(await index.glob(root, '*.ts')).toBeUndefined();
+
+      const callsAfterOverflow = inventoryCalls;
+      await index.mutation(join(root, 'new-file.ts'));
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 80));
+      expect(inventoryCalls).toBe(callsAfterOverflow);
+      expect(index.isOverflowed).toBe(true);
+
+      overflow = false;
+      await index.refresh();
+      expect(index.isOverflowed).toBe(false);
+      expect(index.snapshot()?.entries.map((entry) => entry.path)).toEqual(['kept.ts']);
+    } finally {
+      await index.dispose();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
 });

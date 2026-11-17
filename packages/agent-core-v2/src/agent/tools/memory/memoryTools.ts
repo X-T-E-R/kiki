@@ -186,7 +186,7 @@ Archive is a state change: provide the target and reason, not a replacement body
         const hint = outcome === 'unchanged' ? 'The stored content already matches. No revision, journal operation, or projection refresh was created.'
           : outcome === 'pending' ? `This is a pending proposal, not active guidance.${proposedTarget === undefined ? '' : input.action === 'supersede' ? ' The predecessor is unchanged.' : ' The existing active entry is unchanged.'} Apply direct human instructions to the current task independently; do not retire entries that still depend on this proposal.`
           : 'The returned entry is the stored result. Reuse it as the current read; do not verify with another read unless something is incomplete or has changed.';
-        return { spillExempt: true, memoryReceipt: { action: input.action, outcome, id: entry.id, revision: entry.revision, status: entry.status,
+        return { allowsTurnEndWithSendMessage: true, spillExempt: true, memoryReceipt: { action: input.action, outcome, id: entry.id, revision: entry.revision, status: entry.status,
           operationId: result.operationId ?? undefined, ownerScope: scope, target: owningTarget, proposedTarget },
           output: JSON.stringify({ action: input.action, outcome, id: entry.id, title: entry.title, scope: scope.kind, owner_scope: scope, target: owningTarget,
             status: entry.status, applicability: memoryApplicability(entry), revision: entry.revision, operation_id: result.operationId, entry, proposed_target: proposedTarget, covered_by: entry.covered_by, warnings: result.warnings, reference_hint: hint }) };

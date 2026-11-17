@@ -17,6 +17,7 @@ import {
 import { translate, type I18nKey } from '@kiki/session-core/i18n';
 
 import type { useI18n } from '../../../i18n';
+import { compactIdentifier, compactSessionId, formatSessionOwnerLabel, humanIdentityName } from '../../../lib/compactIdentifier';
 import { BRAND_KEY, brandOfIm, type BrandId } from './catalog';
 
 export const IM_KEY = ['im-sessions'] as const;
@@ -44,9 +45,19 @@ export function isSetupProvider(kind: string | undefined): kind is ImSetupProvid
 }
 
 export function identityLabel(identity: ImIdentity, t: Translator): string {
-  return [identity.chat_title ?? identity.sender_name ?? identity.chat_id,
-    identity.chat_title !== undefined ? identity.sender_name : undefined,
-    identity.topic_id !== '0' ? identity.topic_title ?? `${t('st.im.topicId')} ${identity.topic_id}` : undefined].filter(Boolean).join(' · ');
+  const rawIds = [identity.chat_id.trim(), identity.sender_id.trim()];
+  const chatTitle = humanIdentityName(identity.chat_title, rawIds);
+  const senderName = humanIdentityName(identity.sender_name, rawIds);
+  const head = chatTitle ?? senderName ?? compactIdentifier(identity.chat_id);
+  const second = chatTitle !== undefined
+    ? senderName
+    : (senderName === undefined && identity.sender_id.trim() !== '' && identity.sender_id.trim() !== identity.chat_id.trim()
+      ? compactIdentifier(identity.sender_id)
+      : undefined);
+  const topic = identity.topic_id !== '0'
+    ? (humanIdentityName(identity.topic_title, [identity.topic_id.trim()]) || `${t('st.im.topicId')} ${compactIdentifier(identity.topic_id)}`)
+    : undefined;
+  return [head, second, topic].filter(Boolean).join(' · ');
 }
 
 export function parseTarget(value: string): ImConfirmRequest['target'] {
@@ -72,11 +83,14 @@ export function bindingTargetName(catalog: ImCatalog | undefined, binding: ImBin
   if (binding.pending_reanchor) return t('st.im.pendingReanchor');
   if (binding.persona_id !== undefined) {
     const name = catalog?.personas.find((item) => item.id === binding.persona_id)?.name;
-    return name === undefined ? binding.persona_id : `${t('st.im.kindPersona')} · ${name}`;
+    return name === undefined ? compactIdentifier(binding.persona_id) : `${t('st.im.kindPersona')} · ${name}`;
   }
   if (binding.session_id !== undefined) {
-    const title = catalog?.sessions.find((item) => item.id === binding.session_id)?.title;
-    return title === undefined ? binding.session_id : `${t('st.im.kindSession')} · ${title}`;
+    const title = catalog?.sessions.find((item) => item.id === binding.session_id)?.title?.trim();
+    const label = formatSessionOwnerLabel(binding.session_id, title);
+    return title !== undefined && title !== '' && title !== binding.session_id
+      ? `${t('st.im.kindSession')} · ${label}`
+      : label;
   }
   return t('st.im.pendingReanchor');
 }
@@ -84,12 +98,19 @@ export function bindingTargetName(catalog: ImCatalog | undefined, binding: ImBin
 export function bindingTargetChoices(catalog: ImCatalog | undefined, binding: ImBinding, t: Translator): { value: string; label: string }[] {
   const choices = [
     ...(catalog?.personas ?? []).map((item) => ({ value: `persona:${item.id}`, label: `${t('st.im.kindPersona')} · ${item.name}` })),
-    ...(catalog?.sessions ?? []).map((item) => ({ value: `session:${item.id}`, label: `${t('st.im.kindSession')} · ${item.title}` })),
+    ...(catalog?.sessions ?? []).map((item) => ({
+      value: `session:${item.id}`,
+      label: `${t('st.im.kindSession')} · ${formatSessionOwnerLabel(item.id, item.title)}`,
+    })),
   ];
   const current = bindingTargetValue(binding);
   const fallbackLabel = binding.pending_reanchor
     ? t('st.im.pendingReanchor')
-    : binding.persona_id ?? binding.session_id ?? t('st.im.pendingReanchor');
+    : binding.persona_id !== undefined
+      ? compactIdentifier(binding.persona_id)
+      : binding.session_id !== undefined
+        ? compactSessionId(binding.session_id)
+        : t('st.im.pendingReanchor');
   if (!choices.some((choice) => choice.value === current)) choices.unshift({ value: current, label: fallbackLabel });
   return choices;
 }

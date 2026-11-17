@@ -480,11 +480,13 @@ function orderSnapshotSubagents(subagents: readonly SnapshotSubagent[]): Snapsho
       subagent,
       index,
       active: isSnapshotSubagentActive(subagent),
+      openBranch: subagent.is_branch === true && subagent.branch_sealed !== true,
       recency: snapshotSubagentRecency(subagent),
       ordinal: snapshotSubagentOrdinal(subagent),
     }))
     .toSorted((left, right) => {
       if (left.active !== right.active) return left.active ? -1 : 1;
+      if (left.openBranch !== right.openBranch) return left.openBranch ? -1 : 1;
       if (left.recency !== right.recency) {
         if (left.recency === undefined) return 1;
         if (right.recency === undefined) return -1;
@@ -541,6 +543,14 @@ function enrichSnapshotSubagents(
       branch_sealed: meta?.labels?.['branch'] === 'true'
         ? meta.labels['branchSealed'] === 'true'
         : subagent.branch_sealed,
+      branch_base_turn_id:
+        meta?.labels?.['branchBaseTurnId'] !== undefined && /^\d+$/.test(meta.labels['branchBaseTurnId'])
+          ? Number(meta.labels['branchBaseTurnId'])
+          : subagent.branch_base_turn_id,
+      branch_base_message_id:
+        meta?.labels?.['branchBaseMessageId'] !== undefined && meta.labels['branchBaseMessageId'].length > 0
+          ? meta.labels['branchBaseMessageId']
+          : subagent.branch_base_message_id,
       status,
       subagent_phase: currentOutcome
         ? status === 'completed' || status === 'failed' ? status : undefined

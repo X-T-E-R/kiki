@@ -170,6 +170,9 @@ export class PluginHostService extends Service implements IPluginHostService {
   private readonly extensionRegistrations = new Map<string, DisposableStore>();
   private readonly extensionGenerations = new Map<string, number>();
   private readonly extensionDiscoveries = new Set<Promise<void>>();
+  private readonly dynamicE12Cache = new Map<string, { readonly signature: string; readonly payload: Record<string, unknown> | null }>();
+  private activeE12Probes = 0;
+  private readonly waitingE12Probes: Array<() => void> = [];
 
   attachOutboundIm(bridge: PluginImBridge | undefined): void {
     this.outboundIm = bridge;
@@ -301,6 +304,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         if (affected !== undefined) for (const id of affected) this.gates.set(id, event.finished);
         this.withdrawExtensionPorts(affected);
         const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys(), ...this.extensionGenerations.keys()])];
+        for (const id of ids) this.dynamicE12Cache.delete(id.toLowerCase());
         await Promise.all(ids.map(async (id) => {
           await this.withdrawSlot(id);
           await this.isolates?.current?.terminatePlugin(id, 'Plugin changing');
@@ -403,6 +407,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     const hosts = [...this.hosts.values()];
     this.hosts.clear();
     this.hostSignatures.clear();
+    this.dynamicE12Cache.clear();
     await Promise.allSettled(hosts.map((host) => host.stopAndWait()));
   }
 
@@ -454,7 +459,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       if (kiki === undefined || kiki.tier === 'in-process') continue;
       const hasGuiSlots = (kiki.guiSlots?.length ?? 0) > 0;
       const hasManifestRoutes = (kiki.routes?.length ?? 0) > 0;
-      const hasE12Slot = kiki.slots?.includes('E12:server-gui-slots') === true && kiki.entry !== undefined;
+      const hasE12Slot = kiki.dynamicE12 !== false && kiki.slots?.includes('E12:server-gui-slots') === true && kiki.entry !== undefined;
       const hasE5Slot = (kiki.promptContext === true || kiki.slots?.includes('E5:prompt-context') === true) && kiki.entry !== undefined;
       if (!hasGuiSlots && !hasManifestRoutes && !hasE12Slot && !hasE5Slot) continue;
 
@@ -514,6 +519,36 @@ export class PluginHostService extends Service implements IPluginHostService {
     }
   }
 
+  private async runBoundedE12Probe<T>(signal: AbortSignal, probe: () => Promise<T>): Promise<T> {
+    if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+    if (this.activeE12Probes >= 2) {
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          const index = this.waitingE12Probes.indexOf(enter);
+          if (index >= 0) this.waitingE12Probes.splice(index, 1);
+          signal.removeEventListener('abort', onAbort);
+          reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        };
+        const enter = () => {
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        this.waitingE12Probes.push(enter);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+    } else {
+      this.activeE12Probes += 1;
+    }
+    try {
+      signal.throwIfAborted();
+      return await probe();
+    } finally {
+      const next = this.waitingE12Probes.shift();
+      if (next !== undefined) next();
+      else this.activeE12Probes -= 1;
+    }
+  }
+
   private async discoverDynamicE12Contributions(input: {
     readonly info: PluginInfo;
     readonly signal: AbortSignal;
@@ -527,31 +562,44 @@ export class PluginHostService extends Service implements IPluginHostService {
   }): Promise<void> {
     const { info, generation, registry, store, guiSlotDisposables, synthesizedPanelSlotKeys, routeDisposables, wsTopicDisposables } = input;
     const id = info.id.toLowerCase();
-    let result: IsolatedPluginResult<unknown>;
-    try {
-      result = await this.invokeSlot({
-        pluginId: info.id,
-        slot: 'E12:server-gui-slots',
-        payload: { kind: 'describe', action: 'describe' },
-        signal: input.signal,
-        timeoutMs: 5_000,
-      });
-    } catch (error) {
-      if (input.signal.aborted) return;
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes('Plugin did not register the requested slot')) {
-        this.logger?.current?.warn('plugin E12 slot discovery failed', {
+    const settings = await this.settings.forExecution(info.id).catch(() => ({}));
+    const signature = JSON.stringify([hostSignature(info), (info as { updatedAt?: unknown }).updatedAt ?? '', settings]);
+    const cached = this.dynamicE12Cache.get(id);
+    let payload: Record<string, unknown> | null;
+    if (cached?.signature === signature) {
+      payload = cached.payload;
+    } else {
+      let result: IsolatedPluginResult<unknown>;
+      try {
+        result = await this.runBoundedE12Probe(input.signal, () => this.invokeSlot({
           pluginId: info.id,
-          error: message,
-        });
+          slot: 'E12:server-gui-slots',
+          payload: { kind: 'describe', action: 'describe' },
+          signal: input.signal,
+          timeoutMs: 10_000,
+        }));
+      } catch (error) {
+        if (input.signal.aborted) return;
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('Plugin did not register the requested slot')) {
+          this.dynamicE12Cache.set(id, { signature, payload: null });
+        } else {
+          this.logger?.current?.warn('plugin E12 slot discovery failed', {
+            pluginId: info.id,
+            error: message,
+          });
+        }
+        return;
       }
-      return;
+      payload = typeof result.value === 'object' && result.value !== null && !Array.isArray(result.value)
+        ? (result.value as Record<string, unknown>)
+        : null;
+      this.dynamicE12Cache.set(id, { signature, payload });
     }
     if (this.closing || this.extensionPorts?.current !== registry || this.extensionGenerations.get(id) !== generation || this.extensionRegistrations.get(id) !== store) {
       return;
     }
-    if (typeof result.value !== 'object' || result.value === null || Array.isArray(result.value)) return;
-    const payload = result.value as Record<string, unknown>;
+    if (payload === null) return;
     const declaredPanels = info.manifest?.kiki?.panels ?? [];
     let changed = false;
 

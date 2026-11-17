@@ -3,8 +3,16 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  fromDateInputExclusiveEnd,
+  fromDateInputStart,
+  toDateInputValue,
+  toInclusiveEndDateInputValue,
+} from '../components/usage/UsageFilterBar';
+import { usagePanelFromSearch } from '../components/UsageNavigation';
+import {
   aggregateDimensionGroups,
   aggregateSourceRows,
+  browserTimezoneOffsetMinutes,
   buildAgentTree,
   buildUsageApiQuery,
   bucketLabel,
@@ -129,9 +137,11 @@ describe('parseUsageFilters', () => {
 });
 
 describe('history deep-link detection', () => {
-  it('recognizes old filter/session/view links but not unrelated query state', () => {
+  it('recognizes old filter/session/session_id/view links but not unrelated query state', () => {
     expect(searchHasUsageHistoryParams('?range=last_7_days')).toBe(true);
     expect(searchHasUsageHistoryParams('?session=s_1')).toBe(true);
+    expect(searchHasUsageHistoryParams('?session_id=s_legacy')).toBe(true);
+    expect(usagePanelFromSearch('?session_id=s_legacy')).toBe('history');
     expect(searchHasUsageHistoryParams('?view=sessions')).toBe(true);
     expect(searchHasUsageHistoryParams('?metric=tokens&bucket=b_1')).toBe(true);
     expect(searchHasUsageHistoryParams('?server=http%3A%2F%2Fexample.com')).toBe(false);
@@ -616,6 +626,46 @@ describe('comparison windows', () => {
       nowMs,
     );
     expect(custom).toEqual({ startAt: 1000, endAt: 2000 });
+  });
+
+  it('starts this_week on Monday (not Sunday) in both host calendar and explicit timezone offsets', () => {
+    const hostTz = browserTimezoneOffsetMinutes();
+    const expectedMonday = new Date(2026, 10, 9, 0, 0, 0).getTime();
+    const expectedNextMonday = new Date(2026, 10, 16, 0, 0, 0).getTime();
+
+    // Monday 2026-11-09, Wednesday 2026-11-11, Saturday 2026-11-14, and Sunday 2026-11-15
+    // all belong to the Monday-starting ISO week [2026-11-09, 2026-11-16).
+    for (const dayOfMonth of [9, 11, 14, 15]) {
+      const nowMs = new Date(2026, 10, dayOfMonth, 14, 30, 0).getTime();
+      const win = usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'this_week' }, hostTz, nowMs)!;
+      expect(win).toEqual({ startAt: expectedMonday, endAt: expectedNextMonday });
+    }
+
+    // Explicit synthetic offset (+02:00) on Sunday 2026-11-15 12:00 local -> Monday 2026-11-09 00:00 local
+    const syntheticOffset = 120;
+    const sundayNoonInPlus2 = Date.UTC(2026, 10, 15, 10, 0, 0);
+    const mondayInPlus2 = Date.UTC(2026, 10, 9, 0, 0, 0) - syntheticOffset * 60_000;
+    const nextMondayInPlus2 = Date.UTC(2026, 10, 16, 0, 0, 0) - syntheticOffset * 60_000;
+    expect(
+      usageRangeWindow({ ...USAGE_FILTER_DEFAULTS, range: 'this_week' }, syntheticOffset, sundayNoonInPlus2),
+    ).toEqual({ startAt: mondayInPlus2, endAt: nextMondayInPlus2 });
+  });
+
+  it('computes custom date exclusive upper bounds and inclusive round-trips via local calendar days without fixed 24h drift', () => {
+    const start = fromDateInputStart('2026-11-01')!;
+    const end = fromDateInputExclusiveEnd('2026-11-01')!;
+    expect(start).toBe(new Date(2026, 10, 1, 0, 0, 0, 0).getTime());
+    expect(end).toBe(new Date(2026, 10, 2, 0, 0, 0, 0).getTime());
+    expect(toDateInputValue(start)).toBe('2026-11-01');
+    expect(toInclusiveEndDateInputValue(end)).toBe('2026-11-01');
+
+    // Compare window for a 1-calendar-day custom range aligns to the preceding local midnight.
+    const hostTz = browserTimezoneOffsetMinutes();
+    const prior = usageCompareWindow({ startAt: start, endAt: end }, hostTz, end + 60_000)!;
+    expect(prior).toEqual({
+      startAt: new Date(2026, 9, 31, 0, 0, 0, 0).getTime(),
+      endAt: start,
+    });
   });
 });
 

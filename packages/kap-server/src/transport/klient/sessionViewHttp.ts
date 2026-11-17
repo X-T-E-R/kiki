@@ -267,7 +267,11 @@ export class SessionViewHttpConnection {
         }
         const priority = (agentId: string): boolean => Object.hasOwn(input.transcriptGrades, agentId) &&
           (gradeFor(input.transcriptGrades, agentId) === 'block' || gradeFor(input.transcriptGrades, agentId) === 'delta');
-        const ordered = [...agents].toSorted((left, right) => Number(priority(right)) - Number(priority(left)));
+        const priorityRank = (agentId: string): number => {
+          if (!priority(agentId)) return 0;
+          return agentId !== 'main' ? 2 : 1;
+        };
+        const ordered = [...agents].toSorted((left, right) => priorityRank(right) - priorityRank(left));
         let firstDetail = false;
         let nextAgent = 0;
         const readAgents = async (): Promise<void> => {

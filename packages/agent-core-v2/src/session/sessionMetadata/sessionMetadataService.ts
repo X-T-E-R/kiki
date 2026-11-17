@@ -487,6 +487,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
         private: source.private,
         archivedAt: source.archivedAt,
         executionPhase: source.executionPhase,
+        forkedFrom: source.forkedFrom,
         custom: source.custom,
         lastTurnReason: source.lastTurnReason,
         usage: source.usage,

@@ -7,7 +7,7 @@ import { ISessionIndex, ISessionIndexMirror, type SessionSummary } from '#/app/s
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { PROMOTED_FROM_KEY, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { FORKED_FROM_KEY, PROMOTED_FROM_KEY, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { normalizeSessionMeta, encodeSessionMeta, withoutAgentStatistics } from '#/session/sessionMetadata/sessionMetadataService';
 
 import { sessionScopeOf, legacySessionMetaScopeOf, workspacePersistenceScope } from './internal/addressing';
@@ -32,7 +32,7 @@ function replaceCustomMetadata(
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
   const custom = { ...patch };
-  for (const key of [PROMOTED_FROM_KEY, 'goal']) {
+  for (const key of [PROMOTED_FROM_KEY, FORKED_FROM_KEY, 'goal']) {
     if (!Object.hasOwn(custom, key) && existing !== undefined && Object.hasOwn(existing, key)) {
       custom[key] = existing[key];
     }

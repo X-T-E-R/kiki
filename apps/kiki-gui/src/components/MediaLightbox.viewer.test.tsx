@@ -541,4 +541,23 @@ describe('annotated export', () => {
     expect(widePath).toContain('kiki-viewer-wide-annotated.png');
     expect(tallPath).toContain('kiki-viewer-tall-annotated.png');
   });
+
+  it('rescales preview-resolution annotations onto the full-resolution image during export', async () => {
+    installRasterCanvas();
+    vi.stubGlobal('Image', class {
+      crossOrigin: string | null = null;
+      src = '';
+      get naturalWidth() { return 160; }
+      get naturalHeight() { return 40; }
+      decode() { return Promise.resolve(); }
+    });
+    const previewRect: ImageAnnotation = { id: 3, tool: 'rectangle', points: [{ x: 4, y: 3 }, { x: 20, y: 14 }] };
+    const exported = await renderAnnotatedImage('blob:upgraded', [previewRect], { width: 80, height: 20 });
+    const image = decodePng(await blobBytes(exported));
+    expect(image).toMatchObject({ width: 160, height: 40 });
+    const scaledEdge = (6 * 160 + 8) * 4;
+    expect([image.rgba[scaledEdge], image.rgba[scaledEdge + 1], image.rgba[scaledEdge + 2]]).toEqual([239, 68, 68]);
+    const unscaledInterior = (16 * 160 + 24) * 4;
+    expect([image.rgba[unscaledInterior], image.rgba[unscaledInterior + 1], image.rgba[unscaledInterior + 2]]).toEqual([20, 40, 80]);
+  });
 });

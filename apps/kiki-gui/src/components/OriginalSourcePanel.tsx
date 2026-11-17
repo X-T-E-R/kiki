@@ -23,6 +23,7 @@ import { useState } from 'react';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import type { OAuthMethodStatus } from '../lib/client';
+import { compactIdentifier } from '../lib/compactIdentifier';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
 import { FeedbackLine, Hint } from './controls';
@@ -252,13 +253,13 @@ function ProbeBlock({
         >
           {blocked === null ? (
             <>
-              <p className="text-ink">
+              <p className="text-ink" title={probe.account.state === 'known' ? probe.account.id : undefined}>
                 {/* Kimi Code keeps a credential slot, not an account identity:
                     an unknown account there is the normal answer, not a sign
                     that something is missing, so it is stated without the
                     "which account" caveat. */}
                 {probe.account.state === 'known'
-                  ? t('st.source.foundAccount', { account: probe.account.id })
+                  ? t('st.source.foundAccount', { account: compactIdentifier(probe.account.id) })
                   : probe.provider === 'kimi-code'
                     ? t('st.source.foundSignIn', { app })
                     : t('st.source.foundAccountUnknown')}

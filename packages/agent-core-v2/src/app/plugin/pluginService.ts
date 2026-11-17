@@ -96,6 +96,7 @@ export class PluginService extends Service implements IPluginService {
   private readonly envOAuthHost: string | undefined;
   private readonly manager: PluginManager;
   private initialLoadPromise: Promise<void> | undefined;
+  private activeReloadPromise: Promise<ReloadSummary> | undefined;
   private snapshotLoaded = false;
   private loadError: Error | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -247,6 +248,7 @@ export class PluginService extends Service implements IPluginService {
   }
 
   reloadPlugins(): Promise<ReloadSummary> {
+    if (this.activeReloadPromise !== undefined) return this.activeReloadPromise;
     const reload = this.awaitReloadDelivery(
       this.enqueueMutation(() => this.withPluginChange(undefined, async () => {
         try {
@@ -261,7 +263,10 @@ export class PluginService extends Service implements IPluginService {
           );
         }
       })),
-    );
+    ).finally(() => {
+      if (this.activeReloadPromise === reload) this.activeReloadPromise = undefined;
+    });
+    this.activeReloadPromise = reload;
     this.initialLoadPromise ??= reload.then(
       () => undefined,
       () => undefined,
@@ -556,7 +561,8 @@ export class PluginService extends Service implements IPluginService {
   }
 
   private async runConsumptionRead<T>(fallback: T, operation: () => Promise<T>): Promise<T> {
-    await this.waitForPendingMutations();
+    if (this.snapshotLoaded) return operation();
+    await this.startInitialLoad();
     if (!this.snapshotLoaded) return fallback;
     return operation();
   }

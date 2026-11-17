@@ -21,7 +21,7 @@ import { useMemo, useState } from 'react';
 import { formatCostUsd } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
-import { DisclosureChevron } from '../icons';
+import { DisclosureChevron, Icon } from '../icons';
 import {
   aggregateSourceRows,
   cacheHitRateOf,
@@ -53,6 +53,7 @@ export function UsageSources({
   metric,
   prior,
   lookups,
+  isFilterActive,
   onFilterSource,
   onOpenSessions,
   onSwitchGrouping,
@@ -65,6 +66,7 @@ export function UsageSources({
     readonly unknownLabel: string;
     readonly workspaceName: (id: string) => string | undefined;
   };
+  readonly isFilterActive?: (row: UsageSourceRow) => boolean;
   readonly onFilterSource: (row: UsageSourceRow) => void;
   readonly onOpenSessions: (row: UsageSourceRow | undefined) => void;
   readonly onSwitchGrouping: (groupBy: UsageGroupBy) => void;
@@ -106,34 +108,65 @@ export function UsageSources({
     // Each metric is judged on its own completeness: a missing token record
     // does not make a priced cost incomparable, and vice versa.
     const priorOutcome = priorOutcomeFor(metric, row, priorRow, prior, cacheHit);
+    const filterActive = isFilterActive?.(row) ?? false;
+    const rowName = labelFor(row);
     return (
-      <li key={row.key} data-usage-breakdown-row={row.key} className="border-b border-hairline last:border-b-0">
+      <li key={row.key} data-usage-breakdown-row={row.key} className="group border-b border-hairline last:border-b-0">
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_8rem_4.5rem_4.5rem_auto]">
           <div className="flex min-w-0 items-center gap-2">
             <button
               type="button"
               aria-expanded={open}
               aria-controls={`usage-source-details-${row.key}`}
-              aria-label={t('usage.sources.expand', { name: labelFor(row) })}
+              aria-label={t('usage.sources.expand', { name: rowName })}
               onClick={() => { toggle(row.key); }}
               className="flex h-8 w-6 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
             >
               <DisclosureChevron open={open} className="text-current" />
             </button>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p
                 className={`truncate text-[13px] ${row.key === USAGE_SOURCE_KEY_UNKNOWN ? 'text-ink-soft italic' : 'font-medium text-ink'}`}
                 title={row.value ?? undefined}
               >
-                {labelFor(row)}
+                {rowName}
               </p>
-              {row.key === USAGE_SOURCE_KEY_UNKNOWN ? (
-                <p className="truncate text-[11px] text-ink-faint">{t('usage.sources.unknownRowHint')}</p>
-              ) : row.modelAliases.length > 0 && groupBy !== 'model' ? (
+              {row.key !== USAGE_SOURCE_KEY_UNKNOWN && row.modelAliases.length > 0 && groupBy !== 'model' ? (
                 <p className="truncate font-mono text-[11px] text-ink-faint">
                   {row.modelAliases.length === 1 ? row.modelAliases[0] : t('usage.sources.modelCount', { count: row.modelAliases.length })}
                 </p>
               ) : null}
+            </div>
+            <div className={`flex shrink-0 items-center gap-0.5 transition-opacity ${
+              filterActive ? 'opacity-100' : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100'
+            }`}>
+              {row.filter !== null ? (
+                <button
+                  type="button"
+                  data-usage-row-filter={row.key}
+                  aria-pressed={filterActive}
+                  aria-label={t('usage.sources.toggleFilter', { name: rowName })}
+                  title={t('usage.sources.toggleFilter', { name: rowName })}
+                  onClick={() => { onFilterSource(row); }}
+                  className={`flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-9 pointer-coarse:w-9 ${
+                    filterActive
+                      ? 'bg-selected text-selected-ink'
+                      : 'text-ink-faint hover:bg-ink/[0.06] hover:text-ink'
+                  }`}
+                >
+                  <Icon name="filter" size={12} />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                data-usage-row-sessions={row.key}
+                aria-label={t('usage.sources.traceSessions', { name: rowName })}
+                title={t('usage.sources.traceSessions', { name: rowName })}
+                onClick={() => { onOpenSessions(row); }}
+                className="flex h-7 w-7 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-9 pointer-coarse:w-9"
+              >
+                <Icon name="thread" size={12} />
+              </button>
             </div>
           </div>
           <div className="hidden items-center gap-2 sm:flex">
@@ -171,8 +204,14 @@ export function UsageSources({
               data-usage-breakdown-cost={row.key}
               className="text-right text-[13px] font-semibold text-ink tabular-nums"
             >
-              {unknownTotal ? '—' : formatCostUsd(row.costUsdEstimated)}
-              {row.costUnknown ? <span className="ml-1 inline-block align-[-1px] text-amber-ink">*</span> : null}
+              {unknownTotal || (row.costUnknown && row.costUsdEstimated === 0 && row.totalTokens > 0)
+                ? '—'
+                : formatCostUsd(row.costUsdEstimated)}
+              {row.costUnknown ? (
+                <KnownSubtotalMarker
+                  label={row.costUsdEstimated === 0 && (row.totalTokens > 0 || row.tokensUnknown) ? t('usage.reliability.costUnknown') : undefined}
+                />
+              ) : null}
             </span>
           </div>
           {/* 390-wide reading: the name keeps the amount, the second line keeps
@@ -203,9 +242,7 @@ export function UsageSources({
                 >
                   {t(`usage.sources.onlyThis.${row.filter.field === 'workspace.id' ? 'workspace' : row.filter.field}`)}
                 </button>
-              ) : (
-                <p className="text-[12px] text-ink-faint">{t('usage.sources.noExactFilter')}</p>
-              )}
+              ) : null}
               <button
                 type="button"
                 data-usage-source-sessions={row.key}
@@ -277,7 +314,6 @@ export function UsageSources({
           ) : (
             <ul>{visible.map(renderRow)}</ul>
           )}
-          <p className="mt-2 text-right text-[11.5px] text-ink-faint">{t('usage.sources.sortHint')}</p>
         </>
       )}
     </section>

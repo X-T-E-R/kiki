@@ -60,6 +60,7 @@ it.each(['service', 'sqlite'] as const)('preserves searchService integration cas
       onDidChangeStatus: Event.None,
       status: () => ({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }),
       listRecent: async () => ({ items: sessions, nextCursor: undefined }),
+      get: async (id: string) => sessions.find((item) => item.id === id),
       count: async () => sessions.length,
     } as unknown as ISessionIndex;
     const bootstrap = { homeDir: home, scope: (name: string) => name } as IBootstrapService;

@@ -7,7 +7,7 @@ import { isExternalClientMain } from '@kiki/agent-core-v2/session/sessionMetadat
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
-import type { AgentMeta, SessionMeta, SessionPromotedFrom } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { AgentMeta, SessionForkedFrom, SessionMeta, SessionPromotedFrom } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
@@ -16,6 +16,7 @@ import { loadAgentsMdDetailed } from '@kiki/agent-core-v2/agent/profile/context'
 import { resolveSpaceInheritance } from '@kiki/agent-core-v2/app/bootstrap/spaceInheritance';
 import { ISessionInstructionsProvider } from '@kiki/agent-core-v2/session/sessionInstructions/instructionsProvider';
 import { readSessionObserver } from '../lib/sessionObserver';
+import { resolveSessionPersonaId } from './sessionPersona';
 import { resolveSessionModelBinding } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacyService';
 import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
 import { IInstantiationService } from '@kiki/agent-core-v2/_base/di/instantiation';
@@ -79,7 +80,7 @@ import {
   type Workspace,
 } from '@kiki/agent-core-v2';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
-import { PROMOTED_FROM_KEY, promotedFromOf } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { FORKED_FROM_KEY, forkedFromOf, PROMOTED_FROM_KEY, promotedFromOf } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema, sessionCreationStatusSchema } from '@kiki/protocol';
@@ -196,18 +197,6 @@ function sessionMatchesPrivacy(
     || query.include_private === true
     || (query.include_private === undefined && query.persona !== undefined);
   return (includePrivate || isPrivate !== true) && (query.private_only !== true || isPrivate === true);
-}
-
-function legacyPersonaIdOf(summary: SessionSummary): string | undefined {
-  const legacyPersona = summary.custom?.['bot_persona_id'] ?? summary.custom?.['room_persona_id'];
-  return typeof legacyPersona === 'string' && legacyPersona.length > 0 ? legacyPersona : undefined;
-}
-
-function listPersonaIdOf(core: Scope, summary: SessionSummary): string | undefined {
-  const live = getLiveSessionById(core.accessor, summary.id);
-  const main = live?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
-  if (main !== undefined) return main.accessor.get(IAgentProfileService).data().personaId;
-  return summary.personaId ?? legacyPersonaIdOf(summary);
 }
 
 const sessionsListQueryCoercion = z
@@ -414,9 +403,10 @@ export function registerSessionsRoutes(
   const ephemeralSessions = async (query: { workspace_id?: string; persona?: string; before_id?: string; page_size?: number; include_private?: boolean; private_only?: boolean }, budget = 62 * 1024) => {
     const eligible: { readonly handle: ISessionScopeHandle; readonly meta: SessionMeta }[] = [];
     for (const handle of core.accessor.get(ISessionManager).listEphemeral()) {
-      const persona = handle.accessor.get(IAgentLifecycleService).get('main')?.accessor.get(IAgentProfileService).data().personaId;
       const meta = await handle.accessor.get(ISessionMetadata).read();
-      if ((query.workspace_id !== undefined && handle.accessor.get(ISessionContext).workspaceId !== query.workspace_id)
+      const ctx = handle.accessor.get(ISessionContext);
+      const persona = resolveSessionPersonaId(core, { ...meta, workspaceId: ctx.workspaceId });
+      if ((query.workspace_id !== undefined && ctx.workspaceId !== query.workspace_id)
         || (query.persona !== undefined && persona !== query.persona)
         || !sessionMatchesPrivacy(meta.private, query)) continue;
       eligible.push({ handle, meta });
@@ -776,15 +766,15 @@ export function registerSessionsRoutes(
       const includeArchived = archivedOnly ? true : raw.include_archive;
       const personaNames = new Map<string, Promise<string>>();
       const project = async (summary: SessionSummary, cwd: string, facts = resolveSessionFacts(core, summary.id, summary.usage)): Promise<Session> => {
-        if (facts.live === false) {
-          const personaId = summary.personaId ?? legacyPersonaIdOf(summary);
+        if (facts.agentConfig?.persona === undefined) {
+          const personaId = resolveSessionPersonaId(core, summary);
           if (personaId !== undefined) {
             let name = personaNames.get(personaId);
             if (name === undefined) {
               name = core.accessor.get(IPersonaStore).get(personaId).then((snapshot) => snapshot?.definition.name ?? personaId);
               personaNames.set(personaId, name);
             }
-            facts = { ...facts, agentConfig: { model: '', persona: {
+            facts = { ...facts, agentConfig: { ...facts.agentConfig, model: facts.agentConfig?.model ?? '', persona: {
               id: personaId, name: await name, avatarUrl: `/api/personas/${encodeURIComponent(personaId)}/avatar`,
             } } };
           }
@@ -829,7 +819,7 @@ export function registerSessionsRoutes(
             const cwd = summary.cwd ?? roots.get(summary.workspaceId) ?? (archivedOnly ? '' : undefined);
             if (cwd === undefined) continue;
             if (needle && ![summary.title ?? '', cwd, summary.workspaceId].some((value) => value.toLocaleLowerCase().includes(needle))) continue;
-            if (raw.persona !== undefined && listPersonaIdOf(core, summary) !== raw.persona) continue;
+            if (raw.persona !== undefined && resolveSessionPersonaId(core, summary) !== raw.persona) continue;
             if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
             if (archivedOnly && !summary.archived) continue;
             if (raw.pinned !== undefined && (summary.custom?.[SESSION_PIN_METADATA_KEY] === true) !== raw.pinned) continue;
@@ -955,7 +945,16 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      const facts = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage, undefined, signal));
+      let facts = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage, undefined, signal));
+      if (facts.agentConfig?.persona === undefined) {
+        const personaId = resolveSessionPersonaId(core, summary);
+        if (personaId !== undefined) {
+          const snapshot = await core.accessor.get(IPersonaStore).get(personaId);
+          facts = { ...facts, agentConfig: { ...facts.agentConfig, model: facts.agentConfig?.model ?? '', persona: {
+            id: personaId, name: snapshot?.definition.name ?? personaId, avatarUrl: `/api/personas/${encodeURIComponent(personaId)}/avatar`,
+          } } };
+        }
+      }
       reply.send(
         okEnvelope(
           toWireSession(
@@ -1025,12 +1024,22 @@ export function registerSessionsRoutes(
         );
         return;
       }
+      let facts = await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage);
+      if (facts.agentConfig?.persona === undefined) {
+        const personaId = resolveSessionPersonaId(core, summary);
+        if (personaId !== undefined) {
+          const snapshot = await core.accessor.get(IPersonaStore).get(personaId);
+          facts = { ...facts, agentConfig: { ...facts.agentConfig, model: facts.agentConfig?.model ?? '', persona: {
+            id: personaId, name: snapshot?.definition.name ?? personaId, avatarUrl: `/api/personas/${encodeURIComponent(personaId)}/avatar`,
+          } } };
+        }
+      }
       reply.send(
         okEnvelope(
           toWireSession(
             summary,
             cwd,
-            await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage),
+            facts,
             cursor?.seq,
           ),
           req.id,
@@ -1339,6 +1348,7 @@ export function registerSessionsRoutes(
               metadata: body.metadata,
               seed: body.seed,
               carry,
+              throughMessageId: body.through_message_id,
               turnIndex: boundary.turnIndex,
               throughUserMessage: boundary.throughUserMessage,
             });
@@ -1919,6 +1929,7 @@ export interface SessionWireFields {
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   readonly delivery?: 'reply' | 'message';
   readonly agents?: Readonly<Record<string, AgentMeta>>;
+  readonly forkedFrom?: string;
   readonly promotedFrom?: SessionPromotedFrom;
   readonly executorId?: string;
   readonly negotiated?: NegotiatedExecutorCapabilities;
@@ -1940,6 +1951,7 @@ export function toWireSession(
     executor_id: executorId,
     allow_kiki_subagents: facts.allowKikiSubagents ?? fields.allowKikiSubagents ?? mainMeta?.allowKikiSubagents,
     promoted_from: toWirePromotedFrom(promotedFromOf(fields)),
+    forked_from: toWireForkedFrom(forkedFromOf(fields)),
     negotiated: negotiated === undefined ? undefined : {
       agent_version: negotiated.agentVersion, image: negotiated.image, audio: negotiated.audio,
       fork: negotiated.fork, native_steering: negotiated.nativeSteering,
@@ -2056,11 +2068,31 @@ export async function resolveSessionBindingFacts(
   const usage = { ...(facts.usage ?? emptySessionUsage()), context_tokens: runtime.contextTokens ?? 0,
     context_limit: contextLimit ?? 0, turn_count: runtime.turnCount ?? 0 };
   const persona = profile?.persona?.definition;
+  let wirePersona = persona === undefined ? undefined : {
+    id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
+  };
+  if (wirePersona === undefined) {
+    const fallbackPersonaId = resolveSessionPersonaId(core, {
+      id: sessionId,
+      workspaceId,
+      personaId: profile?.personaId ?? mainMetadata?.personaId ?? saved?.agents?.[MAIN_AGENT_ID]?.personaId,
+      createdAt: saved?.createdAt ?? 0,
+      updatedAt: saved?.updatedAt ?? 0,
+      archived: saved?.archived ?? false,
+      custom: saved?.custom,
+    });
+    if (fallbackPersonaId !== undefined) {
+      const snapshot = await core.accessor.get(IPersonaStore).get(fallbackPersonaId);
+      wirePersona = {
+        id: fallbackPersonaId,
+        name: snapshot?.definition.name ?? fallbackPersonaId,
+        avatarUrl: `/api/personas/${encodeURIComponent(fallbackPersonaId)}/avatar`,
+      };
+    }
+  }
   return { ...facts, usage, executorId: binding.executorId, agentConfig: {
     execution: profile?.execution, model: binding.model ?? '', profile: profile?.profileName,
-    persona: persona === undefined ? undefined : {
-      id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
-    },
+    persona: wirePersona,
   } };
 }
 
@@ -2327,7 +2359,10 @@ function buildWireMetadata(
   cwd: string,
 ): { cwd: string; [key: string]: unknown } {
   if (custom === undefined) return { cwd };
-  const { goal: _drop, [PROMOTED_FROM_KEY]: _promoted, ...rest } = custom as { goal?: unknown; [key: string]: unknown };
+  const { goal: _drop, [PROMOTED_FROM_KEY]: _promoted, [FORKED_FROM_KEY]: _forked, ...rest } = custom as {
+    goal?: unknown;
+    [key: string]: unknown;
+  };
   return { ...rest, cwd };
 }
 
@@ -2339,6 +2374,19 @@ function toWirePromotedFrom(value: SessionPromotedFrom | undefined): Session['pr
     agent_name: value.agentName,
     profile: value.profile,
     promoted_at: value.promotedAt === undefined ? undefined : new Date(value.promotedAt).toISOString(),
+  };
+}
+
+function toWireForkedFrom(value: SessionForkedFrom | undefined): Session['forked_from'] {
+  if (value === undefined) return undefined;
+  return {
+    session_id: value.sessionId,
+    title: value.title,
+    through_message_id: value.throughMessageId,
+    turn_index: value.turnIndex,
+    through_user_message: value.throughUserMessage,
+    seed: value.seed,
+    forked_at: value.forkedAt === undefined ? undefined : new Date(value.forkedAt).toISOString(),
   };
 }
 

@@ -305,7 +305,11 @@ export async function registerApiV1Routes(
         core,
       );
       registerFilesRoutes(apiV1 as unknown as Parameters<typeof registerFilesRoutes>[0], core);
-      registerPersonasRoutes(apiV1 as unknown as Parameters<typeof registerPersonasRoutes>[0], core);
+      registerPersonasRoutes(
+        apiV1 as unknown as Parameters<typeof registerPersonasRoutes>[0],
+        core,
+        opts.broadcaster,
+      );
       registerRecipesRoutes(apiV1 as unknown as Parameters<typeof registerRecipesRoutes>[0], core);
       registerBotRoomRoutes(apiV1 as unknown as Parameters<typeof registerBotRoomRoutes>[0], core);
       registerSessionMediaRoutes(

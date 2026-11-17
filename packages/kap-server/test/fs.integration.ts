@@ -707,6 +707,41 @@ describe('server-v2 /api fs routes', () => {
     expect(body.data.items.map((i) => i.path)).toContain('iota.ts');
   });
 
+  it('workspace fs:suggest and fs:search never disclose sensitive files even with show_hidden', async () => {
+    await mkdir(join(work!, '.aws'), { recursive: true });
+    await writeFile(join(work!, '.env'), 'SECRET=1');
+    await writeFile(join(work!, '.env.local'), 'SECRET=2');
+    await writeFile(join(work!, '.env.example'), 'EXAMPLE=1');
+    await writeFile(join(work!, '.aws', 'credentials'), 'AWS=1');
+
+    const suggested = await postWorkspaceSuggest<{ items: SuggestItemWire[] }>({
+      workspace: work,
+      query: 'env',
+      show_hidden: true,
+      follow_gitignore: false,
+    });
+    expect(suggested.code).toBe(0);
+    expect(suggested.data.items.map((i) => i.path)).toEqual(['.env.example']);
+
+    const searched = await fetch(`${base}/api/workspace/fs:search`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ workspace: work, query: 'env', follow_gitignore: false }),
+    } as never);
+    const searchBody = (await searched.json()) as Envelope<{ items: Array<{ path: string }> }>;
+    expect(searchBody.code).toBe(0);
+    expect(searchBody.data.items.map((i) => i.path)).toEqual(['.env.example']);
+
+    const credSearch = await fetch(`${base}/api/workspace/fs:search`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ workspace: work, query: 'credentials', follow_gitignore: false }),
+    } as never);
+    const credBody = (await credSearch.json()) as Envelope<{ items: Array<{ path: string }> }>;
+    expect(credBody.code).toBe(0);
+    expect(credBody.data.items).toEqual([]);
+  });
+
   it('workspace fs:suggest maps an unknown ref to WORKSPACE_NOT_FOUND', async () => {
     const body = await postWorkspaceSuggest<null>({ workspace: 'does-not-exist', query: 'x' });
     expect(body.code).toBe(ErrorCode.WORKSPACE_NOT_FOUND);

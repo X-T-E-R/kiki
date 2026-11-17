@@ -61,6 +61,7 @@ import {
 } from '@kiki/session-core/settings';
 import { formatTokens } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { compactIdentifier } from '../lib/compactIdentifier';
 import { usePhoneMode } from '../lib/layoutHooks';
 import { DisclosureChevron, Icon } from './icons';
 import { useConnection } from '../state/connection';
@@ -1266,6 +1267,9 @@ export function ProviderEditor({
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirming, setConfirming] = useState<'remove' | null>(null);
+  const [isOpen, setIsOpen] = useState(
+    () => Boolean(defaultOpen) || (openFocusKeySignal ?? 0) > 0 || modelList === undefined,
+  );
   const [revisions, setRevisions] = useState<{
     provider: string;
     models: ReadonlyMap<string, string>;
@@ -1311,6 +1315,22 @@ export function ProviderEditor({
     setModelProtocolsBaseline(initialProtocols.baselines);
   }, [initial, readSnapshot, dirty, saving, initialProtocols]);
   useEffect(() => {
+    if (defaultOpen || (openFocusKeySignal ?? 0) > 0) {
+      setIsOpen(true);
+    }
+  }, [defaultOpen, openFocusKeySignal]);
+  useEffect(() => {
+    const details = detailsRef.current;
+    if (details === null || typeof MutationObserver === 'undefined') return;
+    if (details.open) setIsOpen(true);
+    const observer = new MutationObserver(() => {
+      setIsOpen(details.open);
+    });
+    observer.observe(details, { attributes: true, attributeFilter: ['open'] });
+    return () => { observer.disconnect(); };
+  }, []);
+  useEffect(() => {
+    if (!isOpen) return;
     let current = true;
     setDirectoryModels([]);
     void client.getCatalogProvider(provider.id).then((catalogProvider) => {
@@ -1319,22 +1339,26 @@ export function ProviderEditor({
       if (current) setDirectoryModels([]);
     });
     return () => { current = false; };
-  }, [provider.id]);
+  }, [isOpen, provider.id]);
+  const editsInlineModels = modelList === undefined;
   useEffect(() => {
+    if (!isOpen) return;
     let current = true;
     setRevisions(null);
     void Promise.all([
       client.getProviderEntity(provider.id),
-      Promise.all((readSnapshot?.models ?? []).filter((model) => model.id !== '').map(
-        async (model) => [model.id, (await client.getModel(model.id)).revision] as const,
-      )),
+      editsInlineModels
+        ? Promise.all((readSnapshot?.models ?? []).filter((model) => model.id !== '').map(
+            async (model) => [model.id, (await client.getModel(model.id)).revision] as const,
+          ))
+        : Promise.resolve([] as readonly (readonly [string, string])[]),
     ]).then(([providerEntity, modelEntries]) => {
       if (current) setRevisions({ provider: providerEntity.revision, models: new Map(modelEntries) });
     }).catch((error: unknown) => {
       if (current) setFeedback({ tone: 'error', text: errorText(locale, error) });
     });
     return () => { current = false; };
-  }, [readSnapshot, provider.id]);
+  }, [isOpen, editsInlineModels, readSnapshot, provider.id]);
 
   useDirtyReporter(`provider:${provider.id}`, dirty);
 
@@ -1519,6 +1543,7 @@ export function ProviderEditor({
 
   useEffect(() => {
     if (openFocusKeySignal === 0) return;
+    setIsOpen(true);
     const details = detailsRef.current;
     if (details === null) return;
     details.open = true;
@@ -1545,6 +1570,8 @@ export function ProviderEditor({
     </span>
   );
 
+  const shouldMountBody = isOpen || dirty || confirming !== null;
+
   return (
     <details
       ref={detailsRef}
@@ -1553,6 +1580,7 @@ export function ProviderEditor({
       data-connection-health={healthTone}
       className="group/provider [&[open]]:bg-paper"
       open={defaultOpen || undefined}
+      onToggle={(event) => { setIsOpen(event.currentTarget.open); }}
     >
       <summary style={{ minHeight: LIST_ROW_HEIGHT[density] }}
         className={`flex cursor-pointer list-none items-center gap-3 px-3 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden ${density === 'compact' ? 'py-1' : 'py-2'}`}>
@@ -1572,7 +1600,7 @@ export function ProviderEditor({
           {density === 'compact' ? null : (
             <span className="block truncate text-[12px] text-ink-faint">
               {t(`st.connections.kind.${kind}`)}
-              {!phone && identity !== undefined ? <> · <span data-connection-account className="text-ink-soft">{identity}</span></> : null}
+              {!phone && identity !== undefined ? <> · <span data-connection-account title={identity} className="text-ink-soft">{compactIdentifier(identity)}</span></> : null}
               {!phone && host !== undefined && kind !== 'account' ? ` · ${host}` : ''}
               {' · '}{t('st.connections.modelCount', { count })}
               {!phone && quotaText !== undefined ? <> · <span data-connection-quota={quota?.unit} className="tabular-nums text-ink-soft"
@@ -1584,6 +1612,7 @@ export function ProviderEditor({
         {phone ? null : statusBadge}
         <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/provider:rotate-90" />
       </summary>
+      {shouldMountBody ? (
       <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
         {health === 'error' ? (
           <div role="alert" data-connection-error className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
@@ -1677,6 +1706,7 @@ export function ProviderEditor({
         </div>
         <FeedbackLine feedback={feedback} />
       </div>
+      ) : null}
       <ConfirmDialog
         open={confirming === 'remove'}
         title={t('st.confirm.removeTitle', { id: provider.id })}

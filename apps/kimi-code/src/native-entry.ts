@@ -1,3 +1,4 @@
+process.env['UV_THREADPOOL_SIZE'] ??= '32';
 import './native/worker-heap';
 import { initializeMainHeap } from './native/main-heap';
 import { mcpModeError, type McpModeOptions } from './kiki/mcpMode';

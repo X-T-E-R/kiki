@@ -150,6 +150,17 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       return;
     }
 
+    if (toolName === 'Branch') {
+      event.veto(
+        denyToolExecution(
+          this.toolApproval.formatDenyMessage(
+            'Branch is not available in plan mode because branches carry full execution and write capabilities. Call ExitPlanMode first.',
+          ),
+        ),
+      );
+      return;
+    }
+
     const resume = (event.args as { readonly resume?: unknown }).resume;
     if (
       (toolName === 'AgentRun' && typeof resume === 'string' && resume.trim() !== '') ||

@@ -256,7 +256,12 @@ it.each(['text', 'media'] as const)('keeps accepted %s with empty message IDs in
       text: accepted === 'text' ? 'accepted text' : '', attachments: accepted === 'text' ? [image] : [image, voice] };
     const receipt = await bridge.sendUserMessage(input);
     expect(receipt.delivery).toBe('delivered');
-    expect(receipt.channels).toEqual([{ channelId: im.id, status: 'partial', messageIds: [], detail: 'media_rejected' }]);
+    expect(receipt.channels).toEqual([{
+      channelId: im.id,
+      status: 'partial',
+      messageIds: [],
+      detail: accepted === 'text' ? 'media_rejected' : 'text_empty:media_rejected',
+    }]);
     expect(attempts).toEqual(accepted === 'text' ? ['text', 'image'] : ['image', 'voice']);
     expect(await bridge.sendUserMessage(input)).toEqual(receipt);
     expect(attempts).toHaveLength(2);

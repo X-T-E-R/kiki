@@ -13,7 +13,15 @@
  * before.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { createPortal } from 'react-dom';
 
 import { useLayerHistory } from '../../lib/layerHistory';
@@ -36,6 +44,8 @@ function focusFrom(items: readonly HTMLElement[], start: number, step: 1 | -1): 
 }
 
 export function ActionSheet({
+  id,
+  role = 'menu',
   ariaLabel,
   overlayId,
   onClose,
@@ -43,9 +53,14 @@ export function ActionSheet({
   modalOwnerId,
   autofocus = true,
   restoreFocus = true,
+  returnFocusRef,
   sheetClassName,
+  onKeyDown: onSheetKeyDown,
   children,
 }: {
+  readonly id?: string;
+  /** Surface ARIA role; defaults to `'menu'`, or `'dialog'` for composite controls. */
+  readonly role?: 'menu' | 'dialog';
   readonly ariaLabel: string;
   /** uiBusy overlay id; also the layer-history marker. */
   readonly overlayId: string;
@@ -57,9 +72,13 @@ export function ActionSheet({
   readonly autofocus?: boolean;
   /** False where the opener reveals itself on focus-within and would stay pinned open. */
   readonly restoreFocus?: boolean;
+  /** Fallback focus target when the original opener unmounted while the sheet was open. */
+  readonly returnFocusRef?: RefObject<HTMLElement | null>;
   /** Optional variant class on `.kiki-action-sheet` (e.g. height cap or flex layout). */
   readonly sheetClassName?: string;
-  /** `role="menuitem"` buttons (separators allowed). */
+  /** Optional key handler on the sheet container (e.g. listbox keyboard navigation in dialog mode). */
+  readonly onKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
+  /** `role="menuitem"` buttons (separators allowed), or composite controls when `role="dialog"`. */
   readonly children: ReactNode;
 }) {
   const [inferredModalOwner] = useState(() =>
@@ -69,6 +88,8 @@ export function ActionSheet({
   const sheetRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const returnFocusLatestRef = useRef(returnFocusRef);
+  returnFocusLatestRef.current = returnFocusRef;
 
   useLayerHistory(overlayId, true, onClose);
 
@@ -77,15 +98,41 @@ export function ActionSheet({
   useLayoutEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const sheet = sheetRef.current;
-    if (autofocus && sheet !== null) focusFrom([...sheet.querySelectorAll<HTMLElement>(ITEM_SELECTOR)], 0, 1);
+    if (sheet !== null) {
+      if (autofocus && role === 'menu') {
+        const items = [...sheet.querySelectorAll<HTMLElement>(ITEM_SELECTOR)];
+        if (items.length > 0) focusFrom(items, 0, 1);
+        else sheet.focus();
+      } else if (autofocus) {
+        const first =
+          sheet.querySelector<HTMLElement>('[data-autofocus]:not([disabled])') ??
+          sheet.querySelector<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          );
+        if (first !== null) first.focus();
+        else sheet.focus();
+      } else {
+        sheet.focus();
+      }
+    }
     return () => {
-      if (!restoreFocus || sheet === null || !sheet.contains(document.activeElement)) return;
+      const currentActive = document.activeElement;
+      const focusInsideOrDropped =
+        currentActive === null || currentActive === document.body || (sheet !== null && sheet.contains(currentActive));
+      if (!restoreFocus || sheet === null || !focusInsideOrDropped) return;
       // After the commit: a dialog or route the action opened claims focus on
       // its own mount, and then keeps it.
       queueMicrotask(() => {
         const active = document.activeElement;
         if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
-        if (opener !== null && opener !== document.body && opener.isConnected) opener.focus();
+        if (opener !== null && opener !== document.body && opener.isConnected) {
+          opener.focus();
+          return;
+        }
+        const fallback = returnFocusLatestRef.current?.current;
+        if (fallback !== null && fallback !== undefined && fallback !== document.body && fallback.isConnected) {
+          fallback.focus();
+        }
       });
     };
     // Mount-only: the sheet's focus contract spans its whole life.
@@ -121,10 +168,18 @@ export function ActionSheet({
       <div aria-hidden className="kiki-action-sheet-scrim" onClick={() => { closeRef.current(); }} />
       <div
         ref={sheetRef}
-        role="menu"
+        id={id}
+        role={role}
         aria-label={ariaLabel}
-        className={sheetClassName === undefined ? 'kiki-action-sheet' : `kiki-action-sheet ${sheetClassName}`}
+        tabIndex={-1}
+        className={
+          sheetClassName === undefined
+            ? 'kiki-action-sheet outline-none'
+            : `kiki-action-sheet outline-none ${sheetClassName}`
+        }
         onKeyDown={(event) => {
+          onSheetKeyDown?.(event);
+          if (event.defaultPrevented || role !== 'menu') return;
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
           const items = [...(sheetRef.current?.querySelectorAll<HTMLElement>(ITEM_SELECTOR) ?? [])];
           if (items.length === 0) return;

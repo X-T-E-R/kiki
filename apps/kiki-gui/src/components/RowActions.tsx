@@ -128,6 +128,7 @@ export interface MessageRowActionsProps {
   onEdit?: () => void;
   onRegenerate?: () => void;
   onFork?: (seed?: SessionSeedMode) => void | Promise<unknown>;
+  onBranch?: (seed?: SessionSeedMode) => void;
 }
 
 const FORK_SEED_MODES: readonly SessionSeedMode[] = ['verbatim', 'fresh', 'compact'];
@@ -175,6 +176,7 @@ export function MessageRowActions({
   onEdit,
   onRegenerate,
   onFork,
+  onBranch,
 }: MessageRowActionsProps) {
   const { t } = useI18n();
   const transcriptTarget = useTranscriptTarget();
@@ -316,6 +318,7 @@ export function MessageRowActions({
 
   useEffect(() => {
     if (!forkMenuOpen || coarse) return;
+    const unregister = registerOverlay('row-fork-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation();
@@ -347,6 +350,7 @@ export function MessageRowActions({
     window.addEventListener('scroll', onScrollOrResize, true);
     window.addEventListener('resize', onScrollOrResize);
     return () => {
+      unregister();
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('scroll', onScrollOrResize, true);
@@ -462,8 +466,10 @@ export function MessageRowActions({
   // row publishes as `data-actions-open`. The pointer gate rides the same
   // conditions: hidden icons never catch a click, and whatever the overlay
   // hangs over keeps its clicks and its text selection.
-  const visibility =
-    'pointer-events-none opacity-0 transition-opacity group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 group-focus-within/msg:pointer-events-auto group-focus-within/msg:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 group-data-[actions-open]/msg:pointer-events-auto group-data-[actions-open]/msg:opacity-100';
+  const anyMenuOpen = menuOpen || forkMenuOpen;
+  const visibility = anyMenuOpen
+    ? 'pointer-events-auto opacity-100 transition-opacity'
+    : 'pointer-events-none opacity-0 transition-opacity group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 group-focus-within/msg:pointer-events-auto group-focus-within/msg:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100 group-data-[actions-open]/msg:pointer-events-auto group-data-[actions-open]/msg:opacity-100';
 
   // Only copy-link and plugin message actions are menu-only, so the `⋯`
   // trigger is needed at every width while one of them exists; a strip of tiled
@@ -485,10 +491,12 @@ export function MessageRowActions({
       ref={menuContainerRef}
       data-row-actions
       data-row-actions-align={align}
-      className={`${visibility} absolute top-full right-0 left-0 z-20 flex h-7 items-center pointer-coarse:items-end gap-0.5 ${
+      data-row-menu-open={anyMenuOpen || undefined}
+      className={`${visibility} absolute top-full right-0 left-0 z-20 -mt-1.5 flex h-6 items-center pointer-coarse:mt-0 pointer-coarse:h-7 pointer-coarse:items-end ${
         align === 'right' ? 'justify-end' : 'justify-start'
       }`}
     >
+      <span className="relative inline-flex items-center gap-0.5 rounded-md bg-paper/95 px-0.5 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]">
       <span data-row-action-tiles className="hidden items-center gap-0.5 sm:flex">
         {showCopy ? (
           <button
@@ -531,15 +539,7 @@ export function MessageRowActions({
           </button>
         ) : null}
         {showFork ? (
-          <span
-            className="relative inline-flex"
-            onPointerEnter={(event) => {
-              if (event.pointerType === 'mouse' && !forkDisabled && !forkingRef.current) openForkMenu(false);
-            }}
-            onPointerLeave={(event) => {
-              if (event.pointerType === 'mouse') setForkMenuOpen(false);
-            }}
-          >
+          <span className="relative inline-flex items-center">
             <button
               ref={forkTriggerRef}
               type="button"
@@ -564,13 +564,34 @@ export function MessageRowActions({
             >
               <Icon name="branch" size={14} />
             </button>
+            {!coarse ? (
+              <button
+                type="button"
+                data-row-fork-options
+                title={t('fork.row.optionsAria')}
+                aria-label={t('fork.row.optionsAria')}
+                aria-haspopup="menu"
+                aria-expanded={forkMenuOpen}
+                disabled={forkDisabled}
+                onClick={() => {
+                  if (forkMenuOpen) {
+                    setForkMenuOpen(false);
+                  } else {
+                    openForkMenu(true);
+                  }
+                }}
+                className="flex h-7 w-4 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40 -ml-1"
+              >
+                <Icon name="chevron" size={12} className="rotate-90" />
+              </button>
+            ) : null}
             {!coarse && forkMenuOpen && !forkDisabled ? (
               <div
                 ref={forkMenuRef}
                 role="menu"
                 data-row-fork-menu
                 aria-label={t('transcript.forkTitle')}
-                className={`anim-enter pointer-events-auto absolute z-30 flex min-w-[116px] flex-col gap-0.5 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] ${
+                className={`anim-enter pointer-events-auto absolute z-30 flex min-w-[136px] flex-col gap-0.5 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)] ${
                   align === 'right' ? 'right-0' : 'left-0'
                 } ${forkOpenUp ? 'bottom-full pb-1' : 'top-full pt-1'}`}
               >
@@ -589,6 +610,25 @@ export function MessageRowActions({
                     <span>{t(`transcript.branch.seed.${mode}`)}</span>
                   </button>
                 ))}
+                {onBranch !== undefined ? (
+                  <>
+                    <div role="separator" className="my-0.5 h-px bg-hairline" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-row-branch-here
+                      disabled={forkDisabled}
+                      onClick={() => {
+                        setForkMenuOpen(false);
+                        setMenuOpen(false);
+                        onBranch();
+                      }}
+                      className={MENU_ITEM}
+                    >
+                      <span>{t('fork.row.branchHere')}</span>
+                    </button>
+                  </>
+                ) : null}
               </div>
             ) : null}
           </span>
@@ -630,6 +670,7 @@ export function MessageRowActions({
           {menuItems}
         </div>
       )}
+      </span>
     </span>
   );
 }

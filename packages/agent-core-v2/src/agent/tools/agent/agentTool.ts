@@ -864,14 +864,25 @@ export class SubagentTool implements ISubagentTool {
   private async waitForAgent(wait: Extract<import('#/tool/toolContract').ExecutionTaskWait, { kind: 'agent' }>, ctx: ExecutableToolContext): Promise<ExecutableToolResult> {
     const { taskId, handle, runLabel, timeoutMs } = wait;
     const pause = ctx.executionPauseSignal;
-    const signal = pause === undefined ? ctx.signal : AbortSignal.any([ctx.signal, pause]);
     const steer = this.isMainCaller ? ctx.steerSignal : undefined;
-    const detach = (): void => { if (!signal.aborted) this.tasks.detach(taskId); };
+    const detach = (): void => { if (!ctx.signal.aborted && pause?.aborted !== true) this.tasks.detach(taskId); };
+    const cancelForeground = (): void => {
+      const current = this.tasks.getTask(taskId);
+      if (current === undefined || current.detached) return;
+      if (current.status !== 'running') return;
+      const reason = ctx.signal.reason;
+      const stopTask = isUserCancellation(reason)
+        ? this.tasks.stopByUser(taskId)
+        : this.tasks.stop(taskId, reason instanceof Error ? reason.message : reason === undefined ? undefined : String(reason));
+      void stopTask.catch(() => {});
+    };
     steer?.addEventListener('abort', detach, { once: true });
+    ctx.signal.addEventListener('abort', cancelForeground, { once: true });
     try {
       if (steer?.aborted === true) detach();
-      signal.throwIfAborted();
-      const release = await abortable(this.tasks.waitForForegroundRelease(taskId), signal);
+      if (ctx.signal.aborted) cancelForeground();
+      const releasePromise = this.tasks.waitForForegroundRelease(taskId);
+      const release = pause === undefined ? await releasePromise : await abortable(releasePromise, pause);
       if (release === 'detached' || release === 'timeout_detached') {
         const output = formatBackgroundAgentResult(taskId, handle, runLabel);
         return { allowsTurnEndWithSendMessage: true, output: this.withMainProfileNotice(handle, steer?.aborted === true
@@ -884,6 +895,7 @@ export class SubagentTool implements ISubagentTool {
       throw error;
     } finally {
       steer?.removeEventListener('abort', detach);
+      ctx.signal.removeEventListener('abort', cancelForeground);
     }
   }
 

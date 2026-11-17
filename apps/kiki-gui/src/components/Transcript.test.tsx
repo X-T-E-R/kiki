@@ -12244,3 +12244,177 @@ describe('phone mode pending tray records (#26)', () => {
     expect(records[0]?.textContent).toContain('1 item needs you');
   });
 });
+
+describe('virtualizer scroll row-measurement guards and compact assistant row actions', () => {
+  it('guards ResizeObserver measurements against render-phase getItemKey drift when data-row-key disagrees', async () => {
+    const { guardTranscriptRowMeasure, measureMountedTranscriptRow } = await import('./timeline/virtualLayoutSync');
+    const element = document.createElement('div');
+    element.dataset['index'] = '2';
+    element.dataset['rowKey'] = 'row-old';
+    Object.defineProperty(element, 'offsetHeight', { configurable: true, value: 14 });
+    document.body.append(element);
+
+    const scrollEl = document.createElement('div');
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, value: 600 });
+    document.body.append(scrollEl);
+
+    const itemSizeCache = new Map<string, number>([['row-new', 175]]);
+    const resized: Array<{ index: number; size: number }> = [];
+    const instance = {
+      indexFromElement: () => 2,
+      options: {
+        count: 5,
+        getItemKey: (idx: number) => (idx === 2 ? 'row-new' : `row-${idx}`),
+        estimateSize: () => 120,
+        scrollMargin: 24,
+      },
+      itemSizeCache,
+      elementsCache: new Map<string, HTMLDivElement>(),
+      scrollElement: scrollEl,
+      isScrolling: true,
+      measureElement: (el: HTMLDivElement) => {
+        // Simulates @tanstack/virtual-core skipping synchronous measurement while isScrolling === true.
+        instance.elementsCache.set('row-matched', el);
+      },
+      resizeItem: (index: number, size: number) => {
+        resized.push({ index, size });
+        itemSizeCache.set('row-matched', size);
+      },
+    } as unknown as Parameters<typeof guardTranscriptRowMeasure>[2];
+
+    // Stale DOM node with data-row-key="row-old" must NOT overwrite "row-new"'s 175px cached height with 14px.
+    expect(guardTranscriptRowMeasure(element, undefined, instance)).toBe(175);
+
+    // Matching data-row-key measures synchronously even while instance.isScrolling === true.
+    const matchedEl = document.createElement('div');
+    matchedEl.dataset['index'] = '3';
+    matchedEl.dataset['rowKey'] = 'row-matched';
+    Object.defineProperty(matchedEl, 'offsetHeight', { configurable: true, value: 184 });
+    document.body.append(matchedEl);
+
+    (instance.options as { getItemKey: (idx: number) => string }).getItemKey = (idx: number) =>
+      (idx === 3 ? 'row-matched' : `row-${idx}`);
+    measureMountedTranscriptRow(matchedEl, 3, 'row-matched', instance);
+
+    expect(resized).toEqual([{ index: 3, size: 184 }]);
+    expect(itemSizeCache.get('row-matched')).toBe(184);
+
+    element.remove();
+    matchedEl.remove();
+    scrollEl.remove();
+  });
+
+  it('zeros unlayered .kiki-md edge margins on [data-assistant-prose] and renders MessageRowActions as a zero-height overlay', async () => {
+    const state = transcriptState([
+      {
+        id: 'assistant-prose-tight',
+        kind: 'assistant',
+        text: 'Compact paper-and-ink prose row.',
+        streaming: false,
+      } as unknown as Block,
+    ]);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state));
+
+    const prose = container.querySelector<HTMLElement>('[data-assistant-prose]')!;
+    expect(prose).not.toBeNull();
+    expect(prose.className).toContain('[&_.kiki-md:not(.kiki-md--edges)>div>*:first-child]:!mt-0');
+    expect(prose.className).toContain('[&_.kiki-md:not(.kiki-md--edges)>div>*:last-child]:!mb-0');
+
+    const actions = container.querySelector<HTMLElement>('[data-row-actions]')!;
+    expect(actions).not.toBeNull();
+    expect(actions.className).toContain('absolute');
+    expect(actions.className).toContain('top-full');
+    expect(actions.className).toContain('-mt-1.5');
+
+    const vItem = prose.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    expect(vItem.className).toContain('hover:z-20');
+    expect(vItem.className).toContain('focus-within:z-20');
+    expect(vItem.className).toContain('has-[[data-actions-open]]:z-20');
+    expect(vItem.className).toContain('has-[[data-row-menu-open]]:z-20');
+  });
+
+  it('batches all offsetHeight reads before any style.top writes in syncTranscriptVirtualDom', async () => {
+    const { syncTranscriptVirtualDom } = await import('./timeline/virtualLayoutSync');
+    const ops: string[] = [];
+
+    const scroll = document.createElement('div');
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => { ops.push('read:clientHeight'); return 600; } });
+    const content = document.createElement('div');
+    content.setAttribute('data-transcript-virtual-content', '');
+    scroll.append(content);
+    document.body.append(scroll);
+
+    const heights = [64, 152, 28];
+    const rows = heights.map((h, idx) => {
+      const row = document.createElement('div');
+      row.setAttribute('data-transcript-virtual-item', '');
+      row.dataset['index'] = String(idx);
+      row.dataset['rowKey'] = `row-${idx}`;
+      Object.defineProperty(row, 'offsetHeight', {
+        configurable: true,
+        get: () => { ops.push(`read:row-${idx}`); return h; },
+      });
+      const rawStyle = row.style;
+      let topVal = '';
+      Object.defineProperty(rawStyle, 'top', {
+        configurable: true,
+        get: () => topVal,
+        set: (val: string) => { ops.push(`write:row-${idx}`); topVal = val; },
+      });
+      content.append(row);
+      return row;
+    });
+
+    const itemSizeCache = new Map<string, number>();
+    const elementsCache = new Map<string, HTMLDivElement>();
+    const measurementsCache = heights.map((_, idx) => ({ index: idx, key: `row-${idx}`, start: 24 + idx * 120, size: 120, end: 24 + (idx + 1) * 120, lane: 0 }));
+
+    const onChangeSpy = vi.fn(() => { ops.push('callback:onChange'); });
+    const instance = {
+      indexFromElement: (el: Element) => Number((el as HTMLElement).dataset['index'] ?? -1),
+      options: {
+        count: rows.length,
+        getItemKey: (idx: number) => `row-${idx}`,
+        estimateSize: () => 120,
+        scrollMargin: 24,
+        onChange: onChangeSpy,
+      },
+      itemSizeCache,
+      elementsCache,
+      measurementsCache,
+      scrollElement: scroll,
+      isScrolling: false,
+      measureElement: (el: HTMLDivElement) => {
+        const idx = Number(el.dataset['index']);
+        elementsCache.set(`row-${idx}`, el);
+        instance.options.onChange?.(instance as never, false);
+      },
+      resizeItem: (idx: number, size: number) => {
+        itemSizeCache.set(`row-${idx}`, size);
+        let cursor = 24;
+        for (let i = 0; i < measurementsCache.length; i += 1) {
+          const s = itemSizeCache.get(`row-${i}`) ?? 120;
+          measurementsCache[i] = { ...measurementsCache[i]!, start: cursor, size: s, end: cursor + s };
+          cursor += s + 16;
+        }
+        instance.options.onChange?.(instance as never, false);
+      },
+      getTotalSize: () => measurementsCache.at(-1)!.end,
+      getVirtualItems: () => measurementsCache,
+    } as unknown as Parameters<typeof syncTranscriptVirtualDom>[1];
+
+    syncTranscriptVirtualDom(scroll, instance);
+
+    const firstWriteIdx = ops.findIndex((entry) => entry.startsWith('write:'));
+    const lastReadIdx = ops.reduce((acc, entry, i) => (entry.startsWith('read:') ? i : acc), -1);
+    expect(firstWriteIdx).toBeGreaterThan(0);
+    expect(lastReadIdx).toBeLessThan(firstWriteIdx);
+    // `onChange` is silenced across all 3 `measureElement` + 3 `resizeItem` calls and invoked exactly ONCE after batch writes!
+    expect(onChangeSpy).toHaveBeenCalledTimes(1);
+    expect(ops.at(-1)).toBe('callback:onChange');
+    expect(rows.map((r) => r.style.top)).toEqual(['0px', '80px', '248px']);
+
+    scroll.remove();
+  });
+});

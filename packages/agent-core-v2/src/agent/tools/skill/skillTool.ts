@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { assertPluginSkillUsage } from '#/agent/skill/pluginSkillUsage';
@@ -12,7 +13,8 @@ import { ToolAccesses } from '#/tool/toolContract';
 import { isPromptCommandPath, parseSkillText } from '#/app/skillCatalog/parser';
 import type { SkillCatalog, SkillDefinition } from '#/app/skillCatalog/types';
 
-import type { SkillActivationOrigin } from '#/agent/contextMemory/types';
+import type { ContextMessage, SkillActivationOrigin } from '#/agent/contextMemory/types';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentSkillService } from '#/agent/skill/skill';
 import { renderModelToolSkillPrompt } from '#/agent/skill/prompt';
 import type { ExecutableToolResult, ToolDeliveryMessage, ToolExecution } from '#/tool/toolContract';
@@ -25,6 +27,8 @@ import { matchesGlobRuleSubject, matchesStringRuleSubject } from '#/tool/rule-ma
 
 import {
   ISkillTool,
+  MAX_SKILL_QUERY_DEPTH,
+  NestedSkillTooDeepError,
   SkillToolInputSchema,
   type SkillToolInput,
 } from './skill';
@@ -38,6 +42,8 @@ export class SkillTool implements ISkillTool {
     schema['oneOf'] = [{ required: ['skill'] }, { required: ['path'] }];
   });
 
+  private queryDepth: number = 0;
+
   constructor(
     @ISessionSkillCatalog private readonly catalog: ISessionSkillCatalog,
     @IAgentSkillService private readonly skill: IAgentSkillService,
@@ -46,6 +52,7 @@ export class SkillTool implements ISkillTool {
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @IPluginService private readonly plugins?: IPluginService,
     @IPluginUsageService private readonly usage?: IPluginUsageService,
+    @ref(IAgentContextMemoryService) private readonly contextMemory?: LiveRef<IAgentContextMemoryService>,
   ) {}
 
   async resolveExecution(args: SkillToolInput): Promise<ToolExecution> {
@@ -116,12 +123,22 @@ export class SkillTool implements ISkillTool {
             promptCommand: isPromptCommandPath(lexicalPath),
             text: await lease.runtime.fs!.readText(actualPath),
           });
-          return await executeModelSkill(this.catalog, this.skill, args, this.sessionContext.sessionId, definition);
+          return await executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, definition);
         } finally {
           lease.dispose();
         }
       },
     };
+  }
+
+  withInitialQueryDepth(initialQueryDepth: number): SkillTool {
+    const clone = new SkillTool(this.catalog, this.skill, this.sessionContext, this.runtime, this.workspace, this.plugins, this.usage, this.contextMemory);
+    clone.queryDepth = initialQueryDepth;
+    return clone;
+  }
+
+  private effectiveQueryDepth(): number {
+    return Math.max(this.queryDepth, consecutiveSkillChainDepth(this.contextMemory?.current?.get()));
   }
 
   private async execution(args: SkillToolInput): Promise<ExecutableToolResult> {
@@ -139,19 +156,86 @@ export class SkillTool implements ISkillTool {
       }
       catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
     }
-    return executeModelSkill(this.catalog, this.skill, args, this.sessionContext.sessionId);
+    return executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId);
   }
 }
 
 registerAgentToolService(ISkillTool, SkillTool, { name: 'Skill', domain: 'skill' });
 
+function consecutiveSkillChainDepth(messages: readonly ContextMessage[] | undefined): number {
+  if (messages === undefined || messages.length === 0) return 0;
+  const isInjection = (msg: ContextMessage): boolean =>
+    msg.origin?.kind === 'injection' ||
+    msg.origin?.kind === 'retry' ||
+    (msg.role === 'assistant' && msg.toolCalls.length === 0 && msg.content.every((part) => part.type === 'think'));
+  let i = messages.length - 1;
+  while (i >= 0 && isInjection(messages[i]!)) i -= 1;
+  let currentStepCursor = i;
+  while (currentStepCursor >= 0 && (isInjection(messages[currentStepCursor]!) || messages[currentStepCursor]!.role === 'tool')) {
+    currentStepCursor -= 1;
+  }
+  if (
+    currentStepCursor >= 0 &&
+    messages[currentStepCursor]!.role === 'assistant' &&
+    messages[currentStepCursor]!.toolCalls.some((tc) => tc.name === 'Skill')
+  ) {
+    i = currentStepCursor - 1;
+  }
+  let depth = 0;
+  while (i >= 0) {
+    while (i >= 0 && isInjection(messages[i]!)) i -= 1;
+    if (i < 0) break;
+    const candidate = messages[i]!;
+    if (candidate.role === 'user' && candidate.origin?.kind === 'skill_activation') {
+      while (
+        i >= 0 &&
+        (isInjection(messages[i]!) || (messages[i]!.role === 'user' && messages[i]!.origin?.kind === 'skill_activation'))
+      ) {
+        i -= 1;
+      }
+      depth += 1;
+      while (i >= 0 && isInjection(messages[i]!)) i -= 1;
+      if (i >= 0 && messages[i]!.role === 'tool') {
+        while (i >= 0 && (isInjection(messages[i]!) || messages[i]!.role === 'tool')) i -= 1;
+        if (i >= 0 && messages[i]!.role === 'assistant') i -= 1;
+        continue;
+      }
+      break;
+    }
+    if (candidate.role === 'tool') {
+      while (i >= 0 && (isInjection(messages[i]!) || messages[i]!.role === 'tool')) i -= 1;
+      const stepAssistant = i >= 0 ? messages[i] : undefined;
+      if (
+        stepAssistant?.role === 'assistant' &&
+        stepAssistant.toolCalls.length > 0 &&
+        stepAssistant.toolCalls.every((tc) => tc.name === 'Skill')
+      ) {
+        i -= 1;
+        continue;
+      }
+      break;
+    }
+    if (candidate.role === 'user' && candidate.origin?.kind === 'user' && (candidate.origin.skillActivations?.length ?? 0) > 0) {
+      depth += 1;
+    }
+    break;
+  }
+  return depth;
+}
+
 export async function executeModelSkill(
   catalog: ISessionSkillCatalog,
   skillService: IAgentSkillService,
   args: SkillToolInput,
+  queryDepth: number,
   sessionId: string,
   explicitDefinition?: SkillDefinition,
 ): Promise<ExecutableToolResult> {
+  const currentDepth = queryDepth;
+  if (currentDepth >= MAX_SKILL_QUERY_DEPTH) {
+    throw new NestedSkillTooDeepError(MAX_SKILL_QUERY_DEPTH, args.skill ?? args.path);
+  }
+
   await catalog.ready;
   const skill = explicitDefinition ?? (args.skill === undefined ? undefined : catalog.catalog.getSkill(args.skill));
   if (skill === undefined) {
@@ -169,7 +253,7 @@ export async function executeModelSkill(
   }
 
   const skillArgs = args.args ?? '';
-  const trigger = 'model-tool';
+  const trigger = currentDepth > 0 ? 'nested-skill' : 'model-tool';
   const origin: SkillActivationOrigin = {
     kind: 'skill_activation',
     activationId: randomUUID(),

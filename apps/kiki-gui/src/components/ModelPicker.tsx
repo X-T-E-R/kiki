@@ -8,7 +8,7 @@
  * saving a configuration never drops unknown or external-engine IDs.
  */
 
-import { useMemo, type ReactNode } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 import type { ModelCatalogItem } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
@@ -17,6 +17,9 @@ import { SearchableSelect, type SearchableSelectOption } from './SearchableSelec
 import { FORM_SELECT_TRIGGER } from './settings/SettingsPrimitives';
 
 type Translate = ReturnType<typeof useI18n>['t'];
+
+const EMPTY_CATALOG_MODELS: readonly ModelCatalogItem[] = [];
+const EMPTY_SELECT_OPTIONS: readonly SearchableSelectOption[] = [];
 
 export function buildModelPickerOptions(
   models: readonly ModelCatalogItem[],
@@ -144,7 +147,7 @@ export type ModelPickerProps = SingleModelPickerProps | MultiModelPickerProps;
 export function ModelPicker(props: ModelPickerProps) {
   const {
     id,
-    models = [],
+    models = EMPTY_CATALOG_MODELS,
     options: explicitOptions,
     allowInherit = false,
     allowCustomValue = true,
@@ -193,26 +196,65 @@ export function ModelPicker(props: ModelPickerProps) {
     [isMultiple, props.value, props.values],
   );
 
-  const options = useMemo(
-    () => explicitOptions ?? buildModelPickerOptions(models, t, {
-      allowInherit,
-      unsetLabel,
-      unsetDescription,
-      unsetGroup,
-      unsetKeywords,
-      groupLabel,
-      currentId,
-      preserveValues,
-    }),
-    [explicitOptions, models, t, allowInherit, unsetLabel, unsetDescription, unsetGroup, unsetKeywords, groupLabel, currentId, preserveValues],
+  const catalogOptions = useMemo(
+    () => (explicitOptions !== undefined
+      ? EMPTY_SELECT_OPTIONS
+      : buildCatalogModelOptions(models, t, { groupLabel, currentId })),
+    [explicitOptions, models, t, groupLabel, currentId],
   );
+
+  const catalogKnownIds = useMemo(
+    () => (explicitOptions !== undefined ? undefined : new Set(catalogOptions.map((option) => option.value))),
+    [explicitOptions, catalogOptions],
+  );
+
+  const options = useMemo(() => {
+    if (explicitOptions !== undefined) return explicitOptions;
+    const known = new Set<string>(catalogKnownIds);
+    if (unsetLabel !== undefined) known.add('');
+    if (allowInherit) known.add('inherit');
+
+    const missingOptions: SearchableSelectOption[] = [];
+    for (const raw of preserveValues) {
+      const idVal = raw.trim();
+      if (idVal === '' || known.has(idVal)) continue;
+      known.add(idVal);
+      missingOptions.push({
+        value: idVal,
+        label: idVal,
+        badges: [{ label: t('st.profiles.aliasMissingShort'), tone: 'caution' }],
+        title: t('st.profiles.aliasMissingTitle', { alias: idVal }),
+        keywords: idVal,
+      });
+    }
+
+    if (unsetLabel === undefined && !allowInherit && missingOptions.length === 0) {
+      return catalogOptions;
+    }
+
+    return [
+      ...(unsetLabel === undefined ? [] : [{
+        value: '',
+        label: unsetLabel,
+        description: unsetDescription,
+        group: unsetGroup,
+        keywords: unsetKeywords,
+      }]),
+      ...(allowInherit ? [{
+        value: 'inherit',
+        label: t('st.namedAgents.followCallerModel'),
+        description: t('st.namedAgents.followCallerModelHint'),
+      }] : []),
+      ...missingOptions,
+      ...catalogOptions,
+    ];
+  }, [explicitOptions, catalogOptions, catalogKnownIds, t, allowInherit, unsetLabel, unsetDescription, unsetGroup, unsetKeywords, preserveValues]);
 
   const hasMissingSelection = useMemo(() => {
     if (missing !== undefined) return missing;
-    if (explicitOptions !== undefined || models.length === 0) return false;
-    const known = new Set(models.map((item) => item.id));
-    return preserveValues.some((val) => val !== '' && val !== 'inherit' && !known.has(val));
-  }, [missing, explicitOptions, models, preserveValues]);
+    if (explicitOptions !== undefined || models.length === 0 || catalogKnownIds === undefined) return false;
+    return preserveValues.some((val) => val !== '' && val !== 'inherit' && !catalogKnownIds.has(val));
+  }, [missing, explicitOptions, models.length, catalogKnownIds, preserveValues]);
 
   const resolvedSuffix = triggerSuffix ?? (
     hasMissingSelection
@@ -223,7 +265,8 @@ export function ModelPicker(props: ModelPickerProps) {
   const resolvedClassName = buttonClassName
     ?? `${FORM_SELECT_TRIGGER} ${hasMissingSelection ? 'border-amber-ink/50' : ''}`;
 
-  const customLabel = customValueLabel ?? ((val: string) => t('select.useCustom', { value: val }));
+  const defaultCustomLabel = useCallback((val: string) => t('select.useCustom', { value: val }), [t]);
+  const customLabel = customValueLabel ?? defaultCustomLabel;
   const resolvedTriggerData = useMemo(
     () => ({ 'data-model-picker': '', ...triggerData }),
     [triggerData],

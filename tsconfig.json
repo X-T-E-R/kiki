@@ -4,7 +4,7 @@
     "module": "preserve",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "lib": ["ES2023"],
+    "lib": ["ES2024"],
     "jsx": "react-jsx",
     "jsxImportSource": "react",
 

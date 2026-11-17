@@ -1,3 +1,4 @@
+import { isSensitiveFile } from '#/_base/security/sensitiveFile';
 import type { FsGrepRequest } from '../fs';
 
 export { computeFuzzyScore } from '#/_base/text/fuzzy';
@@ -219,6 +220,7 @@ export function evaluateSuggestCandidate(
 ): SuggestCandidate | null {
   const segments = relPath.split('/');
   if (segments.some((s) => VCS_METADATA_DIRS.has(s))) return null;
+  if (kind !== 'directory' && isSensitiveFile(relPath)) return null;
   if (!query.showHidden && segments.some((s) => s.startsWith('.'))) return null;
   const name = segments[segments.length - 1]!;
   const pathMode = query.pathSegments.length > 0;

@@ -25,7 +25,7 @@ import {
 import { renderNotificationXml } from '#/agent/task/notificationXml';
 import { runningSubagentStatus } from '#/agent/task/runningSubagentStatus';
 import { AgentTaskService, taskNotificationDeliveryKey } from '#/agent/task/taskService';
-import { TaskNotified, TaskStarted, TaskTerminated, TaskWaitDelivered } from '#/agent/task/taskOps';
+import { TaskNotified, TaskRestorationSettled, TaskStarted, TaskTerminated, TaskWaitDelivered } from '#/agent/task/taskOps';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import { BashTool } from '#/agent/tools/os/bash/bashTool';
 import { SubagentTool } from '#/agent/tools/agent/agentTool';
@@ -62,8 +62,8 @@ import { TaskWaitTool } from '#/agent/tools/task/task-wait/taskWaitTool';
 import { IWireService } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { IEventBus } from '#/app/event/eventBus';
-import { Event } from '#/_base/event';
-import { createTestAgent, sessionService } from '../../harness';
+import { Emitter, Event } from '#/_base/event';
+import { createTestAgent, sessionService, taskServices } from '../../harness';
 import { AgentTaskPersistence } from '#/agent/task/persist';
 import { createWireMetadataRecord } from '#/wire/record';
 import { EventBusService } from '#/app/event/eventBusService';
@@ -3191,4 +3191,317 @@ it('restores the exact completed foreground wait before release without listing 
     expect(list.mock.calls.filter(([scope]) => scope.endsWith('/tasks'))).toHaveLength(0);
     expect(fx.llmCalls).toHaveLength(0);
   } finally { list.mockRestore(); await fx.dispose(); }
+});
+
+describe('AgentTaskService restoration retry and paused agent settlement', () => {
+  it('retains restorePending and retries resumeRestoration after loadFromDisk failure', async () => {
+    const fx = createTestAgent(taskServices());
+    const docs = fx.get(IAtomicDocumentStore);
+    const fs = fx.get(IFileSystemStorageService);
+    const session = fx.get(ISessionContext);
+    const persistence = new AgentTaskPersistence(
+      `${session.sessionDir}/agents/main`,
+      fx.get(IAgentScopeContext).scope(),
+      docs,
+      fs,
+    );
+    await persistence.writeTask({
+      kind: 'agent', taskId: 'agent-retry001', agentId: 'child-retry',
+      description: 'interrupted work', executorId: 'native', executorProtocol: 'native',
+      status: 'running', detached: true, ownerAgentId: 'main', startedAt: 1, endedAt: null,
+    });
+    const records = await fx.persistedWireRecords();
+    await fx.dispose();
+    const restored = createTestAgent(
+      sessionService(IAtomicDocumentStore, docs),
+      sessionService(IFileSystemStorageService, fs),
+      taskServices(),
+    );
+    restored.mockNextResponse({ type: 'text', text: 'Acknowledged retry.' });
+    const tasks = restored.get(IAgentTaskService) as TaskServiceTestManager;
+    const settledEvents: unknown[] = [];
+    const sub = restored.get(IEventBus).subscribe(TaskRestorationSettled, (event) => { settledEvents.push(event); });
+    const originalList = docs.list.bind(docs);
+    let failOnce = true;
+    vi.spyOn(docs, 'list').mockImplementation(async (scope, opts) => {
+      if (failOnce && scope.endsWith('/tasks')) {
+        failOnce = false;
+        throw new Error('transient task_load failure');
+      }
+      return originalList(scope, opts);
+    });
+    try {
+      await expect(restored.restore(records)).rejects.toThrow('transient task_load failure');
+      expect(tasks.hasUnfinishedWork()).toBe(true);
+      expect(settledEvents).toHaveLength(0);
+      await tasks.resumeRestoration!();
+      expect(settledEvents).toHaveLength(1);
+      expect(tasks.getTask('agent-retry001')?.status).toBe('lost');
+      await vi.waitFor(() => expect(tasks.hasUnfinishedWork()).toBe(false));
+    } finally {
+      sub.dispose();
+      await restored.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('settlePausedAgentTask adopts a committed outcome or kills an unconfirmed task with diagnostic', async () => {
+    const fx = createTestAgent(taskServices());
+    const tasks = fx.get(IAgentTaskService) as TaskServiceTestManager;
+    const docs = fx.get(IAtomicDocumentStore);
+    const session = fx.get(ISessionContext);
+    const persistence = new AgentTaskPersistence(
+      `${session.sessionDir}/agents/main`,
+      fx.get(IAgentScopeContext).scope(),
+      docs,
+      fx.get(IFileSystemStorageService),
+    );
+    await persistence.writeTask({
+      kind: 'agent', taskId: 'agent-adopted1', agentId: 'child-adopted',
+      description: 'committed before pause', executorId: 'native', executorProtocol: 'native',
+      status: 'running', detached: true, ownerAgentId: 'main', startedAt: 1, endedAt: null,
+      terminalNotificationSuppressed: true,
+    });
+    await persistence.writeTask({
+      kind: 'agent', taskId: 'agent-unresume', agentId: 'child-unresumed',
+      description: 'stopped before pause point', executorId: 'native', executorProtocol: 'native',
+      status: 'running', detached: true, ownerAgentId: 'main', startedAt: 2, endedAt: null,
+      terminalNotificationSuppressed: true,
+    });
+    await fx.get(ISessionMetadata).registerAgent('child-adopted', {
+      type: 'sub', parentAgentId: 'main', status: 'completed',
+      taskId: 'agent-adopted1', resultSummary: 'adopted summary', completedAt: 55,
+    });
+    try {
+      await tasks.loadFromDisk();
+      fx.mockNextResponse({ type: 'text', text: 'Notified parent.' });
+      const adopted = await tasks.settlePausedAgentTask!('agent-adopted1', 'Execution ended before the pause point and was not resumed.');
+      expect(adopted).toMatchObject({ status: 'completed', receiptVerification: 'verified', terminalNotificationSuppressed: undefined });
+      expect(await tasks.readOutput('agent-adopted1')).toBe('adopted summary');
+      const killed = await tasks.settlePausedAgentTask!('agent-unresume', 'Execution ended before the pause point and was not resumed.');
+      expect(killed).toMatchObject({
+        status: 'killed',
+        receiptVerification: 'verified',
+        terminalNotificationSuppressed: undefined,
+        stopReason: 'Execution ended before the pause point and was not resumed.',
+      });
+    } finally {
+      await fx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('stopAllOnExit preserves running agent tasks whose child is in paused requiredAgents', async () => {
+    const changed = new Emitter<Parameters<Parameters<ISessionExecutionControl['onDidChange']>[0]>[0]>();
+    const fx = createTestAgent(
+      sessionService(ISessionExecutionControl, {
+        ...stubExecutionControl(),
+        onDidChange: changed.event,
+        isHeld: () => true,
+        resumePoint: () => undefined,
+        isParked: () => false,
+      }),
+    );
+    await fx.get(IAtomicDocumentStore).set(fx.get(ISessionContext).scope(), 'execution-control.json', { requiredAgents: ['child-paused'] });
+    changed.fire({ phase: 'paused', agents: [] } as Parameters<Parameters<ISessionExecutionControl['onDidChange']>[0]>[0]);
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    const tasks = fx.get(IAgentTaskService) as TaskServiceTestManager;
+    const completion = new Promise<{ result: string }>(() => {});
+    const taskId = tasks.registerTask(new SubagentTask({
+      agentId: 'child-paused', profileName: 'coder', completion,
+    }, 'paused child without checkpoint', new AbortController()), { detached: true });
+    try {
+      await tasks.stopAllOnExit('exit');
+      expect(tasks.getTask(taskId)?.status).toBe('running');
+      expect(tasks.getTask(taskId)?.terminalNotificationSuppressed).toBeUndefined();
+    } finally {
+      changed.dispose();
+      await fx.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('self-heals resumeRestoration via backoff when no second caller retries and converges busy after permanent failure', async () => {
+    const fx = createTestAgent(taskServices());
+    const docs = fx.get(IAtomicDocumentStore);
+    const fs = fx.get(IFileSystemStorageService);
+    const session = fx.get(ISessionContext);
+    const persistence = new AgentTaskPersistence(
+      `${session.sessionDir}/agents/main`,
+      fx.get(IAgentScopeContext).scope(),
+      docs,
+      fs,
+    );
+    await persistence.writeTask({
+      kind: 'agent', taskId: 'agent-autoheal', agentId: 'child-autoheal',
+      description: 'auto-healed interrupted work', executorId: 'native', executorProtocol: 'native',
+      status: 'running', detached: true, ownerAgentId: 'main', startedAt: 1, endedAt: null,
+    });
+    const records = await fx.persistedWireRecords();
+    await fx.dispose();
+
+    const restored = createTestAgent(
+      sessionService(IAtomicDocumentStore, docs),
+      sessionService(IFileSystemStorageService, fs),
+      taskServices(),
+    );
+    restored.mockNextResponse({ type: 'text', text: 'Auto-healed notification.' });
+    const tasks = restored.get(IAgentTaskService) as TaskServiceTestManager;
+    const settledEvents: unknown[] = [];
+    const sub = restored.get(IEventBus).subscribe(TaskRestorationSettled, (event) => { settledEvents.push(event); });
+    const originalList = docs.list.bind(docs);
+    let failCount = 1;
+    const listSpy = vi.spyOn(docs, 'list').mockImplementation(async (scope, opts) => {
+      if (failCount > 0 && scope.endsWith('/tasks')) {
+        failCount -= 1;
+        throw new Error('transient unretried task_load failure');
+      }
+      return originalList(scope, opts);
+    });
+    try {
+      await expect(restored.restore(records)).rejects.toThrow('transient unretried task_load failure');
+      expect(tasks.hasUnfinishedWork()).toBe(true);
+      await vi.waitFor(() => expect(settledEvents).toHaveLength(1), { timeout: 2_000 });
+      expect(tasks.getTask('agent-autoheal')?.status).toBe('lost');
+      await vi.waitFor(() => expect(tasks.hasUnfinishedWork()).toBe(false), { timeout: 2_000 });
+    } finally {
+      listSpy.mockRestore();
+      sub.dispose();
+      await restored.dispose();
+    }
+
+    const exhausted = createTestAgent(
+      sessionService(IAtomicDocumentStore, docs),
+      sessionService(IFileSystemStorageService, fs),
+      taskServices(),
+    );
+    const exhaustedTasks = exhausted.get(IAgentTaskService) as TaskServiceTestManager;
+    const alwaysFail = vi.spyOn(docs, 'list').mockImplementation(async (scope, opts) => {
+      if (scope.endsWith('/tasks')) throw new Error('permanent task_load failure');
+      return originalList(scope, opts);
+    });
+    try {
+      await expect(exhausted.restore(records)).rejects.toThrow('permanent task_load failure');
+      expect(exhaustedTasks.hasUnfinishedWork()).toBe(true);
+      await vi.waitFor(() => expect(exhaustedTasks.hasUnfinishedWork()).toBe(false), { timeout: 5_000 });
+    } finally {
+      alwaysFail.mockRestore();
+      await exhausted.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('emits TaskTerminated exactly once per ghost across partial reconcile persistence failures', async () => {
+    const fx = createTestAgent(taskServices());
+    const docs = fx.get(IAtomicDocumentStore);
+    const fs = fx.get(IFileSystemStorageService);
+    const session = fx.get(ISessionContext);
+    const persistence = new AgentTaskPersistence(
+      `${session.sessionDir}/agents/main`,
+      fx.get(IAgentScopeContext).scope(),
+      docs,
+      fs,
+    );
+    await persistence.writeTask({
+      kind: 'agent', taskId: 'agent-partial1', agentId: 'child-p1',
+      description: 'first ghost', executorId: 'native', executorProtocol: 'native',
+      status: 'running', detached: true, ownerAgentId: 'main', startedAt: 1, endedAt: null,
+    });
+    await persistence.writeTask({
+      kind: 'agent', taskId: 'agent-partial2', agentId: 'child-p2',
+      description: 'second ghost', executorId: 'native', executorProtocol: 'native',
+      status: 'running', detached: true, ownerAgentId: 'main', startedAt: 2, endedAt: null,
+    });
+    const records = await fx.persistedWireRecords();
+    await fx.dispose();
+
+    const restored = createTestAgent(
+      sessionService(IAtomicDocumentStore, docs),
+      sessionService(IFileSystemStorageService, fs),
+      taskServices(),
+    );
+    restored.mockNextResponse({ type: 'text', text: 'Reconciled both ghosts.' });
+    const terminatedIds: string[] = [];
+    const sub = restored.get(IEventBus).subscribe(TaskTerminated, (event) => {
+      terminatedIds.push(event.info.taskId);
+    });
+    const originalSet = docs.set.bind(docs);
+    let failSecondCalls = 2;
+    const setSpy = vi.spyOn(docs, 'set').mockImplementation(async (scope, key, value) => {
+      if (failSecondCalls > 0 && key.includes('agent-partial2')) {
+        failSecondCalls -= 1;
+        throw new Error('transient write failure on second ghost');
+      }
+      return originalSet(scope, key, value);
+    });
+    try {
+      await expect(restored.restore(records)).rejects.toThrow('transient write failure on second ghost');
+      await vi.waitFor(() => {
+        expect(terminatedIds).toEqual(['agent-partial1']);
+      });
+      await restored.get(IAgentTaskService).resumeRestoration!();
+      await vi.waitFor(() => {
+        expect(terminatedIds).toEqual(['agent-partial1', 'agent-partial2']);
+      });
+      expect(restored.get(IAgentTaskService).getTask('agent-partial1')?.status).toBe('lost');
+      expect(restored.get(IAgentTaskService).getTask('agent-partial2')?.status).toBe('lost');
+    } finally {
+      setSpy.mockRestore();
+      sub.dispose();
+      await restored.dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('runningSubagentStatus excludes only the finished taskId and retains a continuation task on the same agentId', () => {
+    const activeTasks: AgentTaskInfo[] = [
+      {
+        taskId: 'agent-finisht1',
+        kind: 'agent',
+        description: 'finished slice',
+        status: 'running',
+        startedAt: 1,
+        endedAt: null,
+        detached: true,
+        agentId: 'child-reused',
+        collaborationTaskName: 'reused_worker',
+      },
+      {
+        taskId: 'agent-contint2',
+        kind: 'agent',
+        description: 'continuation slice',
+        status: 'running',
+        startedAt: 2,
+        endedAt: null,
+        detached: true,
+        agentId: 'child-reused',
+        collaborationTaskName: 'reused_worker',
+      },
+    ];
+    const handle: IAgentScopeHandle = {
+      kind: 'agent',
+      id: 'child-reused',
+      accessor: {
+        get: (token) => {
+          if (token === IAgentScopeContext) return { agentId: 'child-reused', parentAgentId: 'main' } as never;
+          if (token === IAgentExecutionService) return { status: () => ({ state: 'running' }) } as never;
+          if (token === IAgentLoopService) return { status: () => ({ persistenceFailure: undefined }) } as never;
+          return undefined as never;
+        },
+      },
+      dispose: () => {},
+    };
+    expect(runningSubagentStatus(
+      { list: () => activeTasks },
+      { list: () => [handle] },
+      'main',
+      'child-reused',
+      'en',
+      'agent-finisht1',
+    )).toBe('1 subagent still running: reused_worker');
+
+    expect(runningSubagentStatus(
+      { list: () => [activeTasks[0]!] },
+      { list: () => [handle] },
+      'main',
+      'child-reused',
+      'en',
+      'agent-finisht1',
+    )).toBeUndefined();
+  });
 });

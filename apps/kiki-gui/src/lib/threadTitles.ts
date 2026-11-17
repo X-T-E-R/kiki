@@ -31,7 +31,10 @@ const NO_SESSIONS: readonly Pick<Session, 'id' | 'title'>[] = [];
 /** One shared directory subscription per title surface; unknown links fetch once. */
 export function useThreadTitleResolver(texts: readonly string[], sessions: readonly Pick<Session, 'id' | 'title'>[] = NO_SESSIONS): (text: string) => string {
   const client = useOptionalConnection()?.client;
-  const fetchSession = useMemo(() => client === undefined ? undefined : (id: string) => client.getSession(id), [client]);
+  const fetchSession = useMemo(
+    () => typeof client?.getSession === 'function' ? (id: string) => client.getSession(id) : undefined,
+    [client],
+  );
   const supplied = useMemo(() => new Map(sessions.map((session) => [session.id, session.title])), [sessions]);
   const idsKey = JSON.stringify([...new Set(texts.flatMap((text) => findThreadRefs(text).map((ref) => ref.sessionId)))].filter((id) => !supplied.has(id)));
   const ids = useMemo(() => JSON.parse(idsKey) as string[], [idsKey]);
@@ -55,9 +58,14 @@ export interface SessionNameEntry {
  * single metadata read per id no list carries — never once per poll. Callers
  * keep the real id as the action target and render their own fallback label.
  */
-export function useSessionNames(ids: readonly string[]): (sessionId: string) => SessionNameEntry {
-  const client = useOptionalConnection()?.client;
-  const fetchSession = useMemo(() => client === undefined ? undefined : (id: string) => client.getSession(id), [client]);
+export function useSessionNamesWithClient(
+  ids: readonly string[],
+  client: { readonly getSession?: (id: string) => Promise<Session> } | null | undefined,
+): (sessionId: string) => SessionNameEntry {
+  const fetchSession = useMemo(
+    () => typeof client?.getSession === 'function' ? (id: string) => client.getSession!(id) : undefined,
+    [client],
+  );
   const key = ids.join('\n');
   const stableIds = useMemo(() => (key === '' ? [] : key.split('\n')), [key]);
   const directory = useThreadRefDirectory(stableIds, fetchSession);
@@ -70,6 +78,11 @@ export function useSessionNames(ids: readonly string[]): (sessionId: string) => 
       known: true,
     };
   }, [directory]);
+}
+
+export function useSessionNames(ids: readonly string[]): (sessionId: string) => SessionNameEntry {
+  const client = useOptionalConnection()?.client;
+  return useSessionNamesWithClient(ids, client);
 }
 
 export function useThreadTitle(text: string): string {

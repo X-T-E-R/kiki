@@ -1,76 +1,132 @@
-import { useId, useState } from 'react';
 import { formatGrouped } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
 import type { UsageResponseWire } from '../../lib/usageV2';
 import { Icon } from '../icons';
+import { AnchoredPopover, usePopover } from '../overlays/AnchoredPopover';
 
-export function UsageReliabilityDetails({ summary, reliability }: Pick<UsageResponseWire, 'summary' | 'reliability'>) {
-  const { t, locale } = useI18n();
-  const [open, setOpen] = useState(false);
-  const partialLabel = t('usage.reliability.unknown');
-  const detailsId = useId();
+export function UsageReliabilityDetails({
+  summary,
+  reliability,
+  onOpenPricing,
+}: Pick<UsageResponseWire, 'summary' | 'reliability'> & {
+  readonly onOpenPricing?: () => void;
+}) {
+  const { t, tp, locale } = useI18n();
+  const pop = usePopover();
   const coverage = reliability.usage_coverage;
   const missing = coverage?.missing_records ?? 0;
   const legacyZero = coverage?.legacy_zero_records ?? 0;
   const models = reliability.unknown_price_models;
-  const partial = !reliability.complete || summary.cost_unknown || summary.tokens_unknown === true || models.length > 0 ||
-    missing > 0 || legacyZero > 0 || reliability.incomplete_reason !== null || reliability.incomplete_sessions > 0;
+  const partial =
+    !reliability.complete ||
+    summary.cost_unknown ||
+    summary.tokens_unknown === true ||
+    models.length > 0 ||
+    missing > 0 ||
+    legacyZero > 0 ||
+    reliability.incomplete_reason !== null ||
+    reliability.incomplete_sessions > 0;
   const hasAccountingNotices = missing > 0 || legacyZero > 0 || models.length > 0 || summary.cost_unknown;
-  const formatDate = (ms: number) => new Date(ms).toLocaleDateString(locale === 'zh' ? 'zh-CN' : 'en', {
-    year: 'numeric', month: 'short', day: 'numeric',
-  });
+  const formatDate = (ms: number) =>
+    new Date(ms).toLocaleDateString(locale === 'zh' ? 'zh-CN' : 'en', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
   const { earliest_at: earliest, latest_at: latest } = reliability.coverage;
+  const summaryLabel = partial
+    ? t('usage.reliability.summaryPartial', { count: formatGrouped(reliability.scanned_sessions) })
+    : t('usage.reliability.summaryComplete', { count: formatGrouped(reliability.scanned_sessions) });
+  const tooltip = [
+    summaryLabel,
+    ...(models.length > 0 ? [tp('usage.reliability.unpriced', models.length)] : []),
+    ...(missing > 0 ? [t('usage.accounting.missing', { count: missing })] : []),
+  ].join(' · ');
 
   return (
-    <div data-usage-reliability-state={partial ? 'partial' : 'complete'}>
+    <div data-usage-reliability-state={partial ? 'partial' : 'complete'} className="inline-flex items-center">
       <button
         type="button"
         data-usage-reliability-toggle
-        aria-expanded={open}
-        aria-controls={detailsId}
-        onClick={() => { setOpen(!open); }}
-        className="inline-flex min-h-8 items-center gap-1.5 rounded-sm text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink"
+        ref={pop.anchorRef}
+        aria-haspopup="dialog"
+        aria-expanded={pop.open}
+        aria-controls={pop.open ? pop.popoverProps.id : undefined}
+        aria-label={tooltip}
+        title={tooltip}
+        onClick={() => { pop.setOpen((current) => !current); }}
+        className={`flex h-8 w-8 items-center justify-center rounded-md border border-transparent transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11 ${
+          partial ? 'text-amber-ink' : 'text-ink-faint hover:text-ink'
+        }`}
       >
-        {partial ? (
-          <span role="img" title={partialLabel} aria-label={partialLabel} className="inline-flex text-ink-faint">
-            <Icon name="partial" size={12} />
-          </span>
-        ) : null}
-        {t('usage.reliability.title')}
-        <Icon name="chevron" size={12} className={`text-ink-faint ${open ? 'rotate-90' : ''}`} />
+        <Icon name={partial ? 'partial' : 'info'} size={14} />
       </button>
-      {open ? (
-        <div id={detailsId} data-usage-reliability className="max-w-3xl pt-2 pb-3 text-[12px] leading-relaxed text-ink-soft">
+
+      <AnchoredPopover
+        {...pop.popoverProps}
+        align="end"
+        widthClassName="w-[19rem]"
+        label={summaryLabel}
+        data={{ 'data-usage-reliability': '' }}
+      >
+        <div className="space-y-3 text-[12px] leading-relaxed text-ink-soft">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-ink">{summaryLabel}</span>
+            {models.length > 0 && onOpenPricing !== undefined ? (
+              <button
+                type="button"
+                data-usage-reliability-set-prices
+                onClick={() => {
+                  pop.setOpen(false);
+                  onOpenPricing();
+                }}
+                className="text-[11.5px] font-medium text-selected-ink underline-offset-2 hover:underline"
+              >
+                {t('usage.reliability.setPrices')}
+              </button>
+            ) : null}
+          </div>
+
           {hasAccountingNotices ? (
-            <div data-usage-accounting-notices className="space-y-1.5">
+            <div data-usage-accounting-notices className="space-y-1.5 border-t border-hairline pt-2.5">
               {missing > 0 ? <p data-usage-accounting-missing>{t('usage.accounting.missing', { count: missing })}</p> : null}
               {legacyZero > 0 ? <p data-usage-accounting-legacy-zero>{t('usage.accounting.legacyZero', { count: legacyZero })}</p> : null}
               {models.length > 0 ? (
-                <div className="pt-1">
-                  <p>{t('usage.reliability.unpriced', { count: models.length })}</p>
-                  <ul data-usage-unpriced-models className="mt-1 max-h-28 overflow-y-auto font-mono text-[11.5px] text-ink-faint">
-                    {models.map((model) => <li key={model} className="break-all py-0.5">{model}</li>)}
+                <div>
+                  <p>{tp('usage.reliability.unpriced', models.length)}</p>
+                  <ul data-usage-unpriced-models className="mt-1 max-h-24 overflow-y-auto font-mono text-[11px] text-ink-faint">
+                    {models.map((model) => (
+                      <li key={model} className="break-all py-0.5">{model}</li>
+                    ))}
                   </ul>
                 </div>
-              ) : summary.cost_unknown ? <p>{t('usage.reliability.costUnknown')}</p> : null}
+              ) : summary.cost_unknown ? (
+                <p>{t('usage.reliability.costUnknown')}</p>
+              ) : null}
             </div>
           ) : null}
-          <dl className={`${hasAccountingNotices ? 'mt-4 border-t border-hairline pt-3' : ''} grid grid-cols-1 gap-x-8 gap-y-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]`}>
+
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-t border-hairline pt-2.5">
             <div>
-              <dt className="text-[11.5px] text-ink-faint">{t('usage.reliability.coverage')}</dt>
-              <dd className="tabular-nums">
-                {earliest !== null && latest !== null ? `${formatDate(earliest)} → ${formatDate(latest)}` : t('usage.reliability.coverageEmpty')}
+              <dt className="text-[11px] text-ink-faint">{t('usage.reliability.coverage')}</dt>
+              <dd className="text-ink tabular-nums">
+                {earliest !== null && latest !== null
+                  ? `${formatDate(earliest)} → ${formatDate(latest)}`
+                  : t('usage.reliability.coverageEmpty')}
               </dd>
             </div>
             <div>
-              <dt className="text-[11.5px] text-ink-faint">{t('usage.reliability.scanned')}</dt>
-              <dd className="tabular-nums">{formatGrouped(reliability.scanned_sessions)}</dd>
+              <dt className="text-[11px] text-ink-faint">{t('usage.reliability.scanned')}</dt>
+              <dd className="text-ink tabular-nums">{formatGrouped(reliability.scanned_sessions)}</dd>
             </div>
           </dl>
-          <p className="mt-3 text-[11.5px] text-ink-faint">{t('usage.reliability.costSource')} · {t(reliability.includes_deleted_sessions ? 'usage.reliability.deleted.included' : 'usage.reliability.deleted.excluded')}</p>
+
+          <p className="text-[11px] text-ink-faint">
+            {t(reliability.includes_deleted_sessions ? 'usage.reliability.deleted.included' : 'usage.reliability.deleted.excluded')}
+          </p>
         </div>
-      ) : null}
+      </AnchoredPopover>
     </div>
   );
 }

@@ -491,21 +491,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       args: frozenExtensionSnapshot(call.args), signal: options.signal,
     }) : undefined;
     if (proposal?.veto !== undefined) return settleSynthetic(call.args, proposal.veto, 'vetoed');
-    if (proposal !== undefined) {
-      const ignoredBeforeProposal = validation.ignored ?? [];
-      validation = validateExecutableToolArgs(call.tool, proposal.args);
-      const ignored = [...new Set([...ignoredBeforeProposal, ...(validation.ignored ?? [])])];
-      validation = { ...validation, ignored: ignored.length > 0 ? ignored : undefined };
-    }
+    if (proposal !== undefined) validation = validateExecutableToolArgs(call.tool, proposal.args);
     if (validation.error !== null) return settleError(call.args, `Invalid args for tool "${call.toolName}": ${validation.error}`, 'preflight-rejected');
     call.args = proposal === undefined ? validation.args : frozenExtensionSnapshot(validation.args);
-    if (validation.ignored !== undefined && validation.ignored.length > 0) {
-      call.ignoredArguments = validation.ignored;
-      if (proposal?.changed !== true) {
-        call.toolCall = { ...call.toolCall, arguments: JSON.stringify(call.args) };
-        allCalls = allCalls.map(candidate => candidate.id === call.toolCall.id ? call.toolCall : candidate);
-      }
-    }
     if (proposal?.changed === true) {
       call.toolCall = { ...call.toolCall, arguments: JSON.stringify(call.args) };
       allCalls = allCalls.map(candidate => candidate.id === call.toolCall.id ? call.toolCall : candidate);
@@ -906,9 +894,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         cwd: stringArgument(call.args, 'cwd'),
         runtimeId: finalResult.runtimeId,
         activeRuntimeId: activeRuntimeId(this.runtime),
-        result: call.kind === 'runnable' && call.ignoredArguments !== undefined
-          ? withIgnoredArgumentsNote(finalResult, call.ignoredArguments)
-          : finalResult,
+        result: finalResult,
       });
     } finally {
       this.logSlowToolPhase(call, 'finalize_truncate', truncateStartedAt);
@@ -924,18 +910,12 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
   }
 }
 
-function withIgnoredArgumentsNote(result: ToolResult, ignored: readonly string[]): ToolResult {
-  const line = `Note: ignored unknown argument(s): ${ignored.join(', ')}.`;
-  return { ...result, note: result.note === undefined ? line : `${line}\n${result.note}` };
-}
-
 interface RunnableToolCall {
   readonly kind: 'runnable';
   toolCall: ToolCall;
   readonly toolName: string;
   readonly tool: ExecutableTool;
   args: unknown;
-  ignoredArguments?: readonly string[];
 }
 
 interface RejectedToolCall {

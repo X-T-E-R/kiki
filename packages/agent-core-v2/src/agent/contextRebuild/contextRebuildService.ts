@@ -91,11 +91,13 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     }));
     this._register(this.dispatcher.hooks.onDidRestore.register('context-rebuild', async (_ctx, next) => {
       try {
-        await this.executionControl.ready();
-        const binding = this.profile.data();
-        if ((binding.modelAlias !== undefined || binding.profileName !== undefined || binding.execution !== undefined)
-          && this.executionControl.resumePoint(this.scope.agentId) === undefined) {
-          await this.rebuildAfterBoundary('restore');
+        if (this.scope.agentId === MAIN_AGENT_ID) {
+          await this.executionControl.ready();
+          const binding = this.profile.data();
+          if ((binding.modelAlias !== undefined || binding.profileName !== undefined || binding.execution !== undefined)
+            && this.executionControl.resumePoint(this.scope.agentId) === undefined) {
+            await this.rebuildAfterBoundary('restore');
+          }
         }
       } finally {
         await next();
@@ -205,13 +207,13 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     try {
       this.throwIfCancelled(signal);
       beforeProfile = snapshotProfile(this.profile.data());
-      beforeContext = JSON.stringify(this.context.get());
+      beforeContext = fingerprintContextMessages(this.context.get());
       beforeFields = this.profile.getPromptFieldSnapshot();
       await this.skills.ready;
       beforeSkills = JSON.stringify(this.skills.catalog.listSkills());
       beforeMcp = JSON.stringify({ capabilities: await this.mcp.listMcpSessionCapabilities(), tools: toolSnapshot() });
       this.throwIfCancelled(signal);
-      sourceChanges = await this.sources.reload();
+      sourceChanges = await this.sources.reload(trigger);
       completed.push('instructions');
       this.throwIfCancelled(signal);
       await this.profiles.reload();
@@ -316,7 +318,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       plugins: finished('plugins') && !input.skipped.has('plugins') && input.sourceChanges?.pluginsChanged === true,
       mcp: finished('mcp') && input.beforeMcp !== undefined && input.afterMcp !== undefined && input.beforeMcp !== input.afterMcp,
       injections: finished('injections') && !input.skipped.has('injections')
-        && input.beforeContext !== JSON.stringify(this.context.get()),
+        && input.beforeContext !== fingerprintContextMessages(this.context.get()),
     };
   }
 
@@ -422,6 +424,20 @@ function snapshotProfile(data: ReturnType<IAgentProfileService['data']>): Return
     thinkingLevel: data.thinkingLevel,
     boundProfile: data.boundProfile === undefined ? undefined : JSON.parse(JSON.stringify(data.boundProfile)) as typeof data.boundProfile,
   };
+}
+
+function fingerprintContextMessages(messages: ReturnType<IAgentContextMemoryService['get']>): string {
+  const parts = [`len:${messages.length}`];
+  for (const msg of messages) {
+    if (msg.origin?.kind !== 'injection') {
+      parts.push(`${msg.id ?? ''}:${msg.role}`);
+      continue;
+    }
+    const first = msg.content[0];
+    const text = first?.type === 'text' ? first.text : '';
+    parts.push(`inj:${msg.id ?? ''}:${msg.origin.variant}:${text.length}:${text.slice(0, 64)}:${text.slice(-64)}`);
+  }
+  return parts.join('|');
 }
 
 registerScopedService(

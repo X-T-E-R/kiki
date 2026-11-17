@@ -953,3 +953,6 @@ export * from '#/agent/userTool/userTool';
 export * from '#/agent/userTool/userToolOps';
 export * from '#/agent/userTool/userToolService';
 export * from '#/agent/userTool/pluginToolService';
+export * from '#/app/remoteTools/remoteSpaceToolBridge';
+export * from '#/app/remoteTools/remoteSpaceToolBridgeService';
+export * from '#/agent/remoteTools/agentRemoteToolService';

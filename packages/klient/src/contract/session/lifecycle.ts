@@ -60,6 +60,7 @@ export const forkSessionOptionsSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
   turnIndex: z.number().optional(),
   throughUserMessage: z.boolean().optional(),
+  throughMessageId: z.string().optional(),
   externalMaterialOnly: z.boolean().optional(),
   seed: sessionSeedModeWireSchema.optional(),
   carry: sessionSeedCarryWireSchema.optional(),
@@ -69,6 +70,7 @@ export const forkSessionOptionsSchema = z.object({
 export const createChildSessionOptionsSchema = forkSessionOptionsSchema.omit({
   turnIndex: true,
   throughUserMessage: true,
+  throughMessageId: true,
   externalMaterialOnly: true,
   seed: true,
   carry: true,

@@ -99,6 +99,8 @@ export const snapshotSubagentSchema = taskSchema.extend({
   branch_initiator: z.enum(['user', 'agent']).optional(),
   tools_locked: z.boolean().optional(),
   branch_sealed: z.boolean().optional(),
+  branch_base_turn_id: z.number().int().nonnegative().optional(),
+  branch_base_message_id: z.string().min(1).optional(),
   tool_call_count: z.number().int().nonnegative().optional(),
   suspended_reason: z.string().optional(),
   run_in_background: z.boolean().optional(),

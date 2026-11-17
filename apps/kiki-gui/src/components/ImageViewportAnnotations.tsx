@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type AnnotationTool = 'select' | 'arrow' | 'rectangle' | 'pen';
 export interface AnnotationPoint { readonly x: number; readonly y: number }
@@ -30,6 +30,18 @@ export function AnnotationShapes({ marks, strokeWidth, selected, onSelect }: { m
   })}</>;
 }
 
+export function scaleAnnotationMarks(
+  marks: readonly ImageAnnotation[],
+  sx: number,
+  sy: number,
+): readonly ImageAnnotation[] {
+  if (marks.length === 0 || (sx === 1 && sy === 1)) return marks;
+  return marks.map((mark) => ({
+    ...mark,
+    points: mark.points.map((point) => ({ x: point.x * sx, y: point.y * sy })),
+  }));
+}
+
 /** Points stay in original image pixels, independently of zoom and display DPR. */
 export function ImageViewportAnnotations({ width, height, marks, tool, editing, selected, onSelect, onChange }: {
   width: number; height: number; marks: readonly ImageAnnotation[]; tool: AnnotationTool; editing: boolean; selected?: number;
@@ -38,6 +50,28 @@ export function ImageViewportAnnotations({ width, height, marks, tool, editing, 
   const [draft, setDraft] = useState<readonly ImageAnnotation[] | null>(null);
   const committed = useRef<readonly ImageAnnotation[] | null>(null);
   const gesture = useRef<{ start: AnnotationPoint; marks: readonly ImageAnnotation[]; active: ImageAnnotation; moving: boolean; pointer: number } | null>(null);
+  const previousDims = useRef({ width, height });
+  useEffect(() => {
+    const prev = previousDims.current;
+    if (prev.width === width && prev.height === height) return;
+    previousDims.current = { width, height };
+    if (prev.width <= 0 || prev.height <= 0 || width <= 0 || height <= 0 || gesture.current === null) return;
+    const sx = width / prev.width;
+    const sy = height / prev.height;
+    const state = gesture.current;
+    const scaledActive = scaleAnnotationMarks([state.active], sx, sy)[0]!;
+    gesture.current = {
+      ...state,
+      start: { x: state.start.x * sx, y: state.start.y * sy },
+      marks: scaleAnnotationMarks(state.marks, sx, sy),
+      active: scaledActive,
+    };
+    if (committed.current !== null) {
+      const scaledCommitted = scaleAnnotationMarks(committed.current, sx, sy);
+      committed.current = scaledCommitted;
+      setDraft(scaledCommitted);
+    }
+  }, [width, height]);
   const point = (event: React.PointerEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     return { x: Math.max(0, Math.min(width, (event.clientX - rect.left) * width / rect.width)), y: Math.max(0, Math.min(height, (event.clientY - rect.top) * height / rect.height)) };
@@ -82,13 +116,26 @@ export function ImageViewportAnnotations({ width, height, marks, tool, editing, 
 }
 
 /** Export a copy; never replace the original source URL or its bytes. */
-export async function renderAnnotatedImage(src: string, marks: readonly ImageAnnotation[]): Promise<Blob> {
+export async function renderAnnotatedImage(
+  src: string,
+  marks: readonly ImageAnnotation[],
+  sourceSize?: { readonly width: number; readonly height: number },
+): Promise<Blob> {
   const original = new Image();
   original.crossOrigin = 'anonymous';
   original.src = src;
   await original.decode();
   const width = original.naturalWidth;
   const height = original.naturalHeight;
+  const resolvedMarks =
+    sourceSize !== undefined &&
+    sourceSize.width > 0 &&
+    sourceSize.height > 0 &&
+    width > 0 &&
+    height > 0 &&
+    (sourceSize.width !== width || sourceSize.height !== height)
+      ? scaleAnnotationMarks(marks, width / sourceSize.width, height / sourceSize.height)
+      : marks;
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -100,7 +147,7 @@ export async function renderAnnotatedImage(src: string, marks: readonly ImageAnn
   context.lineWidth = strokeWidth;
   context.lineCap = 'round';
   context.lineJoin = 'round';
-  for (const mark of marks) {
+  for (const mark of resolvedMarks) {
     const first = mark.points[0]!;
     const last = mark.points.at(-1)!;
     context.beginPath();

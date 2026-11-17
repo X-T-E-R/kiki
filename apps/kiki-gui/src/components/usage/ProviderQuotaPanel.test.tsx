@@ -296,6 +296,7 @@ describe('ProviderQuotaPanel', () => {
     expect(container.querySelector('[data-quota-settings-link="api"]')?.getAttribute('href')).toBe('/settings/ai#st-card-providers');
     expect(container.querySelector('[data-quota-settings-link="service"]')?.getAttribute('href')).toBe('/settings/search#st-card-search-providers');
     expect(container.querySelector('[data-quota-source-refresh]')).toBeNull();
+    expect(section.textContent).not.toContain('Their allowance is unknown.');
   });
   it('shows enable failures and server-retained off state without fabricating a successful save', async () => {
     const off = source({ id: 'off', enabled: false, status: 'off' });
@@ -636,9 +637,12 @@ describe('ProviderQuotaPanel', () => {
     const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
     const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
 
-    // Expired state on claude-acp (readAt present, readings cleared after TTL)
+    // Expired state on claude-acp (readAt present, readings cleared after TTL) uses compact icon button without resident prose
     expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset['engineQuotaStatus']).toBe('expired');
-    expect(claudeRow.querySelector('[data-engine-quota-expired="claude-acp"]')).not.toBeNull();
+    const expiredBox = claudeRow.querySelector('[data-engine-quota-expired="claude-acp"]')!;
+    expect(expiredBox).not.toBeNull();
+    expect(expiredBox.textContent).not.toContain('Cached reading expired');
+    expect(claudeRow.querySelector('[data-engine-quota-query="claude-acp"]')?.getAttribute('title')).toContain('Cached reading expired');
     expect(claudeRow.textContent).not.toContain('Native Claude Meter');
 
     // Unqueried state on agy-cli (never queried)

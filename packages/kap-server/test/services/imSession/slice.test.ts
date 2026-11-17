@@ -735,6 +735,7 @@ describe('long replies', () => {
     const pluginHost = await createAsrPluginHost(home);
     const listAsrProviders = vi.spyOn(pluginHost, 'listAsrProviders');
     const processService = new HostProcessService();
+    const spawnSpy = vi.spyOn(processService, 'spawn');
     hostProcesses.push(processService);
     const audioBytes = pcmWav(44_100, 2, 200);
     const configSections = new Map<string, unknown>();
@@ -981,6 +982,7 @@ describe('long replies', () => {
         },
       });
       await bridge.setPolicy({ ...bridge.policy(), asr_mode: 'off', asr_provider: null });
+      spawnSpy.mockClear();
       await feishuHandlers?.onMessage({
         event_id: 'ev-slice-audio-off',
         app_id: 'cli_0011223344556692',
@@ -993,6 +995,7 @@ describe('long replies', () => {
           content: JSON.stringify({ file_key: 'aud_off', caption: 'Listen without transcription' }),
         },
       });
+      expect(spawnSpy).not.toHaveBeenCalled();
 
       expect(submittedPrompts).toHaveLength(5);
       const submitted = submittedPrompts[0] as {
@@ -1066,15 +1069,12 @@ describe('long replies', () => {
         content: { type: string; text?: string; audioUrl?: { url: string; name?: string } }[];
       };
       expect(submittedAudioOff.providerMessageId).toBe('om_slice_audio_off');
-      expect(submittedAudioOff.content.map((part) => part.type)).toEqual(['text', 'text', 'text', 'audio_url']);
+      expect(submittedAudioOff.content.map((part) => part.type)).toEqual(['text', 'text', 'audio_url']);
       expect(submittedAudioOff.content[0]?.text).toBe('Listen without transcription');
-      expect(submittedAudioOff.content[2]?.text).toMatch(/16 kHz mono 16-bit PCM WAV/u);
-      expect(submittedAudioOff.content[2]?.text).toMatch(/f_[a-f0-9]{32}\.wav/u);
-      const offWavPath = submittedAudioOff.content[2]?.text?.match(/: (.+f_[a-f0-9]{32}\.wav) —/u)?.[1];
-      expect(offWavPath).toBeDefined();
-      const offWav = await readFile(offWavPath!);
-      expect(offWav.byteLength).toBeGreaterThan(44);
-      expect(offWav.readUInt32LE(24)).toBe(16_000);
+      expect(submittedAudioOff.content[1]?.text).toMatch(/^Attached audio "voice\.opus" \(audio\/opus, 35324 bytes\): .*f_[a-f0-9]{32}-voice\.opus — listen with an audio-capable tool or use this path$/u);
+      const offFileId = submittedAudioOff.content[2]?.audioUrl?.url.match(/^kimi-file:\/\/(f_[a-f0-9]{32})$/u)?.[1];
+      expect(offFileId).toBeDefined();
+      await expect(stat(join(home, 'attachments', `${offFileId!}.wav`))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(asrWarnings).toHaveBeenCalledWith({ asr: 'off' }, 'IM audio transcription unavailable');
     } finally {
       await bridge.close();

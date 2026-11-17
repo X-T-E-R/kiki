@@ -112,6 +112,7 @@ export {
   agentStatusFromMeta,
   liveSourcesFromAgentSnapshots,
   liveSourcesFromSubagentBlocks,
+  mergeAgentViewIntoForest,
   overlayLiveSourcesWithSnapshotSubagents,
   rosterFromSnapshotSubagents,
   rosterFromTranscriptAgents,

@@ -105,7 +105,7 @@ import {
 import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middleware/origin';
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createKimiDeviceId } from '@kiki/oauth';
-import { CONNECTION_PROTOCOL } from '@kiki/protocol';
+import { CONNECTION_PROTOCOL, peerBridgeAttachPayloadSchema } from '@kiki/protocol';
 import { loadOrCreateLocalOwnerToken } from './services/auth/localOwner';
 import { ConnectionAdmission, AdmissionError } from './services/connections/admission';
 import { ConnectionAudience, peerGrant, isWebPathAllowed } from './services/connections/audience';
@@ -114,7 +114,7 @@ import { startWebListener } from './webListener';
 import { registerWebAccessRoutes } from './routes/webAccess';
 import { IBootstrapService } from '@kiki/agent-core-v2';
 import { IWorkspacePersistence } from '@kiki/agent-core-v2/app/workspace/workspacePersistence';
-import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpaceThreadBridgeRequest, type SpaceThreadBridge } from './services/threadBridge/bridge';
+import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpaceThreadBridgeRequest, isPeerRequestBridgeRequest, authorizePeerRequestBridgeRequest, type SpaceThreadBridge } from './services/threadBridge/bridge';
 import { OutboundPeerBridgeClient } from './services/threadBridge/outboundPeerBridgeClient';
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
@@ -738,6 +738,9 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
         if (threadBridge === undefined) { await reply.code(503).send({ code: 40101, msg: 'bridge_unavailable' }); return false; }
         return authorizeSpaceThreadBridgeRequest(threadBridge, token, request, reply);
       }
+      if (isPeerRequestBridgeRequest(request)) {
+        return authorizePeerRequestBridgeRequest(admission, validateCredential, token, request, reply);
+      }
       return audience.authorize(token, request, reply);
     },
   });
@@ -1260,6 +1263,19 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
     sessionViewTranscriptService: transcriptService,
     peerBridgeRegistry,
   });
+  wssKlient.peerServer.on('connection', (socket) => {
+    socket.on('message', (raw) => {
+      const text = typeof raw === 'string' ? raw : Buffer.isBuffer(raw) ? raw.toString('utf8') : Array.isArray(raw) ? Buffer.concat(raw).toString('utf8') : Buffer.from(raw).toString('utf8');
+      if (text.length > 2048 || !text.includes('"bridge_attach"')) return;
+      try {
+        const frame = JSON.parse(text) as { type?: unknown; data?: unknown };
+        if (frame.type === 'bridge_attach' && peerBridgeAttachPayloadSchema.safeParse(frame.data ?? {}).success) {
+          const receiver = (socket as unknown as { _receiver?: { _maxPayload?: number } })._receiver;
+          if (receiver !== undefined) receiver._maxPayload = 24 * 1024 * 1024;
+        }
+      } catch {}
+    });
+  });
   closePeerBridgeSockets = async () => {
     const sockets = [...wssKlient.peerServer.clients].filter((socket) => socket.readyState === socket.OPEN);
     if (sockets.length === 0) return;
@@ -1297,7 +1313,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   pairingHooks.current = {
     workspaces: async () => [...await core.accessor.get(IWorkspaceService).list()].sort((left, right) => right.lastOpenedAt - left.lastOpenedAt).map((workspace) => workspace.id),
     issueBridges: (input) => pairedBridge.issuePairingBridges(input),
-    installBridge: async (connectionId, grant, credential, connectionGrantId) => { await pairedBridge.install({ connectionId, grant, credential }, connectionGrantId); },
+    installBridge: async (connectionId, grant, credential, connectionGrantId, borrowTools) => { await pairedBridge.install({ connectionId, grant, credential }, connectionGrantId, borrowTools); },
     revokeBridge: (id, source) => pairedBridge.revokeInboundFrom(id, source),
     revokedBridges: (source) => pairedBridge.revokedPairingBridges(source),
     retireBridges: (id, ids) => pairedBridge.retireConfirmedBridges(id, ids),

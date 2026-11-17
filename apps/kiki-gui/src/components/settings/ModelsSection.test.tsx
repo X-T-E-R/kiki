@@ -22,6 +22,7 @@ import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
 import { DefaultModelBar } from './DefaultModelBar';
+import { DecisionConnectionEditor } from './DecisionConnections';
 import { CatalogRefreshCard, GlobalDefaultsCard, ThinkingCard } from './ModelsSection';
 import { ProviderModelsHarness } from './testProviderModels';
 import { ModelSwitchCard } from './ModelSwitchCard';
@@ -35,6 +36,7 @@ const createModel = vi.fn();
 const listModels = vi.fn();
 const getConfig = vi.fn();
 const listProviders = vi.fn();
+const getProviderEntity = vi.fn();
 const setDefaultModel = vi.fn();
 const patchConfig = vi.fn();
 const getModel = vi.fn();
@@ -53,6 +55,7 @@ vi.mock('../../state/connection', () => ({
       listModels,
       getConfig,
       listProviders,
+      getProviderEntity,
       setDefaultModel,
       patchConfig,
       getModel,
@@ -120,6 +123,7 @@ beforeEach(() => {
     default_provider: 'managed:kimi-code',
   });
   listProviders.mockReset().mockResolvedValue({ items: [PROVIDER] });
+  getProviderEntity.mockReset().mockResolvedValue({ ...PROVIDER, revision: 'rev-p1' });
   setDefaultModel.mockReset();
   patchConfig.mockReset();
   getModel.mockReset().mockResolvedValue(ENTITY);
@@ -1823,5 +1827,84 @@ describe('ModelCatalogRowEditor usage policy', () => {
     const sent = updateModel.mock.calls[0]?.[1] as { auto_compact?: number; usage?: unknown };
     expect(sent.auto_compact).toBeUndefined();
     expect(sent.usage).toEqual({ main: { auto_compact: 150000 } });
+  });
+});
+
+describe('CatalogRefreshCard large discovery and DecisionConnectionEditor lazy mount', () => {
+  it('virtualizes 1,500 discovered models in CatalogRefreshCard without refetching while editing alias', async () => {
+    listDiscoveredModels.mockResolvedValue({
+      items: [{
+        provider_id: 'gateway',
+        fetched_at: 100,
+        attempted_at: 100,
+        models: Array.from({ length: 1500 }, (_, i) => ({
+          remote_id: `discovered-model-${i}`,
+          display_name: `Discovered ${i}`,
+          max_context_size: 128000,
+        })),
+      }],
+    });
+    const container = await renderCard();
+    const callsAfterMount = listDiscoveredModels.mock.calls.length;
+    expect(callsAfterMount).toBe(1);
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Suggestions — not configured yet"]')!;
+    await act(async () => { trigger.click(); });
+    const mountedOptions = document.body.querySelectorAll('[data-select-panel] [role="option"]');
+    expect(mountedOptions.length).toBeLessThanOrEqual(80);
+
+    await act(async () => { (mountedOptions[2] as HTMLButtonElement).click(); });
+    const aliasInput = container.querySelector<HTMLInputElement>('[data-catalog-refresh-form] input')!;
+    expect(aliasInput.value).toBe('gateway/discovered-model-2');
+    await act(async () => { setInputValue(aliasInput, 'gateway/custom-alias'); });
+    expect(listDiscoveredModels).toHaveBeenCalledTimes(callsAfterMount);
+  });
+
+  it('defers DecisionConnectionEditor body mount and getProviderEntity until expanded', async () => {
+    const decisionProvider: ProviderCatalogItem = {
+      id: 'decision-svc',
+      type: 'openai_decisions',
+      service: 'decision',
+      decision_protocol: 'openai_decisions',
+      base_url: 'https://decision.example.test/v1',
+      default_model: 'judge-v1',
+      has_api_key: true,
+      status: 'connected',
+    };
+    getProviderEntity.mockResolvedValue({ ...decisionProvider, revision: 'rev-d1' });
+    const host = document.createElement('div');
+    document.body.append(host);
+    containers.push(host);
+    const root = createRoot(host);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <RouterDirtyGuard>
+                <DecisionConnectionEditor provider={decisionProvider} onChanged={async () => {}} />
+              </RouterDirtyGuard>
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const details = host.querySelector<HTMLDetailsElement>('[data-decision-row="decision-svc"]')!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector('[data-decision-model]')).toBeNull();
+    expect(getProviderEntity).not.toHaveBeenCalled();
+
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(details.querySelector<HTMLInputElement>('[data-decision-model]')?.value).toBe('judge-v1');
+    expect(getProviderEntity).toHaveBeenCalledExactlyOnceWith('decision-svc');
   });
 });

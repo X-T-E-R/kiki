@@ -243,7 +243,7 @@ export function searchHasUsageParams(search: string): boolean {
 /** True when a URL carries state that belongs to the historical usage view. */
 export function searchHasUsageHistoryParams(search: string): boolean {
   const params = new URLSearchParams(search);
-  return searchHasUsageParams(search) || ['metric', 'compare', 'bucket', 'session', 'view', 'trace']
+  return searchHasUsageParams(search) || ['metric', 'compare', 'bucket', 'session', 'session_id', 'view', 'trace']
     .some((key) => params.has(key));
 }
 
@@ -501,6 +501,14 @@ export function usageCompareWindow(
   if (startAt <= 0 || endAt <= startAt) return null;
   const effectiveEnd = Math.min(endAt, nowMs);
   if (effectiveEnd <= startAt) return null;
+  if (usesHostCalendar(timezoneOffsetMinutes, startAt, endAt, nowMs)) {
+    const daySpan = localCalendarDaySpan(startAt, endAt);
+    if (daySpan !== null) {
+      const priorStart = shiftLocalWallClockDays(startAt, -daySpan);
+      const priorEnd = shiftLocalWallClockDays(effectiveEnd, -daySpan);
+      return priorEnd > priorStart ? { startAt: priorStart, endAt: priorEnd } : null;
+    }
+  }
   const shiftMs = usageWindowShiftMs(startAt, endAt, timezoneOffsetMinutes);
   return { startAt: startAt + shiftMs, endAt: effectiveEnd + shiftMs };
 }
@@ -516,6 +524,12 @@ export function usageWindowShiftMs(
   endAt: number,
   timezoneOffsetMinutes: number,
 ): number {
+  if (usesHostCalendar(timezoneOffsetMinutes, startAt, endAt)) {
+    const daySpan = localCalendarDaySpan(startAt, endAt);
+    if (daySpan !== null) {
+      return shiftLocalWallClockDays(startAt, -daySpan) - startAt;
+    }
+  }
   const dayMs = 86_400_000;
   const offsetMs = timezoneOffsetMinutes * 60_000;
   const midnightAligned = (startAt + offsetMs) % dayMs === 0 && (endAt + offsetMs) % dayMs === 0;
@@ -532,10 +546,61 @@ export function usageBucketCompareWindow(
   timezoneOffsetMinutes: number,
   nowMs: number,
 ): UsageWindow | null {
+  const clippedStart = Math.max(bucket.start_at, range.startAt);
+  const clippedEnd = Math.min(bucket.end_at, range.endAt, nowMs);
+  if (clippedEnd <= clippedStart) return null;
+  if (usesHostCalendar(timezoneOffsetMinutes, range.startAt, range.endAt, nowMs)) {
+    const daySpan = localCalendarDaySpan(range.startAt, range.endAt);
+    if (daySpan !== null) {
+      const startAt = shiftLocalWallClockDays(clippedStart, -daySpan);
+      const endAt = shiftLocalWallClockDays(clippedEnd, -daySpan);
+      return endAt > startAt ? { startAt, endAt } : null;
+    }
+  }
   const shiftMs = usageWindowShiftMs(range.startAt, range.endAt, timezoneOffsetMinutes);
-  const startAt = Math.max(bucket.start_at, range.startAt) + shiftMs;
-  const endAt = Math.min(bucket.end_at, range.endAt, nowMs) + shiftMs;
+  const startAt = clippedStart + shiftMs;
+  const endAt = clippedEnd + shiftMs;
   return endAt > startAt ? { startAt, endAt } : null;
+}
+
+function usesHostCalendar(timezoneOffsetMinutes: number, ...instants: readonly number[]): boolean {
+  if (timezoneOffsetMinutes === -new Date().getTimezoneOffset()) return true;
+  return instants.some((ms) => Number.isFinite(ms) && timezoneOffsetMinutes === -new Date(ms).getTimezoneOffset());
+}
+
+function isLocalMidnight(ms: number): boolean {
+  const date = new Date(ms);
+  return (
+    date.getHours() === 0 &&
+    date.getMinutes() === 0 &&
+    date.getSeconds() === 0 &&
+    date.getMilliseconds() === 0
+  );
+}
+
+function localCalendarDaySpan(startAt: number, endAt: number): number | null {
+  if (!isLocalMidnight(startAt) || !isLocalMidnight(endAt)) return null;
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+  const span = Math.round(
+    (Date.UTC(end.getFullYear(), end.getMonth(), end.getDate()) -
+      Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) /
+      86_400_000,
+  );
+  return span >= 1 ? span : null;
+}
+
+function shiftLocalWallClockDays(ms: number, deltaDays: number): number {
+  const date = new Date(ms);
+  return new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate() + deltaDays,
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+    date.getMilliseconds(),
+  ).getTime();
 }
 
 /** Move an instant by whole local days, staying on the same wall clock. */
@@ -927,6 +992,37 @@ export function usageRangeWindow(
   timezoneOffsetMinutes: number,
   nowMs: number,
 ): UsageWindow | null {
+  if (filters.range === 'custom') {
+    return filters.startAt !== undefined && filters.endAt !== undefined && filters.startAt < filters.endAt
+      ? { startAt: filters.startAt, endAt: filters.endAt }
+      : null;
+  }
+  if (filters.range === 'all') {
+    // Unbounded history has no bounded predecessor to compare against.
+    return null;
+  }
+  if (usesHostCalendar(timezoneOffsetMinutes, nowMs)) {
+    const local = new Date(nowMs);
+    const year = local.getFullYear();
+    const month = local.getMonth();
+    const day = local.getDate();
+    const shiftDays = (delta: number): number => new Date(year, month, day + delta).getTime();
+    switch (filters.range) {
+      case 'today':
+        return { startAt: shiftDays(0), endAt: shiftDays(1) };
+      case 'last_7_days':
+        return { startAt: shiftDays(-6), endAt: shiftDays(1) };
+      case 'this_week': {
+        const daysSinceMonday = (local.getDay() + 6) % 7;
+        return { startAt: shiftDays(-daysSinceMonday), endAt: shiftDays(-daysSinceMonday + 7) };
+      }
+      case 'this_month':
+        return {
+          startAt: new Date(year, month, 1).getTime(),
+          endAt: new Date(year, month + 1, 1).getTime(),
+        };
+    }
+  }
   const offsetMs = timezoneOffsetMinutes * 60_000;
   const dayMs = 86_400_000;
   const midnight = (ms: number): number => Math.floor((ms + offsetMs) / dayMs) * dayMs - offsetMs;
@@ -939,28 +1035,22 @@ export function usageRangeWindow(
   switch (filters.range) {
     case 'today': {
       const startAt = midnight(nowMs);
-      return { startAt, endAt: startAt + dayMs };
+      return { startAt, endAt: shiftDays(startAt, 1) };
     }
     case 'last_7_days': {
-      const endAt = midnight(nowMs) + dayMs;
+      const endAt = shiftDays(midnight(nowMs), 1);
       return { startAt: shiftDays(endAt, -7), endAt };
     }
     case 'this_week': {
-      const startAt = shiftDays(midnight(nowMs), -local.getUTCDay());
-      return { startAt, endAt: startAt + 7 * dayMs };
+      const daysSinceMonday = (local.getUTCDay() + 6) % 7;
+      const startAt = shiftDays(midnight(nowMs), -daysSinceMonday);
+      return { startAt, endAt: shiftDays(startAt, 7) };
     }
     case 'this_month': {
       const startAt = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), 1) - offsetMs;
       const endAt = Date.UTC(local.getUTCFullYear(), local.getUTCMonth() + 1, 1) - offsetMs;
       return { startAt, endAt };
     }
-    case 'custom':
-      return filters.startAt !== undefined && filters.endAt !== undefined && filters.startAt < filters.endAt
-        ? { startAt: filters.startAt, endAt: filters.endAt }
-        : null;
-    case 'all':
-      // Unbounded history has no bounded predecessor to compare against.
-      return null;
   }
 }
 

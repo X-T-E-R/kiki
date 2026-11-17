@@ -406,41 +406,69 @@ describe('SpaceSwitcher', () => {
 
   it('lists shared remote Kikis in a browser client and switches into the selected remote space', async () => {
     host.kind = 'browser';
-    const remoteConnId = '11111111-1111-4111-8111-111111111111';
-    const connectionsList = vi.fn().mockResolvedValue([
-      {
-        id: remoteConnId,
-        label: 'Shared Remote Alpha',
-        endpoint: 'http://127.0.0.1:59001',
-        target: { homeId: remoteConnId, hostId: 'host-alpha', protocol: 1 },
-        credentialRef: remoteConnId,
-        enabled: true,
-        purposes: ['gui'],
-        backgroundSummary: true,
-        state: 'online',
-        activeLeases: 0,
-      },
-    ]);
-    list.mockResolvedValue(TWO);
-    connection.client = { baseUrl: 'http://127.0.0.1:58627', klient: { rest: { homes: { list }, connections: { list: connectionsList } } } } as unknown as typeof connection.client;
-    connection.localClient = null;
-    const scopeNavigate = vi.fn(async () => undefined);
-    const unregister = registerScopeNavigation(scopeNavigate);
-    try {
-      await render();
-      expect(list).not.toHaveBeenCalled();
-      await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
-      await act(async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
-      expect(list).toHaveBeenCalledTimes(1);
-      expect(document.querySelector('[data-space-browser-hint]')?.textContent).toContain('Other spaces open only in the desktop app on that computer.');
-      expect(document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')?.disabled).toBe(true);
-      expect(document.querySelector('[data-space-new-entry]')).toBeNull();
-      expect(connectionsList).toHaveBeenCalledTimes(1);
-      const item = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteConnId}"]`);
-      expect(item).not.toBeNull();
-      expect(item?.textContent).toContain('Shared Remote Alpha');
-      expect(item?.textContent).not.toContain('127.0.0.1:59001');
-      await act(async () => { item!.click(); });
+      const remoteConnId = '11111111-1111-4111-8111-111111111111';
+      const offlineConnId = '22222222-2222-4222-8222-222222222222';
+      const connectionsList = vi.fn().mockResolvedValue([
+        {
+          id: remoteConnId,
+          label: 'Shared Remote Alpha',
+          endpoint: 'http://192.0.2.10:59001',
+          target: { homeId: remoteConnId, hostId: 'host-alpha', protocol: 1 },
+          credentialRef: remoteConnId,
+          enabled: true,
+          purposes: ['gui'],
+          backgroundSummary: true,
+          state: 'online',
+          activeLeases: 0,
+          rttMs: 12,
+          summary: {
+            value: { online: true, busy_sessions: 0, needs_you_sessions: 0, revision: 'r1', as_of: Date.now(), platform: 'win32' },
+            lastSeen: Date.now(),
+            stale: false,
+          },
+        },
+        {
+          id: offlineConnId,
+          label: 'Offline Mac Studio',
+          endpoint: 'http://192.0.2.11:59001',
+          target: { homeId: offlineConnId, hostId: 'host-beta', protocol: 1 },
+          credentialRef: offlineConnId,
+          enabled: true,
+          purposes: ['gui'],
+          backgroundSummary: true,
+          state: 'offline',
+          activeLeases: 0,
+          rttMs: 25,
+          summary: {
+            value: { online: true, busy_sessions: 0, needs_you_sessions: 0, revision: 'r1', as_of: Date.now() - 120_000, platform: 'darwin' },
+            lastSeen: Date.now() - 120_000,
+            stale: true,
+          },
+        },
+      ]);
+      list.mockResolvedValue(TWO);
+      connection.client = { baseUrl: 'http://127.0.0.1:58627', klient: { rest: { homes: { list }, connections: { list: connectionsList } } } } as unknown as typeof connection.client;
+      connection.localClient = null;
+      const scopeNavigate = vi.fn(async () => undefined);
+      const unregister = registerScopeNavigation(scopeNavigate);
+      try {
+        await render();
+        expect(list).not.toHaveBeenCalled();
+        await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-switcher]')!.click(); });
+        await act(async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+        expect(list).toHaveBeenCalledTimes(1);
+        expect(document.querySelector('[data-space-browser-hint]')?.textContent).toContain('Other spaces open only in the desktop app on that computer.');
+        expect(document.querySelector<HTMLButtonElement>('[data-space-switch-item="h-a"]')?.disabled).toBe(true);
+        expect(document.querySelector('[data-space-new-entry]')).toBeNull();
+        expect(connectionsList).toHaveBeenCalledTimes(1);
+        const item = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${remoteConnId}"]`);
+        expect(item).not.toBeNull();
+        expect(item?.textContent).toContain('Shared Remote Alpha');
+        expect(item?.textContent).not.toContain('192.0.2.10:59001');
+        expect(item?.querySelector('[data-space-remote-meta]')?.textContent).toBe('Windows · 12 ms');
+        const offlineItem = document.querySelector<HTMLButtonElement>(`[data-space-remote-item="${offlineConnId}"]`);
+        expect(offlineItem?.querySelector('[data-space-remote-meta]')?.textContent).toBe('macOS');
+        await act(async () => { item!.click(); });
       expect(scopeNavigate).toHaveBeenCalledExactlyOnceWith({
         homeId: `remote:${remoteConnId}`,
         scopeId: `remote:${remoteConnId}`,

@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { useI18n } from '../../i18n';
 import { createBotRoomApi, ROOMS_QUERY_KEY } from '../../lib/botRooms';
+import { compactIdentifier } from '../../lib/compactIdentifier';
 import { useOptionalConnection } from '../../state/connection';
 
 export function useRoomNames(enabled: boolean): (roomId: string) => { readonly name: string; readonly exists: boolean } {
@@ -24,7 +25,7 @@ export function useRoomNames(enabled: boolean): (roomId: string) => { readonly n
   return (roomId) => {
     const name = names.get(roomId);
     if (name !== undefined) return { name, exists: true };
-    return { name: query.isSuccess ? t('comms.deletedRoom') : roomId, exists: !query.isSuccess };
+    return { name: query.isSuccess ? t('comms.deletedRoom') : compactIdentifier(roomId), exists: !query.isSuccess };
   };
 }
 

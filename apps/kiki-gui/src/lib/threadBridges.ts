@@ -41,6 +41,7 @@ export interface PairingBridgeEntry {
   readonly localScope: BridgeScope;
   readonly remoteScope: BridgeScope;
   readonly operations: readonly BridgeOperation[];
+  readonly borrowTools?: boolean;
 }
 
 export const threadBridgeKeys = {
@@ -169,6 +170,7 @@ export function listRemotePairingBridges(
       localScope: link.grant.sourceScope,
       remoteScope: link.grant.targetScope,
       operations: link.grant.operations,
+      borrowTools: link.borrowTools ?? true,
     });
   }
   for (const grant of status.inbound) {
@@ -221,6 +223,7 @@ export function listInboundGrantBridges(
       localScope: link.grant.sourceScope,
       remoteScope: link.grant.targetScope,
       operations: link.grant.operations,
+      borrowTools: link.borrowTools ?? true,
     });
   }
   return entries;
@@ -236,7 +239,7 @@ const UUID_LIKE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  */
 export function sanitizeRemoteWorkspaceLabel(workspaceId: string): string | null {
   const trimmed = workspaceId.trim();
-  if (trimmed === '' || UUID_LIKE_RE.test(trimmed)) return null;
+  if (trimmed === '' || trimmed === '*' || UUID_LIKE_RE.test(trimmed)) return null;
   const match = RAW_WORKSPACE_ID_RE.exec(trimmed);
   if (match !== null) {
     const slug = match[1]?.trim() ?? '';

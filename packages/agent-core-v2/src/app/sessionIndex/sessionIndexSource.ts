@@ -1,6 +1,6 @@
 import { basename, sep } from 'node:path';
 
-import { parseSessionExecutionPhase, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { FORKED_FROM_KEY, parseSessionExecutionPhase, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -37,6 +37,10 @@ export function parseTime(value: unknown): number {
 
 export function parseTurnOutcome(value: unknown): 'completed' | 'cancelled' | 'failed' | undefined {
   return value === 'completed' || value === 'cancelled' || value === 'failed' ? value : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function parseTokenUsage(value: unknown): TokenUsage | undefined {
@@ -106,6 +110,7 @@ export function recoverCwd(meta: Record<string, unknown>): string | undefined {
  *  metadata document. */
 export function buildSessionSummary(fields: {
   id: string;
+  personaId?: string;
   workspaceId: string;
   cwd?: string;
   worktree?: SessionWorktree;
@@ -119,14 +124,21 @@ export function buildSessionSummary(fields: {
   archived: boolean;
   private?: boolean;
   archivedAt?: number;
+  forkedFrom?: string;
   custom?: Record<string, unknown>;
   lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   usage?: SessionUsageSummary;
   agents?: Readonly<Record<string, AgentMeta>>;
 }): SessionSummary {
+  const custom =
+    fields.forkedFrom !== undefined &&
+    fields.forkedFrom.length > 0 &&
+    fields.custom?.[FORKED_FROM_KEY] === undefined
+      ? { ...fields.custom, [FORKED_FROM_KEY]: { sessionId: fields.forkedFrom } }
+      : fields.custom;
   return {
     id: fields.id,
-    personaId: fields.agents?.['main']?.personaId,
+    personaId: nonEmptyString(fields.agents?.['main']?.personaId) ?? nonEmptyString(fields.personaId),
     workspaceId: fields.workspaceId,
     cwd: fields.cwd,
     worktree: fields.worktree,
@@ -140,7 +152,7 @@ export function buildSessionSummary(fields: {
     private: fields.private,
     archivedAt: fields.archivedAt,
     executionPhase: fields.executionPhase,
-    custom: fields.custom,
+    custom,
     lastTurnReason: fields.lastTurnReason,
     usage: fields.private === true ? undefined : parseSessionUsageSummary(fields.usage),
     executorId: fields.agents?.['main']?.executor,
@@ -333,6 +345,7 @@ function summaryFromMetadata(
       : undefined;
   return buildSessionSummary({
     id: sessionId,
+    personaId: nonEmptyString(meta['personaId']) ?? nonEmptyString(meta['persona_id']),
     workspaceId,
     cwd: recoverCwd(meta),
     worktree: parseSessionWorktree(meta['worktree']),
@@ -346,6 +359,7 @@ function summaryFromMetadata(
     private: typeof meta['private'] === 'boolean' ? meta['private'] : undefined,
     archivedAt: meta['archivedAt'] === undefined ? undefined : parseTime(meta['archivedAt']),
     executionPhase: parseSessionExecutionPhase(meta['executionPhase']),
+    forkedFrom: nonEmptyString(meta['forkedFrom']),
     custom,
     lastTurnReason: parseTurnOutcome(meta['lastTurnReason']),
     usage: parseSessionUsageSummary(meta['usage']),

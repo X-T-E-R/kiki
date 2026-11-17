@@ -13,6 +13,8 @@ import {
   advanceSessionIndexRevision,
   legacySessionCollection,
   legacySessionCountersCollection,
+  legacySessionSourcesCollection,
+  legacySessionWorkspaceSourcesCollection,
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
@@ -37,6 +39,25 @@ const WRITE_CHUNK = 500;
 const SCAN_CONCURRENCY = 16;
 const SHARED_SCAN_REUSE_MS = 30_000;
 const FINGERPRINT_REUSE_MS = 30 * 60_000;
+const COOPERATIVE_YIELD_BUDGET_MS = 12;
+const COOPERATIVE_SCAN_ITEMS = 16;
+const scheduleImmediate = setImmediate;
+
+function monotonicMs(): number {
+  return Number(process.hrtime.bigint()) / 1_000_000;
+}
+
+function createCooperativeYield(): (force?: boolean) => Promise<void> {
+  let lastYieldAt = monotonicMs();
+  return async (force = false) => {
+    const now = monotonicMs();
+    if (!force && now - lastYieldAt < COOPERATIVE_YIELD_BUDGET_MS) return;
+    await new Promise<void>((resolve) => {
+      scheduleImmediate(resolve);
+    });
+    lastYieldAt = monotonicMs();
+  };
+}
 
 export interface SessionIndexProjectorDeps {
   readonly storage: IFileSystemStorageService;
@@ -72,9 +93,16 @@ interface ScanSlot {
   settled: boolean;
 }
 
+interface CachedFingerprint {
+  readonly fingerprint: SessionSourceFingerprint;
+  readonly checkedAt: number;
+  readonly sequence: number;
+}
+
 export class SessionIndexProjector {
   private scanSlot: ScanSlot | undefined;
-  private fingerprintCache = new Map<string, { fingerprint: SessionSourceFingerprint; checkedAt: number }>();
+  private readonly fingerprintCache = new Map<string, CachedFingerprint>();
+  private fingerprintSequence = 0;
   private fingerprintGeneration: number | undefined;
   private fingerprintInvalidationEpoch = 0;
   private fullInvalidationEpoch = 0;
@@ -177,6 +205,8 @@ export class SessionIndexProjector {
         await Promise.all([
           queryStore.dropCollection(legacySessionCollection(legacyManifest.seq)),
           queryStore.dropCollection(legacySessionCountersCollection(legacyManifest.seq)),
+          queryStore.dropCollection(legacySessionSourcesCollection(legacyManifest.seq)),
+          queryStore.dropCollection(legacySessionWorkspaceSourcesCollection(legacyManifest.seq)),
         ]);
       } catch (error) {
         log.warn('failed to drop legacy session index generation', {
@@ -215,7 +245,8 @@ export class SessionIndexProjector {
       this.fingerprintGeneration = generation;
     }
     const changed = options?.changedSessions;
-    const nextFingerprintCache = changed === undefined ? new Map<string, { fingerprint: SessionSourceFingerprint; checkedAt: number }>() : new Map(this.fingerprintCache);
+    const nextFingerprintCache = new Map<string, CachedFingerprint>();
+    const sequence = ++this.fingerprintSequence;
     const invalidationEpoch = this.fingerprintInvalidationEpoch;
     const checkedAt = Date.now();
     const collection = sessionCollection(generation);
@@ -264,7 +295,7 @@ export class SessionIndexProjector {
         const fingerprint = reusable
           ? cached.fingerprint
           : await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log);
-        nextFingerprintCache.set(key, { fingerprint, checkedAt: reusable ? cached.checkedAt : checkedAt });
+        nextFingerprintCache.set(key, { fingerprint, checkedAt: reusable ? cached.checkedAt : checkedAt, sequence });
         return { sessionId, fingerprint };
       });
       const changedCandidates: string[] = [];
@@ -421,18 +452,17 @@ export class SessionIndexProjector {
     }
 
     const retainFingerprints = (): void => {
-      if (this.fingerprintGeneration !== generation) return;
-      if (invalidationEpoch !== this.fingerprintInvalidationEpoch) {
-        if (this.fullInvalidationEpoch > invalidationEpoch) {
-          nextFingerprintCache.clear();
-        } else {
-          for (const [key, epoch] of this.keyInvalidationEpochs) {
-            if (epoch > invalidationEpoch) nextFingerprintCache.delete(key);
-          }
+      if (this.fingerprintGeneration !== generation || this.fullInvalidationEpoch > invalidationEpoch) return;
+      for (const [key, entry] of nextFingerprintCache) {
+        if ((this.keyInvalidationEpochs.get(key) ?? 0) > invalidationEpoch) continue;
+        if ((this.fingerprintCache.get(key)?.sequence ?? 0) > sequence) continue;
+        this.fingerprintCache.set(key, entry);
+      }
+      if (changed === undefined) {
+        for (const [key, entry] of this.fingerprintCache) {
+          if (entry.sequence <= sequence && !nextFingerprintCache.has(key)) this.fingerprintCache.delete(key);
         }
       }
-      if (this.fingerprintInvalidationEpoch === invalidationEpoch) this.keyInvalidationEpochs.clear();
-      this.fingerprintCache = nextFingerprintCache;
     };
     if (options?.reuseFingerprints === true) retainFingerprints();
     return async () => {
@@ -464,6 +494,8 @@ export class SessionIndexProjector {
     const fingerprints = new Map<string, SessionSourceFingerprint>();
     const workspaceSources = new Map<string, SessionWorkspaceSource>();
     let sourceMaxMtimeMs = (await storage.mtime(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY)) ?? 0;
+    const maybeYield = createCooperativeYield();
+    let scannedCount = 0;
     for (const workspaceId of await listWorkspaceIds(storage, sessionsScope, log)) {
       const sessionIds = [
         ...await listSessionIds(storage, sessionsScope, workspaceId, log),
@@ -477,11 +509,14 @@ export class SessionIndexProjector {
           log,
         );
         const result = await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+        scannedCount += 1;
+        await maybeYield(scannedCount % COOPERATIVE_SCAN_ITEMS === 0);
         return { sessionId, fingerprint, result };
       });
       const activeSessionIds: string[] = [];
       const archivedSessionIds: string[] = [];
       for (const item of found) {
+        await maybeYield();
         sourceMaxMtimeMs = Math.max(
           sourceMaxMtimeMs,
           item.fingerprint.directMtimeMs,
@@ -504,12 +539,15 @@ export class SessionIndexProjector {
   }
 
   private async batchChunks(ops: Iterable<WriteOp>): Promise<void> {
+    const maybeYield = createCooperativeYield();
     let chunk: WriteOp[] = [];
     for (const op of ops) {
       chunk.push(op);
+      if ((chunk.length & 63) === 0) await maybeYield();
       if (chunk.length === WRITE_CHUNK) {
         await this.deps.queryStore.batch(chunk);
         chunk = [];
+        await maybeYield(true);
       }
     }
     if (chunk.length > 0) await this.deps.queryStore.batch(chunk);

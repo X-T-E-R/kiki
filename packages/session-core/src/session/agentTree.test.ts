@@ -23,6 +23,7 @@ import {
 } from './agentTree';
 import {
   liveSourcesFromAgentSnapshots,
+  mergeAgentViewIntoForest,
   rosterFromTranscriptAgents,
   rosterFromTranscriptResponse,
   sessionAgentForestFromAgentSnapshots,
@@ -2020,5 +2021,94 @@ describe('live agent status during partial history recovery', () => {
       status: "completed",
       busy: false,
     });
+  });
+
+  it("attributes branch-spawned subagents to the branch owner from transcript tasks and live branch view state", () => {
+    const branchSnapshot: AgentTranscriptSnapshot = {
+      items: [],
+      tasks: [{
+        taskId: "task-sub-1",
+        kind: "subagent",
+        state: "running",
+        detached: true,
+        agentId: "agent-285",
+        description: "Audit branch diff",
+        parentToolCallId: "call-run-1",
+        startedAt,
+        outputTail: "",
+      }],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    };
+    const branchRow: SnapshotSubagent = {
+      id: "branch-281",
+      agent_id: "branch-281",
+      session_id: "s1",
+      kind: "subagent",
+      parent_agent_id: "main",
+      description: "Polish right rail",
+      label: "Polish right rail",
+      is_branch: true,
+      branch_seed: "compact",
+      branch_sealed: false,
+      status: "running",
+      activity_status: "running",
+      status_source: "runtime",
+      live: true,
+      created_at: startedAt,
+    };
+
+    const fromSnapshots = sessionAgentForestFromAgentSnapshots(
+      new Map([["main", snapshot()], ["branch-281", branchSnapshot]]),
+      [branchRow],
+      new Set(["main", "branch-281"]),
+    );
+    expect(fromSnapshots.byId["branch-281"]?.childIds).toContain("agent-285");
+    expect(fromSnapshots.byId["agent-285"]?.parentAgentId).toBe("branch-281");
+
+    // Even before the session-level forest observes branch-281's snapshot,
+    // merging branch-281's own view state attaches its live subagents immediately.
+    const baseForest = sessionAgentForestFromAgentSnapshots(
+      new Map([["main", snapshot()]]),
+      [branchRow],
+      new Set(["main"]),
+    );
+    expect(baseForest.byId["branch-281"]?.childIds).toEqual([]);
+    const merged = mergeAgentViewIntoForest(baseForest, "branch-281", {
+      blocks: [{
+        kind: "subagent",
+        id: "subagent:agent-286",
+        subagentId: "agent-286",
+        parentAgentId: "branch-281",
+        parentToolCallId: "call-run-2",
+        name: "reviewer",
+        label: "Independent review",
+        description: "Independent review",
+        model: undefined,
+        thinkingEffort: undefined,
+        status: "running",
+        summary: undefined,
+        error: undefined,
+        endedAt: undefined,
+        toolCallCount: 0,
+        transcript: [],
+      }],
+      tasks: [{
+        id: "task-285",
+        session_id: "s1",
+        kind: "subagent",
+        agent_id: "agent-285",
+        description: "Audit branch diff",
+        status: "running",
+        created_at: startedAt,
+      }],
+    });
+    expect(merged.byId["branch-281"]?.isBranch).toBe(true);
+    expect(merged.byId["branch-281"]?.childIds).toEqual(["agent-285", "agent-286"]);
+    expect(merged.byId["agent-285"]?.parentAgentId).toBe("branch-281");
+    expect(merged.byId["agent-286"]?.parentAgentId).toBe("branch-281");
   });
 });

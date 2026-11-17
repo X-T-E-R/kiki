@@ -19,7 +19,7 @@
 import { useQuery } from '@tanstack/react-query';
 
 import type { ConnectionsFacade } from '@kiki/klient/http';
-import { formatPairingUri, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type ConnectionIdentity, type RemoteConnection, type SshRemoteProfile } from '@kiki/protocol';
+import { formatPairingUri, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type ConnectionIdentity, type RemoteConnection, type SpacePlatform, type SshRemoteProfile } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import type { KikiClient } from './client';
@@ -149,6 +149,24 @@ export interface RemoteSummaryView {
   readonly needsYou: number;
   readonly asOf: number | undefined;
   readonly stale: boolean;
+  readonly platform?: SpacePlatform;
+  readonly borrowableTools?: number;
+  readonly rttMs?: number;
+}
+
+export function spacePlatformLabel(platform: SpacePlatform): 'Windows' | 'Linux' | 'macOS';
+export function spacePlatformLabel(platform: SpacePlatform | undefined): 'Windows' | 'Linux' | 'macOS' | undefined;
+export function spacePlatformLabel(platform: SpacePlatform | undefined): 'Windows' | 'Linux' | 'macOS' | undefined {
+  switch (platform) {
+    case 'win32':
+      return 'Windows';
+    case 'linux':
+      return 'Linux';
+    case 'darwin':
+      return 'macOS';
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -163,6 +181,9 @@ export function remoteSummaryView(record: RemoteConnection, now = Date.now()): R
     needsYou: summary.value.needs_you_sessions,
     asOf: summary.lastSeen,
     stale: summary.stale || now - summary.lastSeen > REMOTE_SUMMARY_STALE_MS,
+    platform: summary.value.platform,
+    borrowableTools: summary.value.borrowable_tool_count,
+    rttMs: record.rttMs,
   };
 }
 

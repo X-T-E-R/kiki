@@ -113,7 +113,7 @@ export function railVisibility(agentId: string, surfaceAgentId: string): RailVis
     openAgent: !isMain && surfaceAgentId !== agentId,
     locateSpawn: !isMain,
     subagentStory: !isMain,
-    stopAll: isMain,
+    stopAll: isMain || surfaceAgentId === agentId,
     comms: isMain,
     taskOwner: isMain ? undefined : agentId,
   };
@@ -371,15 +371,16 @@ export function sessionGraph(input: {
   readonly mainState: { readonly busy: boolean; readonly turnStartedAt: number | undefined };
   readonly expanded: ReadonlySet<string>;
   readonly mainLabel: string;
+  readonly rootAgentId?: string;
 }): SessionGraph {
-  const { forest, pending, mainState, expanded, mainLabel } = input;
-  const branches = firstLevelBranchIds(forest);
+  const { forest, pending, mainState, expanded, mainLabel, rootAgentId = MAIN_AGENT_ID } = input;
+  const branches = firstLevelBranchIds(forest, rootAgentId);
   const rows: GraphRow[] = [];
   const everything: { state: FleetState; needsUser: boolean }[] = [];
   const mainStateWord: FleetState = mainState.busy ? 'running' : 'done';
   rows.push({
     kind: 'main',
-    id: MAIN_AGENT_ID,
+    id: rootAgentId,
     label: mainLabel,
     state: mainStateWord,
     startedAt: mainState.turnStartedAt,
@@ -412,7 +413,7 @@ export function sessionGraph(input: {
           label: node.label,
           state: node.state,
           needsUser: node.needsUser,
-          depth: depthIn(forest, node.id),
+          depth: depthIn(forest, node.id, rootAgentId),
           startedAt: node.startedAt,
           endedAt: node.endedAt,
           waitingSince: node.waitingSince,
@@ -441,23 +442,29 @@ export function sessionGraph(input: {
   return { rows, agentCount: everything.length, composition: compose(everything), from };
 }
 
-/** The main agent's first-level children, in dispatch order. */
-export function firstLevelBranchIds(forest: AgentForest): string[] {
+/** The root agent's first-level children, in dispatch order. */
+export function firstLevelBranchIds(forest: AgentForest, rootAgentId: string = MAIN_AGENT_ID): string[] {
+  if (rootAgentId !== MAIN_AGENT_ID) {
+    return (forest.byId[rootAgentId]?.childIds ?? []).filter((id) => {
+      const node = forest.byId[id];
+      return node !== undefined && node.isBranch !== true && node.branchSealed !== true;
+    });
+  }
   const main = forest.byId[MAIN_AGENT_ID];
   if (main !== undefined) return [...main.childIds];
   return forest.roots.map((node) => node.agentId).filter((id) => id !== MAIN_AGENT_ID);
 }
 
 /**
- * Levels below the main agent, which is the graph's root and draws no lane of
- * its own in the expanded rows. So a first-level branch is depth 1 and its
- * workers depth 2, which is also how far the label is indented.
+ * Levels below the graph's root agent, which draws no lane of its own in the
+ * expanded rows. So a first-level child is depth 1 and its workers depth 2,
+ * which is also how far the label is indented.
  */
-function depthIn(forest: AgentForest, agentId: string): number {
+function depthIn(forest: AgentForest, agentId: string, rootAgentId: string = MAIN_AGENT_ID): number {
   let depth = 0;
   let current: string | undefined = agentId;
   const seen = new Set<string>();
-  while (current !== undefined && current !== MAIN_AGENT_ID && !seen.has(current)) {
+  while (current !== undefined && current !== rootAgentId && !seen.has(current)) {
     seen.add(current);
     depth += 1;
     current = forest.byId[current]?.parentAgentId;
