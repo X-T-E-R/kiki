@@ -746,6 +746,28 @@ it('checks Ego Lite from the installed CLI and does not launch nodejs while list
   }
 });
 
+it.each(['status', 'connect'] as const)('preserves administrator stderr from a non-zero Ego %s probe and its cached status', async (action) => {
+  const diagnostic = 'ego lite closed the connection because ego-browser is running as administrator. Run ego-browser from a terminal that is not elevated.';
+  let rejected = true;
+  const spawn = vi.fn(async (_command: string, args: readonly string[] = []) => ({
+    stdout: Readable.from([args.includes('nodejs') && !rejected ? 'kiki-ego-ready\n' : '']),
+    stderr: Readable.from([args.includes('nodejs') && rejected ? `\u001b[31m${diagnostic}\u001b[0m\n    at file:///C:/Temp/ego-scripts/probe.mjs:1:1` : '']),
+    wait: async () => rejected ? 1 : 0, kill: async () => undefined, dispose: async () => undefined,
+  }));
+  const f = fixture({ hostProcess: { spawn } as never, hostFs: {
+    stat: async (file: string) => ({ isFile: file === 'C:/fixture/ego-browser.exe', isDirectory: false, size: 0 }),
+    mkdir: async () => {}, writeText: async () => {}, remove: async () => {}, readText: async () => '', readdir: async () => [],
+  } as never });
+  f.rows.push({ id: 'ego-lite', name: 'Ego Lite', type: 'ego-lite', enabled: true, cliPath: 'C:/fixture/ego-browser.exe' });
+  const failed = await (action === 'status' ? f.setup.status('ego-lite') : f.setup.connect('ego-lite', {}));
+  expect(failed).toMatchObject({ state: 'failed', error: `Ego Lite is not ready: ${diagnostic}` });
+  expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'failed', error: failed.error });
+  expect(spawn.mock.calls.filter((call) => call[1]?.includes('nodejs'))).toHaveLength(1);
+  expect(f.connect).not.toHaveBeenCalled();
+  rejected = false;
+  expect(await f.setup.connect('ego-lite', {})).toMatchObject({ state: 'ready', error: undefined });
+});
+
 it('reuses the chosen Ego Lite CLI when several programs are installed', async () => {
   Object.defineProperty(process, 'platform', { value: 'win32' });
   const chosen = 'C:/ego-b/ego-browser.exe';
@@ -1032,7 +1054,7 @@ async function readShortcut(host: HostProcessService, shortcutPath: string): Pro
   return { target, arguments: rest.join('\n') };
 }
 
-function pendingEgoFixture() {
+function pendingEgoFixture(diagnostic = '') {
   let mode: 'hang' | 'ready' = 'hang';
   const kills: ReturnType<typeof vi.fn>[] = [];
   const disposals: ReturnType<typeof vi.fn>[] = [];
@@ -1043,7 +1065,7 @@ function pendingEgoFixture() {
     const kill = vi.fn(async () => { finish(1); });
     const dispose = vi.fn(async () => {});
     if (node) { kills.push(kill); disposals.push(dispose); }
-    return { stdin: { end: vi.fn() }, stdout: Readable.from([node && mode === 'ready' ? 'kiki-ego-ready\n' : '']), stderr: Readable.from(['']), wait: () => wait, kill, dispose };
+    return { stdin: { end: vi.fn() }, stdout: Readable.from([node && mode === 'ready' ? 'kiki-ego-ready\n' : '']), stderr: Readable.from([node && mode === 'hang' ? diagnostic : '']), wait: () => wait, kill, dispose };
   });
   const f = fixture({ hostProcess: { spawn } as never, hostFs: {
     stat: async (file: string) => ({ isFile: file === 'C:/fixture/ego-browser.exe', isDirectory: false, size: 0 }),
@@ -1097,6 +1119,24 @@ it('shares and bounds Ego checks, keeps a timeout visible, and refreshes after t
     expect(await refreshed).toMatchObject({ state: 'ready', reason: 'ego_ready', checkedAt: expect.any(String) });
     expect(f.kills).toHaveLength(2);
     expect(f.kills[1]).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+
+it('includes emitted administrator stderr when the setup detection deadline aborts the probe', async () => {
+  vi.useFakeTimers();
+  const diagnostic = 'ego lite closed the connection because ego-browser is running as administrator. Run ego-browser from a terminal that is not elevated.';
+  const f = pendingEgoFixture(`\u001b[31m${diagnostic}\u001b[0m`);
+  try {
+    const pending = f.setup.status('ego-lite');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await pending).toMatchObject({ state: 'preparing' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await f.setup.status('ego-lite')).toMatchObject({
+      state: 'failed', error: `Ego Lite detection timed out after 5000ms: ${diagnostic}`,
+      steps: [{ id: 'detect', state: 'failed', detail: `Ego Lite detection timed out after 5000ms: ${diagnostic}` }],
+    });
+    expect(f.kills[0]).toHaveBeenCalledOnce();
+    expect(f.disposals[0]).toHaveBeenCalledOnce();
   } finally { vi.useRealTimers(); }
 });
 

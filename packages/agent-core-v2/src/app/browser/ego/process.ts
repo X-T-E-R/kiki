@@ -2,10 +2,15 @@ import type { Readable } from 'node:stream';
 
 import type { IHostProcessService } from '#/os/interface/hostProcess';
 
-async function readStream(stream: Readable): Promise<string> {
-  const chunks: Buffer[] = [];
+export interface EgoDetectionOutput {
+  readonly stdout: Buffer[];
+  readonly stderr: Buffer[];
+}
+
+async function readStream(stream: Readable, chunks: Buffer[]): Promise<string> {
+  const start = chunks.length;
   for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks.slice(start)).toString('utf8');
 }
 
 export async function runEgoDetectionCommand(
@@ -13,6 +18,7 @@ export async function runEgoDetectionCommand(
   command: string,
   args: readonly string[],
   signal?: AbortSignal,
+  output: EgoDetectionOutput = { stdout: [], stderr: [] },
 ): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
   signal?.throwIfAborted();
   const child = await processes.spawn(command, args, {
@@ -22,7 +28,7 @@ export async function runEgoDetectionCommand(
   child.stdin?.end?.();
   let cleanup: Promise<void> | undefined;
   let stop: (() => void) | undefined;
-  const work = Promise.all([child.wait(), readStream(child.stdout), readStream(child.stderr)]);
+  const work = Promise.all([child.wait(), readStream(child.stdout, output.stdout), readStream(child.stderr, output.stderr)]);
   const cancelled = new Promise<never>((_resolve, reject) => {
     stop = () => {
       cleanup ??= child.kill().then(() => child.dispose());
