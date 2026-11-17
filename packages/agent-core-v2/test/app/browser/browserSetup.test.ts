@@ -10,6 +10,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { BrowserError } from '#/app/browser/errors';
 import { IBrowserSetupService } from '#/app/browser/browserSetup';
 import { BrowserSetupService } from '#/app/browser/browserSetupService';
+import { extractEgoDiagnostic } from '#/app/browser/ego/resolveCli';
 import { CODEX_BRIDGE_PIN, codexBridgeResource, codexBridgeSelection, verifiedCodexBridge } from '#/app/browser/codexBrowser';
 import { CODEX_BRIDGE_FILE_SHA256, codexBridgeResourcePaths } from '#/app/capability/entries/browserResourceStore';
 import { browserSetupStatusSchema } from '@kiki/protocol';
@@ -768,6 +769,28 @@ it.each(['status', 'connect'] as const)('preserves administrator stderr from a n
   expect(await f.setup.connect('ego-lite', {})).toMatchObject({ state: 'ready', error: undefined });
 });
 
+it('keeps only a bounded diagnostic in the recent Ego probe cache key', async () => {
+  const output = `Error: ${'diagnostic '.repeat(5_000)}C:/Temp/ego-scripts/probe.mjs`;
+  const diagnostic = extractEgoDiagnostic(output);
+  const spawn = vi.fn(async () => ({ stdout: Readable.from(['']), stderr: Readable.from([output]), wait: async () => 1, kill: async () => {}, dispose: async () => {} }));
+  const f = fixture({ hostProcess: { spawn } as never, hostFs: {
+    stat: async (file: string) => ({ isFile: file === 'C:/fixture/ego-browser.exe', isDirectory: false, size: 0 }),
+    mkdir: async () => {}, writeText: async () => {}, remove: async () => {}, readText: async () => '', readdir: async () => [],
+  } as never });
+  f.rows.push({ id: 'ego-lite', name: 'Ego Lite', type: 'ego-lite', enabled: true, cliPath: 'C:/fixture/ego-browser.exe' });
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    expect(await f.setup.connect('ego-lite', {})).toMatchObject({ state: 'failed', error: `Ego Lite is not ready: ${diagnostic}` });
+    expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'failed' });
+    expect(stringify.mock.calls.map(([value]) => value)).toContainEqual([
+      expect.objectContaining({ id: 'ego-lite' }),
+      { kind: 'not_ready', cliPath: 'C:/fixture/ego-browser.exe', checkedAt: expect.any(String), diagnostic },
+    ]);
+    expect(diagnostic?.length).toBeLessThanOrEqual(400);
+    expect(spawn).toHaveBeenCalledOnce();
+  } finally { stringify.mockRestore(); }
+});
+
 it('reuses the chosen Ego Lite CLI when several programs are installed', async () => {
   Object.defineProperty(process, 'platform', { value: 'win32' });
   const chosen = 'C:/ego-b/ego-browser.exe';
@@ -1058,6 +1081,7 @@ function pendingEgoFixture(diagnostic = '') {
   let mode: 'hang' | 'ready' = 'hang';
   const kills: ReturnType<typeof vi.fn>[] = [];
   const disposals: ReturnType<typeof vi.fn>[] = [];
+  const remove = vi.fn(async () => {});
   const spawn = vi.fn(async (_command: string, args: readonly string[] = [], _options?: { ownedProcessTree?: boolean }) => {
     let finish: (code: number) => void = () => {};
     const node = args.includes('nodejs');
@@ -1069,10 +1093,10 @@ function pendingEgoFixture(diagnostic = '') {
   });
   const f = fixture({ hostProcess: { spawn } as never, hostFs: {
     stat: async (file: string) => ({ isFile: file === 'C:/fixture/ego-browser.exe', isDirectory: false, size: 0 }),
-    mkdir: async () => {}, writeText: async () => {}, remove: async () => {}, readText: async () => '', readdir: async () => [],
+    mkdir: async () => {}, writeText: async () => {}, remove, readText: async () => '', readdir: async () => [],
   } as never });
   f.rows.push({ id: 'ego-lite', name: 'Ego Lite', type: 'ego-lite', enabled: true, cliPath: 'C:/fixture/ego-browser.exe' });
-  return { ...f, detectionSpawn: spawn, kills, disposals, ready: () => { mode = 'ready'; } };
+  return { ...f, detectionSpawn: spawn, kills, disposals, remove, ready: () => { mode = 'ready'; }, hang: () => { mode = 'hang'; } };
 }
 
 it('returns the other presets while one Ego check is still running', async () => {
@@ -1137,6 +1161,64 @@ it('includes emitted administrator stderr when the setup detection deadline abor
     });
     expect(f.kills[0]).toHaveBeenCalledOnce();
     expect(f.disposals[0]).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
+});
+
+it.each(['kill', 'dispose', 'remove'] as const)('keeps Ego detection preparing during delayed %s and publishes the diagnostic after teardown', async (phase) => {
+  vi.useFakeTimers();
+  const diagnostic = 'ego-browser is running as administrator. Run from a terminal that is not elevated.';
+  const f = pendingEgoFixture(diagnostic);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    const first = f.setup.status('ego-lite');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await first).toMatchObject({ state: 'preparing' });
+    const delayed = phase === 'kill' ? f.kills[0] : phase === 'dispose' ? f.disposals[0] : f.remove;
+    if (delayed === undefined) throw new Error('missing teardown phase');
+    delayed.mockImplementationOnce(() => gate);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const during = f.setup.status('ego-lite');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await during).toMatchObject({ state: 'preparing', error: undefined, actions: [{ id: 'cancel' }] });
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'failed', error: `Ego Lite detection timed out after 5000ms: ${diagnostic}` });
+    expect(f.kills[0]).toHaveBeenCalledOnce();
+    expect(f.disposals[0]).toHaveBeenCalledOnce();
+    expect(f.remove).toHaveBeenCalledOnce();
+  } finally {
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+  }
+});
+
+it('returns and caches setup probe exceptions instead of retaining a previous ready result', async () => {
+  vi.useFakeTimers();
+  const diagnostic = 'ego-browser is running as administrator. Run from a terminal that is not elevated.';
+  const f = pendingEgoFixture(diagnostic);
+  try {
+    f.ready();
+    const ready = f.setup.connect('ego-lite', {});
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await ready).toMatchObject({ state: 'ready', error: undefined });
+    f.hang();
+    const failed = f.setup.connect('ego-lite', {});
+    await vi.advanceTimersByTimeAsync(5_000);
+    const status = await failed;
+    expect(status).toMatchObject({ state: 'failed', error: expect.stringContaining(`: ${diagnostic}`) });
+    expect(status.error).toContain('5000ms');
+    const calls = f.detectionSpawn.mock.calls.length;
+    expect(await f.setup.status('ego-lite')).toEqual(status);
+    expect(f.detectionSpawn).toHaveBeenCalledTimes(calls);
+    f.detectionSpawn.mockRejectedValueOnce(new Error('fixture spawn failed'));
+    expect(await f.setup.connect('ego-lite', {})).toMatchObject({ state: 'failed', error: 'fixture spawn failed' });
+    expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'failed', error: 'fixture spawn failed' });
+    f.ready();
+    const recovered = f.setup.connect('ego-lite', {});
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await recovered).toMatchObject({ state: 'ready', error: undefined });
   } finally { vi.useRealTimers(); }
 });
 

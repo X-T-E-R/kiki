@@ -7,10 +7,29 @@ export interface EgoDetectionOutput {
   readonly stderr: Buffer[];
 }
 
-async function readStream(stream: Readable, chunks: Buffer[]): Promise<string> {
+function readStream(stream: Readable, chunks: Buffer[]): Promise<string> {
   const start = chunks.length;
-  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  return Buffer.concat(chunks.slice(start)).toString('utf8');
+  return new Promise((resolve, reject) => {
+    const collect = (chunk: Buffer | string): void => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); };
+    const cleanup = (): void => {
+      stream.removeListener('data', collect);
+      stream.removeListener('end', finish);
+      stream.removeListener('close', finish);
+      stream.removeListener('error', fail);
+    };
+    const finish = (): void => {
+      cleanup();
+      resolve(Buffer.concat(chunks.slice(start)).toString('utf8'));
+    };
+    const fail = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    stream.once('end', finish);
+    stream.once('close', finish);
+    stream.once('error', fail);
+    stream.on('data', collect);
+  });
 }
 
 export async function runEgoDetectionCommand(
@@ -25,10 +44,12 @@ export async function runEgoDetectionCommand(
     shell: false, windowsHide: true, ownedProcessTree: signal === undefined ? undefined : true,
     ownedProcessLifetime: signal !== undefined && process.platform === 'win32' ? 'owner' : undefined,
   });
+  const stdout = readStream(child.stdout, output.stdout);
+  const stderr = readStream(child.stderr, output.stderr);
   child.stdin?.end?.();
   let cleanup: Promise<void> | undefined;
   let stop: (() => void) | undefined;
-  const work = Promise.all([child.wait(), readStream(child.stdout, output.stdout), readStream(child.stderr, output.stderr)]);
+  const work = Promise.all([child.wait(), stdout, stderr]);
   const cancelled = new Promise<never>((_resolve, reject) => {
     stop = () => {
       cleanup ??= child.kill().then(() => child.dispose());
@@ -38,9 +59,9 @@ export async function runEgoDetectionCommand(
     else signal?.addEventListener('abort', stop, { once: true });
   });
   try {
-    const [code, stdout, stderr] = await Promise.race([work, cancelled]);
+    const [code, stdoutText, stderrText] = await Promise.race([work, cancelled]);
     signal?.throwIfAborted();
-    return { code, stdout, stderr };
+    return { code, stdout: stdoutText, stderr: stderrText };
   } catch (error) {
     if (signal?.aborted === true) {
       await cleanup;

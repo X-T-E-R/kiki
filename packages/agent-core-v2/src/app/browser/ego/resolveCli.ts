@@ -52,8 +52,14 @@ export function extractEgoDiagnostic(output: string): string | undefined {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '')
     .split(/[\r\n]+/)
     .map((line) => line.replaceAll(EGO_READY_MARKER, '').trim())
-    .filter((line) => line !== '' && !/ego-scripts(?:[\\/]|%2f|%5c)|^at\s|^Node\.js v\d/i.test(line));
-  const diagnostic = [...new Set(lines)].join(' ').replace(/\s+/g, ' ').trim();
+    .filter((line) => !/^(?:at\s|\^+$|Node\.js v\d)|^[^\s:]+\.(?:[cm]?[jt]s):\d+(?::\d+)?$/i.test(line))
+    .map((line) => line
+      .replace(/(["'])(?:file:\/\/\/|[A-Za-z]:[\\/]|\/(?:tmp|var\/folders|Users|home)\/)[^\r\n]*?\1/gi, '<path>')
+      .replace(/file:\/\/\/[^\s<>"'),;]+/gi, '<path>')
+      .replace(/(?:[A-Za-z]:[\\/]|\/(?:tmp|var\/folders|Users|home)\/)(?:[^\\/\r\n<>"'),;]+[\\/])*[^\s\\/<>"'),;]+/gi, '<path>')
+      .replace(/(?:\.{1,2}[\\/])?ego-scripts(?:[\\/]|%2f|%5c)[^\s<>"'),;]+/gi, '<path>'))
+    .filter((line) => line !== '' && !/^<path>(?::\d+){0,2}$/.test(line));
+  const diagnostic = [...new Set(lines)].join(' ').replace(/\s+/g, ' ').trim().toWellFormed();
   if (diagnostic === '') return undefined;
   return diagnostic.length <= 400 ? diagnostic : `${sliceUtf16(diagnostic, 0, 399).trimEnd()}…`;
 }

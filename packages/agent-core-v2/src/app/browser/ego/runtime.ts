@@ -351,6 +351,10 @@ export class EgoBrowserRuntime {
       const flags = egoOutputFlags(first);
       if (!outcome.aborted && sdk !== undefined && outcome.code !== 0 && flags.sdkRejected && !flags.nameInUse && !flags.userInControl && parseMarker(first, PRELUDE) === undefined) {
         argv = egoArgv(serverName, scriptPath);
+        if (detectionOutput !== undefined) {
+          detectionOutput.stdout.length = 0;
+          detectionOutput.stderr.length = 0;
+        }
         outcome = await execute(argv);
       }
       cleanupConfirmed = true;
@@ -383,7 +387,7 @@ export class EgoBrowserRuntime {
     } catch (error) {
       if (error === signal.reason && error instanceof EgoProbeTimeoutError) {
         const diagnostic = extractEgoDiagnostic(`${Buffer.concat(captured.stdout).toString('utf8')}\n${Buffer.concat(captured.stderr).toString('utf8')}`);
-        if (diagnostic !== undefined) error.message = `${error.message}: ${diagnostic}`;
+        if (diagnostic !== undefined) error.message = `${error.message.replace(/\.$/, '')}: ${diagnostic}`;
       }
       throw error;
     } finally {

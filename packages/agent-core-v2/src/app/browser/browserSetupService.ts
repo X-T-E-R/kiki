@@ -28,7 +28,7 @@ import { IBrowserSetupService, type BrowserPresetId, type BrowserSetupConnectInp
 import { readWebbridgeStatus, probeWebbridgeConnection, WEBBRIDGE_COMMAND_ID } from './browserWebbridge';
 import { CODEX_BRIDGE_ADOPTION, codexBridgePipeName, codexBridgeSelection } from './codexBrowser';
 import { EgoBrowserRuntime, EgoProbeTimeoutError } from './ego/runtime';
-import { EGO_LITE_CONNECTION_ID, EGO_LITE_DOWNLOAD_URL, EGO_ONBOARDING_SENTENCE, egoNotReadyMessage } from './ego/resolveCli';
+import { EGO_LITE_CONNECTION_ID, EGO_LITE_DOWNLOAD_URL, EGO_ONBOARDING_SENTENCE, egoNotReadyMessage, extractEgoDiagnostic } from './ego/resolveCli';
 
 const KIMI_HELP = 'https://www.kimi.com/en/help/kimi-webbridge/kimi-webbridge-introduction';
 const CODEX_HELP = 'https://developers.openai.com/codex/app/chrome-extension';
@@ -115,7 +115,7 @@ export class BrowserSetupService extends Disposable implements IBrowserSetupServ
   private readonly errors = new Map<BrowserPresetId, string>();
   private readonly checked = new Map<BrowserPresetId, string>();
   private readonly egoRuntime: EgoBrowserRuntime;
-  private egoLast: { kind: 'ready' | 'onboarding' | 'not_ready'; cliPath: string; checkedAt: string; output: string } | undefined;
+  private egoLast: { kind: 'ready' | 'onboarding' | 'not_ready'; cliPath: string; checkedAt: string; diagnostic?: string } | undefined;
   private egoFlight: { key: string; controller: AbortController; work: Promise<void> } | undefined;
   private egoSnapshot: { key: string; status: BrowserSetupStatus; completedAt: number } | undefined;
   private independentConnectionId = INDEPENDENT_ID;
@@ -478,7 +478,6 @@ export class BrowserSetupService extends Disposable implements IBrowserSetupServ
         flight.work = (async () => {
           const timer = setTimeout(() => {
             const error = new EgoProbeTimeoutError('Ego Lite detection timed out after 5000ms');
-            if (this.egoFlight === flight) this.egoSnapshot = { key, status: this.egoDetectionStatus('failed', error.message), completedAt: Date.now() };
             controller.abort(error);
           }, EGO_DETECTION_TIMEOUT_MS);
           timer.unref?.();
@@ -521,7 +520,7 @@ export class BrowserSetupService extends Disposable implements IBrowserSetupServ
       const probed = await this.egoRuntime.probe(target, signal);
       if (probed.resolution.kind === 'found') {
         const kind = probed.kind === 'ready' || probed.kind === 'onboarding' ? probed.kind : 'not_ready';
-        probe = { kind, cliPath: probed.resolution.path, checkedAt: new Date().toISOString(), output: probed.output };
+        probe = { kind, cliPath: probed.resolution.path, checkedAt: new Date().toISOString(), diagnostic: extractEgoDiagnostic(probed.output) };
       }
     }
     const download = { id: 'open_instructions' as const, url: EGO_LITE_DOWNLOAD_URL, target: 'documentation' as const };
@@ -548,7 +547,7 @@ export class BrowserSetupService extends Disposable implements IBrowserSetupServ
       actions = [connect, download];
     } else if (probe?.kind === 'not_ready') {
       state = 'failed';
-      error = egoNotReadyMessage(probe.output);
+      error = egoNotReadyMessage(probe.diagnostic ?? '');
       actions = [connect, download];
     } else {
       state = 'needs_user_action';
@@ -571,10 +570,21 @@ export class BrowserSetupService extends Disposable implements IBrowserSetupServ
     const saved = resolved?.type === 'ego-lite' ? resolved : undefined;
     const base = saved ?? { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: input.name ?? 'Ego Lite', enabled: true };
     const requested = input.cliPath?.trim();
-    const probed = await this.egoRuntime.probe(requested !== undefined && requested !== '' ? { ...base, cliPath: requested } : base);
+    let probed: Awaited<ReturnType<EgoBrowserRuntime['probe']>>;
+    try {
+      probed = await this.egoRuntime.probe(requested !== undefined && requested !== '' ? { ...base, cliPath: requested } : base);
+    } catch (error) {
+      const flight = this.egoFlight;
+      flight?.controller.abort(new DOMException('Ego Lite detection superseded', 'AbortError'));
+      await flight?.work;
+      this.egoLast = undefined;
+      const status = this.egoDetectionStatus('failed', error instanceof Error ? error.message : 'Ego Lite check failed');
+      this.egoSnapshot = { key: JSON.stringify([resolved, undefined]), status, completedAt: Date.now() };
+      return status;
+    }
     if (probed.resolution.kind === 'found') {
       const kind = probed.kind === 'ready' || probed.kind === 'onboarding' ? probed.kind : 'not_ready';
-      this.egoLast = { kind, cliPath: probed.resolution.path, checkedAt: new Date().toISOString(), output: probed.output };
+      this.egoLast = { kind, cliPath: probed.resolution.path, checkedAt: new Date().toISOString(), diagnostic: extractEgoDiagnostic(probed.output) };
     } else this.egoLast = undefined;
     const found = probed.resolution.kind === 'found' ? probed.resolution.path : undefined;
     const selected = found !== undefined && requested !== undefined && requested !== '' && sameCliPath(found, requested);

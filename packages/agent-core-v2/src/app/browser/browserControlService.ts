@@ -205,7 +205,14 @@ export class BrowserControlService implements IBrowserControlService {
         failure: { code: 'browser.requires_action' }, error: resolution.kind === 'choose' ? 'Choose one Ego Lite CLI path' : 'Ego Lite is not installed' };
     }
     const draft = { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: 'Ego Lite', enabled: true, cliPath: resolution.path };
-    const probed = await this.ego.probe(draft, signal);
+    let probed: Awaited<ReturnType<EgoBrowserRuntime['probe']>>;
+    try {
+      probed = await this.ego.probe(draft, signal);
+    } catch (error) {
+      if (signal?.aborted && error === signal.reason) throw error;
+      return { browser: EGO_LITE_CONNECTION_ID, state: 'failed', executionHost: hostname(), generation: 0, ownership: 'external-browser', checkedAt: new Date().toISOString(),
+        failure: { code: 'browser.execution_failed' }, error: error instanceof Error ? error.message : 'Ego Lite check failed' };
+    }
     if (probed.kind !== 'ready') {
       const onboarding = probed.kind === 'onboarding';
       return { browser: EGO_LITE_CONNECTION_ID, state: 'requires_action', executionHost: hostname(), generation: 0, ownership: 'external-browser', checkedAt: new Date().toISOString(),
