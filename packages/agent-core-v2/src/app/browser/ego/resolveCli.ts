@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
+import { stripVTControlCharacters } from 'node:util';
 import { isAbsolute, join } from 'pathe';
+
+import { sliceUtf16 } from '#/_base/text/utf16';
 
 export const EGO_LITE_DOWNLOAD_URL = 'https://lite.ego.app/download?auto=1';
 export const EGO_LITE_CONNECTION_ID = 'ego-lite';
@@ -42,6 +45,28 @@ export function classifyEgoCheck(output: string): 'ready' | 'onboarding' | 'not_
   if (output.includes(EGO_ONBOARDING_SENTENCE)) return 'onboarding';
   if (output.includes(EGO_READY_MARKER)) return 'ready';
   return 'not_ready';
+}
+
+export function extractEgoDiagnostic(output: string): string | undefined {
+  const lines = stripVTControlCharacters(output)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '')
+    .split(/[\r\n]+/)
+    .map((line) => line.replaceAll(EGO_READY_MARKER, '').trim())
+    .filter((line) => !/^(?:at\s|\^+$|Node\.js v\d)|^[^\s:]+\.(?:[cm]?[jt]s):\d+(?::\d+)?$/i.test(line))
+    .map((line) => line
+      .replace(/(["'])(?:file:\/\/\/|[A-Za-z]:[\\/]|\/(?:tmp|var\/folders|Users|home)\/)[^\r\n]*?\1/gi, '<path>')
+      .replace(/file:\/\/\/[^\s<>"'),;]+/gi, '<path>')
+      .replace(/(?:[A-Za-z]:[\\/]|\/(?:tmp|var\/folders|Users|home)\/)(?:[^\\/\r\n<>"'),;]+[\\/])*[^\s\\/<>"'),;]+/gi, '<path>')
+      .replace(/(?:\.{1,2}[\\/])?ego-scripts(?:[\\/]|%2f|%5c)[^\s<>"'),;]+/gi, '<path>'))
+    .filter((line) => line !== '' && !/^<path>(?::\d+){0,2}$/.test(line));
+  const diagnostic = [...new Set(lines)].join(' ').replace(/\s+/g, ' ').trim().toWellFormed();
+  if (diagnostic === '') return undefined;
+  return diagnostic.length <= 400 ? diagnostic : `${sliceUtf16(diagnostic, 0, 399).trimEnd()}…`;
+}
+
+export function egoNotReadyMessage(output: string): string {
+  const diagnostic = extractEgoDiagnostic(output);
+  return diagnostic === undefined ? 'Ego Lite is not ready' : `Ego Lite is not ready: ${diagnostic}`;
 }
 
 function matchingRecords(records: readonly EgoUninstallRecord[]): EgoUninstallRecord[] {

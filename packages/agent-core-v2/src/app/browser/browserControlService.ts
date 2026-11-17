@@ -19,7 +19,7 @@ import type { BrowserRequestContext } from './codexBrowser';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { EgoBrowserRuntime, egoTabBody, egoUserOutput } from './ego/runtime';
-import { EGO_LITE_CONNECTION_ID, type EgoCliResolution } from './ego/resolveCli';
+import { EGO_LITE_CONNECTION_ID, egoNotReadyMessage, type EgoCliResolution } from './ego/resolveCli';
 
 interface LiveBrowser {
   connection: BrowserResolvedConnection;
@@ -205,11 +205,18 @@ export class BrowserControlService implements IBrowserControlService {
         failure: { code: 'browser.requires_action' }, error: resolution.kind === 'choose' ? 'Choose one Ego Lite CLI path' : 'Ego Lite is not installed' };
     }
     const draft = { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: 'Ego Lite', enabled: true, cliPath: resolution.path };
-    const probed = await this.ego.probe(draft, signal);
+    let probed: Awaited<ReturnType<EgoBrowserRuntime['probe']>>;
+    try {
+      probed = await this.ego.probe(draft, signal);
+    } catch (error) {
+      if (signal?.aborted && error === signal.reason) throw error;
+      return { browser: EGO_LITE_CONNECTION_ID, state: 'failed', executionHost: hostname(), generation: 0, ownership: 'external-browser', checkedAt: new Date().toISOString(),
+        failure: { code: 'browser.execution_failed' }, error: error instanceof Error ? error.message : 'Ego Lite check failed' };
+    }
     if (probed.kind !== 'ready') {
       const onboarding = probed.kind === 'onboarding';
       return { browser: EGO_LITE_CONNECTION_ID, state: 'requires_action', executionHost: hostname(), generation: 0, ownership: 'external-browser', checkedAt: new Date().toISOString(),
-        failure: { code: 'browser.requires_action' }, error: onboarding ? 'Please complete the onboarding process first' : 'Ego Lite is not ready' };
+        failure: { code: 'browser.requires_action' }, error: onboarding ? 'Please complete the onboarding process first' : egoNotReadyMessage(probed.output) };
     }
     if (!connect) {
       return { browser: EGO_LITE_CONNECTION_ID, state: 'idle', executionHost: hostname(), generation: 0, ownership: 'external-browser', checkedAt: new Date().toISOString() };
@@ -978,7 +985,7 @@ export class BrowserControlService implements IBrowserControlService {
       const choose = probed.kind === 'choose' || probed.kind === 'missing';
       live.status = { ...live.status, state: onboarding || choose ? 'requires_action' : 'failed', checkedAt,
         failure: { code: onboarding || choose ? 'browser.requires_action' : 'browser.execution_failed' },
-        error: onboarding ? 'Please complete the onboarding process first' : choose ? probed.kind === 'missing' ? 'Ego Lite is not installed' : 'Choose one Ego Lite CLI path' : 'Ego Lite is not ready' };
+        error: onboarding ? 'Please complete the onboarding process first' : choose ? probed.kind === 'missing' ? 'Ego Lite is not installed' : 'Choose one Ego Lite CLI path' : egoNotReadyMessage(probed.output) };
       return { ...live.status };
     } catch (error) {
       if (signal?.aborted && error === signal.reason) throw error;

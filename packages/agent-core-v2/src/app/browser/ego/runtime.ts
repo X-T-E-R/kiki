@@ -10,10 +10,10 @@ import type { BrowserResolvedConnection } from '#/app/browser/browserConfig';
 import { BrowserError } from '#/app/browser/errors';
 
 import { egoChildNames, egoFileExists, egoPathDelimiter, egoPathHits, readEgoUninstallRecords, readRegisteredEgoPath } from './hints';
-import { runEgoDetectionCommand } from './process';
+import { runEgoDetectionCommand, type EgoDetectionOutput } from './process';
 import {
   EGO_NAME_IN_USE, EGO_READY_MARKER, EGO_SDK_ENV, EGO_SPACE_FILE, EGO_USER_IN_CONTROL,
-  classifyEgoCheck, egoSpaceName, resolveEgoCli, type EgoCliResolution,
+  classifyEgoCheck, egoSpaceName, extractEgoDiagnostic, resolveEgoCli, type EgoCliResolution,
 } from './resolveCli';
 
 export interface EgoBound {
@@ -46,6 +46,12 @@ const TABS = 'KIKI_EGO_TABS ';
 const PAGE = 'KIKI_EGO_PAGE ';
 const REFUSED = 'KIKI_EGO_REFUSED';
 const EGO_PROBE_TIMEOUT_MS = 5_000;
+
+export class EgoProbeTimeoutError extends BrowserError {
+  constructor(message: string) {
+    super('browser.execution_failed', message);
+  }
+}
 
 const fileTails = new Map<string, Promise<unknown>>();
 
@@ -330,14 +336,14 @@ export class EgoBrowserRuntime {
     return file;
   }
 
-  async run(cli: string, connection: BrowserResolvedConnection, directory: string, source: string, signal?: AbortSignal, detection = false): Promise<EgoRunResult> {
+  async run(cli: string, connection: BrowserResolvedConnection, directory: string, source: string, signal?: AbortSignal, detectionOutput?: EgoDetectionOutput): Promise<EgoRunResult> {
     const scriptPath = await this.writeProgram(directory, source);
     let cleanupConfirmed = false;
     try {
       const sdk = await this.sdkPath();
       const serverName = connection.type === 'ego-lite' ? connection.serverName : undefined;
-      const execute = async (args: readonly string[]) => detection
-        ? { ...await runEgoDetectionCommand(this.processes, cli, args, signal), aborted: false }
+      const execute = async (args: readonly string[]) => detectionOutput !== undefined
+        ? { ...await runEgoDetectionCommand(this.processes, cli, args, signal, detectionOutput), aborted: false }
         : this.spawn(cli, args, signal);
       let argv = egoArgv(serverName, scriptPath, sdk);
       let outcome = await execute(argv);
@@ -345,6 +351,10 @@ export class EgoBrowserRuntime {
       const flags = egoOutputFlags(first);
       if (!outcome.aborted && sdk !== undefined && outcome.code !== 0 && flags.sdkRejected && !flags.nameInUse && !flags.userInControl && parseMarker(first, PRELUDE) === undefined) {
         argv = egoArgv(serverName, scriptPath);
+        if (detectionOutput !== undefined) {
+          detectionOutput.stdout.length = 0;
+          detectionOutput.stderr.length = 0;
+        }
         outcome = await execute(argv);
       }
       cleanupConfirmed = true;
@@ -353,13 +363,14 @@ export class EgoBrowserRuntime {
       cleanupConfirmed = signal?.aborted === true && error === signal.reason;
       throw error;
     } finally {
-      if (detection && cleanupConfirmed) await this.files.remove(scriptPath);
+      if (detectionOutput !== undefined && cleanupConfirmed) await this.files.remove(scriptPath);
     }
   }
 
   async probe(connection: BrowserResolvedConnection, callerSignal?: AbortSignal): Promise<{ readonly resolution: EgoCliResolution; readonly output: string; readonly kind: 'ready' | 'onboarding' | 'not_ready' | 'missing' | 'choose' }> {
     const deadline = new AbortController();
-    const timeoutError = new BrowserError('browser.execution_failed', 'Ego Lite probe timed out after 5000ms; check that the browser is started and onboarding is complete, then retry.');
+    const timeoutError = new EgoProbeTimeoutError('Ego Lite probe timed out after 5000ms; check that the browser is started and onboarding is complete, then retry.');
+    const captured: EgoDetectionOutput = { stdout: [], stderr: [] };
     const timer = setTimeout(() => deadline.abort(timeoutError), EGO_PROBE_TIMEOUT_MS);
     timer.unref?.();
     const signal = linkAbort(callerSignal, deadline.signal) ?? deadline.signal;
@@ -368,11 +379,17 @@ export class EgoBrowserRuntime {
       signal.throwIfAborted();
       if (resolution.kind !== 'found') return { resolution, output: '', kind: resolution.kind };
       const directory = join(tmpdir(), 'kiki-ego');
-      const result = await this.run(resolution.path, connection, directory, egoReadyScript(), signal, true);
+      const result = await this.run(resolution.path, connection, directory, egoReadyScript(), signal, captured);
       signal.throwIfAborted();
       const output = `${result.stdout}\n${result.stderr}`;
       if (result.aborted) throw callerSignal?.reason ?? deadline.signal.reason ?? new BrowserError('browser.execution_failed', 'Ego Lite check was cancelled');
       return { resolution, output, kind: classifyEgoCheck(output) };
+    } catch (error) {
+      if (error === signal.reason && error instanceof EgoProbeTimeoutError) {
+        const diagnostic = extractEgoDiagnostic(`${Buffer.concat(captured.stdout).toString('utf8')}\n${Buffer.concat(captured.stderr).toString('utf8')}`);
+        if (diagnostic !== undefined) error.message = `${error.message.replace(/\.$/, '')}: ${diagnostic}`;
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
     }

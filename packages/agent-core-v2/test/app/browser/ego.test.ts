@@ -19,9 +19,9 @@ import { toolApprovalRule } from '#/agent/tools/os/sshToolTarget';
 import type { Runtime } from '#/runtime/runtime';
 import { egoPathHits, parseEgoUninstallExport } from '#/app/browser/ego/hints';
 import {
-  classifyEgoCheck, egoSpaceName, resolveEgoCli, type EgoUninstallRecord,
+  classifyEgoCheck, egoNotReadyMessage, egoSpaceName, extractEgoDiagnostic, resolveEgoCli, type EgoUninstallRecord,
 } from '#/app/browser/ego/resolveCli';
-import { EgoBrowserRuntime, egoArgv, egoPrelude, egoProgram, egoReadyScript, egoTabBody } from '#/app/browser/ego/runtime';
+import { EgoBrowserRuntime, EgoProbeTimeoutError, egoArgv, egoPrelude, egoProgram, egoReadyScript, egoTabBody } from '#/app/browser/ego/runtime';
 import { runEgoDetectionCommand } from '#/app/browser/ego/process';
 
 const EXE = 'ego-browser.exe';
@@ -30,6 +30,7 @@ const versioned = join(root, '0.6.0.16', EXE);
 const child = join(root, 'app', EXE);
 const other = join('D:/Other', EXE);
 const saved = join('E:/saved', EXE);
+const administratorDiagnostic = 'ego lite closed the connection because ego-browser is running as administrator. Run ego-browser from a terminal that is not elevated.';
 
 function record(patch: Partial<EgoUninstallRecord> = {}): EgoUninstallRecord {
   return { displayName: 'ego (lite)', publisher: 'Citro Labs, Inc.', installLocation: root, displayVersion: '0.6.0.16', ...patch };
@@ -64,6 +65,52 @@ describe('Ego Lite CLI resolution', () => {
     expect(parseEgoUninstallExport(text)).toEqual([
       { displayName: 'ego (lite)', publisher: 'Citro Labs', installLocation: 'C:\\Ego', displayVersion: '0.6.0.16' },
     ]);
+  });
+
+  it('extracts concise diagnostics without terminal noise, ready markers, or internal script paths', () => {
+    const output = [
+      '\u001b]0;probe\u0007\u001b[31mkiki-ego-ready\u001b[0m\r',
+      `\u0000\u001b[31m${administratorDiagnostic}\u001b[0m\u0007`,
+      administratorDiagnostic,
+      '    at execute (file:///C:/Temp/ego-scripts/probe.mjs:1:1)',
+      'C:\\Temp Folder\\ego-scripts\\probe.mjs:1',
+      '/tmp/ego-scripts/probe.mjs:1',
+      'file:///C:/Temp%20Folder/ego-scripts%2Fprobe.mjs:1',
+      '    at processTicksAndRejections (node:internal/process/task_queues:105:5)',
+      'Node.js v24.22.2',
+      '^^^^^^',
+      'probe.mjs:1:1',
+    ].join('\n');
+    expect(extractEgoDiagnostic(output)).toBe(administratorDiagnostic);
+    expect(egoNotReadyMessage(output)).toBe(`Ego Lite is not ready: ${administratorDiagnostic}`);
+    expect(extractEgoDiagnostic('\n\u001b[32mkiki-ego-ready\u001b[0m\n\u0000')).toBeUndefined();
+    expect(egoNotReadyMessage('')).toBe('Ego Lite is not ready');
+    const long = extractEgoDiagnostic(`${'x'.repeat(398)}😀${'y'.repeat(20)}`);
+    expect(long).toBe(`${'x'.repeat(398)}…`);
+    expect(long?.length).toBeLessThanOrEqual(400);
+  });
+
+  it.each([
+    'file:///C:/Temp%20Folder/ego-scripts/probe.mjs:1:1',
+    'C:\\Users\\Example User\\Temp\\ego-scripts\\probe.mjs',
+    'C:/Users/Example User/Temp/ego-scripts/probe.mjs',
+    '/tmp/ego-scripts/probe.mjs',
+    '/var/folders/fixture/ego-scripts/probe.mjs',
+    '/Users/Example User/Temp/ego-scripts/probe.mjs',
+    '/home/example/ego-scripts/probe.mjs',
+    'ego-scripts/probe.mjs',
+    '"C:\\Users\\Example User\\config file.json"',
+    '"/home/example/config file.json"',
+  ])('redacts the inline path %s without losing the error or recovery text', (path) => {
+    expect(extractEgoDiagnostic(`Error: cannot open ${path}; restart the browser`)).toBe('Error: cannot open <path>; restart the browser');
+  });
+
+  it('replaces lone surrogates before returning or truncating diagnostic text', () => {
+    expect(extractEgoDiagnostic('Error: \ud800bad \udc00input')).toBe('Error: �bad �input');
+    const output = extractEgoDiagnostic(`${'x'.repeat(398)}\ud800tail`);
+    expect(output).toBe(`${'x'.repeat(398)}�…`);
+    expect(output?.isWellFormed()).toBe(true);
+    expect(output?.length).toBeLessThanOrEqual(400);
   });
 
   it('treats the onboarding sentence as not ready even when the marker is present', () => {
@@ -128,6 +175,68 @@ function marked(spaceId: string, closed = false, extra = ''): string {
 const connection = { id: 'ego-lite', type: 'ego-lite' as const, name: 'Ego Lite', enabled: true, cliPath: versioned, serverName: 'desk' };
 
 describe('Ego Lite runtime', () => {
+  it.each(['stdout', 'stderr'] as const)('keeps administrator diagnostics from a fast non-zero exit on %s', async (stream) => {
+    const { fs } = memoryFs([versioned]);
+    const proc = scripted(() => ({ code: 1, [stream]: administratorDiagnostic }));
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: '' }, 'linux');
+    expect(await runtime.probe(connection)).toMatchObject({ kind: 'not_ready', output: expect.stringContaining(administratorDiagnostic) });
+  });
+
+  it.each(['stdout', 'stderr'] as const)('includes partial %s diagnostics in a probe timeout after closing the owned process', async (stream) => {
+    vi.useFakeTimers();
+    const { files, fs } = memoryFs([versioned]);
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const kill = vi.fn(async () => { stdout.destroy(); stderr.destroy(); });
+    const dispose = vi.fn(async () => {});
+    const spawn = vi.fn(async () => ({ stdout, stderr, wait: () => new Promise<number>(() => {}), kill, dispose }));
+    const runtime = new EgoBrowserRuntime({ spawn } as unknown as IHostProcessService, {
+      ...fs, remove: async (file: string) => { files.delete(file); },
+    }, { PATH: '' }, 'linux');
+    const observed = runtime.probe(connection).catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const target = stream === 'stdout' ? stdout : stderr;
+      target.write('\u001b[31m');
+      target.write(administratorDiagnostic.slice(0, 65));
+      target.write(`${administratorDiagnostic.slice(65)}\u001b[0m\n    at file:///C:/Temp/ego-scripts/probe.mjs:1:1`);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await observed).toMatchObject({ code: 'browser.execution_failed', message: expect.stringContaining(`: ${administratorDiagnostic}`) });
+      expect(await observed).toMatchObject({ message: expect.stringContaining('5000ms') });
+      expect(String(await observed)).not.toContain('ego-scripts');
+      expect(String(await observed)).not.toContain('retry.:');
+      expect(kill).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+      expect([...files.keys()].some((file) => file.includes('ego-scripts'))).toBe(false);
+    } finally {
+      stdout.destroy();
+      stderr.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['', administratorDiagnostic])('keeps only the second attempt output when the SDK fallback times out: %s', async (diagnostic) => {
+    vi.useFakeTimers();
+    const sdk = join(root, 'sdk.js');
+    const { fs } = memoryFs([versioned, sdk]);
+    const proc = scripted((_command, args) => args.includes('--sdk-path')
+      ? { code: 1, stdout: 'unknown option --sdk-path', stderr: 'superseded first attempt' }
+      : { hang: true, stderr: diagnostic });
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: '', KIKI_EGO_SDK_PATH: sdk }, 'linux');
+    const observed = runtime.probe(connection).catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(proc.calls).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const error = await observed;
+      expect(error).toMatchObject({ code: 'browser.execution_failed', message: expect.stringContaining('5000ms') });
+      expect(String(error)).not.toMatch(/sdk-path|superseded|retry\.:/);
+      if (diagnostic !== '') expect(error).toMatchObject({ message: expect.stringContaining(`: ${diagnostic}`) });
+    } finally { vi.useRealTimers(); }
+  });
+
   it('writes a quoted prelude and retries a rejected sdk path once', async () => {
     const label = 'p"1\n;break';
     const source = egoProgram({ name: 'kiki-a', connectionId: 'ego-lite', label, profileId: 'pro"file' }, 'console.log("body")');
@@ -386,6 +495,65 @@ describe('Ego Lite control', () => {
       expect(browserConnectionRecord(configs.get('ego-lite')!)).toEqual({ id: 'ego-lite', name: 'Ego Lite', enabled: true, type: 'ego-lite', cliPath: exe, profileId: undefined, serverName: undefined });
       expect(browserConnectionRecord(configs.get('ego-lite')!)).not.toHaveProperty('endpointDisplay');
     } finally { await ix.dispose(); }
+  });
+
+  it.each(['connect', 'check', 'discovered'] as const)('reports administrator stderr from a fast non-zero %s probe', async (action) => {
+    const previous = process.env['PATH'];
+    process.env['PATH'] = join(root, '0.6.0.16');
+    const { fs } = memoryFs([versioned]);
+    const proc = scripted((_command, args) => args.includes('nodejs') ? { code: 1, stderr: `\u001b[31m${administratorDiagnostic}\u001b[0m` } : {});
+    const ix = new TestInstantiationService();
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IHostProcessService, proc.service);
+    ix.stub(IHostFileSystem, fs);
+    ix.stub(IBrowserBackendFactory, { open: vi.fn() });
+    ix.stub(IBrowserConnectionStore, {
+      list: async () => ({ connections: action === 'discovered' ? [] : [browserConnectionRecord(connection)] }),
+      resolve: async () => connection,
+    });
+    ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
+    const control = ix.get(IBrowserControlService);
+    try {
+      const result = await (action === 'discovered' ? control.probeDiscovered(false) : control[action](connection.id));
+      expect(result).toMatchObject({ error: `Ego Lite is not ready: ${administratorDiagnostic}` });
+      expect(result.state).toBe(action === 'discovered' ? 'requires_action' : 'failed');
+    } finally {
+      await ix.dispose();
+      if (previous === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = previous;
+    }
+  });
+
+  it('returns structured failures for unsaved discovered probes and preserves caller cancellation', async () => {
+    const ix = new TestInstantiationService();
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IHostProcessService, { spawn: vi.fn() });
+    ix.stub(IHostFileSystem, memoryFs([versioned]).fs);
+    ix.stub(IBrowserBackendFactory, { open: vi.fn() });
+    const upsert = vi.fn();
+    ix.stub(IBrowserConnectionStore, { list: async () => ({ connections: [] }), upsert });
+    ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
+    const control = ix.get(IBrowserControlService);
+    const resolution = vi.spyOn(EgoBrowserRuntime.prototype, 'resolve').mockResolvedValue({ kind: 'found', path: versioned });
+    const probe = vi.spyOn(EgoBrowserRuntime.prototype, 'probe');
+    try {
+      for (const error of [new EgoProbeTimeoutError(`Ego Lite probe timed out after 5000ms: ${administratorDiagnostic}`), new Error('fixture spawn failed')]) {
+        probe.mockRejectedValueOnce(error);
+        expect(await control.probeDiscovered(true)).toMatchObject({
+          browser: 'ego-lite', state: 'failed', generation: 0, ownership: 'external-browser', checkedAt: expect.any(String),
+          failure: { code: 'browser.execution_failed' }, error: error.message,
+        });
+      }
+      const caller = new AbortController();
+      const reason = new Error('fixture caller cancellation');
+      probe.mockImplementationOnce(async () => { caller.abort(reason); throw reason; });
+      await expect(control.probeDiscovered(true, caller.signal)).rejects.toBe(reason);
+      expect(upsert).not.toHaveBeenCalled();
+    } finally {
+      probe.mockRestore();
+      resolution.mockRestore();
+      await ix.dispose();
+    }
   });
 
   it('times out a direct connect probe, kills once, and removes its temporary script', async () => {
@@ -710,12 +878,17 @@ it('reports the detection deadline instead of a stream error caused by confirmed
   const dispose = vi.fn(async () => { stdout.destroy(); stderr.destroy(); });
   const kill = vi.fn(async () => { stdout.destroy(); stderr.destroy(); });
   const spawn = vi.fn(async () => ({ stdout, stderr, wait: () => new Promise(() => {}), kill, dispose }));
-  const pending = runEgoDetectionCommand({ spawn } as never, 'fixture-cli', [], controller.signal);
+  const captured = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+  const pending = runEgoDetectionCommand({ spawn } as never, 'fixture-cli', [], controller.signal, captured);
   const observed = pending.catch((error: unknown) => error);
-  await vi.waitFor(() => { expect(spawn).toHaveBeenCalledOnce(); });
+  await vi.waitFor(() => { expect(stdout.listenerCount('data')).toBe(1); expect(stderr.listenerCount('data')).toBe(1); });
   const deadline = new Error('fixture detection deadline');
+  stdout.write('fixture output');
+  stderr.write(administratorDiagnostic);
   controller.abort(deadline);
   expect(await observed).toBe(deadline);
+  expect(Buffer.concat(captured.stdout).toString('utf8')).toBe('fixture output');
+  expect(Buffer.concat(captured.stderr).toString('utf8')).toBe(administratorDiagnostic);
   expect(dispose).toHaveBeenCalledOnce();
 });
 
