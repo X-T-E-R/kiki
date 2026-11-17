@@ -34,6 +34,7 @@ import { ChatProviderError } from '#/kosong/contract/errors';
 import { IConfigService } from '#/app/config/config';
 import { LOOP_CONTROL_SECTION } from '#/agent/loop/configSection';
 import { IAgentTaskService, type AgentTaskInfo } from '#/agent/task/task';
+import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import { QuestionBackgroundTask } from '#/agent/tools/ask-user-question/question-background-task';
 import { escapeXml } from '#/_base/utils/xml-escape';
@@ -1895,22 +1896,31 @@ describe('interrupted background subagent recovery', () => {
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  async function restart(options: { held?: boolean; archived?: boolean; task?: Partial<Extract<AgentTaskInfo, { kind: 'agent' }>> } = {}) {
+  async function restart(options: { held?: boolean; archived?: boolean; ownerId?: string; task?: Partial<Extract<AgentTaskInfo, { kind: 'agent' }>> } = {}) {
     if (options.held) {
       await ctx.get(ISessionExecutionControl).pause({ operationId: 'pause-before-restart' });
       await vi.waitFor(async () => expect((await ctx.get(ISessionExecutionControl).read()).phase).toBe('paused'));
     }
     if (options.archived) await ctx.get(ISessionMetadata).setArchived(true);
     const records = await ctx.persistedWireRecords();
-    await ctx.dispose();
-    await createAgentTaskPersistence(home).writeTask({
+    const ownerId = options.ownerId ?? 'main';
+    const session = ctx.get(ISessionContext);
+    const agentScope = session.scope(`agents/${ownerId}`);
+    const persistence = new AgentTaskPersistence(join(session.sessionDir, 'agents', ownerId), agentScope,
+      ctx.get(IAtomicDocumentStore), ctx.get(IFileSystemStorageService));
+    const task: Extract<AgentTaskInfo, { kind: 'agent' }> = {
       kind: 'agent', taskId: 'agent-restart0', agentId: 'child-interrupted',
       description: 'inspect existing work', collaborationTaskName: 'recovery_worker',
       executorId: 'native', executorProtocol: 'native', status: 'running',
-      detached: true, ownerAgentId: 'main', startedAt: 1, endedAt: null,
+      detached: true, ownerAgentId: ownerId, startedAt: 1, endedAt: null,
       ...options.task,
-    });
-    ctx = createTestAgent(homeDirServices(home), taskServices());
+    };
+    if (task.status === 'completed') await persistence.commitTerminalTask(task, 'Persisted child receipt.');
+    else await persistence.writeTask(task);
+    await ctx.dispose();
+    ctx = createTestAgent(homeDirServices(home), taskServices(), agentService(IAgentScopeContext, makeAgentScopeContext({
+      agentId: ownerId, agentScope, parentAgentId: options.ownerId === undefined ? undefined : 'main',
+    })));
     ctx.mockNextResponse({ type: 'text', text: 'Inspect the interrupted child before resuming it.' });
     await ctx.restore(records);
     return ctx.get(IAgentTaskService) as TaskServiceTestManager;
@@ -1957,11 +1967,102 @@ describe('interrupted background subagent recovery', () => {
     expect(ctx.get(IAgentTaskService).getTask('agent-restart0')?.status).toBe('lost');
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('queues a lost grandchild for the parent-authorized child resume without starting an autonomous turn', async () => {
+    const tasks = await restart({ ownerId: 'sub-parent', task: { agentId: 'grandchild-interrupted' } });
+    const loop = ctx.get(IAgentLoopService);
+    expect(tasks.getTask('agent-restart0')?.status).toBe('lost');
+    expect(loop.status()).toMatchObject({ state: 'idle', hasPendingRequests: true });
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(notifiedCount(ctx)).toBe(0);
+    const handle = await ctx.get(IAgentPromptService).enqueue({ message: {
+      role: 'user', content: [{ type: 'text', text: 'Inspect the saved grandchild work and continue.' }], toolCalls: [],
+    } });
+    expect(await handle.completion).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+    await loop.settled();
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(JSON.stringify(ctx.llmCalls[0]!.history)).toContain('grandchild-interrupted');
+    expect(notifiedCount(ctx)).toBe(1);
+    expect(loop.status().hasPendingRequests).toBe(false);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('passively restores a lost-subagent notification across undo without launching another turn', async () => {
+    const tasks = await restart();
+    const loop = ctx.get(IAgentLoopService);
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await loop.settled();
+    const calls = ctx.llmCalls.length;
+    ctx.mockNextResponse({ type: 'text', text: 'An undo must not start this response.' });
+    await ctx.get(IAgentConversationUndoService).undo(1);
+    await loop.settled();
+    expect(ctx.llmCalls).toHaveLength(calls);
+    expect(tasks.getTask('agent-restart0')?.status).toBe('lost');
+    expect(loop.status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
+    expect(notifiedCount(ctx)).toBe(2);
+    expect(ctx.context.get().filter(message => message.origin?.kind === 'task' && message.origin.taskId === 'agent-restart0')).toHaveLength(1);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('injects an undelivered lost-subagent notification into the first requested step without adding a second step', async () => {
+    const tasks = ctx.get(IAgentTaskService) as TaskServiceTestManager;
+    await createAgentTaskPersistence(home).commitTerminalTask({
+      kind: 'agent', taskId: 'agent-step0001', agentId: 'child-interrupted',
+      description: 'inspect saved work', executorId: 'native', status: 'lost',
+      detached: true, ownerAgentId: 'main', startedAt: 1, endedAt: 2,
+    });
+    await tasks.loadFromDisk();
+    const calls = ctx.llmCalls.length;
+    ctx.mockNextResponse({ type: 'text', text: 'The saved interruption was included in this step.' });
+    ctx.mockNextResponse({ type: 'text', text: 'There must not be a second step.' });
+    const handle = await ctx.get(IAgentPromptService).enqueue({ message: {
+      role: 'user', content: [{ type: 'text', text: 'Check the background task status.' }], toolCalls: [],
+    } });
+    expect(await handle.completion).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+    await ctx.get(IAgentLoopService).settled();
+    expect(ctx.llmCalls).toHaveLength(calls + 1);
+    expect(JSON.stringify(ctx.llmCalls[calls]!.history)).toContain('agent-step0001');
+    expect(notifiedCount(ctx)).toBe(1);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each([
+    { status: 'running', held: false },
+    { status: 'completed', held: false },
+    { status: 'running', held: true },
+    { status: 'completed', held: true },
+  ] as const)('does not pin archived $status results and delivers once after unarchive with held=$held', async ({ status, held }) => {
+    const tasks = await restart({ archived: true, task: { status, endedAt: status === 'completed' ? 2 : null } });
+    const loop = ctx.get(IAgentLoopService);
+    const control = ctx.get(ISessionExecutionControl);
+    const metadata = ctx.get(ISessionMetadata);
+    expect(tasks.getTask('agent-restart0')).toMatchObject({ status: status === 'completed' ? 'completed' : 'lost', receiptVerification: 'verified' });
+    expect(tasks.hasUnfinishedWork()).toBe(false);
+    expect(ctx.get(ISessionActivityView).state().busy).toBe(false);
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(notifiedCount(ctx)).toBe(0);
+    if (held) {
+      await control.pause({ operationId: 'hold-unarchive' });
+      await vi.waitFor(async () => expect((await control.read()).phase).toBe('paused'));
+    }
+    await metadata.setArchived(false);
+    if (held) {
+      expect(ctx.llmCalls).toHaveLength(0);
+      expect(notifiedCount(ctx)).toBe(0);
+      await control.resume({ operationId: 'release-unarchive', pauseOperationId: 'hold-unarchive' });
+    }
+    await vi.waitFor(() => expect(notifiedCount(ctx)).toBe(1));
+    await loop.settled();
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(tasks.hasUnfinishedWork()).toBe(false);
+    await metadata.setArchived(false);
+    await tasks.reconcile();
+    await loop.settled();
+    expect(notifiedCount(ctx)).toBe(1);
+    expect(ctx.llmCalls).toHaveLength(1);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it.each([
     { archived: true },
     { task: { ownerAgentId: 'another-parent' } },
     { task: { detached: false } },
-    { task: { status: 'completed' as const, endedAt: 2 } },
+    { archived: true, task: { status: 'completed' as const, endedAt: 2 } },
     { task: { terminalNotificationSuppressed: true } },
   ])('does not wake an archived parent or an unrelated, foreground, completed or suppressed task: %j', async (options) => {
     await restart(options);

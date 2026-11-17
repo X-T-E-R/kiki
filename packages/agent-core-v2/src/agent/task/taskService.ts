@@ -319,6 +319,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private restoreRecovery: Promise<void> | undefined;
   private restoreDisposed = false;
   private restorePending = false;
+  private unarchiveRecoveryPending = false;
 
   private fireWorkChange(): void {
     this._onDidChangeWork.fire();
@@ -421,10 +422,23 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       ),
     );
     this._register(this.executionControl.onDidChange((state) => {
-      if (state.phase === 'running' && this.restorePending) {
+      if (state.phase !== 'running') return;
+      if (this.restorePending) {
         void this.resumeRestoration().catch(error => this.log.error('agent task restoration failed', { error }));
+      } else if (this.unarchiveRecoveryPending) {
+        void this.restoreAgentTaskNotifications(true).catch(error => this.log.error('unarchived task notification recovery failed', { error }));
       }
     }));
+    if (this.sessionMetadata !== undefined) {
+      this._register(this.sessionMetadata.onDidChangeMetadata(({ changed }) => {
+        if (!changed.includes('archived') || this.restoreDisposed) return;
+        this.unarchiveRecoveryPending = this.sessionMetadata?.snapshot().archived === false;
+        this.fireWorkChange();
+        if (this.unarchiveRecoveryPending && !this.executionControl.isHeld()) {
+          void this.restoreAgentTaskNotifications(true).catch(error => this.log.error('unarchived task notification recovery failed', { error }));
+        }
+      }));
+    }
   }
 
   private get ghosts(): Map<string, AgentTaskInfo> {
@@ -815,16 +829,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   hasUnfinishedWork(includeRestoration = true): boolean {
     if (includeRestoration && this.restorePending) return true;
+    const notificationsEnabled = this.sessionMetadata?.snapshot().archived !== true;
     for (const entry of this.tasks.values()) {
       if (entry.options.lifetime === 'service') continue;
       if (!TERMINAL_STATUSES.has(entry.status) || entry.cleanupFailure !== undefined) return true;
-      if (entry.visible && this.isDetached(entry) && !this.isTerminalNotificationSuppressed(entry.taskId) &&
+      if (notificationsEnabled && entry.visible && this.isDetached(entry) && !this.isTerminalNotificationSuppressed(entry.taskId) &&
         !this.deliveredNotificationKeys.has(entry.taskId)) return true;
     }
     for (const info of this.ghosts.values()) {
-      if (info.lifetime !== 'service' && this.hasUndeliveredTaskNotification(info)) return true;
+      if (notificationsEnabled && info.lifetime !== 'service' && this.hasUndeliveredTaskNotification(info)) return true;
     }
-    return this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0 ||
+    return (notificationsEnabled && (this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0)) ||
       this.pendingWaitDeliveries.size > 0;
   }
 
@@ -2041,7 +2056,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private isInterruptedBackgroundSubagent(info: AgentTaskInfo): boolean {
-    return info.kind === 'agent' && info.status === 'lost' && info.detached === true &&
+    return this.scopeContext.parentAgentId === undefined &&
+      info.kind === 'agent' && info.status === 'lost' && info.detached === true &&
       info.ownerAgentId === this.scopeContext.agentId && info.agentId !== undefined;
   }
 
@@ -2068,9 +2084,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     }
   }
 
-  private restoreAgentTaskNotifications(): Promise<void> {
+  private restoreAgentTaskNotifications(notify = false): Promise<void> {
     const restore = this.notificationRestoreQueue.then(() =>
-      this.restoreAgentTaskNotificationsNow(),
+      this.restoreAgentTaskNotificationsNow(notify),
     );
     this.notificationRestoreQueue = restore.catch(() => {});
     return restore;
@@ -2082,7 +2098,12 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       !this.isTerminalNotificationSuppressed(info.taskId) && !this.deliveredNotificationKeys.has(info.taskId);
   }
 
-  private async restoreAgentTaskNotificationsNow(): Promise<void> {
+  private async restoreAgentTaskNotificationsNow(notify: boolean): Promise<void> {
+    if (this.restoreDisposed || this.exitSuppressionArmed) return;
+    await this.sessionMetadata?.ready;
+    if (this.restoreDisposed || this.exitSuppressionArmed || this.sessionMetadata?.snapshot().archived === true ||
+      (notify && (!this.unarchiveRecoveryPending || this.executionControl.isHeld()))) return;
+    if (notify || this.restorePending) this.unarchiveRecoveryPending = false;
     const delivery = {};
     const candidates = this.list(false).filter(info => this.hasUndeliveredTaskNotification(info));
     const ordinaryCount = candidates.filter((info) => info.kind !== 'question').length;
@@ -2090,12 +2111,15 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       remainingBytes: NOTIFICATION_BATCH_PREVIEW_BYTES,
       perTaskBytes: Math.max(4, Math.floor(NOTIFICATION_BATCH_PREVIEW_BYTES / Math.max(1, ordinaryCount))),
     });
-    for (const info of candidates) await this.restoreAgentTaskNotification(info, delivery);
+    for (const info of candidates) {
+      if (notify) await this.notifyAgentTask(info);
+      else await this.restoreAgentTaskNotification(info, delivery);
+    }
   }
 
   private async restoreAgentTaskNotification(info: AgentTaskInfo, delivery: object): Promise<void> {
     if (this.restoreDisposed || this.exitSuppressionArmed) return;
-    if (this.restorePending || this.isInterruptedBackgroundSubagent(info)) return this.notifyAgentTask(info);
+    if (this.restorePending) return this.notifyAgentTask(info);
     const context = await this.buildAgentTaskNotificationContext(info);
     if (context === undefined) return;
     const externalMain = await this.isExternalClientMain();

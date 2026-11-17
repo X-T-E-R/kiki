@@ -1010,6 +1010,7 @@ describe('AgentTaskService', () => {
 
   it('records external-main task notifications without enqueueing a model step', async () => {
     ix.stub(ISessionMetadata, {
+      onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'],
       snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
       read: async () => ({
         id: 'test-session',
@@ -1991,6 +1992,7 @@ describe('AgentTaskService', () => {
       resumePoint: (id: string) => (id === 'agent-paused' ? ({ agentId: id } as never) : undefined),
     });
     freshIx.stub(ISessionMetadata, {
+      onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'],
       snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
       read: async () => ({
         id: 'test-session',
@@ -2413,7 +2415,7 @@ describe('AgentTaskService', () => {
     const controlServices = () => createServices(disposables, { additionalServices: reg => {
       reg.definePartialInstance(IAtomicDocumentStore, docs);
       reg.definePartialInstance(ISessionContext, session);
-      reg.definePartialInstance(ISessionMetadata, { update: async () => {}, snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents: { 'receipt-owner': { parentAgentId: 'main' }, main: { parentAgentId: null }, idle: { parentAgentId: null } } }) });
+      reg.definePartialInstance(ISessionMetadata, { onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'], update: async () => {}, snapshot: () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents: { 'receipt-owner': { parentAgentId: 'main' }, main: { parentAgentId: null }, idle: { parentAgentId: null } } }) });
       reg.definePartialInstance(IAgentLifecycleService, { list: () => [...agentHandles.values()], get: id => agentHandles.get(id), create });
       reg.define(ISessionExecutionControl, SessionExecutionControl);
     } });
