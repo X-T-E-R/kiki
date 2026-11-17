@@ -957,6 +957,7 @@ describe('ProfileHead inherited external effort', () => {
     expect(line?.textContent).toContain('fallback-model');
     expect(line?.textContent).not.toContain('example-model');
     expect(container.querySelector('[data-rail-profile-name]')?.textContent).toBe('example-profile');
+    expect(container.querySelector('[data-rail-profile-head] svg')).not.toBeNull();
 
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-rail-profile-name]')!.click(); });
     await settle();

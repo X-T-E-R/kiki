@@ -238,7 +238,89 @@ describe('SessionController suspend / resume', () => {
     expect(outcome.kind).toBe('cancelled');
     expect(controller.getState().loadingOlder).toBe(false);
     expect(controller.suspended).toBe(false);
+    expect(controller.parked).toBe(true);
     expect(attachments[0]!.closed).toBe(false);
+    controller.close();
+  });
+
+  it('keeps contentReaders and lookupToolCall from re-entering HistoryReadLane while parked until unparked', async () => {
+    const { controller, deliver } = harness();
+    await controller.open();
+
+    let structureCalls = 0;
+    let structureAborts = 0;
+    let toolCalls = 0;
+    let toolAborts = 0;
+    const view = (controller as unknown as { view: SessionViewFacade }).view;
+    view.transcript.page = vi.fn<SessionViewFacade['transcript']['page']>(
+      (_input, options) => {
+        structureCalls += 1;
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            structureAborts += 1;
+            reject(options.signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+          });
+        });
+      },
+    );
+    view.transcript.detail = vi.fn<NonNullable<SessionViewFacade['transcript']['detail']>>(
+      (_input, options) => {
+        toolCalls += 1;
+        const callNo = toolCalls;
+        return new Promise((resolve, reject) => {
+          if (callNo === 1) {
+            options?.signal?.addEventListener('abort', () => {
+              toolAborts += 1;
+              reject(options.signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+            });
+            return;
+          }
+          resolve({
+            session_id: 'session_test',
+            agent_id: 'main',
+            kind: 'tool',
+            lookup: { status: 'not_found' },
+          });
+        });
+      },
+    );
+
+    const partialSnap = userTurnSnapshot({ assistantText: 'Streaming busy turn' });
+    const patchedSnap = {
+      ...partialSnap,
+      items: partialSnap.items.map((item) =>
+        item.kind === 'turn' ? { ...item, stepsPartial: true } : item,
+      ),
+    };
+    deliver(resetEvent('main', patchedSnap, 3, true));
+
+    const reader = controller.beginContentRead('main', { kind: 'turn', id: 't1' }, ['steps']);
+    await vi.waitFor(() => expect(structureCalls).toBe(1));
+
+    const pendingTool = controller.lookupToolCall('main', 'tc_parked');
+    await vi.waitFor(() => expect(toolCalls).toBe(1));
+
+    // Parking the busy session aborts in-flight structure + tool reads cleanly.
+    controller.cancelParkedReads();
+    expect(controller.parked).toBe(true);
+    expect(structureAborts).toBe(1);
+    expect(toolAborts).toBe(1);
+    await expect(pendingTool).rejects.toMatchObject({ name: 'AbortError' });
+
+    // Live ops arriving while parked must NOT re-pump retained contentReaders into HistoryReadLane.
+    deliver(opsEvent('main', appendOps(5, ' more live text'), 4));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(structureCalls).toBe(1);
+
+    // Unparking resumes pumping retained contentReaders and allows clean tool detail re-fetches.
+    controller.unpark();
+    expect(controller.parked).toBe(false);
+    await vi.waitFor(() => expect(structureCalls).toBe(2));
+    const retriedTool = await controller.lookupToolCall('main', 'tc_parked');
+    expect(toolCalls).toBe(2);
+    expect(retriedTool.status).toBe('not_found');
+
+    reader.release();
     controller.close();
   });
 });

@@ -45,7 +45,7 @@
     "desktop:shortcuts:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-release.ps1 -Action InstallShortcuts",
     "desktop:shortcuts": "pnpm desktop:shortcuts:dev",
     "desktop:release:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-release.test.ps1",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node --max-old-space-size=8192 ../../node_modules/typescript/bin/tsc --noEmit",
     "test": "vitest run",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
     "test:integration": "vitest run .integration.",

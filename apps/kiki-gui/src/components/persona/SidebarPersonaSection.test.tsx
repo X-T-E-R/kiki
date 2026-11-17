@@ -313,28 +313,56 @@ describe('collapsible and count-bounded persona group', () => {
     expect(updatePersona).toHaveBeenCalledWith('xiao-you', { hidden: true });
   });
 
-  it('surfaces multi-conversation count pills and indented inline topic threads beneath multi-thread personas', async () => {
+  it('expands inline topic threads for active or attention personas while keeping idle multi-thread personas collapsed to their count pill', async () => {
     directory.entries = [
-      persona({ id: 'contest-coach', name: '教练 · 赛事顾问', homeSessionId: 'session_home' }),
+      persona({ id: 'contest-coach', name: '教练 · 赛事顾问', homeSessionId: 'session_home', pinned: true }),
+      persona({
+        id: 'fact-check',
+        name: '米粒 · 事实核查',
+        homeSessionId: 'session_fact_home',
+        pinned: true,
+        life: 'done',
+        unreadCount: 1,
+        unreadSessionIds: ['session_fact_unread'],
+      }),
+      persona({ id: 'archive-scribe', name: '归档 · 历史搭子', homeSessionId: 'session_idle_home', pinned: true }),
     ];
     const container = await render([
       hers({ id: 'session_home', title: '教练 · 赛事顾问', updated_at: '2026-11-16T08:00:00Z' }, 'contest-coach'),
       hers({ id: 'session_radar', title: '教练 · 赛事顾问｜全域赛程梳理', updated_at: '2026-11-17T09:30:00Z' }, 'contest-coach'),
       hers({ id: 'session_review', title: '教练 · 赛事顾问 — 方案复盘', updated_at: '2026-11-17T08:00:00Z' }, 'contest-coach'),
+      hers({ id: 'session_fact_home', title: '米粒 · 事实核查', updated_at: '2026-11-16T07:00:00Z' }, 'fact-check'),
+      hers({ id: 'session_fact_unread', title: '米粒 · 事实核查｜证书续期要多久', updated_at: '2026-11-17T09:00:00Z' }, 'fact-check'),
+      hers({ id: 'session_fact_idle', title: '米粒 · 事实核查｜旧归档核对', updated_at: '2026-11-15T09:00:00Z' }, 'fact-check'),
+      hers({ id: 'session_idle_home', title: '归档 · 历史搭子', updated_at: '2026-11-10T08:00:00Z' }, 'archive-scribe'),
+      hers({ id: 'session_idle_1', title: '归档 · 历史搭子｜十月周报', updated_at: '2026-11-11T08:00:00Z' }, 'archive-scribe'),
+      hers({ id: 'session_idle_2', title: '归档 · 历史搭子｜九月周报', updated_at: '2026-11-09T08:00:00Z' }, 'archive-scribe'),
     ], 'session_radar');
 
-    const countBadge = container.querySelector<HTMLElement>('[data-persona-thread-count="3"]');
-    expect(countBadge).not.toBeNull();
+    // All three multi-thread personas retain their 3-conversation switcher count pill.
+    expect(container.querySelectorAll('[data-persona-thread-count="3"]')).toHaveLength(3);
 
-    const subthreads = [...container.querySelectorAll<HTMLButtonElement>('[data-persona-subthread]')];
-    expect(subthreads.map((item) => item.getAttribute('data-persona-subthread'))).toEqual([
+    // Selected persona expands its inline topic threads.
+    const activeSubthreads = [...container.querySelectorAll<HTMLButtonElement>('[data-persona-subthreads="contest-coach"] [data-persona-subthread]')];
+    expect(activeSubthreads.map((item) => item.getAttribute('data-persona-subthread'))).toEqual([
       'session_radar',
       'session_review',
     ]);
-    expect(subthreads[0]?.textContent).toContain('全域赛程梳理');
-    expect(subthreads[0]?.getAttribute('aria-current')).toBe('page');
+    expect(activeSubthreads[0]?.textContent).toContain('全域赛程梳理');
+    expect(activeSubthreads[0]?.getAttribute('aria-current')).toBe('page');
 
-    await act(async () => { subthreads[1]!.click(); });
+    // Unselected persona with unread activity surfaces only its unread/attention thread + overflow link.
+    const unreadSubthreads = [...container.querySelectorAll<HTMLButtonElement>('[data-persona-subthreads="fact-check"] [data-persona-subthread]')];
+    expect(unreadSubthreads.map((item) => item.getAttribute('data-persona-subthread'))).toEqual([
+      'session_fact_unread',
+    ]);
+    expect(container.querySelector('[data-persona-subthreads-more="fact-check"]')?.textContent).toContain('+1');
+
+    // Unselected, completely idle multi-thread persona stays collapsed to a single row so 8+ idle personas never push Conversations off-screen.
+    expect(container.querySelector('[data-persona-subthreads="archive-scribe"]')).toBeNull();
+    expect(container.querySelector('[data-persona-switcher-toggle="archive-scribe"][data-persona-thread-count="3"]')).not.toBeNull();
+
+    await act(async () => { activeSubthreads[1]!.click(); });
     expect(navigate).toHaveBeenCalledWith('/s/session_review');
   });
 });

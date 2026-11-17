@@ -298,6 +298,7 @@ export class LiveControllerRegistry implements ControllerRegistry {
       if (entry.parked !== undefined) {
         // Cache hit: the retained view repaints now and catches up behind it.
         this.unpark(entry);
+        (entry.controller as SessionController & { unpark?: () => void }).unpark?.();
         entry.references = 1;
         entry.ready = entry.controller.resume();
         this.add(entry.controller);
@@ -360,7 +361,7 @@ export class LiveControllerRegistry implements ControllerRegistry {
     // and projecting every frame; `acquire` sets focus again before it is shown.
     else {
       if (typeof controller.setFocusedAgent === 'function') controller.setFocusedAgent(undefined);
-      controller.cancelParkedReads?.();
+      (controller as SessionController & { cancelParkedReads?: () => void }).cancelParkedReads?.();
     }
     this.delete(controller);
     this.enforceLimits();

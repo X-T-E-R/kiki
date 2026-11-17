@@ -167,6 +167,7 @@ export function SidebarPersonaSection({
     if (visiblePersonas.length === 0 || sessions.length === 0) return map;
     const untitled = t('sidebar.untitled');
     for (const persona of visiblePersonas) {
+      const unreadIds = new Set(persona.unreadSessionIds);
       const threads = sessions
         .filter((item) => !item.archived && item.id !== persona.homeSessionId && sessionBelongsToPersona(item, persona.id))
         .map((item): InlinePersonaThread => {
@@ -176,7 +177,10 @@ export function SidebarPersonaSection({
           const fullTitle = roomId === undefined
             ? rawThreadTitle(item, untitled)
             : roomNames.get(roomId) ?? rawThreadTitle(item, untitled);
-          const state = sessionRowState(item, seen);
+          const rawState = sessionRowState(item, seen);
+          const state = rawState === 'unread' && (persona.unreadCount === 0 || (unreadIds.size > 0 && !unreadIds.has(item.id)))
+            ? 'read'
+            : rawState;
           return {
             id: item.id,
             kind: roomId === undefined ? 'topic' : 'room',
@@ -340,18 +344,32 @@ export function SidebarPersonaSection({
                 const hasExtraThreads = extraThreads.length > 0;
                 const totalConversations = extraThreads.length + 1;
                 const inlineSubthreadActive = extraThreads.some((item) => item.isCurrent);
+                const isSelectedPersona = activePersonaId === persona.id
+                  || inlineSubthreadActive
+                  || (persona.homeSessionId !== undefined && persona.homeSessionId === activeSessionId);
+                const attentionThreads = extraThreads.filter(
+                  (item) => item.needsYou || item.life === 'working' || item.life === 'done',
+                );
                 const inlineThreads = (() => {
                   if (!hasExtraThreads) return [];
-                  const top = extraThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
-                  if (extraThreads.length > SIDEBAR_PERSONA_INLINE_THREAD_LIMIT) {
-                    const current = extraThreads.find((item) => item.isCurrent);
-                    if (current !== undefined && !top.includes(current)) {
-                      top[SIDEBAR_PERSONA_INLINE_THREAD_LIMIT - 1] = current;
+                  if (isSelectedPersona) {
+                    const top = extraThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
+                    if (extraThreads.length > SIDEBAR_PERSONA_INLINE_THREAD_LIMIT) {
+                      const current = extraThreads.find((item) => item.isCurrent);
+                      if (current !== undefined && !top.includes(current)) {
+                        top[SIDEBAR_PERSONA_INLINE_THREAD_LIMIT - 1] = current;
+                      }
                     }
+                    return top;
                   }
-                  return top;
+                  if (attentionThreads.length > 0) {
+                    return attentionThreads.slice(0, SIDEBAR_PERSONA_INLINE_THREAD_LIMIT);
+                  }
+                  return [];
                 })();
-                const overflowThreadCount = Math.max(0, extraThreads.length - inlineThreads.length);
+                const overflowThreadCount = inlineThreads.length > 0
+                  ? Math.max(0, extraThreads.length - inlineThreads.length)
+                  : 0;
                 const atDaily = (persona.homeSessionId !== undefined && persona.homeSessionId === activeSessionId)
                   || (activePersonaId === persona.id && !inlineSubthreadActive);
                 const emphasis = atDaily || inlineSubthreadActive || persona.life === 'waiting' || persona.life === 'done';

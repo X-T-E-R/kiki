@@ -22,6 +22,7 @@ import type { AgentIdentity, DetailDrawerTarget } from '../agent-panel/types';
 import { OptionalCapabilityRows, SessionMcpRail } from '../capabilities/optionalCapabilityUi';
 import { SessionPluginsPanel } from '../capabilities/SessionPluginsPanel';
 import { Icon } from '../icons';
+import { resolveProfileIcon } from '../../lib/profileIcon';
 import { ExecutorAuthStatus } from '../harness/ExecutorAuthStatus';
 import { ApprovalSubject } from '../Interactions';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
@@ -238,15 +239,23 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
     source: profile?.source, sourceFile: profile?.source_file,
     context: read.data?.context ?? 'live', isMain: agentId === MAIN_AGENT_ID, rawProfile: profile,
   };
+  const profileIcon = resolveProfileIcon({
+    profile: profileName,
+    executor: profile?.executor,
+    main: agentId === MAIN_AGENT_ID,
+    hasFile: identity.profileSource === 'profile-file',
+    description: profile?.description,
+  });
   return (
     <div data-rail-profile-head className="min-w-0">
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Icon name={profileIcon} size={14} className="shrink-0 text-ink-soft" />
         <button
           type="button"
           data-rail-profile-name
           title={profile?.description ?? t('inspector.details')}
           onClick={() => { setDrawer({ kind: 'profile', identity }); }}
-          className={`-ml-1 min-w-0 truncate rounded px-1 text-left font-display text-[15px] leading-6 font-semibold tracking-tight text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
+          className={`-mx-0.5 min-w-0 truncate rounded px-0.5 text-left font-display text-[15px] leading-6 font-semibold tracking-tight text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
         >
           {profileName ?? label}
         </button>

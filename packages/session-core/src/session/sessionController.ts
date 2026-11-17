@@ -1042,6 +1042,13 @@ export class SessionController {
 
   private isSuspended = false;
 
+  /** True while a busy controller is parked off-screen with its `turn` lease kept alive. */
+  get parked(): boolean {
+    return this.isParked;
+  }
+
+  private isParked = false;
+
   /**
    * Park a loaded view: detach the live subscription and cancel in-flight
    * reads, but keep the canonical per-agent stores and cursors so `resume()`
@@ -1053,6 +1060,7 @@ export class SessionController {
     if (this.resyncDeferredBySuspend !== undefined || this.resyncInFlight || this.shell.resyncing || this.resyncTimer !== null || this.hardResyncQueued || this.rewriteResyncQueued || this.rewriteHold !== undefined) {
       this.resyncDeferredBySuspend = { rewrite };
     }
+    this.isParked = false;
     this.isSuspended = true;
     this.finishBootstrapOpening();
     this.pauseDurableSteerReads();
@@ -1092,6 +1100,7 @@ export class SessionController {
    */
   cancelParkedReads(): void {
     if (this.closed) return;
+    this.isParked = true;
     this.olderLoads.cancelAll();
     const agents = new Set<string>([MAIN_AGENT_ID, ...this.timelines.keys()]);
     for (const agentId of agents) {
@@ -1106,7 +1115,7 @@ export class SessionController {
     for (const [requestKey, controller] of this.contentControllers) {
       this.contentControllers.delete(requestKey);
       this.detailReads.delete(requestKey);
-      controller.abort();
+      controller.abort(new DOMException('Read cancelled', 'AbortError'));
       const slash = requestKey.indexOf('/');
       if (slash > 0) {
         this.setDetailLoad(requestKey.slice(0, slash), requestKey.slice(slash + 1), undefined);
@@ -1114,12 +1123,25 @@ export class SessionController {
     }
     for (const [key, flight] of this.toolDetailReads) {
       this.toolDetailReads.delete(key);
-      flight.controller.abort();
+      flight.controller.abort(new DOMException('Read cancelled', 'AbortError'));
     }
     for (const controller of this.rangeControllers.keys()) {
-      controller.abort();
+      controller.abort(new DOMException('Read cancelled', 'AbortError'));
     }
     this.rangeControllers.clear();
+  }
+
+  /**
+   * Re-enable background content and roster hydration when a parked busy view
+   * becomes active again without having gone through `suspend()`.
+   */
+  unpark(): void {
+    if (this.closed || !this.isParked) return;
+    this.isParked = false;
+    if (!this.isSuspended) {
+      this.queueAutomaticRosterRead();
+      if (this.contentReaders.size > 0) void this.pumpContentReads();
+    }
   }
 
   /**
@@ -1129,7 +1151,9 @@ export class SessionController {
    * refreshes session-level fields.
    */
   resume(): Promise<void> {
-    if (this.closed || !this.isSuspended) return Promise.resolve();
+    if (this.closed) return Promise.resolve();
+    if (this.isParked) this.unpark();
+    if (!this.isSuspended) return Promise.resolve();
     this.isSuspended = false;
     this.scheduleDurableSteerRead();
     const deferredResync = this.resyncDeferredBySuspend;
@@ -1605,13 +1629,13 @@ export class SessionController {
   }
 
   private queueAutomaticRosterRead(): void {
-    if (this.closed || this.isSuspended || !this.shell.loaded || this.shell.resyncing || this.rosterReadQueued || this.rosterReadInFlight || this.olderLoads.hasActive()) return;
+    if (this.closed || this.isSuspended || this.isParked || !this.shell.loaded || this.shell.resyncing || this.rosterReadQueued || this.rosterReadInFlight || this.olderLoads.hasActive()) return;
     const ref = this.latestSnapshot?.contentRefs?.find((entry) => entry.source.kind === 'snapshot' && entry.kind === 'array' && entry.path.length === 1 && entry.path[0] === 'subagents');
     if (ref === undefined || this.view.transcript.content === undefined || this.viewOf(MAIN_AGENT_ID).detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') return;
     this.rosterReadQueued = true;
     queueMicrotask(() => {
       this.rosterReadQueued = false;
-      if (this.closed || this.isSuspended || this.shell.resyncing || this.olderLoads.hasActive()) return;
+      if (this.closed || this.isSuspended || this.isParked || this.shell.resyncing || this.olderLoads.hasActive()) return;
       this.rosterReadInFlight = true;
       void this.loadContentSegment(MAIN_AGENT_ID, ref).then((advanced) => {
         this.rosterReadInFlight = false;
@@ -2750,6 +2774,7 @@ export class SessionController {
         this.toolDetails.set(key, detail.lookup);
         return detail.lookup;
       })().finally(() => { this.snapshotControllers.delete(controller); if (this.toolDetailReads.get(key)?.controller === controller) this.toolDetailReads.delete(key); });
+      void promise.catch(() => {});
       flight = { promise, controller, readers: 0 };
       this.toolDetailReads.set(key, flight);
     }
@@ -3110,11 +3135,11 @@ export class SessionController {
   }
 
   private async pumpContentReads(): Promise<void> {
-    if (this.contentPumpRunning || this.closed || this.isSuspended) return;
+    if (this.contentPumpRunning || this.closed || this.isSuspended || this.isParked) return;
     this.contentPumpRunning = true;
     try {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      if (this.closed || this.isSuspended) return;
+      if (this.closed || this.isSuspended || this.isParked) return;
       for (const [key, target] of this.contentReaders) {
         if (this.contentPumpReads.size >= 4) break;
         if (target.readers === 0 || target.blocked || target.retryTimer !== undefined || this.contentPumpReads.has(key)) continue;
@@ -3162,7 +3187,7 @@ export class SessionController {
               const delay = Math.min(2000, TOOL_DETAIL_PREPARING_RETRY_MS * (2 ** Math.min(attempt, 5)));
               target.retryTimer = setTimeout(() => {
                 target.retryTimer = undefined;
-                if (!this.closed && !this.isSuspended && target.readers > 0 && target.retryVersion === retryVersion) void this.pumpContentReads();
+                if (!this.closed && !this.isSuspended && !this.isParked && target.readers > 0 && target.retryVersion === retryVersion) void this.pumpContentReads();
               }, delay);
               return;
             }

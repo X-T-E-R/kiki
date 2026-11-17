@@ -1,5 +1,4 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -33,19 +32,8 @@ function vendorChunk(id: string): string | undefined {
   return packageName !== undefined && STABLE_VENDOR_PACKAGES.has(packageName) ? 'vendor-react' : undefined;
 }
 
-const sessionCoreSrc = fileURLToPath(new URL('../../packages/session-core/src', import.meta.url));
-
 export default defineConfig({
   plugins: [react(), tailwindcss(), pdfAssetsPlugin(), localServerPlugin({ proxyTarget: serverTarget }), bootPreloadPlugin()],
-  resolve: {
-    alias: [
-      { find: /^@kiki\/session-core$/, replacement: `${sessionCoreSrc}/index.ts` },
-      { find: /^@kiki\/session-core\/(transport|wire)$/, replacement: `${sessionCoreSrc}/$1.ts` },
-      { find: /^@kiki\/session-core\/session\/transcript$/, replacement: `${sessionCoreSrc}/session/transcript/index.ts` },
-      { find: /^@kiki\/session-core\/([^/]+)$/, replacement: `${sessionCoreSrc}/$1/index.ts` },
-      { find: /^@kiki\/session-core\/(.+?)(?:\.ts)?$/, replacement: `${sessionCoreSrc}/$1.ts` },
-    ],
-  },
   define: {
     __KIKI_PROXY_TARGET__: JSON.stringify(serverTarget),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(packageJson.version),

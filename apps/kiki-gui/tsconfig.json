@@ -10,14 +10,7 @@
     // One test checks a Recipe manifest against the real protocol schema, so
     // the types resolve from the package that owns the dependency rather than
     // from a copy added here.
-    "paths": {
-      "zod": ["../../packages/protocol/node_modules/zod"],
-      "@kiki/session-core": ["../../packages/session-core/src/index.ts"],
-      "@kiki/session-core/*": [
-        "../../packages/session-core/src/*.ts",
-        "../../packages/session-core/src/*/index.ts"
-      ]
-    },
+    "paths": { "zod": ["../../packages/protocol/node_modules/zod"] },
     "noEmit": true
   },
   "include": [
