@@ -256,7 +256,7 @@ export function usePopoverDismiss(
   return (event: KeyboardEvent<HTMLElement>) => {
     if (!open || event.key !== 'Escape' || event.defaultPrevented) return;
     if (
-      (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) ||
+      !containsOrOwnsFloatingTarget(rootRef.current, event.target, overlayId) ||
       hasOpenOwnedFloatingPortal(overlayId)
     ) {
       return;
@@ -286,7 +286,10 @@ export function usePopover(
       // Text fields own their own arrow keys (caret movement).
       if ((event.target as HTMLElement).tagName === 'INPUT') return;
       event.preventDefault();
-      const rows = [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)') ?? [])];
+      const localRows = [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)') ?? [])];
+      const rows = localRows.length > 0
+        ? localRows
+        : [...document.querySelectorAll<HTMLElement>(`[${FLOATING_OWNER_ATTRIBUTE}="${overlayId}"] [data-menu-row]:not(:disabled)`)];
       if (rows.length === 0) return;
       const index = rows.findIndex((row) => row === document.activeElement);
       const delta = event.key === 'ArrowDown' ? 1 : -1;

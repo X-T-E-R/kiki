@@ -27,6 +27,7 @@ import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 import { agentRefDelegation, type AgentRefDelegation, type AgentRefRun } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
 import { useOptionalConnection } from '../state/connection';
+import { resolveProfileIcon } from '../lib/profileIcon';
 import { Icon } from './icons';
 import { MiniContextMenu } from './MiniContextMenu';
 import { engineLabel as catalogEngineLabel, executorCatalogQueryKey } from './settings/profileEditor/engines';
@@ -109,7 +110,7 @@ function RejectedBody({ reference, engine, statusText }: { readonly reference: A
       <span aria-hidden className="flex h-3 w-3 shrink-0 items-center justify-center">
         {statusDot('rejected')}
       </span>
-      <Icon name="agent" size={12} className="shrink-0 text-ink-faint" />
+      <Icon name={resolveProfileIcon({ profile: reference.profile, executor: reference.executor })} size={12} className="shrink-0 text-ink-faint" />
       <span className="min-w-0 truncate font-medium text-ink-faint line-through decoration-ink-faint/60">{reference.profile}</span>
       <span className="shrink-0 text-ink-faint">{engine}</span>
       <span className="shrink-0 text-[11px] text-danger/80">{t('agentRef.rejectedCue')}</span>
@@ -165,7 +166,7 @@ export function AgentRefChip({
         <span aria-hidden className="flex h-3 w-3 shrink-0 items-center justify-center">
           {statusDot('delegated')}
         </span>
-        <Icon name="agent" size={12} className="shrink-0 text-ink-faint" />
+        <Icon name={resolveProfileIcon({ profile: reference.profile, executor: reference.executor })} size={12} className="shrink-0 text-ink-faint" />
         <span className="min-w-0 truncate font-medium text-ink">{reference.profile}</span>
         <span className="shrink-0 text-ink-faint">{engine}</span>
         {runs.length > 1 ? <span className="shrink-0 tabular-nums text-ink-faint">{runsText}</span> : null}
@@ -224,7 +225,7 @@ export function AgentRefChip({
       <span aria-hidden className="flex h-3 w-3 shrink-0 items-center justify-center">
         {statusDot('pending')}
       </span>
-      <Icon name="agent" size={12} className="shrink-0 text-ink-faint" />
+      <Icon name={resolveProfileIcon({ profile: reference.profile, executor: reference.executor })} size={12} className="shrink-0 text-ink-faint" />
       <span className="min-w-0 truncate font-medium text-ink">{reference.profile}</span>
       <span className="shrink-0 text-ink-faint">{engine}</span>
       <span className="sr-only">{statusText}</span>

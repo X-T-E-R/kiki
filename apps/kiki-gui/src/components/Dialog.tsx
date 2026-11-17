@@ -28,13 +28,13 @@
  * (lib/layerHistory), so the phone's back closes it the way Escape does.
  */
 
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useLayerHistory } from '../lib/layerHistory';
 import { useCoarsePointer } from '../lib/layoutHooks';
 import { isImeKeyEvent } from '../lib/shortcuts';
-import { canRestoreModalFocus, MODAL_BASE_Z_INDEX, nextModalDepth, registerModal, registerOverlay } from '../lib/uiBusy';
+import { canRestoreModalFocus, MODAL_BASE_Z_INDEX, MODAL_DEPTH_ATTRIBUTE, MODAL_ID_ATTRIBUTE, nextModalDepth, registerModal, registerOverlay } from '../lib/uiBusy';
 
 const ModalDepth = createContext<number | undefined>(undefined);
 export function useStackedDialog(): boolean { return useContext(ModalDepth) !== undefined; }
@@ -151,7 +151,9 @@ export function Dialog({
   useLayerHistory(overlayId, coarse && dismissible, onClose);
 
   // Stack registration is stable across form edits and busy-state changes.
-  useEffect(() => {
+  // Register in useLayoutEffect so child effects opening pickers on mount see
+  // this modal in `uiBusy` immediately.
+  useLayoutEffect(() => {
     const unregister = registerOverlay(overlayId);
     const modal = panelRef.current ? registerModal(overlayId, modalDepth, panelRef.current) : null;
     ownership.current = modal;
@@ -200,7 +202,7 @@ export function Dialog({
       return owner === overlayId && isTop();
     };
     const focusable = () => [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
-      (element) => element.offsetParent !== null && (depth === undefined || !element.closest('[inert]')),
+      (element) => (element.offsetParent !== null || element.getClientRects().length > 0) && (depth === undefined || !element.closest('[inert]')),
     );
     const marked = panel.querySelector<HTMLElement>('[data-autofocus]:not([disabled])');
     const initial = marked ?? (panel.querySelector('[data-autofocus]') === null ? panel.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) : null);
@@ -257,7 +259,18 @@ export function Dialog({
             : ownership.current?.isTop())) closeRef.current();
         }}
       >
-        <div ref={panelRef} role={role} aria-modal="true" aria-label={ariaLabel} tabIndex={-1} className={panelClassName ?? DIALOG_DEFAULT_PANEL_CLASS}>
+        <div
+          ref={panelRef}
+          role={role}
+          aria-modal="true"
+          aria-label={ariaLabel}
+          tabIndex={-1}
+          {...{
+            [MODAL_ID_ATTRIBUTE]: overlayId,
+            [MODAL_DEPTH_ATTRIBUTE]: modalDepth,
+          }}
+          className={panelClassName ?? DIALOG_DEFAULT_PANEL_CLASS}
+        >
           {children}
         </div>
       </div>

@@ -3072,6 +3072,78 @@ fn requested_home(args: &[String]) -> Result<Option<PathBuf>, String> {
     Ok(selected)
 }
 
+const TRAY_LOGON_RETRY_LIMIT: usize = 10;
+const TRAY_LOGON_RETRY_DELAY: Duration = Duration::from_millis(1500);
+
+fn is_background_launch_args<S: AsRef<str>>(args: &[S]) -> bool {
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_ref() {
+            "--" => break,
+            "--home" | "--preset" | "--remote-connection" => {
+                index += 2;
+                continue;
+            }
+            "--background" | "--tray" | "--minimized" => return true,
+            _ => {}
+        }
+        index += 1;
+    }
+    false
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TrayRetryOutcome {
+    tray_created: bool,
+    reveal_fallback_window: bool,
+}
+
+fn retry_tray_after_initial_failure<F, S>(
+    initial_error: String,
+    start_in_background: bool,
+    exit_confirmed: &AtomicBool,
+    retry_limit: usize,
+    mut sleep: S,
+    mut attempt_build: F,
+) -> (TrayRetryOutcome, Option<String>)
+where
+    F: FnMut() -> Result<(), String>,
+    S: FnMut(),
+{
+    let mut last_error = initial_error;
+    for _ in 0..retry_limit {
+        sleep();
+        if exit_confirmed.load(Ordering::SeqCst) {
+            return (
+                TrayRetryOutcome {
+                    tray_created: false,
+                    reveal_fallback_window: false,
+                },
+                Some(last_error),
+            );
+        }
+        match attempt_build() {
+            Ok(()) => {
+                return (
+                    TrayRetryOutcome {
+                        tray_created: true,
+                        reveal_fallback_window: false,
+                    },
+                    None,
+                );
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    (
+        TrayRetryOutcome {
+            tray_created: false,
+            reveal_fallback_window: start_in_background && !exit_confirmed.load(Ordering::SeqCst),
+        },
+        Some(last_error),
+    )
+}
+
 fn kiki_home_dir() -> Result<PathBuf, String> {
     if let Some(path) = requested_home(&env::args().collect::<Vec<_>>())? {
         return Ok(path);
@@ -4092,14 +4164,16 @@ fn request_confirmed_exit(
 }
 
 pub fn run() {
+    let launch_args = env::args().collect::<Vec<_>>();
+    let start_in_background = is_background_launch_args(&launch_args);
     let startup_home = kiki_home_dir().unwrap_or_else(|error| panic!("Cannot resolve Kiki home: {error}"));
     let main_home = main_home_for(&startup_home).unwrap_or_else(|error| panic!("Cannot resolve main space: {error}"));
-    let selected_preset = work_mode::requested_preset(&env::args().collect::<Vec<_>>())
+    let selected_preset = work_mode::requested_preset(&launch_args)
         .unwrap_or_else(|error| panic!("Cannot select work mode: {error}"));
     let mode = if selected_preset.is_some() { WindowMode::Windows } else { read_main_desktop_prefs(&main_home).window_mode };
     let preset_id = selected_preset.clone().unwrap_or_else(|| "kiki".to_string());
     let window_mode = WindowModeDescriptor { window_id: work_mode::window_identity(&startup_home, &preset_id), preset_id };
-    let remote_connection = remote_space::requested_connection(&env::args().collect::<Vec<_>>())
+    let remote_connection = remote_space::requested_connection(&launch_args)
         .unwrap_or_else(|error| panic!("Cannot select remote space: {error}"));
     if let Some(id) = &remote_connection {
         if mode != WindowMode::Windows { panic!("Remote windows require windows mode"); }
@@ -4116,6 +4190,7 @@ pub fn run() {
     let exit_confirmed = Arc::new(AtomicBool::new(false));
     let exit_prompting = Arc::new(AtomicBool::new(false));
     let close_confirmed = exit_confirmed.clone();
+    let setup_exit_confirmed = exit_confirmed.clone();
     let tunnel_manager = ssh_tunnel::TunnelManager::default();
     let shutdown_tunnels = tunnel_manager.clone();
     let mut context = tauri::generate_context!();
@@ -4158,31 +4233,47 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(window_mode)
         // Register first so a second launch focuses the original window
-        // without starting another backend.
+        // without starting another backend, unless the second launch was
+        // requested in background/tray mode.
         .plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
-            if let Ok(Some(home)) = requested_home(&args).map(|home| if preset_window { None } else { home }) {
-                if let Ok(id) = read_desktop_space(&home).map(|space| space.map(|space| space.home_id)) {
-                    let manager = second_launch_manager.clone();
-                    let app = app.clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        let target = id.unwrap_or_else(|| "main".to_string());
-                        if let Err(error) = manager.switch(&app, &target) {
-                            eprintln!("Kiki could not switch space on second launch: {}", error.message);
-                        } else if let Err(error) = reload_space_window(&app) {
-                            eprintln!("Kiki could not reload the selected space: {error}");
-                        }
-                    });
+            let quiet_background = is_background_launch_args(&args);
+            if !quiet_background {
+                if let Ok(Some(home)) = requested_home(&args).map(|home| if preset_window { None } else { home }) {
+                    if let Ok(id) = read_desktop_space(&home).map(|space| space.map(|space| space.home_id)) {
+                        let manager = second_launch_manager.clone();
+                        let app = app.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            let target = id.unwrap_or_else(|| "main".to_string());
+                            if let Err(error) = manager.switch(&app, &target) {
+                                eprintln!("Kiki could not switch space on second launch: {}", error.message);
+                            } else if let Err(error) = reload_space_window(&app) {
+                                eprintln!("Kiki could not reload the selected space: {error}");
+                            }
+                        });
+                    }
                 }
-            }
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
         }))
         // Window geometry memory: restores on window creation, saves on
-        // move/resize/close — no frontend involvement.
-        .plugin(tauri_plugin_window_state::Builder::new().build())
+        // move/resize/close — no frontend involvement. Exclude VISIBLE when
+        // launched with --background so window-state restores size/position
+        // without showing the window on boot.
+        .plugin({
+            let state_flags = if start_in_background {
+                tauri_plugin_window_state::StateFlags::all()
+                    & !tauri_plugin_window_state::StateFlags::VISIBLE
+            } else {
+                tauri_plugin_window_state::StateFlags::all()
+            };
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(state_flags)
+                .build()
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -4258,6 +4349,7 @@ pub fn run() {
                 .ok_or_else(|| std::io::Error::other("main window config is missing"))?;
             let main_window = WebviewWindowBuilder::from_config(app.handle(), main_config)
                 .map_err(std::io::Error::other)?
+                .visible(!start_in_background)
                 .enable_clipboard_access()
                 .initialization_script(&window_mode_script)
                 .on_new_window(|url, _features| {
@@ -4278,12 +4370,58 @@ pub fn run() {
             match build_tray(app.handle()) {
                 Ok(()) => { tray_created.store(true, Ordering::SeqCst); }
                 Err(error) => {
-                    eprintln!("Kiki could not create its tray; close-to-tray is disabled for this run: {error}");
+                    eprintln!("Kiki tray not ready at startup; retrying in the background: {error}");
+                    let retry_handle = app.handle().clone();
+                    let retry_tray_created = tray_created.clone();
+                    let retry_exit_confirmed = setup_exit_confirmed.clone();
+                    thread::spawn(move || {
+                        let (outcome, final_error) = retry_tray_after_initial_failure(
+                            error,
+                            start_in_background,
+                            &retry_exit_confirmed,
+                            TRAY_LOGON_RETRY_LIMIT,
+                            || thread::sleep(TRAY_LOGON_RETRY_DELAY),
+                            || {
+                                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                                let ui_handle = retry_handle.clone();
+                                retry_handle
+                                    .run_on_main_thread(move || {
+                                        let _ = ui_handle.remove_tray_by_id(TRAY_ID);
+                                        let result = build_tray(&ui_handle);
+                                        if result.is_ok() {
+                                            if let Some(manager) = ui_handle.try_state::<SpaceBackendManager>() {
+                                                if let Ok(space) = manager.active_space() {
+                                                    set_space_identity(&ui_handle, &space);
+                                                }
+                                            }
+                                        }
+                                        let _ = tx.send(result);
+                                    })
+                                    .map_err(|err| err.to_string())?;
+                                rx.recv().map_err(|err| err.to_string())?
+                            },
+                        );
+                        if outcome.tray_created {
+                            retry_tray_created.store(true, Ordering::SeqCst);
+                        } else if let Some(last_error) = final_error {
+                            eprintln!("Kiki could not create its tray after logon retries; close-to-tray is disabled for this run: {last_error}");
+                            if outcome.reveal_fallback_window {
+                                let fallback_handle = retry_handle.clone();
+                                let _ = retry_handle.run_on_main_thread(move || {
+                                    let _ = show_main_window(fallback_handle);
+                                });
+                            }
+                        }
+                    });
                 }
             }
             // Saved window visibility and an unavailable hotkey must not strand startup.
-            main_window.unminimize().map_err(std::io::Error::other)?;
-            main_window.show().map_err(std::io::Error::other)?;
+            if start_in_background {
+                let _ = main_window.hide();
+            } else {
+                main_window.unminimize().map_err(std::io::Error::other)?;
+                main_window.show().map_err(std::io::Error::other)?;
+            }
             if let Ok(space) = setup_manager.active_space() { set_space_identity(app.handle(), &space); }
             // Both manager initialization and shortcut registration are optional.
             if mode == WindowMode::Switch || startup_home == main_home {
@@ -4308,6 +4446,15 @@ pub fn run() {
                     tauri::async_runtime::spawn_blocking(move || {
                         if let Err(error) = main_backend.connection(&handle) {
                             eprintln!("Kiki main-space backend could not start: {}", error.message);
+                        }
+                    });
+                }
+            } else if start_in_background {
+                if let Ok(active_backend) = setup_manager.active_backend() {
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        if let Err(error) = active_backend.connection(&handle) {
+                            eprintln!("Kiki active-space backend could not start: {}", error.message);
                         }
                     });
                 }
@@ -5840,5 +5987,111 @@ mod tests {
         let body = &wide[..wide.len() - 1];
         assert_eq!(String::from_utf16(body).unwrap(), sample.to_str().unwrap());
         assert_eq!(body.len(), sample.to_str().unwrap().encode_utf16().count());
+    }
+
+    #[test]
+    fn background_launch_args_recognize_background_tray_and_minimized_flags() {
+        assert!(!is_background_launch_args(&["kiki-desktop"]));
+        assert!(is_background_launch_args(&["kiki-desktop", "--background"]));
+        assert!(is_background_launch_args(&["kiki-desktop", "--tray"]));
+        assert!(is_background_launch_args(&["kiki-desktop", "--minimized"]));
+        assert!(is_background_launch_args(&[
+            "kiki-desktop",
+            "--home",
+            "/example/space",
+            "--background",
+        ]));
+        assert!(!is_background_launch_args(&[
+            "kiki-desktop",
+            "--home",
+            "--background",
+        ]));
+        assert!(!is_background_launch_args(&[
+            "kiki-desktop",
+            "--",
+            "--background",
+        ]));
+    }
+
+    #[test]
+    fn tray_logon_retry_recovers_or_falls_back_safely_in_background_mode() {
+        let exit = AtomicBool::new(false);
+        let mut sleeps = 0usize;
+        let mut attempts = 0usize;
+        let (outcome, err) = retry_tray_after_initial_failure(
+            "shell tray unavailable".into(),
+            true,
+            &exit,
+            5,
+            || sleeps += 1,
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(format!("retry {attempts} failed"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(
+            outcome,
+            TrayRetryOutcome {
+                tray_created: true,
+                reveal_fallback_window: false,
+            }
+        );
+        assert!(err.is_none());
+        assert_eq!(sleeps, 3);
+        assert_eq!(attempts, 3);
+
+        let (bg_fail, bg_err) = retry_tray_after_initial_failure(
+            "shell tray unavailable".into(),
+            true,
+            &exit,
+            2,
+            || {},
+            || Err("still unavailable".into()),
+        );
+        assert_eq!(
+            bg_fail,
+            TrayRetryOutcome {
+                tray_created: false,
+                reveal_fallback_window: true,
+            }
+        );
+        assert_eq!(bg_err.as_deref(), Some("still unavailable"));
+
+        let (fg_fail, _) = retry_tray_after_initial_failure(
+            "shell tray unavailable".into(),
+            false,
+            &exit,
+            2,
+            || {},
+            || Err("still unavailable".into()),
+        );
+        assert_eq!(
+            fg_fail,
+            TrayRetryOutcome {
+                tray_created: false,
+                reveal_fallback_window: false,
+            }
+        );
+
+        let exiting = AtomicBool::new(true);
+        let (cancelled, _) = retry_tray_after_initial_failure(
+            "shell tray unavailable".into(),
+            true,
+            &exiting,
+            4,
+            || {},
+            || panic!("must not attempt tray registration after exit is confirmed"),
+        );
+        assert_eq!(
+            cancelled,
+            TrayRetryOutcome {
+                tray_created: false,
+                reveal_fallback_window: false,
+            }
+        );
     }
 }

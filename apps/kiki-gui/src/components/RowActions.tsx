@@ -74,6 +74,9 @@ export function useMessageRowTapActions<T extends HTMLElement>() {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
       const row = rowRef.current;
+      if (event.target instanceof Element && event.target.closest('.kiki-action-sheet-layer, [data-floating-owners]') !== null) {
+        return;
+      }
       if (row === null || !(event.target instanceof Node) || !row.contains(event.target)) {
         setOpen(false);
       }

@@ -89,7 +89,18 @@ export type IconName =
   | 'compass'
   | 'smartphone'
   | 'plugin'
-  | 'lock';
+  | 'lock'
+  // Agent profile archetypes
+  | 'profileMain'
+  | 'profileCode'
+  | 'profileFrontend'
+  | 'profileResearch'
+  | 'profileReview'
+  | 'profileThink'
+  | 'profileOperator'
+  | 'profileWorker'
+  | 'profileWriter'
+  | 'profileDirector';
 
 export type IconSize = 12 | 14 | 16;
 
@@ -348,6 +359,74 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <rect x="3.5" y="7.2" width="9" height="6.3" rx="1.5" />
       <path d="M5.5 7.2V5.3a2.5 2.5 0 0 1 5 0v1.9" />
+    </>
+  ),
+  // Primary conductor spark + satellite: default/main native Kiki profile.
+  profileMain: (
+    <>
+      <path d="M7 2.5 8.3 6.2 12 7.5 8.3 8.8 7 12.5 5.7 8.8 2 7.5 5.7 6.2z" />
+      <path d="M12.2 2.5v2.4M11 3.7h2.4" />
+    </>
+  ),
+  // Code brackets `< />`: engineering and implementation profiles.
+  profileCode: <path d="M5.2 5.2 2.3 8l2.9 2.8M10.8 5.2 13.7 8l-2.9 2.8M9 3.6 7 12.4" />,
+  // Layout window with header and sidebar split: UI and visual frontend profiles.
+  profileFrontend: (
+    <>
+      <rect x="2.3" y="3" width="11.4" height="10" rx="1.7" />
+      <path d="M2.3 6.3h11.4M6.2 6.3V13" />
+    </>
+  ),
+  // Open book with central spine: research, synthesis, and literature profiles.
+  profileResearch: (
+    <>
+      <path d="M2.3 4.1c1.9-.5 3.9-.2 5.7.9 1.8-1.1 3.8-1.4 5.7-.9v8.3c-1.9-.5-3.9-.2-5.7.9-1.8-1.1-3.8-1.4-5.7-.9z" />
+      <path d="M8 5v8.3" />
+    </>
+  ),
+  // Shield with check mark: independent review, audit, and verification profiles.
+  profileReview: (
+    <>
+      <path d="M8 2.3 13 4.1v3.6c0 3-2.1 5.1-5 6.1-2.9-1-5-3.1-5-6.1V4.1z" />
+      <path d="m5.8 8 1.6 1.6 3-3" />
+    </>
+  ),
+  // Faceted octahedron prism: deep narrow reasoning and architecture profiles.
+  profileThink: (
+    <>
+      <path d="M8 2.2 13.3 8 8 13.8 2.7 8z" />
+      <path d="M8 2.2 6.1 8 8 13.8M2.7 8h10.6" />
+    </>
+  ),
+  // Window frame with precision pointer arrow: browser, phone, and CUA operators.
+  profileOperator: (
+    <>
+      <path d="M13.4 7.8V4.4a1.5 1.5 0 0 0-1.5-1.5H4.1a1.5 1.5 0 0 0-1.5 1.5v5.8a1.5 1.5 0 0 0 1.5 1.5h3.7" />
+      <path d="M2.6 5.6h10.8" />
+      <path d="m9.4 8.6 1.1 4.9 1.1-1.7 1.9-.5z" />
+    </>
+  ),
+  // Isometric stacked layers: bounded execution and batch worker profiles.
+  profileWorker: (
+    <>
+      <path d="M8 2.6 13.5 5.4 8 8.2 2.5 5.4z" />
+      <path d="m2.5 8.4 5.5 2.8 5.5-2.8" />
+      <path d="m2.5 11.1 5.5 2.7 5.5-2.7" />
+    </>
+  ),
+  // Clean fountain pen nib: editorial, prose, and creative writing profiles.
+  profileWriter: (
+    <>
+      <path d="M8 2.3 11.8 8.4 9.9 13.5H6.1L4.2 8.4z" />
+      <path d="M8 2.3v5.3" />
+      <circle cx="8" cy="8.5" r="0.9" />
+    </>
+  ),
+  // Viewfinder frame corners with play triangle: audiovisual director profiles.
+  profileDirector: (
+    <>
+      <path d="M2.5 5.5V3.8a1.2 1.2 0 0 1 1.2-1.2h1.8M10.5 2.6h1.8a1.2 1.2 0 0 1 1.2 1.2v1.7M13.5 10.5v1.7a1.2 1.2 0 0 1-1.2 1.2h-1.8M5.5 13.4H3.7a1.2 1.2 0 0 1-1.2-1.2v-1.7" />
+      <polygon points="6.7,5.8 10.5,8 6.7,10.2" />
     </>
   ),
 };

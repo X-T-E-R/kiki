@@ -50,3 +50,49 @@ export function canSetPersonaHome(session: Session, personaId: string): boolean 
     && !session.ephemeral && !session.archived && !session.busy
     && session.metadata?.['room_member_of'] === undefined;
 }
+
+/**
+ * Merge server-queried persona conversations with already-loaded client sessions
+ * so the switcher renders matching loaded conversations immediately while the
+ * server query is pending, and keeps newly updated local sessions visible even
+ * before a cached server response refreshes.
+ */
+export function mergePersonaConversations(
+  serverItems: readonly Session[] | undefined,
+  loadedSessions: readonly Session[],
+  personaId: string,
+): readonly Session[] {
+  const matchingLoaded = loadedSessions.filter((item) => sessionBelongsToPersona(item, personaId));
+  if (serverItems === undefined) return matchingLoaded;
+  if (matchingLoaded.length === 0) return serverItems;
+  const loadedById = new Map(matchingLoaded.map((item) => [item.id, item]));
+  const seenIds = new Set<string>();
+  const merged: Session[] = [];
+  for (const serverItem of serverItems) {
+    seenIds.add(serverItem.id);
+    const localItem = loadedById.get(serverItem.id);
+    if (localItem !== undefined) {
+      const serverTime = new Date(serverItem.updated_at ?? 0).getTime();
+      const localTime = new Date(localItem.updated_at ?? 0).getTime();
+      merged.push(localTime > serverTime ? localItem : serverItem);
+    } else {
+      merged.push(serverItem);
+    }
+  }
+  for (const localItem of matchingLoaded) {
+    if (!seenIds.has(localItem.id)) merged.push(localItem);
+  }
+  return merged;
+}
+
+/**
+ * Strip a leading `{personaName}｜` / `{personaName} · ` prefix from a sub-thread
+ * title when displayed directly beneath that persona's row in the sidebar.
+ */
+export function compactPersonaThreadTitle(rawTitle: string, personaName: string): string {
+  const trimmed = rawTitle.trim();
+  const name = personaName.trim();
+  if (trimmed === '' || name === '' || !trimmed.startsWith(name)) return trimmed;
+  const rest = trimmed.slice(name.length).replace(/^\s*(?:[｜|·—\-:：])\s*/, '').trim();
+  return rest !== '' ? rest : trimmed;
+}

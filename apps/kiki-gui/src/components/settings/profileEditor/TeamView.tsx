@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import type { ModelCatalogItem } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
 import type { NamedAgentProfile } from '../../../lib/client';
+import { resolveProfileIcon } from '../../../lib/profileIcon';
 import { Icon } from '../../icons';
 import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
 import { SettingsLoading, TEXT_BUTTON } from '../SettingsPrimitives';
@@ -176,6 +177,16 @@ export function TeamView({ rows, models, defaultModelId, onOpen, onNew, newActio
       <button type="button" onClick={() => onOpen(row)} data-team-open={profile.name} data-detail-trigger={profile.name}
         className="group flex min-h-11 w-full min-w-0 flex-col items-start justify-center gap-0.5 rounded-md px-1 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/50">
         <span className="flex w-full min-w-0 items-center gap-1.5">
+          <Icon
+            name={resolveProfileIcon({
+              profile: profile.name,
+              executor: profile.executor,
+              main: profile.main,
+              description: profile.description,
+            })}
+            size={14}
+            className={`shrink-0 ${muted ? 'text-ink-faint' : 'text-ink-soft'}`}
+          />
           <span className={`min-w-0 shrink truncate text-[13px] font-medium group-hover:underline group-hover:decoration-ink-faint group-hover:underline-offset-2 ${shadowed ? 'line-through decoration-ink-faint/60' : muted ? '' : 'text-ink'}`}>{displayName(profile, locale)}</span>
           {warn.length > 0 ? <span data-team-warning className="shrink-0 text-amber-ink">
             <Icon name="warning" size={12} /><span className="sr-only">{t('st.attention.count', { count: warn.length })}</span>

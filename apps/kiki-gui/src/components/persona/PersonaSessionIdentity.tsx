@@ -21,8 +21,9 @@
  */
 
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@kiki/protocol';
+import type { SessionListData } from '@kiki/session-core/sessions';
 import { sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
 import { errorText } from '@kiki/session-core/i18n';
 
@@ -36,7 +37,7 @@ import { PersonaConversationSwitcher } from './PersonaConversationSwitcher';
 import { buildPersonaDirectory } from './usePersonaDirectory';
 import { usePersonaList } from './usePersonas';
 import { usePersonaSwitcherConversations } from './usePersonaSwitcherConversations';
-import { sessionPersonaId } from './personaSessionUtils';
+import { mergePersonaConversations, sessionPersonaId } from './personaSessionUtils';
 
 export interface PersonaSessionIdentityProps {
   readonly session: Session;
@@ -94,8 +95,30 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
   // The switcher's list is the server's answer for this persona (D5): read
   // when the switcher opens, not on every visit to the conversation. The
   // sidebar's switcher reads the same entry.
+  const queryClient = useQueryClient();
   const conversationsQuery = usePersonaSwitcherConversations(personaId, open);
-  const conversations = conversationsQuery.data?.items ?? [];
+  const loadedConversations = useMemo(() => {
+    if (!open || personaId === undefined) return [session];
+    const seenIds = new Set<string>([session.id]);
+    const list: Session[] = [session];
+    for (const [, cached] of queryClient.getQueriesData<SessionListData>({ queryKey: ['sessions'] })) {
+      for (const page of cached?.pages ?? []) {
+        for (const item of page.items) {
+          if (!seenIds.has(item.id)) {
+            seenIds.add(item.id);
+            list.push(item);
+          }
+        }
+      }
+    }
+    return list;
+  }, [open, personaId, queryClient, session]);
+  const conversations = useMemo(
+    () => (personaId === undefined
+      ? []
+      : mergePersonaConversations(conversationsQuery.data?.items, loadedConversations, personaId)),
+    [conversationsQuery.data?.items, loadedConversations, personaId],
+  );
   const entry = useMemo(
     () => (summary === undefined ? undefined : buildPersonaDirectory([summary], [], conversations, seen)[0]),
     [conversations, seen, summary],

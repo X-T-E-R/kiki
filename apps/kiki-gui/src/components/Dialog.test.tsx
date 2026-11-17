@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
+import { MiniContextMenu } from './MiniContextMenu';
 import { SidePanel } from './SidePanel';
 import { SearchableSelect } from './SearchableSelect';
 import { useDirtyGuardState } from './dirtyGuard';
@@ -388,5 +389,46 @@ it('lets a portaled picker inside a SidePanel or plain Dialog peel on Escape bef
   // Second Escape closes the SidePanel itself.
   await escape();
   expect(document.querySelector('[aria-label="New task"]')).toBeNull();
+});
+
+it('exempts a MiniContextMenu opened inside a Dialog from the focus trap so menu items remain clickable', async () => {
+  const onPick = vi.fn();
+  function DialogWithContextMenu() {
+    const [menuOpen, setMenuOpen] = useState(false);
+    return <I18nProvider>
+      <Dialog stacked ariaLabel="Context dialog" overlayId="context-dialog-test" onClose={() => {}}>
+        <button type="button" data-open-menu onClick={() => setMenuOpen(true)}>More</button>
+        {menuOpen ? (
+          <MiniContextMenu
+            x={120}
+            y={120}
+            ariaLabel="Row actions"
+            overlayId="dialog-row-actions"
+            dataAttribute="data-mini-context-menu"
+            onClose={() => setMenuOpen(false)}
+            entries={[
+              { key: 'pin', label: 'Pin item', run: onPick },
+            ]}
+          />
+        ) : null}
+      </Dialog>
+    </I18nProvider>;
+  }
+
+  await act(async () => root.render(<DialogWithContextMenu />));
+  const trigger = document.querySelector<HTMLButtonElement>('[data-open-menu]')!;
+  trigger.focus();
+  await act(async () => { trigger.click(); });
+
+  const menu = document.querySelector<HTMLElement>('[data-mini-context-menu]')!;
+  expect(menu).not.toBeNull();
+  expect(menu.getAttribute('data-modal-escape')).toBe('context-dialog-test');
+  expect(Number(menu.style.zIndex)).toBeGreaterThan(50);
+
+  const item = menu.querySelector<HTMLButtonElement>('[data-menu-item="pin"]')!;
+  await act(async () => { item.focus(); });
+  expect(document.activeElement).toBe(item);
+  await act(async () => { item.click(); });
+  expect(onPick).toHaveBeenCalledTimes(1);
 });
 

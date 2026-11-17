@@ -1893,7 +1893,7 @@ describe('live and event chrome', () => {
     expect([...container.querySelectorAll('button')].some(button => button.textContent === 'Retry')).toBe(false);
   });
 
-  it('does not certify an unverified empty cold read as a blank session', async () => {
+  it('auto-loads once for an empty unverified cold read with more history, and keeps Retry when still empty', async () => {
     const retry = vi.fn();
     const loadOlder = vi.fn(async () => false);
     const { root, container } = makeRoot();
@@ -1902,6 +1902,7 @@ describe('live and event chrome', () => {
       onLoadOlder={loadOlder} onResolveApproval={noopActions}
       onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
     />);
+    expect(loadOlder).toHaveBeenCalledOnce();
     expect(container.textContent).not.toContain('A blank page');
     expect(container.textContent).not.toContain('Earlier history');
     const status = container.querySelector('[data-history-unverified]');
@@ -1912,7 +1913,7 @@ describe('live and event chrome', () => {
     const button = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
     expect(button).toBeDefined();
     await act(async () => { click(button!); });
-    expect(loadOlder).toHaveBeenCalledOnce();
+    expect(loadOlder).toHaveBeenCalledTimes(2);
     expect(retry).not.toHaveBeenCalled();
   });
 

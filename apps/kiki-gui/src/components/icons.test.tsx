@@ -4,7 +4,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { Icon, OutcomeMark, resolvePluginSlotIconName, type OutcomeState } from './icons';
+import { resolveProfileIcon } from '../lib/profileIcon';
+import { Icon, OutcomeMark, resolvePluginSlotIconName, type IconName, type OutcomeState } from './icons';
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
@@ -63,6 +64,47 @@ describe('icon family', () => {
     expect(resolvePluginSlotIconName({ pluginId: 'kiki-phone', panelId: 'preview' })).toBe('smartphone');
     expect(resolvePluginSlotIconName({ icon: 'terminal', pluginId: 'cordis-sh' })).toBe('terminal');
     expect(resolvePluginSlotIconName({ pluginId: 'cordis-notes', fallback: 'star' })).toBe('star');
+  });
+
+  it('draws semantic monochrome profile icons and resolves built-in, custom, file, and external profiles', async () => {
+    const profileGlyphs: readonly IconName[] = [
+      'profileMain',
+      'profileCode',
+      'profileFrontend',
+      'profileResearch',
+      'profileReview',
+      'profileThink',
+      'profileOperator',
+      'profileWorker',
+      'profileWriter',
+      'profileDirector',
+    ];
+    for (const glyph of profileGlyphs) {
+      const container = await render(<Icon name={glyph} size={14} />);
+      const svg = container.querySelector('svg');
+      expect(svg?.getAttribute('viewBox')).toBe('0 0 16 16');
+      expect(svg?.getAttribute('stroke-width')).toBe('1.35');
+      expect(svg?.getAttribute('data-icon')).toBe(glyph);
+      expect(svg?.children.length).toBeGreaterThan(0);
+      expect(svg?.querySelector('text')).toBeNull();
+    }
+
+    expect(resolveProfileIcon({ main: true })).toBe('profileMain');
+    expect(resolveProfileIcon({ profile: 'agent', main: true })).toBe('profileMain');
+    expect(resolveProfileIcon({ profile: 'explore' })).toBe('compass');
+    expect(resolveProfileIcon({ profile: 'implementer' })).toBe('profileCode');
+    expect(resolveProfileIcon({ profile: 'implementer-grokbuild', executor: 'grok' })).toBe('profileCode');
+    expect(resolveProfileIcon({ profile: 'frontend' })).toBe('profileFrontend');
+    expect(resolveProfileIcon({ profile: 'researcher' })).toBe('profileResearch');
+    expect(resolveProfileIcon({ profile: 'reviewer' })).toBe('profileReview');
+    expect(resolveProfileIcon({ profile: 'think' })).toBe('profileThink');
+    expect(resolveProfileIcon({ profile: 'operator' })).toBe('profileOperator');
+    expect(resolveProfileIcon({ profile: 'worker' })).toBe('profileWorker');
+    expect(resolveProfileIcon({ profile: 'writer' })).toBe('profileWriter');
+    expect(resolveProfileIcon({ profile: 'director', main: true })).toBe('profileDirector');
+    expect(resolveProfileIcon({ executor: 'codex-cli' })).toBe('terminal');
+    expect(resolveProfileIcon({ hasFile: true })).toBe('file');
+    expect(resolveProfileIcon({ profile: 'custom-helper', description: 'Independent security audit and code review' })).toBe('profileReview');
   });
 });
 

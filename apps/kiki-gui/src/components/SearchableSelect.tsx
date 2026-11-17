@@ -303,11 +303,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
     placement === 'above' ? 'above' : 'below',
   );
 
-  const [panelZIndex, setPanelZIndex] = useState<number | undefined>(undefined);
-  useEffect(() => {
-    if (!open) { setPanelZIndex(undefined); return; }
-    setPanelZIndex(floatingSurfaceZIndex(triggerRef.current));
-  }, [open]);
+  const panelZIndex = open && isPortaled ? floatingSurfaceZIndex(triggerRef.current) : undefined;
 
   const showFilter = hideFilter !== undefined
     ? !hideFilter

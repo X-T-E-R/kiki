@@ -8,6 +8,7 @@ param(
     [string]$CandidateRoot,
     [string]$ExpectedCommit,
     [string]$DesktopPath,
+    [switch]$Background,
     [switch]$WaitForUser
 )
 
@@ -344,13 +345,21 @@ function Resolve-LaunchTarget([string]$Root) {
     }
 }
 
-function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru) {
+function Invoke-Launch([string]$Root, [string]$LaunchHome, [switch]$PassThru, [switch]$Background) {
     $target = Resolve-LaunchTarget $Root
     $previousHome = $env:KIKI_HOME
     try {
         if ($LaunchHome) { $env:KIKI_HOME = $LaunchHome }
         elseif ((Split-Path -Leaf $target.Root) -eq 'Kiki-Dev') { $env:KIKI_HOME = $target.Root }
-        Start-Process -FilePath $target.MainPath -WorkingDirectory $target.ReleasePath -PassThru:$PassThru
+        $startParams = @{
+            FilePath = $target.MainPath
+            WorkingDirectory = $target.ReleasePath
+            PassThru = [bool]$PassThru
+        }
+        if ($Background) {
+            $startParams['ArgumentList'] = @('--background')
+        }
+        Start-Process @startParams
     }
     finally {
         $env:KIKI_HOME = $previousHome
@@ -488,7 +497,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                 if ($WaitForUser) { Read-Host 'Promotion succeeded. Press Enter to close' | Out-Null }
             }
             'Launch' {
-                Invoke-Launch $RuntimeRoot
+                Invoke-Launch $RuntimeRoot -Background:$Background
             }
             'InstallShortcuts' {
                 if ([string]::IsNullOrWhiteSpace($DesktopPath)) {

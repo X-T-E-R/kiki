@@ -352,13 +352,16 @@ function useActiveController(
     leaseReady: false,
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (sessionId === undefined) {
       setActive({ controller: null, leaseReady: false });
       return;
     }
     // The registry keeps a recently left view parked (bounded LRU), so coming
-    // back reuses its window instead of waiting for a fresh reset.
+    // back reuses its window instead of waiting for a fresh reset. Running in
+    // useLayoutEffect parks/cancels the previous session's history reads and
+    // acquires the next session before paint so cached views repaint in 0ms
+    // and cold views show immediate loading feedback without stale-session flash.
     const lease = registry.acquire(
       sessionId,
       client,
@@ -386,11 +389,16 @@ function useActiveController(
     };
   }, [client, sessionId, registry]);
 
-  useEffect(() => {
-    active.controller?.setPersistenceHint?.(persistenceHint);
-  }, [active.controller, persistenceHint]);
+  const currentController = active.controller !== null && active.controller.sessionId === sessionId
+    ? active.controller
+    : null;
+  const currentLeaseReady = currentController !== null && active.leaseReady;
 
-  return active;
+  useEffect(() => {
+    currentController?.setPersistenceHint?.(persistenceHint);
+  }, [currentController, persistenceHint]);
+
+  return { controller: currentController, leaseReady: currentLeaseReady };
 }
 
 /** The ☰ count on a phone: the same inbox the sidebar's bell reports. */

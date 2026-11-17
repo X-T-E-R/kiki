@@ -41,7 +41,7 @@ import {
 } from '@kiki/transcript';
 import type { SessionViewTranscriptDetail } from '@kiki/klient/session-view';
 import { OlderLoadCoordinator, type OlderLoadResult } from './olderLoadCoordinator';
-import { readInHistoryLane } from './historyReadLane';
+import { readInHistoryLane, type HistoryReadPriority } from './historyReadLane';
 
 import {
   API_CODES,
@@ -1082,6 +1082,44 @@ export class SessionController {
     this.viewAttachment += 1;
     this.viewHandle?.close();
     this.viewHandle = undefined;
+  }
+
+  /**
+   * Release in-flight older/detail/range history reads when a busy view is
+   * parked in the background without suspending its live `turn` subscription,
+   * so inactive sessions never head-of-line block the newly focused session's
+   * `HistoryReadLane`.
+   */
+  cancelParkedReads(): void {
+    if (this.closed) return;
+    this.olderLoads.cancelAll();
+    const agents = new Set<string>([MAIN_AGENT_ID, ...this.timelines.keys()]);
+    for (const agentId of agents) {
+      const view = this.viewOf(agentId);
+      if (view.loadingOlder || view.olderError !== undefined) {
+        this.publishView(agentId, { ...view, loadingOlder: false, olderError: undefined });
+      }
+    }
+    for (const key of this.contentReaders.keys()) {
+      this.retireContentRead(key);
+    }
+    for (const [requestKey, controller] of this.contentControllers) {
+      this.contentControllers.delete(requestKey);
+      this.detailReads.delete(requestKey);
+      controller.abort();
+      const slash = requestKey.indexOf('/');
+      if (slash > 0) {
+        this.setDetailLoad(requestKey.slice(0, slash), requestKey.slice(slash + 1), undefined);
+      }
+    }
+    for (const [key, flight] of this.toolDetailReads) {
+      this.toolDetailReads.delete(key);
+      flight.controller.abort();
+    }
+    for (const controller of this.rangeControllers.keys()) {
+      controller.abort();
+    }
+    this.rangeControllers.clear();
   }
 
   /**
@@ -2363,7 +2401,7 @@ export class SessionController {
         // A page without a watermark reflects at least the state the window
         // was at when it was asked for.
         const requestMark = this.timelines.get(agentId)?.cursor;
-        let page = await this.readPreparedContent(read, signal);
+        let page = await this.readPreparedContent(read, signal, 'high');
         if (obsolete()) return { kind: 'cancelled', changed: false };
         if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
         if (page.read?.stale !== undefined) {
@@ -2391,7 +2429,7 @@ export class SessionController {
               ],
             };
           }
-          page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal);
+          page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal, 'high');
           if (obsolete()) return { kind: 'cancelled', changed: false };
           if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
           if (recovered !== undefined) page = { ...page, items: [...page.items.filter(item => item.kind !== 'turn' || item.turnId !== recovered.turnId), recovered] };
@@ -3149,18 +3187,27 @@ export class SessionController {
     } finally { this.contentPumpRunning = false; }
   }
 
-  private async readAuthoritativeTranscriptContinuation<T extends { read?: TranscriptRead }>(read: () => Promise<T>, staleMessage: string, signal?: AbortSignal): Promise<T> {
-    const result = await this.readPreparedContent(read, signal);
+  private async readAuthoritativeTranscriptContinuation<T extends { read?: TranscriptRead }>(
+    read: () => Promise<T>,
+    staleMessage: string,
+    signal?: AbortSignal,
+    priority: HistoryReadPriority = 'normal',
+  ): Promise<T> {
+    const result = await this.readPreparedContent(read, signal, priority);
     if (result.read?.stale !== undefined) throw new Error(staleMessage);
     return result;
   }
 
-  private async readPreparedContent<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  private async readPreparedContent<T>(
+    read: () => Promise<T>,
+    signal?: AbortSignal,
+    priority: HistoryReadPriority = 'normal',
+  ): Promise<T> {
     let failures = 0;
     const backoff = new PreparingBackoff();
     for (;;) {
       signal?.throwIfAborted();
-      try { return await readInHistoryLane(this.client, read, signal); }
+      try { return await readInHistoryLane(this.client, read, signal, priority); }
       catch (error) {
         signal?.throwIfAborted();
         const code = error instanceof RPCError || error instanceof ApiError ? error.code : undefined;

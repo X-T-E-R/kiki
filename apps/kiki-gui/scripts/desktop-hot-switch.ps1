@@ -5,6 +5,7 @@ param(
     [string]$CandidateRoot,
     [string]$ExpectedCommit,
     [switch]$Recover,
+    [switch]$Background,
     [ValidateRange(1, 86400)][int]$SettleSeconds = 300,
     [ValidateRange(1, 3600)][int]$StartupSeconds = 90
 )
@@ -195,7 +196,7 @@ try {
         if ($null -eq $target) {
             if (@(Find-Shells).Count -gt 0) { throw 'Quit the remaining desktop from its tray before retrying recovery.' }
             Restore-OriginalRelease
-            $launcher = Invoke-Launch $runtime $homePath -PassThru
+            $launcher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
             $target = Await-Release $state.oldReleaseId $state.oldBuildId $launcher
         } elseif ($target.meta.server_home_id -cne $state.serverHomeId -or $target.meta.current_space_id -cne $state.spaceId -or
             $target.releaseId -cnotin @($state.oldReleaseId, $state.targetReleaseId, $state.priorPointerReleaseId)) {
@@ -270,7 +271,7 @@ try {
     Invoke-Promotion $runtime $verified | Out-Host
     if ((Read-CurrentManifest $runtime).releaseId -cne $targetRelease) { throw 'Promotion did not select the verified candidate.' }
     $state.phase = 'starting'; Save-State
-    $launcher = Invoke-Launch $runtime $homePath -PassThru
+    $launcher = Invoke-Launch $runtime $homePath -PassThru -Background:$Background
     $target = Await-Release $targetRelease $commit $launcher
     $state.phase = 'resuming'; Save-State
     Release-OurPauses $target $false

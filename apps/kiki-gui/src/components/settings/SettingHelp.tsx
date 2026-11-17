@@ -20,7 +20,15 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useI18n } from '../../i18n';
+import {
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  owningModalId,
+  registerOverlay,
+  resolveFloatingOwners,
+} from '../../lib/uiBusy';
 import { unzoomedRect, unzoomedViewport } from '../../lib/uiZoom';
+import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
 import { placeAnchored } from '../overlays/anchoredPosition';
 import { Icon } from '../icons';
 
@@ -69,6 +77,7 @@ export function SettingHelp({ children, className = '' }: {
 
   useEffect(() => {
     if (!open) return;
+    const unregister = registerOverlay(`setting-help:${helpId}`);
     // A card scrolls and a window resizes: re-place instead of letting the
     // bubble drift off its label. Escape closes. It only hands focus to the
     // trigger when the trigger already had it: a reader who merely hovered
@@ -77,6 +86,8 @@ export function SettingHelp({ children, className = '' }: {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
       const hadFocus = triggerRef.current !== null && triggerRef.current.contains(document.activeElement);
       setOpen(false);
       if (hadFocus) triggerRef.current?.focus();
@@ -93,12 +104,13 @@ export function SettingHelp({ children, className = '' }: {
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => {
+      unregister();
       window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [open]);
+  }, [open, helpId]);
 
   const close = () => { setOpen(false); openedByClick.current = false; };
 
@@ -155,12 +167,16 @@ export function SettingHelp({ children, className = '' }: {
           id={helpId}
           role="tooltip"
           data-setting-help-bubble
+          {...{
+            [MODAL_ESCAPE_ATTRIBUTE]: owningModalId(triggerRef.current),
+            [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: resolveFloatingOwners(triggerRef.current),
+          }}
           onMouseEnter={enter}
           onMouseLeave={leaveLater}
           className={BUBBLE}
           style={position === null
-            ? { visibility: 'hidden', top: 0, left: 0 }
-            : { top: position.top, left: position.left }}
+            ? { visibility: 'hidden', top: 0, left: 0, zIndex: floatingSurfaceZIndex(triggerRef.current) }
+            : { top: position.top, left: position.left, zIndex: floatingSurfaceZIndex(triggerRef.current) }}
         >
           {children}
         </div>,

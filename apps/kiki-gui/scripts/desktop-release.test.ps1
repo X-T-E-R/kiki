@@ -428,6 +428,34 @@ if ($hashReads[$desktop] -ne 1 -or $hashReads[$server] -ne 1) { throw 'Candidate
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $legacyRoot 'desktop-build-receipt.json'))) 'Launch required a build receipt for an existing release.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $legacyRelease 'desktop-build-receipt.json'))) 'Launch required a build receipt inside an existing release.'
 
+    $backgroundRunner = Join-Path $testRoot 'background-launch.ps1'
+    [IO.File]::WriteAllText($backgroundRunner, @'
+param([string]$ControllerPath, [string]$RuntimePath)
+$ErrorActionPreference = 'Stop'
+. $ControllerPath -Action Launch
+$calls = New-Object System.Collections.Generic.List[object]
+function Start-Process {
+    param(
+        [string]$FilePath,
+        [string]$WorkingDirectory,
+        [string[]]$ArgumentList,
+        [switch]$PassThru
+    )
+    $calls.Add([pscustomobject]@{
+        FilePath = $FilePath
+        WorkingDirectory = $WorkingDirectory
+        Arguments = @($ArgumentList) -join ' '
+        PassThru = [bool]$PassThru
+    }) | Out-Null
+}
+Invoke-Launch $RuntimePath
+Invoke-Launch $RuntimePath -Background
+if ($calls.Count -ne 2) { throw "Expected 2 Start-Process calls, saw $($calls.Count)." }
+if ($calls[0].Arguments -ne '') { throw "Foreground launch passed unexpected arguments: $($calls[0].Arguments)" }
+if ($calls[1].Arguments -ne '--background') { throw "Background launch did not pass --background: $($calls[1].Arguments)" }
+'@, (New-Object Text.UTF8Encoding($false)))
+    Invoke-Controller @('-ControllerPath', $controller, '-RuntimePath', $legacyRoot) 0 $backgroundRunner | Out-Null
+
     Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, and legacy-launch cases.'
 }
 finally {

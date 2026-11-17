@@ -13,11 +13,11 @@
  * before.
  */
 
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useLayerHistory } from '../../lib/layerHistory';
-import { floatingSurfaceZIndex, registerOverlay } from '../../lib/uiBusy';
+import { floatingSurfaceZIndex, owningModalId, registerOverlay, topModalId } from '../../lib/uiBusy';
 
 const ITEM_SELECTOR =
   '[role="menuitem"]:not([disabled]), [role="menuitemcheckbox"]:not([disabled]), [role="menuitemradio"]:not([disabled])';
@@ -62,6 +62,10 @@ export function ActionSheet({
   /** `role="menuitem"` buttons (separators allowed). */
   readonly children: ReactNode;
 }) {
+  const [inferredModalOwner] = useState(() =>
+    modalOwnerId ?? owningModalId(typeof document !== 'undefined' ? document.activeElement : null) ?? topModalId(),
+  );
+  const effectiveModalOwner = modalOwnerId ?? inferredModalOwner;
   const sheetRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -105,7 +109,7 @@ export function ActionSheet({
   return createPortal(
     <div
       {...rootProps}
-      data-modal-escape={modalOwnerId}
+      data-modal-escape={effectiveModalOwner}
       className="kiki-action-sheet-layer"
       // Above whatever dialog is up, like the desktop menu it replaces.
       style={{ zIndex: floatingSurfaceZIndex(null) }}

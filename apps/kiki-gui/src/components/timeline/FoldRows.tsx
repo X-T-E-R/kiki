@@ -10,6 +10,7 @@ import { basenameOf, extractToolOutputMedia, toolResultMedia, type MediaRef } fr
 import { isLiveSubagentStatus, isMediaTool, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup } from '@kiki/session-core/session';
 import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
+import { resolveProfileIcon } from '../../lib/profileIcon';
 import { ContentContinuation, MESSAGE_TEXT_ROOTS, TASK_SUMMARY_ROOTS } from '../ContentContinuation';
 import { Icon, OutcomeMark } from '../icons';
 import { MediaPart } from '../mediaParts';
@@ -143,10 +144,21 @@ export function SubagentGroupRow({
   const { t, tp } = useI18n();
   const total = group.members.length;
   const done = group.members.filter((member) => settled(liveStatus(member, forest, childBlocks))).length;
+  const memberIcons = new Set(
+    group.members.map((member) =>
+      resolveProfileIcon({
+        profile: member.label ?? member.name,
+        executor: member.executorId ?? forest?.byId[member.subagentId]?.executorId,
+        main: false,
+        description: member.description,
+      }),
+    ),
+  );
+  const groupIcon = memberIcons.size === 1 ? [...memberIcons][0]! : 'agent';
   return (
     <ActivityRow
       attrs={{ 'data-subagent-group': total, 'data-subagent-group-done': done }}
-      glyph={<Icon name="agent" />}
+      glyph={<Icon name={groupIcon} />}
       label={tp('transcript.agents.dispatched', total)}
       detail={<span className="text-ink-faint tabular-nums">{t('transcript.agents.progress', { done, total })}</span>}
       // The live mark sits in the members' 28px disclosure column, so it

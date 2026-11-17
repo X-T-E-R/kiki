@@ -2864,7 +2864,7 @@ export function Composer({
     statusSegments.push({
       key: 'profile',
       node: (
-        <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
+        <ComposerPanelOrigin className="flex min-w-0 max-w-full items-center [&>div]:min-w-0">
           <ProfileSelect
             choice={execution}
             pending={executionPending || pendingRuntimeControls !== undefined}
@@ -2898,7 +2898,7 @@ export function Composer({
     statusSegments.push({
       key: 'execution',
       node: (
-        <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
+        <ComposerPanelOrigin className="flex min-w-0 max-w-full items-center [&>div]:min-w-0">
           <ExecutionSelect
             choice={execution}
             pending={executionPending || pendingRuntimeControls !== undefined}
@@ -3702,16 +3702,16 @@ export function Composer({
                     segment.key === 'permission'
                       ? 'ml-auto shrink-0 pl-1'
                       : segment.key === 'plugin-capsules'
-                        ? 'min-w-0 shrink overflow-hidden pl-0.5 @max-[32rem]/toolbar:hidden'
+                        ? 'min-w-0 shrink pl-0.5 @max-[32rem]/toolbar:hidden'
                       : segment.key === 'output-layer'
                         ? 'shrink-0 pl-0.5'
                       : segment.key === 'recipe-binding'
-                        ? 'min-w-0 shrink overflow-hidden @max-[36rem]/toolbar:hidden'
+                        ? 'min-w-0 shrink @max-[36rem]/toolbar:hidden'
                       : segment.key === 'run-mode'
                         ? 'mr-1 shrink-0'
                       : segment.key === 'profile' || segment.key === 'agent'
-                        ? 'min-w-0 shrink overflow-hidden'
-                      : 'min-w-0 shrink overflow-hidden'
+                        ? 'min-w-0 shrink @max-[24rem]/toolbar:shrink-0'
+                      : 'min-w-0 shrink'
                   }`}
                 >
                   {segment.node}

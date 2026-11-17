@@ -4,6 +4,7 @@ import type { SessionSnapshotResponse } from '@kiki/protocol';
 import type { SessionViewFacade, SessionViewSignal, SessionViewSubscribeInput } from '@kiki/klient/session-view';
 
 import type { SessionTransport } from '../transport';
+import { readInHistoryLane } from './historyReadLane';
 import { SessionController } from './sessionController';
 import { appendOps, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
@@ -173,6 +174,71 @@ describe('SessionController suspend / resume', () => {
     await controller.resume();
     await vi.waitFor(() => { expect(attachments).toHaveLength(1); });
     expect(controller.getState().loaded).toBe(true);
+    controller.close();
+  });
+
+  it('prioritizes high-priority timeline page reads ahead of queued background HistoryReadLane reads', async () => {
+    const conn = {};
+    const order: string[] = [];
+    const gates: Array<() => void> = [];
+    const hold = (label: string) => () => new Promise<string>((resolve) => {
+      order.push(`start:${label}`);
+      gates.push(() => {
+        order.push(`done:${label}`);
+        resolve(label);
+      });
+    });
+
+    // Fill all 3 concurrent slots with background reads from session A.
+    const f1 = readInHistoryLane(conn, hold('bg-1'));
+    const f2 = readInHistoryLane(conn, hold('bg-2'));
+    const f3 = readInHistoryLane(conn, hold('bg-3'));
+    // Queue two normal background reads behind them, then a high-priority initial timeline read for session B.
+    const qNormal1 = readInHistoryLane(conn, hold('queued-normal-1'), undefined, 'normal');
+    const qNormal2 = readInHistoryLane(conn, hold('queued-normal-2'), undefined, 'normal');
+    const qHigh = readInHistoryLane(conn, hold('focused-timeline-page'), undefined, 'high');
+
+    expect(order).toEqual(['start:bg-1', 'start:bg-2', 'start:bg-3']);
+    // Release one slot: the high-priority timeline read must jump ahead of queued normal reads.
+    gates.shift()!();
+    await f1;
+    await Promise.resolve();
+    expect(order).toContain('start:focused-timeline-page');
+    expect(order).not.toContain('start:queued-normal-1');
+
+    while (gates.length > 0) {
+      gates.shift()!();
+      await Promise.resolve();
+    }
+    await Promise.all([f2, f3, qNormal1, qNormal2, qHigh]);
+    expect(order.indexOf('start:focused-timeline-page')).toBeLessThan(order.indexOf('start:queued-normal-1'));
+    expect(order.indexOf('start:queued-normal-1')).toBeLessThan(order.indexOf('start:queued-normal-2'));
+  });
+
+  it('cancels parked older history reads without closing a busy view subscription', async () => {
+    const { controller, attachments, deliver } = harness();
+    await controller.open();
+    let aborted = false;
+    (controller as unknown as { view: SessionViewFacade }).view.transcript.page = vi.fn<SessionViewFacade['transcript']['page']>(
+      (_input, options) => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          aborted = true;
+          reject(options.signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+        });
+      }),
+    );
+    deliver(resetEvent('main', userTurnSnapshot({ assistantText: 'Live busy turn' }), 3, true));
+
+    const pendingOlder = controller.loadOlderHistory('main');
+    await vi.waitFor(() => expect(controller.getState().loadingOlder).toBe(true));
+
+    controller.cancelParkedReads();
+    const outcome = await pendingOlder;
+    expect(aborted).toBe(true);
+    expect(outcome.kind).toBe('cancelled');
+    expect(controller.getState().loadingOlder).toBe(false);
+    expect(controller.suspended).toBe(false);
+    expect(attachments[0]!.closed).toBe(false);
     controller.close();
   });
 });

@@ -16,8 +16,13 @@ const modals: Array<{ id: string; depth: number; panel: HTMLElement }> = [];
  * `floatingSurfaceZIndex`.
  */
 export const MODAL_BASE_Z_INDEX = 50;
+export const MODAL_ID_ATTRIBUTE = 'data-modal-id';
+export const MODAL_DEPTH_ATTRIBUTE = 'data-modal-depth';
 function topModal() {
   return modals.reduce<(typeof modals)[number] | undefined>((top, entry) => !top || entry.depth >= top.depth ? entry : top, undefined);
+}
+export function topModalId(): string | undefined {
+  return topModal()?.id;
 }
 export function nextModalDepth(): number {
   return (topModal()?.depth ?? 0) + 1;
@@ -46,6 +51,8 @@ export function owningModalId(element: Element | null): string | undefined {
   for (let node: Element | null = element; node !== null; node = node.parentElement) {
     const owner = modals.find((entry) => entry.panel.contains(node));
     if (owner !== undefined) return owner.id;
+    const attrOwner = node.getAttribute(MODAL_ID_ATTRIBUTE);
+    if (attrOwner !== null && attrOwner !== '') return attrOwner;
   }
   return undefined;
 }
@@ -75,6 +82,11 @@ export function floatingSurfaceZIndex(element: Element | null): number {
   for (let node: Element | null = element; node !== null; node = node.parentElement) {
     const owner = modals.find((entry) => entry.panel.contains(node));
     if (owner !== undefined) return MODAL_BASE_Z_INDEX + owner.depth + 1;
+    const attrDepth = node.getAttribute(MODAL_DEPTH_ATTRIBUTE);
+    if (attrDepth !== null && attrDepth !== '') {
+      const parsed = Number(attrDepth);
+      if (Number.isFinite(parsed)) return MODAL_BASE_Z_INDEX + parsed + 1;
+    }
   }
   return element === null && topModal() !== undefined
     ? MODAL_BASE_Z_INDEX + topModal()!.depth + 1

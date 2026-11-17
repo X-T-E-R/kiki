@@ -6581,6 +6581,32 @@ export const Transcript = memo(function Transcript({
     if (resetFrame !== null && resetFrame !== undefined) cancelAnimationFrame(resetFrame);
   }, []);
 
+  const emptyAutoLoadKey = `${state.sessionId}:${agentId}:${state.transcriptResetVersion}`;
+  const [emptyAutoLoadDoneKey, setEmptyAutoLoadDoneKey] = useState<string | null>(null);
+  const emptyAutoLoadAttemptedRef = useRef<string | null>(null);
+  const [blankRetrying, setBlankRetrying] = useState(false);
+
+  useEffect(() => {
+    if (!loaded || loadError !== undefined || !visible || readingRestoreFailed !== null) return;
+    if (timelineBlocks.length > 0 || !state.hasMoreHistory || state.loadingOlder || state.olderError !== undefined) return;
+    if (emptyAutoLoadAttemptedRef.current === emptyAutoLoadKey) return;
+    emptyAutoLoadAttemptedRef.current = emptyAutoLoadKey;
+    void requestOlderAtReadingAnchor(true).finally(() => {
+      setEmptyAutoLoadDoneKey(emptyAutoLoadKey);
+    });
+  }, [
+    loaded,
+    loadError,
+    visible,
+    readingRestoreFailed,
+    timelineBlocks.length,
+    state.hasMoreHistory,
+    state.loadingOlder,
+    state.olderError,
+    emptyAutoLoadKey,
+    requestOlderAtReadingAnchor,
+  ]);
+
   if (loadError !== undefined && (!loaded || timelineBlocks.length === 0)) {
     return (
       <div ref={surfaceRef} role="alert" className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
@@ -6605,12 +6631,23 @@ export const Transcript = memo(function Transcript({
     return <TranscriptLoading rootRef={surfaceRef} />;
   }
 
-  const topEdgeState = olderBatchActive && !state.loadingOlder && state.olderError === undefined && state.hasMoreHistory
+  const shouldAutoLoadEmptyHistory =
+    loaded &&
+    loadError === undefined &&
+    visible &&
+    readingRestoreFailed === null &&
+    timelineBlocks.length === 0 &&
+    state.hasMoreHistory &&
+    !state.loadingOlder &&
+    state.olderError === undefined &&
+    emptyAutoLoadDoneKey !== emptyAutoLoadKey;
+  const topEdgeState = (olderBatchActive || shouldAutoLoadEmptyHistory) && !state.loadingOlder && state.olderError === undefined && state.hasMoreHistory
     ? { ...state, loadingOlder: true }
     : state;
-  // An unknown cold read and a failed anchor restore keep their existing
-  // Retry action in the blank shell. Known tail coverage, an in-flight older
-  // read, and an older-page failure otherwise let TopEdge own the state.
+  // An unknown cold read whose initial older probe returned empty and a failed
+  // anchor restore keep their Retry action in the blank shell. Known tail
+  // coverage, an in-flight older read (including initial empty-timeline
+  // auto-load), and an older-page failure otherwise let TopEdge own the state.
   const showTopEdgeForEmptyHistory =
     readingRestoreFailed === null &&
     (topEdgeState.hasMoreHistory || topEdgeState.loadingOlder || topEdgeState.olderError !== undefined) &&
@@ -6632,13 +6669,26 @@ export const Transcript = memo(function Transcript({
             there. The blank-state sentence above still yields to it, so an
             unread session is never announced as an empty one. */}
         {state.historyCoverageKind === 'unknown' || readingRestoreFailed !== null ? (
-          <button type="button" data-reading-restore-retry={readingRestoreFailed !== null || undefined}
+          <button
+            type="button"
+            disabled={blankRetrying}
+            aria-busy={blankRetrying || undefined}
+            data-reading-restore-retry={readingRestoreFailed !== null || undefined}
             onClick={() => {
-              if (readingRestoreFailed !== null) reading.retryRestore();
-              else if (state.hasMoreHistory || onRetryLoad === undefined) void onLoadOlder();
-              else onRetryLoad();
+              if (blankRetrying) return;
+              if (readingRestoreFailed !== null) {
+                reading.retryRestore();
+                return;
+              }
+              setBlankRetrying(true);
+              const pending = state.hasMoreHistory || onRetryLoad === undefined
+                ? Promise.resolve(onLoadOlder())
+                : Promise.resolve(onRetryLoad());
+              void pending.finally(() => { setBlankRetrying(false); });
             }}
-            className="rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-faint hover:text-ink-soft">
+            className="inline-flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-faint transition-colors hover:text-ink-soft disabled:cursor-wait disabled:opacity-60"
+          >
+            {blankRetrying ? <Spinner label={t('common.retry')} size={12} /> : null}
             {t('common.retry')}
           </button>
         ) : null}

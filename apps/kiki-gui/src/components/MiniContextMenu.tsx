@@ -17,7 +17,7 @@ import { createPortal } from 'react-dom';
 import { useCoarsePointer } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { runToastAction } from '../lib/toasts';
-import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
+import { floatingSurfaceZIndex, owningModalId, registerOverlay, topModalId } from '../lib/uiBusy';
 import { ActionSheet } from './overlays/ActionSheet';
 import { unzoomedPoint, unzoomedViewport } from '../lib/uiZoom';
 
@@ -107,6 +107,10 @@ function PointerMenu({
   // does (the pointer's own target takes focus, and stealing it back reads as
   // a glitch).
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const [inferredModalOwner] = useState(() =>
+    modalOwnerId ?? owningModalId(typeof document !== 'undefined' ? document.activeElement : null) ?? topModalId(),
+  );
+  const effectiveModalOwner = modalOwnerId ?? inferredModalOwner;
   const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
   // Layout effect: the clamped position lands before the first paint. Focus
   // moves to the first item the same way (SpaceRowMenu's pattern), so the
@@ -168,7 +172,7 @@ function PointerMenu({
     <div
       ref={menuRef}
       {...containerProps}
-      data-modal-escape={modalOwnerId}
+      data-modal-escape={effectiveModalOwner}
       role="menu"
       aria-label={ariaLabel}
       onKeyDown={(event) => {

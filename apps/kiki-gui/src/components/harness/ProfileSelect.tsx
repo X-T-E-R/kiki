@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -15,7 +16,16 @@ import { useHost } from '../../host';
 import { ExecutorScheduleControl, familyExecutorId, passthroughScheduleOverrides } from './ExecutorScheduleControl';
 import { useI18n } from '../../i18n';
 import { agentProfileCatalogQueryKey, type AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
+import { resolveProfileIcon } from '../../lib/profileIcon';
 import { isImeKeyEvent } from '../../lib/shortcuts';
+import {
+  FLOATING_OWNER_ATTRIBUTE,
+  FLOATING_PORTAL_OWNERS_ATTRIBUTE,
+  floatingSurfaceZIndex,
+  owningModalId,
+  resolveFloatingOwners,
+} from '../../lib/uiBusy';
+import { unzoomedRect, unzoomedViewport } from '../../lib/uiZoom';
 import { useConnection } from '../../state/connection';
 import {
   MENU_ROW_CLASS,
@@ -26,7 +36,9 @@ import {
   useComposerPanelAnchor,
   usePopover,
 } from '../ComposerControls';
+import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
 import { Icon } from '../icons';
+import { placeAnchored } from '../overlays/anchoredPosition';
 import { PersonaAvatar, personaAvatarOf } from '../persona/PersonaAvatar';
 import { matchesPersona, sortPersonas, usePersonaList } from '../persona/usePersonas';
 import {
@@ -125,6 +137,10 @@ export function ProfileSelect({
 
   useComposerPanelAnchor(rootRef, open);
 
+  const modalOwnerId = open ? owningModalId(triggerRef.current) : undefined;
+  const portalInModal = modalOwnerId !== undefined;
+  const [modalPanelPos, setModalPanelPos] = useState<{ left: number; top: number } | null>(null);
+
   const [openDirection, setOpenDirection] = useState<'up' | 'down'>('up');
   useEffect(() => {
     if (!open) return;
@@ -175,6 +191,34 @@ export function ProfileSelect({
   formOpenRef.current = fileForm.open;
   const formPathRef = useRef(fileForm.path);
   formPathRef.current = fileForm.path;
+
+  useLayoutEffect(() => {
+    if (!open || !portalInModal) {
+      setModalPanelPos(null);
+      return;
+    }
+    const updatePosition = () => {
+      const triggerRect = triggerRef.current?.getBoundingClientRect();
+      const panelEl = panelRef.current;
+      if (triggerRect === undefined || panelEl === null) return;
+      const anchor = unzoomedRect(triggerRect);
+      const size = unzoomedRect(panelEl.getBoundingClientRect());
+      const placed = placeAnchored(
+        anchor,
+        { width: size.width || 360, height: size.height || 320 },
+        unzoomedViewport(),
+        { gap: 6 },
+      );
+      setModalPanelPos({ left: placed.left, top: placed.top });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open, portalInModal, query, fileForm.open]);
 
   const [check, setCheck] = useState<{
     readonly path: string;
@@ -364,6 +408,18 @@ export function ProfileSelect({
       ? choice.profile
       : currentExecutorLabel;
 
+  const selectedProfileMeta = useMemo(
+    () => (choice.profile === undefined ? undefined : profiles.find((item) => item.name === choice.profile)),
+    [choice.profile, profiles],
+  );
+  const triggerIconName = resolveProfileIcon({
+    profile: hasFile ? resolvedFileName : choice.profile,
+    executor: choice.executor,
+    main: !isCustomProfile && !hasFile,
+    hasFile,
+    description: hasFile ? resolvedFile.description : selectedProfileMeta?.description,
+  });
+
   const baseTriggerText = buttonLabel;
   const triggerText = pending ? t('composer.execution.pendingSuffix', { name: baseTriggerText }) : baseTriggerText;
   const showPersona = persona !== undefined && !pending;
@@ -448,6 +504,16 @@ export function ProfileSelect({
           className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
         >
           <Check on={isSelected} />
+          <Icon
+            name={resolveProfileIcon({
+              profile: p.name,
+              executor: pExecutor,
+              main: p.main,
+              description: p.description,
+            })}
+            size={14}
+            className="mt-[3px] shrink-0 text-ink-soft"
+          />
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center justify-between gap-1.5">
               <span className="min-w-0 truncate font-medium text-ink">{p.name}</span>
@@ -511,8 +577,8 @@ export function ProfileSelect({
           }
         }}
         className={showPersona === true
-          ? 'flex h-7 min-w-0 max-w-44 items-center gap-1.5 rounded-full pr-1.5 pl-1.5 text-[13px] font-medium text-ink outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-10'
-          : `${STATUS_SEGMENT_CLASS} max-w-52 ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.profile !== undefined || choice.profile_file !== undefined ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
+          ? 'flex h-7 min-w-0 max-w-[min(11rem,100%)] items-center gap-1.5 overflow-hidden rounded-full pr-1.5 pl-1.5 text-[13px] font-medium text-ink outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-10'
+          : `${STATUS_SEGMENT_CLASS} max-w-[min(13rem,100%)] overflow-hidden ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.profile !== undefined || choice.profile_file !== undefined ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
       >
         {showPersona === true ? (
           <>
@@ -521,7 +587,7 @@ export function ProfileSelect({
           </>
         ) : (
           <>
-            <Icon name="persona" size={14} className={STATUS_SEGMENT_ICON_CLASS} />
+            <Icon name={triggerIconName} size={14} className={STATUS_SEGMENT_ICON_CLASS} />
             <span className="min-w-0 truncate @max-[24rem]/toolbar:sr-only">
               {triggerText}
             </span>
@@ -557,15 +623,34 @@ export function ProfileSelect({
         </button>
       ) : null}
 
-      {open ? (
-        <div
-          ref={panelRef}
-          data-execution-panel
-          role="radiogroup"
-          aria-label="Profile"
-          className={`anim-enter absolute left-0 z-50 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
-          style={{ backgroundColor: 'var(--color-paper)' }}
-        >
+      {open ? (() => {
+        const panelElement = (
+          <div
+            ref={panelRef}
+            data-execution-panel
+            role="radiogroup"
+            aria-label="Profile"
+            {...(portalInModal
+              ? {
+                  [MODAL_ESCAPE_ATTRIBUTE]: modalOwnerId,
+                  [FLOATING_OWNER_ATTRIBUTE]: 'composer-profile-select',
+                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]:
+                    resolveFloatingOwners(triggerRef.current) ?? 'composer-profile-select',
+                }
+              : undefined)}
+            className={portalInModal
+              ? 'anim-enter fixed w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg'
+              : `anim-enter absolute left-0 z-50 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
+            style={portalInModal
+              ? {
+                  backgroundColor: 'var(--color-paper)',
+                  zIndex: floatingSurfaceZIndex(triggerRef.current),
+                  ...(modalPanelPos === null
+                    ? { visibility: 'hidden', left: 0, top: 0 }
+                    : { left: modalPanelPos.left, top: modalPanelPos.top }),
+                }
+              : { backgroundColor: 'var(--color-paper)' }}
+          >
           {fileForm.open ? (
             <div data-execution-file-form className="flex flex-col">
               <div className="flex items-center gap-1.5 border-b border-hairline px-2.5 py-1.5">
@@ -630,7 +715,13 @@ export function ProfileSelect({
                   <div data-execution-file-preview={checkedProfile.name} className="min-w-0 rounded-md border border-hairline bg-paper p-2">
                     <p className="flex min-w-0 items-center gap-1.5">
                       <Icon
-                        name={isNativeExecutor(checkedProfile.executor) ? 'agent' : 'terminal'}
+                        name={resolveProfileIcon({
+                          profile: checkedProfile.name,
+                          executor: checkedProfile.executor,
+                          main: checkedProfile.main,
+                          hasFile: true,
+                          description: checkedProfile.description,
+                        })}
                         size={14}
                         className={STATUS_SEGMENT_ICON_CLASS}
                       />
@@ -717,6 +808,7 @@ export function ProfileSelect({
                           className={`${MENU_ROW_CLASS} items-start ${isNativeSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                         >
                           <Check on={isNativeSelected} />
+                          <Icon name="profileMain" size={14} className="mt-[3px] shrink-0 text-ink-soft" />
                           <span className="min-w-0 flex-1">
                             <span className="flex min-w-0 items-center justify-between gap-1.5">
                               <span className="block min-w-0 truncate font-medium text-ink">{nativeLabel}</span>
@@ -767,6 +859,7 @@ export function ProfileSelect({
                             className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''} ${!usable && choice.executor !== item.id ? 'opacity-60 cursor-not-allowed' : ''}`}
                           >
                             <Check on={isSelected} />
+                            <Icon name="terminal" size={14} className="mt-[3px] shrink-0 text-ink-soft" />
                             <span className="min-w-0 flex-1">
                               <span className="flex min-w-0 items-center justify-between gap-1.5">
                                 <span className="block min-w-0 truncate font-medium text-ink">{item.label}</span>
@@ -831,6 +924,16 @@ export function ProfileSelect({
                           className={`${MENU_ROW_CLASS} items-start ${MENU_ROW_SELECTED_CLASS}`}
                         >
                           <Check on />
+                          <Icon
+                            name={resolveProfileIcon({
+                              profile: resolvedFile.path === choice.profile_file ? resolvedFile.name : undefined,
+                              executor: choice.executor,
+                              hasFile: true,
+                              description: resolvedFile.path === choice.profile_file ? resolvedFile.description : undefined,
+                            })}
+                            size={14}
+                            className="mt-[3px] shrink-0 text-ink-soft"
+                          />
                           <span className="min-w-0 flex-1">
                             <span className="block min-w-0 truncate font-medium text-ink">
                               {resolvedFile.path === choice.profile_file && resolvedFile.name !== undefined
@@ -879,6 +982,14 @@ export function ProfileSelect({
                             className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                           >
                             <Check on={isSelected} />
+                            <Icon
+                              name={resolveProfileIcon({
+                                profile: retainedProfile,
+                                executor: boundExecution?.executor ?? choice.executor,
+                              })}
+                              size={14}
+                              className="mt-[3px] shrink-0 text-ink-soft"
+                            />
                             <span className="min-w-0 flex-1">
                               <span className="block min-w-0 truncate font-medium text-ink">
                                 {retainedProfile === 'agent' && isNativeExecutor(boundExecution?.executor ?? choice.executor) ? nativeLabel : retainedProfile}
@@ -1001,8 +1112,10 @@ export function ProfileSelect({
               </div>
             </>
           )}
-        </div>
-      ) : null}
+          </div>
+        );
+        return portalInModal ? createPortal(panelElement, document.body) : panelElement;
+      })() : null}
     </div>
   );
 }

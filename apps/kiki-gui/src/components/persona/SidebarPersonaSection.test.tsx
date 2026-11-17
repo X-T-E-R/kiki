@@ -312,4 +312,29 @@ describe('collapsible and count-bounded persona group', () => {
     await flush();
     expect(updatePersona).toHaveBeenCalledWith('xiao-you', { hidden: true });
   });
+
+  it('surfaces multi-conversation count pills and indented inline topic threads beneath multi-thread personas', async () => {
+    directory.entries = [
+      persona({ id: 'contest-coach', name: '教练 · 赛事顾问', homeSessionId: 'session_home' }),
+    ];
+    const container = await render([
+      hers({ id: 'session_home', title: '教练 · 赛事顾问', updated_at: '2026-11-16T08:00:00Z' }, 'contest-coach'),
+      hers({ id: 'session_radar', title: '教练 · 赛事顾问｜全域赛程梳理', updated_at: '2026-11-17T09:30:00Z' }, 'contest-coach'),
+      hers({ id: 'session_review', title: '教练 · 赛事顾问 — 方案复盘', updated_at: '2026-11-17T08:00:00Z' }, 'contest-coach'),
+    ], 'session_radar');
+
+    const countBadge = container.querySelector<HTMLElement>('[data-persona-thread-count="3"]');
+    expect(countBadge).not.toBeNull();
+
+    const subthreads = [...container.querySelectorAll<HTMLButtonElement>('[data-persona-subthread]')];
+    expect(subthreads.map((item) => item.getAttribute('data-persona-subthread'))).toEqual([
+      'session_radar',
+      'session_review',
+    ]);
+    expect(subthreads[0]?.textContent).toContain('全域赛程梳理');
+    expect(subthreads[0]?.getAttribute('aria-current')).toBe('page');
+
+    await act(async () => { subthreads[1]!.click(); });
+    expect(navigate).toHaveBeenCalledWith('/s/session_review');
+  });
 });

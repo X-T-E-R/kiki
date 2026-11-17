@@ -7,8 +7,9 @@ import { Markdown } from '../Markdown';
 import { ReadableToolText } from './LoadedToolText';
 
 import { useI18n } from '../../i18n';
+import { resolveProfileIcon } from '../../lib/profileIcon';
 import { CopyButton } from './ContentCopyButton';
-import { DisclosureChevron } from '../icons';
+import { DisclosureChevron, Icon } from '../icons';
 
 type JsonObject = Record<string, unknown>;
 const isObject = (value: unknown): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -111,12 +112,26 @@ export const SubagentInvocationView = memo(function SubagentInvocationView({ too
   // named by its own field and copyable verbatim, with nothing of it left to a
   // second press. The remaining arguments are the machine envelope around that
   // text — a separate object, and with nothing left of it, nothing to show.
+  const targetProfile = typeof args?.['profile'] === 'string' && args['profile'].trim() !== ''
+    ? args['profile'].trim()
+    : typeof args?.['route'] === 'string' && args['route'].trim() !== ''
+      ? args['route'].trim()
+      : undefined;
   const envelope = rangeField('input') || rangeField('inputText') ? undefined : args === undefined ? toolBlock.argsText || (toolBlock.args === undefined ? t('tc.noInput') : asText(toolBlock.args)) : asText(parameters);
   return (
     <div data-invocation-tool={toolBlock.toolCallId} className="space-y-3 text-ink">
       <div>
         <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
-          <span>{t('tc.input')}</span><CopyButton label={t('tc.input')} text={toolBlock.argsText || asText(toolBlock.args)} prepare={prepare('input')} />
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <span>{t('tc.input')}</span>
+            {targetProfile !== undefined ? (
+              <span data-invocation-profile={targetProfile} className="inline-flex min-w-0 items-center gap-1 font-mono text-[11.5px] font-normal text-ink-soft">
+                <Icon name={resolveProfileIcon({ profile: targetProfile, main: false })} size={12} className="shrink-0 text-ink-faint" />
+                <span className="truncate">{targetProfile}</span>
+              </span>
+            ) : null}
+          </span>
+          <CopyButton label={t('tc.input')} text={toolBlock.argsText || asText(toolBlock.args)} prepare={prepare('input')} />
         </div>
         {textFields.map(([key, value]) => (
           <div key={key} className={envelope === undefined ? undefined : 'mb-3'} data-invocation-text={key}>

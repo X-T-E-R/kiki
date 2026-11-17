@@ -232,6 +232,14 @@ export function PersonaConversationSwitcher({
         {persona.title !== undefined && persona.title.trim() !== '' ? (
           <span className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">{persona.title}</span>
         ) : <span className="flex-1" />}
+        {status?.loading === true && items.some((item) => item.kind !== 'daily') ? (
+          <span
+            role="status"
+            data-persona-switcher-refreshing
+            aria-label={t('persona.conversationsLoading')}
+            className="h-3 w-3 shrink-0 animate-spin rounded-full border-[1.5px] border-ink-faint/30 border-t-ink-soft"
+          />
+        ) : null}
         <button
           type="button"
           data-persona-switcher-settings

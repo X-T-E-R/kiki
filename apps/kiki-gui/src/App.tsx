@@ -285,6 +285,7 @@ function NormalApp() {
   // While the drawer is open on a phone it owns one history entry, so the
   // device back closes it before route navigation (lib/layerHistory).
   const drawerStage = useMediaQuery('(max-width: 767px)');
+  const wideNoSidebarOverlay = useMediaQuery('(min-width: 1360px)');
   const drawerClosed = drawerStage && !sidebarOpen;
   useEffect(() => {
     setBackdropDrawerClosed(drawerClosed);
@@ -947,7 +948,18 @@ function NormalApp() {
   // When another layer inside the drawer is open (such as view/filter menu),
   // anyOverlayOpen(['app-sidebar']) yields so that inner layer consumes Escape first.
   useEffect(() => {
+    if (wideNoSidebarOverlay && sidebarOpen) setSidebarOpen(false);
+  }, [wideNoSidebarOverlay, sidebarOpen]);
+
+  useEffect(() => {
     if (!sidebarOpen) return;
+    if (!drawerStage && typeof document !== 'undefined') {
+      const previewFoldingSidebar = document.querySelector('.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen])') !== null;
+      if (!previewFoldingSidebar) {
+        setSidebarOpen(false);
+        return;
+      }
+    }
     const unregister = registerOverlay('app-sidebar');
     const onKeyDown = (event: KeyboardEvent) => {
       // An Escape that cancels an IME candidate in the drawer's search field
@@ -962,7 +974,7 @@ function NormalApp() {
       unregister();
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [sidebarOpen]);
+  }, [sidebarOpen, drawerStage]);
 
   // A file released over chrome that takes no files (the sidebar, a settings
   // page) is the browser's to handle, and its handling is to open the file in
