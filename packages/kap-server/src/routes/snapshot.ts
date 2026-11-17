@@ -166,7 +166,7 @@ export async function assembleBrowseSnapshotSource(
     () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
   timing.signal?.throwIfAborted();
   const { subagents, counts } = coldBrowseRoster(sessionId, meta);
-  const facts = await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false });
+  const facts = await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false, sessionMetadata: meta });
   return {
     as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
     session: toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
@@ -282,7 +282,7 @@ async function assembleColdSnapshot(
     () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
   signal?.throwIfAborted();
   const facts = await timeSessionViewPhase('snapshot_binding', fields,
-    () => resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], signal), timing);
+    () => resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], signal, { sessionMetadata: meta }), timing);
   const session = toWireSession(
     { ...meta, workspaceId: summary.workspaceId },
     workspace?.root ?? meta.cwd ?? '',
@@ -626,7 +626,7 @@ export async function readBrowseSnapshotContent(
       const workspace = await timeSessionViewPhase('snapshot_workspace', fields, () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
       timing.signal?.throwIfAborted();
       const session = toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
-        await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false }), cursor.seq);
+        await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false, sessionMetadata: meta }), cursor.seq);
       if (ref.source.id !== 'legacy') return readContentSegment({ session }, ref);
       const projection = await timeSessionViewPhase('snapshot_content_controls', fields,
         () => readColdMainWireProjection(core, summary.workspaceId, sessionId, timing.signal), timing);

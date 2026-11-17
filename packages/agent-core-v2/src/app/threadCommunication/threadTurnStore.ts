@@ -444,7 +444,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
       const id = event?.type === 'tool.result' || event?.turnId === undefined ? undefined : Number.parseInt(event.turnId, 10);
       if (id !== undefined && Number.isInteger(id) && id >= head.nextTurnId) head.nextTurnId = advance(id + 1);
       head.cancelled = [...cancelled];
-      if (event?.type !== 'content.part' || event.part.type !== 'text') return;
+      if (event?.type !== 'content.part' || event.part?.type !== 'text') return;
       const turn = head.pending.find((item) => item.turnId === id);
       if (turn !== undefined && event.part.text.length > 0) {
         const text = turn.outputTail + event.part.text;

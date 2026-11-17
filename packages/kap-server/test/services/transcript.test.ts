@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { NOTE_SECTIONS } from '@kiki/agent-core-v2/session/todo/todoNotes';
 import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 import { HistoryReadLane } from '../../src/services/transcript/historyReadLane';
+import * as logicalWire from '../../src/services/history/logicalWireRead';
 
 import {
   IAgentActivityView,
@@ -1997,6 +1998,71 @@ describe('TranscriptService live integration', () => {
     }
   });
 
+  it.each(['main', 'child'])('seeds twenty turns before an opaque checkpoint tail for %s without replaying the wire head', async (agentId) => {
+    const home = await seedWireHome();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', agentId, 'wire.jsonl');
+    await mkdir(dirname(path), { recursive: true });
+    const records = Array.from({ length: 72 }, (_, turnId) => [
+      { type: 'turn.prompt', turnId, promptId: `p${turnId}`, time: turnId * 2000, origin: { kind: 'user' }, input: [{ type: 'text', text: `question ${turnId}` }] },
+      { type: 'llm.request', time: turnId * 2000 + 1, messages: 'x'.repeat(850_000) },
+      { type: 'turn.ended', turnId, reason: 'completed', time: turnId * 2000 + 1000 },
+    ]).flat();
+    await writeFixtureFile(path, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+    await appendFixtureFile(path, Array.from({ length: 8 }, () => JSON.stringify({ type: 'profile.dynamic_snapshot', snapshot: 'x'.repeat(180_000) })).join('\n') + '\n');
+    await appendFixtureFile(path, JSON.stringify({ type: 'profile.dynamic_snapshot', snapshot: 'x'.repeat(2 << 20) }) + '\n');
+    const base = (await fsPromises.stat(path)).size;
+    await appendFixtureFile(path, JSON.stringify({ type: 'context_rebuild.reported', time: 200_000 }) + '\n');
+    await writeFixtureFile(join(dirname(path), WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({ format: 2, state: 'open', trusted: false, epoch: 'checkpoint-restore' }));
+    const agents = new FakeAgents();
+    agents.add('main');
+    if (agentId !== 'main') agents.add(agentId);
+    const reads: { position: number; length: number }[] = [];
+    const open = logicalWire.openLogicalWire;
+    const positioned = vi.spyOn(logicalWire, 'openLogicalWire').mockImplementation(async (...args) => {
+      const source = await open(...args);
+      return source === undefined ? undefined : { ...source, readAt: async (position, length) => {
+        if (args[0] === path) reads.push({ position, length });
+        return source.readAt(position, length);
+      } };
+    });
+    const service = new TranscriptService({ homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      const started = performance.now();
+      service.forSessionLive('s1', { tailFirst: true });
+      const transcript = await service.ensureAgentHistory('s1', agentId, { tailFirst: true });
+      const elapsed = performance.now() - started;
+      const visible = transcript?.snapshot({ tailTurns: 20 });
+      expect(visible?.items.filter(item => item.kind === 'turn').map(item => item.turnId)).toEqual(Array.from({ length: 20 }, (_, index) => `t${52 + index}`));
+      expect(visible?.hasMoreOlder).toBe(true);
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.every(read => read.position > 0 || read.length <= (64 << 10))).toBe(true);
+      expect(reads.reduce((total, read) => total + read.length, 0)).toBeLessThan(base / 2);
+      const first = await readSessionViewTranscriptPage(service, 's1', { agentId, pageSize: 20 });
+      expect(first?.next_cursor).toBeDefined();
+      const older = await readSessionViewTranscriptPage(service, 's1', { agentId, beforeItem: first!.next_cursor, pageSize: 20 });
+      expect(older?.items.some(item => item.kind === 'turn' && item.ordinal < 52)).toBe(true);
+      expect(new Set(first?.items.map(item => item.kind === 'turn' ? item.turnId : item.kind)).size).toBe(first?.items.length);
+      process.stdout.write(`${JSON.stringify({ checkpointTailFirstScreen: { agentId, wireBytes: base, turns: 20, elapsedMs: elapsed } })}\n`);
+    } finally { positioned.mockRestore(); service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+  it('counts visible turns after undo when discovering the newest twenty', async () => {
+    const home = await seedWireHome();
+    const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+    const records = Array.from({ length: 35 }, (_, turnId) => [
+      { type: 'turn.prompt', turnId, origin: { kind: 'user' }, input: [{ type: 'text', text: `question ${turnId}` }] },
+      { type: 'llm.request', messages: 'x'.repeat(40_000) },
+      { type: 'turn.ended', turnId, reason: 'completed' },
+    ]).flat();
+    await writeFixtureFile(path, records.map(record => JSON.stringify(record)).join('\n') + '\n' + JSON.stringify({ type: 'context.undo', count: 15 }) + '\n');
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
+      expect(baseline?.snapshot.items.filter(item => item.kind === 'turn').map(item => item.turnId)).toEqual(Array.from({ length: 20 }, (_, index) => `t${index}`));
+    } finally { service.dispose(); await rm(home, { recursive: true, force: true }); }
+  });
+
   it('opens a small saved transcript without reading its seal or waiting for live verification', async () => {
     const home = await seedWireHomeWithTool();
     const path = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
@@ -2138,7 +2204,8 @@ describe('TranscriptService live integration', () => {
     try {
       service.forSessionLive('s1', { tailFirst: true });
       const visible = await service.ensureAgentHistory('s1', 'main', { tailFirst: true });
-      expect(service.memoryReport().coldReads.bytes).toBeLessThan(2 << 20);
+      expect(service.memoryReport().coldReads.bytes).toBeLessThan(DEFAULT_TRANSCRIPT_MEMORY_CONFIG.maxAgentBytes);
+      expect(service.memoryReport().coldWindowBytes).toBeLessThan(2 << 20);
       expect(visible?.hasMoreOlder).toBe(true);
       expect(visible?.snapshot().toolCallCountKnown).toBe(false);
       if (!onlyOversizedTail) expect(visible?.getTurn('t9')?.prompt).toBe('recent prompt');
@@ -5940,6 +6007,7 @@ it.each([{ turnId: 0, prepared: false, warmed: false }, { turnId: 7, prepared: t
         promptId: `request-${id}`, input: [{ type: 'text', text: `opening-${id}` }], origin: { kind: 'user' }, time: 1000 + id });
     }
     for (let index = 0; index < 145; index += 1) records.push({ type: 'fixture.padding', padding: 'x'.repeat(64 << 10) });
+    if (warmed) records.push({ type: 'fixture.padding', padding: 'x'.repeat(2 << 20) });
     records.push({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId, uuid: 'tail-step', step: 1 }, time: 2000 },
       { type: 'turn.ended', turnId, reason: 'completed', time: 3000 });
     await writeFile(wirePath, `${records.map(record => JSON.stringify(record)).join('\n')}\n`);
@@ -6066,10 +6134,13 @@ it('preserves missing-prefix and missing-suffix structure through cold and ancho
   const records: object[] = Array.from({ length: 24 }, () => ({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) }));
   for (let turnId = 0; turnId < 3; turnId++) {
     records.push({ type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text: `saved prompt ${turnId}` }], origin: { kind: 'user' }, time: 1000 + turnId });
-    for (let step = 0; step < 8; step++) records.push(
-      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step, uuid: `s${turnId}-${step}` } },
-      { type: 'context.append_loop_event', event: { type: 'assistant.delta', turnId, stepUuid: `s${turnId}-${step}`, uuid: `f${turnId}-${step}`, delta: 'body '.repeat(32 << 10) } },
-    );
+    for (let step = 0; step < 8; step++) {
+      if (step === 6) records.push({ type: 'fixture.padding', padding: 'x'.repeat(2 << 20) });
+      records.push(
+        { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step, uuid: `s${turnId}-${step}` } },
+        { type: 'context.append_loop_event', event: { type: 'assistant.delta', turnId, stepUuid: `s${turnId}-${step}`, uuid: `f${turnId}-${step}`, delta: 'body '.repeat(32 << 10) } },
+      );
+    }
     records.push({ type: 'turn.ended', turnId, reason: 'completed' });
   }
   await writeFixtureFile(wirePath, `${records.map(record => JSON.stringify(record)).join('\n')}\n`);

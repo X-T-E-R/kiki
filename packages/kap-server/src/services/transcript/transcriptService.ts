@@ -125,6 +125,13 @@ const UNVERIFIED_RESIDENT_MAX_BYTES = 4 << 20;
 const UNVERIFIED_RESIDENT_MAX_AGENTS = 16;
 const TURN_START_INDEX_MAX_WIRES = 64;
 const ANCHOR_OPENING_MAX_RECORDS = 8;
+const WINDOW_OPAQUE_RECORDS = ['llm.request', 'profile.dynamic_snapshot'].map(type => ({
+  prefix: Buffer.from(`{"type":"${type}",`), record: { type },
+}));
+
+function transcriptWindowRecord(line: Buffer): ContextRecord | undefined {
+  return WINDOW_OPAQUE_RECORDS.find(({ prefix }) => line.subarray(0, prefix.length).equals(prefix))?.record;
+}
 
 export interface TranscriptToolCallCountLimits {
   readonly maxBytesPerRequest?: number;
@@ -2305,13 +2312,12 @@ export class TranscriptService {
       return existing;
     }
     if (existing !== undefined) this.forgetColdWindow(wirePath);
-    const start = mode === 'first-screen'
-      ? await this.firstScreenStart(wirePath, info.size, signal)
-      : await this.tailRecordStart(wirePath, info.size, signal);
-    const read = await this.readWireRange(wirePath, start, info.size, signal, !resolveHeaders);
-    const entire = start === 0 && read.complete;
+    const discovered = mode === 'first-screen' ? await this.firstScreenRecords(agentId, wirePath, info.size, signal) : undefined;
+    const start = discovered?.start ?? await this.tailRecordStart(wirePath, info.size, signal);
+    const read = discovered ?? await this.readWireRange(wirePath, start, info.size, signal, !resolveHeaders);
+    const entire = start === 0 && read.complete && !(discovered?.skippedTurnIds.length);
     const snapshot = this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureReplayState);
-    const window: ColdWireWindow = { fingerprint, start, end: info.size, entire, records: read.records, snapshot, bytes: 0 };
+    const window: ColdWireWindow = { fingerprint, start, end: info.size, entire, records: read.records, snapshot, bytes: 0, skippedTurnIds: discovered?.skippedTurnIds };
     if (!entire && resolveHeaders) {
       await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, window, signal, preserveOpenTurnIds, captureReplayState);
     }
@@ -2540,22 +2546,110 @@ export class TranscriptService {
     return { ...snapshot, toolCallCount: undefined, toolCallCountKnown: false, hasMoreOlder: false };
   }
 
-  private async firstScreenStart(wirePath: string, end: number, signal: AbortSignal): Promise<number> {
-    const start = Math.max(0, end - FIRST_SCREEN_WINDOW_BYTES);
-    if (start === 0) return 0;
+  private firstScreenRecords(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[] }> {
+    return this.scheduleHistoryRead(signal, owned => this.firstScreenRecordsInLane(agentId, wirePath, end, owned), true);
+  }
+
+  private async firstScreenRecordsInLane(agentId: string, wirePath: string, end: number, signal: AbortSignal): Promise<{ start: number; records: ColdWireRecord[]; complete: boolean; skippedTurnIds: string[] }> {
+    const records: ColdWireRecord[] = [];
+    const skippedTurnIds = new Set<string>();
+    let timelineBytes = 0;
+    let scannedRecords = 0;
+    let reverseTurn: string | undefined;
+    let complete = true;
+    const startedAt = performance.now();
+    const finish = () => {
+      records.reverse();
+      this.coldReadRecords += scannedRecords;
+      this.coldReadsCompleted++;
+      this.coldReadDurationMs += performance.now() - startedAt;
+      return { start: boundary, records, complete, skippedTurnIds: [...skippedTurnIds] };
+    };
     const opened = await openLogicalWire(wirePath, signal);
-    if (opened === undefined) return end;
+    if (opened === undefined) return { start: end, records, complete: false, skippedTurnIds: [] };
+    let position = end;
+    let suffix = Buffer.alloc(0);
+    let boundary = end;
+    let turns = 0;
+    let wantedTurns = DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns;
+    let hasUndo = false;
+    let oversizedEnd: number | undefined;
+    let leading = Buffer.alloc(0);
+    let yieldedAt = performance.now();
+    const floor = Math.max(0, end - COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES);
     try {
-      for (let position = start - 1; position < end;) {
+      while (position > floor && scannedRecords < WIRE_COLD_READ_MAX_RECORDS) {
         signal.throwIfAborted();
-        const bytes = await opened.readAt(position, Math.min(64 * 1024, end - position));
-        this.coldReadBytes += bytes.byteLength;
-        if (bytes.byteLength === 0) break;
-        const newline = bytes.indexOf(0x0a);
-        if (newline >= 0) return position + newline + 1;
-        position += bytes.byteLength;
+        const start = Math.max(floor, position - (oversizedEnd === undefined ? Math.min(WIRE_READ_CHUNK_BYTES, FIRST_SCREEN_WINDOW_BYTES - suffix.length) : WIRE_READ_CHUNK_BYTES));
+        const chunk = Buffer.from(await opened.readAt(start, position - start));
+        this.coldReadBytes += chunk.byteLength;
+        const bytes = suffix.length === 0 ? chunk : Buffer.concat([chunk, suffix]);
+        let lineEnd = bytes.length;
+        if (oversizedEnd !== undefined) {
+          const previous = bytes.lastIndexOf(0x0a);
+          if (previous < 0 && start > 0) {
+            leading = bytes.subarray(0, DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES);
+            position = start;
+            continue;
+          }
+          const prefix = Buffer.concat([bytes.subarray(previous + 1), leading]);
+          const record = transcriptWindowRecord(prefix);
+          if (record === undefined) return finish();
+          boundary = start + previous + 1;
+          records.push({ record, position: { startByteOffset: boundary, endByteOffset: oversizedEnd } });
+          scannedRecords++;
+          oversizedEnd = undefined;
+          leading = Buffer.alloc(0);
+          lineEnd = previous;
+        } else if (bytes.at(-1) === 0x0a) lineEnd--;
+        while (lineEnd > 0) {
+          const previous = bytes.lastIndexOf(0x0a, lineEnd - 1);
+          if (previous < 0 && start > 0) break;
+          const lineStart = previous + 1;
+          const line = bytes.subarray(lineStart, lineEnd);
+          boundary = start + lineStart;
+          if (line.length > 0) {
+            scannedRecords++;
+            let record: ContextRecord;
+            try {
+              record = transcriptWindowRecord(line) ?? JSON.parse(line.toString('utf8')) as ContextRecord;
+            } catch (error) {
+              if (!(error instanceof SyntaxError) || start + lineEnd !== end) throw error;
+              complete = false;
+              lineEnd = previous;
+              continue;
+            }
+            if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
+            const event = record['event'] as Record<string, unknown> | undefined;
+            reverseTurn = wireTurnId(record) ?? (record.type === 'context.append_loop_event' ? wireTurnId({ type: record.type, turnId: event?.['turnId'] }) : undefined) ?? reverseTurn;
+            if (record.type === 'context.append_loop_event') timelineBytes += line.byteLength;
+            if (record.type === 'context.append_loop_event' && timelineBytes > FIRST_SCREEN_WINDOW_BYTES && reverseTurn !== undefined) skippedTurnIds.add(reverseTurn);
+            else records.push({ record, position: { startByteOffset: boundary, endByteOffset: Math.min(end, start + lineEnd + 1) } });
+            if (record.type === 'context.undo') hasUndo = true;
+            if (record.type === 'turn.prompt' || record.type === 'turn_begin') turns++;
+            if (turns >= wantedTurns) {
+              const visible = hasUndo ? this.projectColdRecords(agentId, records.toReversed(), false).items.filter(item => item.kind === 'turn').length : turns;
+              if (visible >= DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns) return finish();
+              wantedTurns += DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns - visible;
+            }
+            if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS || record.type === 'context.clear' || record.type === 'branch.base') return finish();
+          }
+          lineEnd = previous;
+          if (performance.now() - yieldedAt >= 4) {
+            await new Promise<void>(resolve => { setImmediate(resolve); });
+            signal.throwIfAborted();
+            yieldedAt = performance.now();
+          }
+        }
+        suffix = bytes.subarray(0, Math.max(0, lineEnd));
+        if (suffix.length >= FIRST_SCREEN_WINDOW_BYTES) {
+          oversizedEnd = boundary;
+          leading = suffix.subarray(0, DEFAULT_TOOL_CALL_COUNT_READ_CHUNK_BYTES);
+          suffix = Buffer.alloc(0);
+        }
+        position = start;
       }
-      return end;
+      return finish();
     } finally { opened.close(); }
   }
 
@@ -2610,6 +2704,7 @@ export class TranscriptService {
       endByteOffset: end,
       chunkBytes: this.coldReadLimits.chunkBytes,
       signal,
+      decodeRecord: transcriptWindowRecord,
       onRecord: (record, span) => {
         if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
         records.push({ record, position: { startByteOffset: span.startByteOffset, endByteOffset: span.endByteOffset,

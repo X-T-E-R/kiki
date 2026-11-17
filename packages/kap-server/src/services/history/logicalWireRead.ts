@@ -4,6 +4,7 @@ import { readLogicalRange, readPinnedRange, wireFileAddress } from '@kiki/agent-
 import {
   streamWireRecords,
   streamWireRecordsAwaited,
+  WIRE_READ_CHUNK_BYTES,
   type AwaitedWireRecordsStreamOptions,
   type WireByteSource,
   type WireRecordsStreamOptions,
@@ -40,7 +41,7 @@ export async function openLogicalWire(wirePath: string, signal?: AbortSignal): P
   let closed = false;
   return {
     size,
-    readAt: (position, length) => readPinnedRange(pinned, position, length, signal),
+    readAt: (position, length) => readPinnedRange(pinned, position, length, signal, WIRE_READ_CHUNK_BYTES),
     chunks: () => pinned.read({ start: 0, end: size - 1 }, { signal }),
     close() {
       if (closed) return;

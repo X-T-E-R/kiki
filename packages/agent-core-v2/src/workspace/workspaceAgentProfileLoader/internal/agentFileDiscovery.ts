@@ -1,11 +1,8 @@
-import {
-  discoverAgentFiles as discoverProfiles,
-  type DiscoverAgentFilesWarn,
-} from '@kiki/agent-profiles/agentFileDiscovery';
+import type { DiscoverAgentFilesWarn } from '@kiki/agent-profiles/agentFileDiscovery';
 import type { AgentFileDiscoveryResult, AgentFileRoot } from '@kiki/agent-profiles/agentFileTypes';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
-import { agentProfilesHostFs } from './hostFs';
+import { discoverCachedAgentFiles } from '#/agent/profile/agentFileDiscoveryCache';
 
 export type { DiscoverAgentFilesWarn };
 
@@ -15,5 +12,5 @@ export function discoverAgentFiles(
   warn?: DiscoverAgentFilesWarn,
   options?: { readonly includeRoutes?: boolean },
 ): Promise<AgentFileDiscoveryResult> {
-  return discoverProfiles(agentProfilesHostFs(fs), roots, warn, options);
+  return discoverCachedAgentFiles(fs, roots, warn, options);
 }

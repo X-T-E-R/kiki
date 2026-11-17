@@ -390,7 +390,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         await this.ensureSchema(manifest.seq);
         if (!this._store.isDisposed) {
           this.reconcileRetryTimer.cancelAndSet(() => {
-            void this.reconcileNow().catch((error: unknown) => {
+            void this.reconcileNow({ reuseFingerprints: true }).catch((error: unknown) => {
               this.log.warn('session index startup reconciliation failed', { error: String(error) });
             });
           }, 0);
@@ -563,7 +563,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.nextReconcileRetryAt = Date.now() + delay;
     this.reconcileRetryDelayMs = Math.min(delay * 2, RECONCILE_RETRY_MAX_MS);
     this.reconcileRetryTimer.cancelAndSet(() => {
-      void this.reconcileNow().catch((error: unknown) => {
+      void this.reconcileNow({ reuseFingerprints: true }).catch((error: unknown) => {
         this.log.warn('session index deferred reconciliation incomplete', { error: String(error) });
       });
     }, delay);
@@ -728,9 +728,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
     if (readRevision !== this.readModelRevision) return legacy();
     this.generation = manifest.seq;
+    let result: T;
     try {
-      const result = await op(manifest.seq);
-      return readRevision === this.readModelRevision ? result : legacy();
+      result = await op(manifest.seq);
     } catch (error) {
       if (isAbortError(error, signal)) throw error;
       if (error instanceof AuthoritativeReadFailure) throw error.cause;
@@ -739,6 +739,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       this.kickPrepare();
       return legacy();
     }
+    return readRevision === this.readModelRevision ? result : legacy();
   }
 
   private async withReadyReadModel<T>(

@@ -3384,6 +3384,46 @@ describe('FileSessionIndex (read model)', () => {
     expect(counts[`getMany:${sessionCollection(1)}`]).toBeUndefined();
   });
 
+  it('retains 1500 scanned fingerprints when one active session invalidates a background reconciliation', async () => {
+    class FingerprintStorage extends FileStorageService {
+      stats = 0;
+      override async mtime(scope: string, key: string): Promise<number | undefined> {
+        this.stats++;
+        return super.mtime(scope, key);
+      }
+      override async size(scope: string, key: string): Promise<number | undefined> {
+        this.stats++;
+        return super.size(scope, key);
+      }
+    }
+    await Promise.all(Array.from({ length: 1500 }, (_, index) => seedSession(`s${index}`, { createdAt: 1, updatedAt: index + 1 })));
+    const storage = new FingerprintStorage(homeDir);
+    const store = build(storage);
+    await store.prepare();
+    storage.stats = 0;
+    const reads: number[] = [];
+    const original = SessionIndexProjector.prototype.planReconcile;
+    const plan = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
+      const before = storage.stats;
+      const commit = await original.apply(this, args);
+      reads.push(storage.stats - before);
+      if (reads.length === 1) {
+        const value = { title: 'managed active turn', createdAt: 1, updatedAt: 2000 };
+        await seedSession('s1499', value);
+        mirror.record(summary('s1499', value));
+        await mirror.drain();
+      }
+      return commit;
+    });
+    try {
+      await store.reconcileNow({ reuseFingerprints: true });
+      expect(reads).toEqual([6001, 5]);
+      expect((await store.get('s1499'))?.title).toBe('managed active turn');
+      expect(await store.count({ workspaceIds: [workspaceId] })).toBe(1500);
+      console.log('session-index-reconcile-retry', { sessions: 1500, fingerprintReads: reads });
+    } finally { plan.mockRestore(); }
+  }, 30_000);
+
   it('reuses periodic fingerprints but forced reconciliation still repairs external drift', async () => {
     class CountingStorage extends FileStorageService {
       stats = 0;
