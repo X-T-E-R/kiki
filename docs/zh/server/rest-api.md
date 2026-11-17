@@ -1149,7 +1149,7 @@ IM 发送最多等待 60 秒，包含该目标的排队时间。审批或提问�
 | `page_token` | 上一页返回的翻页令牌 |
 | `page` | 无状态的 1 起始页码；与 `page_token` 互斥（同传返回 `40001`） |
 
-响应每项固定包含 `workspace`、`meta`（含布尔值 `private`）、`activity` 三组，`include=git` 时附加 `git` 组；`fields=id,archived` 时仅返回 `{ id, archived }`。每页额外携带 `total`，即过滤后的集合大小。翻页令牌绑定首页查询条件（含投影），中途改条件返回 `40922`。`page` 模式是跳页用的无状态替代：每次请求都是独立快照，不签发令牌，`next_page_token` 恒为 `null`。
+响应每项固定包含 `workspace`、`meta`（含布尔值 `private`，绑定角色时带可选 `persona_id`）、`activity` 三组，`include=git` 时附加 `git` 组；`fields=id,archived` 时仅返回 `{ id, archived }`。每页额外携带 `total`，即过滤后的集合大小。翻页令牌绑定首页查询条件（含投影），中途改条件返回 `40922`。`page` 模式是跳页用的无状态替代：每次请求都是独立快照，不签发令牌，`next_page_token` 恒为 `null`。
 
 ### `POST /api/sessions:archive` 与 `POST /api/sessions:restore`
 
