@@ -3549,4 +3549,118 @@ describe('hidden prefix turn preview', () => {
       controller.close();
     }
   });
+
+  it('anchors readTurnContentPreview at the immediate non-turn item and falls back to beforeTurn on 40001', async () => {
+    const t0Canonical: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't0',
+      ordinal: 0,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'TURN-ZERO-PROMPT',
+      steps: [{ kind: 'step', stepId: 's0', turnId: 't0', ordinal: 0, state: 'completed', frames: [{ kind: 'text', frameId: 'f0', role: 'assistant', text: 'TURN-ZERO-ANSWER' }] }],
+    };
+    const t0Partial: TranscriptTurn = { ...t0Canonical, steps: [], stepsPartial: true };
+    const trailingMarkers = Array.from({ length: 10 }, (_, index) => ({
+      kind: 'marker' as const,
+      markerId: `m${index}`,
+      marker: 'message.delivery' as const,
+    }));
+    const t1: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'TURN-ONE', steps: [] };
+    const { controller, deliver, view } = harness(undefined, vi.fn(segmentRead(t0Canonical)));
+    const canonicalPage = await previewPage(t0Canonical, 32_768)({ agentId: 'main', pageSize: 1 });
+    vi.mocked(view.transcript.page).mockResolvedValue(canonicalPage);
+
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [t0Partial, ...trailingMarkers, t1] }), 2));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(view.transcript.page).mock.calls[0]?.[0]).toEqual({
+        agentId: 'main',
+        beforeItem: 'marker:m0',
+        pageSize: 1,
+      });
+      expect(controller.getState().blocks.some((block) => 'text' in block && block.text.includes('TURN-ZERO-ANSWER'))).toBe(true);
+
+      vi.mocked(view.transcript.page).mockReset();
+      vi.mocked(view.transcript.page)
+        .mockRejectedValueOnce(new RPCError(40001, 'invalid before_item'))
+        .mockResolvedValueOnce(canonicalPage);
+      deliver(resetEvent('main', emptySnapshot({ items: [t0Partial, ...trailingMarkers, t1] }), 3));
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(vi.mocked(view.transcript.page).mock.calls.map(([input]) => input)).toEqual([
+        { agentId: 'main', beforeItem: 'marker:m0', pageSize: 1 },
+        { agentId: 'main', beforeTurn: 't1', pageSize: 1 },
+      ]);
+
+      vi.mocked(view.transcript.page).mockReset();
+      vi.mocked(view.transcript.page)
+        .mockResolvedValueOnce({
+          ...canonicalPage,
+          items: [],
+          has_more: true,
+          next_cursor: 'marker:m0',
+          read: { source: 'cold', readiness: 'partial', reason: 'budget' },
+        })
+        .mockResolvedValueOnce(canonicalPage);
+      deliver(resetEvent('main', emptySnapshot({ items: [t0Partial, ...trailingMarkers, t1] }), 4));
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(vi.mocked(view.transcript.page).mock.calls.map(([input]) => input)).toEqual([
+        { agentId: 'main', beforeItem: 'marker:m0', pageSize: 1 },
+        { agentId: 'main', beforeTurn: 't1', pageSize: 1 },
+      ]);
+    } finally {
+      controller.close();
+    }
+  });
+
+  it('seeds non-main child first screen during bootstrapOpening without waiting for main snapshot', async () => {
+    const { controller, view } = harness(undefined);
+    (view as { bootstrap?: SessionViewFacade['bootstrap'] }).bootstrap = (input, onSignal) =>
+      view.subscribe({ ...input, sessionCursor: { seq: 0 } }, onSignal);
+    const childTurn: TranscriptTurn = {
+      kind: 'turn',
+      turnId: 't0',
+      ordinal: 0,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'CHILD-FIRST-SCREEN',
+      steps: [],
+    };
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({
+      session_id: 'session_test',
+      agent_id: 'agent-8',
+      items: [childTurn],
+      has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false },
+      tasks: [],
+      attachments: [],
+      interactions: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+      agents: [],
+      pending_interactions: [],
+    });
+
+    const openPromise = controller.open();
+    controller.retainAgentView('child-workspace', 'agent-8', 'delta');
+    try {
+      await vi.waitFor(() => {
+        expect(view.transcript.page).toHaveBeenCalledWith(
+          { agentId: 'agent-8', beforeItem: undefined, pageSize: 20 },
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        );
+      });
+      await vi.waitFor(() => {
+        expect(controller.getAgentState('agent-8').transcriptReady).toBe(true);
+      });
+      expect(controller.getAgentState('agent-8').blocks.some((block) => block.kind === 'user' && block.text === 'CHILD-FIRST-SCREEN')).toBe(true);
+    } finally {
+      controller.releaseAgentView('child-workspace');
+      controller.close();
+      await openPromise.catch(() => {});
+    }
+  });
 });

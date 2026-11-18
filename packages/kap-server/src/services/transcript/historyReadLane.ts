@@ -16,10 +16,12 @@ export class HistoryReadLane {
   private readonly waiting = new Set<Waiter>();
   private readonly shutdown = new AbortController();
 
+  constructor(private readonly maxConcurrent = 2) {}
+
   async run<T>(signal: AbortSignal | undefined, read: (signal: AbortSignal) => Promise<T>, priority = false): Promise<T> {
     const owned = signal === undefined ? this.shutdown.signal : AbortSignal.any([signal, this.shutdown.signal]);
     owned.throwIfAborted();
-    if (this.active >= 2) {
+    if (this.active >= this.maxConcurrent) {
       if (this.priorityWaiting.size + this.waiting.size >= RESOURCE_DEFAULTS.workerQueue) {
         throw new Error2(ErrorCodes.SESSION_BUSY, 'History readers are busy. Retry this page shortly.');
       }

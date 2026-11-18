@@ -86,10 +86,15 @@ import { questionAnswerTexts } from './transcript/questionAnswers';
 import { completeTranscriptTurnStructure, interactionToBlock } from './transcript/project';
 import { readMarkWins, refreshTurn, resolveItemCopies, resolveTurnCopies, turnGapOf, windowItemKey, type ReadMark } from './transcript/window';
 import { isSteerDeliveredBeforeCutTail, isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
-import type { QueuedPromptMeta } from './transcript/types';
+import type { DurableIngressItem, QueuedPromptMeta } from './transcript/types';
 import type { AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
 import { forgetUnconfirmedSubmission, preserveSubmission } from '../composer/submissionRecovery';
+
+function stampIngressAgent(item: DurableIngressItem, agentId: string): DurableIngressItem {
+  if (item.agent_id !== undefined || agentId === MAIN_AGENT_ID) return item;
+  return { ...item, agent_id: agentId };
+}
 
 export type Listener = () => void;
 
@@ -970,6 +975,12 @@ export class SessionController {
     if (this.view.bootstrap !== undefined) {
       this.finishBootstrapOpening();
       this.transcriptGrades = this.requestedTranscriptGrades();
+      for (const [id, grade] of Object.entries(this.transcriptGrades)) {
+        if (id === '*' || id === MAIN_AGENT_ID || grade === undefined) continue;
+        if (GRADE_RANK[grade] >= GRADE_RANK.block && !this.transcriptPresentable(id)) {
+          void this.seedAgentFirstScreen(id);
+        }
+      }
       await new Promise<void>((resolve) => {
         this.bootstrapOpening = { attachment: this.viewAttachment + 1, resolve };
         try {
@@ -1511,7 +1522,7 @@ export class SessionController {
         Object.entries(this.transcriptGrades).every(([id, grade]) => scheduled.previous[id] === grade)) return;
       this.lowerBaselinesTo(this.transcriptGrades);
       handle.setTranscriptGrades(this.transcriptGrades);
-      if (this.view.bootstrap !== undefined && this.bootstrapOpening === undefined) {
+      if (this.view.bootstrap !== undefined) {
         for (const [id, grade] of Object.entries(this.transcriptGrades)) {
           if (id === '*' || id === MAIN_AGENT_ID || grade === undefined) continue;
           if (GRADE_RANK[grade] >= GRADE_RANK.block && !this.transcriptPresentable(id)) {
@@ -1600,6 +1611,7 @@ export class SessionController {
         }]);
         timeline.olderCursor = page.next_cursor;
         timeline.olderTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
+        timeline.globalCoverage = page.globalCoverage;
         timeline.marks = new Map(
           page.items.flatMap((item) => mark === undefined ? [] : [[windowItemKey(item as TranscriptItem), mark] as const]),
         );
@@ -2145,25 +2157,28 @@ export class SessionController {
     }
   };
 
-  private setDurableIngress(records: readonly PromptItem[], agentId = MAIN_AGENT_ID): void {
+  private setDurableIngress(records: readonly DurableIngressItem[], agentId = MAIN_AGENT_ID): void {
     for (const record of records) {
+      const recordAgent = record.agent_id ?? agentId;
       if (record.admission === 'failed' || record.admission === 'cancelled' || record.delivery_state === 'failed' || record.delivery_state === 'cancelled' ||
           (record.admission === 'admitted' && record.delivery_state === 'queued')) {
-        this.reconcileSteerOutcome(agentId, record.prompt_id, this.settledSteerOutcome(agentId, record.prompt_id));
+        this.reconcileSteerOutcome(recordAgent, record.prompt_id, this.settledSteerOutcome(recordAgent, record.prompt_id));
         continue;
       }
-      const pending = this.findPendingSteer(agentId, record.prompt_id);
+      const pending = this.findPendingSteer(recordAgent, record.prompt_id);
       if (pending === undefined) continue;
       const phase = record.admission === 'held' ? 'held'
         : record.admission === 'admitted' ? 'waiting'
         : (record.admission === 'restoring' || record.admission === 'waiting_switch') && pending.phase !== 'waiting' ? 'preparing' : pending.phase;
-      if (phase !== pending.phase) this.setPendingSteer(agentId, { ...pending, phase });
+      if (phase !== pending.phase) this.setPendingSteer(recordAgent, { ...pending, phase });
       if (record.admission !== undefined) forgetUnconfirmedSubmission(this.sessionId, record.prompt_id);
     }
     const previous = this.shell.durableIngress ?? [];
     if (previous.length === records.length && previous.every((item, index) => {
       const next = records[index];
-      return next !== undefined && item.prompt_id === next.prompt_id && item.status === next.status &&
+      return next !== undefined && item.prompt_id === next.prompt_id &&
+        (item.agent_id ?? MAIN_AGENT_ID) === (next.agent_id ?? MAIN_AGENT_ID) &&
+        item.status === next.status &&
         item.admission === next.admission && item.delivery_state === next.delivery_state && item.delivery_reason === next.delivery_reason && item.revision === next.revision &&
         item.admission_content_truncated === next.admission_content_truncated &&
         item.admission_error?.code === next.admission_error?.code &&
@@ -2212,7 +2227,8 @@ export class SessionController {
     try {
       const result = await this.client.getDurableIngress!(this.sessionId, target.promptId, target.agentId);
       if (this.closed || this.isSuspended || generation !== this.durableSteerReadGeneration) return;
-      this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== result.prompt_id), result], target.agentId);
+      const stamped = stampIngressAgent(result, target.agentId);
+      this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== stamped.prompt_id), stamped], target.agentId);
       if (result.admission !== 'restoring' && result.admission !== 'waiting_switch') {
         this.durableSteerReads.delete(key);
         this.durablePromptReads.delete(target.promptId);
@@ -2243,7 +2259,7 @@ export class SessionController {
     let request!: Promise<void>;
     request = (async () => {
       try {
-        const records: PromptItem[] = [];
+        const records: DurableIngressItem[] = [];
         const cursors = new Set<string>();
         let cursor: string | undefined;
         for (;;) {
@@ -2255,7 +2271,12 @@ export class SessionController {
           cursors.add(next);
           cursor = next;
         }
-        if (!this.closed && !this.isSuspended) this.setDurableIngress(records);
+        if (!this.closed && !this.isSuspended) {
+          const retainedOther = this.getDurableIngress().filter(
+            (item) => (item.agent_id ?? MAIN_AGENT_ID) !== MAIN_AGENT_ID && !records.some((next) => next.prompt_id === item.prompt_id),
+          );
+          this.setDurableIngress(retainedOther.length === 0 ? records : [...retainedOther, ...records]);
+        }
       } catch {
         // Durable ingress is an auxiliary recovery read; prompt submission and
         // the ordered transcript remain usable when this best-effort probe fails.
@@ -2267,15 +2288,18 @@ export class SessionController {
     return request;
   }
 
-  async refreshDurablePrompt(promptId: string): Promise<void> {
+  async refreshDurablePrompt(promptId: string, agentId = MAIN_AGENT_ID): Promise<void> {
     const read = this.client.getDurableIngress?.bind(this.client);
     if (read === undefined || this.closed || this.isSuspended) return;
-    const result = await read(this.sessionId, promptId);
+    const result = agentId === MAIN_AGENT_ID
+      ? await read(this.sessionId, promptId)
+      : await read(this.sessionId, promptId, agentId);
     if (this.closed || this.isSuspended) return;
-    this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== promptId), result]);
+    const stamped = stampIngressAgent(result, agentId);
+    this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== promptId), stamped], agentId);
   }
 
-  getDurableIngress(): readonly PromptItem[] {
+  getDurableIngress(): readonly DurableIngressItem[] {
     return this.shell.durableIngress ?? [];
   }
 
@@ -2290,26 +2314,27 @@ export class SessionController {
     }, agentId);
     const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
     if (!admissionRejected) forgetUnconfirmedSubmission(this.sessionId, promptId);
+    const targetAgent = (result as DurableIngressItem).agent_id ?? body.agent_id ?? agentId;
+    const stamped = stampIngressAgent(result, targetAgent);
     if (result.admission !== undefined) {
       this.setDurableIngress([
         ...this.getDurableIngress().filter((item) => item.prompt_id !== promptId),
-        result,
-      ]);
+        stamped,
+      ], targetAgent);
     }
     const coreAdmitted = result.admission === undefined || result.admission === 'admitted';
     if (coreAdmitted && this.shell.cursor.epoch?.startsWith('cold:') === true) {
       void this.resync();
     }
     if (result.admission === 'restoring' || result.admission === 'waiting_switch') {
-      const targetAgent = body.agent_id ?? agentId;
       this.durablePromptReads.set(result.prompt_id, projectMessageContent(result.content).text);
       this.observeDurableSteer(targetAgent, result.prompt_id);
     }
-    if (admissionRejected || result.admission === 'restoring' || result.admission === 'waiting_switch' || result.admission === 'held') return result;
-    const main = this.viewOf(MAIN_AGENT_ID);
-    if (!main.blocks.some((block) => block.kind === 'user' && block.promptId === result.prompt_id)) {
+    if (admissionRejected || result.admission === 'restoring' || result.admission === 'waiting_switch' || result.admission === 'held') return stamped;
+    const targetView = this.viewOf(targetAgent);
+    if (!targetView.blocks.some((block) => block.kind === 'user' && block.promptId === result.prompt_id)) {
       const projection = projectMessageContent(result.content);
-      this.publishView(MAIN_AGENT_ID, appendLocalUserMessage(main, {
+      this.publishView(targetAgent, appendLocalUserMessage(targetView, {
         userMessageId: result.user_message_id,
         promptId: result.prompt_id,
         text: projection.text,
@@ -3505,14 +3530,20 @@ export class SessionController {
       const items = this.windowSnapshot(agentId).items;
       const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
       if (index < 0) return undefined;
+      const immediateNext = items[index + 1];
+      const immediateKey = immediateNext !== undefined && immediateNext.kind !== 'turn'
+        ? windowItemKey(immediateNext)
+        : undefined;
       return {
         turn: items[index] as TranscriptTurn,
         nextTurn: items.slice(index + 1).find((item): item is TranscriptTurn => item.kind === 'turn'),
+        immediateBeforeItem: immediateKey !== undefined && immediateKey.length <= 512 ? immediateKey : undefined,
       };
     };
     let current = anchor();
     if (current === undefined) return undefined;
     let beforeItem: string | undefined;
+    let immediateBeforeItem = current.immediateBeforeItem;
     let staleRetries = 0;
     const cursors = new Set<string>();
     const backoff = new PreparingBackoff();
@@ -3523,10 +3554,21 @@ export class SessionController {
     // fastest cadence.
     let waitedOn: { readonly continuation: string | undefined; readonly turn: TranscriptTurn | undefined } | undefined;
     for (;;) {
-      const page = await this.readPreparedContent(() => this.view.transcript.page(
-        { agentId, beforeTurn: beforeItem === undefined ? current?.nextTurn?.turnId : undefined, beforeItem, pageSize: 1 },
-        { signal },
-      ), signal);
+      const effectiveBeforeItem = beforeItem ?? immediateBeforeItem;
+      let page;
+      try {
+        page = await this.readPreparedContent(() => this.view.transcript.page(
+          { agentId, beforeTurn: effectiveBeforeItem === undefined ? current?.nextTurn?.turnId : undefined, beforeItem: effectiveBeforeItem, pageSize: 1 },
+          { signal },
+        ), signal);
+      } catch (error) {
+        const code = error instanceof RPCError || error instanceof ApiError ? error.code : undefined;
+        if (beforeItem === undefined && immediateBeforeItem !== undefined && code === 40001) {
+          immediateBeforeItem = undefined;
+          continue;
+        }
+        throw error;
+      }
       if (this.closed || signal.aborted || page.agent_id !== agentId) return undefined;
       if (page.read?.stale !== undefined) {
         this.timeline(agentId).historyRead = page.read;
@@ -3541,12 +3583,17 @@ export class SessionController {
         cursors.clear();
         current = anchor();
         if (current === undefined) return undefined;
+        immediateBeforeItem = current.immediateBeforeItem;
         continue;
       }
       const preview = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
       if (preview !== undefined && (openingOnly ? preview.startedAt !== undefined : preview.stepsPartial !== true)) return preview;
       const budgeted = page.items.length === 0 && page.has_more && (page.read?.readiness === 'preparing' || page.read?.readiness === 'partial');
       if (budgeted || (preview !== undefined && !openingOnly)) {
+        if (budgeted && beforeItem === undefined && immediateBeforeItem !== undefined && current?.nextTurn !== undefined) {
+          immediateBeforeItem = undefined;
+          continue;
+        }
         const next = budgeted ? page.next_cursor ?? beforeItem : beforeItem;
         const answer = { continuation: budgeted ? next : page.next_cursor, turn: preview };
         if (waitedOn === undefined || !transcriptValueEquals(waitedOn, answer)) backoff.progressed();
@@ -5284,9 +5331,10 @@ export class SessionController {
       input.onAcknowledged?.();
     }
     if (admission !== undefined) {
+      const stamped = stampIngressAgent(result, agentId);
       this.setDurableIngress([
-        ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
-        result,
+        ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== stamped.prompt_id),
+        stamped,
       ], agentId);
     }
     const settled = this.settledSteerOutcome(agentId, result.prompt_id);

@@ -39,7 +39,7 @@ import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, Recove
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { SubmissionRecovery } from './SubmissionRecovery';
-import { AdmissionScope, useAdmissionScope, withAdmissionUserBlocks, withOptimisticUserBlock } from './timeline/AdmissionLine';
+import { AdmissionScope, filterIngressForAgent, useAdmissionScope, withAdmissionUserBlocks, withOptimisticUserBlock } from './timeline/AdmissionLine';
 import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
@@ -2496,6 +2496,7 @@ export function SessionView({
   const [draft, setDraft] = useState('');
   const [pendingSubmission, setPendingSubmission] = useState<{
     id: string;
+    agentId: string;
     text: string;
     content: MessageContent[];
     contentKey: string;
@@ -2821,10 +2822,14 @@ export function SessionView({
     resyncing: state.resyncing,
     resyncFailed: state.resyncFailed,
   });
+  const mainDurableIngress = useMemo(
+    () => filterIngressForAgent(state.durableIngress, MAIN_AGENT_ID),
+    [state.durableIngress],
+  );
   useEffect(() => {
     const pending = pendingSubmissionRef.current;
     if (pending === undefined) return;
-    const ingress = state.durableIngress?.find((item) => item.prompt_id === pending.id);
+    const ingress = mainDurableIngress?.find((item) => item.prompt_id === pending.id);
     const row = state.blocks.find((block): block is UserBlock => block.kind === 'user' && block.promptId === pending.id);
     const admission = ingress?.admission;
     if (admission === 'failed') {
@@ -2865,7 +2870,7 @@ export function SessionView({
     if (serverState !== undefined && (pending.status !== serverState.status || pending.retryable !== serverState.retryable)) {
       setPendingSubmission({ ...pending, ...serverState, slow: false });
     }
-  }, [pendingSubmission?.id, pendingSubmission?.status, pendingSubmission?.retryable, state.blocks, state.durableIngress, state.queuedPromptIds, t]);
+  }, [pendingSubmission?.id, pendingSubmission?.status, pendingSubmission?.retryable, state.blocks, mainDurableIngress, state.queuedPromptIds, t]);
 
   // The first acknowledgement of a durable steer is not the last word: keep
   // reading the receipt and explain the final reason when it lands. A prompt
@@ -3157,7 +3162,11 @@ export function SessionView({
   // read through `configQuery` above); the resolution snapshot is captured
   // when a pick is accepted, never re-derived later, so a settings edit cannot
   // change an accepted switch.
-  const modelSwitches = useModelSwitches(sessionId, MAIN_AGENT_ID, state.queuedPromptMeta);
+  const modelSwitches = useModelSwitches(
+    sessionId,
+    selectedAgentId === undefined ? MAIN_AGENT_ID : undefined,
+    state.queuedPromptMeta,
+  );
   const setModelSwitchDialogState = useCallback((dialog: Omit<Extract<NonNullable<typeof switchConfirmation>, { kind: 'model' }>, 'kind'> | undefined) => {
     setSwitchConfirmation(dialog === undefined ? undefined : { ...dialog, kind: 'model' });
   }, []);
@@ -3830,6 +3839,7 @@ export function SessionView({
           };
           setPendingSubmission({
             id: submissionId,
+            agentId: MAIN_AGENT_ID,
             text: echoText,
             content,
             contentKey,
@@ -4259,7 +4269,14 @@ boundExecution,
   // One state fact for manual compaction: the receipt seeds it and live events
   // advance it. The composer meter renders it; a toast only stands in when no
   // meter is on screen to carry the state.
-  const { progress: compactionProgress, seed: seedCompactionProgress } = useCompactionProgress(client, sessionId);
+  const [manualCompactSessionId, setManualCompactSessionId] = useState<string>();
+  const compactionActiveSessionId =
+    manualCompactSessionId === sessionId ||
+    state.busy ||
+    (state.transcriptReady && state.historyRead?.source !== 'cold' && state.cursor.epoch?.startsWith('cold:') !== true)
+      ? sessionId
+      : undefined;
+  const { progress: compactionProgress, seed: seedCompactionProgress } = useCompactionProgress(client, compactionActiveSessionId);
   const compactionHintShownRef = useRef(false);
 
   const [forkPopoverOpenRequest, setForkPopoverOpenRequest] = useState<{
@@ -4317,6 +4334,7 @@ boundExecution,
             });
           });
       } else {
+        setManualCompactSessionId(sessionId);
         void compactSessionContext(actionContext, record)
           .then((receipt) => {
             const outcome = compactReceiptOutcome(receipt);
@@ -4332,7 +4350,7 @@ boundExecution,
           });
       }
     },
-    [actionContext, state.session, t, locale, currentBoundModel, openModelSwitchPanel, seedCompactionProgress, openForkPopover],
+    [actionContext, sessionId, state.session, t, locale, currentBoundModel, openModelSwitchPanel, seedCompactionProgress, openForkPopover],
   );
 
   const confirmUndoRun = useCallback(() => {
@@ -5368,14 +5386,18 @@ boundExecution,
   // untouched.
   const mainTranscriptBlocks = useMemo(
     () => withAdmissionUserBlocks(
-      withOptimisticUserBlock(filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID), pendingSubmission),
-      state.durableIngress,
+      withOptimisticUserBlock(filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID), pendingSubmission, MAIN_AGENT_ID),
+      mainDurableIngress,
+      MAIN_AGENT_ID,
     ),
-    [state.blocks, forest, pendingSubmission, state.durableIngress],
+    [state.blocks, forest, pendingSubmission, mainDurableIngress],
   );
   // One object per (state, blocks) pair, so the memoized timeline skips the
   // renders this component does for its own reasons (draft edits, clocks).
-  const timelineState = useMemo(() => ({ ...state, blocks: mainTranscriptBlocks }), [state, mainTranscriptBlocks]);
+  const timelineState = useMemo(
+    () => ({ ...state, blocks: mainTranscriptBlocks, durableIngress: mainDurableIngress }),
+    [state, mainTranscriptBlocks, mainDurableIngress],
+  );
   const retryOwnPending = useCallback((promptId: string) => {
     const pending = pendingRetryRef.current;
     if (pending?.id !== promptId || pendingSubmissionRef.current?.id !== promptId) return false;
@@ -5383,7 +5405,7 @@ boundExecution,
     return true;
   }, []);
   const admissionScope = useAdmissionScope({
-    ingress: state.durableIngress, blocks: mainTranscriptBlocks, controller, retryPending: retryOwnPending,
+    ingress: mainDurableIngress, agentId: MAIN_AGENT_ID, blocks: mainTranscriptBlocks, controller, retryPending: retryOwnPending,
   });
   // "Needs you": every pending approval/question in the session (main and
   // subagents) is answered in the composer card itself (it takes the input

@@ -73,7 +73,14 @@ import { PreviewToggleButton } from '../PreviewToggleButton';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { RightRail } from '../RightRail';
 import { Transcript } from '../Transcript';
-import { withOptimisticUserBlock, type OptimisticSubmission } from '../timeline/AdmissionLine';
+import {
+  AdmissionScope,
+  filterIngressForAgent,
+  useAdmissionScope,
+  withAdmissionUserBlocks,
+  withOptimisticUserBlock,
+  type OptimisticSubmission,
+} from '../timeline/AdmissionLine';
 import { TranscriptDetailProvider, type TranscriptEntityKind } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
 import { useAgentTimeline } from './useAgentTimeline';
@@ -1016,7 +1023,7 @@ function ChildAgentWorkspace({
     // Native text-only sends use the key as their prompt id, so the echo can
     // hand over to the projected row; other sends drop it when they settle.
     const keyedEcho = !externalExecutor && !hasNonTextAttachment;
-    setSendEcho({ scope: sendScope, id: submission.key, text, content, createdAt: new Date().toISOString(),
+    setSendEcho({ scope: sendScope, agentId, id: submission.key, text, content, createdAt: new Date().toISOString(),
       slow: false, preserved: false, retryable: false, status: 'sending' });
     revealOwnSend(false);
     let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
@@ -1168,6 +1175,10 @@ function ChildAgentWorkspace({
   // reading the receipt and explain the final reason when it lands. A prompt
   // that started, steered or reached this agent's transcript is owned by it,
   // so the pending explanation goes away instead of re-attaching.
+  const childDurableIngress = useMemo(
+    () => filterIngressForAgent(sessionState.durableIngress, agentId),
+    [sessionState.durableIngress, agentId],
+  );
   useEffect(() => {
     const tracked = nowReceiptsRef.current;
     if (tracked.size === 0) return;
@@ -1214,7 +1225,11 @@ function ChildAgentWorkspace({
     }
   };
   // ---- model switching (child): the same panel and queue as main ----
-  const modelSwitches = useModelSwitches(sessionId, agentId, agentLiveState.queuedPromptMeta);
+  const modelSwitches = useModelSwitches(
+    sessionId,
+    agentId,
+    agentLiveState.queuedPromptMeta,
+  );
   const currentChildCanonicalModel = displayModel === undefined
     ? undefined
     : externalExecutor ? displayModel : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
@@ -1428,8 +1443,9 @@ function ChildAgentWorkspace({
     if (echoOwned) clearSendEcho(scopedEcho.id);
   }, [echoOwned, scopedEcho?.id]);
   const timelineBlocks = useMemo(() => {
-    const blocks = withOptimisticUserBlock(agentBlocks, echoOwned ? undefined : scopedEcho);
-    if (scopedEcho?.settledOnServer !== true || blocks === agentBlocks) return blocks;
+    const optimistic = withOptimisticUserBlock(agentBlocks, echoOwned ? undefined : scopedEcho, agentId);
+    const blocks = withAdmissionUserBlocks(optimistic, childDurableIngress, agentId);
+    if (scopedEcho?.settledOnServer !== true || optimistic === agentBlocks) return blocks;
     let changed = false;
     const settled = blocks.map((block) => {
       if (block.kind !== 'user' || block.promptId !== scopedEcho.id || block.optimisticStatus === undefined) return block;
@@ -1437,7 +1453,13 @@ function ChildAgentWorkspace({
       return { ...block, optimisticStatus: undefined };
     });
     return changed ? settled : blocks;
-  }, [agentBlocks, echoOwned, scopedEcho]);
+  }, [agentBlocks, agentId, childDurableIngress, echoOwned, scopedEcho]);
+  const childAdmissionScope = useAdmissionScope({
+    ingress: childDurableIngress,
+    agentId,
+    blocks: timelineBlocks,
+    controller,
+  });
   // Memoised like the main session's `timelineState`: `Transcript` and its
   // rows compare the state and the callbacks below by identity, so rebuilding
   // them on every render (each composer keystroke) re-rendered the timeline.
@@ -1445,6 +1467,7 @@ function ChildAgentWorkspace({
     ...agentLiveState,
     session: sessionState.session,
     blocks: agentBlocks,
+    durableIngress: childDurableIngress,
     busy: headerBusy,
     model: displayModel,
     thinkingEffort: displayEffort,
@@ -1454,7 +1477,7 @@ function ChildAgentWorkspace({
     usage: displayUsage,
     pendingInteraction: agentLiveState.pendingInteraction ?? 'none',
   }), [
-    agentLiveState, sessionState.session, agentBlocks, headerBusy, displayModel,
+    agentLiveState, sessionState.session, agentBlocks, childDurableIngress, headerBusy, displayModel,
     displayEffort, displayContextTokens, displayMaxContextTokens, displayUsage,
   ]);
   const timelineState = useMemo(
@@ -1489,6 +1512,7 @@ function ChildAgentWorkspace({
 
   const chrome = (
     <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
+    <AdmissionScope value={childAdmissionScope}>
     <WorkspaceSurface
       target={target}
       controller={controller}
@@ -1623,6 +1647,7 @@ function ChildAgentWorkspace({
       />}
       railOpen={railOpen} railIsOverlay={railIsOverlay} onCloseRail={onCloseRail}
     />
+    </AdmissionScope>
     <ModelSwitchDialog
       open={modelSwitchDialog !== undefined}
       fromModel={modelSwitchDialog?.fromModel ?? ''}

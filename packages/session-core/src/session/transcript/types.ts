@@ -788,6 +788,10 @@ export interface TurnGap {
   readonly reason: 'partial' | 'stale';
 }
 
+export type DurableIngressItem = import('@kiki/protocol').PromptItem & {
+  readonly agent_id?: string;
+};
+
 export interface SessionViewState {
   readonly contentRefs?: readonly import('@kiki/transcript').ContentRef[];
   readonly version: number;
@@ -825,7 +829,7 @@ export interface SessionViewState {
    */
   readonly queuedPromptMeta: Readonly<Record<string, QueuedPromptMeta>>;
   /** Server-owned durable ingress records retained while cold-session admission recovers. */
-  readonly durableIngress?: readonly import('@kiki/protocol').PromptItem[];
+  readonly durableIngress?: readonly DurableIngressItem[];
   readonly model: string | undefined;
   readonly profile: string | undefined;
   readonly thinkingEffort: string | undefined;

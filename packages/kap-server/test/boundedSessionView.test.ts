@@ -1671,4 +1671,78 @@ describe('bounded session-view canonical reads', () => {
       expect(retainedIds.has(taskId)).toBe(true);
     }
   });
+
+  it('uses boundedPage on unanchored cold first-screen page reads and preserves canonical preview for pageSize 1', async () => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't9', ordinal: 9, state: 'completed', origin: { kind: 'user' }, prompt: 'Tail turn', stepsPartial: true, steps: [] };
+    const canonical: TranscriptTurn = { ...turn, stepsPartial: undefined };
+    const readColdPageSnapshot = vi.fn().mockResolvedValue({ ...empty(), items: [turn], hasMoreOlder: true });
+    const readCanonicalEntity = vi.fn().mockResolvedValue(canonical);
+    const service = {
+      forSessionLive: () => undefined,
+      readColdPageSnapshot,
+      readCanonicalEntity,
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot,
+    } as unknown as TranscriptService;
+
+    const firstScreen = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'sub-cold', pageSize: 20 });
+    expect(firstScreen?.items).toHaveLength(1);
+    expect(readColdPageSnapshot).toHaveBeenCalledWith(
+      'fixture-session',
+      'sub-cold',
+      expect.any(Function),
+      expect.any(AbortSignal),
+      false,
+      undefined,
+      false,
+      false,
+      true,
+    );
+    expect(readCanonicalEntity).not.toHaveBeenCalled();
+
+    const preview = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'sub-cold', pageSize: 1 });
+    expect(preview?.items).toHaveLength(1);
+    expect(readCanonicalEntity).toHaveBeenCalledWith('fixture-session', 'sub-cold', { kind: 'turn', id: 't9' }, expect.any(AbortSignal));
+  });
+
+  it('reads cold todos via readColdTodos and merges newer live resident todo updates over cold baseline', async () => {
+    const coldMeta = { rev: 1, hash: 'h1', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 };
+    const liveMeta = { rev: 2, hash: 'h2', writtenTurn: 2, writtenStep: 't2.1', coveredMessageId: '', windowEpoch: 0 };
+    const readColdTodos = vi.fn().mockResolvedValue({
+      todos: [
+        { todoId: 'todo', items: [{ title: 'Cold item', status: 'pending' as const }], notes: { goal: 'Cold goal' }, notesMeta: coldMeta },
+        { todoId: 'secondary', items: [{ title: 'Keep cold', status: 'done' as const }] },
+      ],
+      verified: true,
+    });
+    const readColdSnapshot = vi.fn().mockRejectedValue(new Error('unexpected full cold snapshot read'));
+    const liveTranscript = new AgentTranscript('main');
+    liveTranscript.apply([{
+      op: 'reset',
+      agentId: 'main',
+      snapshot: {
+        ...empty(),
+        todos: [{ todoId: 'todo', items: [{ title: 'Live item', status: 'done' }], notes: { goal: 'Live goal', next: 'Ship' }, notesMeta: liveMeta }],
+        hasMoreOlder: true,
+      },
+    }]);
+    const service = {
+      forSessionLive: () => ({ getAgent: (id: string) => id === 'main' ? liveTranscript : undefined }),
+      ensureAgentHistory: async () => liveTranscript,
+      isTranscriptLiveCoverageVerified: () => false,
+      verifyTranscriptLiveCoverage: async () => false,
+      readColdTodos,
+      readColdSnapshot,
+      getTranscriptCursor: () => ({ seq: 4, epoch: 'live:fixture-session:main' }),
+      reconcileQuestionSnapshot: (_session: string, snapshot: AgentTranscriptSnapshot) => snapshot,
+    } as unknown as TranscriptService;
+
+    const details = await readSessionViewTranscriptDetails(service, 'fixture-session', { agentId: 'main', kind: 'todo', limit: 20 });
+    expect(readColdTodos).toHaveBeenCalledWith('fixture-session', 'main', undefined);
+    expect(readColdSnapshot).not.toHaveBeenCalled();
+    expect(details?.items).toEqual([
+      expect.objectContaining({ todoId: 'secondary', items: [{ title: 'Keep cold', status: 'done' }] }),
+      expect.objectContaining({ todoId: 'todo', items: [{ title: 'Live item', status: 'done' }], notes: { goal: 'Live goal', next: 'Ship' }, notesMeta: liveMeta }),
+    ]);
+  });
 });

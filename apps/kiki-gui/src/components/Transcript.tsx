@@ -5651,12 +5651,12 @@ export const Transcript = memo(function Transcript({
         });
       });
     };
-    const observer = new ResizeObserver(check);
-    observer.observe(scroll);
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(check) : null;
+    observer?.observe(scroll);
     const content = scroll.querySelector('[data-transcript-virtual-content]');
-    if (content !== null) observer.observe(content);
+    if (content !== null) observer?.observe(content);
     check();
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+    return () => { cancelAnimationFrame(frame); observer?.disconnect(); };
   }, [scrollElement, loaded, visible, state.blocks, state.hasMoreHistory, state.loadingOlder, state.olderError, state.transcriptResetVersion, requestOlderAtReadingAnchor]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,

@@ -7,6 +7,7 @@ import { openLogicalWire } from '../history/logicalWireRead';
 export interface BoundedWireScanOptions {
   readonly maxBytes: number;
   readonly chunkBytes?: number;
+  readonly decodeRecord?: (line: Buffer) => ContextRecord | undefined;
   readonly onRead?: (bytes: number) => void;
   readonly onRecord: (record: ContextRecord, lineNumber: number) => void;
 }
@@ -28,6 +29,7 @@ export async function readWireRecordsBounded(
   let position = 0;
   let pending = Buffer.alloc(0);
   let lineNumber = 0;
+  let yieldedAt = performance.now();
   try {
     while (position < fileSize) {
       const length = Math.min(chunkBytes, fileSize - position);
@@ -53,12 +55,16 @@ export async function readWireRecordsBounded(
         const line = pending.subarray(0, newline);
         pending = pending.subarray(newline + 1);
         lineNumber += 1;
-        parseLine(wirePath, line, lineNumber, options.onRecord);
+        parseLine(wirePath, line, lineNumber, options.onRecord, options.decodeRecord);
+        if (performance.now() - yieldedAt >= 4) {
+          await new Promise<void>((resolve) => { setImmediate(resolve); });
+          yieldedAt = performance.now();
+        }
       }
     }
     if (pending.length > 0) {
       lineNumber += 1;
-      parseLine(wirePath, pending, lineNumber, options.onRecord);
+      parseLine(wirePath, pending, lineNumber, options.onRecord, options.decodeRecord);
     }
     if (position !== fileSize) {
       throw new Error(`wire.jsonl: file changed during bounded read for ${wirePath}`);
@@ -75,9 +81,15 @@ function parseLine(
   line: Buffer,
   lineNumber: number,
   onRecord: (record: ContextRecord, lineNumber: number) => void,
+  decodeRecord?: (line: Buffer) => ContextRecord | undefined,
 ): void {
   const normalized = line.length > 0 && line.at(-1) === 0x0d ? line.subarray(0, -1) : line;
   if (normalized.length === 0) return;
+  const predecoded = decodeRecord?.(normalized);
+  if (predecoded !== undefined) {
+    onRecord(predecoded, lineNumber);
+    return;
+  }
   let record: unknown;
   try {
     record = JSON.parse(normalized.toString('utf8'));

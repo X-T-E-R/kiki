@@ -16,8 +16,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import type { MessageContent, PromptItem } from '@kiki/protocol';
-import { appendLocalUserMessage, createViewState, projectMessageContent, type Block, type SessionController } from '@kiki/session-core/session';
+import type { MessageContent } from '@kiki/protocol';
+import { appendLocalUserMessage, createViewState, projectMessageContent, type Block, type DurableIngressItem, type SessionController } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
 import { Icon, Spinner } from '../icons';
@@ -42,9 +42,28 @@ interface AdmissionScopeValue {
   readonly onCancel?: (promptId: string) => void;
 }
 
+const DEFAULT_AGENT_ID = 'main';
 const EMPTY_VIEWS: ReadonlyMap<string, AdmissionView> = new Map();
-const NO_RECORDS: readonly PromptItem[] = [];
+const NO_RECORDS: readonly DurableIngressItem[] = [];
 const AdmissionContext = createContext<AdmissionScopeValue>({ views: EMPTY_VIEWS });
+
+/** Narrow session-wide durable ingress records to one target timeline (`undefined` means `'main'`). */
+export function filterIngressForAgent(
+  ingress: readonly DurableIngressItem[] | undefined,
+  targetAgentId: string = DEFAULT_AGENT_ID,
+): readonly DurableIngressItem[] | undefined {
+  if (ingress === undefined || ingress.length === 0) return ingress;
+  let matched: DurableIngressItem[] | undefined;
+  for (let index = 0; index < ingress.length; index += 1) {
+    const item = ingress[index]!;
+    if ((item.agent_id ?? DEFAULT_AGENT_ID) === targetAgentId) {
+      if (matched !== undefined) matched.push(item);
+    } else if (matched === undefined) {
+      matched = ingress.slice(0, index);
+    }
+  }
+  return matched ?? ingress;
+}
 
 /** Prompt ids the canonical transcript already owns (no pending echo). */
 function settledPromptIds(blocks: readonly Block[]): Set<string> {
@@ -60,7 +79,7 @@ function settledPromptIds(blocks: readonly Block[]): Set<string> {
  * only until the transcript owns the prompt; held and failed always show.
  */
 export function admissionViews(
-  ingress: readonly PromptItem[],
+  ingress: readonly DurableIngressItem[],
   settled: ReadonlySet<string>,
   slow: ReadonlySet<string>,
 ): ReadonlyMap<string, AdmissionView> {
@@ -88,12 +107,17 @@ export function admissionViews(
  * seen after reopening the session) become the user's bubble, so the state
  * and its actions still sit on a message rather than in a banner.
  */
-export function withAdmissionUserBlocks(blocks: readonly Block[], ingress: readonly PromptItem[] | undefined): readonly Block[] {
-  if (ingress === undefined || ingress.length === 0) return blocks;
+export function withAdmissionUserBlocks(
+  blocks: readonly Block[],
+  ingress: readonly DurableIngressItem[] | undefined,
+  targetAgentId: string = DEFAULT_AGENT_ID,
+): readonly Block[] {
+  const scoped = filterIngressForAgent(ingress, targetAgentId);
+  if (scoped === undefined || scoped.length === 0) return blocks;
   const present = new Set<string>();
   for (const block of blocks) if (block.kind === 'user' && block.promptId !== undefined) present.add(block.promptId);
   const extra: Block[] = [];
-  for (const item of ingress) {
+  for (const item of scoped) {
     if (item.admission !== 'restoring' && item.admission !== 'waiting_switch' && item.admission !== 'held' && item.admission !== 'failed') continue;
     if (present.has(item.prompt_id)) continue;
     const projection = projectMessageContent(item.content);
@@ -113,6 +137,7 @@ export function withAdmissionUserBlocks(blocks: readonly Block[], ingress: reado
 /** A message the composer sent that no projection owns yet. */
 export interface OptimisticSubmission {
   readonly id: string;
+  readonly agentId?: string;
   readonly text: string;
   readonly content?: MessageContent[];
   readonly createdAt: string;
@@ -129,8 +154,13 @@ export interface OptimisticSubmission {
 export function withOptimisticUserBlock(
   blocks: readonly Block[],
   pending: OptimisticSubmission | undefined,
+  targetAgentId: string = DEFAULT_AGENT_ID,
 ): readonly Block[] {
-  if (pending === undefined || blocks.some(block => block.kind === 'user' && block.promptId === pending.id)) return blocks;
+  if (
+    pending === undefined ||
+    (pending.agentId ?? DEFAULT_AGENT_ID) !== targetAgentId ||
+    blocks.some(block => block.kind === 'user' && block.promptId === pending.id)
+  ) return blocks;
   const projected = appendLocalUserMessage(createViewState(pending.id), {
     userMessageId: pending.id, promptId: pending.id, text: pending.text, content: pending.content,
     createdAt: pending.createdAt, status: 'running',
@@ -146,14 +176,14 @@ export function withOptimisticUserBlock(
  * Tracks how long each restore has run (the server's elapsed time when known,
  * else since this view first saw it) and flips it to "slow" at the threshold.
  */
-function useSlowRestores(ingress: readonly PromptItem[]): ReadonlySet<string> {
+function useSlowRestores(ingress: readonly DurableIngressItem[]): ReadonlySet<string> {
   const firstSeen = useRef(new Map<string, number>());
   const [now, setNow] = useState(() => Date.now());
   const restoring = ingress.filter((item) => item.admission === 'restoring');
   const seen = firstSeen.current;
   const live = new Set(restoring.map((item) => item.prompt_id));
   for (const id of seen.keys()) if (!live.has(id)) seen.delete(id);
-  const startOf = (item: PromptItem) => {
+  const startOf = (item: DurableIngressItem) => {
     let start = seen.get(item.prompt_id);
     if (start === undefined) {
       start = Date.now() - (item.restore_progress?.elapsed_ms ?? 0);
@@ -181,14 +211,18 @@ function useSlowRestores(ingress: readonly PromptItem[]): ReadonlySet<string> {
  * `retryPending` lets the composer's own in-flight retry handle a message it
  * still owns; anything else resumes the saved request by id.
  */
-export function useAdmissionScope({ ingress, blocks, controller, retryPending }: {
-  readonly ingress: readonly PromptItem[] | undefined;
+export function useAdmissionScope({ ingress, agentId = DEFAULT_AGENT_ID, blocks, controller, retryPending }: {
+  readonly ingress: readonly DurableIngressItem[] | undefined;
+  readonly agentId?: string;
   readonly blocks: readonly Block[];
   readonly controller: SessionController | null;
   readonly retryPending?: (promptId: string) => boolean;
 }): AdmissionScopeValue {
   const { t } = useI18n();
-  const records = ingress ?? NO_RECORDS;
+  const records = useMemo(
+    () => filterIngressForAgent(ingress, agentId) ?? NO_RECORDS,
+    [ingress, agentId],
+  );
   const slow = useSlowRestores(records);
   const settled = useMemo(() => settledPromptIds(blocks), [blocks]);
   const computed = admissionViews(records, settled, slow);
@@ -206,14 +240,18 @@ export function useAdmissionScope({ ingress, blocks, controller, retryPending }:
     const read = () => {
       if (reading) return;
       reading = true;
-      void controller.refreshDurablePrompt(ids[next++ % ids.length]!).catch(() => {}).finally(() => { reading = false; });
+      const id = ids[next++ % ids.length]!;
+      const task = agentId !== DEFAULT_AGENT_ID
+        ? controller.refreshDurablePrompt(id, agentId)
+        : controller.refreshDurablePrompt(id);
+      void task.catch(() => {}).finally(() => { reading = false; });
     };
     // The first read lands with the line itself: a restore that already
     // finished or failed corrects the bubble at once.
     read();
     const timer = setInterval(read, RESTORE_POLL_MS);
     return () => { clearInterval(timer); };
-  }, [polled, controller]);
+  }, [agentId, polled, controller]);
   const run = useCallback((promptId: string, action: () => Promise<unknown>) => {
     setBusyId(promptId);
     void action()
@@ -228,12 +266,19 @@ export function useAdmissionScope({ ingress, blocks, controller, retryPending }:
     if (retryPending?.(promptId) === true) return;
     const item = [...(controller.getDurableIngress?.() ?? []), ...records].find((entry) => entry.prompt_id === promptId);
     if (item === undefined) return;
-    run(promptId, () => controller.resumeDurableIngress(promptId, { content: item.content }));
-  }, [controller, records, retryPending, run]);
+    const itemAgentId = item.agent_id ?? agentId;
+    run(promptId, () => itemAgentId !== DEFAULT_AGENT_ID
+      ? controller.resumeDurableIngress(promptId, { content: item.content }, itemAgentId)
+      : controller.resumeDurableIngress(promptId, { content: item.content }));
+  }, [agentId, controller, records, retryPending, run]);
   const onCancel = useCallback((promptId: string) => {
     if (controller === null) return;
-    run(promptId, () => controller.abortPrompt(promptId));
-  }, [controller, run]);
+    const item = [...(controller.getDurableIngress?.() ?? []), ...records].find((entry) => entry.prompt_id === promptId);
+    const itemAgentId = item?.agent_id ?? agentId;
+    run(promptId, () => itemAgentId !== DEFAULT_AGENT_ID
+      ? controller.abortPrompt(promptId, itemAgentId)
+      : controller.abortPrompt(promptId));
+  }, [agentId, controller, records, run]);
   return useMemo(() => ({ views, busyId, onRetry: controller === null ? undefined : onRetry, onCancel: controller === null ? undefined : onCancel }),
     [views, busyId, controller, onRetry, onCancel]);
 }

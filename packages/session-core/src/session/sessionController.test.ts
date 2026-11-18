@@ -578,6 +578,36 @@ describe('SessionController prompt runtime projection', () => {
     expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.promptId === 'restoring-prompt')).toBe(false);
     controller.close();
   });
+
+  it('stamps non-main agent_id onto durableIngress items and preserves them across main ingress refreshes', async () => {
+    const { controller, client } = await openController({ persistenceHint: 'saved' });
+    client.submitPrompt.mockResolvedValueOnce({
+      prompt_id: 'child-restore-1', user_message_id: 'child-restore-1', status: 'queued',
+      content: [{ type: 'text', text: 'wake cold branch' }], created_at: '2026-01-01T00:00:00.000Z', admission: 'restoring',
+    });
+    client.listDurableIngress = vi.fn().mockResolvedValueOnce({
+      active: null,
+      queued: [],
+      ingress: [{
+        prompt_id: 'main-restore-1', user_message_id: 'main-restore-1', status: 'queued',
+        content: [{ type: 'text', text: 'wake main' }], created_at: '2026-01-01T00:00:01.000Z', admission: 'restoring',
+      }],
+    });
+    await controller.sendPromptNow({
+      agentId: 'agent-7',
+      promptId: 'child-restore-1',
+      text: 'wake cold branch',
+    });
+    expect(controller.getDurableIngress()).toEqual([
+      expect.objectContaining({ prompt_id: 'child-restore-1', agent_id: 'agent-7', admission: 'restoring' }),
+    ]);
+    await controller.refreshDurableIngress();
+    expect(controller.getDurableIngress().map((entry) => [entry.prompt_id, entry.agent_id])).toEqual([
+      ['child-restore-1', 'agent-7'],
+      ['main-restore-1', undefined],
+    ]);
+    controller.close();
+  });
 });
 
 describe('SessionController pipeline', () => {
