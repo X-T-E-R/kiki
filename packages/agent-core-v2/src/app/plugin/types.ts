@@ -154,6 +154,7 @@ export interface PluginRecord {
   readonly skillInstructions?: string;
   readonly skillCount: number;
   readonly manifest?: PluginManifest;
+  readonly legacyHooksAbsent?: boolean;
   readonly manifestKind?: PluginManifestKind;
   readonly manifestPath?: string;
   readonly shadowedManifestPath?: string;

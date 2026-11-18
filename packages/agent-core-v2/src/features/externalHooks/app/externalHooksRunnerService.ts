@@ -1,4 +1,5 @@
 import { Disposable } from '#/_base/di/lifecycle';
+import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { Emitter, type Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -54,15 +55,17 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     return result;
   }
 
-  trigger(
+  async trigger(
     event: string,
     args: ExternalHooksRunnerTriggerArgs = {},
     failureMode: ExternalHooksRunnerFailureMode = 'empty',
   ): Promise<HookResult[]> {
     try {
-      return this.triggerInner(event, args).catch(() => failureResults(event, failureMode));
-    } catch {
-      return Promise.resolve(failureResults(event, failureMode));
+      return await this.triggerInner(event, args);
+    } catch (error) {
+      return failureMode === 'block'
+        ? [{ action: 'block', reason: `Failed to evaluate ${event} hooks: ${toErrorMessage(error)}` }]
+        : [];
     }
   }
 
@@ -151,8 +154,4 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     this.loadFailure = undefined;
     this._onDidReload.fire();
   }
-}
-
-function failureResults(event: string, mode: ExternalHooksRunnerFailureMode): HookResult[] {
-  return mode === 'block' ? [{ action: 'block', reason: `Blocked by ${event} hook` }] : [];
 }

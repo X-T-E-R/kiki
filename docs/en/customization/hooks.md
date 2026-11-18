@@ -107,6 +107,8 @@ On a match, the CLI passes the event details as JSON on **standard input** (stdi
 
 A blocking event fails closed when the script fails or times out: the pending operation stops with a reason. An observation-only event never interrupts the main flow. The [return-value table](#return-values) covers both.
 
+A plugin manifest that declares no legacy hooks can report its own settings errors without blocking messages or tools. If Kiki cannot load or evaluate a required blocking hook, the error names the evaluation failure so you can distinguish it from a script denial.
+
 ::: warning Note
 A hook supplements permission rules; it is not an operating-system sandbox and cannot approve a tool for you. Keep permission checks and manual confirmation in place for anything high-risk.
 :::

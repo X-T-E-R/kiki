@@ -341,6 +341,31 @@ describe('PluginService (plugin boundary)', () => {
     }
   });
 
+  it('keeps legacy hooks available when an enabled plugin with no legacy hooks has invalid settings', async () => {
+    const home = await makeHome();
+    const invalid = await makePluginDir('invalid-settings', {
+      'x-kiki': { settings: { schemaVersion: 1, schema: { type: 'object', properties: { threshold: { type: 'integer', minimum: 1 } } } } },
+    });
+    const valid = await makePluginDir('valid-hook', {
+      hooks: [{ event: 'PreToolUse', command: 'echo guard' }],
+    });
+    createdDirs.push(invalid, valid);
+    await writeInstalledFile(home, JSON.stringify({
+      version: 1,
+      plugins: [...installedFile('invalid-settings', invalid).plugins, ...installedFile('valid-hook', valid).plugins],
+    }));
+    const host = makeHost(home);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await expect(svc.getPluginInfo({ id: 'invalid-settings' })).resolves.toMatchObject({ state: 'error' });
+      await expect(svc.enabledHooks()).resolves.toEqual([
+        expect.objectContaining({ pluginId: 'valid-hook', event: 'PreToolUse', command: 'echo guard' }),
+      ]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it('rejects hook reads when an enabled plugin has an invalid matcher', async () => {
     const home = await makeHome();
     const pluginRoot = await makePluginDir('invalid-hook', {

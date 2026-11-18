@@ -250,7 +250,7 @@ describe('ExternalHooksRunnerService', () => {
     await expect(runner.trigger('PreToolUse', { matcherValue: 'Bash', inputData: {} })).resolves.toEqual([]);
     await expect(
       triggerBlockingResults(runner, 'PreToolUse', { matcherValue: 'Bash', inputData: {} }),
-    ).resolves.toEqual([{ action: 'block', reason: 'Blocked by PreToolUse hook' }]);
+    ).resolves.toEqual([{ action: 'block', reason: expect.stringContaining('Failed to evaluate PreToolUse hooks: Invalid regular expression') }]);
   });
 
   it('fails closed for blocking triggers when the initial hook load fails', async () => {
@@ -258,10 +258,10 @@ describe('ExternalHooksRunnerService', () => {
 
     await expect(runner.triggerBlock('PreToolUse')).resolves.toEqual({
       block: true,
-      reason: 'Blocked by PreToolUse hook',
+      reason: 'Failed to evaluate PreToolUse hooks: load failed',
     });
     await expect(triggerBlockingResults(runner, 'UserPromptSubmit')).resolves.toEqual([
-      { action: 'block', reason: 'Blocked by UserPromptSubmit hook' },
+      { action: 'block', reason: 'Failed to evaluate UserPromptSubmit hooks: load failed' },
     ]);
     await expect(runner.fireAndForgetTrigger('Notification')).resolves.toEqual([]);
   });
@@ -283,10 +283,10 @@ describe('ExternalHooksRunnerService', () => {
     ).resolves.toEqual([]);
     await expect(
       runner.triggerBlock('PreToolUse', { matcherValue: 'Bash', inputData }),
-    ).resolves.toEqual({ block: true, reason: 'Blocked by PreToolUse hook' });
+    ).resolves.toEqual({ block: true, reason: 'Failed to evaluate PreToolUse hooks: broken input' });
     await expect(
       triggerBlockingResults(runner, 'UserPromptSubmit', { matcherValue: 'prompt', inputData }),
-    ).resolves.toEqual([{ action: 'block', reason: 'Blocked by UserPromptSubmit hook' }]);
+    ).resolves.toEqual([{ action: 'block', reason: 'Failed to evaluate UserPromptSubmit hooks: broken input' }]);
   });
 
   it('fails open when fireAndForgetTrigger sees a synchronous trigger error', async () => {

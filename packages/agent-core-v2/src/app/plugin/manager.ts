@@ -522,7 +522,7 @@ export class PluginManager {
   enabledHooks(): readonly HookDef[] {
     const out: HookDef[] = [];
     for (const record of this.records.values()) {
-      if (!record.enabled) continue;
+      if (!record.enabled || record.legacyHooksAbsent === true) continue;
       if (record.state !== 'ok' || record.manifest === undefined) {
         const message = record.diagnostics.find((diagnostic) => diagnostic.severity === 'error')?.message;
         throw new Error2(
@@ -1052,6 +1052,7 @@ async function recordFrom(input: {
     rollback: input.rollback,
     skillCount: await countDiscoveredPluginSkills(input.id, parsed.manifest, input.discoverSkills),
     manifest: parsed.manifest,
+    legacyHooksAbsent: parsed.legacyHooksAbsent,
     manifestKind: parsed.manifestKind,
     manifestPath: parsed.manifestPath,
     shadowedManifestPath: parsed.shadowedManifestPath,

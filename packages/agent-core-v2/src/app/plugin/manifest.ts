@@ -44,6 +44,7 @@ function checkAborted(signal?: AbortSignal): void {
 
 export interface ParsedManifestResult {
   readonly manifest?: PluginManifest;
+  readonly legacyHooksAbsent?: boolean;
   readonly manifestKind?: PluginManifestKind;
   readonly manifestPath?: string;
   readonly shadowedManifestPath?: string;
@@ -196,7 +197,10 @@ export async function parseManifest(pluginRoot: string, signal?: AbortSignal): P
   };
   checkAborted(signal);
 
-  return { manifest, manifestKind, manifestPath, shadowedManifestPath, diagnostics };
+  const hooks = raw['hooks'];
+  const legacy = isObject(hooks) ? hooks['legacy'] : hooks;
+  const legacyHooksAbsent = legacy === undefined || (Array.isArray(legacy) && legacy.length === 0);
+  return { manifest, manifestKind, manifestPath, shadowedManifestPath, diagnostics, legacyHooksAbsent };
 }
 
 function recordUnsupportedRuntimeFields(
