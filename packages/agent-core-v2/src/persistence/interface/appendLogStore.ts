@@ -20,6 +20,7 @@ export class AppendLogCorruptedError extends StorageError {
 
 export interface AppendLogOptions {
   readonly onError?: (error: unknown) => void;
+  readonly encodedLine?: Uint8Array;
 }
 
 export interface AppendLogTruncation {

@@ -6,6 +6,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import {
   BLOBREF_PROTOCOL,
+  CheckpointBlobMissingError,
   IAgentBlobService,
   MISSING_MEDIA_PLACEHOLDER,
 } from './agentBlobService';
@@ -16,11 +17,17 @@ const DEFAULT_THRESHOLD = 4096;
 const DEFAULT_MAX_CACHE_SIZE = 50 * 1024 * 1024;
 const DATA_URI_HEADER_RE = /^data:([^;]+);base64,/;
 
+interface RememberedOffload {
+  readonly part: ContentPart;
+  readonly hashes: readonly string[];
+}
+
 export class AgentBlobServiceImpl implements IAgentBlobService {
   declare readonly _serviceBrand: undefined;
 
   private readonly storageScope: string;
   private readonly cache = new ByteLruCache(DEFAULT_MAX_CACHE_SIZE);
+  private readonly offloadedPartRefs = new WeakMap<ContentPart, RememberedOffload>();
 
   constructor(
     @IBlobStore private readonly blobs: IBlobStore,
@@ -49,25 +56,79 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
   }
 
   async loadParts(parts: readonly ContentPart[]): Promise<readonly ContentPart[]> {
+    return this.loadPartsInternal(parts, false);
+  }
+
+  async loadPartsStrict(parts: readonly ContentPart[]): Promise<readonly ContentPart[]> {
+    return this.loadPartsInternal(parts, true);
+  }
+
+  private async loadPartsInternal(parts: readonly ContentPart[], strict: boolean): Promise<readonly ContentPart[]> {
     let changed = false;
     const out: ContentPart[] = [];
     for (const part of parts) {
-      const next = await this.loadContentPart(part);
+      const next = await this.loadContentPart(part, strict);
       if (next !== part) changed = true;
       out.push(next);
     }
     return changed ? out : parts;
   }
 
-  private offloadContentPart(part: ContentPart): Promise<ContentPart> {
-    return this.rewriteMediaUrls(part, (url) => this.maybeOffloadString(url));
+  private async offloadContentPart(part: ContentPart): Promise<ContentPart> {
+    const remembered = this.offloadedPartRefs.get(part);
+    if (remembered !== undefined && await this.hasAllBlobs(remembered.hashes)) {
+      return remembered.part;
+    }
+    const hashes: string[] = [];
+    const next = await this.rewriteMediaUrls(part, async (url) => {
+      const rewritten = await this.maybeOffloadString(url);
+      if (this.isBlobRef(rewritten)) {
+        const parsed = parseBlobRef(rewritten);
+        if (parsed !== undefined) hashes.push(parsed.hash);
+      }
+      return rewritten;
+    });
+    if (next !== part && hashes.length > 0) {
+      this.offloadedPartRefs.set(part, { part: next, hashes });
+    }
+    return next;
   }
 
-  private loadContentPart(part: ContentPart): Promise<ContentPart> {
-    return this.rewriteMediaUrls(part, async (url) => {
+  private async loadContentPart(part: ContentPart, strict: boolean): Promise<ContentPart> {
+    const hashes: string[] = [];
+    let allResolved = true;
+    const next = await this.rewriteMediaUrls(part, async (url) => {
       if (!this.isBlobRef(url)) return url;
-      return (await this.loadBlobRefUrl(url)) ?? MISSING_MEDIA_PLACEHOLDER;
+      const parsed = parseBlobRef(url);
+      if (parsed === undefined) {
+        allResolved = false;
+        if (strict) throw new CheckpointBlobMissingError(url);
+        return MISSING_MEDIA_PLACEHOLDER;
+      }
+      const loaded = await this.loadBlobRefUrl(parsed);
+      if (loaded === undefined) {
+        allResolved = false;
+        if (strict) throw new CheckpointBlobMissingError(url);
+        return MISSING_MEDIA_PLACEHOLDER;
+      }
+      hashes.push(parsed.hash);
+      return loaded;
     });
+    if (next !== part && allResolved && hashes.length > 0) {
+      this.offloadedPartRefs.set(next, { part, hashes });
+    }
+    return next;
+  }
+
+  private async hasAllBlobs(hashes: readonly string[]): Promise<boolean> {
+    for (const hash of hashes) {
+      const present = await this.blobs.has(this.storageScope, hash).catch(() => false);
+      if (!present) {
+        this.cache.delete?.(hash);
+        return false;
+      }
+    }
+    return true;
   }
 
   private async rewriteMediaUrls(
@@ -91,10 +152,7 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
     return updated === undefined ? part : (updated as unknown as ContentPart);
   }
 
-  private async loadBlobRefUrl(url: string): Promise<string | undefined> {
-    const ref = parseBlobRef(url);
-    if (ref === undefined) return undefined;
-
+  private async loadBlobRefUrl(ref: { readonly mimeType: string; readonly hash: string }): Promise<string | undefined> {
     const payload = await this.readBlob(ref.hash);
     if (payload === undefined) return undefined;
 
@@ -103,7 +161,12 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
 
   private async readBlob(hash: string): Promise<Buffer | undefined> {
     const cached = this.cache.get(hash);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      const exists = await this.blobs.has(this.storageScope, hash).catch(() => false);
+      if (exists) return cached;
+      this.cache.delete?.(hash);
+      return undefined;
+    }
 
     const payload = await this.blobs.get(this.storageScope, hash).catch(() => undefined);
     if (payload === undefined) return undefined;
@@ -128,9 +191,12 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
 
   private async writeBlob(mimeType: string, base64Payload: string): Promise<string> {
     const hash = createHash('sha256').update(base64Payload, 'utf8').digest('hex');
-    const binary = Buffer.from(base64Payload, 'base64');
-    await this.blobs.put(this.storageScope, hash, binary);
-    this.cache.set(hash, binary);
+    const exists = await this.blobs.has(this.storageScope, hash).catch(() => false);
+    if (!exists) {
+      const binary = Buffer.from(base64Payload, 'base64');
+      await this.blobs.put(this.storageScope, hash, binary);
+      this.cache.set(hash, binary);
+    }
     return formatBlobRef(mimeType, hash);
   }
 }

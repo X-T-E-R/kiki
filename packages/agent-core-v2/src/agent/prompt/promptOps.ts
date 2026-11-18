@@ -72,6 +72,21 @@ export const promptRetryReceiptKey = defineState('promptRetryReceipt', (): Map<s
         return content === prompt.message.content ? record : { ...record,
           replacementPrompt: { ...prompt, message: { ...prompt.message, content: [...content] } } };
       },
+      dehydrateState: async (state, transform) => {
+        let changed = false;
+        const dehydrated = new Map(state);
+        for (const [id, entry] of state) {
+          const message = entry.receipt.message;
+          if (message === undefined) continue;
+          const content = await transform(message.content);
+          if (content !== message.content) {
+            changed = true;
+            dehydrated.set(id, { ...entry,
+              receipt: { ...entry.receipt, message: { ...message, content: [...content] as ContextMessage['content'] } } });
+          }
+        }
+        return changed ? dehydrated : state;
+      },
       rehydrate: async (state, transform) => {
         const restored = new Map(state);
         for (const [id, entry] of state) {

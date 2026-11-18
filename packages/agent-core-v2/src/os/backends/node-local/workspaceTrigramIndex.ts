@@ -53,9 +53,19 @@ export class WorkspaceTrigramIndex {
   invalidate(): void { this.revision = -1; }
 
   patch(snapshot: WorkspacePathSnapshot, path: string, entry: WorkspacePathEntry | undefined): void {
+    this.patchBatch(snapshot, [[path, entry]]);
+  }
+
+  patchBatch(
+    snapshot: WorkspacePathSnapshot,
+    patches: readonly (readonly [string, WorkspacePathEntry | undefined])[],
+  ): void {
+    if (patches.length === 0) return;
     this.latest = snapshot;
-    this.dirtyPaths.add(path);
-    this.updates.set(path, entry?.kind === 'file' && !entry.sensitive ? entry : undefined);
+    for (const [path, entry] of patches) {
+      this.dirtyPaths.add(path);
+      this.updates.set(path, entry?.kind === 'file' && !entry.sensitive ? entry : undefined);
+    }
     if (this.epoch !== undefined && this.revision !== -1) this.revision = snapshot.revision;
     this.flushUpdates();
   }

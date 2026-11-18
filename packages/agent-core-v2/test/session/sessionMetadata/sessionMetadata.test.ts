@@ -305,7 +305,7 @@ describe('SessionMetadata', () => {
     expect(writes.mock.calls.filter(([, key]) => key === 'state.json').length).toBeLessThanOrEqual(2);
   });
 
-  it('writes long outcomes separately and restores their full receipt after a restart', async () => {
+  it('writes long outcomes separately and restores their full receipt on demand after a restart', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.ready;
     const store = ix.get(IAtomicDocumentStore);
@@ -314,7 +314,16 @@ describe('SessionMetadata', () => {
     const raw = await store.get<{ agents: Record<string, { resultSummary: string; outcomeRef: string }> }>(META_SCOPE, 'state.json');
     expect(raw?.agents['child']?.resultSummary).toHaveLength(2048);
     expect(raw?.agents['child']?.outcomeRef).toBeTruthy();
-    expect((await createFreshMetadata(ix).read()).agents?.['child']?.resultSummary).toBe(receipt);
+    expect((await meta.read()).agents?.['child']?.resultSummary).toBe(receipt.slice(0, 2048));
+    expect((await meta.readAgentWithOutcome?.('child'))?.resultSummary).toBe(receipt);
+    const fresh = createFreshMetadata(ix);
+    const gets = vi.spyOn(store, 'get');
+    await fresh.ready;
+    expect(gets.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/'))).toEqual([]);
+    expect((await fresh.read()).agents?.['child']?.resultSummary).toBe(receipt.slice(0, 2048));
+    expect((await fresh.readAgentWithOutcome?.('child'))?.resultSummary).toBe(receipt);
+    expect((await fresh.readHydrated?.())?.agents?.['child']?.resultSummary).toBe(receipt);
+    expect(gets.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/'))).toHaveLength(1);
     const writes = vi.spyOn(store, 'set');
     await meta.updateAgent('child', (current) => ({ ...current, userLabel: 'renamed' }));
     expect(writes.mock.calls.map(([, key]) => key)).toEqual(['state.json']);
@@ -328,7 +337,7 @@ describe('SessionMetadata', () => {
     if (outcomes.ok) expect(outcomes.outcomes.get('task-1')).toMatchObject({ status: 'completed', finalOutput: receipt.slice(0, 2048) });
   });
 
-  it('keeps persisted outcome previews well formed while restoring the full receipt', async () => {
+  it('keeps persisted outcome previews well formed while restoring the full receipt on demand', async () => {
     const meta = ix.get(ISessionMetadata);
     const prefix = 'x'.repeat(2_047);
     const receipt = `${prefix}🛰tail`;
@@ -340,7 +349,10 @@ describe('SessionMetadata', () => {
     expect(preview.resultSummary.isWellFormed()).toBe(true);
     expect(preview.error.isWellFormed()).toBe(true);
     expect(preview.resultSummary.length).toBeLessThanOrEqual(2_048);
-    expect((await createFreshMetadata(ix).read()).agents?.['child']?.resultSummary).toBe(receipt);
+    const fresh = createFreshMetadata(ix);
+    expect((await fresh.read()).agents?.['child']?.resultSummary).toBe(prefix);
+    expect((await fresh.readAgentWithOutcome?.('child'))?.resultSummary).toBe(receipt);
+    expect((await fresh.readAgentWithOutcome?.('child'))?.error).toBe(receipt);
   });
 
   it('preserves the committed outcome when a sidecar write fails', async () => {
@@ -360,7 +372,88 @@ describe('SessionMetadata', () => {
     if (outcomes.ok) expect(outcomes.outcomes.get('new-task')).toMatchObject({ status: 'completed', finalOutput: 'r'.repeat(8192) });
     fail.mockRestore();
     await meta.updateAgent('child', (current) => ({ ...current, userLabel: 'retry sidecar' }));
-    expect((await createFreshMetadata(ix).read()).agents?.['child']?.resultSummary).toHaveLength(8192);
+    const freshAfterRetry = createFreshMetadata(ix);
+    expect((await freshAfterRetry.read()).agents?.['child']?.resultSummary).toHaveLength(2048);
+    expect((await freshAfterRetry.readAgentWithOutcome?.('child'))?.resultSummary).toHaveLength(8192);
+  });
+
+  it('opens zero sidecar files on cold load of a 650-subagent sidecar roster and avoids roster cloning on usage/status updates', async () => {
+    const store = ix.get(IAtomicDocumentStore);
+    const agents: Record<string, unknown> = { main: { type: 'main', executor: 'native' } };
+    for (let index = 0; index < 650; index += 1) {
+      const ref = `agent-outcomes/00000000-0000-4000-8000-${String(index).padStart(12, '0')}.json`;
+      const fullReceipt = `receipt-${index}-${'z'.repeat(8_192)}`;
+      await store.set(META_SCOPE, ref, { version: 1, resultSummary: fullReceipt });
+      agents[`agent-${index}`] = {
+        type: 'sub',
+        taskId: `task-${index}`,
+        status: 'completed',
+        completedAt: 1_000 + index,
+        resultSummary: fullReceipt.slice(0, 2048),
+        outcomeRef: ref,
+      };
+    }
+    agents['inline-legacy'] = {
+      type: 'sub',
+      taskId: 'task-inline',
+      status: 'completed',
+      completedAt: 2_000,
+      resultSummary: 'legacy-inline-'.repeat(400),
+    };
+    await store.set(META_SCOPE, 'state.json', {
+      id: 's1',
+      version: SESSION_META_VERSION,
+      createdAt: 1,
+      updatedAt: 2,
+      archived: false,
+      agents,
+      custom: {},
+      isCustomTitle: false,
+    });
+    const getSpy = vi.spyOn(store, 'get');
+    const fresh = createFreshMetadata(ix);
+    await fresh.ready;
+    expect(getSpy.mock.calls.map(([, key]) => key)).toEqual(['state.json']);
+    const unhydrated = await fresh.read();
+    expect(getSpy.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/'))).toHaveLength(0);
+    expect(unhydrated.agents?.['agent-42']?.resultSummary).toHaveLength(2048);
+    expect(unhydrated.agents?.['inline-legacy']?.resultSummary).toBe('legacy-inline-'.repeat(400));
+    expect(fresh.isPrivate()).toBe(false);
+    expect(fresh.isArchived()).toBe(false);
+    expect(fresh.peekAgent('agent-42')?.taskId).toBe('task-42');
+
+    const snapBefore = fresh.snapshot();
+    fresh.recordUsage('example-model', { inputOther: 10, output: 5, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(fresh.isPrivate()).toBe(false);
+    const snapAfterUsage = fresh.snapshot();
+    expect(snapAfterUsage).not.toBe(snapBefore);
+    expect(snapAfterUsage.agents).toBe(snapBefore.agents);
+
+    await fresh.updateAgent('agent-0', (current) => ({ ...current, contextTokens: 777 }));
+    const snapAfterSingleAgent = fresh.snapshot();
+    expect(snapAfterSingleAgent.agents).not.toBe(snapBefore.agents);
+    expect(snapAfterSingleAgent.agents?.['agent-0']?.contextTokens).toBe(777);
+    expect(snapAfterSingleAgent.agents?.['agent-42']).toBe(snapBefore.agents?.['agent-42']);
+    expect(getSpy.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/'))).toHaveLength(0);
+
+    const hydrated42 = await fresh.readAgentWithOutcome('agent-42');
+    expect(hydrated42?.resultSummary).toBe(`receipt-42-${'z'.repeat(8_192)}`);
+    expect(getSpy.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/'))).toHaveLength(1);
+    await fresh.readAgentWithOutcome('agent-42');
+    expect(getSpy.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/'))).toHaveLength(1);
+
+    const updatedReceipt = `updated-42-${'w'.repeat(9_000)}`;
+    await fresh.updateAgent('agent-42', (current) => ({ ...current, resultSummary: updatedReceipt }));
+    expect((await fresh.readAgentWithOutcome('agent-42'))?.resultSummary).toBe(updatedReceipt);
+
+    const targetedOutcome = await readCommittedAgentRunOutcomes(fresh, new Set(['agent-100']));
+    expect(targetedOutcome.ok).toBe(true);
+    if (targetedOutcome.ok) {
+      expect(targetedOutcome.outcomes.size).toBe(1);
+      expect(targetedOutcome.outcomes.get('task-100')?.finalOutput).toBe(`receipt-100-${'z'.repeat(8_192)}`);
+    }
+    expect(getSpy.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/'))).toHaveLength(2);
+    await fresh.dispose();
   });
 
   it('creates an initial document on first read', async () => {

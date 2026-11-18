@@ -28,6 +28,7 @@ export { readLogicalRange, readPinnedRange, wireFileAddress } from '#/persistenc
 
 const textEncoder = new TextEncoder();
 const TRANSIENT_APPEND_ERRNOS = new Set(['EBUSY', 'EPERM', 'EACCES']);
+const MAX_APPEND_BATCH_BYTES = 4 * 1024 * 1024;
 
 const pendingRetirements = new Set<Promise<void>>();
 
@@ -63,8 +64,13 @@ export async function drainAppendLogRetirements(): Promise<void> {
   }
 }
 
+interface PendingAppendEntry {
+  readonly record: unknown;
+  encodedLine?: Uint8Array;
+}
+
 interface LogState {
-  pending: unknown[];
+  pending: PendingAppendEntry[];
   flushPromise: Promise<void> | undefined;
   flushScheduled: boolean;
   storageFailure: { readonly error: unknown } | undefined;
@@ -207,7 +213,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
 
   append<R>(scope: string, key: string, record: R, options?: AppendLogOptions): void {
     const state = this.state(scope, key);
-    state.pending.push(record);
+    state.pending.push({ record, encodedLine: options?.encodedLine });
     if (options?.onError !== undefined && state.onError === undefined) {
       state.onError = options.onError;
     }
@@ -618,9 +624,8 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     if (state.cutoverEpoch !== cutoverEpoch) return false;
     let wrote = false;
     while (state.pending.length > 0) {
-      const batch = state.pending.slice();
-      const encoded = encodeBatch(batch);
-      const prepared = this.prepareProjections(scope, key, batch);
+      const { batch, encoded } = takeEncodedBatch(state.pending);
+      const prepared = this.prepareProjections(scope, key, batch.map((entry) => entry.record));
       if (state.position === undefined) {
         try {
           const [generation, size] = await Promise.all([this.readGeneration(scope, key), this.storage.size(scope, key)]);
@@ -667,15 +672,38 @@ function fromLogId(id: string): { scope: string; key: string } {
   return { scope: id.slice(0, index), key: id.slice(index + 1) };
 }
 
-function encodeBatch(records: readonly unknown[]): Uint8Array {
-  const chunks = [...encodeJsonLines(records)];
-  const bytes = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
+function plainUint8Array(bytes: Uint8Array): Uint8Array {
+  return Buffer.isBuffer(bytes)
+    ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    : bytes;
+}
+
+function takeEncodedBatch(pending: readonly PendingAppendEntry[]): {
+  readonly batch: readonly PendingAppendEntry[];
+  readonly encoded: Uint8Array;
+} {
+  const batch: PendingAppendEntry[] = [];
+  const lines: Uint8Array[] = [];
+  let totalBytes = 0;
+  for (const entry of pending) {
+    const raw = entry.encodedLine ?? (entry.encodedLine = textEncoder.encode(`${JSON.stringify(entry.record)}\n`));
+    const line = plainUint8Array(raw);
+    entry.encodedLine = line;
+    if (batch.length > 0 && totalBytes + line.byteLength > MAX_APPEND_BATCH_BYTES) break;
+    batch.push(entry);
+    lines.push(line);
+    totalBytes += line.byteLength;
   }
-  return bytes;
+  if (lines.length === 1) {
+    return { batch, encoded: lines[0]! };
+  }
+  const encoded = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const line of lines) {
+    encoded.set(line, offset);
+    offset += line.byteLength;
+  }
+  return { batch, encoded };
 }
 
 function waitForSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {

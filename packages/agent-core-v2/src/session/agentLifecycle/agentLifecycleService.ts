@@ -233,7 +233,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const d = handle.accessor
       .get(IAgentUsageService)
       .onDidRecord(({ model, usage, usageKnown }) => {
-        if (this.sessionMetadata.snapshot().private !== true) this.sessionMetadata.recordUsage(model, usage, usageKnown);
+        if ((this.sessionMetadata.isPrivate?.() ?? this.sessionMetadata.snapshot().private === true) !== true) this.sessionMetadata.recordUsage(model, usage, usageKnown);
       });
     this.usageDisposables.set(handle.id, d);
   }
@@ -385,7 +385,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       {
         seeds: [
           [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope, parentAgentId, isBranch })],
-          [ITelemetryService, privateSessionTelemetry(this.telemetry.withContext({ agent_id: agentId }), () => this.sessionMetadata.snapshot().private === true)],
+          [ITelemetryService, privateSessionTelemetry(this.telemetry.withContext({ agent_id: agentId }), () => this.sessionMetadata.isPrivate?.() ?? this.sessionMetadata.snapshot().private === true)],
           [IAgentRuntimeBindingSeed, {
             _serviceBrand: undefined,
             binding: { workspaceId: this.ctx.workspaceId, runtimeId: opts.runtimeId ?? 'local' },

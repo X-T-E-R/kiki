@@ -463,7 +463,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (this.sessionMetadata !== undefined) {
       this._register(this.sessionMetadata.onDidChangeMetadata(({ changed }) => {
         if (!changed.includes('archived') || this.restoreDisposed) return;
-        this.unarchiveRecoveryPending = this.sessionMetadata?.snapshot().archived === false;
+        this.unarchiveRecoveryPending = this.sessionMetadata !== undefined &&
+          (this.sessionMetadata.isArchived !== undefined
+            ? !this.sessionMetadata.isArchived()
+            : this.sessionMetadata.snapshot().archived === false);
         this.fireWorkChange();
         if (this.unarchiveRecoveryPending && !this.executionControl.isHeld()) {
           void this.restoreAgentTaskNotifications(true).catch(error => this.log.error('unarchived task notification recovery failed', { error }));
@@ -888,7 +891,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (TERMINAL_STATUSES.has(currentInfo.status)) return currentInfo;
     const outcomeRead = currentInfo.agentId === undefined
       ? undefined
-      : await readCommittedAgentRunOutcomes(this.sessionMetadata);
+      : await readCommittedAgentRunOutcomes(this.sessionMetadata, new Set([currentInfo.agentId]));
     const known = outcomeRead?.ok === true ? outcomeRead.outcomes.get(taskId) : undefined;
     if (known !== undefined && known.subagentId === currentInfo.agentId) {
       if (entry !== undefined) {
@@ -1013,7 +1016,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   hasUnfinishedWork(includeRestoration = true): boolean {
     if (includeRestoration && this.restorePending && !this.restoreExhausted) return true;
-    const notificationsEnabled = this.sessionMetadata?.snapshot().archived !== true;
+    const notificationsEnabled = (this.sessionMetadata?.isArchived?.() ?? this.sessionMetadata?.snapshot().archived) !== true;
     for (const entry of this.tasks.values()) {
       if (entry.options.lifetime === 'service') continue;
       if (!TERMINAL_STATUSES.has(entry.status) || entry.cleanupFailure !== undefined) return true;
@@ -1789,9 +1792,15 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const lostTasks: AgentTaskInfo[] = [];
     let changed = false;
     const persistence = this.persistence;
-    const needsOutcome = [...this.ghosts.values()].some((info) =>
-      !TERMINAL_STATUSES.has(info.status) && info.kind === 'agent' && info.agentId !== undefined);
-    const outcomeRead = needsOutcome ? await readCommittedAgentRunOutcomes(this.sessionMetadata) : undefined;
+    const pendingAgentIds = new Set<string>();
+    for (const info of this.ghosts.values()) {
+      if (!TERMINAL_STATUSES.has(info.status) && info.kind === 'agent' && info.agentId !== undefined) {
+        pendingAgentIds.add(info.agentId);
+      }
+    }
+    const outcomeRead = pendingAgentIds.size > 0
+      ? await readCommittedAgentRunOutcomes(this.sessionMetadata, pendingAgentIds)
+      : undefined;
     if (outcomeRead?.ok === false) {
       this.log.error('agent run outcome metadata could not be read; unconfirmed tasks stay lost', {
         error: outcomeRead.error,
@@ -2227,7 +2236,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private async notifyAgentTask(info: AgentTaskInfo): Promise<void> {
-    if (this.sessionMetadata?.snapshot().archived === true) return;
+    if ((this.sessionMetadata?.isArchived?.() ?? this.sessionMetadata?.snapshot().archived) === true) return;
     const generation = this.notificationUndoGeneration;
     const context = await this.buildAgentTaskNotificationContext(info);
     if (generation !== this.notificationUndoGeneration || context === undefined) return;
@@ -2304,7 +2313,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
     const goal = this.currentGoal();
     const lastEnded = this.states.has(turnKey) ? this.states.get(turnKey).lastEnded : undefined;
-    if (this.sessionMetadata?.snapshot().archived === true ||
+    if ((this.sessionMetadata?.isArchived?.() ?? this.sessionMetadata?.snapshot().archived) === true ||
       (info.status === 'lost' && !this.isInterruptedBackgroundSubagent(info)) ||
       (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId &&
         !(this.scopeContext.parentAgentId === undefined && info.kind === 'agent' && info.detached !== false && info.status !== 'killed'))) {
@@ -2365,7 +2374,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async restoreAgentTaskNotificationsNow(notify: boolean): Promise<void> {
     if (this.restoreDisposed || this.exitSuppressionArmed) return;
     await this.sessionMetadata?.ready;
-    if (this.restoreDisposed || this.exitSuppressionArmed || this.sessionMetadata?.snapshot().archived === true ||
+    if (this.restoreDisposed || this.exitSuppressionArmed || (this.sessionMetadata?.isArchived?.() ?? this.sessionMetadata?.snapshot().archived) === true ||
       (notify && (!this.unarchiveRecoveryPending || this.executionControl.isHeld()))) return;
     if (notify || this.restorePending) this.unarchiveRecoveryPending = false;
     const delivery = {};
@@ -2472,7 +2481,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         const snapshot = budgetNotificationPreview(info, output, delivery, this.pendingNotificationRequests.size);
         const name = info.kind === 'agent'
           ? info.collaborationTaskName ?? (info.agentId === undefined ? undefined
-            : this.sessionMetadata?.snapshot().agents?.[info.agentId]?.labels?.[COLLABORATION_TASK_NAME_LABEL])
+            : (this.sessionMetadata?.peekAgent !== undefined
+              ? this.sessionMetadata.peekAgent(info.agentId)
+              : this.sessionMetadata?.snapshot().agents?.[info.agentId])?.labels?.[COLLABORATION_TASK_NAME_LABEL])
           : undefined;
         const remainingSubagents = info.kind === 'agent'
           ? runningSubagentStatus(this, this.lifecycle, this.scopeContext.agentId, info.agentId, undefined, info.taskId)

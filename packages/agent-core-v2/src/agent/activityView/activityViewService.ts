@@ -322,7 +322,10 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     const metadata = this.sessionMetadata?.current;
     if (metadata !== undefined && agentId !== undefined) {
       try {
-        const count = metadata.snapshot().agents?.[agentId]?.toolCallCount;
+        const agentMeta = metadata.peekAgent !== undefined
+          ? metadata.peekAgent(agentId)
+          : metadata.snapshot().agents?.[agentId];
+        const count = agentMeta?.toolCallCount;
         if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) {
           persistedCount = count;
         }

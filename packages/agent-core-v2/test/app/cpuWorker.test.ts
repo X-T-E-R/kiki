@@ -91,6 +91,36 @@ describe('CPU worker pool', () => {
     await workers.close();
     await expect(workers.request({})).rejects.toMatchObject({code:'CPU_POOL_CLOSED'});
   });
+
+  it('scales surplus idle worker isolates back down to 1 warm worker after idle timeout without terminating active work', async () => {
+    const workers = await pool({ maxWorkers: 3, idleTimeoutMs: 50 });
+    expect(workers.liveWorkerCount).toBe(0);
+    if (workers.size > 1) {
+      const burstIds = await Promise.all(
+        Array.from({ length: workers.size }, () => workers.request<number>({ type: 'delay', ms: 40 })),
+      );
+      expect(new Set(burstIds).size).toBe(workers.size);
+      expect(workers.liveWorkerCount).toBe(workers.size);
+
+      const longRunning = workers.request<number>({ type: 'delay', ms: 140 });
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 90));
+      expect(workers.liveWorkerCount).toBe(1);
+      const survivorId = await longRunning;
+
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 90));
+      expect(workers.liveWorkerCount).toBe(1);
+      expect(await workers.request<number>({ type: 'delay', ms: 5 })).toBe(survivorId);
+
+      const secondBurst = await Promise.all(
+        Array.from({ length: workers.size }, () => workers.request<number>({ type: 'delay', ms: 35 })),
+      );
+      expect(new Set(secondBurst).size).toBe(workers.size);
+    } else {
+      await workers.request({ type: 'delay', ms: 10 });
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 90));
+      expect(workers.liveWorkerCount).toBe(1);
+    }
+  });
 });
 
 function productionPool(): CpuWorkerPool {

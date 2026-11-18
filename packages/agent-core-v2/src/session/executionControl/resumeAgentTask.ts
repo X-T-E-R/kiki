@@ -22,7 +22,8 @@ export async function resumeAgentTask(child: IAgentScopeHandle, turn: Turn): Pro
   const parent = child.accessor.get(IAgentLifecycleService).get(parentId);
   if (parent === undefined) throw new Error2(ErrorCodes.AGENT_NOT_FOUND, 'The saved execution task owner is unavailable');
   const tasks = parent.accessor.get(IAgentTaskService);
-  const meta = child.accessor.get(ISessionMetadata).snapshot().agents?.[child.id];
+  const metadata = child.accessor.get(ISessionMetadata);
+  const meta = metadata.peekAgent !== undefined ? metadata.peekAgent(child.id) : metadata.snapshot().agents?.[child.id];
   const info = await tasks.findPausedAgentTask(child.id, meta?.labels?.[COLLABORATION_LATEST_TASK_LABEL]);
   if (info?.kind !== 'agent') return;
   const controller = new AbortController();
@@ -98,7 +99,9 @@ export async function settleUnresumedAgentTask(child: IAgentScopeHandle): Promis
   if (tasks.findPausedAgentTask === undefined || tasks.settlePausedAgentTask === undefined) return;
   let latestTaskId: string | undefined;
   try {
-    latestTaskId = child.accessor.get(ISessionMetadata).snapshot().agents?.[child.id]?.labels?.[COLLABORATION_LATEST_TASK_LABEL];
+    const metadata = child.accessor.get(ISessionMetadata);
+    const agent = metadata.peekAgent !== undefined ? metadata.peekAgent(child.id) : metadata.snapshot().agents?.[child.id];
+    latestTaskId = agent?.labels?.[COLLABORATION_LATEST_TASK_LABEL];
   } catch {
     latestTaskId = undefined;
   }

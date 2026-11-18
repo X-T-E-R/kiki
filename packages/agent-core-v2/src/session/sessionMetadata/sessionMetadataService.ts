@@ -116,14 +116,45 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   };
 
   private readonly deferredChanges = new Set<keyof SessionMeta>();
-  private detached: { readonly source: SessionMeta; readonly value: SessionMeta } | undefined;
+  private detached: {
+    readonly source: SessionMeta;
+    readonly value: SessionMeta;
+    readonly agentsSource: SessionMeta['agents'];
+    readonly agentsValue: SessionMeta['agents'];
+  } | undefined;
+  private readonly detachedAgentClones = new WeakMap<AgentMeta, AgentMeta>();
   private lastMirroredSummary: SessionSummary | undefined;
   private readonly outcomes: AgentOutcomeDocuments;
 
   private async persist(): Promise<PersistedSessionMeta> {
-    const encoded = encodeSessionMeta(await this.outcomes.project(this.data));
+    const projected = await this.outcomes.project(this.data);
+    const encoded = encodeSessionMeta(projected.encoded);
     await this.store.set(this.scope, META_KEY, encoded, { cooperative: true });
+    this.applyProjectedResidentAgents(projected.sourceAgents, projected.resident.agents);
     return encoded;
+  }
+
+  private applyProjectedResidentAgents(
+    sourceAgents: SessionMeta['agents'],
+    residentAgents: SessionMeta['agents'],
+  ): void {
+    if (sourceAgents === undefined || residentAgents === undefined || sourceAgents === residentAgents) return;
+    const currentAgents = this.data.agents;
+    if (currentAgents === undefined) return;
+    if (currentAgents === sourceAgents) {
+      this.data = { ...this.data, agents: residentAgents };
+      return;
+    }
+    let changed = false;
+    const merged: Record<string, AgentMeta> = { ...currentAgents };
+    for (const [id, current] of Object.entries(currentAgents)) {
+      const compacted = residentAgents[id];
+      if (current === sourceAgents[id] && compacted !== undefined && compacted !== current) {
+        merged[id] = compacted;
+        changed = true;
+      }
+    }
+    if (changed) this.data = { ...this.data, agents: merged };
   }
 
   private async persistAbsorbingDeferred(): Promise<{ readonly absorbed: readonly (keyof SessionMeta)[]; readonly encoded: PersistedSessionMeta }> {
@@ -253,8 +284,55 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   snapshot(): SessionMeta {
     if (!this.initialized) throw new BugIndicatingError('Session metadata snapshot requires ready');
     const data = this.data;
-    if (this.detached?.source !== data) this.detached = { source: data, value: structuredClone(data) };
+    if (this.detached?.source !== data) {
+      const agentsValue =
+        this.detached !== undefined && this.detached.agentsSource === data.agents
+          ? this.detached.agentsValue
+          : this.cloneAgents(data.agents);
+      const base = structuredClone({ ...data, agents: undefined });
+      const value: SessionMeta = data.agents === undefined ? base : { ...base, agents: agentsValue };
+      this.detached = { source: data, value, agentsSource: data.agents, agentsValue };
+    }
     return this.detached.value;
+  }
+
+  private cloneAgents(agents: SessionMeta['agents']): SessionMeta['agents'] {
+    if (agents === undefined) return undefined;
+    const cloned: Record<string, AgentMeta> = {};
+    for (const [id, agent] of Object.entries(agents)) {
+      let copy = this.detachedAgentClones.get(agent);
+      if (copy === undefined) {
+        copy = structuredClone(agent);
+        this.detachedAgentClones.set(agent, copy);
+      }
+      cloned[id] = copy;
+    }
+    return cloned;
+  }
+
+  isPrivate(): boolean {
+    if (!this.initialized) throw new BugIndicatingError('Session metadata isPrivate requires ready');
+    return this.data.private === true;
+  }
+
+  isArchived(): boolean {
+    if (!this.initialized) throw new BugIndicatingError('Session metadata isArchived requires ready');
+    return this.data.archived === true;
+  }
+
+  peekAgent(agentId: string): AgentMeta | undefined {
+    if (!this.initialized) throw new BugIndicatingError('Session metadata peekAgent requires ready');
+    return this.data.agents?.[agentId];
+  }
+
+  async readAgentWithOutcome(agentId: string): Promise<AgentMeta | undefined> {
+    await this.ready;
+    return this.outcomes.readAgent(this.data, agentId);
+  }
+
+  async readHydrated(): Promise<SessionMeta> {
+    await this.ready;
+    return this.outcomes.hydrateAll(this.data);
   }
 
   async getAgentExecutor(agentId: string): Promise<string | undefined> {
@@ -308,6 +386,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     const isPrivate = patch.private ?? this.data.private;
     const nextAgents = isPrivate === true && (agents !== this.data.agents || this.data.private !== true)
       ? withoutAgentStatistics(agents) : agents;
+    this.outcomes.preserveRefs(this.data.agents, nextAgents);
     this.data = { ...this.data, ...patch, private: isPrivate, agents: nextAgents, updatedAt, activityUpdatedAt };
     if (isPrivate === true && this.data.usage !== undefined) this.data = { ...this.data, usage: undefined };
   }
@@ -359,8 +438,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     return this.enqueueAgentUpdate((agents) => {
       const existing = agents[agentId];
       const copy = structuredClone(meta);
-      const next = this.agentStatisticsPolicy(existing === undefined ? copy : { ...copy, createdAt: existing.createdAt });
-      if (existing !== undefined && agentMetaEquals(existing, next)) return false;
+      const next = this.outcomes.preserveAgentRef(
+        existing,
+        this.agentStatisticsPolicy(existing === undefined ? copy : { ...copy, createdAt: existing.createdAt }),
+      );
+      if (existing !== undefined && agentMetaEquals(existing, next) && this.outcomes.sameOutcome(existing, next)) return false;
       agents[agentId] = next;
       return true;
     });
@@ -371,8 +453,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       const current = agents[agentId];
       if (current === undefined) return false;
       const updated = updater(structuredClone(current));
-      const next = this.agentStatisticsPolicy({ ...updated, createdAt: current.createdAt });
-      if (agentMetaEquals(current, next)) return false;
+      const next = this.outcomes.preserveAgentRef(
+        current,
+        this.agentStatisticsPolicy({ ...updated, createdAt: current.createdAt }),
+      );
+      if (agentMetaEquals(current, next) && this.outcomes.sameOutcome(current, next)) return false;
       agents[agentId] = next;
       return true;
     });
@@ -385,6 +470,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   unregisterAgent(agentId: string): Promise<void> {
     return this.enqueueAgentUpdate((agents) => {
       if (agents[agentId] === undefined) return false;
+      this.outcomes.invalidateAgent(agentId);
       delete agents[agentId];
       return true;
     }, true);
@@ -507,7 +593,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private async load(): Promise<void> {
     const existing = await this.store.get<SessionMeta>(this.scope, META_KEY);
     if (existing !== undefined) {
-      this.data = await this.outcomes.hydrate(normalizeSessionMeta(existing, this.ctx.sessionId));
+      this.data = this.outcomes.prepareLoaded(normalizeSessionMeta(existing, this.ctx.sessionId));
       if (
         this.data.agents === undefined ||
         this.data.custom === undefined ||

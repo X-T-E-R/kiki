@@ -81,6 +81,7 @@ import {
   type SessionMeta,
   type SessionPromotedFrom,
 } from '#/session/sessionMetadata/sessionMetadata';
+import { readAgentOutcome } from '#/session/sessionMetadata/agentOutcomeStore';
 import { ISessionSkillCatalogData } from '#/session/sessionSkillCatalog/skillCatalogData';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
@@ -493,7 +494,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await phase('materialize_directories', () => this.workspaceDirs.ready);
     await phase('materialize_additional_directories', () => this.workspaceDirs.mergeAdditionalDirs(opts.workDir, opts.additionalDirs ?? []));
     let metadata: ISessionMetadata | undefined;
-    const isPrivate = () => metadata === undefined ? opts.private === true : metadata.snapshot().private === true;
+    const isPrivate = () => metadata === undefined ? opts.private === true : (metadata.isPrivate?.() ?? metadata.snapshot().private === true);
     const ctx: ISessionContext = {
       _serviceBrand: undefined,
       sessionId: opts.sessionId,
@@ -1223,7 +1224,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     fallback: SessionUsageSummary | undefined,
   ): Promise<void> {
     const metadata = handle.accessor.get(ISessionMetadata);
-    if (metadata.snapshot().private === true) return;
+    if (metadata.isPrivate?.() ?? metadata.snapshot().private === true) return;
     const current = metadata.usage();
     const usage = current?.wireComplete === true ? current : fallback ?? current;
     if (usage === undefined) return;
@@ -1792,10 +1793,19 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sourceId} does not exist`);
     }
     if (sourceHandle !== undefined) await sourceHandle.accessor.get(ISessionMetadata).drain();
-    const sourceMeta = sourceHandle !== undefined
-      ? await sourceHandle.accessor.get(ISessionMetadata).read()
+    const sourceMetadata = sourceHandle?.accessor.get(ISessionMetadata);
+    const sourceMeta = sourceMetadata !== undefined
+      ? await sourceMetadata.read()
       : await this.readMetaFromDisk(sourceId);
-    const agentMeta = sourceMeta?.agents?.[opts.agentId];
+    const sourceScope = sourceHandle?.accessor.get(ISessionContext).metaScope ?? sessionScopeOf(this.handlerScope, sourceId);
+    const hydratePromotionAgent = async (id: string, meta: AgentMeta | undefined): Promise<AgentMeta | undefined> => {
+      if (meta === undefined) return undefined;
+      if (sourceMetadata?.readAgentWithOutcome !== undefined) {
+        return (await sourceMetadata.readAgentWithOutcome(id)) ?? meta;
+      }
+      return readAgentOutcome(this.docs, sourceScope, meta);
+    };
+    const agentMeta = await hydratePromotionAgent(opts.agentId, sourceMeta?.agents?.[opts.agentId]);
     if (agentMeta === undefined) {
       throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Agent "${opts.agentId}" does not exist in session ${sourceId}`, {
         details: { sessionId: sourceId, agentId: opts.agentId },
@@ -1812,13 +1822,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const descendantNodes = collectPromotedDescendantIds(sourceMeta?.agents, opts.agentId);
     const descendants: PromotedDescendantSource[] = [];
     for (const node of descendantNodes) {
+      const hydratedDescendantMeta = (await hydratePromotionAgent(node.agentId, node.agentMeta)) ?? node.agentMeta;
       const descendantSettled = sliceSettledAgentRecords(
         await this.readSourceWireRecords(sourceHandle, sourceId, node.agentId, false),
       );
       descendants.push({
         agentId: node.agentId,
         parentAgentId: node.parentAgentId,
-        agentMeta: node.agentMeta,
+        agentMeta: hydratedDescendantMeta,
         records: descendantSettled.records,
         lastTurnReason: descendantSettled.lastTurnReason,
         wasOpen: descendantSettled.wasOpen,
