@@ -6,7 +6,11 @@ import { createDecorator, type ServiceIdentifier, type ServicesAccessor } from '
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
@@ -118,6 +122,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   declare readonly _serviceBrand: undefined;
   private selected?: string;
   private initialized = false;
+  private releaseFlight?: Promise<void>;
   private readonly selections = new Map<string, Selection>();
   private readonly registrations = new Map<string, { dispose(): void }>();
   private readonly loadedCatalog = new Map<string, { backend: ReturnType<typeof catalogBackend>; tools: MCPToolDefinition[] }>();
@@ -143,12 +148,12 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
     this._store.ledger.register(async () => {
       await this.control.endTurn(caller);
-      if (caller.agentId !== MAIN_AGENT_ID) {
+      if (!this.isInteractiveConversationAgent()) {
         await this.control.releaseAgent?.(caller, this.session.sessionDir);
       }
     }, 'official-browser-turn-cleanup');
     this._register(eventBus.subscribe(TurnEnded, (event) => {
-      void this.control.endTurn(caller, event.turnId).catch(onUnexpectedError);
+      void this.onTurnEnded(caller, event.turnId).catch(onUnexpectedError);
     }));
     if (config.onDidSectionChange !== undefined) {
       this._register(config.onDidSectionChange(() => this.refreshLoaded()));
@@ -157,11 +162,61 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     if (capability !== undefined) this._register(capability.onDidChange(() => { this.refreshLoaded(); }));
   }
 
-  private optionalCapabilityPolicy(): IOptionalCapabilityPolicy | undefined {
+  private optionalService<T>(id: ServiceIdentifier<T>): T | undefined {
     try {
-      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+      return this.instantiation.invokeFunction((accessor) => accessor.get(id)) ?? undefined;
     } catch {
       return undefined;
+    }
+  }
+
+  private optionalCapabilityPolicy(): IOptionalCapabilityPolicy | undefined {
+    return this.optionalService(IOptionalCapabilityPolicy);
+  }
+
+  private isInteractiveConversationAgent(): boolean {
+    if (this.agent.agentId === MAIN_AGENT_ID || this.agent.isBranch === true) return true;
+    const meta = this.optionalService(ISessionMetadata)?.snapshot?.().agents?.[this.agent.agentId];
+    return meta?.type === 'main' || meta?.labels?.['branch'] === 'true';
+  }
+
+  private hasPendingOrActiveWork(): boolean {
+    const execution = this.optionalService(IAgentExecutionService);
+    if (execution !== undefined) {
+      const state = execution.status().state;
+      if (state !== 'idle' && state !== 'closed') return true;
+    }
+    const loop = this.optionalService(IAgentLoopService);
+    if (loop !== undefined) {
+      const status = loop.status();
+      if (status.state !== 'idle' || status.pendingTurnIds.length > 0 || status.hasPendingRequests) return true;
+    }
+    const prompts = this.optionalService(IAgentPromptService);
+    if (prompts !== undefined) {
+      const queue = prompts.list();
+      if (prompts.hasQueuedWork() || queue.active !== undefined || queue.launching !== undefined || queue.pending.length > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async onTurnEnded(caller: { readonly sessionId: string; readonly agentId: string }, turnId: number): Promise<void> {
+    await this.control.endTurn(caller, turnId);
+    if (this._store.isDisposed || this.isInteractiveConversationAgent() || this.releaseFlight !== undefined) return;
+    const flight = (async () => {
+      await this.optionalService(IAgentExecutionService)?.settled();
+      await this.optionalService(IAgentLoopService)?.settled();
+      await Promise.resolve();
+      await Promise.resolve();
+      if (this._store.isDisposed || this.isInteractiveConversationAgent() || this.hasPendingOrActiveWork()) return;
+      await this.control.releaseAgent?.(caller, this.session.sessionDir);
+    })();
+    this.releaseFlight = flight;
+    try {
+      await flight;
+    } finally {
+      if (this.releaseFlight === flight) this.releaseFlight = undefined;
     }
   }
 

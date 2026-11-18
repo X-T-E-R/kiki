@@ -17,13 +17,14 @@ import {
   resolveEgoCli, type EgoCliResolution,
 } from './resolveCli';
 import {
-  FINISH, OWNED, PAGE, PRELUDE, REFUSED, TABS, analyzeEgoScriptBindings, egoCleanupScript,
+  FINISH, OWNED, PAGE, PRELUDE, REFUSED, TABS, egoCleanupScript,
   egoNumericSpaceId, egoPrelude, egoProgram, type EgoBound,
 } from './script';
+import { analyzeEgoScriptBindings, type EgoScriptBindingAnalysis } from './scriptBindings';
 
 export {
   EGO_CLEANUP_TIMEOUT_MS, EGO_RUN_TIMEOUT_ENV, EGO_RUN_TIMEOUT_MS, analyzeEgoScriptBindings,
-  egoCleanupScript, egoNumericSpaceId, egoPrelude, egoProgram, type EgoBound,
+  egoCleanupScript, egoNumericSpaceId, egoPrelude, egoProgram, type EgoBound, type EgoScriptBindingAnalysis,
 };
 
 export interface EgoSpaceBinding {
@@ -160,7 +161,7 @@ async function writeSpaces(files: IHostFileSystem, sessionDir: string, value: Re
   await files.writeText(spaceFile(sessionDir), `${JSON.stringify(value)}\n`);
 }
 
-function sameLease(current: EgoSpaceBinding | undefined, started: EgoSpaceBinding): boolean {
+function sameLease(current: EgoSpaceBinding | undefined, started: EgoSpaceBinding): current is EgoSpaceBinding {
   return current !== undefined && current.connectionId === started.connectionId && current.name === started.name
     && (current.spaceId ?? undefined) === (started.spaceId ?? undefined);
 }
@@ -335,12 +336,31 @@ export class EgoBrowserRuntime {
     });
   }
 
-  private async deleteAgentLease(sessionDir: string, agentId: string, started: EgoSpaceBinding): Promise<void> {
+  private async reconcileAgentLease(
+    sessionDir: string,
+    agentId: string,
+    started: EgoSpaceBinding,
+    aliveIds: readonly number[],
+  ): Promise<void> {
     await withFile(spaceFile(sessionDir), async () => {
       const all = await readSpaces(this.files, sessionDir);
       const current = all[agentId];
       if (!sameLease(current, started)) return;
-      delete all[agentId];
+      const aliveSet = new Set(aliveIds);
+      const currentPrimary = egoNumericSpaceId(current.spaceId);
+      const nextPrimary = currentPrimary !== undefined && aliveSet.has(currentPrimary) ? String(currentPrimary) : undefined;
+      const remainingOwned = (current.ownedSpaceIds ?? []).filter((id) => aliveSet.has(id));
+      const ownedSpaceIds = remainingOwned.length > 0 ? remainingOwned : undefined;
+      if (nextPrimary === undefined && ownedSpaceIds === undefined) {
+        delete all[agentId];
+      } else {
+        all[agentId] = {
+          connectionId: current.connectionId,
+          name: current.name,
+          spaceId: nextPrimary,
+          ownedSpaceIds,
+        };
+      }
       await writeSpaces(this.files, sessionDir, all);
     });
   }
@@ -618,7 +638,10 @@ export class EgoBrowserRuntime {
             true,
           );
           if (result.code === 0) {
-            await this.deleteAgentLease(input.sessionDir, input.agentId, started);
+            const output = `${result.stdout}\n${result.stderr}`;
+            const finish = parseMarker(output, FINISH);
+            const stillAlive = finish?.closed === true ? [] : parseOwnedMarker(output);
+            await this.reconcileAgentLease(input.sessionDir, input.agentId, started, stillAlive);
             return true;
           }
           return false;

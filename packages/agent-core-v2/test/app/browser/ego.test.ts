@@ -24,13 +24,18 @@ import {
 } from '#/app/browser/ego/resolveCli';
 import {
   EGO_RUN_TIMEOUT_MS, EgoBrowserRuntime, EgoProbeTimeoutError, EgoRunTimeoutError,
-  analyzeEgoScriptBindings, egoArgv, egoNumericSpaceId, egoPrelude, egoProgram, egoReadyScript, egoTabBody,
+  egoArgv, egoNumericSpaceId, egoPrelude, egoProgram, egoReadyScript, egoTabBody,
 } from '#/app/browser/ego/runtime';
+import { analyzeEgoScriptBindings } from '#/app/browser/ego/scriptBindings';
 import { runEgoDetectionCommand } from '#/app/browser/ego/process';
 import { createDecorator } from '#/_base/di/instantiation';
 import { EventBusService } from '#/app/event/eventBusService';
 import { IEventBus } from '#/app/event/eventBus';
+import { TurnEnded } from '#/agent/loop/turnOps';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentPromptService, type PromptSnapshot } from '#/agent/prompt/prompt';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -1381,6 +1386,194 @@ describe('Ego Lite lazy script binding and subagent disposal cleanup', () => {
       expect(savedAfterMain['main']).toMatchObject({ spaceId: String(mainSpace.id) });
     } finally {
       await subScope.agentIx.dispose();
+      await mainScope.agentIx.dispose();
+      await appIx.dispose();
+    }
+  });
+
+  it('releases idle subagent Ego spaces immediately on TurnEnded while resident, keeping main, branches, queued follow-ups, and delegated spaces', async () => {
+    const defaults = createDecorator<{ readonly _serviceBrand: undefined; ready: Promise<string | undefined> }>('sessionBrowserDefault');
+    const sessionDir = 'C:/session';
+    const sim = createEgoSimulator();
+    const { files, fs } = memoryFs([versioned]);
+    const configs = new Map<string, BrowserResolvedConnection>([['ego-lite', connection]]);
+    const appIx = new TestInstantiationService();
+    appIx.stub(IFlagService, { enabled: () => true });
+    appIx.stub(IHostProcessService, simulatedProcessService(files, sim));
+    appIx.stub(IHostFileSystem, fs);
+    appIx.stub(IBrowserBackendFactory, { open: vi.fn() });
+    appIx.stub(IBrowserConnectionStore, {
+      list: async () => ({ connections: [browserConnectionRecord(connection)], defaultBrowser: 'ego-lite' }),
+      resolve: async (id: string) => {
+        const found = configs.get(id);
+        if (found === undefined) throw new BrowserError('browser.not_found', id);
+        return found;
+      },
+      upsert: async () => browserConnectionRecord(connection),
+      remove: async () => undefined,
+      setDefault: async () => undefined,
+      revealEndpoint: async () => undefined,
+    });
+    appIx.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
+    const control = appIx.get(IBrowserControlService);
+
+    const makeResidentAgent = (options: {
+      readonly agentId: string;
+      readonly isBranch?: boolean;
+      readonly metadataBranch?: boolean;
+      readonly hasQueued?: () => boolean;
+      readonly isActive?: () => boolean;
+      readonly loopSettled?: () => Promise<void>;
+    }) => {
+      const agentIx = new TestInstantiationService();
+      const fakeRuntime = new FakeRuntime({ workspaceId: 'w', runtimeId: 'local', generation: '1' }, { pathClass: 'win32' });
+      agentIx.stub(IBrowserControlService, control);
+      agentIx.stub(IBrowserConnectionStore, appIx.get(IBrowserConnectionStore));
+      agentIx.stub(defaults, { ready: Promise.resolve('ego-lite') });
+      agentIx.stub(IAgentScopeContext, { agentId: options.agentId, isBranch: options.isBranch });
+      agentIx.stub(ISessionContext, { sessionId: 's', sessionDir });
+      agentIx.stub(ISessionWorkspaceContext, { workDir: sessionDir, additionalDirs: [] });
+      agentIx.stub(IAgentRuntimeService, { inspect: () => fakeRuntime, prepareFor: async () => fakeRuntime });
+      agentIx.stub(ISessionMediaStore, {});
+      agentIx.stub(ISessionInteractionService, { hasConsumer: () => false });
+      agentIx.stub(IFlagService, { enabled: () => true });
+      agentIx.stub(IConfigService, { get: <T>() => ({ connections: { 'ego-lite': connection } }) as T });
+      agentIx.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
+      agentIx.stub(ISessionMetadata, {
+        snapshot: () => ({
+          id: 's',
+          createdAt: 1,
+          updatedAt: 1,
+          archived: false,
+          agents: options.metadataBranch === true
+            ? { [options.agentId]: { type: 'main', labels: { branch: 'true' } } }
+            : { [options.agentId]: { type: options.agentId === 'main' ? 'main' : 'sub' } },
+        }),
+      });
+      agentIx.stub(IAgentLoopService, {
+        settled: () => options.loopSettled?.() ?? Promise.resolve(),
+        status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false, activeTurnId: undefined, finalizing: false }),
+      });
+      const activePlaceholder = { id: 'p-finishing' } as PromptSnapshot;
+      const queuedPlaceholder = { id: 'p-next' } as PromptSnapshot;
+      agentIx.stub(IAgentPromptService, {
+        hasQueuedWork: () => options.hasQueued?.() === true,
+        list: () => ({
+          active: options.isActive?.() === true ? activePlaceholder : undefined,
+          pending: options.hasQueued?.() === true ? [queuedPlaceholder] : [],
+        }),
+      });
+      agentIx.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+      agentIx.set(IEventBus, new SyncDescriptor(EventBusService));
+      agentIx.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+      return {
+        agentIx,
+        bus: agentIx.get(IEventBus),
+        browser: agentIx.get(IAgentBrowserService) as AgentBrowserService,
+      };
+    };
+
+    let subHasQueuedFollowUp = true;
+    let subActiveDuringFinalization = false;
+    const mainScope = makeResidentAgent({ agentId: 'main' });
+    const branchScope = makeResidentAgent({ agentId: 'agent-branch-1', isBranch: true });
+    const metadataBranchScope = makeResidentAgent({ agentId: 'agent-branch-2', metadataBranch: true });
+    const subScope = makeResidentAgent({
+      agentId: 'agent-9',
+      hasQueued: () => subHasQueuedFollowUp,
+      isActive: () => subActiveDuringFinalization,
+      loopSettled: async () => {
+        await Promise.resolve();
+        subActiveDuringFinalization = false;
+      },
+    });
+    const delegatedSubScope = makeResidentAgent({ agentId: 'agent-10' });
+
+    try {
+      expect((await control.connect('ego-lite')).state).toBe('ready');
+      const ctx = { turnId: 1, toolCallId: 'call-1', signal: new AbortController().signal };
+
+      await mainScope.browser.egoRun({ browser: 'ego-lite', script: 'const p = await task.newPage(); await p.goto("https://example.com/main");' }, ctx.signal, ctx);
+      await branchScope.browser.egoRun({ browser: 'ego-lite', script: 'const p = await task.newPage(); await p.goto("https://example.com/branch-1");' }, ctx.signal, ctx);
+      await metadataBranchScope.browser.egoRun({ browser: 'ego-lite', script: 'const p = await task.newPage(); await p.goto("https://example.com/branch-2");' }, ctx.signal, ctx);
+      await subScope.browser.egoRun({ browser: 'ego-lite', script: 'const p = await task.newPage(); await p.goto("https://example.com/sub-turn-1");' }, ctx.signal, ctx);
+
+      const mainSpace = [...sim.spaces.values()].find((space) => space.name === egoSpaceName('s', 'main'))!;
+      const branchSpace = [...sim.spaces.values()].find((space) => space.name === egoSpaceName('s', 'agent-branch-1'))!;
+      const metadataBranchSpace = [...sim.spaces.values()].find((space) => space.name === egoSpaceName('s', 'agent-branch-2'))!;
+      const subSpaceTurn1 = [...sim.spaces.values()].find((space) => space.name === egoSpaceName('s', 'agent-9'))!;
+
+      mainScope.bus.publish(new TurnEnded({ turnId: 1, reason: 'completed' }));
+      branchScope.bus.publish(new TurnEnded({ turnId: 1, reason: 'completed' }));
+      metadataBranchScope.bus.publish(new TurnEnded({ turnId: 1, reason: 'completed' }));
+      subScope.bus.publish(new TurnEnded({ turnId: 1, reason: 'completed' }));
+      await new Promise<void>((resolve) => { setTimeout(resolve, 20); });
+
+      expect(mainSpace.closed).toBe(false);
+      expect(branchSpace.closed).toBe(false);
+      expect(metadataBranchSpace.closed).toBe(false);
+      expect(subSpaceTurn1.closed).toBe(false);
+
+      const reuseInTurn2 = await subScope.browser.egoRun({
+        browser: 'ego-lite',
+        script: 'await task.page("p1").goto("https://example.com/sub-turn-2");',
+      }, ctx.signal, { ...ctx, turnId: 2 });
+      expect(reuseInTurn2.isError).not.toBe(true);
+      expect([...sim.spaces.values()].filter((space) => space.name === egoSpaceName('s', 'agent-9'))).toHaveLength(1);
+
+      subHasQueuedFollowUp = false;
+      subActiveDuringFinalization = true;
+      subScope.bus.publish(new TurnEnded({ turnId: 2, reason: 'completed' }));
+      await vi.waitFor(() => {
+        expect(subSpaceTurn1.closed).toBe(true);
+      });
+      expect(mainSpace.closed).toBe(false);
+      expect(branchSpace.closed).toBe(false);
+      expect(metadataBranchSpace.closed).toBe(false);
+      const savedAfterTurn2 = JSON.parse(files.get(join(sessionDir, 'browser-ego-spaces.json')) ?? '{}') as Record<string, unknown>;
+      expect(savedAfterTurn2['agent-9']).toBeUndefined();
+      expect(savedAfterTurn2['main']).toMatchObject({ spaceId: String(mainSpace.id) });
+      expect(savedAfterTurn2['agent-branch-1']).toMatchObject({ spaceId: String(branchSpace.id) });
+      expect(savedAfterTurn2['agent-branch-2']).toMatchObject({ spaceId: String(metadataBranchSpace.id) });
+
+      const resumedTurn3 = await subScope.browser.egoRun({
+        browser: 'ego-lite',
+        script: 'const p = await task.newPage(); await p.goto("https://example.com/sub-resumed");',
+      }, ctx.signal, { ...ctx, turnId: 3 });
+      expect(resumedTurn3.isError).not.toBe(true);
+      const subSpaceTurn3 = [...sim.spaces.values()].find((space) => space.name === egoSpaceName('s', 'agent-9') && !space.closed)!;
+      expect(subSpaceTurn3).toBeDefined();
+      expect(subSpaceTurn3.id).not.toBe(subSpaceTurn1.id);
+
+      subScope.bus.publish(new TurnEnded({ turnId: 3, reason: 'completed' }));
+      await vi.waitFor(() => {
+        expect(subSpaceTurn3.closed).toBe(true);
+      });
+
+      await delegatedSubScope.browser.egoRun({
+        browser: 'ego-lite',
+        script: 'const p = await task.newPage(); await p.goto("https://example.com/login"); const scratch = await taskSpace("sub-scratch-space"); console.log(scratch.spaceId);',
+      }, ctx.signal, ctx);
+      const delegatedPrimary = [...sim.spaces.values()].find((space) => space.name === egoSpaceName('s', 'agent-10'))!;
+      const delegatedScratch = [...sim.spaces.values()].find((space) => space.name === 'sub-scratch-space')!;
+      delegatedPrimary.ownership = 'agentDelegatedToUser';
+
+      delegatedSubScope.bus.publish(new TurnEnded({ turnId: 1, reason: 'completed' }));
+      await vi.waitFor(() => {
+        expect(delegatedScratch.closed).toBe(true);
+      });
+      expect(delegatedPrimary.closed).toBe(false);
+      const savedAfterDelegated = JSON.parse(files.get(join(sessionDir, 'browser-ego-spaces.json')) ?? '{}') as Record<string, unknown>;
+      expect(savedAfterDelegated['agent-10']).toEqual({
+        connectionId: 'ego-lite',
+        name: egoSpaceName('s', 'agent-10'),
+        spaceId: String(delegatedPrimary.id),
+      });
+    } finally {
+      await delegatedSubScope.agentIx.dispose();
+      await subScope.agentIx.dispose();
+      await metadataBranchScope.agentIx.dispose();
+      await branchScope.agentIx.dispose();
       await mainScope.agentIx.dispose();
       await appIx.dispose();
     }
