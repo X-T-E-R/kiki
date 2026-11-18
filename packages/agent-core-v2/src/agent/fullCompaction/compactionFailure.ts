@@ -4,19 +4,34 @@ import {
   APIProviderQuotaExhaustedError,
   APIStatusError,
   isRetryableBufferedRequestError,
+  isSafetyProviderErrorCode,
+  readUpstreamSafetySubCode,
 } from '#/kosong/contract/errors';
 import { isAbortError } from '#/_base/utils/abort';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { isCodedError, toErrorDisplayMessage, toErrorPayload, unwrapErrorCause } from '#/errors';
 
+export function isStreamedSafetyRefusalText(text: string): boolean {
+  return text.includes("This request was blocked by Gemini's filters.") && text.includes('generative-ai/use-policy');
+}
+
 export function compactionFailureKind(error: unknown): 'filtered' | 'auth' | 'quota' | 'timeout' | 'upstream' {
+  const topDetails = typeof error === 'object' && error !== null ? toErrorPayload(error).details : undefined;
+  if (topDetails?.['compaction_stream_filtered'] === true) return 'filtered';
+  const topSubCode = readUpstreamSafetySubCode(topDetails);
+  if (topSubCode !== undefined && isSafetyProviderErrorCode(topSubCode)) return 'filtered';
   const cause = unwrapErrorCause(error);
   if (cause instanceof APIEmptyResponseError && cause.finishReason === 'filtered') return 'filtered';
   if (isCodedError(cause) && cause.code === 'provider.filtered') return 'filtered';
   const details = typeof cause === 'object' && cause !== null ? toErrorPayload(cause).details : undefined;
-  if (details?.['upstreamErrorCode'] === 'antigravity_safety') return 'filtered';
+  if (details?.['compaction_stream_filtered'] === true) return 'filtered';
+  const upstreamErrorCode = typeof details?.['upstreamErrorCode'] === 'string' ? details['upstreamErrorCode'].trim() : '';
+  if (upstreamErrorCode.length > 0 && isSafetyProviderErrorCode(upstreamErrorCode)) return 'filtered';
+  const subCode = readUpstreamSafetySubCode(details);
+  if (subCode !== undefined && isSafetyProviderErrorCode(subCode)) return 'filtered';
   const status = cause instanceof APIStatusError ? cause : undefined;
-  if (/CONTENT_FILTERED|content[_-]?filter/i.test(status?.message ?? '')) return 'filtered';
+  const message = status?.message ?? (cause instanceof Error ? cause.message : '');
+  if (/CONTENT_FILTERED|content[_-]?filter|soft safety filter block|blocked by gemini's filters|safety filter blocks/i.test(message)) return 'filtered';
   if (status?.statusCode === 401 || status?.statusCode === 403) return 'auth';
   if (cause instanceof APIProviderQuotaExhaustedError ||
       /(?:insufficient_quota|quota[_ -]?(?:exceeded|exhausted)|billing[_ -]?(?:limit|exhausted))/i.test(status?.message ?? '')) return 'quota';

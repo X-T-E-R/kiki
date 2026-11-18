@@ -753,4 +753,36 @@ describe('relay gate fixtures', () => {
     expect(live.tokens).toBeGreaterThan(0);
     expect(live.tokens).toBeLessThanOrEqual(32_000);
   });
+
+  it('stops on attempt 1 and rescues automatic compaction via relay when buffered summary hits Gemini soft safety stream cut', async () => {
+    let attempts = 0;
+    const ctx = testAgent({
+      initialConfig: { providers: {}, loopControl: { contextStrategy: 'summarize', compactionMaxAttempts: 3 } },
+      generate: async (_chat, _system, _tools, _history, callbacks) => {
+        attempts += 1;
+        await callbacks?.onMessagePart?.({
+          type: 'text',
+          text: "Partial summary.\nThis request was blocked by Gemini's filters. Learn more at https://cloud.google.com/vertex-ai/generative-ai/use-policy",
+        });
+        const error = markProviderEventError(new APIStatusError(502, 'Upstream stream ended before a terminal event'), 'gateway_stream_terminal_error');
+        throw error;
+      },
+    });
+    try {
+      await stalledWindow(ctx);
+      const service = ctx.get(IAgentFullCompactionService);
+      expect(service.begin({ source: 'auto' })).toBe(true);
+      const result = await service.compacting!.promise;
+      expect(attempts).toBe(1);
+      expect(result).toMatchObject({
+        strategy: 'relay',
+        fallbackFrom: 'summarize',
+        reasonCodes: expect.arrayContaining(['summarize_failed_relay_rescue']),
+      });
+      expect(JSON.stringify(await ctx.persistedWireRecords())).not.toContain("blocked by Gemini's filters");
+      await ctx.expectResumeMatches();
+    } finally {
+      await ctx.dispose();
+    }
+  });
 });

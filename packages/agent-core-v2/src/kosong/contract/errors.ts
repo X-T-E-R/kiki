@@ -370,9 +370,37 @@ export function noteConfirmedRequestExecution(error: unknown): void {
   noteRequestDelivery(error, 'confirmed');
 }
 
+export function isSafetyProviderErrorCode(code: string): boolean {
+  return (
+    code === 'antigravity_safety' ||
+    code === 'antigravity_soft_safety' ||
+    code.startsWith('antigravity_safety_') ||
+    code.startsWith('antigravity_soft_safety_') ||
+    code === 'antigravity_session_safety_circuit'
+  );
+}
+
+export function readUpstreamSafetySubCode(details: Readonly<Record<string, unknown>> | undefined): string | undefined {
+  if (details === undefined) return undefined;
+  if (typeof details['upstream_code'] === 'string') return details['upstream_code'].trim();
+  const upstream = details['upstreamDetails'];
+  if (typeof upstream === 'object' && upstream !== null) {
+    const direct = (upstream as Record<string, unknown>)['upstream_code'];
+    if (typeof direct === 'string') return direct.trim();
+    const nested = (upstream as Record<string, unknown>)['error'];
+    if (typeof nested === 'object' && nested !== null && typeof (nested as Record<string, unknown>)['upstream_code'] === 'string') {
+      return ((nested as Record<string, unknown>)['upstream_code'] as string).trim();
+    }
+  }
+  return undefined;
+}
+
 const NON_CONTINUABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'antigravity_thinking_only',
   'antigravity_safety',
+  'antigravity_soft_safety',
+  'antigravity_safety_streak_aborted',
+  'antigravity_session_safety_circuit',
   'antigravity_malformed_response',
   'antigravity_upstream_terminal_error',
 ]);
@@ -477,10 +505,13 @@ function isRetryableProviderFailure(error: unknown, mode: 'generation' | 'interr
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
     visited.add(current);
     const details = providerErrorMetadata(current);
-    if (mode === 'buffered' ? details['retry_policy_veto'] === true : details['retry'] === false || details['upstream_retryable'] === false) return false;
+    if (mode === 'buffered' ? details['retry_policy_veto'] === true || details['compaction_stream_filtered'] === true : details['retry'] === false || details['upstream_retryable'] === false) return false;
     if (mode === 'generation' && details['request_output'] === 'observed') return false;
     const code = details['upstreamErrorCode'];
-    if (typeof code === 'string' && (mode === 'buffered' ? code === 'antigravity_safety' : NON_RETRYABLE_PROVIDER_CODES.has(code))) return false;
+    const subCode = readUpstreamSafetySubCode(details);
+    if (typeof code === 'string' && (mode === 'buffered' ? isSafetyProviderErrorCode(code) : NON_RETRYABLE_PROVIDER_CODES.has(code) || isSafetyProviderErrorCode(code))) return false;
+    if (typeof subCode === 'string' && isSafetyProviderErrorCode(subCode)) return false;
+    if (mode === 'buffered' && current instanceof Error && /soft safety filter block|blocked by gemini's filters|safety filter blocks/i.test(current.message)) return false;
     if (mode === 'buffered') {
       if (current instanceof ChatProviderError &&
         (current.code === PROVIDER_FILTERED_ERROR_CODE || current.code === PROVIDER_AUTH_ERROR_CODE || current instanceof APIProviderQuotaExhaustedError)) return false;

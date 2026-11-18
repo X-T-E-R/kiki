@@ -83,6 +83,25 @@ describe('compaction-only retry classification', () => {
     noteExecutedRequestDelivery(safety);
     expect(compactionFailureKind(safety)).toBe('filtered');
     expect(isRetryableCompactionError(safety)).toBe(false);
+
+    const softSafetyCut = markProviderEventError(
+      attachErrorDetails(new ChatProviderError('Upstream stream ended after Gemini soft safety filter block'), {
+        upstreamStatus: 502,
+        upstream_retryable: false,
+        upstreamDetails: { error: { upstream_code: 'antigravity_soft_safety_stream_cut' } },
+      }),
+      'gateway_stream_terminal_error',
+    );
+    expect(compactionFailureKind(softSafetyCut)).toBe('filtered');
+    expect(isRetryableCompactionError(softSafetyCut)).toBe(false);
+
+    const streamFiltered = attachErrorDetails(
+      markProviderEventError(new APIStatusError(502, 'Upstream stream ended before a terminal event'), 'gateway_stream_terminal_error'),
+      { compaction_stream_filtered: true },
+    );
+    expect(compactionFailureKind(streamFiltered)).toBe('filtered');
+    expect(isRetryableCompactionError(streamFiltered)).toBe(false);
+
     for (const status of [400, 401, 403, 404, 422]) {
       const error = attachErrorDetails(new ChatProviderError('rejected'), { upstreamStatus: status });
       expect(isRetryableCompactionError(error)).toBe(false);

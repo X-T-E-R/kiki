@@ -54,7 +54,7 @@ import { inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
 import type { CompactionFailedEvent, CompactionFinishedEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import { ErrorCodes, Error2, isCodedError, isError2, toKimiErrorPayload } from "#/errors";
+import { attachErrorDetails, ErrorCodes, Error2, isCodedError, isError2, toKimiErrorPayload, unwrapErrorCause } from "#/errors";
 import { AgentErrorEvent } from '#/agent/mcp/mcpEvents';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import compactionInstructionTemplate from './compaction-instruction.md?raw';
@@ -85,7 +85,7 @@ import { OrderedHookSlot } from '#/hooks';
 import { resolveAutoCompact, type ResolvedAutoCompact } from './autoCompact';
 import { AutoCompactOverrideChanged, autoCompactOverrideKey } from './autoCompactOps';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
-import { describeCompactionFailure, isRetryableCompactionError } from './compactionFailure';
+import { compactionFailureKind, describeCompactionFailure, isRetryableCompactionError, isStreamedSafetyRefusalText } from './compactionFailure';
 
 export const MAX_COMPACTION_RETRY_ATTEMPTS = 3;
 const DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS = 128 * 1024;
@@ -906,10 +906,39 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     }
   }
 
-  private startSummaryRequest(messages: readonly Message[], maxOutputSize: number, signal: AbortSignal, turnId?: number, droppedCount = 0) {
-    return this.llmRequester.start({ messages, maxOutputSize, source: {
-      type: 'operation', turnId, requestKind: 'full_compaction', logFields: { droppedCount },
-    } }, undefined, signal);
+  private async runSummaryRequest(messages: readonly Message[], maxOutputSize: number, signal: AbortSignal, active?: ActiveCompaction, droppedCount = 0): Promise<AgentLLMRequestFinish> {
+    let rollingText = '';
+    let sawFilterMarkerA = false;
+    let sawFilterMarkerB = false;
+    const request = this.llmRequester.start({
+      messages,
+      maxOutputSize,
+      source: {
+        type: 'operation',
+        turnId: active?.originTurnId,
+        requestKind: 'full_compaction',
+        logFields: { droppedCount },
+      },
+    }, (part) => {
+      if (part.type !== 'text' || part.text.length === 0) return;
+      const combined = rollingText + part.text;
+      if (!sawFilterMarkerA && combined.includes("This request was blocked by Gemini's filters.")) sawFilterMarkerA = true;
+      if (!sawFilterMarkerB && combined.includes('generative-ai/use-policy')) sawFilterMarkerB = true;
+      rollingText = combined.length > 512 ? combined.slice(-512) : combined;
+    }, signal);
+    if (active !== undefined) active.trace = request.trace;
+    try {
+      return await request.result;
+    } catch (error) {
+      if (sawFilterMarkerA && sawFilterMarkerB && typeof error === 'object' && error !== null) {
+        attachErrorDetails(error, { compaction_stream_filtered: true });
+        const cause = unwrapErrorCause(error);
+        if (typeof cause === 'object' && cause !== null && cause !== error) {
+          attachErrorDetails(cause, { compaction_stream_filtered: true });
+        }
+      }
+      throw error;
+    }
   }
 
   async prepareModelSwitchSummary(history: readonly ContextMessage[], signal: AbortSignal, onSummarizing?: () => void | Promise<void>): Promise<string | undefined> {
@@ -939,8 +968,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     while (true) {
       signal.throwIfAborted();
       try {
-        const request = this.startSummaryRequest(messages, model.maxOutputSize ?? DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS, signal);
-        const attempt = collectSummary(await request.result);
+        const attempt = collectSummary(await this.runSummaryRequest(messages, model.maxOutputSize ?? DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS, signal));
         this.telemetry.track2('compaction_finished', {
           source: 'manual', tokens_before: tokensBefore, tokens_after: this.tokenCounting.estimateText(attempt.summary),
           duration_ms: Date.now() - startedAt, compacted_count: history.length, retry_count: retryCount, round: 1,
@@ -1143,9 +1171,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         requestAttempts += 1;
 
         try {
-          const request = this.startSummaryRequest(messages, compactionMaxOutputSize, signal, active.originTurnId, droppedCount);
-          active.trace = request.trace;
-          attempt = collectSummary(await request.result);
+          attempt = collectSummary(await this.runSummaryRequest(messages, compactionMaxOutputSize, signal, active, droppedCount));
           break;
         } catch (error) {
           if (isAbortError(error) || signal.aborted) throw error;
@@ -1196,13 +1222,45 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       }
       } catch (error) {
         if (error instanceof CompactionPersistError || isAbortError(error) || signal.aborted) throw error;
-        if (choice.strategy === 'summarize' || !eligibility.safe || customInstruction ||
-            !(this.shouldRecoverFromContextOverflow(error) || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError)) throw error;
+        const filteredFailure = compactionFailureKind(error) === 'filtered';
+        const allowAutoFilteredRelay = data.source === 'auto' && requested !== 'summarize' && filteredFailure;
+        if ((choice.strategy === 'summarize' && !allowAutoFilteredRelay) || customInstruction ||
+            !(this.shouldRecoverFromContextOverflow(error) || isRetryableCompactionError(error) || error instanceof CompactionTruncatedError || filteredFailure)) throw error;
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;
-        const rescueReasons = selectionReasons(requestedStrategy, selectionSource, [...reasons, 'summarize_failed_relay_rescue']);
-        const summary = withPreservedIndex(renderRelay({ ...relayInput, compactCount: relayCompactCount > 0 ? relayCompactCount : compactCount }));
+        const targetCompactCount = relayCompactCount > 0 ? relayCompactCount : compactCount;
+        let rescueSummary = relaySummary;
+        if (rescueSummary === undefined && !renderFailed) {
+          try {
+            rescueSummary = withPreservedIndex(renderRelay({ ...relayInput, compactCount: targetCompactCount }));
+          } catch {
+            throw error;
+          }
+        }
+        const rescueEligibility = choice.strategy === 'summarize' && !choice.shadow && rescueSummary !== undefined
+          ? evaluateFreshEligibility({
+            history: originalHistory, compactCount: targetCompactCount, notes: notes.notes, meta: notes.meta,
+            windowEpoch: epoch, strategy: 'auto', threshold: autoCompact.tokens,
+            projectedTokens: buildContextCompactionShape(originalHistory, {
+              summary: rescueSummary, compactedCount: targetCompactCount, tokensBefore,
+              requestOverheadTokens: this.requestTokens([]),
+            }).tokensAfter,
+            instruction: customInstruction,
+            historyAvailable: historyToolAvailable('HistoryRead'),
+            historyReadAvailable: historyToolAvailable('HistoryRead'),
+            windowTokens: autoCompact.effectiveMaxContextTokens,
+            outputReserve: autoCompact.reservedContextTokens,
+            tokensBefore,
+            estimateMessage: (message) => this.tokenCounting.estimateMessage(message),
+            estimateText: relayInput.estimateText, sessionId: relayInput.sessionId, agentId: relayInput.agentId,
+          })
+          : eligibility;
+        if (!rescueEligibility.safe || rescueSummary === undefined) throw error;
+        const rescueReasons = selectionReasons(requestedStrategy, selectionSource, [...rescueEligibility.reasons, 'summarize_failed_relay_rescue']);
+        const summary = choice.strategy === 'summarize'
+          ? rescueSummary
+          : withPreservedIndex(renderRelay({ ...relayInput, compactCount: targetCompactCount }));
         attemptedStrategy = 'relay';
-        const result = await this.commitCompaction(active, { summary, contextSummary: summary, compactedCount: relayCompactCount > 0 ? relayCompactCount : compactCount,
+        const result = await this.commitCompaction(active, { summary, contextSummary: summary, compactedCount: targetCompactCount,
           tokensBefore, requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
           reasonCodes: rescueReasons, fallbackFrom: 'summarize' });
         this.telemetry.track2('compaction_finished', { source: data.source, turn_id: active.originTurnId,
@@ -1365,6 +1423,12 @@ function collectSummary(finish: AgentLLMRequestFinish): CompactionAttemptResult 
   if (summary.length === 0) {
     throw new APIEmptyResponseError(
       'The compaction response did not contain a non-empty summary.',
+    );
+  }
+  if (isStreamedSafetyRefusalText(summary)) {
+    throw new APIEmptyResponseError(
+      'The compaction response was blocked by provider content filters.',
+      { finishReason: 'filtered' },
     );
   }
 
