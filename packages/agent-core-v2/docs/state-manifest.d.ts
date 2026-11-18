@@ -2842,11 +2842,13 @@ export interface AgentStateSnapshot {
   // replayable · durable — folds: LlmToolsSnapshot, LlmRequest
   'llm.requestTrace': /* LlmRequestTraceState — packages/agent-core-v2/src/agent/llmRequester/llmRequestOps.ts */ {
     readonly seenToolsHashes: readonly string[];
+    readonly seenSystemPromptHashes?: readonly string[];
     readonly advertisedProfiles?: readonly {
       readonly name: string;
       readonly line: string;
       readonly signature: string;
     }[];
+    readonly advertisedProfilesHash?: string;
     readonly lastRequest?: {
       system_prompt_hash: string;
       tools_hash: string;

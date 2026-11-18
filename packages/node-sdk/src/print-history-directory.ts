@@ -5,6 +5,7 @@ import { IBootstrapService, IAgentLifecycleService, ISessionContext, ISessionInd
 import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor, type IHistoryDirectory, type HistoryDirectoryRequest, type HistoryDirectoryPage, type HistoryDirectoryTurn } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
 import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, isPlainAgentId } from '@kiki/transcript';
 import { streamWireRecords } from '@kiki/transcript-live/wireRecords';
+import { openPersistedJournal } from '#/retained-session';
 
 const MAX_BYTES = 2 << 20;
 const MAX_RECORDS = 10_000;
@@ -67,10 +68,22 @@ export function createPrintHistoryDirectory(getApp: () => Scope): IHistoryDirect
         const agent = live?.accessor.get(IAgentLifecycleService).get(agentId);
         await agent?.accessor.get(IWireService).flush();
         signal?.throwIfAborted();
-        const read = await streamWireRecords(join(sessionDir, 'agents', agentId, 'wire.jsonl'), {
-          maxBytes: MAX_BYTES, maxRecords: MAX_RECORDS, maxLineBytes: MAX_LINE_BYTES, chunkBytes: 64 << 10, signal,
-          onRecord: (record) => reducer.apply(adapter.add(record)),
-        });
+        const wirePath = join(sessionDir, 'agents', agentId, 'wire.jsonl');
+        const journal = await openPersistedJournal(wirePath, signal);
+        let read;
+        try {
+          read = await streamWireRecords(wirePath, {
+            maxBytes: MAX_BYTES,
+            maxRecords: MAX_RECORDS,
+            maxLineBytes: MAX_LINE_BYTES,
+            chunkBytes: 64 << 10,
+            signal,
+            byteSource: journal,
+            onRecord: (record) => reducer.apply(adapter.add(record)),
+          });
+        } finally {
+          await journal?.close().catch(() => undefined);
+        }
         reducer.apply(adapter.finish());
         const all: HistoryDirectoryTurn[] = transcript.snapshot().items.flatMap((item) => item.kind !== 'turn' ? [] : [{
           turn: item.ordinal, startedAt: item.startedAt, promptExcerpt: excerpt(item.prompt),

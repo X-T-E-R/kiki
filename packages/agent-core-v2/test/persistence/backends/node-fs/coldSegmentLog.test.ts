@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { deflateRawSync } from 'node:zlib';
 
@@ -15,9 +15,18 @@ import { scanSessionWire } from '#/app/sessionExport/wire-scan';
 import { type AppendLogStore, coldManifestKey } from '#/persistence/backends/node-fs/appendLogStore';
 import { createTestAppendLogStore } from '../../interface/stubs';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { allocatedFileBytes, closeSparseFileWorker } from '#/persistence/backends/node-fs/sparseFile';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
-import { COLD_SEGMENT_BYTES, openPinnedLogicalRead, readLogicalBytes, withColdExclusive } from '#/persistence/coldSegmentLog';
-import { sealRetainedJournal } from '#/persistence/retainedJournal';
+import { COLD_SEGMENT_BYTES, openPinnedLogicalRead, readLogicalBytes, unsealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
+import {
+  compactRetainedJournal,
+  sealRetainedJournal,
+  unsealRetainedJournal,
+} from '#/persistence/retainedJournal';
+import { ColdCompactionService } from '#/app/coldCompaction/coldCompactionService';
+import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import type { ISessionIndex, SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import type { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { StorageErrors, type StorageReadOptions, type StorageReadRange, type StorageWriteOptions } from '#/persistence/interface/storage';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
@@ -803,4 +812,237 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('compacts zstd format-2 journals with sparse reclamation, incremental segment reuse, checkpoint boundary sparing, and SHA-256 verified unseal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-zstd-sparse-'));
+    const sessionDir = join(root, 'session');
+    const agentDir = join(sessionDir, 'agents', 'main');
+    const wirePath = join(agentDir, KEY);
+    try {
+      await mkdir(join(agentDir, 'replay-checkpoints'), { recursive: true });
+      const lines: Buffer[] = [];
+      let checkpointWireSize = 0;
+      let runningBytes = 0;
+      for (let i = 0; i < 180; i += 1) {
+        const record = Buffer.from(`${JSON.stringify({
+          type: 'note',
+          id: `rec-${i}`,
+          body: `REPEATED_SYSTEM_PROMPT_BLOCK_${'ABCD1234'.repeat(420)}_${i}`,
+        })}\n`);
+        lines.push(record);
+        runningBytes += record.byteLength;
+        if (i === 95) checkpointWireSize = runningBytes;
+      }
+      const initialBytes = Buffer.concat(lines);
+      expect(initialBytes.byteLength).toBeGreaterThan(550 * 1024);
+      const checkpointBoundaryExpected = initialBytes.subarray(checkpointWireSize - 4096, checkpointWireSize);
+      await writeFile(wirePath, initialBytes);
+      await writeFile(
+        join(agentDir, 'replay-checkpoints', 'engine-v1'),
+        JSON.stringify({
+          format: 1,
+          replayAbi: 3,
+          wire: { size: checkpointWireSize, mtimeMs: 12345 },
+          stateNames: [],
+          graph: { nodes: [] },
+        }),
+      );
+
+      const statBefore = await stat(wirePath, { bigint: true });
+      const compacted1 = await compactRetainedJournal(wirePath, {
+        segmentBytes: 128 * 1024,
+        hotTailBytes: 64 * 1024,
+      });
+      expect(compacted1.skipped).toBe(false);
+      expect(compacted1.seal?.format).toBe(2);
+      expect(compacted1.seal?.codec).toBe('zstd');
+      expect(compacted1.seal?.level).toBe(3);
+
+      const statAfter = await stat(wirePath, { bigint: true });
+      expect(statAfter.ino).toBe(statBefore.ino);
+      expect(statAfter.size).toBe(statBefore.size);
+      expect(statAfter.mtimeNs).toBe(statBefore.mtimeNs);
+      expect(statAfter.ctimeNs).toBe(statBefore.ctimeNs);
+
+      if (process.platform === 'win32') {
+        expect(compacted1.seal?.originalRetained).toBe(false);
+        expect((compacted1.seal?.sparseRanges.length ?? 0)).toBeGreaterThan(0);
+        expect(compacted1.physicalBytesAfter).toBeLessThan(Math.floor(compacted1.physicalBytesBefore * 0.6));
+
+        const rawOnDisk = await readFile(wirePath);
+        expect(rawOnDisk.subarray(0, 65536)).toEqual(initialBytes.subarray(0, 65536));
+        expect(rawOnDisk.subarray(compacted1.seal!.sealedCut)).toEqual(initialBytes.subarray(compacted1.seal!.sealedCut));
+        expect(rawOnDisk.subarray(checkpointWireSize - 4096, checkpointWireSize)).toEqual(checkpointBoundaryExpected);
+        expect(rawOnDisk.subarray(65536, 131072).every((byte) => byte === 0)).toBe(true);
+      }
+
+      const storage = new FileStorageService(sessionDir);
+      const log = createTestAppendLogStore(storage);
+      disposables.add(log);
+      try {
+        expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(initialBytes);
+
+        for (let j = 0; j < 80; j += 1) {
+          log.append(SCOPE, KEY, {
+            type: 'note',
+            id: `appended-${j}`,
+            body: `APPENDED_BLOCK_${'WXYZ9876'.repeat(420)}_${j}`,
+          } as unknown as WireRecord);
+        }
+        await log.flush();
+      } finally {
+        await log.dispose();
+        await storage.close();
+      }
+
+      const expectedAfterAppend = Buffer.concat([
+        initialBytes,
+        Buffer.from(
+          Array.from({ length: 80 }, (_, j) => `${JSON.stringify({
+            type: 'note',
+            id: `appended-${j}`,
+            body: `APPENDED_BLOCK_${'WXYZ9876'.repeat(420)}_${j}`,
+          })}\n`).join(''),
+        ),
+      ]);
+
+      const compacted2 = await compactRetainedJournal(wirePath, {
+        segmentBytes: 128 * 1024,
+        hotTailBytes: 64 * 1024,
+      });
+      expect(compacted2.skipped).toBe(false);
+      expect((compacted2.seal?.reusedSegmentCount ?? 0)).toBeGreaterThan(0);
+      expect(compacted2.seal!.sealedCut).toBeGreaterThan(compacted1.seal!.sealedCut);
+      expect((compacted2.seal?.segmentCount ?? 0)).toBeGreaterThan(compacted1.seal?.segmentCount ?? 0);
+
+      const noopCompact = await compactRetainedJournal(wirePath, {
+        segmentBytes: 128 * 1024,
+        hotTailBytes: 64 * 1024,
+      });
+      expect(noopCompact.seal?.reusedSegmentCount).toBe(compacted2.seal?.segmentCount);
+
+      const unsealed = await unsealRetainedJournal(wirePath);
+      expect(unsealed.hadManifest).toBe(true);
+      if (process.platform === 'win32') {
+        expect(unsealed.restoredOriginal).toBe(true);
+        expect(unsealed.verifiedSegments).toBe(compacted2.seal?.segmentCount);
+      }
+      const restoredDiskBytes = await readFile(wirePath);
+      expect(createHash('sha256').update(restoredDiskBytes).digest('hex')).toBe(
+        createHash('sha256').update(expectedAfterAppend).digest('hex'),
+      );
+      await expect(stat(`${wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('refuses to overwrite wire.jsonl or delete segments on unseal when a cold zstd segment is corrupted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-zstd-corrupt-'));
+    const sessionDir = join(root, 'session');
+    const agentDir = join(sessionDir, 'agents', 'main');
+    const wirePath = join(agentDir, KEY);
+    try {
+      await mkdir(agentDir, { recursive: true });
+      const payload = Buffer.from(
+        Array.from({ length: 120 }, (_, i) => `${JSON.stringify({
+          type: 'note',
+          id: `item-${i}`,
+          text: 'CORRUPT_GUARD_PAYLOAD_'.repeat(160),
+        })}\n`).join(''),
+      );
+      await writeFile(wirePath, payload);
+      const compacted = await compactRetainedJournal(wirePath, {
+        segmentBytes: 128 * 1024,
+        hotTailBytes: 64 * 1024,
+      });
+      expect(compacted.skipped).toBe(false);
+      const segRoot = `${wirePath}.segments`;
+      const [sealDir] = await readdir(segRoot);
+      const [firstSeg] = await readdir(join(segRoot, sealDir!));
+      const firstSegPath = join(segRoot, sealDir!, firstSeg!);
+      const fh = await open(firstSegPath, 'r+');
+      try {
+        await fh.write(Buffer.from([0xff, 0x00, 0xaa, 0x55]), 0, 4, 0);
+      } finally {
+        await fh.close();
+      }
+      const storage = new FileStorageService(sessionDir);
+      try {
+        await expect(
+          unsealColdSegments(storage, SCOPE, KEY, { forceRestoreOriginal: true }),
+        ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED });
+      } finally {
+        await storage.close();
+      }
+      expect((await stat(`${wirePath}.segments.json`)).isFile()).toBe(true);
+      expect((await stat(firstSegPath)).isFile()).toBe(true);
+    } finally {
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('runs idle cold compaction only on quiescent unlocked sessions and restores cleanly on unsealSession', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'cold-idle-service-'));
+    const wsId = 'wd_idle_test';
+    const coldSessionId = 'session_11111111-1111-4111-8111-111111111111';
+    const hotSessionId = 'session_22222222-2222-4222-8222-222222222222';
+    const coldWirePath = join(homeDir, 'sessions', wsId, coldSessionId, 'agents', 'sub-1', KEY);
+    const hotWirePath = join(homeDir, 'sessions', wsId, hotSessionId, 'agents', 'sub-1', KEY);
+    const body = Buffer.from(
+      Array.from({ length: 120 }, (_, i) => `${JSON.stringify({
+        type: 'note',
+        id: `idle-${i}`,
+        text: 'IDLE_COMPACTION_PAYLOAD_'.repeat(160),
+      })}\n`).join(''),
+    );
+    const storage = new FileStorageService(homeDir);
+    let service: ColdCompactionService | undefined;
+    try {
+      await mkdir(join(homeDir, 'sessions', wsId, coldSessionId, 'agents', 'sub-1'), { recursive: true });
+      await mkdir(join(homeDir, 'sessions', wsId, hotSessionId, 'agents', 'sub-1'), { recursive: true });
+      await writeFile(coldWirePath, body);
+      await writeFile(hotWirePath, body);
+
+      const now = Date.now();
+      const summaries: SessionSummary[] = [
+        { id: hotSessionId, workspaceId: wsId, createdAt: now - 10_000, updatedAt: now - 5_000, archived: false },
+        { id: coldSessionId, workspaceId: wsId, createdAt: now - 7_200_000, updatedAt: now - 3_600_000, archived: false },
+      ];
+      const bootstrap = {
+        scope: (domain: string) => domain,
+      } as unknown as IBootstrapService;
+      const index = {
+        get: async (id: string) => summaries.find((item) => item.id === id),
+        listRecent: async () => ({ items: summaries }),
+      } as unknown as ISessionIndex;
+      const manager = {
+        get: () => undefined,
+        withLifecycleSerialization: async <T>(_id: string, work: () => Promise<T>) => work(),
+      } as unknown as ISessionManager;
+
+      service = new ColdCompactionService(bootstrap, storage, index, manager, {
+        get: () => ({ enabled: false, minIdleAgeMs: 1_800_000, maxSessionsPerSweep: 1, reclaimSparse: true }),
+      } as never);
+
+      const count = await service.runIdlePass();
+      if (process.platform === 'win32') {
+        expect(count).toBe(1);
+        expect(await allocatedFileBytes(coldWirePath)).toBeLessThan(body.byteLength);
+      }
+      expect((await stat(`${coldWirePath}.segments.json`)).isFile()).toBe(true);
+      await expect(stat(`${hotWirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const unsealed = await service.unsealSession(coldSessionId);
+      expect(unsealed?.unsealedJournals).toBe(1);
+      expect(await readFile(coldWirePath)).toEqual(body);
+    } finally {
+      await service?.dispose();
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

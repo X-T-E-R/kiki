@@ -157,4 +157,62 @@ describe('kiki session seal', () => {
     expect(await readFile(wirePath)).toEqual(journal);
     await expect(stat(join(sessionDir, 'agents', 'main', 'wire.jsonl.segments.json'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it('compacts a session with zstd and restores byte-exact wire.jsonl on unseal', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-session-compact-cli-'));
+    cleanup.push(homeDir);
+    const sessionDir = join(homeDir, 'sessions', 'wd_alpha', SESSION_ID);
+    const wirePath = join(sessionDir, 'agents', 'main', 'wire.jsonl');
+    const lines: string[] = [];
+    for (let i = 1; i <= 160; i += 1) {
+      lines.push(
+        `${JSON.stringify({
+          type: 'turn.prompt',
+          turnId: i,
+          promptId: `p-${i}`,
+          input: [{ type: 'text', text: `CLI_TURN_${i}_${'BLOCK_'.repeat(350)}` }],
+          origin: { kind: 'user' },
+          time: i * 1000,
+        })}\n`,
+        `${JSON.stringify({ type: 'turn.ended', turnId: i, reason: 'completed', time: i * 1000 + 10 })}\n`,
+      );
+    }
+    const original = Buffer.from(lines.join(''));
+    await mkdir(join(sessionDir, 'agents', 'main'), { recursive: true });
+    await writeFile(wirePath, original);
+    await writeFile(
+      join(sessionDir, 'state.json'),
+      JSON.stringify({ id: SESSION_ID, createdAt: 1, updatedAt: 2, archived: false, agents: { main: { type: 'main' } } }),
+    );
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const deps: Partial<SessionCommandDeps> = {
+      homeDir: () => homeDir,
+      stdout: { write: (chunk) => (stdout.push(chunk), true) },
+      stderr: { write: (chunk) => (stderr.push(chunk), true) },
+      exit: () => {},
+    };
+    const run = async (action: string) => {
+      stdout.length = 0;
+      const program = new Command('kiki');
+      registerSessionCommand(program, deps);
+      await program.parseAsync(['node', 'kiki', 'session', action, SESSION_ID, '--json']);
+      expect(stderr).toEqual([]);
+      return JSON.parse(stdout.join(''));
+    };
+
+    const compacted = await run('compact');
+    expect(compacted).toMatchObject({
+      schemaVersion: 1,
+      action: 'compact',
+      sessionId: SESSION_ID,
+      workspaceId: 'wd_alpha',
+      compactedJournals: 1,
+    });
+    const shown = await run('show');
+    expect(JSON.stringify(shown)).toContain('CLI_TURN_50_');
+
+    await run('unseal');
+    expect(await readFile(wirePath)).toEqual(original);
+  });
 });

@@ -27,6 +27,7 @@ import {
 } from '@kiki/agent-core-v2';
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
 import { MISSING_MEDIA_PLACEHOLDER } from '@kiki/agent-core-v2/agent/blob/agentBlobService';
+import { logicalByteSize, readLogicalBytes } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { readWireContextProjection } from '@kiki/agent-core-v2/persistence/wireContextRead';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { parseMediaBlobRef } from '@kiki/transcript';
@@ -401,7 +402,7 @@ async function refreshColdMessageHistory(
   const scope = agentScopeOf(sessionScope, 'main');
   const storage = core.accessor.get(IFileSystemStorageService);
   const [offset, mtime] = await Promise.all([
-    storage.size(scope, AGENT_WIRE_RECORD_KEY),
+    logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY),
     storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
   ]);
   const state = messageHistoryCacheState(core);
@@ -706,9 +707,11 @@ async function rebuildMessageHistoryCache(
   await agent.accessor.get(IWireService).flush();
   signal?.throwIfAborted();
   const scope = agent.accessor.get(IAgentScopeContext).scope();
-  const offset = await core.accessor
-    .get(IFileSystemStorageService)
-    .size(scope, AGENT_WIRE_RECORD_KEY) ?? 0;
+  const offset = await logicalByteSize(
+    core.accessor.get(IFileSystemStorageService),
+    scope,
+    AGENT_WIRE_RECORD_KEY,
+  ) ?? 0;
   const transcript = await readTranscript(core, agent, signal);
   const merged = mergeLiveTail(transcript, contextMessages);
   const messages = [...merged.messages];
@@ -733,14 +736,15 @@ async function readDurableWireTail(
   await agent.accessor.get(IWireService).flush();
   signal?.throwIfAborted();
   const storage = core.accessor.get(IFileSystemStorageService);
-  const size = await storage.size(entry.scope, AGENT_WIRE_RECORD_KEY) ?? 0;
+  const size = await logicalByteSize(storage, entry.scope, AGENT_WIRE_RECORD_KEY) ?? 0;
   signal?.throwIfAborted();
   if (size < entry.offset) return { offset: size, creationTimes: [], rewritten: true };
   if (size === entry.offset) return { offset: size, creationTimes: [], rewritten: false };
   let pending = '';
   const records: WireRecord[] = [];
   const decoder = new TextDecoder();
-  for await (const chunk of storage.readStream(
+  for await (const chunk of readLogicalBytes(
+    storage,
     entry.scope,
     AGENT_WIRE_RECORD_KEY,
     { start: entry.offset, end: size - 1 },
@@ -938,7 +942,10 @@ export async function captureContextMessageHistory(
         return { key: 'missing', size: 0 };
       }
     }
-    const [size, mtime] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]);
+    const [size, mtime] = await Promise.all([
+      logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY),
+      storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
+    ]);
     signal?.throwIfAborted();
     return { key: `${size}:${mtime}`, size: size ?? 0 };
   };
@@ -1066,7 +1073,8 @@ async function tryCaptureIncrementalHistory(
   const reducer = createContextTranscriptReducer();
   let sliceStart = performance.now();
   let sliceRecords = 0;
-  for await (const chunk of storage.readStream(
+  for await (const chunk of readLogicalBytes(
+    storage,
     scope,
     AGENT_WIRE_RECORD_KEY,
     { start: cached.offset, end: size - 1 },

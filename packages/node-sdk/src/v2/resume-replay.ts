@@ -46,7 +46,7 @@
  * degrades to an empty result instead of failing the session resume.
  */
 
-import { readFile } from 'node:fs/promises';
+import { openPersistedJournal } from '#/retained-session';
 
 import {
   applyContextCompactionRecord,
@@ -86,12 +86,18 @@ const EMPTY_FOLD: FoldedAgentReplay = { replay: [], toolStore: {} };
  * rejected resume.
  */
 export async function foldAgentWireReplay(wirePath: string): Promise<FoldedAgentReplay> {
+  let journal: Awaited<ReturnType<typeof openPersistedJournal>>;
   try {
-    const records = parseWireRecords(await readFile(wirePath, 'utf-8'));
+    journal = await openPersistedJournal(wirePath);
+    if (journal === undefined || journal.size === 0) return EMPTY_FOLD;
+    const bytes = await journal.readAt(0, journal.size);
+    const records = parseWireRecords(new TextDecoder().decode(bytes));
     if (records.length === 0) return EMPTY_FOLD;
     return new ReplayFold().run(records);
   } catch {
     return EMPTY_FOLD;
+  } finally {
+    await journal?.close().catch(() => undefined);
   }
 }
 

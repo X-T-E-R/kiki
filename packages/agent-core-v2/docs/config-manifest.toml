@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (59 sections · 1 overlay(s))
+# Index (60 sections · 1 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorInstances          src/app/agentExecutor/executorInstances.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
@@ -19,6 +19,7 @@
 #   branch                          src/app/branch/configSection.ts
 #   browserControl                  src/app/browser/browserConfig.ts
 #   builtinProductSkills            src/app/skillCatalog/configSection.ts
+#   coldCompaction                  src/app/coldCompaction/configSection.ts
 #   computerControl                 src/app/computer/configSection.ts
 #   cpuWorkers                      src/app/cpuWorker/configSection.ts
 #   cron                            src/app/cron/configSection.ts
@@ -296,6 +297,28 @@ connections = {  }
 # ##########################################################################
 
 builtin_product_skills = true
+
+# ##########################################################################
+# coldCompaction (config.toml: cold_compaction)
+#   owner: src/app/coldCompaction/configSection.ts
+#   scope: core
+#   hooks: stripEnv
+#   env:
+#     enabled <- KIKI_COLD_COMPACTION_ENABLED (custom parse)
+#     initial_delay_ms <- KIKI_COLD_COMPACTION_INITIAL_DELAY_MS (custom parse)
+#     sweep_interval_ms <- KIKI_COLD_COMPACTION_SWEEP_INTERVAL_MS (custom parse)
+#     min_idle_age_ms <- KIKI_COLD_COMPACTION_MIN_IDLE_AGE_MS (custom parse)
+#     max_sessions_per_sweep <- KIKI_COLD_COMPACTION_MAX_SESSIONS_PER_SWEEP (custom parse)
+#     reclaim_sparse <- KIKI_COLD_COMPACTION_RECLAIM_SPARSE (custom parse)
+# ##########################################################################
+
+[cold_compaction]
+enabled = true
+initial_delay_ms = 600000
+sweep_interval_ms = 300000
+min_idle_age_ms = 1800000
+max_sessions_per_sweep = 1
+reclaim_sparse = true
 
 # ##########################################################################
 # computerControl (config.toml: computer_control)

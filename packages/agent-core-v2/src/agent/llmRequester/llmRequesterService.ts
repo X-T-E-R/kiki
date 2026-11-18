@@ -170,6 +170,7 @@ import {
 import { projectDynamicToolSchemas } from './dynamicToolProjection';
 import { PromptCacheWindow } from './promptCacheWindow';
 import {
+  hashAdvertisedProfiles,
   LlmRequest,
   llmRequestTraceKey,
   LlmToolsSnapshot,
@@ -1550,7 +1551,10 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       void this.dispatcher.dispatch(new LlmToolsSnapshot({ hash: toolsHash, tools }));
     }
 
+    const kind = requestKindForRecord(fields);
+    const trace = this.states.get(llmRequestTraceKey);
     const systemPromptHash = this.systemPromptHash(input.systemPrompt);
+    const seenSystemPrompt = trace.seenSystemPromptHashes?.includes(systemPromptHash) === true;
     const overrides = this.config.get<ModelOverrides>('modelOverrides');
     const thinkingConfig = this.config.get<ThinkingConfig>(THINKING_SECTION);
     const modelId =
@@ -1558,12 +1562,22 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     const modelConfig = modelId === undefined ? undefined : this.modelService.get(modelId);
     const agentRun = this.tools.resolve('AgentRun') as ISubagentTool | undefined;
     const advertisedTool = wireTools.find((tool) => tool.name === 'AgentRun');
-    const advertisedProfiles = advertisedTool !== undefined && typeof agentRun?.advertisedProfileDescriptions === 'function'
+    const rawAdvertisedProfiles = advertisedTool !== undefined && typeof agentRun?.advertisedProfileDescriptions === 'function'
       ? [...agentRun.advertisedProfileDescriptions()].filter(([, entry]) => advertisedTool.description.includes(entry.line))
         .map(([name, entry]) => ({ name, ...entry })) : undefined;
+    const advertisedProfilesHash = rawAdvertisedProfiles === undefined
+      ? undefined
+      : hashAdvertisedProfiles(rawAdvertisedProfiles);
+    const previousAdvertisedHash = trace.advertisedProfilesHash ??
+      (trace.advertisedProfiles === undefined ? undefined : hashAdvertisedProfiles(trace.advertisedProfiles));
+    const advertisedProfiles = rawAdvertisedProfiles !== undefined &&
+      (kind !== 'loop' || advertisedProfilesHash !== previousAdvertisedHash)
+      ? rawAdvertisedProfiles
+      : undefined;
     const payload: LlmRequestPayload = {
-      kind: requestKindForRecord(fields),
+      kind,
       advertisedProfiles,
+      advertisedProfilesHash,
       provider: input.protocol,
       protocol: input.protocol,
       protocol_source: input.protocolSource,
@@ -1582,7 +1596,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       toolSelect: this.toolSelect.enabled(),
       systemPromptHash,
       systemPrompt:
-        input.systemPrompt === this.profile.data().systemPrompt
+        input.systemPrompt === '' ||
+        input.systemPrompt === this.profile.data().systemPrompt ||
+        seenSystemPrompt
           ? undefined
           : input.systemPrompt,
       toolsHash,

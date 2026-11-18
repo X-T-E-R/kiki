@@ -62,21 +62,39 @@ export interface AppendLogProjection<T> {
   onError(error: unknown): void;
 }
 
+export type ColdSealCodec = 'deflate-raw' | 'zstd';
+
+export interface ColdSparseRange {
+  readonly start: number;
+  readonly end: number;
+}
+
 export interface ColdSealOptions {
+  readonly codec?: ColdSealCodec;
+  readonly level?: number;
   readonly segmentBytes?: number;
+  readonly reclaim?: boolean;
+  readonly keepHeadBytes?: number;
+  readonly preserveOffsets?: readonly number[];
+  readonly incremental?: boolean;
   readonly signal?: AbortSignal;
 }
 
 export interface ColdSealResult {
-  readonly format: 1;
-  readonly codec: 'deflate-raw';
-  readonly level: 6;
+  readonly format: 1 | 2;
+  readonly codec: ColdSealCodec;
+  readonly level: number;
   readonly segmentBytes: number;
   readonly sealedCut: number;
   readonly logicalSize: number;
   readonly segmentCount: number;
+  readonly reusedSegmentCount?: number;
+  readonly compressedBytes?: number;
   readonly generation: string;
-  readonly originalRetained: true;
+  readonly originalRetained: boolean;
+  readonly sparseRanges?: readonly ColdSparseRange[];
+  readonly allocatedBytesBefore?: number;
+  readonly allocatedBytesAfter?: number;
 }
 
 /** A process-local revision invalidated by observed metadata changes outside successful appends; absent identity disables incremental digest reuse. */

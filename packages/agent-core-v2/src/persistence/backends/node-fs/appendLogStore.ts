@@ -325,7 +325,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         let committed: { generation: string; offset: number; boundary: Uint8Array } | undefined;
         await withColdExclusive(this.storage, scope, key, async () => {
           const replace = async (): Promise<void> => {
-            await discardColdUnlocked(this.storage, scope, key);
+            await discardColdUnlocked(this.storage, scope, key, { skipRestoreOriginal: true });
             const generation = randomUUID();
             await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
             state.position = undefined;

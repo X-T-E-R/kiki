@@ -1042,10 +1042,40 @@ describe('AgentLLMRequesterService native tool and shared prompt preparation', (
       tools: [{ name: 'AgentRun', source: 'builtin', description: `Launch\n${line}`, parameters: {} }], advertisedProfiles,
     });
     await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
     await service.request({ tools: [], source: { type: 'operation', requestKind: 'test' } });
+    await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
     const requests = records.filter((record) => record.type === 'llm.request');
     expect(requests[0]?.['advertisedProfiles']).toEqual([{ name: 'explore', line, signature: 'visible-signature' }]);
+    expect(requests[0]?.['advertisedProfilesHash']).toEqual(expect.any(String));
     expect(requests[1]?.['advertisedProfiles']).toBeUndefined();
+    expect(requests[1]?.['advertisedProfilesHash']).toBe(requests[0]?.['advertisedProfilesHash']);
+    expect(requests[2]?.['advertisedProfiles']).toBeUndefined();
+    expect(requests[2]?.['advertisedProfilesHash']).toBeUndefined();
+    expect(requests[3]?.['advertisedProfiles']).toEqual([{ name: 'explore', line, signature: 'visible-signature' }]);
+    expect(requests[3]?.['advertisedProfilesHash']).toBe(requests[0]?.['advertisedProfilesHash']);
+  });
+
+  it('deduplicates dynamic systemPrompt bodies across steps while re-emitting on unseen hashes', async () => {
+    const promptConfig: { value: PromptConfig } = {
+      value: { overrides: { fields: { 'system.shared': 'DYNAMIC_APPENDIX_ONE' } } },
+    };
+    const { service, records } = createService(createRequester({ value: 0 }, null), undefined, { promptConfig });
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+    promptConfig.value = { overrides: { fields: { 'system.shared': 'DYNAMIC_APPENDIX_TWO' } } };
+    await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+    promptConfig.value = { overrides: { fields: { 'system.shared': 'DYNAMIC_APPENDIX_ONE' } } };
+    await service.request({ source: { type: 'turn', turnId: 3, step: 1 } });
+    const requests = records.filter((record) => record.type === 'llm.request');
+    expect(requests).toHaveLength(4);
+    expect(requests[0]?.['systemPrompt']).toBe('system\n\nDYNAMIC_APPENDIX_ONE');
+    expect(requests[1]?.['systemPrompt']).toBeUndefined();
+    expect(requests[1]?.['systemPromptHash']).toBe(requests[0]?.['systemPromptHash']);
+    expect(requests[2]?.['systemPrompt']).toBe('system\n\nDYNAMIC_APPENDIX_TWO');
+    expect(requests[2]?.['systemPromptHash']).not.toBe(requests[0]?.['systemPromptHash']);
+    expect(requests[3]?.['systemPrompt']).toBeUndefined();
+    expect(requests[3]?.['systemPromptHash']).toBe(requests[0]?.['systemPromptHash']);
   });
   it.each(['main', 'standalone-child'])('sends lane schema, freshly prepared descriptions and shared guidance once for %s', async (agentId) => {
     const inputs: ModelRequestInput[] = [];

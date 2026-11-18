@@ -7,10 +7,13 @@ import { SESSION_LOCK_SCOPE, isSessionLockActive, sessionLockKey } from '@kiki/a
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  compactPersistedSession,
   discardPersistedSession,
   persistedSessionLockScope,
   sealPersistedSession,
+  unsealPersistedSession,
 } from '../src/retained-session';
+import { foldAgentWireReplay } from '../src/v2/resume-replay';
 
 const SESSION_ID = 'session_2fd93c4b-8945-479b-b61a-cf106bcf2e9b';
 const WORKSPACE_ID = 'wd_alpha';
@@ -89,6 +92,50 @@ describe('persisted session journal maintenance', () => {
       await held.release();
       await holder.close();
     }
+  });
+
+  it('compacts sparse zstd journals, folds replay records logically, and restores original bytes on unseal', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-retained-compact-'));
+    cleanup.push(homeDir);
+    const sessionDir = join(homeDir, 'sessions', WORKSPACE_ID, SESSION_ID);
+    const wirePath = join(sessionDir, 'agents', 'main', 'wire.jsonl');
+    await mkdir(join(sessionDir, 'agents', 'main'), { recursive: true });
+    const lines: string[] = [
+      `${JSON.stringify({ type: 'metadata', protocol_version: '1.6', created_at: 1000 })}\n`,
+    ];
+    for (let i = 0; i < 90; i += 1) {
+      const marker = i === 40 ? 'SDK_REPLAY_INTERIOR_40' : `SDK_MSG_${i}`;
+      lines.push(`${JSON.stringify({
+        type: 'context.append_message',
+        time: 1000 + i,
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: `${marker} ${'REPEAT_'.repeat(300)}` }],
+          toolCalls: [],
+        },
+      })}\n`);
+    }
+    const rawExpected = Buffer.from(lines.join(''));
+    await writeFile(wirePath, rawExpected);
+
+    const compacted = await compactPersistedSession(
+      { homeDir, workspaceId: WORKSPACE_ID, sessionId: SESSION_ID, sessionDir },
+      { segmentBytes: 128 * 1024, hotTailBytes: 64 * 1024 },
+    );
+    expect(compacted.compactedJournals).toBe(1);
+
+    const folded = await foldAgentWireReplay(wirePath);
+    expect(folded.replay.length).toBe(90);
+    expect(JSON.stringify(folded.replay)).toContain('SDK_REPLAY_INTERIOR_40');
+
+    const unsealed = await unsealPersistedSession({
+      homeDir,
+      workspaceId: WORKSPACE_ID,
+      sessionId: SESSION_ID,
+      sessionDir,
+    });
+    expect(unsealed.unsealedJournals).toBe(1);
+    expect(await readFile(wirePath)).toEqual(rawExpected);
   });
 });
 

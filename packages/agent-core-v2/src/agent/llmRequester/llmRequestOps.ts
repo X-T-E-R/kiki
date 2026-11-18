@@ -1,9 +1,12 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import { Event2 } from '#/app/event/event2';
 import type { ThinkingEffort } from '#/kosong/contract/provider';
 import { defineState } from '#/state/state';
+
+const MAX_SEEN_SYSTEM_PROMPT_HASHES = 512;
 
 export interface LlmRequestToolSchema {
   readonly name: string;
@@ -13,8 +16,16 @@ export interface LlmRequestToolSchema {
 
 export interface LlmRequestTraceState {
   readonly seenToolsHashes: readonly string[];
+  readonly seenSystemPromptHashes?: readonly string[];
   readonly advertisedProfiles?: readonly { readonly name: string; readonly line: string; readonly signature: string }[];
+  readonly advertisedProfilesHash?: string;
   readonly lastRequest?: import('@kiki/protocol').AgentPromptRequest;
+}
+
+export function hashAdvertisedProfiles(
+  entries: readonly { readonly name: string; readonly line: string; readonly signature: string }[],
+): string {
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
 }
 
 const llmToolEntrySchema = z.object({
@@ -63,6 +74,7 @@ const llmRequestSchema = z.object({
   anchorSteps: z.number().int().positive().optional(),
   anchorScope: z.enum(['session', 'turn']).optional(),
   advertisedProfiles: z.array(z.object({ name: z.string(), line: z.string(), signature: z.string() })).readonly().optional(),
+  advertisedProfilesHash: z.string().optional(),
 });
 
 export type LlmRequestPayload = z.infer<typeof llmRequestSchema>;
@@ -93,5 +105,31 @@ export const llmRequestTraceKey = defineState(
   })
   .on(LlmRequest, (s, e) => {
     s.lastRequest = promptRequestEvidence(e);
-    if (e.kind === 'loop') s.advertisedProfiles = e.advertisedProfiles?.map((entry) => ({ ...entry }));
+    if (e.systemPrompt !== undefined && e.systemPrompt.length > 0) {
+      const seen = s.seenSystemPromptHashes ?? [];
+      if (!seen.includes(e.systemPromptHash)) {
+        const next = [...seen, e.systemPromptHash];
+        s.seenSystemPromptHashes = next.length > MAX_SEEN_SYSTEM_PROMPT_HASHES
+          ? next.slice(next.length - MAX_SEEN_SYSTEM_PROMPT_HASHES)
+          : next;
+      }
+    }
+    if (e.kind === 'loop') {
+      if (e.advertisedProfiles !== undefined) {
+        s.advertisedProfiles = e.advertisedProfiles.map((entry) => ({ ...entry }));
+        s.advertisedProfilesHash = e.advertisedProfilesHash ?? hashAdvertisedProfiles(e.advertisedProfiles);
+      } else if (e.advertisedProfilesHash !== undefined) {
+        const currentHash = s.advertisedProfilesHash ??
+          (s.advertisedProfiles === undefined ? undefined : hashAdvertisedProfiles(s.advertisedProfiles));
+        if (currentHash === e.advertisedProfilesHash) {
+          s.advertisedProfilesHash = e.advertisedProfilesHash;
+        } else {
+          s.advertisedProfiles = undefined;
+          s.advertisedProfilesHash = undefined;
+        }
+      } else {
+        s.advertisedProfiles = undefined;
+        s.advertisedProfilesHash = undefined;
+      }
+    }
   });

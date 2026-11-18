@@ -1,15 +1,23 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 
 import { ISessionIndex, ISessionManager, type IHistoryArchive, type Scope } from '@kiki/agent-core-v2';
 import { exportSessionDirectory } from '@kiki/agent-core-v2/app/sessionExport/sessionExportService';
-import { discardRetainedSession, sealRetainedSession } from '@kiki/agent-core-v2/persistence/retainedJournal';
+import { closeSparseFileWorker } from '@kiki/agent-core-v2/persistence/backends/node-fs/sparseFile';
+import {
+  compactRetainedSession,
+  discardRetainedSession,
+  sealRetainedSession,
+  unsealRetainedSession,
+} from '@kiki/agent-core-v2/persistence/retainedJournal';
 import { digestWireBytes } from '@kiki/agent-core-v2/wire/transcriptReceipt';
+import { tokenize } from '@kiki/lexical';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { SqliteSearchIndex } from '../src/search/sqlite/index';
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { HistoryLocatorStore } from '../src/services/history/historyLocatorStore';
 import { historyArchiveSeed } from '../src/services/historyArchive';
@@ -156,6 +164,162 @@ describe('sealed journal consumers', () => {
     } finally {
       service.dispose();
       await db.close();
+    }
+  }, 30_000);
+
+  it('serves SqliteSearchIndex, TranscriptService, HistorySearch, export, incremental append, and lossless unseal over sparse-holed zstd journals', async () => {
+    home = await mkdtemp(join(tmpdir(), 'cold-zstd-consumers-'));
+    const sessionDir = join(home, 'sessions', WORKSPACE_ID, SESSION_ID);
+    const agentDir = join(sessionDir, 'agents', 'main');
+    const wirePath = join(agentDir, 'wire.jsonl');
+    const records: string[] = [];
+    for (let i = 1; i <= 140; i += 1) {
+      const marker = i === 60 ? 'SPARSE_INTERIOR_TOKEN_60' : `TURN_FILL_${i}`;
+      records.push(
+        line({
+          type: 'turn.prompt',
+          turnId: i,
+          promptId: `p-${i}`,
+          input: [{ type: 'text', text: `${marker} ${'PADDING_BLOCK_'.repeat(180)}` }],
+          origin: { kind: 'user' },
+          time: 1000 + i * 10,
+        }),
+        line({
+          type: 'context.append_message',
+          time: 1000 + i * 10,
+          message: {
+            role: 'user',
+            origin: { kind: 'user' },
+            content: [{ type: 'text', text: `${marker} ${'PADDING_BLOCK_'.repeat(180)}` }],
+          },
+        }),
+        line({ type: 'turn.ended', turnId: i, reason: 'completed', time: 1005 + i * 10 }),
+      );
+    }
+    const journal = Buffer.from(records.join(''));
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(wirePath, journal);
+    await writeFile(join(sessionDir, 'state.json'), JSON.stringify({ title: 'Sparse Zstd Session' }));
+
+    const compacted = await compactRetainedSession(sessionDir, {
+      segmentBytes: 128 * 1024,
+      hotTailBytes: 64 * 1024,
+    });
+    expect(compacted.compactedJournals).toBe(1);
+    if (process.platform === 'win32') {
+      const rawDisk = await readFile(wirePath);
+      expect(rawDisk.includes(Buffer.from('SPARSE_INTERIOR_TOKEN_60'))).toBe(false);
+    }
+
+    const searchIndex = await SqliteSearchIndex.open(join(home, 'search.sqlite'));
+    const core = {
+      accessor: {
+        get: (token: unknown) => token === ISessionIndex
+          ? { get: async (id: string) => id === SESSION_ID ? { workspaceId: WORKSPACE_ID } : undefined }
+          : token === ISessionManager
+            ? { get: () => undefined, list: () => [] }
+            : undefined,
+      },
+    } as unknown as Scope;
+    const service = new TranscriptService({ homeDir: home, core });
+    const db = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+    const nav = new HistoryLocatorStore(db, service);
+    service.setHistoryLocatorReader(() => nav);
+    const archive = historyArchiveSeed(() => core, () => service, () => nav)[0]![1] as IHistoryArchive;
+
+    try {
+      await searchIndex.syncSession({
+        id: SESSION_ID,
+        workspaceId: WORKSPACE_ID,
+        dir: sessionDir,
+        updatedAt: 5000,
+      });
+      const initialHits = await searchIndex.search({
+        query: 'SPARSE_INTERIOR_TOKEN_60',
+        mode: 'terms',
+        sort: 'time_asc',
+        pageSize: 10,
+        op: 'AND',
+        termsQuery: [...new Set(tokenize('SPARSE_INTERIOR_TOKEN_60'))],
+      });
+      expect(initialHits.rows.length).toBeGreaterThan(0);
+
+      const archivePage = await archive.search({
+        query: 'SPARSE_INTERIOR_TOKEN_60',
+        mode: 'auto',
+        sort: 'newest',
+        workspaceId: WORKSPACE_ID,
+        sessionId: SESSION_ID,
+        agentId: 'main',
+        pageSize: 5,
+      });
+      expect(archivePage.items.length).toBeGreaterThan(0);
+
+      const exportZip = join(home, 'sparse-export.zip');
+      await exportSessionDirectory({
+        request: { sessionId: SESSION_ID, outputPath: exportZip, version: '0.0.0-test' },
+        summary: { id: SESSION_ID, sessionDir },
+      });
+      expect(await readZipEntry(exportZip, 'agents/main/wire.jsonl')).toEqual(journal);
+
+      const appendedChunk = Buffer.from([
+        line({
+          type: 'turn.prompt',
+          turnId: 141,
+          promptId: 'p-141',
+          input: [{ type: 'text', text: 'LIVE_APPENDED_TOKEN_141' }],
+          origin: { kind: 'user' },
+          time: 9000,
+        }),
+        line({
+          type: 'context.append_message',
+          time: 9000,
+          message: {
+            role: 'user',
+            origin: { kind: 'user' },
+            content: [{ type: 'text', text: 'LIVE_APPENDED_TOKEN_141' }],
+          },
+        }),
+        line({ type: 'turn.ended', turnId: 141, reason: 'completed', time: 9005 }),
+      ].join(''));
+      await appendFile(wirePath, appendedChunk);
+
+      await searchIndex.syncSession({
+        id: SESSION_ID,
+        workspaceId: WORKSPACE_ID,
+        dir: sessionDir,
+        updatedAt: 9005,
+      });
+      const appendedHits = await searchIndex.search({
+        query: 'LIVE_APPENDED_TOKEN_141',
+        mode: 'terms',
+        sort: 'time_asc',
+        pageSize: 10,
+        op: 'AND',
+        termsQuery: [...new Set(tokenize('LIVE_APPENDED_TOKEN_141'))],
+      });
+      expect(appendedHits.rows.length).toBeGreaterThan(0);
+      const stillInteriorHits = await searchIndex.search({
+        query: 'SPARSE_INTERIOR_TOKEN_60',
+        mode: 'terms',
+        sort: 'time_asc',
+        pageSize: 10,
+        op: 'AND',
+        termsQuery: [...new Set(tokenize('SPARSE_INTERIOR_TOKEN_60'))],
+      });
+      expect(stillInteriorHits.rows.length).toBeGreaterThan(0);
+
+      const unsealed = await unsealRetainedSession(sessionDir);
+      expect(unsealed.unsealedJournals).toBe(1);
+      const expectedTotal = Buffer.concat([journal, appendedChunk]);
+      expect(createHash('sha256').update(await readFile(wirePath)).digest('hex')).toBe(
+        createHash('sha256').update(expectedTotal).digest('hex'),
+      );
+    } finally {
+      searchIndex.close();
+      service.dispose();
+      await db.close();
+      closeSparseFileWorker();
     }
   }, 30_000);
 });
