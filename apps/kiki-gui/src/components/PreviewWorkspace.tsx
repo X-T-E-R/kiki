@@ -9,7 +9,7 @@
  * image, audio/video, text/code, and unsupported fallbacks).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { basenameOf, resolveHostPath, type FileReference } from '@kiki/session-core/composer/media';
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
@@ -613,11 +613,11 @@ function AgentTabWorkspace({
 
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
-  useEffect(() => {
+  useLayoutEffect(() => {
     controller.retainAgentView(viewId, agentId, visibleRef.current ? 'delta' : 'off');
     return () => { controller.releaseAgentView(viewId); };
   }, [controller, viewId, agentId]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     controller.updateAgentView(viewId, visible ? 'delta' : 'off');
   }, [controller, viewId, visible]);
 

@@ -9,9 +9,9 @@ import { composerInput, setComposerInputValue } from './composerInputTestUtils';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
-import { AdmissionLine, AdmissionScope, RESTORE_NOTICE_MS, RESTORE_POLL_MS, useAdmissionScope, useAdmissionView, withAdmissionUserBlocks } from './timeline/AdmissionLine';
+import { AdmissionLine, AdmissionScope, RESTORE_NOTICE_MS, RESTORE_POLL_MS, useAdmissionScope, useAdmissionView, withAdmissionUserBlocks, withOptimisticUserBlock } from './timeline/AdmissionLine';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, resetComposerMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
-import { createViewState, projectAgentTranscriptView, type UserBlock } from '@kiki/session-core/session';
+import { createViewState, projectAgentTranscriptView, type DurableIngressItem, type UserBlock } from '@kiki/session-core/session';
 import { emptySessionUsage, type PromptItem, type SessionPendingInteraction } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
 
@@ -19,7 +19,7 @@ const contentRead = {
   beginContentRead() { return { release() {}, retry() {} }; },
   isContentRange() { return false; },
 };
-const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly PromptItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), beginRead: vi.fn(), releaseRead: vi.fn(), retryRead: vi.fn(), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn(), updateSessionProfile: vi.fn(), live: false }));
+const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly DurableIngressItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), beginRead: vi.fn(), releaseRead: vi.fn(), retryRead: vi.fn(), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn(), updateSessionProfile: vi.fn(), live: false }));
 vi.mock('../lib/toasts', () => ({ pushToast: fixture.pushToast }));
 /** A snapshot field the header shows, cut in the window — the composer's remainder. */
 const STRUCTURE_REF = { source: { kind: 'snapshot' as const, id: '' }, revision: 'rev-1', path: ['session', 'title'], kind: 'text' as const, offset: 12, total: 40 };
@@ -184,6 +184,35 @@ it('does not render historical durable receipts as footer message notices', asyn
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(container.querySelector('[data-durable-ingress]')).toBeNull();
   expect(container.querySelector('[data-submission-status]')).toBeNull();
+});
+
+it('does not leak subagent or branch restoring/held ingress bubbles onto the main timeline', async () => {
+  fixture.queued = false;
+  fixture.durableIngress = [
+    {
+      admission: 'restoring', prompt_id: 'main-restoring', user_message_id: 'msg-main', status: 'queued',
+      content: [{ type: 'text', text: 'main restoring message' }], created_at: '2026-01-01T00:00:00Z',
+    },
+    {
+      admission: 'restoring', prompt_id: 'subagent-restoring', agent_id: 'agent-7', user_message_id: 'msg-sub', status: 'queued',
+      content: [{ type: 'text', text: 'subagent restoring message' }], created_at: '2026-01-01T00:00:01Z',
+    },
+    {
+      admission: 'held', prompt_id: 'branch-held', agent_id: 'branch-1', user_message_id: 'msg-branch', status: 'queued',
+      content: [{ type: 'text', text: 'branch held message' }], created_at: '2026-01-01T00:00:02Z',
+    },
+  ];
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  const renderedMessages = [...container.querySelectorAll('[data-user-message]')].map((el) => el.textContent);
+  expect(renderedMessages).toEqual(['main restoring message']);
+  expect(container.querySelector('[data-pending-retry]')).toBeNull();
 });
 
 it('clicking a held message retries the same durable prompt exactly once', async () => {
@@ -1348,6 +1377,50 @@ describe('admission line on the message', () => {
       await act(async () => { line.querySelector<HTMLButtonElement>('[data-admission-cancel]')!.click(); });
       expect(calls.abortPrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
     } finally { vi.useRealTimers(); }
+  });
+
+  it('scopes admission bubbles, optimistic echoes, and retry/cancel actions to the matching agentId', async () => {
+    const { calls, controller } = makeController();
+    const mixedIngress: readonly DurableIngressItem[] = [
+      { ...item, prompt_id: 'main-item', content: [{ type: 'text', text: 'Main bubble' }] },
+      {
+        ...item,
+        prompt_id: 'child-held',
+        agent_id: 'agent-7',
+        admission: 'held',
+        restore_progress: undefined,
+        content: [{ type: 'text', text: 'Child held bubble' }],
+      },
+    ];
+    expect(withAdmissionUserBlocks([], mixedIngress).map((b) => b.kind === 'user' ? b.text : '')).toEqual(['Main bubble']);
+    expect(withAdmissionUserBlocks([], mixedIngress, 'agent-7').map((b) => b.kind === 'user' ? b.text : '')).toEqual(['Child held bubble']);
+
+    const branchOptimistic = {
+      id: 'opt-branch',
+      agentId: 'branch-1',
+      text: 'Branch optimistic',
+      createdAt: '2026-01-01T00:00:00Z',
+      slow: false,
+      preserved: false,
+      retryable: false,
+      status: 'sending' as const,
+    };
+    expect(withOptimisticUserBlock([], branchOptimistic, 'main')).toHaveLength(0);
+    expect(withOptimisticUserBlock([], branchOptimistic, 'branch-1')).toHaveLength(1);
+
+    function ScopedProbe() {
+      const blocks = withAdmissionUserBlocks([], mixedIngress, 'agent-7');
+      const scope = useAdmissionScope({ ingress: mixedIngress, agentId: 'agent-7', blocks, controller });
+      return <AdmissionScope value={scope}>{blocks.map(block => block.kind === 'user' ? <Line key={block.id} promptId={block.promptId} text={block.text} /> : null)}</AdmissionScope>;
+    }
+    root ??= createRoot(container);
+    await act(async () => root!.render(<I18nProvider><ScopedProbe /></I18nProvider>));
+    expect(container.textContent).toContain('Child held bubble');
+    expect(container.textContent).not.toContain('Main bubble');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-admission-retry]')!.click(); });
+    expect(calls.resumeDurableIngress).toHaveBeenCalledExactlyOnceWith('child-held', { content: [{ type: 'text', text: 'Child held bubble' }] }, 'agent-7');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-admission-cancel]')!.click(); });
+    expect(calls.abortPrompt).toHaveBeenCalledExactlyOnceWith('child-held', 'agent-7');
   });
 });
 

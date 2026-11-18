@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import {
   agentContinuationAvailable,
@@ -143,12 +143,12 @@ export function useAgentTimeline(
   const viewId = `workspace:${sessionId}:${agentId}:${leaseId}`;
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (agentId === MAIN_AGENT_ID || controller === null || typeof controller.retainAgentView !== 'function') return;
     controller.retainAgentView(viewId, agentId, visibleRef.current ? 'delta' : 'off');
     return () => { controller.releaseAgentView?.(viewId); };
   }, [controller, viewId, agentId]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (agentId === MAIN_AGENT_ID || controller === null || typeof controller.updateAgentView !== 'function') return;
     controller.updateAgentView(viewId, visible ? 'delta' : 'off');
   }, [controller, viewId, agentId, visible]);

@@ -14,7 +14,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { logicalByteSize } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
-import { readPersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
+import { readPersistedAgentRuntimeFacts, type PersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
 import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { isExternalClientMain } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { readPersistedAgentProfileSnapshot, PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET } from './agentProfileSnapshot';
@@ -111,7 +111,7 @@ const persistedMetricsStates = new WeakMap<Scope, PersistedMetricsState>();
 async function mapBounded<T, R>(
   items: readonly T[],
   limit: number,
-  worker: (item: T) => Promise<R>,
+  worker: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   if (items.length === 0) return [];
   const results = new Array<R>(items.length);
@@ -121,7 +121,7 @@ async function mapBounded<T, R>(
     while (cursor < items.length) {
       const index = cursor;
       cursor += 1;
-      results[index] = await worker(items[index]!);
+      results[index] = await worker(items[index]!, index);
     }
   }));
   return results;
@@ -250,15 +250,60 @@ export async function readPersistedAgentPanelMetrics(
       }
     }
     if (missing.length === 0) return finish();
+    const foregroundDeadlineAt = options.complete === true ? Date.now() + 650 : undefined;
+    const runtimeBudgetDeadlineAt = foregroundDeadlineAt === undefined ? undefined : foregroundDeadlineAt - 200;
+    const primaryTarget = options.agentIds?.[0];
+    missing.sort((left, right) => {
+      const rank = (id: string) => id === 'main' ? 0 : id === primaryTarget ? 1 : 2;
+      return rank(left) - rank(right);
+    });
+    const storage = core.accessor.get(IFileSystemStorageService);
     const metadata = await readColdSessionMeta(core, workspaceId, sessionId);
-    const runtime = new Map(await mapBounded(missing, PERSISTED_METRICS_RUNTIME_CONCURRENCY, async (agentId) => {
+    type RuntimePrepassEntry = {
+      readonly facts: PersistedAgentRuntimeFacts;
+      readonly checkpointReady: boolean;
+      readonly context: PersistedAgentContext;
+      readonly contextComplete: boolean;
+    };
+    const fallbackFacts = (contextTokens: number | undefined): PersistedAgentRuntimeFacts =>
+      contextTokens === undefined ? { complete: false } : { contextTokens, complete: false };
+    const runtime = new Map(await mapBounded(missing, PERSISTED_METRICS_RUNTIME_CONCURRENCY, async (agentId, index): Promise<readonly [string, RuntimePrepassEntry]> => {
       options.signal?.throwIfAborted();
       const meta = metadata?.agents?.[agentId];
-      const [facts, profile, size] = await Promise.all([
+      const size = await logicalByteSize(storage, `${sessionScope}/agents/${agentId}`, 'wire.jsonl');
+      options.signal?.throwIfAborted();
+      if (size === undefined || size === 0) {
+        const native = !(metadata !== undefined && isExternalClientMain(metadata, agentId)) && (meta?.executor ?? 'native') === 'native';
+        const context: PersistedAgentContext = {
+          contextTokens: meta?.contextTokens ?? null,
+          contextLimit: native ? persistedAgentContextLimit(core, undefined, meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
+          compactionCount: null,
+        };
+        return [agentId, {
+          facts: fallbackFacts(meta?.contextTokens),
+          checkpointReady: false,
+          context,
+          contextComplete: size === 0,
+        }] as const;
+      }
+      if (runtimeBudgetDeadlineAt !== undefined && index >= 4 && Date.now() >= runtimeBudgetDeadlineAt) {
+        const native = !(metadata !== undefined && isExternalClientMain(metadata, agentId)) && (meta?.executor ?? 'native') === 'native';
+        const context: PersistedAgentContext = {
+          contextTokens: meta?.contextTokens ?? null,
+          contextLimit: native ? persistedAgentContextLimit(core, undefined, meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
+          compactionCount: null,
+        };
+        return [agentId, {
+          facts: fallbackFacts(meta?.contextTokens),
+          checkpointReady: false,
+          context,
+          contextComplete: false,
+        }] as const;
+      }
+      const [facts, profile] = await Promise.all([
         readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, agentId, meta, options.signal),
         readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, meta, options.signal,
           { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
-        logicalByteSize(core.accessor.get(IFileSystemStorageService), `${sessionScope}/agents/${agentId}`, 'wire.jsonl'),
       ]);
       const native = profile?.driver !== 'external' && !(metadata !== undefined && isExternalClientMain(metadata, agentId))
         && (profile?.executorId ?? meta?.executor ?? 'native') === 'native';
@@ -269,8 +314,9 @@ export async function readPersistedAgentPanelMetrics(
       };
       return [agentId, {
         facts,
-        checkpointReady: facts.complete && (size ?? 0) > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+        checkpointReady: facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
         context,
+        contextComplete: true,
       }] as const;
     }));
     for (const [agentId, entry] of runtime) contexts.set(agentId, entry.context);
@@ -348,7 +394,7 @@ export async function readPersistedAgentPanelMetrics(
             usages[agentId] = { ...usage, complete: false, partial: true };
             continue;
           }
-          if (!usage.complete || controller.signal.aborted) continue;
+          if (!usage.complete || controller.signal.aborted || runtime.get(agentId)?.contextComplete !== true) continue;
           const ttl = mutable.has(agentId)
             ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
             : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
@@ -373,7 +419,8 @@ export async function readPersistedAgentPanelMetrics(
       state.activeFlights.add(flight);
     }
     const slice = new AbortController();
-    const timer = options.complete === true ? setTimeout(() => { slice.abort(new DOMException('Panel preparation continues in background', 'TimeoutError')); }, 650) : undefined;
+    const remainingSliceMs = foregroundDeadlineAt === undefined ? undefined : Math.max(250, foregroundDeadlineAt - Date.now());
+    const timer = remainingSliceMs !== undefined ? setTimeout(() => { slice.abort(new DOMException('Panel preparation continues in background', 'TimeoutError')); }, remainingSliceMs) : undefined;
     timer?.unref();
     let scanned: PersistedMetricsScanResult;
     try {

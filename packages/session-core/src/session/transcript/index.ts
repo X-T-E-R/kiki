@@ -14,6 +14,7 @@ export {
   type MessageReach,
   type Block,
   type CompactionHistoryEntry,
+  type DurableIngressItem,
   type EarlierPromptOutcome,
   type FloorEntry,
   type NoticeBlock,

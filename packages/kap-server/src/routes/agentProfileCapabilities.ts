@@ -235,6 +235,37 @@ export async function acquireWorkspaceProfileCatalog(
   }
 }
 
+interface SavedWorkspaceCatalogFlight {
+  readonly promise: Promise<{
+    readonly catalog: SessionAgentProfileCatalogService;
+    readonly skills: NonNullable<ReturnType<typeof createUnscopedAgentProfileCatalog>['skills']>['catalog'];
+    readonly dispose: () => void | Promise<void>;
+  }>;
+  users: number;
+  settled?: {
+    readonly dispose: () => void | Promise<void>;
+  };
+}
+
+const savedWorkspaceCatalogFlights = new WeakMap<Scope, Map<string, SavedWorkspaceCatalogFlight>>();
+
+function savedWorkspaceCatalogFlightMap(core: Scope): Map<string, SavedWorkspaceCatalogFlight> {
+  let flights = savedWorkspaceCatalogFlights.get(core);
+  if (flights !== undefined) return flights;
+  flights = new Map();
+  savedWorkspaceCatalogFlights.set(core, flights);
+  const map = flights;
+  core.accessor.get(IInstantiationService).onWillDispose(async () => {
+    const entries = [...map.values()];
+    map.clear();
+    savedWorkspaceCatalogFlights.delete(core);
+    for (const entry of entries) {
+      await Promise.resolve(entry.settled?.dispose()).catch(() => undefined);
+    }
+  });
+  return map;
+}
+
 async function acquireSavedWorkspaceProfileCatalog(
   core: Scope,
   workspaceId: string,
@@ -248,17 +279,57 @@ async function acquireSavedWorkspaceProfileCatalog(
   const root = indexedRoot ?? registered?.root;
   if (root === undefined) return undefined;
   const cwd = summary?.cwd ?? meta?.cwd ?? root;
-  const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), root, workspaceId);
+  const flights = savedWorkspaceCatalogFlightMap(core);
+  const key = `${workspaceId}\0${root}`;
+  let flight = flights.get(key);
+  if (flight === undefined) {
+    let created!: SavedWorkspaceCatalogFlight;
+    const promise = (async () => {
+      const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), root, workspaceId);
+      try {
+        for (const entry of core.accessor.get(IAgentProfileRegistry).entries()) {
+          if (entry.workspaceKey === undefined) preview.registry.register(entry);
+        }
+        await Promise.all([preview.catalog.ready, preview.skills!.ready]);
+        created.settled = { dispose: preview.dispose };
+        return { catalog: preview.catalog, skills: preview.skills!.catalog, dispose: preview.dispose };
+      } catch (error) {
+        if (flights.get(key) === created) flights.delete(key);
+        await preview.dispose();
+        throw error;
+      }
+    })();
+    created = { promise, users: 0 };
+    flight = created;
+    flights.set(key, flight);
+  }
+  const active = flight;
+  active.users += 1;
+  let acquired: Awaited<SavedWorkspaceCatalogFlight['promise']>;
   try {
-    for (const entry of core.accessor.get(IAgentProfileRegistry).entries()) {
-      if (entry.workspaceKey === undefined) preview.registry.register(entry);
-    }
-    await Promise.all([preview.catalog.ready, preview.skills!.ready]);
-    return { cwd, catalog: preview.catalog, skills: preview.skills!.catalog, dispose: preview.dispose };
+    acquired = await active.promise;
   } catch (error) {
-    await preview.dispose();
+    active.users -= 1;
+    if (active.users <= 0 && flights.get(key) === active) {
+      flights.delete(key);
+    }
     throw error;
   }
+  let released = false;
+  return {
+    cwd,
+    catalog: acquired.catalog,
+    skills: acquired.skills,
+    dispose: async () => {
+      if (released) return;
+      released = true;
+      active.users -= 1;
+      if (active.users <= 0 && flights.get(key) === active) {
+        flights.delete(key);
+        await acquired.dispose();
+      }
+    },
+  };
 }
 
 async function persistedPromptDiagnostics(core: Scope, snapshot: PersistedAgentProfileSnapshot | undefined, checkAllPromptFiles?: boolean): Promise<import('@kiki/protocol').AgentPromptDiagnostics | undefined> {

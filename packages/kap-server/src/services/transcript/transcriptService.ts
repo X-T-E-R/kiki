@@ -52,6 +52,7 @@ import {
   type TranscriptWireRecordPosition,
   type ToolCountSetOp,
   type TranscriptTaskRef,
+  type TranscriptTodo,
   type TranscriptTurn,
   type ContentSource,
 } from '@kiki/transcript';
@@ -125,12 +126,81 @@ const UNVERIFIED_RESIDENT_MAX_BYTES = 4 << 20;
 const UNVERIFIED_RESIDENT_MAX_AGENTS = 16;
 const TURN_START_INDEX_MAX_WIRES = 64;
 const ANCHOR_OPENING_MAX_RECORDS = 8;
-const WINDOW_OPAQUE_RECORDS = ['llm.request', 'profile.dynamic_snapshot'].map(type => ({
+const COLD_TODOS_CACHE_MAX_ENTRIES = 64;
+const WINDOW_OPAQUE_RECORDS = [
+  'llm.request',
+  'profile.dynamic_snapshot',
+  'llm.tools_snapshot',
+  'hook.step.prepared',
+  'staleGuard.recorded',
+  'token_counting.measured',
+  'token_counting.rebased',
+  'usage.record',
+  'plugin.session_start',
+  'context_rebuild.reported',
+  'auto_compact.override_changed',
+  'todo.continuity_decision',
+  'task.waitDelivered',
+].map(type => ({
   prefix: Buffer.from(`{"type":"${type}",`), record: { type },
 }));
+const TODO_RELEVANT_PREFIXES = [
+  'tools.update_store',
+  'executor.plan.update',
+  'executor.plan.remove',
+].map(type => Buffer.from(`{"type":"${type}"`));
+const INIT_RELEVANT_PREFIXES = [
+  'metadata',
+  'runtime.set_binding',
+].map(type => Buffer.from(`{"type":"${type}"`));
+const RECORD_JSON_HEAD = Buffer.from('{"type":"');
+const TODO_NOOP_RECORD: ContextRecord = { type: 'noop' };
+const coldRecordBytesCache = new WeakMap<object, number>();
+
+function hasClosedJsonObjectFrame(line: Buffer): boolean {
+  const end = line.length > 0 && line[line.length - 1] === 0x0d ? line.length - 1 : line.length;
+  return end >= 2 && line[end - 1] === 0x7d;
+}
+
+function transcriptOpaqueHeaderRecord(head: Buffer): ContextRecord | undefined {
+  for (let index = 0; index < WINDOW_OPAQUE_RECORDS.length; index += 1) {
+    const entry = WINDOW_OPAQUE_RECORDS[index]!;
+    if (head.length >= entry.prefix.length && head.subarray(0, entry.prefix.length).equals(entry.prefix)) {
+      return entry.record;
+    }
+  }
+  return undefined;
+}
 
 function transcriptWindowRecord(line: Buffer): ContextRecord | undefined {
-  return WINDOW_OPAQUE_RECORDS.find(({ prefix }) => line.subarray(0, prefix.length).equals(prefix))?.record;
+  if (!hasClosedJsonObjectFrame(line)) return undefined;
+  return transcriptOpaqueHeaderRecord(line);
+}
+
+function transcriptTodoRecord(line: Buffer, checkInit: boolean): ContextRecord | undefined {
+  if (!hasClosedJsonObjectFrame(line)) return undefined;
+  if (line.length < RECORD_JSON_HEAD.length || !line.subarray(0, RECORD_JSON_HEAD.length).equals(RECORD_JSON_HEAD)) {
+    return undefined;
+  }
+  for (let index = 0; index < TODO_RELEVANT_PREFIXES.length; index += 1) {
+    const prefix = TODO_RELEVANT_PREFIXES[index]!;
+    if (line.length >= prefix.length && line.subarray(0, prefix.length).equals(prefix)) return undefined;
+  }
+  if (checkInit) {
+    for (let index = 0; index < INIT_RELEVANT_PREFIXES.length; index += 1) {
+      const prefix = INIT_RELEVANT_PREFIXES[index]!;
+      if (line.length >= prefix.length && line.subarray(0, prefix.length).equals(prefix)) return undefined;
+    }
+  }
+  return TODO_NOOP_RECORD;
+}
+
+function estimateColdRecordWeight(entry: ColdWireRecord): number {
+  const cached = coldRecordBytesCache.get(entry);
+  if (cached !== undefined) return cached;
+  const bytes = estimateColdSnapshotBytes(entry, COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES + 1);
+  coldRecordBytesCache.set(entry, bytes);
+  return bytes;
 }
 
 export interface TranscriptToolCallCountLimits {
@@ -291,6 +361,25 @@ interface ColdSnapshotFlight {
 interface WireReceiptVerificationFlight {
   readonly controller: AbortController;
   readonly promise: Promise<boolean>;
+  waiters: number;
+  settled: boolean;
+}
+
+interface ColdWindowFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<ColdWireWindow | undefined>;
+  waiters: number;
+  settled: boolean;
+}
+
+interface ColdTodosResult {
+  readonly todos: readonly TranscriptTodo[];
+  readonly verified: boolean;
+}
+
+interface ColdTodosFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<ColdTodosResult | undefined>;
   waiters: number;
   settled: boolean;
 }
@@ -553,6 +642,7 @@ interface AnchorSeek {
 
 export class TranscriptService {
   private readonly historyReads = new HistoryReadLane();
+  private readonly coldTodoReads = new HistoryReadLane(1);
 
   scheduleHistoryRead<T>(signal: AbortSignal | undefined, read: (signal: AbortSignal) => Promise<T>, priority = false): Promise<T> {
     return this.historyReads.run(signal, read, priority);
@@ -574,6 +664,9 @@ export class TranscriptService {
   private readonly opsJournalLimits: Required<TranscriptOpsJournalLimits>;
   private readonly wireRecordReader: NonNullable<TranscriptServiceDeps['wireRecordReader']>;
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
+  private readonly coldWindowFlights = new Map<string, ColdWindowFlight>();
+  private readonly coldTodosFlights = new Map<string, ColdTodosFlight>();
+  private readonly coldTodosCache = new Map<string, { fingerprint: string; todos: readonly TranscriptTodo[]; verified: boolean }>();
   private readonly residencyMaintenance = new Map<string, { controller: AbortController; again: boolean }>();
   private readonly warnedRetainedTurns = new WeakMap<TranscriptTurn, 'not_found' | 'mismatch' | 'over_budget'>();
   private readonly coldSnapshotCache = new Map<string, ColdSnapshotCacheEntry>();
@@ -1771,6 +1864,7 @@ export class TranscriptService {
       await this.toolCallCountReader(wirePath, fileSize, {
         maxBytes: fileSize,
         chunkBytes: this.toolCallCountLimits.readChunkBytes,
+        decodeRecord: transcriptWindowRecord,
         onRecord: (record) => {
           for (const fact of adapter.add(record)) {
             if (fact.durability === 'durable' && acceptedDurableFacts.has(fact.factId)) continue;
@@ -2313,6 +2407,58 @@ export class TranscriptService {
       return existing;
     }
     if (existing !== undefined) this.forgetColdWindow(wirePath);
+    if (preserveOpenTurnIds === undefined && captureReplayState === undefined) {
+      const flightKey = `${wirePath}\0${fingerprint}\0${mode}`;
+      let flight = this.coldWindowFlights.get(flightKey);
+      if (flight !== undefined && !flight.controller.signal.aborted) this.coldReadsShared += 1;
+      if (flight === undefined || flight.controller.signal.aborted) {
+        const controller = new AbortController();
+        let created!: ColdWindowFlight;
+        const promise = Promise.resolve()
+          .then(() => this.buildColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, controller.signal, undefined, undefined, mode))
+          .finally(() => {
+            created.settled = true;
+            if (this.coldWindowFlights.get(flightKey) === created) this.coldWindowFlights.delete(flightKey);
+          });
+        created = { controller, promise, waiters: 0, settled: false };
+        flight = created;
+        this.coldWindowFlights.set(flightKey, flight);
+      }
+      return this.awaitColdWindowFlight(flight, signal);
+    }
+    return this.buildColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, mode);
+  }
+
+  private async awaitColdWindowFlight(flight: ColdWindowFlight, signal: AbortSignal): Promise<ColdWireWindow | undefined> {
+    signal.throwIfAborted();
+    flight.waiters += 1;
+    let onAbort: (() => void) | undefined;
+    try {
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => {
+          reject(signal.reason ?? new DOMException('The request was aborted', 'AbortError'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return await Promise.race([flight.promise, aborted]);
+    } catch (error) {
+      if (signal.aborted) this.coldReadsCancelled += 1;
+      throw error;
+    } finally {
+      if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+      flight.waiters -= 1;
+      if (flight.waiters === 0 && !flight.settled) {
+        flight.controller.abort(new DOMException('No cold wire window readers remain', 'AbortError'));
+      }
+    }
+  }
+
+  private async buildColdWireWindow(sessionId: string, agentId: string, wirePath: string,
+    info: { size: number; mtimeMs: number; ctimeMs: number; dev: number | bigint; ino: number | bigint; birthtimeMs: number },
+    fingerprint: string, signal: AbortSignal, preserveOpenTurnIds?: () => readonly string[],
+    captureReplayState?: (state: TranscriptReplayState) => void, mode: 'headers' | 'records' | 'first-screen' = 'headers',
+  ): Promise<ColdWireWindow | undefined> {
+    const resolveHeaders = mode === 'headers';
     const discovered = mode === 'first-screen' ? await this.firstScreenRecords(agentId, wirePath, info.size, signal) : undefined;
     const start = discovered?.start ?? await this.tailRecordStart(wirePath, info.size, signal);
     const read = discovered ?? await this.readWireRange(wirePath, start, info.size, signal, !resolveHeaders);
@@ -2369,7 +2515,7 @@ export class TranscriptService {
         this.deleteColdSnapshotCache(wirePath);
         return skipped;
       }
-      const fitted = this.fitOlderColdWindow(agentId, read.records, window, preserveOpenTurnIds, captureReplayState);
+      const fitted = await this.fitOlderColdWindow(agentId, read.records, window, signal, preserveOpenTurnIds, captureReplayState);
       const startAt = read.recordStarts[fitted.keepFrom];
       if (startAt === undefined || startAt >= window.start) return window;
       const retainedTurnIds = new Set(fitted.snapshot.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
@@ -2393,64 +2539,130 @@ export class TranscriptService {
     return extended;
   }
 
-  private fitOlderColdWindow(agentId: string, older: readonly ColdWireRecord[], window: ColdWireWindow,
-    preserveOpenTurnIds?: () => readonly string[], captureReplayState?: (state: TranscriptReplayState) => void,
-  ): { keepFrom: number; records: ColdWireRecord[]; snapshot: AgentTranscriptSnapshot; bytes: number; droppedTail: boolean } {
-    const projectFrom = (keepFrom: number, oldCount: number) => {
+  private async fitOlderColdWindow(agentId: string, older: readonly ColdWireRecord[], window: ColdWireWindow,
+    signal: AbortSignal, preserveOpenTurnIds?: () => readonly string[], captureReplayState?: (state: TranscriptReplayState) => void,
+  ): Promise<{ keepFrom: number; records: ColdWireRecord[]; snapshot: AgentTranscriptSnapshot; bytes: number; droppedTail: boolean }> {
+    let yieldedAt = performance.now();
+    const maybeYield = async () => {
+      if (performance.now() - yieldedAt >= 4) {
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+        signal.throwIfAborted();
+        yieldedAt = performance.now();
+      }
+    };
+    const projectFrom = async (keepFrom: number, oldCount: number) => {
+      await maybeYield();
       const records = [...older.slice(keepFrom), ...window.records.slice(0, oldCount)];
       const snapshot = this.projectColdRecords(agentId, records, false, preserveOpenTurnIds, captureReplayState, window);
+      await maybeYield();
       return {
         keepFrom, records, snapshot, bytes: this.coldWindowBytes(snapshot, records),
         droppedTail: oldCount < window.records.length,
       };
     };
     const allOld = window.records.length;
-    if (window.snapshot.items.every(item => item.kind === 'turn')) {
-      let oldCount = Math.floor(allOld / 2);
-      for (;;) {
-        const fitted = projectFrom(0, oldCount);
-        if (fitted.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) return fitted;
-        if (oldCount === 0) break;
-        oldCount = Math.floor(oldCount / 2);
-      }
-    }
-    let low = 0;
-    let high = allOld;
-    let fitted = projectFrom(0, 0);
-    let fittedWithinCap = fitted.bytes <= COLD_WIRE_WINDOW_MAX_BYTES;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      const candidate = projectFrom(0, mid);
-      if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
-        fitted = candidate;
-        fittedWithinCap = true;
-        low = mid + 1;
-      } else high = mid - 1;
-    }
-    if (fittedWithinCap || older.length === 0) return fitted;
-    const lastOlder = older.length - 1;
-    fitted = projectFrom(lastOlder, 0);
-    low = 1;
-    high = lastOlder - 1;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      const candidate = projectFrom(mid, 0);
-      if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
-        fitted = candidate;
-        high = mid - 1;
-      } else low = mid + 1;
-    }
-    const chosenKeepFrom = fitted.keepFrom;
-    if (fitted.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
-      low = 1;
-      high = allOld;
+    const olderPrefix = new Float64Array(older.length + 1);
+    for (let i = 0; i < older.length; i += 1) olderPrefix[i + 1] = olderPrefix[i]! + estimateColdRecordWeight(older[i]!);
+    const windowPrefix = new Float64Array(allOld + 1);
+    for (let i = 0; i < allOld; i += 1) windowPrefix[i + 1] = windowPrefix[i]! + estimateColdRecordWeight(window.records[i]!);
+    const olderTotalWeight = olderPrefix[older.length]!;
+    const windowTotalWeight = windowPrefix[allOld]!;
+    let ratio = windowTotalWeight > 0 && window.bytes > 0
+      ? Math.max(1.05, Math.min(3.5, window.bytes / windowTotalWeight))
+      : 2.0;
+
+    const findMaxOldCount = (maxWeight: number): number => {
+      if (maxWeight <= 0 || allOld === 0) return 0;
+      let low = 0;
+      let high = allOld;
+      let best = 0;
       while (low <= high) {
         const mid = (low + high) >> 1;
-        const candidate = projectFrom(chosenKeepFrom, mid);
-        if (candidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
-          fitted = candidate;
+        if (windowPrefix[mid]! <= maxWeight) {
+          best = mid;
           low = mid + 1;
-        } else high = mid - 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      return best;
+    };
+
+    const findMinKeepFrom = (maxWeight: number): number => {
+      let low = 0;
+      let high = Math.max(0, older.length - 1);
+      let best = high;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (olderTotalWeight - olderPrefix[mid]! <= maxWeight) {
+          best = mid;
+          high = mid - 1;
+        } else {
+          low = mid + 1;
+        }
+      }
+      return best;
+    };
+
+    if (older.length === 0) return projectFrom(0, 0);
+
+    let zeroOldCandidate: Awaited<ReturnType<typeof projectFrom>> | undefined;
+    if (olderTotalWeight <= COLD_WIRE_WINDOW_MAX_BYTES) {
+      const initialOldCount = findMaxOldCount(Math.max(0, (COLD_WIRE_WINDOW_MAX_BYTES * 0.92) / ratio - olderTotalWeight));
+      const first = await projectFrom(0, initialOldCount);
+      if (first.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) {
+        if (initialOldCount < allOld && first.bytes < COLD_WIRE_WINDOW_MAX_BYTES * 0.65) {
+          const observedWeight = olderTotalWeight + windowPrefix[initialOldCount]!;
+          if (observedWeight > 0) ratio = Math.max(1.02, first.bytes / observedWeight);
+          const steppedCount = findMaxOldCount(Math.max(0, (COLD_WIRE_WINDOW_MAX_BYTES * 0.94) / ratio - olderTotalWeight));
+          if (steppedCount > initialOldCount) {
+            const stepped = await projectFrom(0, steppedCount);
+            if (stepped.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) return stepped;
+          }
+        }
+        return first;
+      }
+      const observedWeight = olderTotalWeight + windowPrefix[initialOldCount]!;
+      if (observedWeight > 0) ratio = Math.max(1.05, (first.bytes / observedWeight) * 1.06);
+      if (initialOldCount === 0) {
+        zeroOldCandidate = first;
+      } else {
+        const shrunkCount = findMaxOldCount(Math.max(0, (COLD_WIRE_WINDOW_MAX_BYTES * 0.9) / ratio - olderTotalWeight));
+        if (shrunkCount > 0 && shrunkCount < initialOldCount) {
+          const second = await projectFrom(0, shrunkCount);
+          if (second.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) return second;
+        }
+        zeroOldCandidate = await projectFrom(0, 0);
+        if (zeroOldCandidate.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) return zeroOldCandidate;
+        if (olderTotalWeight > 0) ratio = Math.max(1.05, (zeroOldCandidate.bytes / olderTotalWeight) * 1.06);
+      }
+    }
+
+    const lastOlder = older.length - 1;
+    if (olderTotalWeight - olderPrefix[lastOlder]! > COLD_WIRE_WINDOW_MAX_BYTES) {
+      return projectFrom(lastOlder, 0);
+    }
+    const estKeepFrom = findMinKeepFrom((COLD_WIRE_WINDOW_MAX_BYTES * 0.9) / ratio);
+    let fitted = estKeepFrom === 0 && zeroOldCandidate !== undefined ? zeroOldCandidate : await projectFrom(estKeepFrom, 0);
+    if (fitted.bytes > COLD_WIRE_WINDOW_MAX_BYTES) {
+      const usedWeight = olderTotalWeight - olderPrefix[fitted.keepFrom]!;
+      if (usedWeight > 0) ratio = Math.max(1.05, (fitted.bytes / usedWeight) * 1.08);
+      const tighterKeepFrom = Math.max(fitted.keepFrom + 1, findMinKeepFrom((COLD_WIRE_WINDOW_MAX_BYTES * 0.88) / ratio));
+      if (tighterKeepFrom < lastOlder) {
+        const tighter = await projectFrom(tighterKeepFrom, 0);
+        if (tighter.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) fitted = tighter;
+        else fitted = await projectFrom(lastOlder, 0);
+      } else {
+        fitted = await projectFrom(lastOlder, 0);
+      }
+    }
+    if (fitted.bytes < COLD_WIRE_WINDOW_MAX_BYTES * 0.8 && allOld > 0) {
+      const keptOlderWeight = olderTotalWeight - olderPrefix[fitted.keepFrom]!;
+      if (keptOlderWeight > 0 && fitted.bytes > 0) ratio = Math.max(1.02, fitted.bytes / keptOlderWeight);
+      const extraOldCount = findMaxOldCount(Math.max(0, (COLD_WIRE_WINDOW_MAX_BYTES * 0.92) / ratio - keptOlderWeight));
+      if (extraOldCount > 0) {
+        const withExtra = await projectFrom(fitted.keepFrom, extraOldCount);
+        if (withExtra.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) return withExtra;
       }
     }
     return fitted;
@@ -2500,7 +2712,7 @@ export class TranscriptService {
     for (const wirePath of this.anchorWindows.keys()) {
       if (wirePath.split(/[/\\]/).includes(sessionId)) this.anchorWindows.delete(wirePath);
     }
-    for (const map of [this.turnStartIndexes, this.anchorOpeningSeeks]) {
+    for (const map of [this.turnStartIndexes, this.anchorOpeningSeeks, this.coldTodosCache]) {
       for (const wirePath of map.keys()) if (wirePath.split(/[/\\]/).includes(sessionId)) map.delete(wirePath);
     }
     for (const key of this.anchorSeeks.keys()) {
@@ -2611,7 +2823,7 @@ export class TranscriptService {
           boundary = start + lineStart;
           if (oversizedLine) {
             const head = prefix.length >= 64 ? prefix : Buffer.concat([prefix, oversizedLeading]);
-            const opaque = transcriptWindowRecord(head);
+            const opaque = transcriptOpaqueHeaderRecord(head);
             oversizedLine = false;
             oversizedLeading = Buffer.alloc(0);
             if (opaque === undefined) {
@@ -2915,6 +3127,212 @@ export class TranscriptService {
     ) };
   }
 
+  async readColdTodos(
+    sessionId: string,
+    agentId: string = MAIN_AGENT_ID,
+    signal?: AbortSignal,
+  ): Promise<{ readonly todos: readonly TranscriptTodo[]; readonly verified: boolean } | undefined> {
+    signal?.throwIfAborted();
+    await this.live.get(sessionId)?.pendingDisposals.get(agentId);
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    const key = `${sessionId}\0${agentId}`;
+    let flight = this.coldTodosFlights.get(key);
+    if (flight !== undefined && !flight.controller.signal.aborted) this.coldReadsShared += 1;
+    if (flight === undefined || flight.controller.signal.aborted) {
+      const controller = new AbortController();
+      let created!: ColdTodosFlight;
+      const promise = Promise.resolve()
+        .then(() => this.loadColdTodos(sessionId, agentId, controller.signal))
+        .finally(() => {
+          created.settled = true;
+          if (this.coldTodosFlights.get(key) === created) this.coldTodosFlights.delete(key);
+        });
+      created = { controller, promise, waiters: 0, settled: false };
+      flight = created;
+      this.coldTodosFlights.set(key, flight);
+    }
+    const result = await this.awaitColdTodos(flight, signal);
+    this.assertReadableAgent(sessionId, agentId);
+    return result;
+  }
+
+  private async awaitColdTodos(flight: ColdTodosFlight, signal?: AbortSignal): Promise<ColdTodosResult | undefined> {
+    signal?.throwIfAborted();
+    flight.waiters += 1;
+    let onAbort: (() => void) | undefined;
+    try {
+      if (signal === undefined) return await flight.promise;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => {
+          reject(signal.reason ?? new DOMException('The request was aborted', 'AbortError'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return await Promise.race([flight.promise, aborted]);
+    } catch (error) {
+      if (signal?.aborted === true) this.coldReadsCancelled += 1;
+      throw error;
+    } finally {
+      if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
+      flight.waiters -= 1;
+      if (flight.waiters === 0 && !flight.settled) {
+        flight.controller.abort(new DOMException('No cold todo readers remain', 'AbortError'));
+      }
+    }
+  }
+
+  private async loadColdTodos(sessionId: string, agentId: string, signal: AbortSignal): Promise<ColdTodosResult | undefined> {
+    const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
+    if (summary === undefined) return undefined;
+    if (!isPlainAgentId(agentId)) return { todos: [], verified: false };
+    const wirePath = join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, AGENTS_DIR, agentId, WIRE_FILE);
+    let info = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    signal.throwIfAborted();
+    const missingWire = info === undefined;
+    const sealed = info !== undefined && await this.hasVerifiedWireReceipt(wirePath, info, signal);
+    const liveVerified = info !== undefined && !sealed && await this.hasVerifiedLiveEpoch(sessionId, agentId);
+    if (liveVerified) info = await stat(wirePath).catch(() => undefined);
+    const verified = sealed || liveVerified;
+    signal.throwIfAborted();
+    const fingerprint = info === undefined ? undefined : fileIdentity(info);
+    const cacheFingerprint = info === undefined ? undefined : `${fingerprint}:${fileFingerprint(info)}`;
+    if (cacheFingerprint !== undefined) {
+      const cachedFull = this.coldSnapshotCache.get(wirePath);
+      if (cachedFull !== undefined && !cachedFull.pageOnly && cachedFull.fingerprint === cacheFingerprint && cachedFull.expiresAt > Date.now()) {
+        return { todos: cachedFull.snapshot.todos, verified: cachedFull.snapshot.toolCallCountKnown === true };
+      }
+      const cachedTodos = this.coldTodosCache.get(wirePath);
+      if (cachedTodos !== undefined && cachedTodos.fingerprint === cacheFingerprint && (cachedTodos.verified || !verified)) {
+        this.coldTodosCache.delete(wirePath);
+        this.coldTodosCache.set(wirePath, cachedTodos);
+        return { todos: cachedTodos.todos, verified: cachedTodos.verified };
+      }
+      if (sealed && fingerprint !== undefined && info !== undefined && info.size <= TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES) {
+        const checkpointStore = this.deps.core.accessor.get(IQueryStore) as IQueryStore | undefined;
+        if (checkpointStore !== undefined) {
+          const checkpoint = await readTranscriptProjectionCheckpoint(
+            checkpointStore,
+            `${summary.workspaceId}\0${sessionId}\0${agentId}`,
+            fingerprint,
+            info.size,
+          );
+          if (checkpoint !== undefined && checkpoint.nextByteOffset === info.size) {
+            return { todos: checkpoint.snapshot.todos, verified: true };
+          }
+        }
+      }
+    }
+    const transcript = new AgentTranscriptDraft(agentId);
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter(agentId);
+    const initState = { onlyInit: true, sawMetadata: false };
+    const readLimits = this.coldReadLimits;
+    const todoSliceBytes = this.deps.coldReadLimits?.maxBytes ?? Math.max(readLimits.maxBytes, 32 * 1024 * 1024);
+    const startedAt = Date.now();
+    let complete = false;
+    let readResult!: WireRecordsStreamResult;
+    try {
+      let nextByteOffset = 0;
+      let recordCount = 0;
+      let bytesRead = 0;
+      let oversizedRecord = false;
+      for (;;) {
+        signal.throwIfAborted();
+        const sliceStartOffset = nextByteOffset;
+        const sliceStartOrdinal = recordCount;
+        const sliceOversized: boolean = oversizedRecord;
+        const read: WireRecordsStreamResult = await this.coldTodoReads.run(signal, (owned) => this.wireRecordReader(wirePath, {
+          startByteOffset: sliceStartOffset === 0 ? undefined : sliceStartOffset,
+          startRecordOrdinal: sliceStartOrdinal,
+          chunkBytes: readLimits.chunkBytes,
+          maxBytes: sliceOversized ? undefined : todoSliceBytes,
+          maxRecords: sliceOversized ? 1 : readLimits.maxRecords,
+          maxLineBytes: sliceOversized ? undefined : readLimits.maxLineBytes,
+          signal: owned,
+          decodeRecord: (line) => transcriptTodoRecord(line, initState.onlyInit),
+          onRecord: (record, span) => {
+            if (record === TODO_NOOP_RECORD) {
+              initState.onlyInit = false;
+              return;
+            }
+            if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
+            if (initState.onlyInit) {
+              if (isWireInitOnlyRecord(record, span.ordinal)) {
+                if (span.ordinal === 0) initState.sawMetadata = true;
+              } else {
+                initState.onlyInit = false;
+              }
+            }
+            return reducer.apply(adapter.add(record, {
+              startByteOffset: span.startByteOffset,
+              endByteOffset: span.endByteOffset,
+              ordinal: span.ordinal,
+            }));
+          },
+        }), false);
+        bytesRead += read.bytesRead;
+        recordCount += read.recordCount;
+        readResult = { ...read, bytesRead, recordCount };
+        if (read.complete || read.incompleteReason === 'partial_tail') break;
+        const progressed = read.nextByteOffset > nextByteOffset;
+        if (!progressed && oversizedRecord) throw new Error('history_canonical_source_no_progress');
+        if (read.incompleteReason !== 'byte_budget' && read.incompleteReason !== 'record_budget' && read.incompleteReason !== 'line_budget') {
+          throw new Error(`history_canonical_source_incomplete:${read.incompleteReason ?? 'unknown'}`);
+        }
+        oversizedRecord = !progressed;
+        nextByteOffset = read.nextByteOffset;
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+      }
+      this.coldReadsCompleted += 1;
+      this.coldReadBytes += readResult.bytesRead;
+      this.coldReadRecords += readResult.recordCount;
+      this.coldReadDurationMs += Date.now() - startedAt;
+      if (!readResult.complete && readResult.incompleteReason !== 'partial_tail') this.coldReadsFenced += 1;
+      complete = readResult.complete;
+    } catch (error) {
+      if (signal.aborted) throw signal.reason ?? new DOMException('The cold todo read was aborted', 'AbortError');
+      if (missingWire && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        const metadata = agentId === MAIN_AGENT_ID
+          ? await readFile(join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, STATE_FILE), 'utf-8').then(text => JSON.parse(text) as SessionMeta).catch((err: NodeJS.ErrnoException) => {
+              if (err.code === 'ENOENT') return undefined;
+              throw err;
+            })
+          : undefined;
+        signal.throwIfAborted();
+        if (metadata?.agents !== undefined && Object.keys(metadata.agents).length === 0) return { todos: [], verified: true };
+        return { todos: [], verified: false };
+      }
+      this.logTranscriptFailure(sessionId, agentId, error);
+      throw error;
+    }
+    reducer.apply(adapter.finish());
+    const snapshot = transcript.snapshot();
+    const stillVerified = verified && (sealed
+      ? await this.hasVerifiedWireReceipt(wirePath, info!, signal)
+      : await this.hasVerifiedLiveEpoch(sessionId, agentId));
+    const initOnlyReplay = complete && info !== undefined && info.size > 0 && readResult !== undefined &&
+      readResult.recordCount > 0 && readResult.nextByteOffset === info.size &&
+      initState.onlyInit && initState.sawMetadata && snapshot.todos.length === 0;
+    const after = (stillVerified || initOnlyReplay || complete) ? await stat(wirePath).catch(() => undefined) : undefined;
+    const unchanged = after !== undefined && `${fileIdentity(after)}:${fileFingerprint(after)}` === cacheFingerprint;
+    const proven = complete && (stillVerified || initOnlyReplay) && unchanged;
+    const entry = { todos: snapshot.todos, verified: proven };
+    if (complete && unchanged && cacheFingerprint !== undefined && !signal.aborted) {
+      this.coldTodosCache.delete(wirePath);
+      this.coldTodosCache.set(wirePath, { fingerprint: cacheFingerprint, todos: snapshot.todos, verified: proven });
+      while (this.coldTodosCache.size > COLD_TODOS_CACHE_MAX_ENTRIES) {
+        const oldest = this.coldTodosCache.keys().next().value;
+        if (oldest === undefined) break;
+        this.coldTodosCache.delete(oldest);
+      }
+    }
+    return entry;
+  }
+
   async readColdSnapshotBounded(
     sessionId: string,
     agentId: string = MAIN_AGENT_ID,
@@ -3211,7 +3629,7 @@ export class TranscriptService {
       reducer.restore(checkpoint.acceptedDurableFacts);
     }
     let complete: boolean;
-    let readResult: WireRecordsStreamResult | undefined;
+    let readResult!: WireRecordsStreamResult;
     const initState = { onlyInit: checkpoint === undefined && !bounded, sawMetadata: false };
     const onColdRecord: NonNullable<WireRecordsStreamOptions['onRecord']> = (record, span) => {
       if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
@@ -3233,14 +3651,18 @@ export class TranscriptService {
       let oversizedRecord = false;
       for (;;) {
         signal.throwIfAborted();
-        const read = await this.wireRecordReader(wirePath, {
-          startByteOffset: nextByteOffset === 0 ? undefined : nextByteOffset,
-          startRecordOrdinal: (checkpoint?.recordCount ?? 0) + recordCount,
+        const sliceStartOffset = nextByteOffset;
+        const sliceStartOrdinal = (checkpoint?.recordCount ?? 0) + recordCount;
+        const sliceOversized: boolean = oversizedRecord;
+        const read: WireRecordsStreamResult = await this.wireRecordReader(wirePath, {
+          startByteOffset: sliceStartOffset === 0 ? undefined : sliceStartOffset,
+          startRecordOrdinal: sliceStartOrdinal,
           chunkBytes: readLimits.chunkBytes,
-          maxBytes: oversizedRecord ? undefined : readLimits.maxBytes,
-          maxRecords: oversizedRecord ? 1 : readLimits.maxRecords,
-          maxLineBytes: oversizedRecord ? undefined : readLimits.maxLineBytes,
+          maxBytes: sliceOversized ? undefined : readLimits.maxBytes,
+          maxRecords: sliceOversized ? 1 : readLimits.maxRecords,
+          maxLineBytes: sliceOversized ? undefined : readLimits.maxLineBytes,
           signal,
+          decodeRecord: transcriptWindowRecord,
           onRecord: onColdRecord,
         });
         bytesRead += read.bytesRead;
@@ -3535,6 +3957,7 @@ export class TranscriptService {
         maxRecords: budget.records,
         chunkBytes: this.coldReadLimits.chunkBytes,
         signal: owned,
+        decodeRecord: transcriptWindowRecord,
         onRecord: (record, span) => {
           if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
           window.records.push({ record, position: { startByteOffset: span.startByteOffset, endByteOffset: span.endByteOffset } });
@@ -3607,6 +4030,7 @@ export class TranscriptService {
       maxBytes: budget.bytes,
       chunkBytes: this.coldReadLimits.chunkBytes,
       signal: owned,
+      decodeRecord: transcriptWindowRecord,
       onRecord: (record, span) => {
         const recordTurn = wireTurnId(record);
         if (recordTurn !== undefined && recordTurn !== turnId) { ended = true; return false; }
@@ -3682,6 +4106,7 @@ export class TranscriptService {
       maxRecords: budget.records,
       chunkBytes: this.coldReadLimits.chunkBytes,
       signal,
+      decodeRecord: transcriptWindowRecord,
       onRecord: (record, span) => {
         const found = wireTurnId(record);
         if (found !== undefined && !starts.has(found)) starts.set(found, span.startByteOffset);
@@ -3824,6 +4249,7 @@ export class TranscriptService {
 
   dispose(): void {
     this.historyReads.dispose();
+    this.coldTodoReads.dispose();
     this.detailHistoryLocator?.invalidateCanonical();
     this.eventLoopDelay.disable();
     this.clearVerifiedWireReceipts();
@@ -3831,6 +4257,15 @@ export class TranscriptService {
     for (const key of this.coldSnapshotCache.keys()) this.deleteColdSnapshotCache(key);
     this.coldWireWindows.clear();
     this.coldWireWindowBytes = 0;
+    for (const flight of this.coldWindowFlights.values()) {
+      if (!flight.settled) flight.controller.abort(new DOMException('Transcript service is disposing', 'AbortError'));
+    }
+    this.coldWindowFlights.clear();
+    for (const flight of this.coldTodosFlights.values()) {
+      if (!flight.settled) flight.controller.abort(new DOMException('Transcript service is disposing', 'AbortError'));
+    }
+    this.coldTodosFlights.clear();
+    this.coldTodosCache.clear();
     this.anchorSeeks.clear();
     this.anchorWindows.clear();
     this.turnStartIndexes.clear();
@@ -4233,10 +4668,15 @@ function estimateColdSnapshotBytes(snapshot: unknown, cap: number): number {
     else if (typeof value === 'object' && value !== null && !seen.has(value)) {
       seen.add(value);
       bytes += 64;
-      if (Array.isArray(value)) for (const item of value) stack.push(item);
-      else for (const [key, item] of Object.entries(value)) {
-        bytes += key.length * 2;
-        stack.push(item);
+      if (Array.isArray(value)) {
+        for (let index = 0; index < value.length; index += 1) stack.push(value[index]);
+      } else {
+        const record = value as Record<string, unknown>;
+        for (const key in record) {
+          if (!Object.hasOwn(record, key)) continue;
+          bytes += key.length * 2;
+          stack.push(record[key]);
+        }
       }
     }
     if (bytes > cap) return bytes;

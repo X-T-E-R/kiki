@@ -24,6 +24,7 @@ import {
   type ToolCallFrame,
   type TranscriptInteraction,
   type TranscriptItem,
+  type TranscriptTodo,
   type TranscriptTurn,
 } from '@kiki/transcript';
 
@@ -117,6 +118,35 @@ function residentTimelineEntity(service: TranscriptService, sessionId: string, a
   return turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
 }
 
+function mergeColdAndLiveTodos(
+  coldTodos: readonly TranscriptTodo[],
+  liveTodos: readonly TranscriptTodo[],
+): TranscriptTodo[] {
+  const merged = new Map<string, TranscriptTodo>();
+  for (const todo of coldTodos) merged.set(todo.todoId, todo);
+  for (const live of liveTodos) {
+    const cold = merged.get(live.todoId);
+    if (cold === undefined || live.todoId !== 'todo') {
+      merged.set(live.todoId, live);
+      continue;
+    }
+    const liveNewer = live.updatedAt !== undefined && cold.updatedAt !== undefined
+      ? live.updatedAt >= cold.updatedAt
+      : live.updatedAt !== undefined || live.items.length > 0;
+    const liveNotesNewer = live.notesMeta !== undefined && (cold.notesMeta === undefined || live.notesMeta.rev >= cold.notesMeta.rev);
+    merged.set(live.todoId, {
+      ...(liveNewer ? cold : live),
+      ...(liveNewer ? live : cold),
+      items: liveNewer ? live.items : cold.items,
+      notes: liveNotesNewer ? live.notes : (cold.notes ?? live.notes),
+      notesMeta: liveNotesNewer ? live.notesMeta : (cold.notesMeta ?? live.notesMeta),
+      notesStatus: liveNotesNewer ? live.notesStatus : (cold.notesStatus ?? live.notesStatus),
+      updatedAt: liveNewer ? live.updatedAt : cold.updatedAt,
+    });
+  }
+  return [...merged.values()];
+}
+
 export async function readSessionViewCanonicalEntity(
   service: TranscriptService, sessionId: string,
   input: { readonly agentId: string; readonly ref: Pick<ContentRef, 'source'>; readonly signal?: AbortSignal },
@@ -124,6 +154,24 @@ export async function readSessionViewCanonicalEntity(
   input.signal?.throwIfAborted();
   if (input.ref.source.kind === 'turn' || input.ref.source.kind === 'frame') {
     return service.readCanonicalEntity(sessionId, input.agentId, input.ref.source, input.signal);
+  }
+  if (input.ref.source.kind === 'todo' && typeof service.readColdTodos === 'function') {
+    const store = service.forSessionLive(sessionId, { tailFirst: true });
+    if (store === undefined) {
+      const cold = await service.readColdTodos(sessionId, input.agentId, input.signal);
+      input.signal?.throwIfAborted();
+      return cold?.todos.find((todo) => todo.todoId === input.ref.source.id);
+    }
+    const transcript = await service.ensureAgentHistory(sessionId, input.agentId, { tailFirst: true, signal: input.signal });
+    if (transcript === undefined) return undefined;
+    if (!transcript.hasMoreOlder) {
+      const found = transcript.getTodo(input.ref.source.id);
+      if (found !== undefined) return found;
+    }
+    const cold = await service.readColdTodos(sessionId, input.agentId, input.signal);
+    input.signal?.throwIfAborted();
+    const todos = cold === undefined ? [...transcript.getTodos().values()] : mergeColdAndLiveTodos(cold.todos, [...transcript.getTodos().values()]);
+    return todos.find((todo) => todo.todoId === input.ref.source.id);
   }
   const store = service.forSessionLive(sessionId);
   const transcript = store === undefined ? undefined : await service.ensureAgentHistory(sessionId, input.agentId);
@@ -594,6 +642,64 @@ export async function readSessionViewTranscriptDetails(
   },
 ): Promise<TranscriptDetailListResponse | undefined> {
   input.signal?.throwIfAborted();
+  if (input.kind === 'todo' && typeof transcriptService.readColdTodos === 'function') {
+    const store = transcriptService.forSessionLive(sessionId, { tailFirst: true });
+    let todos: readonly TranscriptTodo[];
+    let source: TranscriptRead['source'];
+    let verified: boolean;
+    if (store === undefined) {
+      const cold = await transcriptService.readColdTodos(sessionId, input.agentId, input.signal);
+      if (cold === undefined) return undefined;
+      todos = cold.todos;
+      source = 'cold';
+      verified = cold.verified;
+    } else {
+      const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { tailFirst: true, signal: input.signal });
+      if (transcript === undefined) return undefined;
+      if (!transcript.hasMoreOlder) {
+        const snap = transcript.snapshot();
+        todos = snap.todos;
+        source = 'live';
+        verified = snap.toolCallCountKnown === true;
+      } else {
+        const cold = await transcriptService.readColdTodos(sessionId, input.agentId, input.signal);
+        if (cold === undefined) return undefined;
+        todos = mergeColdAndLiveTodos(cold.todos, [...transcript.getTodos().values()]);
+        const liveVerified = transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) && cold.verified;
+        source = liveVerified ? 'live' : 'derived';
+        verified = liveVerified;
+      }
+    }
+    const ordered: readonly TranscriptCollectionEntity[] = todos.toSorted((left, right) =>
+      left.todoId < right.todoId ? -1 : left.todoId > right.todoId ? 1 : 0);
+    const cursor = input.cursor === undefined ? undefined : decodeTranscriptDetailCursor(input.cursor, input.agentId, input.kind);
+    if (cursor?.v === 2 && cursor.source !== source) return {
+      session_id: sessionId, agent_id: input.agentId, kind: input.kind, items: [], has_more: true, read: staleRead(source),
+    };
+    const after = cursor?.after;
+    const limit = Math.max(1, Math.min(100, Math.floor(input.limit ?? 20)));
+    const start = after === undefined ? 0 : ordered.findIndex((entry) => detailEntityId(input.kind, entry) > after);
+    const offset = start < 0 ? ordered.length : start;
+    const items: TranscriptCollectionEntity[] = [];
+    let bytes = 2048;
+    for (const entity of ordered.slice(offset, offset + limit)) {
+      input.signal?.throwIfAborted();
+      const projected = boundedEntity(entity, { kind: 'todo', id: detailEntityId('todo', entity) });
+      const size = jsonBytes(projected) + 1;
+      if (items.length > 0 && bytes + size > TRANSCRIPT_WINDOW_BYTES) break;
+      items.push(projected);
+      bytes += size;
+    }
+    const hasMore = offset + items.length < ordered.length;
+    const next_cursor = hasMore && items.length > 0
+      ? encodeTranscriptDetailCursor({ v: 2, agentId: input.agentId, kind: input.kind, source, after: detailEntityId(input.kind, items.at(-1)!) })
+      : undefined;
+    const read = readFor(source, verified ? { kind: 'full', hasMoreOlder: false } : { kind: 'unknown', hasMoreOlder: true });
+    if (next_cursor !== undefined) {
+      return { session_id: sessionId, agent_id: input.agentId, kind: input.kind, items, total: ordered.length, has_more: hasMore, read, next_cursor } as TranscriptDetailListResponse;
+    }
+    return { session_id: sessionId, agent_id: input.agentId, kind: input.kind, items, total: ordered.length, has_more: hasMore, read } as TranscriptDetailListResponse;
+  }
   const store = transcriptService.forSessionLive(sessionId);
   const transcript = store === undefined ? undefined : await transcriptService.ensureAgentHistory(sessionId, input.agentId);
   const snapshot = transcript === undefined ? await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal)
