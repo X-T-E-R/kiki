@@ -1,4 +1,5 @@
 import { PassThrough, Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { join } from 'pathe';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -14,15 +15,32 @@ import { BrowserError } from '#/app/browser/errors';
 import type { BrowserRequestContext } from '#/app/browser/codexBrowser';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
-import { AgentBrowserService, BrowserEgoRunTool, egoRunExecution, type IAgentBrowserService } from '#/agent/tools/browser/browserTools';
+import { AgentBrowserService, BrowserEgoRunTool, IAgentBrowserService, egoRunExecution } from '#/agent/tools/browser/browserTools';
 import { toolApprovalRule } from '#/agent/tools/os/sshToolTarget';
 import type { Runtime } from '#/runtime/runtime';
 import { egoPathHits, parseEgoUninstallExport } from '#/app/browser/ego/hints';
 import {
   classifyEgoCheck, egoNotReadyMessage, egoSpaceName, extractEgoDiagnostic, resolveEgoCli, type EgoUninstallRecord,
 } from '#/app/browser/ego/resolveCli';
-import { EgoBrowserRuntime, EgoProbeTimeoutError, egoArgv, egoPrelude, egoProgram, egoReadyScript, egoTabBody } from '#/app/browser/ego/runtime';
+import {
+  EGO_RUN_TIMEOUT_MS, EgoBrowserRuntime, EgoProbeTimeoutError, EgoRunTimeoutError,
+  analyzeEgoScriptBindings, egoArgv, egoNumericSpaceId, egoPrelude, egoProgram, egoReadyScript, egoTabBody,
+} from '#/app/browser/ego/runtime';
 import { runEgoDetectionCommand } from '#/app/browser/ego/process';
+import { createDecorator } from '#/_base/di/instantiation';
+import { EventBusService } from '#/app/event/eventBusService';
+import { IEventBus } from '#/app/event/eventBus';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { IConfigService } from '#/app/config/config';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
 
 const EXE = 'ego-browser.exe';
 const root = 'C:/EgoLite';
@@ -237,14 +255,21 @@ describe('Ego Lite runtime', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('writes a quoted prelude and retries a rejected sdk path once', async () => {
+  it('writes a quoted prelude, materializes task/page lazily, and retries a rejected sdk path once', async () => {
     const label = 'p"1\n;break';
-    const source = egoProgram({ name: 'kiki-a', connectionId: 'ego-lite', label, profileId: 'pro"file' }, 'console.log("body")');
-    const bound = { name: 'kiki-a', connectionId: 'ego-lite', label, profileId: 'pro"file' };
-    expect(source.startsWith(`const __kikiBound = JSON.parse(${JSON.stringify(JSON.stringify(bound))});\nconst task = await taskSpace(__kikiBound.name, { profileId: __kikiBound.profileId });\nconst page = task.page(__kikiBound.label);`)).toBe(true);
+    const bound = { name: 'kiki-a', label, profileId: 'pro"file', connectionId: 'ego-lite' };
+    const source = egoProgram(bound, 'await page.goto("https://example.com");\nconsole.log("body")');
+    expect(source.startsWith(`const __kikiBound = JSON.parse(${JSON.stringify(JSON.stringify(bound))});`)).toBe(true);
+    expect(source).toContain('const task = await __kikiOpenTask();');
+    expect(source).toContain('const page = task.page(__kikiBound.label);');
+    const lazySource = egoProgram(bound, 'console.log("body")');
+    expect(lazySource.startsWith(`const __kikiBound = JSON.parse(${JSON.stringify(JSON.stringify(bound))});`)).toBe(true);
+    expect(lazySource).not.toContain('__kikiOpenTask');
+    expect(lazySource).not.toContain('const page = task.page');
     const resumed = egoPrelude({ ...bound, spaceId: '7' });
-    expect(resumed).toContain('const task = await taskSpace(__kikiBound.spaceId ?? __kikiBound.name);');
-    expect(resumed).not.toContain('{ profileId:');
+    expect(resumed).toContain('\\"spaceId\\":7');
+    expect(resumed).not.toContain('\\"spaceId\\":\\"7\\"');
+    expect(resumed).toContain('const spaces = typeof listTaskSpaces === "function" ? await listTaskSpaces() : undefined;');
     expect(egoTabBody('open')).toContain('const opened = await task.newPage();');
     expect(egoTabBody('open')).toContain('if (__kikiBound.url) await opened.goto(__kikiBound.url);');
     expect(egoTabBody('open')).not.toContain('newPage(__kikiBound.url)');
@@ -265,7 +290,7 @@ describe('Ego Lite runtime', () => {
     expect(proc.calls).toHaveLength(2);
     expect(proc.calls[0]?.args).toContain('--sdk-path');
     expect(proc.calls[1]?.args).not.toContain('--sdk-path');
-    expect(proc.calls[0]?.options).toEqual({ shell: false, windowsHide: true });
+    expect(proc.calls[0]?.options).toEqual({ shell: false, windowsHide: true, ownedProcessTree: true, ownedProcessLifetime: undefined });
     expect(ran.binding.spaceId).toBe('space-1');
     expect(files.get(join('C:/session', 'browser-ego-spaces.json'))).toContain('space-1');
   });
@@ -285,7 +310,8 @@ describe('Ego Lite runtime', () => {
     expect(second.result.stdout).toContain(help);
     expect(proc.calls).toHaveLength(2);
     const scripts = [...files.values()].filter((value) => value.startsWith('const __kikiBound'));
-    expect(scripts[1]).toContain(JSON.stringify(JSON.stringify({ spaceId: '32', name: egoSpaceName('s', 'a'), connectionId: connection.id })));
+    expect(scripts[1]).toContain(JSON.stringify(JSON.stringify({ spaceId: 32, name: egoSpaceName('s', 'a'), connectionId: connection.id })));
+    expect(scripts[1]).not.toContain('__kikiOpenTask');
     expect(scripts[1]).not.toContain('claimTaskSpace');
   });
 
@@ -378,8 +404,8 @@ describe('Ego Lite runtime', () => {
       await pending[0];
       await vi.waitFor(() => expect(proc.calls).toHaveLength(2));
       const scripts = [...files.values()].filter((value) => value.startsWith('const __kikiBound'));
-      expect(scripts[1]).toContain('\\"spaceId\\":\\"32\\"');
-      expect(scripts[1]).not.toContain('{ profileId: __kikiBound.profileId }');
+      expect(scripts[1]).toContain('\\"spaceId\\":32');
+      expect(scripts[1]).not.toContain('\\"spaceId\\":\\"32\\"');
       pending.push(runtime.runAgent(input));
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(proc.calls).toHaveLength(2);
@@ -904,4 +930,546 @@ it('keeps detection cleanup failures visible instead of reporting cancellation s
   controller.abort();
   expect(await observed).toBe(failure);
   expect(dispose).not.toHaveBeenCalled();
+});
+
+interface SimulatedTab {
+  targetId: string;
+  label?: string;
+  url: string;
+  title?: string;
+  active?: boolean;
+  openedBy: 'agent' | 'unknown' | 'user';
+}
+
+interface SimulatedSpace {
+  id: number;
+  name: string;
+  profileId?: string;
+  ownership: 'agent' | 'user' | 'agentDelegatedToUser';
+  closed: boolean;
+  tabs: SimulatedTab[];
+}
+
+function createEgoSimulator(seed: readonly SimulatedSpace[] = []) {
+  let nextId = Math.max(200, ...seed.map((item) => item.id)) + 1;
+  const spaces = new Map<number, SimulatedSpace>(seed.map((item) => [item.id, { ...item, tabs: item.tabs.map((tab) => ({ ...tab })) }]));
+  const taskSpaceCalls: { target: unknown; options?: unknown }[] = [];
+  const cdpCalls: { spaceId: number; method: string; params?: unknown }[] = [];
+  const finishCalls: { spaceId: number; options?: unknown }[] = [];
+
+  const handleFor = (space: SimulatedSpace) => {
+    const pageHandle = (label: string) => ({
+      label,
+      spaceId: space.id,
+      goto: async (url: string) => {
+        const existing = space.tabs.find((item) => item.label === label);
+        if (existing !== undefined) existing.url = url;
+        else space.tabs.push({ targetId: `target-${String(space.id)}-${label}`, label, url, openedBy: 'agent', active: true });
+      },
+      title: async () => space.tabs.find((item) => item.label === label)?.title ?? 'Example',
+      close: async () => {
+        space.tabs = space.tabs.filter((item) => item.label !== label);
+      },
+    });
+    return {
+      id: space.id,
+      spaceId: space.id,
+      name: space.name,
+      get ownership() { return space.ownership; },
+      get closed() { return space.closed; },
+      page: (label: string) => pageHandle(label),
+      pages: async () => space.tabs.filter((tab) => tab.label !== undefined).map((tab) => ({ label: tab.label, url: tab.url, title: tab.title })),
+      tabs: async () => space.tabs.map((tab) => ({ ...tab })),
+      newPage: async () => {
+        const label = `p${String(space.tabs.filter((tab) => tab.label !== undefined).length + 1)}`;
+        space.tabs.push({ targetId: `target-${String(space.id)}-${label}`, label, url: 'about:blank', openedBy: 'agent', active: true });
+        return pageHandle(label);
+      },
+      cdp: async (method: string, params?: { targetId?: string }) => {
+        if (space.ownership !== 'agent') throw new Error(EGO_USER_IN_CONTROL_TEXT);
+        cdpCalls.push({ spaceId: space.id, method, params });
+        if (method === 'Target.closeTarget' && typeof params?.targetId === 'string') {
+          space.tabs = space.tabs.filter((tab) => tab.targetId !== params.targetId);
+          if (space.tabs.length === 0) space.closed = true;
+        }
+        return {};
+      },
+      finish: async (options?: { keep?: readonly string[] }) => {
+        if (space.closed) throw new Error(`TaskSpace ${String(space.id)} is already closed`);
+        if (space.ownership !== 'agent') throw new Error(EGO_USER_IN_CONTROL_TEXT);
+        finishCalls.push({ spaceId: space.id, options });
+        const keep = new Set(options?.keep ?? []);
+        space.tabs = space.tabs.filter((tab) => tab.openedBy !== 'agent' || (tab.label !== undefined && keep.has(tab.label)));
+        for (const tab of space.tabs) delete tab.label;
+        if (space.tabs.length === 0) {
+          space.closed = true;
+          return { closed: true };
+        }
+        space.ownership = 'user';
+        return { closed: false };
+      },
+    };
+  };
+
+  const listTaskSpaces = async () =>
+    [...spaces.values()]
+      .filter((space) => !space.closed)
+      .map((space) => ({ id: space.id, name: space.name, ownership: space.ownership, profileId: space.profileId }));
+
+  const openTaskSpace = async (target: unknown, options?: { profileId?: string; name?: string }) => {
+    taskSpaceCalls.push({ target, options });
+    if (typeof target === 'number') {
+      const found = spaces.get(target);
+      if (found === undefined || found.closed) throw new Error(`Dead numeric space ${String(target)}`);
+      if (found.ownership !== 'agent') throw new Error(EGO_USER_IN_CONTROL_TEXT);
+      return handleFor(found);
+    }
+    const name = typeof target === 'string'
+      ? target
+      : target !== null && typeof target === 'object' && typeof (target as { name?: unknown }).name === 'string'
+        ? (target as { name: string }).name
+        : undefined;
+    const profileId = options?.profileId ?? (target !== null && typeof target === 'object' && typeof (target as { profileId?: unknown }).profileId === 'string'
+      ? (target as { profileId: string }).profileId
+      : undefined);
+    if (name === undefined || name === '') throw new Error('Invalid taskSpace argument');
+    const existing = [...spaces.values()].find((item) => !item.closed && item.name === name);
+    if (existing !== undefined) {
+      if (profileId !== undefined && profileId !== '') throw new Error('profileId applies only when creating a new space');
+      if (existing.ownership === 'user') throw new Error('EGO_TASK_SPACE_NAME_IN_USE');
+      if (existing.ownership !== 'agent') throw new Error(EGO_USER_IN_CONTROL_TEXT);
+      return handleFor(existing);
+    }
+    const id = nextId++;
+    const created: SimulatedSpace = {
+      id,
+      name,
+      profileId,
+      ownership: 'agent',
+      closed: false,
+      tabs: [{ targetId: `nt-${String(id)}`, url: 'chrome://newtab/', openedBy: 'unknown', active: true }],
+    };
+    spaces.set(id, created);
+    return handleFor(created);
+  };
+
+  const runModule = async (source: string): Promise<{ code: number; stdout: string; stderr: string }> => {
+    const logs: string[] = [];
+    const globals = globalThis as Record<string, unknown>;
+    const prevTaskSpace = globals['taskSpace'];
+    const prevListTaskSpaces = globals['listTaskSpaces'];
+    const prevEgo = globals['ego'];
+    const origLog = console.log;
+    globals['taskSpace'] = openTaskSpace;
+    globals['listTaskSpaces'] = listTaskSpaces;
+    globals['ego'] = { taskSpace: openTaskSpace, listTaskSpaces };
+    console.log = (...items: unknown[]) => {
+      logs.push(items.map((item) => typeof item === 'string' ? item : JSON.stringify(item)).join(' '));
+    };
+    try {
+      const encoded = Buffer.from(`${source}\nexport const __kikiNonce = ${JSON.stringify(Math.random())};\n`, 'utf8').toString('base64');
+      await import(`data:text/javascript;base64,${encoded}`);
+      return { code: 0, stdout: `${logs.join('\n')}\n`, stderr: '' };
+    } catch (error) {
+      return { code: 1, stdout: `${logs.join('\n')}\n`, stderr: error instanceof Error ? error.message : String(error) };
+    } finally {
+      console.log = origLog;
+      if (prevTaskSpace === undefined) delete globals['taskSpace'];
+      else globals['taskSpace'] = prevTaskSpace;
+      if (prevListTaskSpaces === undefined) delete globals['listTaskSpaces'];
+      else globals['listTaskSpaces'] = prevListTaskSpaces;
+      if (prevEgo === undefined) delete globals['ego'];
+      else globals['ego'] = prevEgo;
+    }
+  };
+
+  return { spaces, taskSpaceCalls, cdpCalls, finishCalls, runModule };
+}
+
+const EGO_USER_IN_CONTROL_TEXT = 'EGO_TASK_SPACE_USER_IN_CONTROL';
+
+function simulatedProcessService(files: Map<string, string>, sim: ReturnType<typeof createEgoSimulator>): IHostProcessService {
+  const spawn = vi.fn(async (_command: string, args: readonly string[] = []) => {
+    const evalArg = args[args.indexOf('-e') + 1] ?? '';
+    if (!evalArg.startsWith('await import(')) {
+      return { pid: 1, exitCode: 0, stdin: Readable.from([]), stdout: Readable.from(['']), stderr: Readable.from(['']), wait: async () => 0, kill: async () => undefined, dispose: async () => undefined };
+    }
+    const urlLiteral = /^await import\((".*")\)$/.exec(evalArg)?.[1];
+    const href = urlLiteral === undefined ? '' : JSON.parse(urlLiteral) as string;
+    const filePath = href === '' ? '' : join(fileURLToPath(href));
+    const source = files.get(filePath) ?? [...files.entries()].find(([key]) => key.toLowerCase() === filePath.toLowerCase())?.[1] ?? '';
+    if (source.trim() === 'console.log("kiki-ego-ready");') {
+      return { pid: 1, exitCode: 0, stdin: Readable.from([]), stdout: Readable.from(['kiki-ego-ready\n']), stderr: Readable.from(['']), wait: async () => 0, kill: async () => undefined, dispose: async () => undefined };
+    }
+    const outcome = await sim.runModule(source);
+    return {
+      pid: 1, exitCode: outcome.code, stdin: Readable.from([]),
+      stdout: Readable.from([outcome.stdout]), stderr: Readable.from([outcome.stderr]),
+      wait: async () => outcome.code, kill: async () => undefined, dispose: async () => undefined,
+    };
+  });
+  return { spawn } as unknown as IHostProcessService;
+}
+
+describe('Ego Lite numeric spaceId liveness and zombie-window prevention', () => {
+  it('coerces numeric spaceId strings and rejects non-numeric spaceIds', () => {
+    expect(egoNumericSpaceId(177)).toBe(177);
+    expect(egoNumericSpaceId('177')).toBe(177);
+    expect(egoNumericSpaceId(' 0 ')).toBe(0);
+    expect(egoNumericSpaceId('space-1')).toBeUndefined();
+    expect(egoNumericSpaceId('-7')).toBeUndefined();
+    expect(egoNumericSpaceId('12.5')).toBeUndefined();
+    expect(egoNumericSpaceId('')).toBeUndefined();
+    expect(egoNumericSpaceId(undefined)).toBeUndefined();
+  });
+
+  it('reattaches a live space numerically and recreates under Kiki name when numeric spaceId 177 was closed', async () => {
+    const sessionDir = 'C:/session';
+    const spaceFile = join(sessionDir, 'browser-ego-spaces.json');
+    const expectedName = egoSpaceName('s', 'a');
+    const profileConnection = { ...connection, profileId: 'Profile 10' };
+    const sim = createEgoSimulator([
+      { id: 177, name: expectedName, profileId: 'Profile 10', ownership: 'agent', closed: false, tabs: [{ targetId: 't-177', label: 'p1', url: 'https://example.com', openedBy: 'agent' }] },
+      { id: 153, name: 'other-user-space', profileId: 'Profile 6', ownership: 'agentDelegatedToUser', closed: false, tabs: [{ targetId: 't-153', url: 'https://example.test', openedBy: 'unknown' }] },
+    ]);
+    const { files, fs } = memoryFs([versioned]);
+    files.set(spaceFile, `${JSON.stringify({ a: { connectionId: 'ego-lite', name: expectedName, spaceId: '177' } })}\n`);
+    const runtime = new EgoBrowserRuntime(simulatedProcessService(files, sim), fs, { PATH: '' }, 'linux');
+
+    const attached = await runtime.runAgent({
+      connection: profileConnection, sessionDir, sessionId: 's', agentId: 'a', label: 'p1',
+      body: 'await page.goto("https://example.com/one"); console.log(task.spaceId);',
+    });
+    expect(attached.result.code).toBe(0);
+    expect(attached.binding.spaceId).toBe('177');
+    expect(sim.taskSpaceCalls).toEqual([{ target: 177, options: undefined }]);
+    expect(sim.taskSpaceCalls.some((call) => call.target === '177')).toBe(false);
+
+    sim.spaces.get(177)!.closed = true;
+    sim.taskSpaceCalls.length = 0;
+
+    const recreated = await runtime.runAgent({
+      connection: profileConnection, sessionDir, sessionId: 's', agentId: 'a',
+      body: 'const p = await task.newPage(); await p.goto("https://example.com/recreated"); console.log(task.spaceId);',
+    });
+    expect(recreated.result.code).toBe(0);
+    expect(sim.taskSpaceCalls).toEqual([{ target: expectedName, options: { profileId: 'Profile 10' } }]);
+    expect(sim.taskSpaceCalls.some((call) => call.target === '177' || call.target === 177)).toBe(false);
+    expect([...sim.spaces.values()].some((space) => space.name === '177')).toBe(false);
+    expect(recreated.binding.spaceId).toBe('201');
+    expect(JSON.parse(files.get(spaceFile) ?? '{}')).toEqual({
+      a: { connectionId: 'ego-lite', name: expectedName, spaceId: '201' },
+    });
+  });
+
+  it('reattaches by numeric id when the Kiki space name already exists on a profileId connection and preserves user-control errors', async () => {
+    const sessionDir = 'C:/session';
+    const expectedName = egoSpaceName('s', 'a');
+    const profileConnection = { ...connection, profileId: 'Profile 10' };
+    const sim = createEgoSimulator([
+      { id: 88, name: expectedName, profileId: 'Profile 10', ownership: 'agent', closed: false, tabs: [{ targetId: 't-88', url: 'chrome://newtab/', openedBy: 'unknown' }] },
+    ]);
+    const { files, fs } = memoryFs([versioned]);
+    const runtime = new EgoBrowserRuntime(simulatedProcessService(files, sim), fs, { PATH: '' }, 'linux');
+
+    const attached = await runtime.runAgent({
+      connection: profileConnection, sessionDir, sessionId: 's', agentId: 'a',
+      body: 'console.log(task.spaceId);',
+    });
+    expect(attached.result.code).toBe(0);
+    expect(attached.binding.spaceId).toBe('88');
+    expect(sim.taskSpaceCalls).toEqual([{ target: 88, options: undefined }]);
+
+    sim.spaces.get(88)!.ownership = 'agentDelegatedToUser';
+    await expect(runtime.runAgent({
+      connection: profileConnection, sessionDir, sessionId: 's', agentId: 'a',
+      body: 'console.log(task.spaceId);',
+    })).rejects.toMatchObject({ code: 'browser.execution_failed', message: 'EGO_TASK_SPACE_USER_IN_CONTROL' });
+  });
+});
+
+describe('Ego Lite lazy script binding and subagent disposal cleanup', () => {
+  it('detects free task/page bindings accurately across comments, strings, regexes, member access, object keys, arrows, and shadowing', () => {
+    expect(analyzeEgoScriptBindings('const s = await taskSpace("tmp", { profileId: "Profile 6" }); const p = s.page("main");')).toMatchObject({
+      usesFreeTask: false, usesFreePage: false, declaresTopLevelTask: false, declaresTopLevelPage: false,
+    });
+    expect(analyzeEgoScriptBindings('const s = await ego.taskSpace({ name: "tmp", profileId: "Profile 6" });')).toMatchObject({
+      usesFreeTask: false, usesFreePage: false,
+    });
+    expect(analyzeEgoScriptBindings('const task = await taskSpace("custom"); const page = task.page("p1"); await page.goto("https://example.com");')).toMatchObject({
+      usesFreeTask: false, usesFreePage: false, declaresTopLevelTask: true, declaresTopLevelPage: true,
+    });
+    expect(analyzeEgoScriptBindings('const found = (await listTaskSpaces()).find((task) => !task.closed); console.log({ task: found, page: 1 }); if (found) /task|page/.test("task");')).toMatchObject({
+      usesFreeTask: false, usesFreePage: false,
+    });
+    expect(analyzeEgoScriptBindings('const page = task.page("p1"); await page.goto("https://example.com");')).toMatchObject({
+      usesFreeTask: true, usesFreePage: false, declaresTopLevelTask: false, declaresTopLevelPage: true,
+    });
+    expect(analyzeEgoScriptBindings('await page.goto("https://example.com");')).toMatchObject({
+      usesFreeTask: false, usesFreePage: true, declaresTopLevelPage: false,
+    });
+    expect(analyzeEgoScriptBindings('console.log(`${task.spaceId}`);')).toMatchObject({
+      usesFreeTask: true,
+    });
+  });
+
+  it('does not open a default kiki-* window when a script manages its own profileId space and cleans pure blank tabs on finish', async () => {
+    const sessionDir = 'C:/session';
+    const sim = createEgoSimulator();
+    const { files, fs } = memoryFs([versioned]);
+    const runtime = new EgoBrowserRuntime(simulatedProcessService(files, sim), fs, { PATH: '' }, 'linux');
+
+    const customFinished = await runtime.runAgent({
+      connection, sessionDir, sessionId: 's', agentId: 'sub-1',
+      body: [
+        'const custom = await taskSpace("tmp-p10-check", { profileId: "Profile 10" });',
+        'try {',
+        '  const p = await custom.newPage();',
+        '  await p.goto("https://example.com/check");',
+        '} finally {',
+        '  await custom.finish({ keep: [] });',
+        '}',
+      ].join('\n'),
+    });
+    expect(customFinished.result.code).toBe(0);
+    expect(sim.taskSpaceCalls).toEqual([{ target: 'tmp-p10-check', options: { profileId: 'Profile 10' } }]);
+    expect([...sim.spaces.values()].some((space) => space.name.startsWith('kiki-'))).toBe(false);
+    expect([...sim.spaces.values()].every((space) => space.closed)).toBe(true);
+    expect(sim.cdpCalls).toEqual([{ spaceId: 201, method: 'Target.closeTarget', params: { targetId: 'nt-201' } }]);
+    expect(files.has(join(sessionDir, 'browser-ego-spaces.json'))).toBe(false);
+
+    const egoNamespaceRun = await runtime.runAgent({
+      connection, sessionDir, sessionId: 's', agentId: 'sub-2', label: 'p1',
+      body: [
+        'const custom = await ego.taskSpace({ name: "tmp-ego-ns", profileId: "Profile 6" });',
+        'await custom.finish({ keep: [] });',
+      ].join('\n'),
+    });
+    expect(egoNamespaceRun.result.code).toBe(0);
+    expect([...sim.spaces.values()].some((space) => space.name.startsWith('kiki-'))).toBe(false);
+    expect([...sim.spaces.values()].every((space) => space.closed)).toBe(true);
+
+    const shadowedPageRun = await runtime.runAgent({
+      connection, sessionDir, sessionId: 's', agentId: 'main', label: 'p1',
+      body: 'const page = await task.newPage(); await page.goto("https://example.com/main"); console.log(await page.title());',
+    });
+    expect(shadowedPageRun.result.code).toBe(0);
+    expect(shadowedPageRun.binding.spaceId).toBe('203');
+  });
+
+  it('never closes non-blank unknown user tabs during finish({ keep: [] })', async () => {
+    const sessionDir = 'C:/session';
+    const expectedName = egoSpaceName('s', 'a');
+    const sim = createEgoSimulator([{
+      id: 55,
+      name: expectedName,
+      ownership: 'agent',
+      closed: false,
+      tabs: [
+        { targetId: 'user-doc', url: 'https://example.com/user-work', openedBy: 'unknown', active: true },
+        { targetId: 'agent-tab', label: 'p1', url: 'https://example.com/agent', openedBy: 'agent', active: false },
+      ],
+    }]);
+    const { files, fs } = memoryFs([versioned]);
+    files.set(join(sessionDir, 'browser-ego-spaces.json'), `${JSON.stringify({ a: { connectionId: 'ego-lite', name: expectedName, spaceId: '55' } })}\n`);
+    const runtime = new EgoBrowserRuntime(simulatedProcessService(files, sim), fs, { PATH: '' }, 'linux');
+    const ran = await runtime.runAgent({
+      connection, sessionDir, sessionId: 's', agentId: 'a',
+      body: 'await task.finish({ keep: [] });',
+    });
+    expect(ran.result.code).toBe(0);
+    expect(sim.cdpCalls).toEqual([]);
+    expect(sim.spaces.get(55)?.closed).toBe(false);
+    expect(sim.spaces.get(55)?.tabs.map((tab) => tab.targetId)).toEqual(['user-doc']);
+  });
+
+  it('cleans up subagent-owned default and custom Ego spaces on subagent disposal while keeping main, user, and delegated spaces open', async () => {
+    const defaults = createDecorator<{ readonly _serviceBrand: undefined; ready: Promise<string | undefined> }>('sessionBrowserDefault');
+    const sessionDir = 'C:/session';
+    const sim = createEgoSimulator([
+      { id: 10, name: 'user-personal-space', ownership: 'user', closed: false, tabs: [{ targetId: 'nt-10', url: 'chrome://newtab/', openedBy: 'unknown' }] },
+      { id: 11, name: 'delegated-3d-studio', ownership: 'agentDelegatedToUser', closed: false, tabs: [{ targetId: 'nt-11', url: 'chrome://newtab/', openedBy: 'unknown' }] },
+    ]);
+    const { files, fs } = memoryFs([versioned]);
+    const configs = new Map<string, BrowserResolvedConnection>([['ego-lite', connection]]);
+    const appIx = new TestInstantiationService();
+    appIx.stub(IFlagService, { enabled: () => true });
+    appIx.stub(IHostProcessService, simulatedProcessService(files, sim));
+    appIx.stub(IHostFileSystem, fs);
+    appIx.stub(IBrowserBackendFactory, { open: vi.fn() });
+    appIx.stub(IBrowserConnectionStore, {
+      list: async () => ({ connections: [browserConnectionRecord(connection)], defaultBrowser: 'ego-lite' }),
+      resolve: async (id: string) => {
+        const found = configs.get(id);
+        if (found === undefined) throw new BrowserError('browser.not_found', id);
+        return found;
+      },
+      upsert: async () => browserConnectionRecord(connection),
+      remove: async () => undefined,
+      setDefault: async () => undefined,
+      revealEndpoint: async () => undefined,
+    });
+    appIx.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
+    const control = appIx.get(IBrowserControlService);
+
+    const makeAgentService = (agentId: string) => {
+      const agentIx = new TestInstantiationService();
+      const fakeRuntime = new FakeRuntime({ workspaceId: 'w', runtimeId: 'local', generation: '1' }, { pathClass: 'win32' });
+      agentIx.stub(IBrowserControlService, control);
+      agentIx.stub(IBrowserConnectionStore, appIx.get(IBrowserConnectionStore));
+      agentIx.stub(defaults, { ready: Promise.resolve('ego-lite') });
+      agentIx.stub(IAgentScopeContext, { agentId });
+      agentIx.stub(ISessionContext, { sessionId: 's', sessionDir });
+      agentIx.stub(ISessionWorkspaceContext, { workDir: sessionDir, additionalDirs: [] });
+      agentIx.stub(IAgentRuntimeService, { inspect: () => fakeRuntime, prepareFor: async () => fakeRuntime });
+      agentIx.stub(ISessionMediaStore, {});
+      agentIx.stub(ISessionInteractionService, { hasConsumer: () => false });
+      agentIx.stub(IFlagService, { enabled: () => true });
+      agentIx.stub(IConfigService, { get: <T>() => ({ connections: { 'ego-lite': connection } }) as T });
+      agentIx.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
+      agentIx.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+      agentIx.set(IEventBus, new SyncDescriptor(EventBusService));
+      agentIx.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+      return { agentIx, browser: agentIx.get(IAgentBrowserService) as AgentBrowserService };
+    };
+
+    const mainScope = makeAgentService('main');
+    const subScope = makeAgentService('agent-7');
+    try {
+      expect((await control.connect('ego-lite')).state).toBe('ready');
+      const ctx = { turnId: 1, toolCallId: 'call-1', signal: new AbortController().signal };
+
+      const mainRun = await mainScope.browser.egoRun({
+        browser: 'ego-lite',
+        script: 'const p = await task.newPage(); await p.goto("https://example.com/main-dashboard");',
+      }, ctx.signal, ctx);
+      expect(mainRun.isError, JSON.stringify(mainRun.output)).not.toBe(true);
+
+      const subDefaultRun = await subScope.browser.egoRun({
+        browser: 'ego-lite',
+        script: 'const p = await task.newPage(); await p.goto("https://example.com/sub-work");',
+      }, ctx.signal, ctx);
+      expect(subDefaultRun.isError).not.toBe(true);
+
+      const subCustomRun = await subScope.browser.egoRun({
+        browser: 'ego-lite',
+        script: 'const leaked = await taskSpace("sub-unfinished-p6", { profileId: "Profile 6" }); console.log(leaked.spaceId);',
+      }, ctx.signal, ctx);
+      expect(subCustomRun.isError).not.toBe(true);
+
+      const mainSpace = [...sim.spaces.values()].find((space) => space.name === egoSpaceName('s', 'main'))!;
+      const subDefaultSpace = [...sim.spaces.values()].find((space) => space.name === egoSpaceName('s', 'agent-7'))!;
+      const subCustomSpace = [...sim.spaces.values()].find((space) => space.name === 'sub-unfinished-p6')!;
+      expect(mainSpace.closed).toBe(false);
+      expect(subDefaultSpace.closed).toBe(false);
+      expect(subCustomSpace.closed).toBe(false);
+
+      await subScope.browser.dispose();
+
+      expect(subDefaultSpace.closed).toBe(true);
+      expect(subCustomSpace.closed).toBe(true);
+      expect(mainSpace.closed).toBe(false);
+      expect(sim.spaces.get(10)?.closed).toBe(false);
+      expect(sim.spaces.get(11)?.closed).toBe(false);
+      const savedAfterSub = JSON.parse(files.get(join(sessionDir, 'browser-ego-spaces.json')) ?? '{}') as Record<string, unknown>;
+      expect(savedAfterSub['agent-7']).toBeUndefined();
+      expect(savedAfterSub['main']).toMatchObject({ spaceId: String(mainSpace.id) });
+
+      await mainScope.browser.dispose();
+      expect(mainSpace.closed).toBe(false);
+      const savedAfterMain = JSON.parse(files.get(join(sessionDir, 'browser-ego-spaces.json')) ?? '{}') as Record<string, unknown>;
+      expect(savedAfterMain['main']).toMatchObject({ spaceId: String(mainSpace.id) });
+    } finally {
+      await subScope.agentIx.dispose();
+      await mainScope.agentIx.dispose();
+      await appIx.dispose();
+    }
+  });
+});
+
+describe('Ego Lite runAgent execution timeout and process-tree abort', () => {
+  it('enforces the default execution timeout, terminates the owned process tree, and surfaces partial diagnostics', async () => {
+    vi.useFakeTimers();
+    const { fs } = memoryFs([versioned]);
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const kill = vi.fn(async () => { stdout.destroy(); stderr.destroy(); });
+    const dispose = vi.fn(async () => {});
+    const spawn = vi.fn(async () => ({ pid: 74680, exitCode: null, stdin: Readable.from([]), stdout, stderr, wait: () => new Promise<number>(() => {}), kill, dispose }));
+    const runtime = new EgoBrowserRuntime({ spawn } as unknown as IHostProcessService, fs, { PATH: '' }, 'linux');
+    const observed = runtime.runAgent({
+      connection, sessionDir: 'C:/session', sessionId: 's', agentId: 'a',
+      body: 'await page.goto("https://example.com");', label: 'p1',
+    }).catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawn).toHaveBeenCalledWith(versioned, expect.any(Array), expect.objectContaining({
+        shell: false,
+        windowsHide: true,
+        ownedProcessTree: true,
+      }));
+      stderr.write('Waiting on unresponsive space 166\n    at file:///C:/Temp/ego-scripts/hung.mjs:1:1');
+      await vi.advanceTimersByTimeAsync(EGO_RUN_TIMEOUT_MS - 1);
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await observed;
+      expect(error).toBeInstanceOf(EgoRunTimeoutError);
+      expect(error).toMatchObject({
+        code: 'browser.execution_failed',
+        message: `Ego Lite script timed out after ${String(EGO_RUN_TIMEOUT_MS)}ms: Waiting on unresponsive space 166`,
+      });
+      expect(kill).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+    } finally {
+      stdout.destroy();
+      stderr.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('supports env/explicit timeout overrides and settles caller AbortSignal even when wait() never resolves', async () => {
+    vi.useFakeTimers();
+    const { fs } = memoryFs([versioned]);
+    const killA = vi.fn(async () => {});
+    const disposeA = vi.fn(async () => {});
+    const killB = vi.fn(async () => {});
+    const disposeB = vi.fn(async () => {});
+    let callCount = 0;
+    const spawn = vi.fn(async () => {
+      callCount += 1;
+      const first = callCount === 1;
+      return {
+        pid: callCount, exitCode: null, stdin: Readable.from([]),
+        stdout: new PassThrough(), stderr: new PassThrough(),
+        wait: () => new Promise<number>(() => {}),
+        kill: first ? killA : killB,
+        dispose: first ? disposeA : disposeB,
+      };
+    });
+    const runtime = new EgoBrowserRuntime({ spawn } as unknown as IHostProcessService, fs, { PATH: '', KIKI_EGO_RUN_TIMEOUT_MS: '3500' }, 'linux');
+    try {
+      const envTimed = runtime.runAgent({ connection, sessionDir: 'C:/session', sessionId: 's', agentId: 'a', body: 'console.log(1)' }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(3_499);
+      expect(killA).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await envTimed).toMatchObject({ code: 'browser.execution_failed', message: 'Ego Lite script timed out after 3500ms' });
+      expect(killA).toHaveBeenCalledOnce();
+      expect(disposeA).toHaveBeenCalledOnce();
+
+      const caller = new AbortController();
+      const abortReason = new Error('caller aborted hung ego-browser');
+      const aborted = runtime.runAgent({
+        connection, sessionDir: 'C:/session', sessionId: 's', agentId: 'b',
+        body: 'console.log(2)', signal: caller.signal, timeoutMs: 60_000,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawn).toHaveBeenCalledTimes(2);
+      caller.abort(abortReason);
+      expect(await aborted).toBe(abortReason);
+      expect(killB).toHaveBeenCalledOnce();
+      expect(disposeB).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

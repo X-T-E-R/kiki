@@ -7,7 +7,7 @@ export interface EgoDetectionOutput {
   readonly stderr: Buffer[];
 }
 
-function readStream(stream: Readable, chunks: Buffer[]): Promise<string> {
+export function readEgoStream(stream: Readable, chunks: Buffer[]): Promise<string> {
   const start = chunks.length;
   return new Promise((resolve, reject) => {
     const collect = (chunk: Buffer | string): void => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); };
@@ -44,8 +44,8 @@ export async function runEgoDetectionCommand(
     shell: false, windowsHide: true, ownedProcessTree: signal === undefined ? undefined : true,
     ownedProcessLifetime: signal !== undefined && process.platform === 'win32' ? 'owner' : undefined,
   });
-  const stdout = readStream(child.stdout, output.stdout);
-  const stderr = readStream(child.stderr, output.stderr);
+  const stdout = readEgoStream(child.stdout, output.stdout);
+  const stderr = readEgoStream(child.stderr, output.stderr);
   child.stdin?.end?.();
   let cleanup: Promise<void> | undefined;
   let stop: (() => void) | undefined;

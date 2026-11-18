@@ -15,6 +15,9 @@ export const EGO_SPACE_FILE = 'browser-ego-spaces.json';
 export const EGO_NAME_IN_USE = 'EGO_TASK_SPACE_NAME_IN_USE';
 export const EGO_USER_IN_CONTROL = 'EGO_TASK_SPACE_USER_IN_CONTROL';
 export const EGO_SDK_ENV = 'KIKI_EGO_SDK_PATH';
+export const EGO_RUN_TIMEOUT_ENV = 'KIKI_EGO_RUN_TIMEOUT_MS';
+export const EGO_RUN_TIMEOUT_MS = 120_000;
+export const EGO_CLEANUP_TIMEOUT_MS = 15_000;
 
 export interface EgoUninstallRecord {
   readonly displayName: string;

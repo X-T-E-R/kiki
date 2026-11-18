@@ -69,5 +69,6 @@ export interface IBrowserControlService {
   tabs(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<readonly BrowserTab[]>;
   invoke(input: BrowserInvocation, signal?: AbortSignal): Promise<BrowserInvocationResult>;
   endTurn(caller: BrowserCaller, turnId?: number): Promise<void>;
+  releaseAgent?(caller: BrowserCaller, sessionDir?: string): Promise<void>;
 }
 export const IBrowserControlService = createDecorator<IBrowserControlService>('browserControlService');

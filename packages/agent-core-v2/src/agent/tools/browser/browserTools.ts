@@ -6,6 +6,7 @@ import { createDecorator, type ServiceIdentifier, type ServicesAccessor } from '
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
@@ -55,7 +56,11 @@ export const BrowserTabsInputSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('frame'), browser: BrowserIdSchema.optional(), frame: z.string().min(1) }).strict(),
 ]);
 export type BrowserTabsInput = z.infer<typeof BrowserTabsInputSchema>;
-export const BrowserEgoRunInputSchema = z.object({ browser: BrowserIdSchema.optional(), script: z.string().min(1) }).strict();
+export const BrowserEgoRunInputSchema = z.object({
+  browser: BrowserIdSchema.optional(),
+  script: z.string().min(1),
+  timeoutMs: z.number().int().min(1_000).max(600_000).optional(),
+}).strict();
 export type BrowserEgoRunInput = z.infer<typeof BrowserEgoRunInputSchema>;
 const selectionDropped = 'The previously selected tab is not in the current list. It was not replaced. Select a listed target before the next page action.';
 const registeredNamesNote = 'loaded lists registered names only. When SelectTools is available, the next step announces those names, SelectTools loads an exact registered name, and its schema arrives on the following step; a direct call before that selection stays unavailable, and the names stay off the top-level tool list. When SelectTools is unavailable, a registered name joins the top-level tool list the next time that list is built for a user turn. Unload drops the registration.';
@@ -136,7 +141,12 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
   ) {
     super();
     const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
-    this._store.ledger.register(() => this.control.endTurn(caller), 'official-browser-turn-cleanup');
+    this._store.ledger.register(async () => {
+      await this.control.endTurn(caller);
+      if (caller.agentId !== MAIN_AGENT_ID) {
+        await this.control.releaseAgent?.(caller, this.session.sessionDir);
+      }
+    }, 'official-browser-turn-cleanup');
     this._register(eventBus.subscribe(TurnEnded, (event) => {
       void this.control.endTurn(caller, event.turnId).catch(onUnexpectedError);
     }));
@@ -352,8 +362,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
       const connection = await this.store.resolve(browser);
       if (connection.type !== 'ego-lite') throw new BrowserError('browser.unsupported', 'browser__ego_run runs on an Ego Lite connection');
       const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
+      const args = input.timeoutMs === undefined ? { script: input.script } : { script: input.script, timeoutMs: input.timeoutMs };
       const result = await this.control.invoke({
-        browser, caller, requestContext: this.requestContext(ctx), tool: 'browser__ego_run', args: { script: input.script },
+        browser, caller, requestContext: this.requestContext(ctx), tool: 'browser__ego_run', args,
         tab: this.selections.get(browser)?.tab,
       }, signal);
       return await this.output(result, ctx);
@@ -535,7 +546,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     parts.unshift({ type: 'text', text: `Browser provenance: ${provenance}` });
     const path = browserResponse(result.result).data?.['path'];
     const shots = browserResponse(result.result).data?.['shots'];
-    if (ctx !== undefined && Array.isArray(shots) && !converted.isError) {
+    if (ctx !== undefined && Array.isArray(shots) && shots.length > 0 && !converted.isError) {
       const runtime = await prepareToolRuntime(this.runtime, 'local');
       if (runtime.fs !== undefined) {
         for (const shot of shots) {

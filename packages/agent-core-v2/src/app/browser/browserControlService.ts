@@ -1023,15 +1023,17 @@ export class BrowserControlService implements IBrowserControlService {
     const label = action === 'open' || action === 'script' ? input.tab : textArg(input.args, 'tab') ?? input.tab;
     const body = action === 'script' ? textArg(input.args, 'script') : egoTabBody(action);
     if (body === undefined || body === '') throw new BrowserError('browser.invalid', 'Ego Lite script is required');
+    const timeoutArg = input.args['timeoutMs'];
+    const timeoutMs = typeof timeoutArg === 'number' && Number.isFinite(timeoutArg) && timeoutArg > 0 ? timeoutArg : undefined;
     const started = live.status;
     const startedGeneration = started.generation;
     live.status = { ...live.status, state: 'running', currentCall: { ...input.caller, tool: input.tool, tab: label } };
     try {
       const ran = await this.ego.runAgent({
         connection: live.connection, sessionDir, sessionId: input.caller.sessionId, agentId: input.caller.agentId,
-        ...(action !== 'open' && label !== undefined ? { label } : {}),
-        ...(action === 'open' && textArg(input.args, 'url') !== undefined ? { url: textArg(input.args, 'url') } : {}),
-        body, signal,
+        label: action !== 'open' ? label : undefined,
+        url: action === 'open' ? textArg(input.args, 'url') : undefined,
+        body, signal, timeoutMs,
       });
       if (live.status.generation !== startedGeneration) throw new BrowserError('browser.disconnected', 'Ego Lite connection was disconnected');
       if (ran.refused) throw new BrowserError('browser.target', 'Only an agent-opened labeled Ego Lite tab can be closed');
@@ -1296,6 +1298,19 @@ export class BrowserControlService implements IBrowserControlService {
         try { await live.backend.official.endTurn(caller, turnId); }
         catch (error) { this.fail(live, error, true); }
       });
+    }
+  }
+
+  async releaseAgent(caller: BrowserCaller, sessionDir?: string): Promise<void> {
+    if (caller.agentId === 'main' || caller.agentId === '' || sessionDir === undefined || sessionDir === '') return;
+    const binding = await this.ego.readBinding(sessionDir, caller.agentId);
+    if (binding === undefined) return;
+    const live = this.connections.get(binding.connectionId);
+    if (live === undefined || !live.admitting || live.connection.type !== 'ego-lite') return;
+    try {
+      await this.ego.cleanupAgent({ connection: live.connection, sessionDir, agentId: caller.agentId });
+    } catch {
+      return;
     }
   }
 

@@ -10,25 +10,27 @@ import type { BrowserResolvedConnection } from '#/app/browser/browserConfig';
 import { BrowserError } from '#/app/browser/errors';
 
 import { egoChildNames, egoFileExists, egoPathDelimiter, egoPathHits, readEgoUninstallRecords, readRegisteredEgoPath } from './hints';
-import { runEgoDetectionCommand, type EgoDetectionOutput } from './process';
+import { readEgoStream, runEgoDetectionCommand, type EgoDetectionOutput } from './process';
 import {
-  EGO_NAME_IN_USE, EGO_READY_MARKER, EGO_SDK_ENV, EGO_SPACE_FILE, EGO_USER_IN_CONTROL,
-  classifyEgoCheck, egoSpaceName, extractEgoDiagnostic, resolveEgoCli, type EgoCliResolution,
+  EGO_CLEANUP_TIMEOUT_MS, EGO_NAME_IN_USE, EGO_READY_MARKER, EGO_RUN_TIMEOUT_ENV, EGO_RUN_TIMEOUT_MS,
+  EGO_SDK_ENV, EGO_SPACE_FILE, EGO_USER_IN_CONTROL, classifyEgoCheck, egoSpaceName, extractEgoDiagnostic,
+  resolveEgoCli, type EgoCliResolution,
 } from './resolveCli';
+import {
+  FINISH, OWNED, PAGE, PRELUDE, REFUSED, TABS, analyzeEgoScriptBindings, egoCleanupScript,
+  egoNumericSpaceId, egoPrelude, egoProgram, type EgoBound,
+} from './script';
 
-export interface EgoBound {
-  readonly spaceId?: string;
-  readonly name: string;
-  readonly label?: string;
-  readonly profileId?: string;
-  readonly connectionId: string;
-  readonly url?: string;
-}
+export {
+  EGO_CLEANUP_TIMEOUT_MS, EGO_RUN_TIMEOUT_ENV, EGO_RUN_TIMEOUT_MS, analyzeEgoScriptBindings,
+  egoCleanupScript, egoNumericSpaceId, egoPrelude, egoProgram, type EgoBound,
+};
 
 export interface EgoSpaceBinding {
   readonly connectionId: string;
   readonly spaceId?: string;
   readonly name: string;
+  readonly ownedSpaceIds?: readonly number[];
 }
 
 export interface EgoRunResult {
@@ -40,16 +42,18 @@ export interface EgoRunResult {
   readonly argv: readonly string[];
 }
 
-const PRELUDE = 'KIKI_EGO_PRELUDE ';
-const FINISH = 'KIKI_EGO_FINISH ';
-const TABS = 'KIKI_EGO_TABS ';
-const PAGE = 'KIKI_EGO_PAGE ';
-const REFUSED = 'KIKI_EGO_REFUSED';
 const EGO_PROBE_TIMEOUT_MS = 5_000;
 
 export class EgoProbeTimeoutError extends BrowserError {
   constructor(message: string) {
     super('browser.execution_failed', message);
+  }
+}
+
+export class EgoRunTimeoutError extends BrowserError {
+  constructor(message: string) {
+    super('browser.execution_failed', message);
+    this.name = 'EgoRunTimeoutError';
   }
 }
 
@@ -60,25 +64,6 @@ function withFile<T>(file: string, body: () => Promise<T>): Promise<T> {
   const run = previous.then(body, body);
   fileTails.set(file, run.then(() => undefined, () => undefined));
   return run;
-}
-
-export function egoPrelude(bound: EgoBound): string {
-  const payload = JSON.stringify(JSON.stringify(bound));
-  const open = bound.spaceId === undefined && bound.profileId !== undefined && bound.profileId !== ''
-    ? 'const task = await taskSpace(__kikiBound.name, { profileId: __kikiBound.profileId });'
-    : 'const task = await taskSpace(__kikiBound.spaceId ?? __kikiBound.name);';
-  const lines = [
-    `const __kikiBound = JSON.parse(${payload});`,
-    open,
-  ];
-  if (bound.label !== undefined && bound.label !== '') lines.push('const page = task.page(__kikiBound.label);');
-  lines.push(`console.log(${JSON.stringify(PRELUDE)} + JSON.stringify({ spaceId: task.spaceId ?? task.id, name: task.name, closed: task.closed === true }));`);
-  return lines.join('\n');
-}
-
-export function egoProgram(bound: EgoBound, body: string, shotDir?: string): string {
-  const shot = shotDir === undefined || shotDir === '' ? '' : `const shotDir = ${JSON.stringify(shotDir)};\n`;
-  return `${egoPrelude(bound)}\n${shot}${body}\nconsole.log(${JSON.stringify(FINISH)} + JSON.stringify({ spaceId: task.spaceId ?? task.id, closed: task.closed === true }));\n`;
 }
 
 export function egoReadyScript(): string {
@@ -104,14 +89,33 @@ function parseMarker(text: string, marker: string): ParsedLine | undefined {
   if (line === undefined) return undefined;
   try {
     const value = JSON.parse(line.slice(marker.length)) as { spaceId?: unknown; name?: unknown; closed?: unknown; label?: unknown };
+    const spaceId = typeof value.spaceId === 'number' && Number.isSafeInteger(value.spaceId) && value.spaceId >= 0
+      ? String(value.spaceId)
+      : typeof value.spaceId === 'string' && value.spaceId !== '' ? value.spaceId : undefined;
     return {
-      ...(typeof value.spaceId === 'string' || typeof value.spaceId === 'number' ? { spaceId: String(value.spaceId) } : {}),
-      ...(typeof value.name === 'string' ? { name: value.name } : {}),
-      ...(value.closed === true ? { closed: true } : {}),
-      ...(typeof value.label === 'string' ? { label: value.label } : {}),
+      spaceId,
+      name: typeof value.name === 'string' ? value.name : undefined,
+      closed: value.closed === true ? true : undefined,
+      label: typeof value.label === 'string' ? value.label : undefined,
     };
   } catch {
     return undefined;
+  }
+}
+
+function parseOwnedMarker(text: string): readonly number[] {
+  const lines = text.split(/\r?\n/).filter((item) => item.startsWith(OWNED));
+  const line = lines.at(-1);
+  if (line === undefined) return [];
+  try {
+    const value = JSON.parse(line.slice(OWNED.length)) as { spaceIds?: unknown };
+    if (!Array.isArray(value.spaceIds)) return [];
+    const ids = value.spaceIds
+      .map((item) => egoNumericSpaceId(item))
+      .filter((item): item is number => item !== undefined);
+    return [...new Set(ids)];
+  } catch {
+    return [];
   }
 }
 
@@ -129,8 +133,23 @@ function spaceFile(sessionDir: string): string {
 
 async function readSpaces(files: IHostFileSystem, sessionDir: string): Promise<Record<string, EgoSpaceBinding>> {
   try {
-    const parsed = JSON.parse(await files.readText(spaceFile(sessionDir))) as Record<string, EgoSpaceBinding>;
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    const parsed = JSON.parse(await files.readText(spaceFile(sessionDir))) as Record<string, unknown>;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const normalized: Record<string, EgoSpaceBinding> = {};
+    for (const [key, raw] of Object.entries(parsed)) {
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const entry = raw as Record<string, unknown>;
+      if (typeof entry['connectionId'] !== 'string' || typeof entry['name'] !== 'string') continue;
+      const spaceId = typeof entry['spaceId'] === 'number' && Number.isSafeInteger(entry['spaceId']) && entry['spaceId'] >= 0
+        ? String(entry['spaceId'])
+        : typeof entry['spaceId'] === 'string' && entry['spaceId'] !== '' ? entry['spaceId'] : undefined;
+      const ownedRaw = Array.isArray(entry['ownedSpaceIds'])
+        ? entry['ownedSpaceIds'].map((id) => egoNumericSpaceId(id)).filter((id): id is number => id !== undefined)
+        : [];
+      const ownedSpaceIds = ownedRaw.length > 0 ? [...new Set(ownedRaw)] : undefined;
+      normalized[key] = { connectionId: entry['connectionId'], name: entry['name'], spaceId, ownedSpaceIds };
+    }
+    return normalized;
   } catch {
     return {};
   }
@@ -146,19 +165,11 @@ function sameLease(current: EgoSpaceBinding | undefined, started: EgoSpaceBindin
     && (current.spaceId ?? undefined) === (started.spaceId ?? undefined);
 }
 
-function linkAbort(first: AbortSignal | undefined, second: AbortSignal | undefined): AbortSignal | undefined {
-  if (first === undefined) return second;
-  if (second === undefined) return first;
-  const linked = new AbortController();
-  const forward = (): void => {
-    if (!linked.signal.aborted) linked.abort(first.aborted ? first.reason : second.reason);
-  };
-  if (first.aborted || second.aborted) forward();
-  else {
-    first.addEventListener('abort', forward, { once: true });
-    second.addEventListener('abort', forward, { once: true });
-  }
-  return linked.signal;
+function mergeSignals(...signals: readonly (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const present = signals.filter((item): item is AbortSignal => item !== undefined);
+  if (present.length === 0) return undefined;
+  if (present.length === 1) return present[0];
+  return AbortSignal.any(present);
 }
 
 async function listShots(files: IHostFileSystem, directory: string): Promise<readonly string[]> {
@@ -189,14 +200,15 @@ export class EgoBrowserRuntime {
   }
 
   abort(connectionId: string): void {
+    const reason = new BrowserError('browser.disconnected', 'Ego Lite connection was disconnected');
     const current = this.agentStops.get(connectionId);
     if (current === undefined) {
       const stopped = new AbortController();
-      stopped.abort();
+      stopped.abort(reason);
       this.agentStops.set(connectionId, stopped);
       return;
     }
-    current.abort();
+    current.abort(reason);
   }
 
   private agentStop(connectionId: string): AbortSignal {
@@ -208,6 +220,16 @@ export class EgoBrowserRuntime {
     }
     if (current.signal.aborted) throw new BrowserError('browser.disconnected', 'Ego Lite connection is disconnected');
     return current.signal;
+  }
+
+  private resolveRunTimeoutMs(explicit?: number): number {
+    if (explicit !== undefined && Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+    const raw = this.env[EGO_RUN_TIMEOUT_ENV]?.trim();
+    if (raw !== undefined && /^\d+$/.test(raw)) {
+      const parsed = Number(raw);
+      if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+    }
+    return EGO_RUN_TIMEOUT_MS;
   }
 
   async resolve(connection: BrowserResolvedConnection | undefined, signal?: AbortSignal): Promise<EgoCliResolution> {
@@ -266,14 +288,30 @@ export class EgoBrowserRuntime {
     return (await readSpaces(this.files, sessionDir))[agentId];
   }
 
-  private async updateSpace(sessionDir: string, agentId: string, started: EgoSpaceBinding, spaceId: string, connectionId: string): Promise<void> {
+  private async updateSpace(
+    sessionDir: string,
+    agentId: string,
+    started: EgoSpaceBinding,
+    spaceId: string | undefined,
+    createdOwned: readonly number[],
+    connectionId: string,
+  ): Promise<void> {
     await withFile(spaceFile(sessionDir), async () => {
       const all = await readSpaces(this.files, sessionDir);
       const current = all[agentId];
       if (current === undefined) {
         if (started.spaceId !== undefined) return;
       } else if (!sameLease(current, started)) return;
-      all[agentId] = { connectionId: current?.connectionId ?? connectionId, name: started.name, spaceId };
+      const nextSpaceId = spaceId ?? current?.spaceId;
+      const mergedOwned = [...new Set([...(current?.ownedSpaceIds ?? []), ...createdOwned])];
+      const ownedSpaceIds = mergedOwned.length > 0 ? mergedOwned : undefined;
+      if (nextSpaceId === undefined && ownedSpaceIds === undefined) return;
+      all[agentId] = {
+        connectionId: current?.connectionId ?? connectionId,
+        name: started.name,
+        spaceId: nextSpaceId,
+        ownedSpaceIds,
+      };
       await writeSpaces(this.files, sessionDir, all);
     });
   }
@@ -286,6 +324,22 @@ export class EgoBrowserRuntime {
       const owned = current !== undefined && current.connectionId === started.connectionId && current.name === started.name
         && (current.spaceId ?? undefined) === (expected ?? undefined);
       if (!owned) return;
+      const closedNumeric = egoNumericSpaceId(expected);
+      const remaining = (current.ownedSpaceIds ?? []).filter((id) => id !== closedNumeric);
+      if (remaining.length > 0) {
+        all[agentId] = { connectionId: current.connectionId, name: current.name, ownedSpaceIds: remaining };
+      } else {
+        delete all[agentId];
+      }
+      await writeSpaces(this.files, sessionDir, all);
+    });
+  }
+
+  private async deleteAgentLease(sessionDir: string, agentId: string, started: EgoSpaceBinding): Promise<void> {
+    await withFile(spaceFile(sessionDir), async () => {
+      const all = await readSpaces(this.files, sessionDir);
+      const current = all[agentId];
+      if (!sameLease(current, started)) return;
       delete all[agentId];
       await writeSpaces(this.files, sessionDir, all);
     });
@@ -304,27 +358,49 @@ export class EgoBrowserRuntime {
     return await egoFileExists(this.files, value) ? value : undefined;
   }
 
-  private async spawn(cli: string, args: readonly string[], signal?: AbortSignal): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string; readonly aborted: boolean }> {
+  private async spawn(
+    cli: string,
+    args: readonly string[],
+    signal?: AbortSignal,
+    output: EgoDetectionOutput = { stdout: [], stderr: [] },
+  ): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string; readonly aborted: boolean }> {
     signal?.throwIfAborted();
-    const child = await this.processes.spawn(cli, args, { shell: false, windowsHide: true });
+    const child = await this.processes.spawn(cli, args, {
+      shell: false,
+      windowsHide: true,
+      ownedProcessTree: true,
+      ownedProcessLifetime: this.platform === 'win32' && process.platform === 'win32' ? 'owner' : undefined,
+    });
+    const stdoutPromise = readEgoStream(child.stdout, output.stdout);
+    const stderrPromise = readEgoStream(child.stderr, output.stderr);
     (child.stdin as { end?: () => void } | undefined)?.end?.();
-    let aborted = false;
-    const stop = (): void => {
-      aborted = true;
-      void child.kill().catch(() => undefined);
-    };
-    if (signal !== undefined) {
+    let cleanup: Promise<void> | undefined;
+    let stop: (() => void) | undefined;
+    const work = Promise.all([child.wait(), stdoutPromise, stderrPromise]);
+    const cancelled = signal === undefined ? undefined : new Promise<never>((_resolve, reject) => {
+      stop = () => {
+        cleanup ??= child.kill().then(async () => { await child.dispose(); });
+        void cleanup.then(() => {
+          reject(signal.reason ?? new BrowserError('browser.execution_failed', 'Ego Lite script was cancelled'));
+        }, reject);
+      };
       if (signal.aborted) stop();
       else signal.addEventListener('abort', stop, { once: true });
-    }
+    });
     try {
-      const stdoutPromise = readAll(child.stdout);
-      const stderrPromise = readAll(child.stderr);
-      const code = await child.wait();
-      return { code, stdout: await stdoutPromise, stderr: await stderrPromise, aborted: aborted || signal?.aborted === true };
+      const [code, stdout, stderr] = await (cancelled === undefined ? work : Promise.race([work, cancelled]));
+      signal?.throwIfAborted();
+      return { code, stdout, stderr, aborted: false };
+    } catch (error) {
+      if (signal?.aborted === true && cleanup !== undefined) {
+        await cleanup;
+        throw signal.reason ?? error;
+      }
+      throw error;
     } finally {
-      signal?.removeEventListener('abort', stop);
-      await child.dispose();
+      if (stop !== undefined) signal?.removeEventListener('abort', stop);
+      if (cleanup !== undefined) await cleanup;
+      else await child.dispose();
     }
   }
 
@@ -336,7 +412,16 @@ export class EgoBrowserRuntime {
     return file;
   }
 
-  async run(cli: string, connection: BrowserResolvedConnection, directory: string, source: string, signal?: AbortSignal, detectionOutput?: EgoDetectionOutput): Promise<EgoRunResult> {
+  async run(
+    cli: string,
+    connection: BrowserResolvedConnection,
+    directory: string,
+    source: string,
+    signal?: AbortSignal,
+    detectionOutput?: EgoDetectionOutput,
+    removeScript = detectionOutput !== undefined,
+    capturedOutput?: EgoDetectionOutput,
+  ): Promise<EgoRunResult> {
     const scriptPath = await this.writeProgram(directory, source);
     let cleanupConfirmed = false;
     try {
@@ -344,7 +429,7 @@ export class EgoBrowserRuntime {
       const serverName = connection.type === 'ego-lite' ? connection.serverName : undefined;
       const execute = async (args: readonly string[]) => detectionOutput !== undefined
         ? { ...await runEgoDetectionCommand(this.processes, cli, args, signal, detectionOutput), aborted: false }
-        : this.spawn(cli, args, signal);
+        : this.spawn(cli, args, signal, capturedOutput);
       let argv = egoArgv(serverName, scriptPath, sdk);
       let outcome = await execute(argv);
       const first = `${outcome.stdout}\n${outcome.stderr}`;
@@ -355,6 +440,10 @@ export class EgoBrowserRuntime {
           detectionOutput.stdout.length = 0;
           detectionOutput.stderr.length = 0;
         }
+        if (capturedOutput !== undefined) {
+          capturedOutput.stdout.length = 0;
+          capturedOutput.stderr.length = 0;
+        }
         outcome = await execute(argv);
       }
       cleanupConfirmed = true;
@@ -363,7 +452,7 @@ export class EgoBrowserRuntime {
       cleanupConfirmed = signal?.aborted === true && error === signal.reason;
       throw error;
     } finally {
-      if (detectionOutput !== undefined && cleanupConfirmed) await this.files.remove(scriptPath);
+      if (removeScript && cleanupConfirmed) await this.files.remove(scriptPath);
     }
   }
 
@@ -373,13 +462,13 @@ export class EgoBrowserRuntime {
     const captured: EgoDetectionOutput = { stdout: [], stderr: [] };
     const timer = setTimeout(() => deadline.abort(timeoutError), EGO_PROBE_TIMEOUT_MS);
     timer.unref?.();
-    const signal = linkAbort(callerSignal, deadline.signal) ?? deadline.signal;
+    const signal = mergeSignals(callerSignal, deadline.signal) ?? deadline.signal;
     try {
       const resolution = await this.resolve(connection, signal);
       signal.throwIfAborted();
       if (resolution.kind !== 'found') return { resolution, output: '', kind: resolution.kind };
       const directory = join(tmpdir(), 'kiki-ego');
-      const result = await this.run(resolution.path, connection, directory, egoReadyScript(), signal, captured);
+      const result = await this.run(resolution.path, connection, directory, egoReadyScript(), signal, captured, true);
       signal.throwIfAborted();
       const output = `${result.stdout}\n${result.stderr}`;
       if (result.aborted) throw callerSignal?.reason ?? deadline.signal.reason ?? new BrowserError('browser.execution_failed', 'Ego Lite check was cancelled');
@@ -404,45 +493,138 @@ export class EgoBrowserRuntime {
     readonly url?: string;
     readonly body: string;
     readonly signal?: AbortSignal;
+    readonly timeoutMs?: number;
   }): Promise<{ readonly result: EgoRunResult; readonly binding: EgoSpaceBinding; readonly tabs?: readonly BrowserTab[]; readonly pageLabel?: string; readonly refused: boolean; readonly shots: readonly string[] }> {
-    const resolution = await this.resolve(input.connection);
+    const resolution = await this.resolve(input.connection, input.signal);
     if (resolution.kind === 'missing') throw new BrowserError('browser.disconnected', 'Ego Lite is not installed');
     if (resolution.kind === 'choose') throw new BrowserError('browser.requires_action', 'Choose one Ego Lite CLI path');
     const name = egoSpaceName(input.sessionId, input.agentId);
     const stop = this.agentStop(input.connection.id);
     const key = `${input.connection.id}\0${input.sessionDir}\0${input.agentId}`;
     return this.lock(key, async () => {
+      input.signal?.throwIfAborted();
+      if (stop.aborted) throw stop.reason ?? new BrowserError('browser.disconnected', 'Ego Lite connection is disconnected');
       const started = (await this.readBinding(input.sessionDir, input.agentId)) ?? { connectionId: input.connection.id, name };
       return this.lock(`${input.connection.id}\0space\0${started.spaceId ?? started.name}`, async () => {
+        input.signal?.throwIfAborted();
+        if (stop.aborted) throw stop.reason ?? new BrowserError('browser.disconnected', 'Ego Lite connection is disconnected');
+        const numericSpaceId = egoNumericSpaceId(started.spaceId);
         const bound: EgoBound = {
-          ...(started.spaceId !== undefined ? { spaceId: started.spaceId } : {}),
+          spaceId: numericSpaceId,
           name: started.name,
-          ...(input.label !== undefined && input.label !== '' ? { label: input.label } : {}),
-          ...(input.connection.type === 'ego-lite' && input.connection.profileId !== undefined ? { profileId: input.connection.profileId } : {}),
+          label: input.label !== undefined && input.label !== '' ? input.label : undefined,
+          profileId: input.connection.type === 'ego-lite' ? input.connection.profileId : undefined,
           connectionId: input.connection.id,
-          ...(input.url !== undefined ? { url: input.url } : {}),
+          url: input.url,
         };
         const shotDir = join(input.sessionDir, 'ego-shots', randomUUID());
         await this.files.mkdir(shotDir, { recursive: true });
-        const result = await this.run(resolution.path, input.connection, input.sessionDir, egoProgram(bound, input.body, shotDir), linkAbort(input.signal, stop));
+        const timeoutMs = this.resolveRunTimeoutMs(input.timeoutMs);
+        const deadline = new AbortController();
+        const timeoutError = new EgoRunTimeoutError(`Ego Lite script timed out after ${String(timeoutMs)}ms`);
+        const captured: EgoDetectionOutput = { stdout: [], stderr: [] };
+        const timer = setTimeout(() => deadline.abort(timeoutError), timeoutMs);
+        timer.unref?.();
+        const execSignal = mergeSignals(input.signal, stop, deadline.signal);
+        let result: EgoRunResult;
+        try {
+          result = await this.run(
+            resolution.path,
+            input.connection,
+            input.sessionDir,
+            egoProgram(bound, input.body, shotDir),
+            execSignal,
+            undefined,
+            false,
+            captured,
+          );
+        } catch (error) {
+          if (error === timeoutError) {
+            const diagnostic = extractEgoDiagnostic(`${Buffer.concat(captured.stdout).toString('utf8')}\n${Buffer.concat(captured.stderr).toString('utf8')}`);
+            if (diagnostic !== undefined) timeoutError.message = `${timeoutError.message}: ${diagnostic}`;
+          }
+          throw error;
+        } finally {
+          clearTimeout(timer);
+        }
         const output = `${result.stdout}\n${result.stderr}`;
         const flags = egoOutputFlags(output);
-        if (result.aborted) throw (input.signal?.aborted === true ? input.signal.reason : undefined) ?? new BrowserError('browser.execution_failed', 'Ego Lite script was cancelled');
+        if (result.aborted) {
+          throw (input.signal?.aborted === true ? input.signal.reason : undefined)
+            ?? (deadline.signal.aborted ? deadline.signal.reason : undefined)
+            ?? new BrowserError('browser.execution_failed', 'Ego Lite script was cancelled');
+        }
         if (result.code !== 0) {
           if (flags.nameInUse) throw new BrowserError('browser.execution_failed', EGO_NAME_IN_USE);
           if (flags.userInControl) throw new BrowserError('browser.execution_failed', EGO_USER_IN_CONTROL);
         }
         const prelude = parseMarker(output, PRELUDE);
         const finish = parseMarker(output, FINISH);
+        const createdOwned = parseOwnedMarker(output);
         let written: string | undefined;
-        if (prelude?.spaceId !== undefined && prelude.spaceId !== '') {
-          await this.updateSpace(input.sessionDir, input.agentId, started, prelude.spaceId, input.connection.id);
-          written = prelude.spaceId;
+        if ((prelude?.spaceId !== undefined && prelude.spaceId !== '') || createdOwned.length > 0) {
+          const nextSpaceId = prelude?.spaceId !== undefined && prelude.spaceId !== '' ? prelude.spaceId : undefined;
+          await this.updateSpace(input.sessionDir, input.agentId, started, nextSpaceId, createdOwned, input.connection.id);
+          written = nextSpaceId;
         }
         if (result.code === 0 && finish?.closed === true) await this.deleteIfStarted(input.sessionDir, input.agentId, started, written);
-        const binding = (await this.readBinding(input.sessionDir, input.agentId)) ?? { ...started, ...(written !== undefined ? { spaceId: written } : {}) };
+        const binding = (await this.readBinding(input.sessionDir, input.agentId))
+          ?? { ...started, spaceId: written ?? started.spaceId };
         const shots = await listShots(this.files, shotDir);
         return { result, binding, tabs: parseTabs(output), pageLabel: parseMarker(output, PAGE)?.label, refused: output.includes(REFUSED), shots };
+      });
+    });
+  }
+
+  async cleanupAgent(input: {
+    readonly connection: BrowserResolvedConnection;
+    readonly sessionDir: string;
+    readonly agentId: string;
+    readonly signal?: AbortSignal;
+    readonly timeoutMs?: number;
+  }): Promise<boolean> {
+    if (input.agentId === 'main' || input.agentId === '') return false;
+    const key = `${input.connection.id}\0${input.sessionDir}\0${input.agentId}`;
+    return this.lock(key, async () => {
+      const started = await this.readBinding(input.sessionDir, input.agentId);
+      if (started === undefined || started.connectionId !== input.connection.id) return false;
+      const stop = this.agentStops.get(input.connection.id)?.signal;
+      if (stop?.aborted === true) return false;
+      const resolution = await this.resolve(input.connection, input.signal);
+      if (resolution.kind !== 'found') return false;
+      return this.lock(`${input.connection.id}\0space\0${started.spaceId ?? started.name}`, async () => {
+        const current = await this.readBinding(input.sessionDir, input.agentId);
+        if (!sameLease(current, started)) return false;
+        const spaceIds = [...new Set([
+          egoNumericSpaceId(current?.spaceId),
+          ...(current?.ownedSpaceIds ?? []),
+        ].filter((id): id is number => id !== undefined))];
+        const timeoutMs = input.timeoutMs !== undefined && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
+          ? Math.floor(input.timeoutMs)
+          : EGO_CLEANUP_TIMEOUT_MS;
+        const deadline = new AbortController();
+        const timeoutError = new EgoRunTimeoutError(`Ego Lite cleanup timed out after ${String(timeoutMs)}ms`);
+        const timer = setTimeout(() => deadline.abort(timeoutError), timeoutMs);
+        timer.unref?.();
+        const execSignal = mergeSignals(input.signal, stop, deadline.signal);
+        try {
+          const result = await this.run(
+            resolution.path,
+            input.connection,
+            input.sessionDir,
+            egoCleanupScript({ name: started.name, spaceIds }),
+            execSignal,
+            undefined,
+            true,
+          );
+          if (result.code === 0) {
+            await this.deleteAgentLease(input.sessionDir, input.agentId, started);
+            return true;
+          }
+          return false;
+        } finally {
+          clearTimeout(timer);
+        }
       });
     });
   }
@@ -466,21 +648,15 @@ function parseTabs(output: string): readonly BrowserTab[] | undefined {
         tabId: label,
         targetId: label,
         label,
-        ...(typeof record['title'] === 'string' ? { title: record['title'] } : {}),
-        ...(typeof record['url'] === 'string' ? { url: record['url'] } : {}),
-        ...(typeof record['active'] === 'boolean' ? { active: record['active'] } : {}),
+        title: typeof record['title'] === 'string' ? record['title'] : prev?.title,
+        url: typeof record['url'] === 'string' ? record['url'] : prev?.url,
+        active: typeof record['active'] === 'boolean' ? record['active'] : prev?.active,
       });
     }
     return [...byLabel.values()];
   } catch {
     return undefined;
   }
-}
-
-async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 export function egoTabBody(action: 'list' | 'open' | 'select' | 'close'): string {
@@ -496,6 +672,7 @@ export function egoUserOutput(result: { readonly stdout: string; readonly stderr
     || line.startsWith(FINISH)
     || line.startsWith(TABS)
     || line.startsWith(PAGE)
+    || line.startsWith(OWNED)
     || line === REFUSED;
   const clean = (text: string): string =>
     text
