@@ -20,6 +20,8 @@ import {
 } from '#/agent/profile/profileOps';
 import { AgentModelSwitch } from '#/agent/modelSwitch/modelSwitchEvent';
 import { effectiveToolBinding } from '#/agent/profile/toolBinding';
+import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { CreateAgentOptions } from '#/session/agentLifecycle/agentLifecycle';
 import { subagentProfileName } from '#/session/agentLifecycle/subagentMetadata';
 import { LlmRequest, promptRequestEvidence } from '#/agent/llmRequester/llmRequestOps';
 import { McpToolsDiscovered } from '#/agent/mcp/mcpDiscoveryOps';
@@ -389,5 +391,50 @@ function metadataSnapshot(metadata: AgentMeta | undefined): PersistedAgentProfil
     executorId: metadata.executor,
     executorProtocol: metadata.executorProtocol,
     activeToolsKnown: false,
+  };
+}
+
+/** Builds `CreateAgentOptions` for restoring a persisted agent, binding unbound branches cleanly. */
+export function resolvePersistedAgentCreateOptions(
+  agentId: string,
+  metadata: AgentMeta | undefined,
+  snapshot: PersistedAgentProfileSnapshot | undefined,
+): CreateAgentOptions | undefined {
+  const isBranch = metadata?.labels?.['branch'] === 'true';
+  const nativeExecutor = snapshot?.executorId === undefined || snapshot.executorId === 'native';
+  const hasBoundProfileOrRoute =
+    (snapshot?.profileName !== undefined && snapshot.profileName.length > 0) ||
+    (snapshot?.routeId !== undefined && snapshot.routeId.length > 0);
+  const unboundBranch =
+    isBranch &&
+    nativeExecutor &&
+    (!hasBoundProfileOrRoute || snapshot?.modelAlias === undefined || snapshot.modelAlias.length === 0);
+  if (unboundBranch) {
+    return {
+      agentId,
+      delegator: metadata?.delegator,
+      userLabel: metadata?.userLabel,
+      labels: metadata?.labels,
+      binding: {
+        profile: snapshot?.profileName ?? metadata?.labels?.['profileName'] ?? DEFAULT_AGENT_PROFILE_NAME,
+        route: snapshot?.routeId,
+      },
+    };
+  }
+  if (snapshot === undefined) return undefined;
+  return {
+    agentId,
+    delegator: metadata?.delegator,
+    userLabel: metadata?.userLabel,
+    labels: metadata?.labels,
+    restoreBinding: {
+      profileName: snapshot.profileName,
+      routeId: snapshot.routeId,
+      modelAlias: snapshot.modelAlias,
+      thinkingEffort: snapshot.thinkingLevel,
+      thinkingEffortExplicit: snapshot.thinkingEffortExplicit,
+      executorId: snapshot.executorId,
+      executorProtocol: snapshot.executorProtocol,
+    },
   };
 }

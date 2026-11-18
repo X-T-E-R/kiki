@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, computerControlVerdict, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
 import { isBrowserControlEnabled, browserControlEnabledPatch, browserControlVerdict, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { branchAllowPatch, branchUsagePreference, branchUsagePreferencePatch, isBranchEnabled } from './branchControl';
+import { normalizeSelectableModelAlias, projectedProfileModelRuleSource, projectedProfileModelState } from './agentSettings';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 import { MEMORY_ADVISOR_RANGES, memoryAdvisorEndpointIssue, memoryAdvisorModelBaseUrl, memoryAdvisorModePatch, memoryAdvisorNumberValue, memoryAdvisorOn, memoryAdvisorSelectorFromDraft, memoryAdvisorView, parseMemoryAdvisorNumber } from './memoryAdvisor';
 import {
@@ -2830,5 +2831,28 @@ describe('decision source settings and routes', () => {
       cardId: 'st-card-decision-judges',
       tab: 'defaults',
     });
+  });
+
+  it('strips profile:* UI rule-source sentinels and treats main/branch delegation position as allowed when model is unset', () => {
+    expect(normalizeSelectableModelAlias(undefined)).toBeUndefined();
+    expect(normalizeSelectableModelAlias('   ')).toBeUndefined();
+    expect(normalizeSelectableModelAlias('profile:agent')).toBeUndefined();
+    expect(normalizeSelectableModelAlias('profile:agent.restrict_models_to_menu')).toBeUndefined();
+    expect(normalizeSelectableModelAlias('fixture/kiki-pro')).toBe('fixture/kiki-pro');
+
+    const constrainedAgentProjection = {
+      model_constraints_active: true,
+      deny_models: ['fixture/blocked'],
+      effective_model_aliases: ['fixture/kiki-pro'],
+    };
+    const models = [
+      { id: 'fixture/kiki-pro', remote_id: 'kiki-pro', provider_id: 'fixture' },
+      { id: 'fixture/blocked', remote_id: 'blocked', provider_id: 'fixture' },
+    ];
+    expect(projectedProfileModelState(constrainedAgentProjection, models, undefined, 'main')).toBe('allowed');
+    expect(projectedProfileModelState(constrainedAgentProjection, models, 'profile:agent', 'main')).toBe('allowed');
+    expect(projectedProfileModelState(constrainedAgentProjection, models, 'fixture/kiki-pro', 'main')).toBe('allowed');
+    expect(projectedProfileModelState(constrainedAgentProjection, models, undefined, 'sub')).toBe('blocked');
+    expect(projectedProfileModelRuleSource(constrainedAgentProjection, models, 'profile:agent', 'agent')).toBe('profile:agent');
   });
 });

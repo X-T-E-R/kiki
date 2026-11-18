@@ -953,7 +953,16 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
     draft.refreshing = true;
     draft.refreshingUntil = entry.refreshingUntil;
   }
-  if (!accepted) return;
+  if (!accepted) {
+    if (idleSuppressed && draft.isBranch === true && entry.disposedAt === undefined) {
+      draft.model ??= firstPresent(entry.model);
+      draft.thinkingEffort ??= firstPresent(entry.thinkingEffort);
+      draft.thinkingEffortExplicit ??= entry.thinkingEffortExplicit;
+      draft.executorId ??= firstPresent(entry.executorId);
+      draft.executorProtocol ??= firstPresent(entry.executorProtocol);
+    }
+    return;
+  }
   draft.model = firstPresent(entry.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(entry.thinkingEffort) ?? draft.thinkingEffort;
   draft.thinkingEffortExplicit = entry.thinkingEffortExplicit ?? draft.thinkingEffortExplicit;

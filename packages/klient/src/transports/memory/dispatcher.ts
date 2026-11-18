@@ -21,7 +21,7 @@ import { IWorkAdmissionService } from '@kiki/agent-core-v2/app/workAdmission/wor
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
-import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
+import { readPersistedAgentProfileSnapshot, resolvePersistedAgentCreateOptions } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { readPersistedExecutionControl } from '@kiki/agent-core-v2/session/executionControl/readExecutionControl';
 import { PersistedContextRebuildReader } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuildRead';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
@@ -168,25 +168,15 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       options?.signal,
     );
     options?.signal?.throwIfAborted();
-    if (snapshot === undefined) {
+    const createOptions = resolvePersistedAgentCreateOptions(scope.agentId, agentMetadata, snapshot);
+    if (createOptions === undefined) {
       throw new RPCError(
         REQUEST_INVALID,
         `Persisted binding metadata for agent "${scope.agentId}" is unavailable`,
         { agentId: scope.agentId },
       );
     }
-    await lifecycle.create({
-      agentId: scope.agentId,
-      restoreBinding: {
-        profileName: snapshot.profileName,
-        routeId: snapshot.routeId,
-        modelAlias: snapshot.modelAlias,
-        thinkingEffort: snapshot.thinkingLevel,
-        thinkingEffortExplicit: snapshot.thinkingEffortExplicit,
-        executorId: snapshot.executorId,
-        executorProtocol: snapshot.executorProtocol,
-      },
-    });
+    await lifecycle.create(createOptions);
   }
 
   function resolveService(resolved: ResolvedScope, service: string): Record<string, unknown> {

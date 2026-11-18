@@ -76,6 +76,7 @@ import { errorText, issueText, type I18nKey, type I18nParams } from '@kiki/sessi
 import {
   composerEnterAction,
   catalogModelSupportsEffort,
+  normalizeSelectableModelAlias,
   projectedProfileModelState,
   projectedProfileModelRuleSource,
   resolveCatalogModel,
@@ -377,6 +378,7 @@ export function Composer({
   busyPlaceholder,
   sessionId,
   agentId = 'main',
+  delegationPosition,
   workspaceId,
   agentProfileCatalogMode,
   fsSearch,
@@ -547,6 +549,8 @@ export function Composer({
   sessionId?: string;
   /** Agent whose frozen model domain applies; defaults to the main agent. */
   agentId?: string;
+  /** Effective delegation position (`main` for main & branches, `sub` for subagents). */
+  delegationPosition?: 'main' | 'sub';
   /** Registered workspace id for the /new draft's skill catalog. */
   workspaceId?: string;
   /** Named agent profile catalog visibility and workspace scope. */
@@ -972,6 +976,20 @@ export function Composer({
   });
   const models = modelsQuery.data?.items ?? [];
 
+  const frozenMenuQuery = useQuery({
+    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
+    queryFn: () => client.getAgentCapabilities({ session_id: sessionId!, agent_id: agentId }),
+    enabled: sessionId !== undefined,
+    staleTime: 30_000,
+    retry: retryCatalog,
+    retryDelay: catalogRetryDelay,
+  });
+  const frozenProfile = frozenMenuQuery.data?.profile;
+  const normalizedModel = normalizeSelectableModelAlias(model);
+  const normalizedDefaultModel =
+    normalizeSelectableModelAlias(defaultModel) ?? normalizeSelectableModelAlias(frozenProfile?.model);
+  const normalizedServerDefaultModel = normalizeSelectableModelAlias(serverDefaultModel);
+
   // Model picker options: the inherit entry first, then the catalog grouped
   // by provider display label (buildCatalogModelOptions). The inherit row
   // resolves its target against the catalog so an ambiguous bare alias still
@@ -979,7 +997,7 @@ export function Composer({
   const providerGroupLabel = useProviderGroupLabel();
   const catalogModelOptions: readonly SearchableSelectOption[] = useMemo(
     () => {
-      const inheritTargetId = defaultModel ?? serverDefaultModel;
+      const inheritTargetId = normalizedDefaultModel ?? normalizedServerDefaultModel;
       const inheritResolved =
         inheritTargetId !== undefined ? resolveCatalogModel(models, inheritTargetId) : undefined;
       const inheritDisplay = inheritResolved?.display_name ?? inheritTargetId ?? t('composer.unknown');
@@ -991,7 +1009,7 @@ export function Composer({
         {
           value: '',
           label:
-            defaultModel !== undefined
+            normalizedDefaultModel !== undefined
               ? t('composer.inheritSession', { model: inheritDisplay })
               : t(
                   modelSource === 'local-default'
@@ -1004,10 +1022,10 @@ export function Composer({
           badges: inheritResolved !== undefined ? modelFactBadges(inheritResolved, t) : undefined,
           title: inheritResolved !== undefined ? modelTooltip(inheritResolved) : inheritTargetId,
         },
-        ...buildCatalogModelOptions(models, t, { groupLabel: providerGroupLabel, currentId: defaultModel }),
+        ...buildCatalogModelOptions(models, t, { groupLabel: providerGroupLabel, currentId: normalizedDefaultModel }),
       ];
     },
-    [models, defaultModel, serverDefaultModel, modelSource, providerGroupLabel, t],
+    [models, normalizedDefaultModel, normalizedServerDefaultModel, modelSource, providerGroupLabel, t],
   );
 
   // The effective catalog validates selections without erasing them on an
@@ -1025,15 +1043,6 @@ export function Composer({
   // server without the route; the native engine is always offered regardless.
   const executorCatalog = useExecutorCatalog();
 
-  const frozenMenuQuery = useQuery({
-    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
-    queryFn: () => client.getAgentCapabilities({ session_id: sessionId!, agent_id: agentId }),
-    enabled: sessionId !== undefined,
-    staleTime: 30_000,
-    retry: retryCatalog,
-    retryDelay: catalogRetryDelay,
-  });
-  const frozenProfile = frozenMenuQuery.data?.profile;
   const fromFile = execution?.profile_file !== undefined;
   const validateFile = fromFile && (sessionId === undefined || executionPending);
   const filePreviewQuery = useProfileFilePreview(validateFile ? execution?.profile_file : undefined, agentProfileCatalogMode);
@@ -1041,17 +1050,20 @@ export function Composer({
     ? filePreviewQuery.data?.profile.name ?? frozenProfile?.name ?? execution!.profile_file!
     : agentProfile ?? frozenProfile?.name ?? DEFAULT_AGENT_PROFILE;
   const catalogProfile = agentProfilesQuery.data?.items.find((item) => item.name === selectedProfileName);
+  const effectiveDelegationPosition = delegationPosition ?? (agentId === 'main' ? 'main' : 'sub');
   // A pending file is its own declaration, even if a catalog profile has the same name.
   // A bound file keeps its frozen domain until the next message rebinds it.
   const modelProjection = fromFile
     ? validateFile ? filePreviewQuery.data?.profile : frozenProfile
     : sessionId === undefined ? catalogProfile
       : frozenProfile?.name === selectedProfileName ? frozenProfile
-        : frozenProfile !== undefined ? catalogProfile : agentId === 'main' ? undefined : { restrict_models_to_menu: true };
-  const modelSelectionPosition = agentId === 'main' ? 'main' : 'sub';
-  const selectionDefaultModel = validateFile ? filePreviewQuery.data?.profile.pinned_model_alias ?? serverDefaultModel : defaultModel;
+        : frozenProfile !== undefined ? catalogProfile : effectiveDelegationPosition === 'main' ? undefined : { restrict_models_to_menu: true };
+  const modelSelectionPosition = effectiveDelegationPosition;
+  const selectionDefaultModel = validateFile
+    ? normalizeSelectableModelAlias(filePreviewQuery.data?.profile.pinned_model_alias) ?? normalizedServerDefaultModel
+    : normalizedDefaultModel;
   const modelOptions: readonly SearchableSelectOption[] = useMemo(() => catalogModelOptions.map((option) => {
-    const target = option.value === '' ? selectionDefaultModel ?? serverDefaultModel : option.value;
+    const target = option.value === '' ? selectionDefaultModel ?? normalizedServerDefaultModel : option.value;
     const inheritedFileModel = validateFile && option.value === '' && target !== undefined ? resolveCatalogModel(models, target) : undefined;
     const row = validateFile && option.value === '' ? { ...option,
       label: t('composer.inheritSession', { model: inheritedFileModel?.display_name ?? target ?? t('composer.unknown') }),
@@ -1066,7 +1078,7 @@ export function Composer({
       hint: state === 'unknown' || source === row.hint ? undefined : source,
       description: reason, title: [row.title ?? row.label, reason].join('\n'),
     };
-  }), [catalogModelOptions, modelProjection, models, selectionDefaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
+  }), [catalogModelOptions, modelProjection, models, selectionDefaultModel, normalizedServerDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
   const selectedExecution = execution ?? boundExecution;
   const externalExecution = selectedExecution !== undefined && !isNativeExecutor(selectedExecution.executor);
   const executorId = externalExecution ? selectedExecution.executor : undefined;
@@ -1075,7 +1087,7 @@ export function Composer({
   const validateProfile = !fromFile && !bareExternal && explicitProfileChoice && agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
   const validatingModel = externalExecution
     ? (typeof selectedExecution.overrides?.model === 'string' ? selectedExecution.overrides.model : undefined)
-    : model || selectionDefaultModel || serverDefaultModel;
+    : normalizedModel || selectionDefaultModel || normalizedServerDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
   const modelDomainState = externalExecution ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
   const recipeBindingSourceRevision = JSON.stringify([
@@ -1159,8 +1171,8 @@ export function Composer({
   // An override holding a bare alias (e.g. a profile-pinned k3-256k) displays
   // as the resolved catalog row, so the trigger names the serving provider's
   // model instead of an unmatched raw id.
-  const resolvedModelKey = !externalExecution && model !== undefined
-    ? resolveCatalogModel(models, model)?.id
+  const resolvedModelKey = !externalExecution && normalizedModel !== undefined
+    ? resolveCatalogModel(models, normalizedModel)?.id
     : undefined;
   // Catalog reads enrich the selection; the server validates the submitted binding.
   const selectionCatalogError = (validateFile ? filePreviewQuery.error : null) ??
@@ -2915,7 +2927,7 @@ export function Composer({
             nativeLabel={t('composer.agentDefaultName')}
             models={models}
             modelOptions={modelOptions}
-            currentModel={bindingSetting?.model ?? (externalExecution ? validatingModel : model)}
+            currentModel={bindingSetting?.model ?? (externalExecution ? validatingModel : normalizedModel)}
             effectiveModel={effectiveModel}
             modelShortLabel={modelShortLabel}
             modelSource={modelSource}

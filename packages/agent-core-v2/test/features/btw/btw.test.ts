@@ -28,6 +28,8 @@ import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { BRANCH_CONFIG_SECTION, type BranchUsagePreference } from '#/app/branch/configSection';
+import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { resolvePersistedAgentCreateOptions } from '#/session/agentProfileSnapshot';
 import { ErrorCodes } from '#/errors';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IConfigService } from '#/app/config/config';
@@ -292,6 +294,60 @@ describe('SessionBranchService completion metadata', () => {
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({ restoreBinding: expect.objectContaining({ profileName: 'example', modelAlias: 'example-model', thinkingEffort: 'high' }) }));
     await harness.service.foldBranch({ branchId: 'branch-1', summary: 'Cold result', done: false });
     expect(harness.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('binds unbound persisted branches to the default agent profile on restore and binds new branches from unbound main when default_model is configured', async () => {
+    const unboundOptions = resolvePersistedAgentCreateOptions(
+      'agent-352',
+      { parentAgentId: 'main', labels: { branch: 'true', profileName: 'agent' } },
+      { source: 'metadata', profileName: 'agent', activeToolsKnown: false },
+    );
+    expect(unboundOptions).toEqual({
+      agentId: 'agent-352',
+      delegator: undefined,
+      userLabel: undefined,
+      labels: { branch: 'true', profileName: 'agent' },
+      binding: { profile: 'agent', route: undefined },
+    });
+
+    const boundOptions = resolvePersistedAgentCreateOptions(
+      'agent-352',
+      { parentAgentId: 'main', labels: { branch: 'true', profileName: 'agent' } },
+      {
+        source: 'wire',
+        profileName: 'agent',
+        modelAlias: 'fixture/pro',
+        thinkingLevel: 'high',
+        executorId: 'native',
+        activeToolsKnown: true,
+      },
+    );
+    expect(boundOptions).toMatchObject({
+      agentId: 'agent-352',
+      restoreBinding: {
+        profileName: 'agent',
+        modelAlias: 'fixture/pro',
+        thinkingEffort: 'high',
+        executorId: 'native',
+      },
+    });
+
+    const storage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const harness = createBranchFoldHarness(
+      ix,
+      { parentAgentId: 'main', labels: { branch: 'true', profileName: DEFAULT_AGENT_PROFILE_NAME } },
+      'native',
+      true,
+    );
+    await harness.service.setToolsLocked({ branchId: 'branch-1', locked: false });
+    expect(harness.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'branch-1',
+        binding: expect.objectContaining({ profile: DEFAULT_AGENT_PROFILE_NAME }),
+      }),
+    );
   });
 
   it('rejects a normal subagent as a merge source', async () => {

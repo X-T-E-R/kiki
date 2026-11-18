@@ -583,6 +583,14 @@ export interface ProfileModelProjection {
   readonly declared_model_menu?: { readonly identities: readonly string[] };
 }
 
+/** Strip blank values and UI rule-source sentinels (`profile:<name>`) before model selection or validation. */
+export function normalizeSelectableModelAlias(model: string | undefined): string | undefined {
+  if (model === undefined) return undefined;
+  const trimmed = model.trim();
+  if (trimmed === '' || trimmed.startsWith('profile:')) return undefined;
+  return trimmed;
+}
+
 /** Validate an existing selection against the server projection; never choose a replacement. */
 export function projectedProfileModelState(
   projection: ProfileModelProjection | undefined,
@@ -590,16 +598,17 @@ export function projectedProfileModelState(
   selected: string | undefined,
   position: 'main' | 'sub' = 'sub',
 ): 'allowed' | 'warning' | 'blocked' | 'unknown' {
+  const normalizedSelected = normalizeSelectableModelAlias(selected);
   if (position === 'main') {
     const constrained = projection?.model_constraints_active ?? (projection?.restrict_models_to_menu === true
       || projection?.allowed_models !== undefined || (projection?.deny_models?.length ?? 0) > 0);
-    if (!constrained || projection?.effective_model_aliases === undefined || selected === undefined) return 'allowed';
+    if (!constrained || projection?.effective_model_aliases === undefined || normalizedSelected === undefined) return 'allowed';
   }
   if (projection?.effective_model_aliases === undefined) {
     return projection?.restrict_models_to_menu === true ? 'unknown' : 'allowed';
   }
-  if (selected === undefined) return 'blocked';
-  const identity = resolveCatalogModel(models, selected)?.id ?? selected;
+  if (normalizedSelected === undefined) return 'blocked';
+  const identity = resolveCatalogModel(models, normalizedSelected)?.id ?? normalizedSelected;
   return projection.effective_model_aliases.some((alias) => (resolveCatalogModel(models, alias)?.id ?? alias) === identity)
     ? 'allowed' : position === 'main' ? 'warning' : 'blocked';
 }
@@ -612,7 +621,8 @@ export function projectedProfileModelRuleSource(
   selected: string | undefined,
   profileName: string,
 ): string {
-  const identity = selected === undefined ? undefined : resolveCatalogModel(models, selected)?.id ?? selected;
+  const normalizedSelected = normalizeSelectableModelAlias(selected);
+  const identity = normalizedSelected === undefined ? undefined : resolveCatalogModel(models, normalizedSelected)?.id ?? normalizedSelected;
   const outsideMenu = projection?.restrict_models_to_menu === true && projection.declared_model_menu !== undefined
     && identity !== undefined && !projection.declared_model_menu.identities.includes(identity);
   return `profile:${profileName}${outsideMenu ? '.restrict_models_to_menu' : ''}`;

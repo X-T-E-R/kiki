@@ -2,7 +2,10 @@ import { ulid } from 'ulid';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
-import { readPersistedAgentProfileSnapshot } from '#/session/agentProfileSnapshot';
+import {
+  readPersistedAgentProfileSnapshot,
+  resolvePersistedAgentCreateOptions,
+} from '#/session/agentProfileSnapshot';
 import { Service } from '#/_base/di/service';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { BranchBase } from '#/agent/contextMemory/contextEvents';
@@ -144,19 +147,12 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     const profile = await readPersistedAgentProfileSnapshot(
       this.profileHost, this.session.workspaceId, this.session.sessionId, agentId, meta,
     );
-    return this.lifecycle.create({
+    const createOptions = resolvePersistedAgentCreateOptions(agentId, meta, profile);
+    return this.lifecycle.create(createOptions ?? {
       agentId,
       delegator: meta?.delegator,
       userLabel: meta?.userLabel,
       labels: meta?.labels,
-      restoreBinding: profile === undefined ? undefined : {
-        profileName: profile.profileName,
-        modelAlias: profile.modelAlias,
-        thinkingEffort: profile.thinkingLevel,
-        thinkingEffortExplicit: profile.thinkingEffortExplicit,
-        executorId: profile.executorId,
-        executorProtocol: profile.executorProtocol,
-      },
     });
   }
 
@@ -218,6 +214,12 @@ export class SessionBranchService extends Service implements ISessionBranchServi
           additionalDirs: parentRoots?.additionalDirs,
         };
 
+    const unboundDefaultModel =
+      parentData.profileName === undefined &&
+      parentData.execution === undefined &&
+      parentData.endpoint === undefined
+        ? normalizeNonBlank(input.model) ?? normalizeNonBlank(this.configService.get<string>('default_model'))
+        : undefined;
     const overrideBinding = input.executor !== undefined
       ? {
           execution: {
@@ -232,7 +234,8 @@ export class SessionBranchService extends Service implements ISessionBranchServi
           thinking: input.thinking === undefined ? undefined : input.thinking ?? undefined,
         }
       : {
-          model: input.model,
+          profile: unboundDefaultModel !== undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined,
+          model: input.model ?? unboundDefaultModel,
           thinking: input.thinking === undefined ? undefined : input.thinking ?? undefined,
         };
 

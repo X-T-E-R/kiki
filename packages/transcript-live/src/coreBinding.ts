@@ -1,6 +1,7 @@
 import {
   IAgentLifecycleService,
   IAgentActivityView,
+  IAgentPermissionModeService,
   IAgentPromptService,
   IAgentProfileService,
   IAgentTaskService,
@@ -368,6 +369,7 @@ export function bindSessionTranscript(
       event.type === 'plan.revision' ||
       event.type === 'interaction.request' ||
       event.type === 'interaction.resolved' ||
+      event.type === 'permission.set_mode' ||
       event.type === 'turn.cancel' ||
       event.type === 'branch.base' ||
       (event.type === 'executor.runtime.update' && event['kind'] === 'usage')
@@ -386,6 +388,17 @@ export function bindSessionTranscript(
     }
   };
 
+  const republishAgentStatus = (handle: IAgentScopeHandle | undefined): void => {
+    if (handle === undefined) return;
+    handle.accessor.get(IAgentProfileService)?.republishStatus();
+    try {
+      const mode = handle.accessor.get(IAgentPermissionModeService)?.mode;
+      if (mode !== undefined) {
+        applyOps(handle.id, [{ op: 'meta.merge', meta: { agent: { permission: mode } } }]);
+      }
+    } catch {}
+  };
+
   const finishReplay = (agentId: string, state?: TranscriptReplayState): void => {
     if (state !== undefined) {
       wireAdapterFor(agentId).restore(state.adapter);
@@ -396,7 +409,7 @@ export function bindSessionTranscript(
     const buffered = bufferedEvents.get(agentId) ?? [];
     bufferedEvents.delete(agentId);
     for (const event of buffered) processEvent(agentId, event);
-    agents.get(agentId)?.accessor.get(IAgentProfileService)?.republishStatus();
+    republishAgentStatus(agents.get(agentId));
   };
 
   const subscribeAgent = (handle: IAgentScopeHandle, replay: boolean): void => {
@@ -420,7 +433,7 @@ export function bindSessionTranscript(
     const list = agentDisposables.get(handle.id) ?? [];
     list.push(busD);
     agentDisposables.set(handle.id, list);
-    if (!replay) handle.accessor.get(IAgentProfileService)?.republishStatus();
+    if (!replay) republishAgentStatus(handle);
   };
 
   const interactionAgentId = (interaction: Interaction): string => {

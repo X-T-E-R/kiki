@@ -5582,3 +5582,22 @@ it('projects tool.result side-channel notes onto ToolCallFrame without mutating 
     note: 'Note: stale.txt changed on disk since you last read it; the edit was applied because the text it replaced still matched exactly.',
   });
 });
+
+it('projects durable permission.set_mode wire records onto meta.agent.permission', () => {
+  const transcript = new AgentTranscript('branch-1');
+  const adapter = new TranscriptWireAdapter('branch-1', {
+    turn: (turnId) => transcript.getTurn(turnId),
+    tool: (toolCallId) => transcript.getToolCall(toolCallId),
+  });
+  const reducer = new TranscriptFactReducer(transcript);
+  const feed = (record: TranscriptWireRecord) => reducer.apply(adapter.add(record));
+  feed({ type: 'profile.bind', profileName: 'agent', modelAlias: 'fixture/pro', thinkingEffort: 'high', time: 10 });
+  feed({ type: 'permission.set_mode', mode: 'yolo', source: 'binding', time: 20 });
+  expect(transcript.getMeta().agent).toMatchObject({
+    model: 'fixture/pro',
+    thinkingEffort: 'high',
+    permission: 'yolo',
+  });
+  feed({ type: 'permission.set_mode', mode: 'review', source: 'user', time: 30 });
+  expect(transcript.getMeta().agent?.permission).toBe('review');
+});

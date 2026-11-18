@@ -515,6 +515,12 @@ export class TranscriptWireAdapter {
           summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } });
       return [...operations, ...this.compactQueuedPositions()];
     }
+    if (record.type === 'permission.set_mode') {
+      const mode = stringOf(record['mode']);
+      return mode === 'manual' || mode === 'auto' || mode === 'review' || mode === 'yolo'
+        ? [{ op: 'meta.merge', meta: { agent: { permission: mode } } }]
+        : [];
+    }
     if (record.type === 'profile.bind' || record.type === 'config.update') {
       const model = stringOf(record['modelAlias']);
       const thinkingEffort = stringOf(record['thinkingEffort']) ?? stringOf(record['thinkingLevel']);
@@ -2961,6 +2967,7 @@ function durableRecord(type: string): boolean {
     type === 'prompt.model_switch_queued' ||
     type === 'prompt.model_switch_status' ||
     type === 'config.update' ||
+    type === 'permission.set_mode' ||
     type === 'profile.bind' ||
     type === 'turn.prompt' ||
     type === 'turn.ended' ||

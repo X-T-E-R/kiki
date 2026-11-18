@@ -96,7 +96,7 @@ const MAIN_AGENT_ID = 'main';
 const WIRE_FILE = 'wire.jsonl';
 const STATE_FILE = 'state.json';
 const TRANSCRIPT_CHECKPOINT_COLLECTION = '__transcript_projection_checkpoint__';
-const TRANSCRIPT_CHECKPOINT_FORMAT = 24;
+const TRANSCRIPT_CHECKPOINT_FORMAT = 25;
 const TRANSCRIPT_CHECKPOINT_MIN_RECORDS = 256;
 const TRANSCRIPT_CHECKPOINT_MAX_WIRE_BYTES = 8 << 20;
 const OPS_JOURNAL_COMPACT_MIN_HEAD = 1024;
@@ -451,6 +451,27 @@ export interface TranscriptOpsCatchup {
 interface ColdWireRecord {
   readonly record: ContextRecord;
   readonly position: TranscriptWireRecordPosition;
+}
+
+function foldColdHeadAgentMeta(
+  records: readonly ColdWireRecord[],
+): NonNullable<AgentTranscriptSnapshot['meta']['agent']> | undefined {
+  let model: string | undefined;
+  let thinkingEffort: string | undefined;
+  let permission: 'manual' | 'auto' | 'review' | 'yolo' | undefined;
+  for (const { record } of records) {
+    if (record.type === 'profile.bind' || record.type === 'config.update') {
+      const alias = record['modelAlias'];
+      if (typeof alias === 'string' && alias.length > 0) model = alias;
+      const effort = record['thinkingEffort'] ?? record['thinkingLevel'];
+      if (typeof effort === 'string' && effort.length > 0) thinkingEffort = effort;
+    } else if (record.type === 'permission.set_mode') {
+      const mode = record['mode'];
+      if (mode === 'manual' || mode === 'auto' || mode === 'review' || mode === 'yolo') permission = mode;
+    }
+  }
+  if (model === undefined && thinkingEffort === undefined && permission === undefined) return undefined;
+  return { model, thinkingEffort, permission };
 }
 
 interface ColdWireWindow {
@@ -2463,7 +2484,14 @@ export class TranscriptService {
     const start = discovered?.start ?? await this.tailRecordStart(wirePath, info.size, signal);
     const read = discovered ?? await this.readWireRange(wirePath, start, info.size, signal, !resolveHeaders);
     const entire = start === 0 && read.complete && !(discovered?.skippedTurnIds.length);
-    const snapshot = this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureReplayState);
+    let snapshot = this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureReplayState);
+    if (start > 0 && (snapshot.meta.agent?.model === undefined || snapshot.meta.agent?.permission === undefined)) {
+      const head = await this.readWireRange(wirePath, 0, Math.min(start, 65_536), signal, true);
+      const headAgent = foldColdHeadAgentMeta(head.records);
+      if (headAgent !== undefined) {
+        snapshot = { ...snapshot, meta: { ...snapshot.meta, agent: { ...headAgent, ...snapshot.meta.agent } } };
+      }
+    }
     const window: ColdWireWindow = { fingerprint, start, end: info.size, entire, records: read.records, snapshot, bytes: 0, skippedTurnIds: discovered?.skippedTurnIds };
     if (!entire && resolveHeaders) {
       await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, window, signal, preserveOpenTurnIds, captureReplayState);

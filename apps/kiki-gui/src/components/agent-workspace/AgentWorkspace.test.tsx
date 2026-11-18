@@ -176,13 +176,15 @@ vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: 
 // the workspace passes keep their identity.
 vi.mock('../Transcript', async () => {
   const { memo } = await import('react');
-  return { Transcript: memo(({ state, agentId, showQueuedPrompts }: { state: { blocks: readonly { kind?: string; text?: string; optimisticStatus?: string }[]; loadError?: string; transcriptReady?: boolean }; agentId?: string; showQueuedPrompts?: boolean }) => {
+  return { Transcript: memo(({ state, agentId, showQueuedPrompts }: { state: { blocks: readonly { id?: string; kind?: string; text?: string; optimisticStatus?: string }[]; loadError?: string; transcriptReady?: boolean }; agentId?: string; showQueuedPrompts?: boolean }) => {
     harness.transcriptRenders += 1;
     return <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length}
       data-timeline-queued={showQueuedPrompts === true ? 'shown' : 'hidden'}
       data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'}>
       {state.blocks.filter((block) => block.kind === 'user').map((block, index) =>
         <span key={index} data-timeline-user={block.text} data-timeline-optimistic={block.optimisticStatus} />)}
+      {state.blocks.filter((block) => block.kind === 'assistant' && typeof block.text === 'string').map((block, index) =>
+        <p key={`assistant-${block.id ?? index}`} data-quote-source={block.id ?? `assistant-${index}`}>{block.text}</p>)}
     </div>;
   }) };
 });
@@ -3513,4 +3515,221 @@ it('uses profile thinking default on main while subagent uses catalog default', 
     effort: undefined,
     adjustedFrom: undefined,
   });
+});
+
+it('inherits model and yolo permission on a branch bound to constrained profile:agent without blocking send, and aligns the branch merge bar in ConversationDockColumn', async () => {
+  localStorage.setItem('kiki.locale', 'zh');
+  harness.listModels.mockResolvedValue({
+    items: [
+      {
+        id: 'fixture/kiki-pro',
+        provider_id: 'fixture',
+        remote_id: 'kiki-pro',
+        support_efforts: ['low', 'medium', 'high'],
+      },
+      { id: 'fixture/other', provider_id: 'fixture', remote_id: 'other' },
+    ],
+  });
+  harness.readCapabilities.mockResolvedValue({
+    context: 'live',
+    owner: { profile: 'agent', agent_id: 'agent-352' },
+    available: true,
+    profile: {
+      name: 'agent',
+      model: undefined,
+      model_constraints_active: true,
+      deny_models: ['fixture/other'],
+      effective_model_aliases: ['fixture/kiki-pro'],
+    },
+    targets: [],
+    tools: [],
+    skills: [],
+    metrics: {},
+  });
+  harness.sendAgentMessage.mockResolvedValue(null);
+
+  const branchNode: AgentTreeNode = {
+    agentId: 'agent-352',
+    parentAgentId: 'main',
+    name: 'agent',
+    label: '上下文保留窗口与分支解耦设计',
+    status: 'completed',
+    busy: false,
+    isBranch: true,
+    branchSeed: 'fresh',
+    executorId: 'native',
+    toolCallCount: 1,
+    childIds: [],
+  };
+  const forest: AgentForest = {
+    roots: ['main'],
+    byId: {
+      main: {
+        agentId: 'main',
+        name: 'main',
+        label: 'Main session',
+        status: 'completed',
+        busy: false,
+        toolCallCount: 2,
+        childIds: ['agent-352'],
+      },
+      'agent-352': branchNode,
+    },
+  };
+
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'agent-352' },
+    forest,
+    sessionState: {
+      ...createViewState('session'),
+      loaded: true,
+      model: 'fixture/kiki-pro',
+      thinkingEffort: 'high',
+      permissionMode: 'yolo',
+    },
+    controller: controllerStub({
+      forest,
+      agentStates: {
+        'agent-352': {
+          ...createViewState('session'),
+          loaded: true,
+          transcriptReady: true,
+          blocks: [{ id: 'a-branch-1', kind: 'assistant', text: 'Branch analysis ready.' }] as unknown as ReturnType<typeof createViewState>['blocks'],
+        },
+      },
+    }),
+  });
+  await settle();
+
+  expect(dock.querySelector('[data-composer-model-alert]')).toBeNull();
+  expect(dock.textContent).not.toContain('profile:agent');
+  expect(dock.textContent).not.toContain('跟随默认：未知');
+  expect(dock.textContent).toContain('kiki-pro');
+  expect(dock.textContent).toContain('完全放行');
+  expect(dock.querySelector('[data-composer-replying-to]')).toBeNull();
+
+  const branchBar = dock.querySelector<HTMLElement>('[data-branch-fold-bar="agent-352"]');
+  expect(branchBar).not.toBeNull();
+  expect(branchBar?.className).toContain('px-3 sm:px-6');
+  expect(branchBar?.firstElementChild?.className).toContain('max-w-[var(--kiki-chat-content-width,760px)]');
+  expect(branchBar?.textContent).toContain('分支自 main · 轻量');
+  expect(branchBar?.querySelector('[data-branch-fold-action]')?.textContent).toBe('合回主线');
+
+  await typeText(composerInput(dock), '继续补充迁移方案');
+  await act(async () => {
+    composerInput(dock).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  await settle();
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith(
+    'session',
+    'agent-352',
+    '继续补充迁移方案',
+    [{ type: 'text', text: '继续补充迁移方案' }],
+    expect.any(String),
+    undefined,
+  );
+});
+
+it.each([
+  { label: 'subagent', agentId: 'child', isBranch: false },
+  { label: 'branch', agentId: 'branch-1', isBranch: true },
+])('attaches selection-quote annotations (标注) from the timeline and serializes kiki-source blockquotes on send ($label)', async ({ agentId, isBranch }) => {
+  harness.sendAgentMessage.mockResolvedValue(null);
+  const childNode: AgentTreeNode = {
+    agentId,
+    parentAgentId: 'main',
+    name: isBranch ? 'agent' : 'worker',
+    label: isBranch ? 'Side branch' : 'Worker child',
+    model: 'fixture/kiki-pro',
+    status: 'completed',
+    busy: false,
+    isBranch,
+    branchSeed: isBranch ? 'fresh' : undefined,
+    executorId: 'native',
+    toolCallCount: 0,
+    childIds: [],
+  };
+  const forest: AgentForest = {
+    roots: ['main'],
+    byId: {
+      main: {
+        agentId: 'main',
+        name: 'main',
+        label: 'Main',
+        status: 'completed',
+        busy: false,
+        toolCallCount: 0,
+        childIds: [agentId],
+      },
+      [agentId]: childNode,
+    },
+  };
+  const assistantText = 'Keep keptMessages capped at 20k tokens with a 2k head anchor.';
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId },
+    forest,
+    controller: controllerStub({
+      forest,
+      agentStates: {
+        [agentId]: {
+          ...createViewState('session'),
+          loaded: true,
+          transcriptReady: true,
+          model: 'fixture/kiki-pro',
+          permissionMode: 'yolo',
+          blocks: [{ id: 'msg-quote-1', kind: 'assistant', text: assistantText }] as unknown as ReturnType<typeof createViewState>['blocks'],
+        },
+      },
+    }),
+  });
+  await settle();
+
+  const quoteNode = container.querySelector<HTMLElement>('[data-quote-source="msg-quote-1"]');
+  expect(quoteNode).not.toBeNull();
+  const textNode = quoteNode!.firstChild!;
+  const range = document.createRange();
+  range.setStart(textNode, 5);
+  range.setEnd(textNode, 17);
+  range.getBoundingClientRect = () => ({
+    x: 120, y: 180, width: 96, height: 20, top: 180, left: 120, right: 216, bottom: 200, toJSON: () => ({}),
+  });
+  const selection = window.getSelection()!;
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  await act(async () => {
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+  const annotateBtn = container.querySelector<HTMLButtonElement>('[data-selection-annotate-action]');
+  expect(annotateBtn).not.toBeNull();
+  await act(async () => { annotateBtn!.click(); });
+
+  const commentInput = container.querySelector<HTMLInputElement>('[data-selection-annotate-input]');
+  expect(commentInput).not.toBeNull();
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(commentInput, 'Raise cap to 32k?');
+    commentInput!.dispatchEvent(new Event('input', { bubbles: true }));
+    commentInput!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  await settle();
+
+  expect(dock.textContent).toContain('1 note');
+
+  await typeText(composerInput(dock), 'Check token trade-offs.');
+  await settle();
+  const sendButton = dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]');
+  expect(sendButton?.disabled).toBe(false);
+  await act(async () => {
+    sendButton!.click();
+  });
+  await settle();
+
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
+  const sentText = harness.sendAgentMessage.mock.calls[0]![2] as string;
+  expect(sentText).toContain('<!-- kiki-source:');
+  expect(sentText).toContain('> keptMessages');
+  expect(sentText).toContain('Comment: Raise cap to 32k?');
+  expect(sentText).toContain('Check token trade-offs.');
+  expect(dock.textContent).not.toContain('1 note');
 });
