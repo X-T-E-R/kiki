@@ -326,7 +326,9 @@ export class SessionManager implements ISessionManager {
         }
       } catch (error) {
         this.evictionFailures += 1;
-        if (this.residency.get(sessionId) === entry) entry.idleSince = Date.now();
+        if (this.residency.get(sessionId) === entry) {
+          entry.idleSince = entry.pins === 0 && !this.isSessionActive(this.sessions.get(sessionId)) ? Date.now() : undefined;
+        }
         throw error;
       }
     });
@@ -687,11 +689,21 @@ export class SessionManager implements ISessionManager {
     return entry;
   }
 
+  private isSessionActive(handle: ISessionScopeHandle | undefined): boolean {
+    if (handle === undefined) return false;
+    try {
+      const state = handle.accessor.get(ISessionActivityView).state();
+      return state.busy || state.pendingInteraction !== 'none';
+    } catch {
+      return false;
+    }
+  }
+
   private touchResidency(sessionId: string): void {
     const entry = this.ensureResidency(sessionId);
     entry.lastAccess = Date.now();
     entry.generation += 1;
-    if (entry.pins === 0) entry.idleSince = Date.now();
+    entry.idleSince = entry.pins === 0 && !this.isSessionActive(this.sessions.get(sessionId)) ? Date.now() : undefined;
   }
 
   private registerResidency(sessionId: string, handle: ISessionScopeHandle): void {
@@ -699,14 +711,9 @@ export class SessionManager implements ISessionManager {
     const previous = entry.activitySubscription?.dispose();
     if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const update = (): void => {
-      try {
-        const state = handle.accessor.get(ISessionActivityView).state();
-        entry.idleSince = entry.pins === 0 && !state.busy && state.pendingInteraction === 'none'
-          ? (entry.idleSince ?? Date.now())
-          : undefined;
-      } catch {
-        entry.idleSince = entry.pins === 0 ? (entry.idleSince ?? Date.now()) : undefined;
-      }
+      entry.idleSince = entry.pins === 0 && !this.isSessionActive(handle)
+        ? (entry.idleSince ?? Date.now())
+        : undefined;
       entry.generation += 1;
     };
     try {

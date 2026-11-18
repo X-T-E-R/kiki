@@ -25,6 +25,7 @@ import {
   type ProjectionPolicy,
 } from '#/agent/contextProjector/contextProjector';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
+import { wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
 import { injectDelegationContext } from '#/agent/profile/delegationContext';
@@ -192,6 +193,9 @@ const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
 const noopOnPart: AgentLLMRequestPartHandler = () => {};
 
 export const KIKI_INFINITE_RETRY_ENV = 'KIKI_INFINITE_RETRY';
+
+const MALFORMED_FUNCTION_CALL_MAX_ATTEMPTS = 4;
+const MISSING_TERMINAL_MAX_ATTEMPTS = 3;
 
 function responseTransportLogFields(error: unknown): Partial<ResponsesTransportDiagnostics> {
   const visited = new Set<object>();
@@ -632,6 +636,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     let attemptObservedVisibleContent = false;
     let attemptStartedAt = Date.now();
     let attemptTraceId: string | undefined;
+    let malformedFunctionCallRetry = 0;
     const run = async (
       policy: ProjectionPolicy | undefined,
       params: ModelRequestParams,
@@ -679,22 +684,27 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         projectedMessages,
       });
       const unmarkedOpaquePolicy = this.unmarkedOpaquePolicyFor(request.model);
+      const targetMessages = projectMessagesForModelTarget(
+        projectDynamicToolSchemas(
+          await this.mediaResolver.resolve(
+            projected,
+            request.requester,
+            signal,
+            params.headers,
+          ),
+          request.model.protocol,
+          usesKimiToolSchema(request.model.providerType),
+        ),
+        request.model,
+        { unmarkedOpaquePolicy },
+      );
       const input = {
         systemPrompt: request.systemPrompt,
         tools: request.tools,
-        messages: projectMessagesForModelTarget(
-          projectDynamicToolSchemas(
-            await this.mediaResolver.resolve(
-              projected,
-              request.requester,
-              signal,
-              params.headers,
-            ),
-            request.model.protocol,
-            usesKimiToolSchema(request.model.providerType),
-          ),
-          request.model,
-          { unmarkedOpaquePolicy },
+        messages: withMalformedFunctionCallRetryNudge(
+          targetMessages,
+          malformedFunctionCallRetry,
+          request.tools.length > 0,
         ),
       };
       this.warnAboutAnthropicThinkingEffort(request);
@@ -854,7 +864,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         executorId: 'native',
         usageKnown: usage !== undefined,
       });
-      if (usage !== undefined) {
+      if (usage !== undefined && malformedFunctionCallRetry === 0) {
         this.tokenCounting.measured(request.contextMessages, [message], usage);
       }
       this.logResponse(request.logFields, usage ?? emptyUsage(), timing);
@@ -921,7 +931,12 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           const partialOutput = attemptObservedOutput || (discardRetry
             ? requestDeliveryProvenance(error) === 'executed' : !isRetryableGenerateError(error));
           if (partialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
-          const maxAttempts = Math.min(malformedFunctionCall || missingTerminal ? 3 : DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
+          const defaultCap = malformedFunctionCall
+            ? MALFORMED_FUNCTION_CALL_MAX_ATTEMPTS
+            : missingTerminal
+              ? MISSING_TERMINAL_MAX_ATTEMPTS
+              : DEFAULT_MAX_RETRY_ATTEMPTS;
+          const maxAttempts = Math.min(defaultCap, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
             this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
           if (interruptionAttempt >= maxAttempts) {
             if (!uncommittedOverload || !this.infiniteRetryEnabled) {
@@ -935,9 +950,12 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
               throw error;
             }
           } else {
-          if (malformedFunctionCall && params.toolChoice === undefined && request.tools.length > 0 &&
-            params.requestParams?.['tool_choice'] === undefined && request.model.requestParams?.['tool_choice'] === undefined) {
-            params = { ...params, toolChoice: 'auto' };
+          if (malformedFunctionCall) {
+            malformedFunctionCallRetry += 1;
+            if (params.toolChoice === undefined && request.tools.length > 0 &&
+              params.requestParams?.['tool_choice'] === undefined && request.model.requestParams?.['tool_choice'] === undefined) {
+              params = { ...params, toolChoice: 'auto' };
+            }
           }
           if (request.model.protocol === 'google-genai') {
             params = { ...params, googleContinuationToken: discardRetry ? undefined : readGenerateContinuationToken(error) };
@@ -1850,6 +1868,33 @@ function projectionField(fields: AgentLLMRequestLogFields): LlmRequestProjection
     default:
       return undefined;
   }
+}
+
+function withMalformedFunctionCallRetryNudge(
+  messages: readonly Message[],
+  retryAttempt: number,
+  hasTools: boolean,
+): readonly Message[] {
+  if (retryAttempt <= 0) return messages;
+  const guidance = !hasTools
+    ? 'No tools are declared for this request; reply in plain text without attempting any tool or function call.'
+    : retryAttempt === 1
+      ? 'Only call a tool declared in the active tool schemas, emit strictly valid JSON object arguments with properly escaped strings, keep payloads concise, or reply in plain text if no tool call is needed.'
+      : `Attempt ${String(retryAttempt + 1)} after ${String(retryAttempt)} consecutive malformed tool/function calls: do not repeat a large or complex call; issue at most one small tool call with minimal, well-formed JSON arguments (split large edits or payloads across steps), or reply in plain text.`;
+  const nudge: Message = {
+    role: 'user',
+    content: [{
+      type: 'text',
+      text: wrapSystemReminder(
+        `Your previous response was rejected because the upstream provider returned a malformed tool/function call. ${guidance}`,
+      ),
+    }],
+    toolCalls: [],
+  };
+  if (messages.at(-1)?.partial === true) {
+    return [...messages.slice(0, -1), nudge, messages.at(-1)!];
+  }
+  return [...messages, nudge];
 }
 
 function fingerprint(content: string): string {

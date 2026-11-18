@@ -221,6 +221,7 @@ describe('autonomous child receipt return', () => {
     const read = vi.spyOn(logs, 'read').mockImplementation((scope, key, options) => {
       if (!scope.endsWith('agents/agent-child') || key !== 'wire.jsonl') return originalRead(scope, key, options);
       return (async function* () {
+        if (scans < 0) yield '' as never;
         scans++;
         const signal = options!.signal!;
         entered.resolve(signal);
@@ -1620,6 +1621,83 @@ describe('task notification → main agent (real Agent instance)', () => {
         await hook.dispose();
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it.each(['recover', 'fail'] as const)(
+      'readmits an unconsumed subagent notification after a failed turn without re-firing delivered tasks (%s)',
+      async (secondTurnOutcome) => {
+        await ctx.get(IConfigService).set(LOOP_CONTROL_SECTION, { maxAttemptsPerStep: 1 });
+        const firstCompletion = createControlledPromise<{ result: string }>();
+        const secondCompletion = createControlledPromise<{ result: string }>();
+        const firstId = background.registerTask(new SubagentTask(
+          { agentId: 'agent-first', profileName: 'coder', completion: firstCompletion },
+          'first subagent',
+          new AbortController(),
+        ));
+        const secondId = background.registerTask(new SubagentTask(
+          { agentId: 'agent-second', profileName: 'coder', completion: secondCompletion },
+          'second subagent',
+          new AbortController(),
+        ));
+        const requester = ctx.get(IAgentLLMRequesterService);
+        const originalStart = requester.start.bind(requester);
+        const enqueue = vi.spyOn(loop, 'enqueue');
+        let callIndex = 0;
+        const startSpy = vi.spyOn(requester, 'start').mockImplementation((options, onPart, signal) => {
+          callIndex += 1;
+          const started = originalStart(options, onPart, signal);
+          if (callIndex !== 1) return started;
+          void started.result.catch(() => {});
+          return {
+            ...started,
+            result: (async () => {
+              await ctx.get(IEventDispatcher).flush();
+              expect(notifiedCount(ctx)).toBe(1);
+              secondCompletion.resolve({ result: 'second subagent report during failed turn' });
+              await background.wait(secondId);
+              await vi.waitFor(() => {
+                expect(enqueue.mock.calls.some(([r]) => r.kind === 'task_notification' && r.state === 'pending')).toBe(true);
+              });
+              return started.result;
+            })(),
+          };
+        });
+        try {
+          ctx.mockNextProviderResponse({
+            error: new ChatProviderError('Example first turn failure', 'provider.api_error'),
+          });
+          if (secondTurnOutcome === 'recover') {
+            ctx.mockNextResponse({ type: 'text', text: 'handled second subagent after failed turn' });
+          } else {
+            ctx.mockNextProviderResponse({
+              error: new ChatProviderError('Example second turn failure', 'provider.api_error'),
+            });
+          }
+          firstCompletion.resolve({ result: 'first subagent report' });
+          await background.wait(firstId);
+          await vi.waitFor(() => {
+            expect(notifiedCount(ctx)).toBe(2);
+          }, { timeout: 3000 });
+          await loop.settled();
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          await loop.settled();
+
+          expect(ctx.llmCalls).toHaveLength(2);
+          expect(JSON.stringify(ctx.llmCalls[0]!.history)).toContain('first subagent report');
+          expect(JSON.stringify(ctx.llmCalls[0]!.history)).not.toContain('second subagent report during failed turn');
+          expect(JSON.stringify(ctx.llmCalls[1]!.history)).toContain('second subagent report during failed turn');
+          expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === firstId)).toHaveLength(1);
+          expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === secondId)).toHaveLength(1);
+          expect(loop.status().state).toBe('idle');
+          expect(loop.status().hasPendingRequests).toBe(false);
+          expect(loop.status().lastTurnResult).toBe(secondTurnOutcome === 'recover' ? 'completed' : 'failed');
+        } finally {
+          startSpy.mockRestore();
+          firstCompletion.resolve({ result: 'cleanup' });
+          secondCompletion.resolve({ result: 'cleanup' });
+        }
+      },
+      PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
+    );
 
     it('IDLE × N: a GROUP of bg agents completes — the first notification launches one turn, the rest fold in', async () => {
       ctx.mockNextResponse({ type: 'text', text: 'ack group 1' });
