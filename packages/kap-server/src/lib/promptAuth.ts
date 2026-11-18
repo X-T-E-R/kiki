@@ -1,11 +1,15 @@
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   Error2,
   ErrorCodes,
   IAgentProfileService,
   IAuthSummaryService,
+  IBootstrapService,
   IConfigService,
   IModelService,
+  IProviderService,
   ISessionAgentProfileCatalog,
   type IAgentScopeHandle,
   type ISessionScopeHandle,
@@ -16,6 +20,134 @@ import { IAdhocEndpointVault } from '@kiki/agent-core-v2/session/adhocEndpoint/a
 import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { resolveEndpointBinding } from '@kiki/agent-core-v2/session/adhocEndpoint/endpointBinding';
 import { adhocEndpointModelId, type ExecutionSelection } from '@kiki/protocol';
+
+interface CachedStaticAuth {
+  readonly resolvedModelId: string;
+  readonly providerId?: string;
+}
+
+interface AuthReadyCacheState {
+  diskFingerprint?: string;
+  readonly verifiedStaticModels: Map<string, CachedStaticAuth>;
+}
+
+const authReadyCaches = new WeakMap<IConfigService, AuthReadyCacheState>();
+
+function getAuthReadyCache(config: IConfigService): AuthReadyCacheState {
+  let state = authReadyCaches.get(config);
+  if (state === undefined) {
+    const created: AuthReadyCacheState = { verifiedStaticModels: new Map() };
+    config.onDidChangeConfiguration?.(() => {
+      created.verifiedStaticModels.clear();
+    });
+    authReadyCaches.set(config, created);
+    state = created;
+  }
+  return state;
+}
+
+async function statToken(filePath: string): Promise<string> {
+  try {
+    const info = await stat(filePath);
+    return `${String(info.size)}:${String(info.mtimeMs)}`;
+  } catch {
+    return '-';
+  }
+}
+
+async function computeAuthFilesFingerprint(accessor: IAgentScopeHandle['accessor']): Promise<string | undefined> {
+  let bootstrap: IBootstrapService;
+  try {
+    bootstrap = accessor.get(IBootstrapService);
+  } catch {
+    return undefined;
+  }
+  const paths = [
+    bootstrap.configPath,
+    join(bootstrap.homeDir, 'config.toml'),
+    join(bootstrap.credentialsHomeDir, 'credentials', 'config.toml'),
+    join(bootstrap.credentialsHomeDir, 'credentials.toml'),
+    ...(bootstrap.baseHomeDir === undefined ? [] : [join(bootstrap.baseHomeDir, 'config.toml')]),
+  ];
+  const unique = [...new Set(paths.filter((item): item is string => typeof item === 'string' && item.length > 0))];
+  if (unique.length === 0) return undefined;
+  const tokens = await Promise.all(unique.map(statToken));
+  return tokens.join('|');
+}
+
+function isStaticApiKeyModelReadyInMemory(
+  accessor: IAgentScopeHandle['accessor'],
+  requestedModel: string | undefined,
+  expected?: CachedStaticAuth,
+): CachedStaticAuth | undefined {
+  try {
+    const models = accessor.get(IModelService);
+    const providers = accessor.get(IProviderService);
+    const candidate = requestedModel ?? models.getDefaultModel();
+    if (candidate === undefined || candidate === '') return undefined;
+    const resolvedModelId = models.resolveId(candidate);
+    if (resolvedModelId === undefined) return undefined;
+    if (expected !== undefined && expected.resolvedModelId !== resolvedModelId) return undefined;
+    const configured = models.get(resolvedModelId);
+    if (configured === undefined) return undefined;
+    const configuredRecord = configured as unknown as Record<string, unknown>;
+    if (configuredRecord['oauth'] !== undefined) return undefined;
+    const providerId = typeof configured.provider === 'string' && configured.provider.length > 0
+      ? configured.provider
+      : providers.getDefaultProvider();
+    if (expected !== undefined && expected.providerId !== providerId) return undefined;
+    if (providerId !== undefined) {
+      const provider = providers.get(providerId);
+      if (provider === undefined || provider.oauth !== undefined) return undefined;
+      const key = typeof provider.apiKey === 'string' ? provider.apiKey.trim() : '';
+      const modelKey = typeof configuredRecord['apiKey'] === 'string' ? configuredRecord['apiKey'].trim() : '';
+      if (key.length === 0 && modelKey.length === 0) return undefined;
+      return { resolvedModelId, providerId };
+    }
+    const directKey = typeof configuredRecord['apiKey'] === 'string' ? configuredRecord['apiKey'].trim() : '';
+    if (directKey.length === 0) return undefined;
+    return { resolvedModelId };
+  } catch {
+    return undefined;
+  }
+}
+
+async function ensureNativeModelAuthReady(
+  accessor: IAgentScopeHandle['accessor'],
+  model: string | undefined,
+): Promise<void> {
+  let config: IConfigService | undefined;
+  try {
+    config = accessor.get(IConfigService);
+  } catch {
+    config = undefined;
+  }
+  const cacheKey = model ?? '__default__';
+  if (config !== undefined) {
+    const state = getAuthReadyCache(config);
+    const fingerprint = await computeAuthFilesFingerprint(accessor);
+    if (fingerprint !== undefined && fingerprint === state.diskFingerprint) {
+      const cached = state.verifiedStaticModels.get(cacheKey);
+      if (cached !== undefined && isStaticApiKeyModelReadyInMemory(accessor, model, cached) !== undefined) {
+        return;
+      }
+    }
+    await accessor.get(IAuthSummaryService).ensureReady(model);
+    const afterFingerprint = await computeAuthFilesFingerprint(accessor);
+    if (afterFingerprint !== undefined) {
+      if (state.diskFingerprint !== afterFingerprint) {
+        state.verifiedStaticModels.clear();
+        state.diskFingerprint = afterFingerprint;
+      }
+      const verified = isStaticApiKeyModelReadyInMemory(accessor, model);
+      if (verified !== undefined) {
+        state.verifiedStaticModels.set(cacheKey, verified);
+      }
+    }
+    return;
+  }
+  await accessor.get(IAuthSummaryService).ensureReady(model);
+}
 
 export async function ensurePromptAuthReady(
   session: ISessionScopeHandle,
@@ -57,7 +189,7 @@ export async function ensurePromptAuthReady(
       const selected = selectedName === DEFAULT_AGENT_PROFILE_NAME ? catalog.getDefault() : catalog.get(selectedName);
       if (selected !== undefined && await endpointReady(selected)) return;
     }
-    await accessor.get(IAuthSummaryService).ensureReady(await nativeExecutionAuthModel(
+    await ensureNativeModelAuthReady(accessor, await nativeExecutionAuthModel(
       session, accessor, profile, execution, fileProfile, overrides.model,
     ));
     return;
@@ -85,7 +217,7 @@ export async function ensurePromptAuthReady(
       }
     }
   }
-  await accessor.get(IAuthSummaryService).ensureReady(model);
+  await ensureNativeModelAuthReady(accessor, model);
 }
 
 function currentBoundEndpoint(
@@ -122,7 +254,11 @@ async function nativeExecutionAuthModel(
     if (selected === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, `Unknown agent profile: "${selectedName}"`);
   }
   const config = accessor.get(IConfigService);
-  await config.reload();
+  const cacheState = getAuthReadyCache(config);
+  const fingerprint = await computeAuthFilesFingerprint(accessor);
+  if (fingerprint === undefined || fingerprint !== cacheState.diskFingerprint) {
+    await config.reload();
+  }
   const models = accessor.get(IModelService);
   const requested = execution.profile_file === undefined ? execution : { ...execution, profile_file: fileProfile?.sourcePath };
   const defaults = config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[requested.executor]?.defaults;

@@ -32,6 +32,7 @@
     "test:scale": "pnpm -C packages/kap-server run test:scale",
     "perf:real-corpus": "node scripts/perf-real-corpus.mjs",
     "perf:real-corpus:quick": "node scripts/perf-real-corpus.mjs --quick --enforce",
+    "perf:home": "node scripts/perf-home-api-send.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "clean": "pnpm -r run clean",

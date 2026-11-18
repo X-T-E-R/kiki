@@ -15,7 +15,7 @@ import { resolveEffectiveSessionModel } from '@kiki/agent-core-v2/app/sessionLeg
 import { loadAgentsMdDetailed } from '@kiki/agent-core-v2/agent/profile/context';
 import { resolveSpaceInheritance } from '@kiki/agent-core-v2/app/bootstrap/spaceInheritance';
 import { ISessionInstructionsProvider } from '@kiki/agent-core-v2/session/sessionInstructions/instructionsProvider';
-import { readSessionObserver } from '../lib/sessionObserver';
+import { readSessionCursorSeq } from '../lib/sessionObserver';
 import { resolveSessionPersonaId } from './sessionPersona';
 import { resolveSessionModelBinding } from '@kiki/agent-core-v2/app/sessionLegacy/sessionLegacyService';
 import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
@@ -26,8 +26,14 @@ import { join } from 'node:path';
 import {
   ErrorCodes,
   DEFAULT_AGENT_PROFILE_NAME,
+  IAgentProfileRegistry,
   IBootstrapService,
+  IConfigService,
+  IFileSystemStorageService,
   IHostFileSystem,
+  agentScopeOf,
+  sessionScopeOf,
+  workspacePersistenceScope,
   AGENT_PROFILE_SOURCE_PRIORITY,
   SKILL_SOURCE_PRIORITY,
   IAgentActivityView,
@@ -627,8 +633,8 @@ export function registerSessionsRoutes(
           core.accessor.get(IEventService).publish(
             new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
           );
-          const cursor = await broadcaster?.getCursor(meta.id);
-          return cursor === undefined ? session : { ...session, last_seq: cursor.seq };
+          const seq = await readSessionCursorSeq(core, broadcaster, meta.id);
+          return seq === undefined ? session : { ...session, last_seq: seq };
         } catch (error) {
           if (!sessionCreated && externalConnectionId !== undefined && createdSessionId !== undefined) {
             externalClients?.cancelPreparedSession(createdSessionId);
@@ -779,8 +785,8 @@ export function registerSessionsRoutes(
             } } };
           }
         }
-        const cursor = await broadcaster?.getCursor(summary.id);
-        return toWireSession(summary, cwd, facts, cursor?.seq);
+        const seq = await readSessionCursorSeq(core, broadcaster, summary.id, signal, true);
+        return toWireSession(summary, cwd, facts, seq);
       };
 
       interface Eligible {
@@ -910,7 +916,6 @@ export function registerSessionsRoutes(
     },
     async (req, reply) => {
       const { session_id } = req.params;
-      const cursor = await broadcaster?.getCursor(session_id);
       const manager = core.accessor.get(ISessionManager);
       if (manager.isEphemeral(session_id)) {
         const handle = manager.get(session_id);
@@ -919,10 +924,13 @@ export function registerSessionsRoutes(
           return;
         }
         const ctx = handle.accessor.get(ISessionContext);
-        const meta = await handle.accessor.get(ISessionMetadata).read();
+        const [meta, seq] = await Promise.all([
+          handle.accessor.get(ISessionMetadata).read(),
+          readSessionCursorSeq(core, broadcaster, session_id),
+        ]);
         reply.send(okEnvelope(toWireSession(
           { ...meta, workspaceId: ctx.workspaceId }, ctx.cwd,
-          resolveSessionFacts(core, session_id), cursor?.seq, true,
+          resolveSessionFacts(core, session_id), seq, true,
         ), req.id));
         return;
       }
@@ -945,7 +953,13 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      let facts = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage, undefined, signal));
+      let [facts, seq] = await withReplyCloseSignal(
+        reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+        (signal) => Promise.all([
+          resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage, undefined, signal),
+          readSessionCursorSeq(core, broadcaster, session_id, signal, true),
+        ]),
+      );
       if (facts.agentConfig?.persona === undefined) {
         const personaId = resolveSessionPersonaId(core, summary);
         if (personaId !== undefined) {
@@ -961,7 +975,7 @@ export function registerSessionsRoutes(
             summary,
             cwd,
             facts,
-            cursor?.seq,
+            seq,
           ),
           req.id,
         ),
@@ -1698,10 +1712,15 @@ export function registerSessionsRoutes(
     async (req, reply) => {
       try {
         const { session_id } = req.params;
-        const status = await core.accessor.get(ISessionLegacyService).status(session_id);
         const live = getLiveSessionById(core.accessor, session_id);
+        if (live === undefined) {
+          const status = await readCachedColdSessionStatus(core, session_id);
+          reply.send(okEnvelope({ ...status, context_breakdown: undefined }, req.id));
+          return;
+        }
+        const status = await core.accessor.get(ISessionLegacyService).status(session_id);
         const main = live
-          ?.accessor.get(IAgentLifecycleService)
+          .accessor.get(IAgentLifecycleService)
           .list()
           .find((agent) => agent.id === MAIN_AGENT_ID);
         const breakdown =
@@ -1874,24 +1893,28 @@ export function registerSessionsRoutes(
     async (req, reply) => {
       const { session_id } = req.params;
       try {
-        const observer = await readSessionObserver(core, session_id);
-        if (observer === undefined) {
-          reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
-          return;
-        }
-        const main = observer.live?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+        const live = core.accessor.get(ISessionManager).get(session_id);
+        const main = live?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
         let agentsMdWarning: string | undefined;
         if (main !== undefined) {
           agentsMdWarning = main.accessor.get(IAgentProfileService).getAgentsMdWarning();
-        } else if (observer.live !== undefined) {
-          const instructions = observer.live.accessor.get(ISessionInstructionsProvider);
+        } else if (live !== undefined) {
+          const instructions = live.accessor.get(ISessionInstructionsProvider);
           await instructions.ready;
           agentsMdWarning = instructions.agentsMdWarning;
         } else {
+          const summary = await core.accessor.get(ISessionIndex).get(session_id);
+          if (summary === undefined) {
+            reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
+            return;
+          }
           const bootstrap = core.accessor.get(IBootstrapService);
+          const resolvedCwd = summary.cwd
+            ?? (await readColdSessionMeta(core, summary.workspaceId, session_id))?.cwd
+            ?? bootstrap.osHomeDir;
           agentsMdWarning = (await loadAgentsMdDetailed(
             { fs: core.accessor.get(IHostFileSystem), homeDir: bootstrap.osHomeDir },
-            observer.metadata?.cwd ?? observer.summary!.cwd ?? bootstrap.osHomeDir, bootstrap.homeDir,
+            resolvedCwd, bootstrap.homeDir,
             { inheritance: resolveSpaceInheritance(bootstrap) },
           )).warning;
         }
@@ -2016,6 +2039,217 @@ export interface SessionFacts {
   readonly live?: boolean;
 }
 
+const COLD_SESSION_CACHE_TTL_MS = 10_000;
+const MAX_COLD_SESSION_CACHE = 128;
+
+interface ColdSessionBindingBase {
+  readonly contextTokens: number;
+  readonly contextLimit: number;
+  readonly turnCount: number;
+  readonly executorId: string;
+  readonly agentConfig: Session['agent_config'];
+}
+
+interface ColdSessionCacheState {
+  configGen: number;
+  readonly statusValues: Map<string, { readonly revision: string; readonly expiresAt: number; readonly status: Awaited<ReturnType<ISessionLegacyService['status']>> }>;
+  readonly statusInflight: Map<string, Promise<Awaited<ReturnType<ISessionLegacyService['status']>>>>;
+  readonly bindingValues: Map<string, { readonly revision: string; readonly expiresAt: number; readonly base: ColdSessionBindingBase }>;
+  readonly bindingInflight: Map<string, Promise<ColdSessionBindingBase>>;
+}
+
+const coldSessionCacheStates = new WeakMap<Scope, ColdSessionCacheState>();
+
+function getColdSessionCacheState(core: Scope): ColdSessionCacheState {
+  let state = coldSessionCacheStates.get(core);
+  if (state !== undefined) return state;
+  state = {
+    configGen: 0,
+    statusValues: new Map(),
+    statusInflight: new Map(),
+    bindingValues: new Map(),
+    bindingInflight: new Map(),
+  };
+  coldSessionCacheStates.set(core, state);
+  const evict = ({ sessionId }: { readonly sessionId: string }) => {
+    state!.statusValues.delete(sessionId);
+    state!.bindingValues.delete(sessionId);
+  };
+  const bumpGeneration = () => {
+    state!.configGen += 1;
+    state!.statusValues.clear();
+    state!.bindingValues.clear();
+  };
+  try {
+    core.accessor.get(IConfigService).onDidChangeConfiguration(bumpGeneration);
+  } catch {}
+  try {
+    const models = core.accessor.get(IModelService);
+    models.onDidChangeModels(bumpGeneration);
+    models.onDidChangeDefaultModel(bumpGeneration);
+  } catch {}
+  try {
+    core.accessor.get(IAgentProfileRegistry).onDidChange(bumpGeneration);
+  } catch {}
+  try {
+    const manager = core.accessor.get(ISessionManager);
+    manager.onDidCreateSession?.(evict);
+    manager.onDidCloseSession?.(evict);
+    manager.onDidArchiveSession?.(evict);
+  } catch {}
+  try {
+    core.accessor.get(IEventService).onDidPublish((event) => {
+      const payload = (event as { readonly payload?: { readonly sessionId?: unknown } }).payload;
+      if (typeof payload?.sessionId === 'string') evict({ sessionId: payload.sessionId });
+    });
+  } catch {}
+  return state;
+}
+
+function statToken(stat: { readonly size: number; readonly identity?: string; readonly revision?: string } | undefined): string {
+  return stat === undefined ? '-' : `${stat.size}:${stat.identity ?? ''}:${stat.revision ?? ''}`;
+}
+
+async function coldSessionArtifactsRevision(core: Scope, workspaceId: string, sessionId: string): Promise<string | undefined> {
+  const state = getColdSessionCacheState(core);
+  const storage = core.accessor.get(IFileSystemStorageService);
+  const statFn = storage.stat?.bind(storage);
+  if (statFn === undefined) return undefined;
+  const bootstrap = core.accessor.get(IBootstrapService);
+  const sessionScope = sessionScopeOf(workspacePersistenceScope(bootstrap.scope('sessions'), workspaceId), sessionId);
+  const mainScope = agentScopeOf(sessionScope, MAIN_AGENT_ID);
+  const [stateStat, wireStat, ckptStat] = await Promise.all([
+    statFn(sessionScope, 'state.json').catch(() => undefined),
+    statFn(mainScope, 'wire.jsonl').catch(() => undefined),
+    statFn(`${mainScope}/replay-checkpoints`, 'engine-v1').catch(() => undefined),
+  ]);
+  return `${state.configGen}#${statToken(stateStat)}#${statToken(wireStat)}#${statToken(ckptStat)}`;
+}
+
+async function readCachedColdSessionStatus(
+  core: Scope,
+  sessionId: string,
+): Promise<Awaited<ReturnType<ISessionLegacyService['status']>>> {
+  const state = getColdSessionCacheState(core);
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary !== undefined) {
+    const revision = await coldSessionArtifactsRevision(core, summary.workspaceId, sessionId);
+    if (revision !== undefined) {
+      const cached = state.statusValues.get(sessionId);
+      if (cached !== undefined && cached.revision === revision && Date.now() < cached.expiresAt) {
+        return cached.status;
+      }
+    }
+  }
+  let pending = state.statusInflight.get(sessionId);
+  if (pending === undefined) {
+    pending = (async () => {
+      const preRevision = summary === undefined
+        ? undefined
+        : await coldSessionArtifactsRevision(core, summary.workspaceId, sessionId);
+      const status = await core.accessor.get(ISessionLegacyService).status(sessionId);
+      if (summary !== undefined && preRevision !== undefined && getLiveSessionById(core.accessor, sessionId) === undefined) {
+        const postRevision = await coldSessionArtifactsRevision(core, summary.workspaceId, sessionId);
+        if (postRevision === preRevision) {
+          if (state.statusValues.size >= MAX_COLD_SESSION_CACHE) {
+            const oldest = state.statusValues.keys().next().value;
+            if (oldest !== undefined) state.statusValues.delete(oldest);
+          }
+          state.statusValues.set(sessionId, {
+            revision: preRevision,
+            expiresAt: Date.now() + COLD_SESSION_CACHE_TTL_MS,
+            status,
+          });
+        }
+      }
+      return status;
+    })().finally(() => {
+      if (state.statusInflight.get(sessionId) === pending) {
+        state.statusInflight.delete(sessionId);
+      }
+    });
+    state.statusInflight.set(sessionId, pending);
+  }
+  return pending;
+}
+
+async function computeColdSessionBindingBase(
+  core: Scope,
+  sessionId: string,
+  workspaceId: string,
+  metadata?: AgentMeta,
+  signal?: AbortSignal,
+  sessionMetadata?: SessionMeta,
+): Promise<ColdSessionBindingBase> {
+  const saved = sessionMetadata ?? await readColdSessionMeta(core, workspaceId, sessionId);
+  const mainMetadata = metadata ?? saved?.agents?.[MAIN_AGENT_ID];
+  const [profile, runtime] = await Promise.all([
+    readPersistedAgentProfileSnapshot(
+      core,
+      workspaceId,
+      sessionId,
+      MAIN_AGENT_ID,
+      mainMetadata,
+      signal,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    ),
+    readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal),
+  ]);
+  const externallyDriven = profile?.driver === 'external' || saved !== undefined && isExternalClientMain(saved, MAIN_AGENT_ID);
+  const preview = !externallyDriven && profile?.endpoint === undefined && !profile?.modelAlias && (profile?.executorId ?? 'native') === 'native'
+    ? createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService),
+      (await core.accessor.get(IWorkspaceService).get(workspaceId))?.root, workspaceId, false) : undefined;
+  let binding: { model: string | undefined; executorId: string };
+  try {
+    await preview?.catalog.ready;
+    if (externallyDriven) {
+      binding = { model: profile?.modelAlias, executorId: profile?.executorId ?? 'native' };
+    } else if (profile?.endpoint !== undefined) {
+      binding = { model: profile.modelAlias ?? materializeAdhocModel(profile.endpoint).id, executorId: 'native' };
+    } else {
+      const models = core.accessor.get(IModelService);
+      await models.ready;
+      binding = resolveEffectiveSessionModel(models, profile ?? {}, preview?.catalog.getDefault());
+    }
+  } finally { await preview?.dispose(); }
+  const contextLimit = !externallyDriven && binding.executorId === 'native' ? persistedAgentContextLimit(core, profile, binding.model) : undefined;
+  const persona = profile?.persona?.definition;
+  let wirePersona = persona === undefined ? undefined : {
+    id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
+  };
+  if (wirePersona === undefined) {
+    const fallbackPersonaId = resolveSessionPersonaId(core, {
+      id: sessionId,
+      workspaceId,
+      personaId: profile?.personaId ?? mainMetadata?.personaId ?? saved?.agents?.[MAIN_AGENT_ID]?.personaId,
+      createdAt: saved?.createdAt ?? 0,
+      updatedAt: saved?.updatedAt ?? 0,
+      archived: saved?.archived ?? false,
+      custom: saved?.custom,
+    });
+    if (fallbackPersonaId !== undefined) {
+      const snapshot = await core.accessor.get(IPersonaStore).get(fallbackPersonaId);
+      wirePersona = {
+        id: fallbackPersonaId,
+        name: snapshot?.definition.name ?? fallbackPersonaId,
+        avatarUrl: `/api/personas/${encodeURIComponent(fallbackPersonaId)}/avatar`,
+      };
+    }
+  }
+  return {
+    contextTokens: runtime.contextTokens ?? 0,
+    contextLimit: contextLimit ?? 0,
+    turnCount: runtime.turnCount ?? 0,
+    executorId: binding.executorId,
+    agentConfig: {
+      execution: profile?.execution,
+      model: binding.model ?? '',
+      profile: profile?.profileName,
+      persona: wirePersona,
+    },
+  };
+}
+
 export async function resolveSessionBindingFacts(
   core: Scope,
   sessionId: string,
@@ -2042,58 +2276,84 @@ export async function resolveSessionBindingFacts(
     }
   }
   if (facts.live) return facts;
-  const saved = options.sessionMetadata ?? await readColdSessionMeta(core, workspaceId, sessionId);
-  const mainMetadata = metadata ?? saved?.agents?.[MAIN_AGENT_ID];
-  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal,
-    { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });
-  const externallyDriven = profile?.driver === 'external' || saved !== undefined && isExternalClientMain(saved, MAIN_AGENT_ID);
-  const preview = !externallyDriven && profile?.endpoint === undefined && !profile?.modelAlias && (profile?.executorId ?? 'native') === 'native'
-    ? createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService),
-      (await core.accessor.get(IWorkspaceService).get(workspaceId))?.root, workspaceId, false) : undefined;
-  let binding: { model: string | undefined; executorId: string };
-  try {
-    await preview?.catalog.ready;
-    if (externallyDriven) {
-      binding = { model: profile?.modelAlias, executorId: profile?.executorId ?? 'native' };
-    } else if (profile?.endpoint !== undefined) {
-      binding = { model: profile.modelAlias ?? materializeAdhocModel(profile.endpoint).id, executorId: 'native' };
+
+  let base: ColdSessionBindingBase;
+  if (metadata === undefined && options.sessionMetadata === undefined && signal === undefined) {
+    const state = getColdSessionCacheState(core);
+    const revision = await coldSessionArtifactsRevision(core, workspaceId, sessionId);
+    const cached = revision === undefined ? undefined : state.bindingValues.get(sessionId);
+    if (cached !== undefined && cached.revision === revision && Date.now() < cached.expiresAt) {
+      base = cached.base;
     } else {
-      const models = core.accessor.get(IModelService);
-      await models.ready;
-      binding = resolveEffectiveSessionModel(models, profile ?? {}, preview?.catalog.getDefault());
+      let pending = state.bindingInflight.get(sessionId);
+      if (pending === undefined) {
+        pending = (async () => {
+          const computed = await computeColdSessionBindingBase(core, sessionId, workspaceId);
+          if (revision !== undefined && getLiveSessionById(core.accessor, sessionId) === undefined) {
+            const postRevision = await coldSessionArtifactsRevision(core, workspaceId, sessionId);
+            if (postRevision === revision) {
+              if (state.bindingValues.size >= MAX_COLD_SESSION_CACHE) {
+                const oldest = state.bindingValues.keys().next().value;
+                if (oldest !== undefined) state.bindingValues.delete(oldest);
+              }
+              state.bindingValues.set(sessionId, {
+                revision,
+                expiresAt: Date.now() + COLD_SESSION_CACHE_TTL_MS,
+                base: computed,
+              });
+            }
+          }
+          return computed;
+        })().finally(() => {
+          if (state.bindingInflight.get(sessionId) === pending) {
+            state.bindingInflight.delete(sessionId);
+          }
+        });
+        state.bindingInflight.set(sessionId, pending);
+      }
+      base = await pending;
     }
-  } finally { await preview?.dispose(); }
-  const runtime = await readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal);
-  const contextLimit = !externallyDriven && binding.executorId === 'native' ? persistedAgentContextLimit(core, profile, binding.model) : undefined;
-  const usage = { ...(facts.usage ?? emptySessionUsage()), context_tokens: runtime.contextTokens ?? 0,
-    context_limit: contextLimit ?? 0, turn_count: runtime.turnCount ?? 0 };
-  const persona = profile?.persona?.definition;
-  let wirePersona = persona === undefined ? undefined : {
-    id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
-  };
-  if (wirePersona === undefined) {
-    const fallbackPersonaId = resolveSessionPersonaId(core, {
-      id: sessionId,
-      workspaceId,
-      personaId: profile?.personaId ?? mainMetadata?.personaId ?? saved?.agents?.[MAIN_AGENT_ID]?.personaId,
-      createdAt: saved?.createdAt ?? 0,
-      updatedAt: saved?.updatedAt ?? 0,
-      archived: saved?.archived ?? false,
-      custom: saved?.custom,
-    });
-    if (fallbackPersonaId !== undefined) {
-      const snapshot = await core.accessor.get(IPersonaStore).get(fallbackPersonaId);
-      wirePersona = {
-        id: fallbackPersonaId,
-        name: snapshot?.definition.name ?? fallbackPersonaId,
-        avatarUrl: `/api/personas/${encodeURIComponent(fallbackPersonaId)}/avatar`,
-      };
+  } else if (metadata === undefined && options.sessionMetadata === undefined) {
+    const state = getColdSessionCacheState(core);
+    signal?.throwIfAborted();
+    const revision = await coldSessionArtifactsRevision(core, workspaceId, sessionId);
+    signal?.throwIfAborted();
+    const cached = revision === undefined ? undefined : state.bindingValues.get(sessionId);
+    if (cached !== undefined && cached.revision === revision && Date.now() < cached.expiresAt) {
+      base = cached.base;
+    } else {
+      base = await computeColdSessionBindingBase(core, sessionId, workspaceId, undefined, signal, undefined);
+      if (revision !== undefined && !signal?.aborted && getLiveSessionById(core.accessor, sessionId) === undefined) {
+        const postRevision = await coldSessionArtifactsRevision(core, workspaceId, sessionId);
+        if (postRevision === revision) {
+          if (state.bindingValues.size >= MAX_COLD_SESSION_CACHE) {
+            const oldest = state.bindingValues.keys().next().value;
+            if (oldest !== undefined) state.bindingValues.delete(oldest);
+          }
+          state.bindingValues.set(sessionId, {
+            revision,
+            expiresAt: Date.now() + COLD_SESSION_CACHE_TTL_MS,
+            base,
+          });
+        }
+      }
     }
+  } else {
+    base = await computeColdSessionBindingBase(core, sessionId, workspaceId, metadata, signal, options.sessionMetadata);
   }
-  return { ...facts, usage, executorId: binding.executorId, agentConfig: {
-    execution: profile?.execution, model: binding.model ?? '', profile: profile?.profileName,
-    persona: wirePersona,
-  } };
+
+  const usage = {
+    ...(facts.usage ?? emptySessionUsage()),
+    context_tokens: base.contextTokens,
+    context_limit: base.contextLimit,
+    turn_count: base.turnCount,
+  };
+  return {
+    ...facts,
+    usage,
+    executorId: base.executorId,
+    agentConfig: base.agentConfig,
+  };
 }
 
 /**

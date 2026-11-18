@@ -188,6 +188,7 @@ const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
   'extra',
   PLUGIN_SKILL_SOURCE_ID,
 ];
+const SKILL_RELOAD_THROTTLE_MS = 2_000;
 
 function addUsageByModel(
   target: Record<string, TokenUsage>,
@@ -296,6 +297,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly resumePrunes = new Map<string, { at: number; running?: Promise<void> }>();
   private readonly receiptDiscoveries = new WeakMap<ISessionScopeHandle, ISessionSubagentService>();
   private readonly prePersistence = new WeakMap<ISessionScopeHandle, { revoke(): void; entry: LedgerEntry }[]>();
+  private lastSkillReloadAt = 0;
+  private inflightSkillReload?: Promise<void>;
 
   constructor(
     private readonly instantiation: IInstantiationService,
@@ -426,11 +429,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (opts.localSession !== undefined && (sessionId.startsWith('external:') || sessionId === opts.localSession.externalId)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'External source IDs cannot be used as Kiki session IDs');
     }
-    await this.assertNewSession(sessionId);
+    if (opts.sessionId !== undefined) {
+      await this.assertNewSession(sessionId);
+    }
     if (opts.ephemeral === true) this.ephemeralSessions.add(sessionId);
-    void this.workspaceSkillCatalog
-      .reloadSources(SESSION_CREATE_RELOAD_SKILL_SOURCES)
-      .catch(() => undefined);
+    this.triggerCreateSkillReload();
     let handle: ISessionScopeHandle;
     try {
       handle = await this.materializeSession({
@@ -482,6 +485,23 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
     await this.announceCreated({ sessionId, handle, source: 'startup' });
     return handle;
+  }
+
+  private triggerCreateSkillReload(): void {
+    if (this.inflightSkillReload !== undefined) return;
+    if (Date.now() - this.lastSkillReloadAt < SKILL_RELOAD_THROTTLE_MS) return;
+    const running = this.workspaceSkillCatalog
+      .reloadSources(SESSION_CREATE_RELOAD_SKILL_SOURCES)
+      .then(() => {
+        this.lastSkillReloadAt = Date.now();
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.inflightSkillReload === running) {
+          this.inflightSkillReload = undefined;
+        }
+      });
+    this.inflightSkillReload = running;
   }
 
   private async materializeSession(opts: MaterializeSessionOptions): Promise<ISessionScopeHandle> {

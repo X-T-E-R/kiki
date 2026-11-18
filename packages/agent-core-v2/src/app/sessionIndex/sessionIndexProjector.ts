@@ -37,8 +37,8 @@ import {
 
 const WRITE_CHUNK = 500;
 const SCAN_CONCURRENCY = 16;
-const SUMMARY_READ_CONCURRENCY = 4;
-const LARGE_METADATA_BYTES = 65_536;
+const SUMMARY_READ_CONCURRENCY = 8;
+const LARGE_METADATA_BYTES = 524_288;
 const SHARED_SCAN_REUSE_MS = 30_000;
 const FINGERPRINT_REUSE_MS = 30 * 60_000;
 const COOPERATIVE_YIELD_BUDGET_MS = 12;
@@ -135,6 +135,10 @@ interface CachedFingerprint {
 export class SessionIndexProjector {
   private scanSlot: ScanSlot | undefined;
   private readonly fingerprintCache = new Map<string, CachedFingerprint>();
+  private readonly summaryFingerprintCache = new Map<
+    string,
+    { readonly fingerprint: SessionSourceFingerprint; readonly summary: SessionSummary }
+  >();
   private fingerprintSequence = 0;
   private fingerprintGeneration: number | undefined;
   private fingerprintInvalidationEpoch = 0;
@@ -143,15 +147,49 @@ export class SessionIndexProjector {
 
   constructor(private readonly deps: SessionIndexProjectorDeps) {}
 
+  cachedSummaryForFingerprint(
+    workspaceId: string,
+    sessionId: string,
+    fingerprint: SessionSourceFingerprint,
+  ): SessionSummary | undefined {
+    const key = `${workspaceId}/${sessionId}`;
+    const bySummary = this.summaryFingerprintCache.get(key);
+    if (bySummary !== undefined && fingerprintEquals(bySummary.fingerprint, fingerprint)) {
+      return bySummary.summary;
+    }
+    const cached = this.fingerprintCache.get(key);
+    if (
+      cached === undefined ||
+      cached.summaryResolved !== true ||
+      cached.summary === undefined ||
+      !fingerprintEquals(cached.fingerprint, fingerprint)
+    ) {
+      return undefined;
+    }
+    return cached.summary;
+  }
+
+  rememberSummaryFingerprint(
+    workspaceId: string,
+    sessionId: string,
+    fingerprint: SessionSourceFingerprint,
+    summary: SessionSummary,
+  ): void {
+    const key = `${workspaceId}/${sessionId}`;
+    this.summaryFingerprintCache.set(key, { fingerprint, summary });
+  }
+
   invalidateFingerprint(workspaceId?: string, sessionId?: string): void {
     this.fingerprintInvalidationEpoch += 1;
     if (workspaceId === undefined || sessionId === undefined) {
       this.fingerprintCache.clear();
+      this.summaryFingerprintCache.clear();
       this.fullInvalidationEpoch = this.fingerprintInvalidationEpoch;
       this.keyInvalidationEpochs.clear();
     } else {
       const key = `${workspaceId}/${sessionId}`;
       this.fingerprintCache.delete(key);
+      this.summaryFingerprintCache.delete(key);
       this.keyInvalidationEpochs.set(key, this.fingerprintInvalidationEpoch);
     }
   }
@@ -231,6 +269,18 @@ export class SessionIndexProjector {
     }
     await this.batchChunks(writes());
     await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, { seq: generation, sourceMaxMtimeMs });
+    this.fingerprintGeneration = generation;
+    this.fingerprintCache.clear();
+    this.summaryFingerprintCache.clear();
+    for (const summary of summaries) {
+      const fingerprint = fingerprints.get(summary.id);
+      if (fingerprint !== undefined) {
+        this.summaryFingerprintCache.set(`${summary.workspaceId}/${summary.id}`, {
+          fingerprint,
+          summary,
+        });
+      }
+    }
     log.info('session index generation published', { generation, sessions: summaries.length });
     const legacyManifest = await queryStore.getCheckpoint(LEGACY_SESSION_INDEX_MANIFEST);
     if (legacyManifest !== undefined) {
@@ -670,7 +720,7 @@ export class SessionIndexProjector {
   }
 }
 
-function fingerprintEquals(
+export function fingerprintEquals(
   left: SessionSourceFingerprint | undefined,
   right: SessionSourceFingerprint,
 ): boolean {

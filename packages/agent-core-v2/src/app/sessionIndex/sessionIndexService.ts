@@ -686,7 +686,12 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]> {
-    return readSessionArchiveFamily(this.storage, this.docs, this.sessionsScope, id, excludedIds, this.log);
+    return readSessionArchiveFamily(this.storage, this.docs, this.sessionsScope, id, excludedIds, this.log, {
+      get: (workspaceId, sessionId, fingerprint) =>
+        this.projector.cachedSummaryForFingerprint(workspaceId, sessionId, fingerprint),
+      set: (workspaceId, sessionId, fingerprint, summary) =>
+        this.projector.rememberSummaryFingerprint(workspaceId, sessionId, fingerprint, summary),
+    });
   }
 
   async listRecent(query: SessionListQuery): Promise<Page<SessionSummary>> {

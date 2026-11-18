@@ -8,8 +8,12 @@ import { ISessionManager, type UnguardedSessionLifecycle } from '#/app/sessionMa
 import {
   ISessionIndex,
   ISessionIndexMirror,
+  CREATED_BY_SESSION_ID_KEY,
   type SessionSummary,
 } from '#/app/sessionIndex/sessionIndex';
+import { readSessionArchiveFamily } from '#/app/sessionIndex/sessionArchiveFamily';
+import type { IFileSystemStorageService } from '#/persistence/interface/storage';
+import type { ILogService } from '#/_base/log/log';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
@@ -424,5 +428,73 @@ describe('updateColdSessionProfile', () => {
     expect(exitPrivate.kind).toBe('updated');
     expect(steps).toEqual(['persist', 'privacy:false', 'mirror']);
     expect(stored.private).toBe(false);
+  });
+
+  it('reuses unchanged non-attached session summaries across archive family reads while re-reading attached or modified files', async () => {
+    const metas = new Map<string, SessionMeta>([
+      ['sessions/wd/root', { id: 'root', createdAt: 1, updatedAt: 1, archived: false }],
+      ['sessions/wd/child', { id: 'child', createdAt: 2, updatedAt: 2, archived: false, custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' } }],
+      ['sessions/wd/unrelated-1', { id: 'unrelated-1', createdAt: 3, updatedAt: 3, archived: false }],
+      ['sessions/wd/unrelated-2', { id: 'unrelated-2', createdAt: 4, updatedAt: 4, archived: false }],
+    ]);
+    const revisions = new Map<string, number>([
+      ['sessions/wd/root', 1],
+      ['sessions/wd/child', 1],
+      ['sessions/wd/unrelated-1', 1],
+      ['sessions/wd/unrelated-2', 1],
+    ]);
+    const storage = {
+      list: async (scope: string) => {
+        if (scope === 'sessions') return ['wd'];
+        if (scope === 'sessions/wd') return ['root', 'child', 'unrelated-1', 'unrelated-2'];
+        return [];
+      },
+      mtime: async (scope: string, key: string) => (key === 'state.json' && metas.has(scope) ? (revisions.get(scope) ?? 1) * 1000 : undefined),
+      size: async (scope: string, key: string) => (key === 'state.json' && metas.has(scope) ? 128 : undefined),
+      stat: async (scope: string, key: string) => {
+        if (key !== 'state.json' || !metas.has(scope)) return undefined;
+        return { size: 128, mtimeMs: (revisions.get(scope) ?? 1) * 1000, identity: scope, revision: String(revisions.get(scope) ?? 1) };
+      },
+    } as unknown as IFileSystemStorageService;
+    const reads: string[] = [];
+    const docs = {
+      get: async (scope: string, key: string) => {
+        if (key !== 'state.json') return undefined;
+        reads.push(scope);
+        return metas.get(scope);
+      },
+    } as unknown as IAtomicDocumentStore;
+    const noopLog = {
+      level: 'off',
+      setLevel: () => {},
+      flush: async () => {},
+      error: () => {},
+      warn: () => {},
+      info: () => {},
+      debug: () => {},
+      child: () => noopLog,
+    } as unknown as ILogService;
+
+    const first = await readSessionArchiveFamily(storage, docs, 'sessions', 'root', [], noopLog);
+    expect(first.map((s) => s.id)).toEqual(['root', 'child']);
+    expect(reads).toHaveLength(4);
+
+    reads.length = 0;
+    const second = await readSessionArchiveFamily(storage, docs, 'sessions', 'root', [], noopLog);
+    expect(second.map((s) => s.id)).toEqual(['root', 'child']);
+    expect(reads.toSorted()).toEqual(['sessions/wd/child', 'sessions/wd/root']);
+
+    reads.length = 0;
+    metas.set('sessions/wd/unrelated-2', {
+      id: 'unrelated-2',
+      createdAt: 4,
+      updatedAt: 5,
+      archived: false,
+      custom: { [CREATED_BY_SESSION_ID_KEY]: 'root' },
+    });
+    revisions.set('sessions/wd/unrelated-2', 2);
+    const third = await readSessionArchiveFamily(storage, docs, 'sessions', 'root', [], noopLog);
+    expect(third.map((s) => s.id).toSorted()).toEqual(['child', 'root', 'unrelated-2']);
+    expect(reads.toSorted()).toEqual(['sessions/wd/child', 'sessions/wd/root', 'sessions/wd/unrelated-2']);
   });
 });

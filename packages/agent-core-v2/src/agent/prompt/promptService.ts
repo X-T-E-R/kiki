@@ -631,6 +631,7 @@ interface Record extends PromptSnapshot {
   detachedForClose?: boolean;
   releaseSubmissionSignal?: () => void;
   outcomeCommitted?: boolean;
+  referencesPreparedRevision?: number;
 }
 
 export function bundledSkillActivations(origin: PromptOrigin | undefined): readonly BundledSkillActivation[] {
@@ -1336,7 +1337,9 @@ export class AgentPromptService implements IAgentPromptService {
       if (committed.fingerprint !== fingerprint) {
         throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
       }
-      await this.wire.flush();
+      if (this.unflushedPromptIds.has(promptId)) {
+        await this.flushPendingWireIds();
+      }
       return committed.receipt as PromptRetryReceipt;
     },
     commit: async (promptId: string, fingerprint: string, receipt: PromptRetryReceipt): Promise<void> => {
@@ -1345,7 +1348,9 @@ export class AgentPromptService implements IAgentPromptService {
         if (existing.fingerprint !== fingerprint || JSON.stringify(existing.receipt) !== JSON.stringify(receipt)) {
           throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
         }
-        await this.wire.flush();
+        if (this.unflushedPromptIds.has(promptId)) {
+          await this.flushPendingWireIds();
+        }
         return;
       }
       if (
@@ -1354,8 +1359,9 @@ export class AgentPromptService implements IAgentPromptService {
       ) {
         throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is not accepted`);
       }
+      this.unflushedPromptIds.add(promptId);
       await this.dispatcher.dispatch(new PromptRetryCommitted({ promptId, fingerprint, receipt }));
-      await this.wire.flush();
+      await this.flushPendingWireIds();
     },
     run: async <T>(promptId: string, fingerprint: string, operation: () => Promise<T>): Promise<T> => {
       const existing = this.retryFlights.get(promptId);
@@ -1365,10 +1371,17 @@ export class AgentPromptService implements IAgentPromptService {
         }
         return existing.promise as Promise<T>;
       }
-      const promise = Promise.resolve().then(async () => {
-        await this[promptRetry].lookup(promptId, fingerprint);
-        return operation();
-      });
+      const committed = this.states.get(promptRetryReceiptKey).get(promptId);
+      if (committed !== undefined && committed.fingerprint !== fingerprint) {
+        throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+      }
+      if (committed === undefined && this.states.get(promptAdmissionKey).has(promptId)) {
+        throw new Error2(
+          ErrorCodes.PROMPT_ID_CONFLICT,
+          `prompt_id '${promptId}' was accepted without a replayable receipt; inspect the child before resubmitting`,
+        );
+      }
+      const promise = Promise.resolve().then(operation);
       this.retryFlights.set(promptId, { fingerprint, promise });
       try {
         return await promise;
@@ -1418,14 +1431,16 @@ export class AgentPromptService implements IAgentPromptService {
         reservation.commit(id);
         if (signal?.aborted) throw submissionCancelled(id);
         if (retryFingerprint === undefined) {
+          this.unflushedPromptIds.add(id);
           await this.dispatcher.dispatch(new PromptAccepted({ promptId: id }));
-          if (durableAcceptance) await this.wire.flush();
         }
         if (signal?.aborted) throw submissionCancelled(id);
         const handle = await this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal, retryFingerprint,
           waitForLaunch: options?.waitForLaunch, nativeSteer: options?.nativeSteer, retryContentRanges: options?.contentRanges,
           parentReceiptManaged: options?.parentReceiptManaged });
-        if (durableAcceptance) await this.wire.flush();
+        if (durableAcceptance && this.unflushedPromptIds.has(id)) {
+          await this.timeSubphase(id, 'durable_wire_flush', () => this.flushPendingWireIds());
+        }
         return handle;
       }),
       dispose: () => {
@@ -1437,9 +1452,36 @@ export class AgentPromptService implements IAgentPromptService {
 
   private readonly promptHandles = new Map<string, PromptHandle>();
   private readonly synchronousAdmissions = new WeakSet<PromptHandle>();
+  private readonly unflushedPromptIds = new Set<string>();
+
+  private async flushPendingWireIds(): Promise<void> {
+    const snapshot = [...this.unflushedPromptIds];
+    await this.wire.flush();
+    for (const id of snapshot) {
+      this.unflushedPromptIds.delete(id);
+    }
+  }
+
+  private async timeSubphase<T>(promptId: string, subphase: string, action: () => Promise<T>): Promise<T> {
+    if (this.log.level !== 'debug') return action();
+    const started = performance.now();
+    try {
+      return await action();
+    } finally {
+      this.log.debug('prompt admission subphase', {
+        sessionId: this.sessionContext.sessionId,
+        agentId: this.scopeContext.agentId,
+        promptId,
+        subphase,
+        elapsedMs: Number((performance.now() - started).toFixed(3)),
+      });
+    }
+  }
 
   private async awaitAdmission(handle: PromptHandle): Promise<PromptHandle> {
-    if (this.synchronousAdmissions.has(handle)) await Promise.race([handle.launched, handle.completion]);
+    if (this.synchronousAdmissions.has(handle)) {
+      await this.timeSubphase(handle.id, 'await_launch', () => Promise.race([handle.launched, handle.completion]).then(() => undefined));
+    }
     return handle;
   }
   private readonly originalPromptMessages = new Map<string, ContextMessage>();
@@ -1571,6 +1613,7 @@ export class AgentPromptService implements IAgentPromptService {
       goalId,
       appendTiming,
       revision: 0,
+      referencesPreparedRevision: changesCaller ? undefined : 0,
       deferredDisabledTools: input.deferredDisabledTools,
       alreadyMaterialized: input.alreadyMaterialized === true,
       parentReceiptManaged: input.parentReceiptManaged,
@@ -1580,7 +1623,7 @@ export class AgentPromptService implements IAgentPromptService {
       completionDeferred,
     });
     record.handle = this.createHandle(record);
-    await this.rememberOriginalPromptMessage(id, message);
+    await this.timeSubphase(id, 'remember_original', () => this.rememberOriginalPromptMessage(id, message));
     if (signal?.aborted || this.closing !== undefined) {
       this.detachPendingForClose(record);
       throw submissionCancelled(id);
@@ -1606,10 +1649,14 @@ export class AgentPromptService implements IAgentPromptService {
       retryContentRanges: input.retryContentRanges,
     };
     if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
+    this.unflushedPromptIds.add(id);
     if (input.commitHistoryRewrite === undefined) {
-      await this.dispatcher.dispatch(new PromptEnqueued(enqueued));
+      await this.timeSubphase(id, 'enqueue_dispatch', () => this.dispatcher.dispatch(new PromptEnqueued(enqueued)));
     } else {
-      try { await input.commitHistoryRewrite(enqueued); }
+      try {
+        await input.commitHistoryRewrite(enqueued);
+        this.unflushedPromptIds.delete(id);
+      }
       catch (error) {
         if (!this.states.get(promptIdentityKey).has(id)) throw error;
         onUnexpectedError(error);
@@ -1618,7 +1665,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (this.closing !== undefined) {
       if (this.closing === 'preserve-pending') this.detachPendingForClose(record);
       else this.cancelUnlaunched(record, true);
-      await this.wire.flush();
+      await this.flushPendingWireIds();
       return record.handle;
     }
     if (signal?.aborted) {
@@ -2054,6 +2101,7 @@ export class AgentPromptService implements IAgentPromptService {
     promptId: string,
     message: ContextMessage,
   ): Promise<void> {
+    if (!message.content.some((part) => part.type === 'image_url')) return;
     const content: ContentPart[] = [];
     let changed = false;
     for (const part of message.content) {
@@ -2961,8 +3009,14 @@ export class AgentPromptService implements IAgentPromptService {
       controller.signal.throwIfAborted();
       for (const candidate of selected) {
         this.steeringPromptIds.add(candidate.id);
-        candidate.message = await this.prepareReferenceMessage({ ...candidate.message,
-          content: this.repairKnownTruncatedImages(candidate.id, candidate.message.content) }, candidate.userMessageId, controller.signal);
+        const hasImages = this.originalPromptMessages.has(candidate.id) ||
+          candidate.message.content.some((part) => part.type === 'image_url');
+        if (candidate.referencesPreparedRevision !== candidate.revision || hasImages) {
+          candidate.message = await this.prepareReferenceMessage({ ...candidate.message,
+            content: hasImages ? this.repairKnownTruncatedImages(candidate.id, candidate.message.content) : candidate.message.content },
+            candidate.userMessageId, controller.signal);
+          candidate.referencesPreparedRevision = candidate.revision;
+        }
       }
       const batch = selected.map(candidate => ({ ...this.extractCompressionCaptions(candidate.message),
         alreadyMaterialized: candidate.message.origin?.kind === 'agent_message'
@@ -3019,7 +3073,7 @@ export class AgentPromptService implements IAgentPromptService {
             committedAt: new Date().toISOString(),
           }));
         }
-        await this.wire.flush();
+        await this.flushPendingWireIds();
       });
       controller.signal.throwIfAborted();
       const deliverable = selected.filter((candidate) => candidate.state !== 'cancelled');

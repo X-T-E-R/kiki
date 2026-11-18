@@ -38,12 +38,11 @@ import { buildContentDisposition } from '../lib/contentDisposition';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { boundedListPreview } from '../transport/klient/boundedContent';
+import { readSessionCursorSeq, type SessionCursorReader } from '../lib/sessionObserver';
 import { resolveSessionPersonaId } from './sessionPersona';
 import { resolveSessionFacts, toWireSession } from './sessions';
 
-interface PersonaCursorReader {
-  getCursor(sessionId: string): Promise<{ readonly seq: number } | undefined> | { readonly seq: number } | undefined;
-}
+type PersonaCursorReader = SessionCursorReader;
 
 interface PersonasRouteHost {
   get(
@@ -199,8 +198,8 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
               },
             };
           }
-          const cursor = await broadcaster?.getCursor(summary.id);
-          return boundedListPreview(toWireSession(summary, cwd, facts, cursor?.seq));
+          const seq = await readSessionCursorSeq(core, broadcaster, summary.id, undefined, true);
+          return boundedListPreview(toWireSession(summary, cwd, facts, seq));
         }));
         data[personaId] = { total: bucket.total, items };
       }));

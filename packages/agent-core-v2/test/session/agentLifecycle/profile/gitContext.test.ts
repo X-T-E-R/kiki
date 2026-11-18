@@ -272,6 +272,28 @@ describe('collectGitContext', () => {
       vi.useRealTimers();
     }
   });
+
+  it('coalesces concurrent calls and reuses clean results within TTL per process and cwd', async () => {
+    const { process, spawn } = gitRunner({
+      'rev-parse --is-inside-work-tree': { stdout: 'true\n' },
+      'symbolic-ref --short HEAD': { stdout: 'main\n' },
+      'remote get-url origin': { stdout: 'https://github.com/owner/repo.git\n' },
+      'status --porcelain': { stdout: '' },
+      'log -3 --format=%h %s': { stdout: 'abc1234 init\n' },
+    });
+
+    const [first, second] = await Promise.all([
+      collectGitContext(process, '/repo-cached'),
+      collectGitContext(process, '/repo-cached'),
+    ]);
+    expect(first).toContain('Branch: main');
+    expect(second).toBe(first);
+    expect(spawn).toHaveBeenCalledTimes(5);
+
+    const third = await collectGitContext(process, '/repo-cached');
+    expect(third).toBe(first);
+    expect(spawn).toHaveBeenCalledTimes(5);
+  });
 });
 
 describe('remote url helpers', () => {

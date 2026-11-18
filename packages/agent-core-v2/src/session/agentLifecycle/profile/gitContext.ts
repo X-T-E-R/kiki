@@ -5,8 +5,26 @@ import { sliceUtf16 } from '#/_base/text/utf16';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 
 const GIT_TIMEOUT_MS = 5_000;
+const GIT_CONTEXT_CACHE_TTL_MS = 5_000;
 const MAX_DIRTY_FILES = 20;
 const MAX_COMMIT_LINE_LENGTH = 200;
+
+interface CachedGitContext {
+  readonly value: string;
+  readonly expiresAt: number;
+}
+
+const gitContextCaches = new WeakMap<IHostProcessService, Map<string, CachedGitContext>>();
+const gitContextFlights = new WeakMap<IHostProcessService, Map<string, Promise<string>>>();
+
+function getGitCacheMap<T>(store: WeakMap<IHostProcessService, Map<string, T>>, process: IHostProcessService): Map<string, T> {
+  let map = store.get(process);
+  if (map === undefined) {
+    map = new Map();
+    store.set(process, map);
+  }
+  return map;
+}
 
 const ALLOWED_HOSTS = [
   'github.com',
@@ -33,11 +51,37 @@ export async function collectGitContext(
   cwd: string,
   log?: ILogger,
 ): Promise<string> {
+  const now = Date.now();
+  const cache = getGitCacheMap(gitContextCaches, process);
+  const cached = cache.get(cwd);
+  if (cached !== undefined && now < cached.expiresAt) {
+    return cached.value;
+  }
+  const flights = getGitCacheMap(gitContextFlights, process);
+  const existingFlight = flights.get(cwd);
+  if (existingFlight !== undefined) {
+    return existingFlight;
+  }
+  const flight = computeGitContext(process, cwd, log, cache).finally(() => {
+    if (flights.get(cwd) === flight) flights.delete(cwd);
+  });
+  flights.set(cwd, flight);
+  return flight;
+}
+
+async function computeGitContext(
+  process: IHostProcessService,
+  cwd: string,
+  log: ILogger | undefined,
+  cache: Map<string, CachedGitContext>,
+): Promise<string> {
   const revParseArgs = ['rev-parse', '--is-inside-work-tree'] as const;
   const revParse = await runGit(process, cwd, revParseArgs);
   if (!revParse.ok) {
     if (revParse.kind === 'command-failed' && isNotARepo(revParse.stderr)) {
-      return `<git-context status="unavailable" reason="not-a-repo"/>`;
+      const unavailable = `<git-context status="unavailable" reason="not-a-repo"/>`;
+      cache.set(cwd, { value: unavailable, expiresAt: Date.now() + GIT_CONTEXT_CACHE_TTL_MS });
+      return unavailable;
     }
     logGitFailure(cwd, revParseArgs, revParse, log);
     return '';
@@ -53,8 +97,12 @@ export async function collectGitContext(
     commandArgs.map(async (args) => ({ args, result: await runGit(process, cwd, args) })),
   )) as unknown as [TaggedGitResult, TaggedGitResult, TaggedGitResult, TaggedGitResult];
 
+  let hadFailure = false;
   for (const { args, result } of [remote, branch, status, gitLog]) {
-    if (!result.ok) logGitFailure(cwd, args, result, log);
+    if (!result.ok) {
+      hadFailure = true;
+      logGitFailure(cwd, args, result, log);
+    }
   }
 
   const remoteUrl = stdoutOf(remote.result);
@@ -94,8 +142,12 @@ export async function collectGitContext(
     }
   }
 
-  if (sections.length <= 1) return '';
-  return `<git-context>\n${sections.join('\n')}\n</git-context>`;
+  const formatted = sections.length <= 1 ? '' : `<git-context>\n${sections.join('\n')}\n</git-context>`;
+  if (!hadFailure) {
+    if (cache.size >= 64) cache.delete(cache.keys().next().value!);
+    cache.set(cwd, { value: formatted, expiresAt: Date.now() + GIT_CONTEXT_CACHE_TTL_MS });
+  }
+  return formatted;
 }
 
 export function sanitizeRemoteUrl(remoteUrl: string): string | null {

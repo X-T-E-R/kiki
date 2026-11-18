@@ -185,10 +185,10 @@ export class PromptIngress {
     return progress === undefined ? undefined : { ...progress, elapsed_ms: Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) };
   }
 
-  private async item(target: Target, entry: Entry, full = true): Promise<PromptItem> {
+  private async item(target: Target, entry: Entry, full = true, knownBody?: PromptSubmission): Promise<PromptItem> {
     const result = entry.result === undefined ? undefined : full
       ? await this.documents().get<PromptSubmitResult>(`${target.scope}/prompt-ingress/results`, `${entry.key}.json`) : entry.result;
-    const body = full && result === undefined ? await this.payload(target, entry.key) : entry.body;
+    const body = full && result === undefined ? (knownBody ?? await this.payload(target, entry.key)) : entry.body;
     const progress = entry.admission === 'restoring' ? this.progress.get(`${target.scope}/${entry.key}`) ?? entry.restoreProgress : entry.restoreProgress;
     const item: PromptItem = { ...result, restore_progress: progress === undefined ? undefined : { ...progress, elapsed_ms: entry.admission === 'restoring' ? Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) : progress.elapsed_ms },
       admission_duplicate_of: entry.duplicateOf, prompt_id: entry.body.prompt_id!, user_message_id: result?.user_message_id ?? entry.body.prompt_id!,
@@ -223,16 +223,17 @@ export class PromptIngress {
       return this.item(target, recovered);
     }
     const content = await this.retainMedia(target, body.content);
+    const savedPayload: PromptSubmission = { ...body, content, admission: undefined };
     const entry = await this.locked(target, async () => {
-      const raced = await this.read(target, key);
+      const [raced, index] = await Promise.all([
+        this.read(target, key),
+        this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY),
+      ]);
       if (raced !== undefined) {
         if (raced.fingerprint !== fingerprint) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, 'This prompt_id already belongs to another request.');
         return raced;
       }
-      await this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, { ...body, content, admission: undefined });
-      const index = await this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY);
       const ordinal = index?.next ?? 0;
-      await this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 });
       const contentIdentity = `${target.scope}/${agentId}/${createHash('sha256').update(JSON.stringify({ ...body, prompt_id: undefined, admission: undefined })).digest('hex')}`;
       const duplicate = this.pendingContent.get(contentIdentity);
       const created: Entry = { version: 1, key, ordinal, agentId, body: { prompt_id: body.prompt_id, append_timing: body.append_timing, content: this.preview(content) }, fingerprint,
@@ -240,14 +241,25 @@ export class PromptIngress {
         contentIdentity, duplicateOf: duplicate?.promptId,
         error: duplicate === undefined ? undefined : { code: 40903, message: 'An identical message is already waiting for restoration. This copy is held. Cancel it or explicitly resume it to send it separately.' },
         steerTarget: body.delivery_mode === 'steer' ? steerTarget : undefined };
+      await Promise.all([
+        this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload),
+        this.save(target, created),
+      ]);
       if (created.admission === 'waiting_switch') await this.registerSwitchEntry(target, key);
-      await this.publish(target, created);
+      await Promise.all([
+        this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 }),
+        this.documents().update<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${Math.floor(created.ordinal / PAGE_SIZE)}.json`, current => {
+          const keys = [...(current?.keys ?? [])];
+          keys[created.ordinal % PAGE_SIZE] = created.key;
+          return { keys };
+        }),
+      ]);
       if (duplicate === undefined) this.pendingContent.set(contentIdentity, { key, promptId: body.prompt_id! });
       return created;
     });
     if (entry.owner === this.owner && entry.admission === 'restoring') this.schedule(target, entry);
     if (entry.admission === 'waiting_switch' && this.core.accessor.get(IWorkAdmissionService).state().operationId === undefined) this.start();
-    return this.item(target, entry);
+    return this.item(target, entry, true, entry.owner === this.owner && entry.result === undefined ? savedPayload : undefined);
   }
 
   async lookup(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
@@ -331,7 +343,18 @@ export class PromptIngress {
 
   private schedule(target: Target, entry: Entry): void {
     const key = `${target.scope}/${entry.key}`;
-    if (this.closed || this.workers.has(key)) return;
+    if (this.closed) return;
+    const running = this.workers.get(key);
+    if (running !== undefined) {
+      void running.promise.then(async () => {
+        if (this.closed || this.workers.has(key)) return;
+        const current = await this.read(target, entry.key).catch(() => undefined);
+        if (current !== undefined && current.owner === this.owner && current.admission === 'restoring') {
+          this.schedule(target, current);
+        }
+      });
+      return;
+    }
     const admission = entry.cancelRequested ? undefined : this.core.accessor.get(IWorkAdmissionService).acquire('durable-prompt-prepare');
     if (entry.contentIdentity !== undefined && !this.pendingContent.has(entry.contentIdentity)) {
       this.pendingContent.set(entry.contentIdentity, { key: entry.key, promptId: entry.body.prompt_id! });
@@ -428,6 +451,7 @@ export class PromptIngress {
   }
 
   private async retainMedia(target: Target, content: PromptSubmission['content']): Promise<PromptSubmission['content']> {
+    if (content.every((part) => part.type === 'text')) return content;
     const media = this.media(target);
     const files = this.files(target);
     await assertPromptFileRefs(content, files);

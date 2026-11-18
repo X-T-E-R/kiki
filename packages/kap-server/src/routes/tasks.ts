@@ -273,37 +273,119 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
 }
 
 const VALID_TASK_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{8}$/;
+const PERSISTED_TASK_READ_CONCURRENCY = 16;
+const MAX_CACHED_PERSISTED_TASKS = 4096;
+
+interface CachedPersistedTaskEntry {
+  readonly revision: string;
+  readonly task: AgentTaskInfo | undefined;
+}
+
+const persistedTaskCaches = new WeakMap<Scope, Map<string, CachedPersistedTaskEntry>>();
+
+function getPersistedTaskCache(core: Scope): Map<string, CachedPersistedTaskEntry> {
+  let cache = persistedTaskCaches.get(core);
+  if (cache === undefined) {
+    cache = new Map();
+    persistedTaskCaches.set(core, cache);
+  }
+  return cache;
+}
 
 class PersistedTasksReader {
+  private readonly cache: Map<string, CachedPersistedTaskEntry>;
+  private readonly cacheScopePrefix: string;
+
   constructor(
+    core: Scope,
     readonly persistence: AgentTaskPersistence,
     private readonly docs: IAtomicDocumentStore,
+    private readonly storage: IFileSystemStorageService,
     private readonly scopes: readonly string[],
     private readonly ownerId: string,
-  ) {}
+  ) {
+    this.cache = getPersistedTaskCache(core);
+    this.cacheScopePrefix = `${this.scopes.join('|')}::${this.ownerId}::`;
+  }
+
+  private async taskRevision(taskId: string): Promise<string | undefined> {
+    const statFn = this.storage.stat?.bind(this.storage);
+    if (statFn === undefined) return undefined;
+    const key = `${taskId}.json`;
+    const parts: string[] = [];
+    let anyFound = false;
+    await Promise.all(
+      this.scopes.map(async (scope, idx) => {
+        const [jsonStat, outStat] = await Promise.all([
+          statFn(`${scope}/tasks`, key).catch(() => undefined),
+          statFn(`${scope}/tasks/${taskId}`, 'output.log').catch(() => undefined),
+        ]);
+        if (jsonStat !== undefined) anyFound = true;
+        const jsonTok = jsonStat === undefined
+          ? '-'
+          : `${jsonStat.size}:${jsonStat.identity ?? ''}:${jsonStat.revision ?? ''}`;
+        const outTok = outStat === undefined
+          ? '-'
+          : `${outStat.size}:${outStat.identity ?? ''}:${outStat.revision ?? ''}`;
+        parts[idx] = `${jsonTok}#${outTok}`;
+      }),
+    );
+    return anyFound ? parts.join(';') : undefined;
+  }
 
   async read(taskId: string): Promise<AgentTaskInfo | undefined> {
     if (!VALID_TASK_ID.test(taskId)) return undefined;
-    const task = await this.persistence.readTask(taskId);
-    return task?.ownerAgentId !== undefined && task.ownerAgentId !== this.ownerId ? undefined : task;
+    const revision = await this.taskRevision(taskId);
+    const cacheKey = `${this.cacheScopePrefix}${taskId}`;
+    if (revision !== undefined) {
+      const cached = this.cache.get(cacheKey);
+      if (cached !== undefined && cached.revision === revision) {
+        return cached.task;
+      }
+    }
+    const raw = await this.persistence.readTask(taskId);
+    const task = raw?.ownerAgentId !== undefined && raw.ownerAgentId !== this.ownerId ? undefined : raw;
+    if (revision !== undefined) {
+      const postRevision = await this.taskRevision(taskId);
+      if (postRevision === revision) {
+        if (this.cache.size >= MAX_CACHED_PERSISTED_TASKS) {
+          const oldest = this.cache.keys().next().value;
+          if (oldest !== undefined) this.cache.delete(oldest);
+        }
+        this.cache.set(cacheKey, { revision, task });
+      }
+    } else {
+      this.cache.delete(cacheKey);
+    }
+    return task;
   }
 
   async list(limit: number, offset: number): Promise<{ readonly items: readonly AgentTaskInfo[]; readonly hasMore: boolean; readonly nextOffset: number }> {
     const ids = new Set<string>();
-    for (const scope of this.scopes) {
-      for (const key of await this.docs.list(`${scope}/tasks`)) {
+    const lists = await Promise.all(this.scopes.map((scope) => this.docs.list(`${scope}/tasks`)));
+    for (const keys of lists) {
+      for (const key of keys) {
         if (key.endsWith('.json') && VALID_TASK_ID.test(key.slice(0, -5))) ids.add(key.slice(0, -5));
       }
     }
     const ordered = [...ids].toSorted();
     const end = Math.min(ordered.length, offset + limit);
-    const items: AgentTaskInfo[] = [];
-    for (const id of ordered.slice(offset, end)) {
-      try {
-        const task = await this.read(id);
-        if (task !== undefined) items.push(task);
-      } catch {}
-    }
+    const pageIds = ordered.slice(offset, end);
+    const resolved = new Array<AgentTaskInfo | undefined>(pageIds.length);
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(PERSISTED_TASK_READ_CONCURRENCY, pageIds.length) },
+      async () => {
+        while (cursor < pageIds.length) {
+          const index = cursor++;
+          try {
+            resolved[index] = await this.read(pageIds[index]!);
+          } catch {}
+        }
+      },
+    );
+    await Promise.all(workers);
+    const items = resolved.filter((task): task is AgentTaskInfo => task !== undefined);
     return { items, hasMore: end < ordered.length, nextOffset: end };
   }
 }
@@ -332,10 +414,11 @@ async function resolveSessionTasks(
     const scope = sessionScopeOf(workspacePersistenceScope(bootstrap.scope('sessions'), summary.workspaceId), sid);
     const ownerScope = agentScopeOf(scope, ownerId);
     const docs = core.accessor.get(IAtomicDocumentStore);
+    const storage = core.accessor.get(IFileSystemStorageService);
     const fallback = ownerId === MAIN_AGENT_ID ? { dir: join(bootstrap.homeDir, scope), scope } : undefined;
     const persistence = new AgentTaskPersistence(join(bootstrap.homeDir, ownerScope), ownerScope, docs,
-      core.accessor.get(IFileSystemStorageService), fallback);
-    const persisted = new PersistedTasksReader(persistence, docs, fallback === undefined ? [ownerScope] : [ownerScope, scope], ownerId);
+      storage, fallback);
+    const persisted = new PersistedTasksReader(core, persistence, docs, storage, fallback === undefined ? [ownerScope] : [ownerScope, scope], ownerId);
     return { kind: 'resolved', tasks: undefined, persisted };
   }
   if (agent === undefined) return { kind: 'agent_not_found', agentId: ownerId };

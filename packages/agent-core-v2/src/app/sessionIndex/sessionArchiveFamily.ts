@@ -4,7 +4,33 @@ import { Error2 } from '#/_base/errors/errors';
 import type { ILogService } from '#/_base/log/log';
 
 import { CHILD_SESSION_KIND, CHILD_SESSION_KIND_KEY, CREATED_BY_SESSION_ID_KEY, PARENT_SESSION_ID_KEY, type SessionSummary } from './sessionIndex';
-import { listSessionIds, listWorkspaceIds, mapBounded, readSessionSummaryResult } from './sessionIndexSource';
+import type { SessionSourceFingerprint } from './sessionIndexModel';
+import { fingerprintEquals } from './sessionIndexProjector';
+import { listSessionIds, listWorkspaceIds, mapBounded, readSessionSummaryResult, sessionStateFingerprint } from './sessionIndexSource';
+
+export interface ArchiveFamilySummaryCache {
+  get(workspaceId: string, sessionId: string, fingerprint: SessionSourceFingerprint): SessionSummary | undefined;
+  set(workspaceId: string, sessionId: string, fingerprint: SessionSourceFingerprint, summary: SessionSummary): void;
+}
+
+const fallbackSummaryCaches = new WeakMap<IAtomicDocumentStore, Map<string, { readonly fingerprint: SessionSourceFingerprint; readonly summary: SessionSummary }>>();
+
+function getFallbackSummaryCache(docs: IAtomicDocumentStore): ArchiveFamilySummaryCache {
+  let map = fallbackSummaryCaches.get(docs);
+  if (map === undefined) {
+    map = new Map();
+    fallbackSummaryCaches.set(docs, map);
+  }
+  return {
+    get(workspaceId, sessionId, fingerprint) {
+      const entry = map!.get(`${workspaceId}/${sessionId}`);
+      return entry !== undefined && fingerprintEquals(entry.fingerprint, fingerprint) ? entry.summary : undefined;
+    },
+    set(workspaceId, sessionId, fingerprint, summary) {
+      map!.set(`${workspaceId}/${sessionId}`, { fingerprint, summary });
+    },
+  };
+}
 
 export function attachedSessionParent(summary: SessionSummary): string | undefined {
   const createdBy = summary.custom?.[CREATED_BY_SESSION_ID_KEY];
@@ -21,10 +47,12 @@ export async function readSessionArchiveFamily(
   rootId: string,
   excludedIds: readonly string[],
   log: ILogService,
+  summaryCache?: ArchiveFamilySummaryCache,
 ): Promise<SessionSummary[]> {
   const started = Date.now();
   const deadline = started + 30_000;
   const entries: { workspaceId: string; sessionId: string }[] = [];
+  const cache = summaryCache ?? getFallbackSummaryCache(docs);
   const checkBudget = (): void => {
     if (entries.length > 100_000 || Date.now() > deadline) {
       throw new Error2('internal', 'Attached conversation discovery exceeded its budget; no conversations were archived. Retry after reducing the session inventory.');
@@ -37,14 +65,25 @@ export async function readSessionArchiveFamily(
         checkBudget();
       }
     }
-    const summaries = await mapBounded(entries, 16, async ({ workspaceId, sessionId }) => {
+    const summaries = await mapBounded(entries, 32, async ({ workspaceId, sessionId }) => {
       checkBudget();
+      const fingerprint = await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log);
+      if (sessionId !== rootId && (fingerprint.directSize > 0 || fingerprint.nestedSize > 0)) {
+        const cached = cache.get(workspaceId, sessionId, fingerprint);
+        if (cached !== undefined && attachedSessionParent(cached) === undefined) {
+          return cached;
+        }
+      }
       const result = await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
       checkBudget();
       if (result.kind === 'error') {
         throw new Error2('internal', `Cannot discover attached conversations: metadata for session ${sessionId} is unreadable. No conversations were archived.`, { cause: result.error });
       }
-      return result.kind === 'found' ? result.summary : undefined;
+      if (result.kind === 'found') {
+        cache.set(workspaceId, sessionId, fingerprint, result.summary);
+        return result.summary;
+      }
+      return undefined;
     });
     const byId = new Map(summaries.map((summary) => [summary.id, summary]));
     const root = byId.get(rootId);

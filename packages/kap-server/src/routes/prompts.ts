@@ -602,7 +602,18 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       let lease: SessionOperationLease | undefined;
       let enqueued = false;
       let retryContentRanges: readonly import('@kiki/agent-core-v2').PromptContentRange[] | undefined;
-      const phase = <T>(name: string, action: () => Promise<T>) => observeRestore(progress => ingressExecution?.onRestoreProgress(progress), () => withRestoreDeadline(() => timeRestorePhase(core.accessor.get(ILogService), { sessionId: session_id, agentId: req.body.agent_id ?? 'main', promptId: req.body.prompt_id, requestId: req.id }, name, action)));
+      const log = core.accessor.get(ILogService);
+      const logContext = { sessionId: session_id, agentId: req.body.agent_id ?? 'main', promptId: req.body.prompt_id, requestId: req.id };
+      const phase = <T>(name: string, action: () => Promise<T>) => observeRestore(progress => ingressExecution?.onRestoreProgress(progress), () => withRestoreDeadline(() => timeRestorePhase(log, logContext, name, action)));
+      const subphase = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+        if (log.level !== 'debug') return action();
+        const started = performance.now();
+        try {
+          return await action();
+        } finally {
+          log.debug('prompt admission subphase', { ...logContext, subphase: name, elapsedMs: Number((performance.now() - started).toFixed(3)) });
+        }
+      };
       const sendResult = (result: z.input<typeof promptSubmitResultSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
         const resolved_parts = result.resolved_parts ?? (retryContentRanges ?? preparedMedia?.sourceRanges)?.map(({ index, start, end }) => ({ index, content: result.content.slice(start, end) }));
         const data = req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({ ...result, resolved_parts })
@@ -624,10 +635,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         if (req.body.prompt_id === undefined && req.body.skills !== undefined) {
           await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
         }
-        const sessionMedia = session.accessor.get(ISessionMediaStore);
-        const files = ingressExecution?.files ?? sessionPromptFiles(core.accessor.get(IFileService), sessionMedia);
-        if (req.body.prompt_id === undefined) {
-          await assertPromptFileRefs(req.body.content, files);
+        const isPlainTextOnly = req.body.content.every((part) => part.type === 'text');
+        const sessionMedia = isPlainTextOnly ? undefined : session.accessor.get(ISessionMediaStore);
+        const files = isPlainTextOnly
+          ? undefined
+          : (ingressExecution?.files ?? sessionPromptFiles(core.accessor.get(IFileService), sessionMedia!));
+        if (!isPlainTextOnly && req.body.prompt_id === undefined) {
+          await assertPromptFileRefs(req.body.content, files!);
         }
         const restoring = resolvePromptFromSession(core, session, req.body.agent_id);
         const resolved = await phase('prompt_ensure_main', () => signal === undefined ? restoring : abortable(restoring, signal));
@@ -637,45 +651,50 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         let replayedSubmission = false;
         const submit = async () => {
         if (retryPromptId !== undefined && retryFingerprint !== undefined) {
-          const receipt = await promptRetryFor(resolved.prompt).lookup(retryPromptId, retryFingerprint);
+          const receipt = await subphase('retry_lookup', () => promptRetryFor(resolved.prompt).lookup(retryPromptId, retryFingerprint));
           if (receipt !== undefined) {
             replayedSubmission = true;
             retryContentRanges = receipt.contentRanges;
             return projectPromptRetryReceipt(retryPromptId, receipt, req.body.content);
           }
         }
-        if (req.body.skills !== undefined) await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
-        await assertPromptFileRefs(req.body.content, files);
-        const resolveContent = (signal: AbortSignal) => resolvePromptSessionMediaRefs(req.body.content,
-          sessionMedia,
-          transcriptService === undefined ? undefined : publishedInlineMediaReader(core, transcriptService, session_id, signal),
-          files);
-        const submittedContent = ingressExecution === undefined
-          ? await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], resolveContent)
-          : await resolveContent(ingressExecution.signal);
-        await ensurePromptAuthReady(session, resolved.accessor, req.body);
+        const submittedContent = await subphase('media_and_refs', async () => {
+          if (req.body.skills !== undefined) await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
+          if (isPlainTextOnly) return req.body.content;
+          await assertPromptFileRefs(req.body.content, files!);
+          const resolveContent = (signal: AbortSignal) => resolvePromptSessionMediaRefs(req.body.content,
+            sessionMedia!,
+            transcriptService === undefined ? undefined : publishedInlineMediaReader(core, transcriptService, session_id, signal),
+            files!);
+          return ingressExecution === undefined
+            ? withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], resolveContent)
+            : resolveContent(ingressExecution.signal);
+        });
+        await subphase('auth_ready', () => ensurePromptAuthReady(session, resolved.accessor, req.body));
 
-        const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
-        preparedMedia = await resolvePromptMediaFiles(
-          submittedContent,
-          files,
-          core.accessor.get(IBootstrapService).cacheDir,
-          {
-            telemetry,
-            sessionMedia,
-            providerType: resolved.profile.getModelProviderType(req.body.model),
-            resolveOriginalsDir: async () =>
-              sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir),
-            resolveAttachmentsDir: async () =>
-              join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
-          },
-        );
-        const resolvedContent = preparedMedia.content;
+        if (!isPlainTextOnly) {
+          const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
+          preparedMedia = await subphase('media_files', () => resolvePromptMediaFiles(
+            submittedContent,
+            files!,
+            core.accessor.get(IBootstrapService).cacheDir,
+            {
+              telemetry,
+              sessionMedia: sessionMedia!,
+              providerType: resolved.profile.getModelProviderType(req.body.model),
+              resolveOriginalsDir: async () =>
+                sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir),
+              resolveAttachmentsDir: async () =>
+                join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
+            },
+          ));
+        }
+        const resolvedContent = preparedMedia === undefined ? submittedContent : preparedMedia.content;
         reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined || req.query.receipt === 'true', retryFingerprint, {
           waitForLaunch: req.query.receipt === 'true' || ingressExecution !== undefined || req.body.delivery_mode === 'steer' ? false : undefined,
           nativeSteer: req.body.delivery_mode === 'steer' && (resolved.profile.data().executorId ?? 'native') === 'native'
             ? { turnId: steerTarget?.turnId } : undefined,
-          contentRanges: preparedMedia.sourceRanges,
+          contentRanges: preparedMedia?.sourceRanges,
           parentReceiptManaged: resolved.agentId !== MAIN_AGENT_ID,
         });
 
@@ -731,13 +750,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         }
         const parts = contentToCoreParts(resolvedContent);
         await ingressExecution?.beforeSubmit();
-        const admission = await admitPromptRun(core, session, resolved, reservation);
+        const admission = await subphase('admit_run', () => admitPromptRun(core, session, resolved, reservation!));
         try {
-          await applyPromptMetadataUpdate({
+          await subphase('metadata_update', () => applyPromptMetadataUpdate({
             metadata: session.accessor.get(ISessionMetadata),
             eventService: core.accessor.get(IEventService),
             sessionId: session_id,
-          }, promptMetadataTextFromContentParts(parts));
+          }, promptMetadataTextFromContentParts(parts)));
           if (req.body.skills !== undefined) {
             const settlement = watchPromptSettlements(resolved.events);
             let result: PromptWithSkillsResult;
@@ -772,12 +791,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           }
           signal?.throwIfAborted();
           const token = sessionAccessToken(req);
-          const handle = await admission.reservation.submit({
+          const handle = await subphase('reservation_submit', () => admission.reservation.submit({
             role: 'user',
             content: parts,
             toolCalls: [],
             origin: token === undefined ? { kind: 'user' } : { kind: 'user', via: { client: token.client.name, channel: token.channel } },
-          }, execution, deferredDisabledTools, req.body.append_timing);
+          }, execution, deferredDisabledTools, req.body.append_timing));
           enqueued = true;
           const staging = preparedMedia;
           void Promise.race([handle.launched, handle.completion]).then(
@@ -785,7 +804,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             () => staging?.discard(),
           );
           if (retryFingerprint !== undefined) {
-            const receipt = await promptRetryFor(resolved.prompt).lookup(handle.id, retryFingerprint);
+            const receipt = await subphase('receipt_lookup', () => promptRetryFor(resolved.prompt).lookup(handle.id, retryFingerprint));
             if (receipt === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt receipt is missing.');
             return projectPromptRetryReceipt(handle.id, receipt, req.body.content);
           }
