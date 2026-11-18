@@ -1566,7 +1566,7 @@ describe('AgentRun tool execution contract', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       const result = await pending;
       const task = tasks.list(false)[0]!;
-      expect(result.allowsTurnEndWithSendMessage).toBe(true);
+      expect(result).toMatchObject({ allowsTurnEndWithSendMessage: true });
       expect(result.output).toContain('Foreground wait moved to background');
       expect(task).toMatchObject({ detached: true, status: 'running' });
       expect(lifecycle.run.mock.calls[0]![2].signal.aborted).toBe(false);
