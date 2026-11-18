@@ -1,16 +1,23 @@
+import { createControlledPromise } from '@antfu/utils';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Emitter, Event } from '#/_base/event';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentTaskService } from '#/agent/task/task';
+import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { observeRestore, type RestoreProgress } from '#/session/agentLifecycle/restoreTiming';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
-import type { ISessionScopeHandle } from '#/_base/di/scope';
+import type { IAgentScopeHandle, ISessionScopeHandle } from '#/_base/di/scope';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { SessionManager } from '#/app/sessionManager/sessionManagerService';
 import { Error2, ErrorCodes } from '#/errors';
@@ -27,6 +34,7 @@ import type {
 import type { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycleService';
 import type { WorkspaceInstance } from '#/workspace/workspaceInstance/workspaceInstance';
 import { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
+import { createTestAgent, sessionService, taskServices } from '../../harness';
 
 function controller(sessionId = 'session-1'): {
   readonly service: SessionLifecycleService;
@@ -1085,7 +1093,7 @@ describe('SessionManager', () => {
         expect(events).toEqual(['drain-start', 'drain-end', 'restore']);
       }
       expect(lease?.handle).toBe(fake.handle);
-      lease?.dispose();
+      await lease?.dispose();
     } finally {
       releaseDrain();
       await disposables.dispose();
@@ -1429,6 +1437,102 @@ describe('SessionManager', () => {
     expect(manager.get('cold-a')).toBeDefined();
     expect(manager.get('cold-b')).toBeDefined();
     await manager.dispose();
+  });
+
+  it('keeps an unpinned session active against idle eviction and resume touches while detached subagents run and drain', async () => {
+    const created = new Emitter<IAgentScopeHandle>();
+    const handles = new Map<string, IAgentScopeHandle>();
+    const agent = createTestAgent(
+      taskServices(),
+      sessionService(IAgentLifecycleService, {
+        _serviceBrand: undefined,
+        onWillCreate: Event.None as Event<IAgentScopeHandle>,
+        onDidCreate: created.event,
+        onDidDispose: Event.None as Event<string>,
+        get: (id: string) => handles.get(id),
+        list: () => [...handles.values()],
+        create: async () => { throw new Error('unused'); },
+        commitCreate: () => {},
+        discard: async () => {},
+        fork: async () => { throw new Error('unused'); },
+        broadcastPermissionMode: () => {},
+        countPendingBackgroundTasks: () => agent.get(IAgentTaskService).list(true).length,
+        drainBackgroundTasks: async () => {},
+        remove: async () => {},
+      }),
+    );
+    const mainHandle: IAgentScopeHandle = {
+      kind: 'agent',
+      id: 'main',
+      accessor: { get: (id) => agent.get(id) },
+      dispose: () => {},
+    };
+    await agent.get(ISessionMetadata).read();
+    handles.set('main', mainHandle);
+    created.fire(mainHandle);
+    const fake = controller();
+    (fake.handle as { accessor: ISessionScopeHandle['accessor'] }).accessor = {
+      get: (id) => agent.get(id),
+    };
+    const unload = vi.spyOn(fake.service, 'unload');
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+    } as unknown as WorkspaceInstance;
+    const manager = new SessionManager(
+      {
+        acquire: async () => ({ instance: workspace, dispose: () => {} }),
+        get: () => workspace,
+      } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      {
+        ready: Promise.resolve(),
+        get: () => ({ idleTtlMs: 0, minIdleMs: 0, maxLiveSessions: 8, sweepIntervalMs: 300_000 }),
+      } as never,
+      { enabled: () => true } as never,
+    );
+    const completion = createControlledPromise<{ result: string }>();
+    try {
+      await manager.create({ workDir: '/workspace' });
+      expect(agent.get(ISessionActivityView).state().busy).toBe(false);
+      expect(manager.residencyReport().idleSessions).toBe(1);
+
+      const taskId = agent.get(IAgentTaskService).registerTask(
+        new SubagentTask(
+          { agentId: 'agent-bg', profileName: 'worker', completion },
+          'detached background subagent',
+          new AbortController(),
+        ),
+        { detached: true },
+      );
+      expect(agent.get(ISessionActivityView).state().busy).toBe(true);
+      expect(manager.residencyReport().idleSessions).toBe(0);
+
+      await manager.resume('session-1');
+      expect(manager.residencyReport().idleSessions).toBe(0);
+      await expect(manager.evictIfIdle('session-1', { ignoreIdleTtl: true })).resolves.toBe(false);
+      expect(unload).not.toHaveBeenCalled();
+      expect(manager.residencyReport().evictionSkips).toEqual({ active: 1 });
+
+      agent.mockNextResponse({ type: 'text', text: 'acknowledged detached subagent' });
+      const turnEnd = agent.untilTurnEnd();
+      completion.resolve({ result: 'detached subagent completed' });
+      await agent.get(IAgentTaskService).wait(taskId);
+      await turnEnd;
+      await agent.get(IAgentLoopService).settled();
+      await vi.waitFor(() => {
+        expect(agent.get(ISessionActivityView).state().busy).toBe(false);
+      });
+      expect(manager.residencyReport().idleSessions).toBe(1);
+      await expect(manager.evictIfIdle('session-1', { ignoreIdleTtl: true })).resolves.toBe(true);
+      expect(unload).toHaveBeenCalledTimes(1);
+    } finally {
+      completion.resolve({ result: 'cleanup' });
+      created.dispose();
+      handles.clear();
+      await manager.dispose();
+      await agent.dispose();
+    }
   });
 });
 

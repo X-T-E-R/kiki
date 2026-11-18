@@ -530,10 +530,13 @@ describe('thinking-only continuation', () => {
         const terminal = await (await prompt(local)).completion;
         expect(terminal.state).toBe(mode === 'recover' ? 'completed' : 'failed');
         expect(toolRuns).toBe(mode === 'recover' ? 1 : 0);
-        const attempts = mode === 'lower-budget' ? 2 : 3;
+        const attempts = mode === 'lower-budget' ? 2 : mode === 'recover' ? 3 : 4;
         expect(bodies).toHaveLength(attempts);
         expect(executedAtRequest).toEqual(mode === 'recover' ? [0, 0, 1] : Array.from({ length: attempts }, () => 0));
-        expect(bodies[1]).toEqual({ ...(bodies[0] as Record<string, unknown>), tool_choice: { type: 'auto' } });
+        expect(JSON.stringify(bodies[0])).not.toContain('malformed tool/function call');
+        expect((bodies[1] as Record<string, unknown>)['tool_choice']).toEqual({ type: 'auto' });
+        expect(JSON.stringify(bodies[1])).toContain('malformed tool/function call');
+        expect(JSON.stringify(local.contextData().history)).not.toContain('malformed tool/function call');
         const discarded = local.allEvents.filter(event => event.type === '[rpc]' && event.event === 'response.attempt.discarded')
           .map(event => event.args as { toolCallIds: string[] });
         expect(discarded).toHaveLength(mode === 'recover' ? 1 : attempts - 1);

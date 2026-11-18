@@ -2269,7 +2269,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
           if (generation !== this.notificationUndoGeneration || this.pendingNotificationRequests.get(key) !== request) return;
           this.clearPendingNotification(key, request);
           if (
-            (result?.type === 'completed' || result?.type === 'cancelled') &&
+            (result?.type === 'completed' ||
+              result?.type === 'cancelled' ||
+              (result?.type === 'failed' && result.steps > 0)) &&
             !this.restoreDisposed &&
             !this.exitSuppressionArmed &&
             !this.deliveredNotificationKeys.has(key) &&

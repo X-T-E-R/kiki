@@ -18,6 +18,7 @@ import { Emitter } from '#/_base/event';
 import type { ConfigChangedEvent } from '#/app/config/config';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { AdhocEndpointVault, IAdhocEndpointVault } from '#/session/adhocEndpoint/adhocEndpointVault';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import {
   IAgentContextProjectorService,
@@ -293,6 +294,8 @@ function createService(
   });
   const profile: Partial<IAgentProfileService> = {
     getRecipeModelSettings: () => undefined,
+    getRuntimeModel: () => options.transportModel?.value ?? requester.model,
+    getRuntimeRequester: (id) => ix.get(IModelCatalog).getRequester(id ?? selectedModelAlias()),
     resolveModelContext: () => ({
       modelAlias: selectedModelAlias(),
       modelCapabilities: requester.model.capabilities,
@@ -404,6 +407,7 @@ function createService(
   if (options.extensions !== undefined) ix.stub(IPluginExtensionPortRegistryReader, { activeStreamTaps: () => [], ...options.extensions });
 
   ix.stub(IAgentContextMemoryService, context);
+  ix.set(IAdhocEndpointVault, new SyncDescriptor(AdhocEndpointVault));
   ix.stub(ISessionContext, { sessionId });
   ix.stub(ISessionMetadata, {
     read: async () => ({
@@ -3396,26 +3400,97 @@ describe.each(['anthropic', 'google-genai'] as const)('%s malformed function-cal
       } else {
         const error = await pending.catch((failure: unknown) => failure);
         const details = toErrorPayload(error).details;
-        if (mode === 'exhaust') expect(details).toMatchObject({ retry: false, retry_exhausted: true, retry_attempts: 3, retry_max_attempts: 3 });
+        if (mode === 'exhaust') expect(details).toMatchObject({ retry: false, retry_exhausted: true, retry_attempts: 4, retry_max_attempts: 4 });
         else expect(details?.['retry_exhausted']).toBeUndefined();
         if (protocol === 'anthropic') expect(details).toMatchObject({ upstream_retryable: false });
       }
-      const expectedAttempts = mode === 'recover' || mode === 'tool' ? 2 : mode === 'exhaust' ? 3 : 1;
+      const expectedAttempts = mode === 'recover' || mode === 'tool' ? 2 : mode === 'exhaust' ? 4 : 1;
       expect(bodies).toHaveLength(expectedAttempts);
+      expect(bodies[0]).not.toContain('malformed tool/function call');
       const parsed = bodies.map(body => JSON.parse(body) as Record<string, unknown>);
       for (const [index, body] of parsed.entries()) {
         if (protocol === 'anthropic') {
           expect(body['tool_choice']).toEqual(index === 0 ? undefined : { type: 'auto' });
           expect(body['thinking']).toMatchObject({ type: 'enabled', budget_tokens: 32000 });
-          delete body['tool_choice'];
+          expect(body['system']).toEqual(parsed[0]!['system']);
+          expect(body['tools']).toEqual(parsed[0]!['tools']);
         } else {
           expect(body['toolConfig']).toEqual(index === 0 ? undefined : { functionCallingConfig: { mode: 'AUTO' } });
-          delete body['toolConfig'];
+          expect(body['systemInstruction']).toEqual(parsed[0]!['systemInstruction']);
+          expect(body['tools']).toEqual(parsed[0]!['tools']);
         }
-        expect(body).toEqual(parsed[0]);
+        if (index > 0) {
+          expect(bodies[index]).toContain('<system-reminder>');
+          expect(bodies[index]).toContain('malformed tool/function call');
+          expect(bodies[index]).not.toBe(bodies[index - 1]);
+          if (index >= 2) {
+            expect(bodies[index]).toContain(`Attempt ${String(index + 1)} after ${String(index)} consecutive malformed tool/function calls`);
+          }
+        }
       }
       expect(onAttemptRetry.mock.calls).toEqual(Array.from({ length: expectedAttempts - 1 }, () => ['discard']));
       expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(expectedAttempts - 1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('recovers from deterministic malformed calls only when nudged and leaves canonical context untouched', async () => {
+    const bodies: string[] = [];
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        bodies.push(body);
+        const escalatedNudgePresent = body.includes('Attempt 3 after 2 consecutive malformed tool/function calls');
+        const events = protocol === 'google-genai'
+          ? (escalatedNudgePresent
+              ? [{ candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'SaveWork', args: { ok: true } } }] }, finishReason: 'STOP' }] }]
+              : [{ candidates: [{ finishReason: 'MALFORMED_FUNCTION_CALL' }] }])
+          : [
+              { type: 'message_start', message: { id: 'fixture', usage: { input_tokens: 10, output_tokens: 4 } } },
+              ...(escalatedNudgePresent
+                ? [
+                    { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_ok', name: 'SaveWork', input: {} } },
+                    { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"ok":true}' } },
+                    { type: 'content_block_stop', index: 0 },
+                    { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 4 } },
+                    { type: 'message_stop' },
+                  ]
+                : [
+                    { type: 'error', error: { type: 'api_error', code: 'antigravity_malformed_function_call', message: 'The upstream returned a malformed function call.', retryable: true } },
+                  ]),
+            ];
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(events.map(event => `${'type' in event ? `event: ${event.type}\n` : ''}data: ${JSON.stringify(event)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model = { ...createRequester({ value: 0 }, null).model, protocol, baseUrl,
+      capabilities: { ...capabilities, thinking: true, tool_use: true, max_context_tokens: 128000 },
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const options = { model: model.name, baseUrl, apiKey: 'YOUR_API_KEY', adaptiveThinking: false };
+    const provider = protocol === 'google-genai' ? new GoogleGenAIChatProvider(options) : new AnthropicChatProvider(options);
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const canonicalMessages: Message[] = [{ role: 'user', content: [{ type: 'text', text: 'Save the current work.' }], toolCalls: [] }];
+    const { service, measuredCalls } = createService(requester, undefined, {
+      contextMessages: canonicalMessages,
+      requestParams: { thinkingEffort: 'high' },
+      retryConfig: { maxAttempts: 5, policies: [{ match: '.*', retry: true, backoff: 1 }] },
+    });
+    try {
+      const result = await service.request({
+        source: { type: 'turn', turnId: 1, step: 1 },
+        onAttemptRetry: () => {},
+        tools: [{ name: 'SaveWork', description: 'Save work', parameters: { type: 'object', properties: { ok: { type: 'boolean' } } } }],
+      }, undefined, AbortSignal.timeout(3500));
+      expect(bodies).toHaveLength(3);
+      expect(result.message.toolCalls).toMatchObject([{ name: 'SaveWork', arguments: '{"ok":true}' }]);
+      expect(canonicalMessages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'Save the current work.' }], toolCalls: [] }]);
+      expect(JSON.stringify(canonicalMessages)).not.toContain('malformed tool/function call');
+      expect(measuredCalls).toEqual([]);
     } finally {
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));
