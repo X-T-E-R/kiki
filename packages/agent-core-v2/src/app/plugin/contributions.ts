@@ -117,18 +117,48 @@ export const requestProjectionContributionSchema = z.object({
 }).strict();
 export type PluginRequestProjection = z.infer<typeof requestProjectionContributionSchema>;
 
+export interface PluginSettingsProperty {
+  readonly type: 'string' | 'boolean' | 'number';
+  readonly integer?: boolean;
+  readonly title?: string;
+  readonly description?: string;
+  readonly placeholder?: string;
+  readonly secret?: boolean;
+  readonly default?: string | number | boolean;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly hidden?: boolean;
+  readonly group?: string;
+  readonly groupTitle?: string;
+  readonly localizations?: Record<string, {
+    readonly title?: string;
+    readonly description?: string;
+    readonly placeholder?: string;
+    readonly groupTitle?: string;
+  }>;
+  readonly enum?: string[];
+  readonly multiline?: boolean;
+  readonly advanced?: boolean;
+  readonly format?: 'kiki-model' | 'kiki-connection';
+  readonly requiredUnless?: string;
+}
+
 const settingsPropertySchema = z.object({
-  type: z.enum(['string', 'boolean', 'number']),
+  type: z.enum(['string', 'boolean', 'number', 'integer']),
   title: z.string().optional(),
   description: z.string().optional(),
+  placeholder: z.string().max(240).optional(),
   secret: z.boolean().optional(),
   default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  minimum: z.number().finite().optional(),
+  maximum: z.number().finite().optional(),
   hidden: z.boolean().optional(),
   group: z.string().min(1).max(80).optional(),
   groupTitle: z.string().min(1).max(80).optional(),
   localizations: z.record(z.string().min(2).max(35), z.object({
     title: z.string().optional(),
     description: z.string().optional(),
+    placeholder: z.string().max(240).optional(),
     groupTitle: z.string().min(1).max(80).optional(),
   }).strict()).optional(),
   enum: z.array(z.string().min(1)).max(2000).optional(),
@@ -143,9 +173,38 @@ const settingsPropertySchema = z.object({
   if (property.format !== undefined && property.secret === true) {
     ctx.addIssue({ code: 'custom', path: ['format'], message: 'secret settings cannot declare format' });
   }
+  const isNumeric = property.type === 'number' || property.type === 'integer';
+  if ((property.minimum !== undefined || property.maximum !== undefined) && !isNumeric) {
+    ctx.addIssue({ code: 'custom', path: ['minimum'], message: 'minimum and maximum require a number or integer setting' });
+  }
+  if (property.minimum !== undefined && property.maximum !== undefined && property.minimum > property.maximum) {
+    ctx.addIssue({ code: 'custom', path: ['minimum'], message: 'minimum cannot exceed maximum' });
+  }
+  if (property.default !== undefined) {
+    if (property.type === 'integer') {
+      if (typeof property.default !== 'number' || !Number.isInteger(property.default)) {
+        ctx.addIssue({ code: 'custom', path: ['default'], message: 'integer setting default must be an integer' });
+      }
+    } else if (typeof property.default !== property.type) {
+      ctx.addIssue({ code: 'custom', path: ['default'], message: `default must match setting type ${property.type}` });
+    }
+    if (isNumeric && typeof property.default === 'number') {
+      if (property.minimum !== undefined && property.default < property.minimum) {
+        ctx.addIssue({ code: 'custom', path: ['default'], message: 'default cannot be less than minimum' });
+      }
+      if (property.maximum !== undefined && property.default > property.maximum) {
+        ctx.addIssue({ code: 'custom', path: ['default'], message: 'default cannot exceed maximum' });
+      }
+    }
+  }
+}).transform((property): PluginSettingsProperty => {
+  if (property.type === 'integer') {
+    return { ...property, type: 'number', integer: true };
+  }
+  return { ...property, type: property.type };
 });
 
-type SettingsProperty = z.infer<typeof settingsPropertySchema>;
+type SettingsProperty = PluginSettingsProperty;
 
 export const settingsContributionSchema = z.object({
   schemaVersion,
@@ -256,6 +315,7 @@ export async function parsePluginExtension(
   diagnostics: PluginDiagnostic[],
   signal?: AbortSignal,
   pluginId?: string,
+  hasOtherManifestContributions = false,
 ): Promise<PluginExtension | undefined> {
   checkAborted(signal);
   if (raw === undefined) return undefined;
@@ -283,7 +343,7 @@ export async function parsePluginExtension(
     commands: z.array(commandContributionSchema).optional(),
     entry: z.string().startsWith('./').optional(),
     activation: z.literal('app').optional(),
-    settings: settingsContributionSchema.optional(),
+    settings: z.unknown().optional(),
     requestProjection: requestProjectionContributionSchema.optional(),
     prerequisites: z.unknown().optional(),
     mediaSurface: z.object({ view: z.literal('media') }).strict().optional(),
@@ -293,11 +353,29 @@ export async function parsePluginExtension(
     return undefined;
   }
   const value = envelope.data;
-  const hasContributions = value.themes !== undefined || value.providerPresets !== undefined ||
+  const hasOtherKikiContributions = value.themes !== undefined || value.providerPresets !== undefined ||
     value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.asrProviders !== undefined || value.harnessAccountSources !== undefined || value.harnessQuotaSources !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.guiSlots !== undefined || value.routes !== undefined || value.promptContext !== undefined || value.commands !== undefined ||
-    value.slots !== undefined || value.entry !== undefined || value.settings !== undefined || value.requestProjection !== undefined;
+    value.slots !== undefined || value.entry !== undefined || value.requestProjection !== undefined || value.mediaSurface !== undefined;
+  const hasContributions = hasOtherKikiContributions || value.settings !== undefined;
   if (hasContributions && value.engines === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.engines.kiki is required for Kiki contributions' });
+  }
+  let parsedSettings: PluginSettings | undefined;
+  if (value.settings !== undefined) {
+    const settingsResult = settingsContributionSchema.safeParse(value.settings);
+    if (settingsResult.success) {
+      parsedSettings = settingsResult.data;
+    } else if (hasOtherKikiContributions || hasOtherManifestContributions) {
+      diagnostics.push({
+        severity: 'warn',
+        message: `Invalid x-kiki.settings (settings form disabled): ${settingsResult.error.message}`,
+      });
+    } else {
+      diagnostics.push({
+        severity: 'error',
+        message: `Invalid x-kiki extension: ${settingsResult.error.message}`,
+      });
+    }
   }
   if (value.engines !== undefined && (validRange(value.engines.kiki) === null ||
     !satisfies(KIKI_PLUGIN_ENGINE_VERSION, value.engines.kiki))) {
@@ -320,12 +398,12 @@ export async function parsePluginExtension(
       : group === undefined || provider.connectionSetting.startsWith(group.settingsPrefix)
         ? provider.connectionSetting
         : group.settingsPrefix + provider.connectionSetting;
-    if (setting !== undefined && value.settings?.schema.properties[setting]?.type !== 'string') {
+    if (setting !== undefined && parsedSettings?.schema.properties[setting]?.type !== 'string') {
       diagnostics.push({ severity: 'error', message: `Media provider ${provider.id} connectionSetting must name a declared string setting` });
     }
   }
   for (const provider of value.asrProviders ?? []) {
-    if (provider.connectionSetting !== undefined && value.settings?.schema.properties[provider.connectionSetting]?.type !== 'string') {
+    if (provider.connectionSetting !== undefined && parsedSettings?.schema.properties[provider.connectionSetting]?.type !== 'string') {
       diagnostics.push({ severity: 'error', message: `ASR provider ${provider.id} connectionSetting must name a declared string setting` });
     }
   }
@@ -333,9 +411,9 @@ export async function parsePluginExtension(
   const groupedIds = groups.flatMap((group) => group.providerIds);
   if (new Set(groups.map((group) => group.id)).size !== groups.length || new Set(groups.map((group) => group.settingsPrefix)).size !== groups.length || new Set(groupedIds).size !== groupedIds.length || groupedIds.some((id) => !value.mediaProviders?.some((provider) => provider.id === id))) diagnostics.push({ severity: 'error', message: 'Media source groups require unique ids, prefixes and declared providers' });
   for (const group of groups) {
-    if (group.required.some((key) => value.settings?.schema.properties[group.settingsPrefix + key] === undefined)) diagnostics.push({ severity: 'error', message: `Media source ${group.id} required settings must be declared` });
+    if (group.required.some((key) => parsedSettings?.schema.properties[group.settingsPrefix + key] === undefined)) diagnostics.push({ severity: 'error', message: `Media source ${group.id} required settings must be declared` });
   }
-  if (value.mediaScriptProvider !== undefined && (!value.mediaProviders?.some((provider) => provider.id === value.mediaScriptProvider) || value.settings?.schema.properties['scriptSources']?.type !== 'string')) diagnostics.push({ severity: 'error', message: 'Media scripts require a declared provider and scriptSources string setting' });
+  if (value.mediaScriptProvider !== undefined && (!value.mediaProviders?.some((provider) => provider.id === value.mediaScriptProvider) || parsedSettings?.schema.properties['scriptSources']?.type !== 'string')) diagnostics.push({ severity: 'error', message: 'Media scripts require a declared provider and scriptSources string setting' });
   const resolvedEntry = value.entry === undefined ? undefined : await safePluginFile(root, value.entry, signal);
   checkAborted(signal);
   if (value.entry !== undefined && resolvedEntry === undefined) {
@@ -493,7 +571,7 @@ export async function parsePluginExtension(
     commands: value.commands,
     entry: resolvedEntry,
     activation: value.activation,
-    settings: value.settings,
+    settings: parsedSettings,
     requestProjection: value.requestProjection,
     mediaSurface: value.mediaSurface,
   };

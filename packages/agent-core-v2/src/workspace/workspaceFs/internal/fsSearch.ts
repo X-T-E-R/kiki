@@ -219,7 +219,7 @@ export function evaluateSuggestCandidate(
   query: SuggestQuery,
 ): SuggestCandidate | null {
   const segments = relPath.split('/');
-  if (segments.some((s) => VCS_METADATA_DIRS.has(s))) return null;
+  if (segments.some((s) => VCS_METADATA_DIRS.has(s.toLowerCase()))) return null;
   if (kind !== 'directory' && isSensitiveFile(relPath)) return null;
   if (!query.showHidden && segments.some((s) => s.startsWith('.'))) return null;
   const name = segments[segments.length - 1]!;

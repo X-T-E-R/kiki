@@ -15,63 +15,90 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { createConnectionTransport } from '@kiki/klient/http';
-import type { Session } from '@kiki/protocol';
+import type { PersonaSessionHeadBucket, PersonaSessionHeadsQuery, PersonaSessionHeadsResponse } from '@kiki/protocol';
+import type { SessionPrivateFilter } from '@kiki/session-core/settings';
 
 import { useConnection } from '../../state/connection';
 
 /** The window one switcher panel shows at once; the full list is a page away. */
 const PAGE_SIZE = 100;
 
-export interface PersonaSessionHeadBucket {
-  readonly total: number;
-  readonly items: readonly Session[];
-}
+export type { PersonaSessionHeadBucket };
+export type PersonaSessionHeadsMap = Readonly<PersonaSessionHeadsResponse>;
 
-export type PersonaSessionHeadsMap = Readonly<Record<string, PersonaSessionHeadBucket>>;
+export type PersonaPrivateFilter = SessionPrivateFilter;
 
-export const personaSwitcherQueryKey = (personaId: string | undefined) =>
-  ['persona-switcher-sessions', personaId ?? ''] as const;
+export const personaSwitcherQueryKey = (
+  personaId: string | undefined,
+  privateFilter: PersonaPrivateFilter = 'include',
+) => ['persona-switcher-sessions', personaId ?? '', privateFilter] as const;
 
-export const personaSessionHeadsQueryKey = (scopeKey: string, perPersonaLimit: number) =>
-  ['persona-session-heads', scopeKey, perPersonaLimit] as const;
+export const personaSessionHeadsQueryKey = (
+  scopeKey: string,
+  perPersonaLimit: number,
+  privateFilter: PersonaPrivateFilter = 'hide',
+) => ['persona-session-heads', scopeKey, perPersonaLimit, privateFilter] as const;
 
 interface SessionHeadsClientOverride {
-  readonly listPersonaSessionHeads?: (params: {
-    readonly per_persona_limit: number;
-    readonly include_private: boolean;
-  }) => Promise<PersonaSessionHeadsMap>;
+  readonly listPersonaSessionHeads?: (
+    params: PersonaSessionHeadsQuery,
+    options?: { readonly signal?: AbortSignal },
+  ) => Promise<PersonaSessionHeadsMap>;
+  readonly klient?: {
+    readonly rest?: {
+      readonly personas?: {
+        readonly sessionHeads?: (
+          params: PersonaSessionHeadsQuery,
+          options?: { readonly signal?: AbortSignal },
+        ) => Promise<PersonaSessionHeadsMap>;
+      };
+    };
+  };
   readonly baseUrl?: string;
 }
 
 export function usePersonaSessionHeads(options: {
   readonly enabled: boolean;
   readonly perPersonaLimit?: number;
+  readonly privateFilter?: PersonaPrivateFilter;
 }) {
   const connection = useConnection();
   const perPersonaLimit = options.perPersonaLimit ?? 10;
+  const privateFilter = options.privateFilter ?? 'hide';
+  const includePrivate = privateFilter !== 'hide';
+  const privateOnly = privateFilter === 'only' ? true : undefined;
   const client = connection.client as unknown as SessionHeadsClientOverride | undefined;
   const rawBaseUrl = connection.config?.url ?? client?.baseUrl;
   const token = connection.config?.token?.trim() ?? '';
   const connectionId = connection.connectionId ?? null;
   const scopeKey = `${connection.spaceKey ?? ''}:${connection.scopeId ?? 'local'}:${connectionId ?? ''}:${rawBaseUrl ?? ''}`;
-  const hasMockMethod = typeof client?.listPersonaSessionHeads === 'function';
+  const hasClientMethod = typeof client?.listPersonaSessionHeads === 'function';
+  const hasRestMethod = typeof client?.klient?.rest?.personas?.sessionHeads === 'function';
   const canFetchHttp = rawBaseUrl !== undefined && typeof globalThis.fetch === 'function';
 
   return useQuery<PersonaSessionHeadsMap>({
-    queryKey: personaSessionHeadsQueryKey(scopeKey, perPersonaLimit),
+    queryKey: personaSessionHeadsQueryKey(scopeKey, perPersonaLimit, privateFilter),
     queryFn: async ({ signal }) => {
-      if (hasMockMethod) {
-        return client!.listPersonaSessionHeads!({
-          per_persona_limit: perPersonaLimit,
-          include_private: true,
-        });
+      const queryParams: PersonaSessionHeadsQuery = {
+        per_persona_limit: perPersonaLimit,
+        include_private: includePrivate,
+        private_only: privateOnly,
+      };
+      if (hasClientMethod) {
+        return client!.listPersonaSessionHeads!(queryParams, { signal });
+      }
+      if (hasRestMethod) {
+        return client!.klient!.rest!.personas!.sessionHeads!(queryParams, { signal });
       }
       const root = (rawBaseUrl ?? '').trim().replace(/\/+$/u, '');
       const url = root === ''
         ? new URL('/api/personas/session-heads', globalThis.location?.origin ?? 'http://localhost')
         : new URL(`${root}/api/personas/session-heads`);
       url.searchParams.set('per_persona_limit', String(perPersonaLimit));
-      url.searchParams.set('include_private', 'true');
+      url.searchParams.set('include_private', String(includePrivate));
+      if (privateOnly === true) {
+        url.searchParams.set('private_only', 'true');
+      }
 
       const headers: Record<string, string> = { accept: 'application/json' };
       if (token !== '') {
@@ -111,18 +138,29 @@ export function usePersonaSessionHeads(options: {
       }
       return (envelope as { readonly data: PersonaSessionHeadsMap }).data;
     },
-    enabled: options.enabled && (hasMockMethod || canFetchHttp),
+    enabled: options.enabled && (hasClientMethod || hasRestMethod || canFetchHttp),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
 }
 
-export function usePersonaSwitcherConversations(personaId: string | undefined, open: boolean) {
+export function usePersonaSwitcherConversations(
+  personaId: string | undefined,
+  open: boolean,
+  privateFilter: PersonaPrivateFilter = 'include',
+) {
   const { client } = useConnection();
   const hasValidPersona = Boolean(personaId && personaId.trim() !== '');
+  const includePrivate = privateFilter !== 'hide';
+  const privateOnly = privateFilter === 'only' ? true : undefined;
   return useQuery({
-    queryKey: personaSwitcherQueryKey(personaId),
-    queryFn: () => client.listSessions({ persona: personaId!, page_size: PAGE_SIZE, include_private: true }),
+    queryKey: personaSwitcherQueryKey(personaId, privateFilter),
+    queryFn: ({ signal }) => client.listSessions({
+      persona: personaId!,
+      page_size: PAGE_SIZE,
+      include_private: includePrivate,
+      private_only: privateOnly,
+    }, { signal }),
     enabled: open && hasValidPersona && typeof client?.listSessions === 'function',
     staleTime: 30_000,
     refetchOnWindowFocus: false,

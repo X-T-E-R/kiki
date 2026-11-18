@@ -32,9 +32,9 @@ describe('compactIdentifier', () => {
     expect(compactIdentifier('devbox-01.internal')).toBe('devbox-01.internal');
     expect(compactIdentifier('192.0.2.10:22')).toBe('192.0.2.10:22');
     expect(compactIdentifier('[2001:db8::1]:8443')).toBe('[2001:db8::1]:8443');
-    expect(compactIdentifier('magpie-account-1')).toBe('magpie-account-1');
+    expect(compactIdentifier('acme-account-1')).toBe('acme-account-1');
     expect(compactIdentifier('implementer-v2')).toBe('implementer-v2');
-    expect(compactIdentifier('qweneval/qwen-latest-series-invite-1102')).toBe('qweneval/qwen-latest-series-invite-1102');
+    expect(compactIdentifier('provider/example-model-preview')).toBe('provider/example-model-preview');
     expect(compactIdentifier('-1001')).toBe('-1001');
     expect(compactIdentifier('8080')).toBe('8080');
   });
@@ -44,7 +44,7 @@ describe('compactIdentifier', () => {
     expect(compactIdentifier('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe('01AR…5FAV');
     expect(compactIdentifier('SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8')).toBe('SHA256:nThb…5SY8');
     expect(compactIdentifier('wxid_0a9b8c7d6e5f4a3b2c1d')).toBe('wxid_0a9b…2c1d');
-    expect(compactIdentifier('wxid_chenmo')).toBe('wxid_chenmo');
+    expect(compactIdentifier('wxid_alice')).toBe('wxid_alice');
   });
 
   it('prefers real session titles and falls back to compact session IDs only when untitled', () => {

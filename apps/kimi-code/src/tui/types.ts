@@ -138,11 +138,18 @@ export interface ToolCallBlockData {
   truncated?: boolean;
 }
 
+export type ToolContinuationStatus =
+  | { readonly state: 'loading' }
+  | { readonly state: 'error'; readonly message: string }
+  | { readonly state: 'partial'; readonly loaded: number; readonly total: number };
+
 export interface ToolResultBlockData {
   tool_call_id: string;
   output: string;
   is_error?: boolean;
   synthetic?: boolean;
+  note?: string;
+  continuationStatus?: ToolContinuationStatus;
 }
 
 export interface SubagentReplayToolCallData {

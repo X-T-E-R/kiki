@@ -73,14 +73,23 @@ export function subtreeWatchFilter(
   candidates: readonly string[],
   options?: SubtreeWatchFilterOptions,
 ): SubtreeWatchFilter {
-  const normRoot = normalizeSlashes(root);
-  const normCandidates = candidates.map(normalizeSlashes);
+  const caseInsensitive = isWindowsAbsolutePath(root);
+  const normalizeKey = (p: string): string => {
+    const slashed = normalizeSlashes(p);
+    return caseInsensitive ? slashed.toLowerCase() : slashed;
+  };
+  const normRoot = normalizeKey(root);
+  const normCandidates = candidates.map(normalizeKey);
+  const effectiveOptions: SubtreeWatchFilterOptions | undefined =
+    options === undefined || !caseInsensitive || options.keepEntryFile === undefined
+      ? options
+      : { ...options, keepEntryFile: options.keepEntryFile.toLowerCase() };
   const normScannedDirectories =
     options?.scannedDirectories === undefined
       ? undefined
-      : new Set([...normCandidates, ...options.scannedDirectories.map(normalizeSlashes)]);
+      : new Set([...normCandidates, ...options.scannedDirectories.map(normalizeKey)]);
   const subtree = (p: string): boolean => {
-    const norm = normalizeSlashes(p);
+    const norm = normalizeKey(p);
     if (norm === normRoot) return false;
     for (const candidate of normCandidates) {
       if (norm === candidate) return false;
@@ -90,15 +99,16 @@ export function subtreeWatchFilter(
     return true;
   };
   const filter = (p: string): boolean => {
-    const norm = normalizeSlashes(p);
+    const slashed = normalizeSlashes(p);
+    const norm = caseInsensitive ? slashed.toLowerCase() : slashed;
     if (norm === normRoot) return false;
     for (const candidate of normCandidates) {
       if (norm === candidate) return false;
       if (norm.startsWith(`${candidate}/`)) {
         return isPrunedBelowCandidate(
           norm,
-          norm.slice(candidate.length + 1),
-          options,
+          slashed.slice(candidate.length + 1),
+          effectiveOptions,
           normScannedDirectories,
         );
       }
@@ -111,21 +121,22 @@ export function subtreeWatchFilter(
 
 function isPrunedBelowCandidate(
   normPath: string,
-  rel: string,
+  rawRel: string,
   options: SubtreeWatchFilterOptions | undefined,
   scannedDirectories: ReadonlySet<string> | undefined,
 ): boolean {
   if (options === undefined) return false;
-  const segments = rel.split('/');
-  if (options.maxDepth !== undefined && segments.length > options.maxDepth) return true;
+  const rawSegments = rawRel.split('/');
+  if (options.maxDepth !== undefined && rawSegments.length > options.maxDepth) return true;
   if (options.skipEntry !== undefined) {
-    const excludedAt = segments.findIndex(options.skipEntry);
+    const excludedAt = rawSegments.findIndex(options.skipEntry);
     if (excludedAt !== -1) {
-      if (segments.length <= excludedAt + 1) return false;
+      if (rawSegments.length <= excludedAt + 1) return false;
+      const tailSegment = normPath.slice(normPath.lastIndexOf('/') + 1);
       return !(
         options.keepEntryFile !== undefined &&
-        segments.length === excludedAt + 2 &&
-        segments.at(-1) === options.keepEntryFile
+        rawSegments.length === excludedAt + 2 &&
+        tailSegment === options.keepEntryFile
       );
     }
   }

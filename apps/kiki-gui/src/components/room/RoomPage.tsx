@@ -29,6 +29,7 @@ import { registerOverlay } from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
 import { AvatarStack } from '../bot/SidebarBotRoomGroups';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { invalidatePersonaSessionLists } from '../../lib/personaFreshness';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { useSidebarContext } from '../sidebarContext';
 import { Icon } from '../icons';
@@ -249,6 +250,7 @@ function RoomView({
       queryClient.removeQueries({ queryKey: roomQueryKey(room.id) });
       void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      invalidatePersonaSessionLists(queryClient);
       void navigate('/');
     },
     onError: (error) => {

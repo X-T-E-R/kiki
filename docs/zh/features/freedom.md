@@ -52,7 +52,7 @@ Kiki 按范围发现 profile，范围越具体越优先：**显式指定（`--ag
 
 **替我审批**的行为和自动模式一样，但会把策略产生的审批请求先交给一个你配置的审查者。显式的 `ask` 规则仍然直接给你；审查者有把握的决定会连同审查者归属一起记录；没把握或审查者不可用时，回到你平常的审批面板。
 
-Plan 模式是另一根轴：智能体先给出计划，等你确认后才改文件。即使在 YOLO 下退出 Plan 模式也需要确认，自动和「替我审批」是例外——它们的计划退出自动批准，并在记录里标为自动批准。见[交互与输入](/zh/guides/interaction#权限模式)和[配置里的权限模式](/zh/configuration/config-files#permission)。
+Plan 模式是另一根轴：智能体先调研并写出计划，再改其他文件。在默认的 `free` Plan gate 下，调用 `ExitPlanMode` 会直接退出 Plan 模式（标为自动批准）；将 Plan gate 设为 `gated` 时，手动模式下退出需要你审阅，自动、「替我审批」和 YOLO 下则自动批准。见 [交互与输入](/zh/guides/interaction#plan-模式) 和 [配置里的权限模式](/zh/configuration/config-files#permission)。
 
 ## 生命周期 Hooks
 

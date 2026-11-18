@@ -39,7 +39,7 @@ kiki <subcommand> [options]
 `-r` / `--resume` 是 `--session` 的隐藏别名；`--yes` 和 `--auto-approve` 是 `--yolo` 的隐藏别名，在帮助信息中不显示。
 
 ::: warning 注意
-`--yolo` 会跳过普通工具调用的人工确认，包括文件写入和 Shell 命令执行，请只在受信任的工作目录下使用。Plan 模式的退出审批不会被 `--yolo` 跳过；Plan 模式下的 `Bash` 按普通放行规则处理。
+`--yolo` 会跳过普通工具调用（包括文件写入和 Shell 命令执行）以及 `gated` 下 Plan 模式退出的人工确认，请只在受信任的工作目录下使用。Plan 模式下的 `Bash` 按普通放行规则处理。
 :::
 
 ### flag 冲突规则

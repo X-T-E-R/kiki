@@ -97,11 +97,11 @@ function sourceRevisionFor(controller: SessionController | undefined, forest: Ag
 }
 
 function revisionToken(ids: readonly string[], revisions: ReadonlyMap<string, string>): string {
-  return JSON.stringify(ids.map((id) => [id, revisions.get(id) ?? '']));
+  return ids.map((id) => `${id}\t${revisions.get(id) ?? ''}`).join('\n');
 }
 
 interface CachedPanelSourceRevision {
-  readonly cursorSeq: SessionViewState['cursor']['seq'] | undefined;
+  readonly hasCursorSeq: boolean;
   readonly cursorEpoch: SessionViewState['cursor']['epoch'] | undefined;
   readonly resetVersion: number | undefined;
   readonly usageRevision: number | undefined;
@@ -149,6 +149,7 @@ function usePanelSourceRevisions(
         const id = currentIds[i]!;
         const state = controller?.getAgentState(id);
         const cursorSeq = state?.cursor.seq;
+        const hasCursorSeq = cursorSeq !== undefined;
         const cursorEpoch = state?.cursor.epoch ?? mainEpoch;
         const resetVersion = state?.transcriptResetVersion ?? mainReset;
         const usageRevision = panelUsageRevision(klient, sessionId, id);
@@ -157,7 +158,7 @@ function usePanelSourceRevisions(
         const cached = cache.get(id);
         if (
           cached !== undefined &&
-          cached.cursorSeq === cursorSeq &&
+          cached.hasCursorSeq === hasCursorSeq &&
           cached.cursorEpoch === cursorEpoch &&
           cached.resetVersion === resetVersion &&
           cached.usageRevision === usageRevision &&
@@ -175,7 +176,7 @@ function usePanelSourceRevisions(
           usage,
           rosterUsage,
         });
-        cache.set(id, { cursorSeq, cursorEpoch, resetVersion, usageRevision, usage, rosterUsage, value });
+        cache.set(id, { hasCursorSeq, cursorEpoch, resetVersion, usageRevision, usage, rosterUsage, value });
         parts[i] = value;
       }
       if (cache.size > currentIds.length + 64) {

@@ -98,7 +98,7 @@ describe('google model-turn continuation', () => {
       expect(signaturesOf(generateContentStream.mock.calls[1]?.[0])).toEqual([]);
       expect(signaturesOf(generateContentStream.mock.calls[2]?.[0])).toContain(SIGNATURE);
       expect(contentsOf(generateContentStream.mock.calls[2]?.[0]).at(-1)?.['role']).toBe('user');
-      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }]);
     } finally {
       await local.dispose();
     }
@@ -121,7 +121,7 @@ describe('google model-turn continuation', () => {
       expect(generateContentStream).toHaveBeenCalledTimes(2);
       expect(retries).toEqual([]);
       expect(promptCount(local, 'Continue.')).toBe(0);
-      if (kind === 'thinking') expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      if (kind === 'thinking') expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }]);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -163,7 +163,7 @@ describe('google model-turn continuation', () => {
         } },
       });
       expect(generateContentStream).toHaveBeenCalledTimes(2);
-      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: 'sig-second' }]);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: 'sig-second', reasoningOrigin: expect.any(String) }]);
     } finally {
       await local.dispose();
     }
@@ -208,7 +208,7 @@ describe('google model-turn continuation', () => {
       });
       expect(generateContentStream).toHaveBeenCalledTimes(1);
       expect(retries).toEqual([]);
-      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }]);
       expect(promptCount(local, PROMPT)).toBe(1);
     } finally {
       await local.dispose();
@@ -297,7 +297,7 @@ describe('google model-turn continuation', () => {
       expect(terminal.state).toBe('failed');
       expect(generateContentStream).toHaveBeenCalledTimes(2);
       expect(promptCount(local, 'Continue.')).toBe(0);
-      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }]);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -379,7 +379,7 @@ describe('google model-turn continuation', () => {
       expect(deltaValues(local, 'assistant.delta')).toEqual(['Before tool', 'Work saved.']);
       expect(discardEvents(local)).toEqual([expect.objectContaining({ partIds: [], toolCallIds: [expect.any(String)] })]);
       expect(wireLoopEvents(local, 'tool.call')).toHaveLength(1);
-      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThink(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }]);
       expect(storedTextParts(local)).toEqual(['Before tool', 'Work saved.']);
       expect(signaturesOf(generateContentStream.mock.calls[2]?.[0])).toEqual([SIGNATURE, 'sig-call']);
       await local.expectResumeMatches();
@@ -402,7 +402,7 @@ describe('google model-turn continuation', () => {
       expect(terminal).toMatchObject({ state: 'cancelled' });
       expect(generateContentStream).toHaveBeenCalledTimes(1);
       expect(storedContent(local)).toEqual([
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Keep this' },
       ]);
       expect(discardEvents(local)).toEqual([]);
@@ -467,7 +467,7 @@ describe('google model-turn continuation', () => {
       expect(signaturesOf(bodies[4])).toEqual([SIGNATURE, 'sig-call']);
       expect(toolRuns).toBe(1);
       expect(storedContent(fixture.local)).toEqual([
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Before' },
         { type: 'text', text: ' after' },
         { type: 'text', text: 'Work saved.' },
@@ -558,7 +558,7 @@ describe('google model-turn continuation', () => {
       expect(bodies[2]?.['continuationToken']).toBeUndefined();
       expect(bodies[2]?.['contents']).toEqual(bodies[0]?.['contents']);
       expect(storedContent(fixture.local)).toEqual([
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Before after.' },
       ]);
       expect(deltaValues(fixture.local, 'thinking.delta')).toEqual([THINKING]);
@@ -608,7 +608,7 @@ describe('google model-turn continuation', () => {
       expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
       expect(generateContentStream).toHaveBeenCalledTimes(3);
       expect(storedContent(local)).toEqual([
-        { type: 'think', think: 'Plan final', encrypted: 'sig-final' },
+        { type: 'think', think: 'Plan final', encrypted: 'sig-final', reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Answer' },
       ]);
       expect(deltaValues(local, 'thinking.delta')).toEqual(['Plan', 'Plan extended', 'Plan final']);
@@ -635,8 +635,8 @@ describe('google model-turn continuation', () => {
       const terminal = await (await prompt(local)).completion;
       expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
       expect(storedContent(local)).toEqual([
-        { type: 'think', think: 'Same thought', encrypted: 'sig-new' },
-        { type: 'think', think: '', encrypted: 'sig-tail' },
+        { type: 'think', think: 'Same thought', encrypted: 'sig-new', reasoningOrigin: expect.any(String) },
+        { type: 'think', think: '', encrypted: 'sig-tail', reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Body' },
       ]);
       expect(deltaValues(local, 'thinking.delta')).toEqual(['Same thought']);
@@ -700,7 +700,7 @@ describe('google model-turn continuation', () => {
       expect(toolRuns).toBe(1);
       expect(retries).toEqual([]);
       expect(storedContent(fixture.local)).toEqual([
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Before' },
         { type: 'text', text: 'Work saved.' },
       ]);
@@ -743,7 +743,7 @@ describe('google model-turn continuation', () => {
       const bodies = fixture.bodies.map(body => JSON.parse(body) as Record<string, unknown>);
       expect(bodies[1]?.['continuationToken']).toBeUndefined();
       expect(storedContent(fixture.local)).toEqual([
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Before after.' },
       ]);
       expect(deltaValues(fixture.local, 'assistant.delta')).toEqual(['Before', ' after', 'Before', ' after', '.']);
@@ -802,7 +802,7 @@ describe('google model-turn continuation', () => {
       expect(terminal).toMatchObject({ state: 'cancelled' });
       expect(fixture.bodies).toHaveLength(2);
       expect(storedContent(fixture.local)).toEqual([
-        { type: 'think', think: THINKING, encrypted: SIGNATURE },
+        { type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) },
         { type: 'text', text: 'Before after' },
       ]);
       await fixture.local.expectResumeMatches();

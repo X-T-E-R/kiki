@@ -177,7 +177,7 @@ export class SessionViewTarget implements BroadcastTarget {
         const title = event.patch?.title ?? event.title;
         if (typeof title === 'string') return { type: 'sessionCursorAdvanced', cursor, title, generation: this.generation };
       }
-      if ((event.type === 'agent.created' || event.type === 'agent.disposed') && typeof event.agentId === 'string' && event.agentId !== '') {
+      if ((event.type === 'agent.created' || event.type === 'agent.disposed' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed') && typeof event.agentId === 'string' && event.agentId !== '') {
         return { type: 'sessionCursorAdvanced', cursor, generation: this.generation, rosterAgentId: event.agentId };
       }
       if ((event.type === 'subagent.spawned' || event.type === 'subagent.started' || event.type === 'subagent.suspended' ||

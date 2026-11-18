@@ -568,4 +568,28 @@ describe('model switch engine', () => {
     expect(await mailbox.listPendingAgents('test-session')).toEqual([]);
     expect(await mailbox.nextQueued('test-session', 'main')).toBeUndefined();
   });
+
+  it('retains unmarked opaque reasoning before cross-target switch, omits it after direct switch while preserving readable reasoning and tool signatures, and leaves canonical memory intact', async () => {
+    const ctx = await createHost();
+    appendOldContext(ctx);
+    const canonicalBefore = structuredClone(ctx.get(IAgentContextMemoryService).get());
+    ctx.mockNextResponse({ type: 'text', text: 'Reply on old model' });
+    await ctx.get(IAgentLLMRequesterService).request();
+    expect(ctx.llmCalls[0]?.history[1]?.content).toEqual([
+      { type: 'think', think: 'OLD_REASONING', encrypted: 'OLD_SIGNATURE' },
+      { type: 'text', text: 'OLD_ASSISTANT_BODY' },
+    ]);
+
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'direct-opaque-1', model: NEW, mode: 'direct' }))
+      .toMatchObject({ state: 'completed', fromModel: OLD, toModel: NEW });
+
+    ctx.mockNextResponse({ type: 'text', text: 'Reply on new model' });
+    await ctx.get(IAgentLLMRequesterService).request();
+    expect(ctx.llmCalls[1]?.history[1]?.content).toEqual([
+      { type: 'think', think: 'OLD_REASONING', reasoningKey: undefined, hidden: undefined },
+      { type: 'text', text: 'OLD_ASSISTANT_BODY' },
+    ]);
+    expect(ctx.llmCalls[1]?.history[1]?.toolCalls[0]?.extras).toEqual({ signature: 'OLD_TOOL_SIGNATURE' });
+    expect(ctx.get(IAgentContextMemoryService).get()).toEqual(canonicalBefore);
+  });
 });

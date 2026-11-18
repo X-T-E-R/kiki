@@ -487,7 +487,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 }
 ```
 
-`format` 只用于非密钥字符串。`kiki-model` 保存已配置的模型 ID，`kiki-connection` 保存连接 ID。`requiredUnless` 可在必填字段上指向同一 schema 中另一个非密钥字符串字段；该字段非空时，原字段可以留空。这个声明不改变存储，也不会自动选择连接。只有插件自身的 adapter 支持时才保留自有 API 设置；媒体生成继续走原有媒体 adapter。
+每个属性声明 `type`（`string`、`boolean`、`number` 或 `integer`，可选 `minimum`、`maximum`、`enum` 和 `placeholder`；保存设置时 Kiki 会校验整数与数值上下界）。`format` 只用于非密钥字符串。`kiki-model` 保存已配置的模型 ID，`kiki-connection` 保存连接 ID。`requiredUnless` 可在必填字段上指向同一 schema 中另一个非密钥字符串字段；该字段非空时，原字段可以留空。这个声明不改变存储，也不会自动选择连接。若含其他有效贡献项的插件仅 `x-kiki.settings` schema 有误，除媒体或 ASR 声明依赖该设置外，Kiki 只禁用其设置表单并记录警告，不影响其余功能。只有插件自身的 adapter 支持时才保留自有 API 设置；媒体生成继续走原有媒体 adapter。
 
 在已注册的工具中，通过 `context.models.stream()` 流式调用已配置的模型：
 
@@ -830,7 +830,7 @@ plugin 可以在其 manifest 中声明 hook 规则，在 plugin 启用期间于�
 
 plugin hooks 与全局 hooks 机制相同——事件列表、stdin JSON 载荷、退出码如何影响主流程，详见 [Hooks](./hooks.md)。三点不同：
 
-- 只在 plugin **启用**期间运行。
+- 只在 plugin 在当前工作区与会话作用域内**启用**期间运行；若带 hook（或因 manifest 无法解析而不能排除含 hook）的已启用 plugin 加载失败，阻断类事件仅在该 plugin 生效的作用域内附带具体 plugin ID 与诊断信息按 fail-closed 拦截，不影响未启用它的工作区与会话。
 - 每条 hook 的工作目录是 plugin 根目录，因此 `command` 可以用 plugin 内的 `./` 路径。
 - 进程会额外拿到 `KIKI_HOME` 和 `KIKI_PLUGIN_ROOT` 两个环境变量。
 

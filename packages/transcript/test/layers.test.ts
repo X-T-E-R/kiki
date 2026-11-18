@@ -5541,3 +5541,44 @@ it('backfills ownerTurnId on subagent.spawned from the parent tool call or activ
     ownerTurnId: 7,
   });
 });
+
+it('projects tool.result side-channel notes onto ToolCallFrame without mutating output', () => {
+  const transcript = new AgentTranscript('main');
+  const adapter = new TranscriptWireAdapter('main', {
+    turn: (turnId) => transcript.getTurn(turnId),
+    tool: (toolCallId) => transcript.getToolCall(toolCallId),
+  });
+  const reducer = new TranscriptFactReducer(transcript);
+  const feed = (record: TranscriptWireRecord) => reducer.apply(adapter.add(record));
+  feed({ type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, input: [{ type: 'text', text: 'edit file' }], time: 100 });
+  feed({ type: 'context.append_loop_event', time: 110, event: { type: 'step.begin', turnId: 1, step: 1, uuid: 's1' } });
+  feed({
+    type: 'context.append_loop_event',
+    time: 120,
+    event: { type: 'tool.call', turnId: 1, step: 1, stepUuid: 's1', toolCallId: 'call_stale_1', name: 'Edit', args: { path: 'stale.txt' } },
+  });
+  feed({
+    type: 'context.append_loop_event',
+    time: 130,
+    event: {
+      type: 'tool.result',
+      turnId: 1,
+      step: 1,
+      stepUuid: 's1',
+      toolCallId: 'call_stale_1',
+      result: {
+        output: 'File successfully updated: stale.txt',
+        isError: false,
+        note: 'Note: stale.txt changed on disk since you last read it; the edit was applied because the text it replaced still matched exactly.',
+      },
+    },
+  });
+  feed({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 140 });
+  const lookup = transcript.getToolCall('call_stale_1');
+  expect(lookup?.frame).toMatchObject({
+    toolCallId: 'call_stale_1',
+    state: 'done',
+    output: 'File successfully updated: stale.txt',
+    note: 'Note: stale.txt changed on disk since you last read it; the edit was applied because the text it replaced still matched exactly.',
+  });
+});

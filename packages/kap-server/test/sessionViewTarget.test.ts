@@ -53,6 +53,37 @@ describe('SessionViewTarget', () => {
     expect(signals.at(-1)).toMatchObject({ currentSessionCursor: { seq: 12, epoch: 'session-epoch' } });
   });
 
+  it('emits rosterAgentId cursor hints for agent.branch_sealed and agent.tool_lock_changed', () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    target.begin(1, false);
+    target.finish({ seq: 10, epoch: 'session-epoch' }, true);
+    target.send({
+      ...durable(11),
+      type: 'agent.tool_lock_changed',
+      payload: { type: 'agent.tool_lock_changed', agentId: 'branch-1', locked: true },
+    });
+    target.send({
+      ...durable(12),
+      type: 'agent.branch_sealed',
+      payload: { type: 'agent.branch_sealed', agentId: 'branch-1', sealed: true, foldId: 'fold-1' },
+    });
+    expect(signals.slice(1)).toEqual([
+      {
+        type: 'sessionCursorAdvanced',
+        cursor: { seq: 11, epoch: 'session-epoch' },
+        generation: 1,
+        rosterAgentId: 'branch-1',
+      },
+      {
+        type: 'sessionCursorAdvanced',
+        cursor: { seq: 12, epoch: 'session-epoch' },
+        generation: 1,
+        rosterAgentId: 'branch-1',
+      },
+    ]);
+  });
+
   it('requires recovery when a bootstrap shell belongs to another durable epoch', async () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));

@@ -14,9 +14,12 @@ import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
 import { createDeferredCleanup, type DeferredCleanup } from '../lib/sessionOperationLease';
 import { AdmissionError } from '../services/connections/admission';
+import { peerAudience } from '../services/connections/audience';
 import { isLoopbackPreviewClient } from '../lib/previewLocalClient';
+import { authenticatedAuthorization } from '../middleware/auth';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import type { TranscriptService } from '../services/transcript/transcriptService';
+import { webPrincipal } from '../services/webAccess';
 import { openSessionMedia } from './sessionMedia';
 
 const TTL_MS = 30 * 60 * 1000;
@@ -231,7 +234,12 @@ function applyRange(reply: FastifyReply, raw: string | undefined, size: number):
   return range === null ? null : { start: range.start, end: range.end };
 }
 
-export function registerHostMediaPreviewRoutes(app: FastifyInstance, core: Scope, transcriptService?: TranscriptService): void {
+export function registerHostMediaPreviewRoutes(
+  app: FastifyInstance,
+  core: Scope,
+  transcriptService?: TranscriptService,
+  allowExternalHostPaths = true,
+): void {
   const grants = new Map<string, MediaGrant>();
   const hostFs = core.accessor.get(IHostFileSystem);
   const sweep = (): void => {
@@ -261,6 +269,14 @@ export function registerHostMediaPreviewRoutes(app: FastifyInstance, core: Scope
   app.post('/api/fs:media-preview', async (req, reply) => {
     try {
       requireLocalClient(req);
+      if (
+        !allowExternalHostPaths ||
+        authenticatedAuthorization(req) === undefined ||
+        peerAudience(req) !== undefined ||
+        webPrincipal(req) !== undefined
+      ) {
+        throw new AdmissionError(403, 'media_preview_forbidden');
+      }
       const body = openSchema.parse(req.body);
       if (!isAbsolute(body.path)) throw new AdmissionError(400, 'media_preview_path_must_be_absolute');
       const mime = MEDIA_MIME[mediaExtension(body.path)];
@@ -283,6 +299,9 @@ export function registerHostMediaPreviewRoutes(app: FastifyInstance, core: Scope
       let fileId = '';
       try {
         requireLocalClient(req);
+        if (peerAudience(req) !== undefined || webPrincipal(req) !== undefined) {
+          throw new AdmissionError(403, 'media_preview_forbidden');
+        }
         sessionId = (req.params as { sessionId: string }).sessionId;
         if (sessionId.length === 0) throw new AdmissionError(400, 'invalid_media_preview_request');
         const body = sessionOpenSchema.parse(req.body);
@@ -311,6 +330,7 @@ export function registerHostMediaPreviewRoutes(app: FastifyInstance, core: Scope
   });
   app.get('/media-preview/:previewId', async (req, reply) => {
     try {
+      requireLocalClient(req);
       sweep();
       const id = (req.params as { previewId: string }).previewId;
       if (!ID_RE.test(id)) throw new AdmissionError(404, 'media_preview_not_found');

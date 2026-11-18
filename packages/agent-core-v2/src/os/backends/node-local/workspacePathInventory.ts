@@ -103,7 +103,7 @@ function pathEntry(root: string, path: string): WorkspacePathEntry | undefined {
 export function workspacePathEntry(root: string, path: string): WorkspacePathEntry | undefined {
   const local = relative(root, path);
   if (local === '' || local === '..' || local.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(local) ||
-      local.split(/[\\/]/u).some(part => VCS.has(part))) return undefined;
+      local.split(/[\\/]/u).some(part => VCS.has(part.toLowerCase()))) return undefined;
   const entry = pathEntry(root, path);
   return entry === undefined || new PathRules(root).ignored(path, entry.kind === 'directory') ? undefined : entry;
 }
@@ -132,7 +132,7 @@ export function workspacePathInventory(root: string, limit: number): WorkspacePa
     if (dirent === undefined) { stack.pop(); continue; }
     const path = join(frame.path, dirent.name);
     if (dirent.isDirectory()) {
-      if (VCS.has(dirent.name) || rules.ignored(path, true)) continue;
+      if (VCS.has(dirent.name.toLowerCase()) || rules.ignored(path, true)) continue;
       const entry = pathEntry(root, path);
       if (entry === undefined) continue;
       entries.push(entry);
@@ -140,7 +140,7 @@ export function workspacePathInventory(root: string, limit: number): WorkspacePa
       stack.push({ path, index: 0 });
       continue;
     }
-    if (VCS.has(dirent.name) || rules.ignored(path, false)) continue;
+    if (VCS.has(dirent.name.toLowerCase()) || rules.ignored(path, false)) continue;
     const entry = pathEntry(root, path);
     if (entry === undefined) continue;
     entries.push(entry);

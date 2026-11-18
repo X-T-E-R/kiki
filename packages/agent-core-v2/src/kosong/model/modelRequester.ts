@@ -79,6 +79,7 @@ export interface ModelRequestParams {
   readonly resolveResponsesTransport?: () => ResponsesTransportSelection | undefined;
   readonly attribution?: RequestAttribution;
   readonly retry?: 'never';
+  readonly unmarkedOpaquePolicy?: import('./reasoningOrigin').UnmarkedOpaqueReasoningPolicy;
 }
 
 /** The `ModelRequester` contract: per-turn input, the streamed `ModelRequestEvent` output, and the

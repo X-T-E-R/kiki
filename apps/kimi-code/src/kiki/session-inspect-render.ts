@@ -162,8 +162,22 @@ function renderTimelineEntry(entry: SessionTimelineEntry): string[] {
     }
     case 'thinking':
       return renderTextBlock(`${at}THINKING`, entry.text);
-    case 'tool':
-      return [`${at}TOOL ${sanitizeInline(entry.name)} [${entry.state}]`, `  ${sanitizeInline(entry.summary)}`];
+    case 'tool': {
+      const lines = [`${at}TOOL ${sanitizeInline(entry.name)} [${entry.state}]`, `  ${sanitizeInline(entry.summary)}`];
+      if (entry.note !== null && entry.note.trim().length > 0) {
+        const cleaned = entry.note
+          .replaceAll(/<system>([\s\S]*?)<\/system>/gu, '$1')
+          .split(/\r?\n/u)
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+        for (const noteLine of cleaned) {
+          if (!entry.summary.includes(noteLine)) {
+            lines.push(`  ${sanitizeInline(noteLine)}`);
+          }
+        }
+      }
+      return lines;
+    }
     case 'notice':
       return renderTextBlock(
         `${at}${entry.level.toUpperCase()}${entry.source === null ? '' : ` ${entry.source}`}`,

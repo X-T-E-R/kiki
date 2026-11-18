@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { useQueries, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import type { PersonaSummary, RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { isPinnedSession, sessionRowState } from '@kiki/session-core/sessions';
 import { setSidebarPersonaSectionCollapsed, type SessionSeenMap } from '@kiki/session-core/settings';
@@ -19,6 +19,7 @@ import { setSidebarPersonaSectionCollapsed, type SessionSeenMap } from '@kiki/se
 import { useI18n } from '../../i18n';
 import { BOTS_QUERY_KEY } from '../../lib/botRooms';
 import { useLayoutPreferences } from '../../lib/layoutHooks';
+import { invalidatePersonaSessionLists } from '../../lib/personaFreshness';
 import { useConnection } from '../../state/connection';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DisclosureChevron, Icon } from '../icons';
@@ -30,12 +31,10 @@ import { personaNewConversationUrl } from './personaNavigation';
 import {
   compactPersonaThreadTitle,
   mergePersonaConversations,
+  sessionMatchesPrivateFilter,
   sessionPersonaId,
 } from './personaSessionUtils';
-import {
-  personaSwitcherQueryKey,
-  usePersonaSessionHeads,
-} from './usePersonaSwitcherConversations';
+import { usePersonaSessionHeads } from './usePersonaSwitcherConversations';
 import { usePersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
 import { invalidatePersonas } from './usePersonas';
 
@@ -178,8 +177,14 @@ export function SidebarPersonaSection({
   const { client } = useConnection();
   const layoutPrefs = useLayoutPreferences();
   const collapsed = layoutPrefs.sidebarPersonaSectionCollapsed === true;
+  const privateFilter = layoutPrefs.filters.private ?? 'hide';
 
-  const { directory } = usePersonaDirectory({ sessions, seen });
+  const filteredSessions = useMemo(
+    () => sessions.filter((item) => sessionMatchesPrivateFilter(item, privateFilter)),
+    [privateFilter, sessions],
+  );
+
+  const { directory } = usePersonaDirectory({ sessions: filteredSessions, seen });
   const [savedOrder, setSavedOrder] = useState<readonly string[]>(readSavedPersonaOrder);
   const [showAllPersonas, setShowAllPersonas] = useState(false);
   const [expandedOverrides, setExpandedOverrides] = useState<Readonly<Record<string, boolean>>>({});
@@ -205,29 +210,7 @@ export function SidebarPersonaSection({
   const headsQuery = usePersonaSessionHeads({
     enabled: !collapsed && visiblePersonas.length > 0,
     perPersonaLimit: 10,
-  });
-
-  const overflowPersonaIds = useMemo(() => {
-    if (collapsed) return [];
-    const heads = headsQuery.data;
-    return shownPersonas
-      .filter((persona) => {
-        if (showAllThreadsFor[persona.id] !== true) return false;
-        const head = heads?.[persona.id];
-        return head !== undefined && head.total > head.items.length;
-      })
-      .map((persona) => persona.id);
-  }, [collapsed, headsQuery.data, showAllThreadsFor, shownPersonas]);
-
-  const canQueryPersonaSessions = typeof client?.listSessions === 'function';
-  const overflowQueries = useQueries({
-    queries: overflowPersonaIds.map((personaId) => ({
-      queryKey: personaSwitcherQueryKey(personaId),
-      queryFn: () => client.listSessions({ persona: personaId, page_size: 100, include_private: true }),
-      enabled: !collapsed && canQueryPersonaSessions && personaId.trim() !== '',
-      staleTime: 30_000,
-      refetchOnWindowFocus: false,
-    })),
+    privateFilter,
   });
 
   const serverSessionsByPersona = useMemo(() => {
@@ -236,15 +219,16 @@ export function SidebarPersonaSection({
     if (heads !== undefined) {
       for (const persona of visiblePersonas) {
         const head = heads[persona.id];
-        if (head !== undefined) map.set(persona.id, head.items);
+        if (head !== undefined) {
+          map.set(
+            persona.id,
+            head.items.filter((item) => sessionMatchesPrivateFilter(item, privateFilter)),
+          );
+        }
       }
     }
-    overflowPersonaIds.forEach((personaId, index) => {
-      const fullItems = overflowQueries[index]?.data?.items;
-      if (fullItems !== undefined) map.set(personaId, fullItems);
-    });
     return map;
-  }, [headsQuery.data, overflowPersonaIds, overflowQueries, visiblePersonas]);
+  }, [headsQuery.data, privateFilter, visiblePersonas]);
 
   const personaMembershipSig = useMemo(() => {
     if (sessions.length === 0) return null;
@@ -252,7 +236,7 @@ export function SidebarPersonaSection({
     for (const item of sessions) {
       const pid = sessionPersonaId(item);
       if (pid !== undefined) {
-        tokens.push(`${pid}:${item.id}:${item.archived === true ? 1 : 0}`);
+        tokens.push(`${pid}:${item.id}:${item.archived === true ? 1 : 0}:${item.private === true ? 1 : 0}:${item.title ?? ''}`);
       }
     }
     tokens.sort();
@@ -268,8 +252,7 @@ export function SidebarPersonaSection({
     }
     if (prevMembershipSigRef.current !== personaMembershipSig) {
       prevMembershipSigRef.current = personaMembershipSig;
-      void queryClient.invalidateQueries({ queryKey: ['persona-session-heads'] });
-      void queryClient.invalidateQueries({ queryKey: ['persona-switcher-sessions'] });
+      invalidatePersonaSessionLists(queryClient);
     }
   }, [personaMembershipSig, queryClient]);
 
@@ -293,7 +276,8 @@ export function SidebarPersonaSection({
   }, [location.pathname, location.search, activeSessionId, directory, sessions, serverSessionsByPersona]);
 
   const roomNames = useMemo(() => new Map(rooms.map((room) => [room.id, room.title])), [rooms]);
-  const globalSessionIds = useMemo(() => new Set(sessions.map((item) => item.id)), [sessions]);
+  const globalSessionIds = useMemo(() => new Set(filteredSessions.map((item) => item.id)), [filteredSessions]);
+  const rawSessionsById = useMemo(() => new Map(sessions.map((item) => [item.id, item])), [sessions]);
 
   const personaThreadStats = useMemo(() => {
     const map = new Map<string, {
@@ -310,19 +294,33 @@ export function SidebarPersonaSection({
     for (const persona of visiblePersonas) {
       const headBucket = heads?.[persona.id];
       const serverItems = serverSessionsByPersona.get(persona.id);
-      const merged = mergePersonaConversations(serverItems, sessions, persona.id).filter((item) => !item.archived);
-      const directoryUnreadIds = new Set(persona.unreadSessionIds);
+      const merged = mergePersonaConversations(serverItems, filteredSessions, persona.id).filter(
+        (item) => !item.archived && sessionMatchesPrivateFilter(item, privateFilter),
+      );
+      const hasFilteredOutOwned = sessions.some(
+        (item) => !item.archived
+          && (sessionPersonaId(item) === persona.id || item.id === persona.homeSessionId)
+          && !sessionMatchesPrivateFilter(item, privateFilter),
+      ) || (headBucket?.items.some((item) => !sessionMatchesPrivateFilter(item, privateFilter)) ?? false);
+
+      const allowedUnreadSeed = persona.unreadSessionIds.filter((id) => {
+        const known = rawSessionsById.get(id) ?? headBucket?.items.find((item) => item.id === id);
+        return known === undefined ? privateFilter !== 'only' : sessionMatchesPrivateFilter(known, privateFilter);
+      });
+      const baseUnreadCount = hasFilteredOutOwned ? allowedUnreadSeed.length : persona.unreadCount;
+      const directoryUnreadIds = new Set(allowedUnreadSeed);
       const extraThreads: InlinePersonaThread[] = [];
-      const computedUnreadIds: string[] = [...persona.unreadSessionIds];
+      const computedUnreadIds: string[] = [...allowedUnreadSeed];
       const computedUnreadSet = new Set(computedUnreadIds);
-      let hasWaiting = persona.life === 'waiting';
-      let hasWorking = persona.life === 'working';
+      let hasWaiting = !hasFilteredOutOwned && persona.life === 'waiting';
+      let hasWorking = !hasFilteredOutOwned && persona.life === 'working';
 
       for (const item of merged) {
         const rawState = sessionRowState(item, seen);
         const state = globalSessionIds.has(item.id)
           && rawState === 'unread'
-          && (persona.unreadCount === 0 || !directoryUnreadIds.has(item.id))
+          && !hasFilteredOutOwned
+          && (baseUnreadCount === 0 || !directoryUnreadIds.has(item.id))
           ? 'read'
           : rawState;
         if (state === 'needs-me') hasWaiting = true;
@@ -360,36 +358,47 @@ export function SidebarPersonaSection({
         return new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime();
       });
 
-      const unreadCount = Math.max(persona.unreadCount, computedUnreadIds.length);
+      const unreadCount = Math.max(baseUnreadCount, computedUnreadIds.length);
       const life: PersonaDirectoryEntry['life'] = hasWaiting
         ? 'waiting'
         : hasWorking
           ? 'working'
-          : unreadCount > 0 || persona.life === 'done'
+          : unreadCount > 0 || (!hasFilteredOutOwned && persona.life === 'done')
             ? 'done'
             : 'idle';
-      const hasHomeSlot = persona.homeSessionId !== undefined ? 1 : 0;
+      const knownHome = persona.homeSessionId === undefined
+        ? undefined
+        : rawSessionsById.get(persona.homeSessionId) ?? headBucket?.items.find((item) => item.id === persona.homeSessionId);
+      const hasHomeSlot = persona.homeSessionId !== undefined
+        && (knownHome !== undefined ? sessionMatchesPrivateFilter(knownHome, privateFilter) : privateFilter !== 'only')
+        ? 1
+        : 0;
       let serverTotal = 0;
       if (headBucket !== undefined) {
-        const headIds = new Set(headBucket.items.map((item) => item.id));
-        const newestTailTime = headBucket.items.length > 0
-          ? new Date(headBucket.items.at(-1)?.updated_at ?? 0).getTime()
+        const visibleHeadItems = headBucket.items.filter((item) => sessionMatchesPrivateFilter(item, privateFilter));
+        const removedHeadPrivate = headBucket.items.length - visibleHeadItems.length;
+        const headIds = new Set(visibleHeadItems.map((item) => item.id));
+        const newestTailTime = visibleHeadItems.length > 0
+          ? new Date(visibleHeadItems.at(-1)?.updated_at ?? 0).getTime()
           : 0;
-        const addedLocal = sessions.filter((item) =>
+        const addedLocal = filteredSessions.filter((item) =>
           !item.archived
           && sessionPersonaId(item) === persona.id
           && !headIds.has(item.id)
-          && (headBucket.items.length < 10 || new Date(item.updated_at ?? 0).getTime() >= newestTailTime),
+          && (visibleHeadItems.length < 10 || new Date(item.updated_at ?? 0).getTime() >= newestTailTime),
         ).length;
-        const archivedFromHead = headBucket.items.filter(
-          (item) => sessions.find((local) => local.id === item.id)?.archived === true,
-        ).length;
-        const homeMissingFromIndex = persona.homeSessionId !== undefined
+        const excludedFromHead = visibleHeadItems.filter((item) => {
+          const local = rawSessionsById.get(item.id);
+          return local !== undefined && (local.archived === true || !sessionMatchesPrivateFilter(local, privateFilter));
+        }).length;
+        const homeMissingFromIndex = hasHomeSlot === 1
+          && persona.homeSessionId !== undefined
           && !headIds.has(persona.homeSessionId)
           && !merged.some((item) => item.id === persona.homeSessionId)
           ? 1
           : 0;
-        serverTotal = Math.max(0, headBucket.total + addedLocal - archivedFromHead) + homeMissingFromIndex;
+        const baseHeadTotal = Math.max(visibleHeadItems.length, headBucket.total - removedHeadPrivate);
+        serverTotal = Math.max(0, baseHeadTotal + addedLocal - excludedFromHead) + homeMissingFromIndex;
       }
       const totalConversations = Math.max(extraThreads.length + hasHomeSlot, serverTotal);
       const totalNonHomeConversations = Math.max(extraThreads.length, totalConversations - hasHomeSlot);
@@ -403,7 +412,7 @@ export function SidebarPersonaSection({
       });
     }
     return map;
-  }, [activeSessionId, globalSessionIds, headsQuery.data, roomNames, seen, serverSessionsByPersona, sessions, t, visiblePersonas]);
+  }, [activeSessionId, filteredSessions, globalSessionIds, headsQuery.data, privateFilter, rawSessionsById, roomNames, seen, serverSessionsByPersona, sessions, t, visiblePersonas]);
 
   const commitPersonaOrder = useCallback((nextIds: readonly string[]) => {
     setSavedOrder(nextIds);
@@ -862,8 +871,12 @@ export function SidebarPersonaSection({
                               data-persona-subthreads-more={persona.id}
                               onClick={(event) => {
                                 event.stopPropagation();
-                                setExpandedOverrides((prev) => ({ ...prev, [persona.id]: true }));
-                                setShowAllThreadsFor((prev) => ({ ...prev, [persona.id]: true }));
+                                if (!showAllThreads && extraThreads.length > inlineThreads.length) {
+                                  setExpandedOverrides((prev) => ({ ...prev, [persona.id]: true }));
+                                  setShowAllThreadsFor((prev) => ({ ...prev, [persona.id]: true }));
+                                  return;
+                                }
+                                void navigate(`/personas?persona=${encodeURIComponent(persona.id)}&view=conversations`);
                               }}
                               className="row-interactive flex h-6 w-full items-center pr-2 pl-[23px] text-left text-[11px] leading-4 text-ink-faint transition-colors hover:text-ink"
                             >

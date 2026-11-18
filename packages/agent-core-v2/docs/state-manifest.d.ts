@@ -1207,6 +1207,7 @@ export interface AgentStateSnapshot {
           reasoningKey?: string;
           reasoningDetails?: readonly Record<string, unknown>[];
           hidden?: boolean;
+          reasoningOrigin?: string;
         } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'image_url';
           imageUrl: {
@@ -1600,6 +1601,7 @@ export interface AgentStateSnapshot {
         reasoningKey?: string;
         reasoningDetails?: readonly Record<string, unknown>[];
         hidden?: boolean;
+        reasoningOrigin?: string;
       } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'image_url';
         imageUrl: {
@@ -1921,6 +1923,7 @@ export interface AgentStateSnapshot {
           reasoningKey?: string;
           reasoningDetails?: readonly Record<string, unknown>[];
           hidden?: boolean;
+          reasoningOrigin?: string;
         } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'image_url';
           imageUrl: {
@@ -2252,6 +2255,7 @@ export interface AgentStateSnapshot {
       reasoningKey?: string;
       reasoningDetails?: readonly Record<string, unknown>[];
       hidden?: boolean;
+      reasoningOrigin?: string;
     } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'image_url';
       imageUrl: {
@@ -2366,6 +2370,7 @@ export interface AgentStateSnapshot {
         reasoningKey?: string;
         reasoningDetails?: readonly Record<string, unknown>[];
         hidden?: boolean;
+        reasoningOrigin?: string;
       } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'image_url';
         imageUrl: {
@@ -2946,6 +2951,7 @@ export interface AgentStateSnapshot {
         reasoningKey?: string;
         reasoningDetails?: readonly Record<string, unknown>[];
         hidden?: boolean;
+        reasoningOrigin?: string;
       } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'image_url';
         imageUrl: {
@@ -3133,6 +3139,7 @@ export interface AgentStateSnapshot {
         readonly purpose: 'connectivity_probe';
       });
       readonly retry?: 'never';
+      readonly unmarkedOpaquePolicy?: 'retain' | 'omit';
     };
     readonly systemPrompt: string;
     readonly promptFields: /* ResolvedPromptFieldOverrides — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
@@ -4125,6 +4132,7 @@ export interface AgentStateSnapshot {
     reasoningKey?: string;
     reasoningDetails?: readonly Record<string, unknown>[];
     hidden?: boolean;
+    reasoningOrigin?: string;
   } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'image_url';
     imageUrl: {
@@ -8525,6 +8533,7 @@ export interface AgentStateSnapshot {
           reasoningKey?: string;
           reasoningDetails?: readonly Record<string, unknown>[];
           hidden?: boolean;
+          reasoningOrigin?: string;
         } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'image_url';
           imageUrl: {
@@ -8639,6 +8648,7 @@ export interface AgentStateSnapshot {
             reasoningKey?: string;
             reasoningDetails?: readonly Record<string, unknown>[];
             hidden?: boolean;
+            reasoningOrigin?: string;
           } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
             type: 'image_url';
             imageUrl: {

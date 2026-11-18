@@ -28,7 +28,15 @@ function legacyPersonaId(summary: SessionSummary): string | undefined {
 export function resolveSessionPersonaId(core: Scope, summary: SessionSummary): string | undefined {
   const main = getLiveSessionById(core.accessor, summary.id)
     ?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
-  const livePersonaId = validPersonaId(main?.accessor.get(IAgentProfileService).data().personaId);
-  if (livePersonaId !== undefined) return livePersonaId;
+  if (main !== undefined) {
+    const profile = main.accessor.get(IAgentProfileService).data();
+    const livePersonaId = validPersonaId(profile.personaId);
+    if (livePersonaId !== undefined) return livePersonaId;
+    const isBound = profile.boundProfile !== undefined
+      || profile.profileName !== undefined
+      || profile.execution !== undefined
+      || profile.driver === 'external';
+    if (isBound) return undefined;
+  }
   return validPersonaId(summary.personaId) ?? legacyPersonaId(summary);
 }

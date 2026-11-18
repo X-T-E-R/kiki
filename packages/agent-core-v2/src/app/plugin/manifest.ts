@@ -168,7 +168,23 @@ export async function parseManifest(pluginRoot: string, signal?: AbortSignal): P
     }
   }
 
-  const kiki = await parsePluginExtension(pluginRoot, raw['x-kiki'], diagnostics, signal, resolveInstalledPluginId(name));
+  const hasOtherManifestContributions = skills.length > 0
+    || agents.length > 0
+    || raw['mcpServers'] !== undefined
+    || raw['hooks'] !== undefined
+    || raw['hook_rules'] !== undefined
+    || raw['hookRules'] !== undefined
+    || raw['commands'] !== undefined
+    || raw['sessionStart'] !== undefined
+    || systemPrompt !== undefined;
+  const kiki = await parsePluginExtension(
+    pluginRoot,
+    raw['x-kiki'],
+    diagnostics,
+    signal,
+    resolveInstalledPluginId(name),
+    hasOtherManifestContributions,
+  );
   checkAborted(signal);
   recordUnsupportedRuntimeFields(raw, diagnostics);
 

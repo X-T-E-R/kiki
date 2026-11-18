@@ -109,6 +109,7 @@ import {
   validateDaemonCommandArgs,
   type DaemonSkillCommand,
 } from './commands';
+import { DaemonContentContinuationManager } from './content-continuation';
 import { discoverDaemon, resolveDaemonHome, type DaemonConnection } from './discovery';
 import { DaemonProgramStatus } from './program-status';
 import { DaemonTranscriptRenderer, TranscriptNoteComponent } from './transcript-renderer';
@@ -248,6 +249,9 @@ export class DaemonTUI {
   /** Startup's session open/create; input submitted meanwhile waits for it. */
   private sessionReady: Promise<void> | undefined;
   private readonly transcriptBody = new Container();
+  private readonly contentContinuations = new DaemonContentContinuationManager(() => {
+    this.refreshFocusedTranscript();
+  });
 
   constructor(private connection: DaemonConnection, startup: DaemonTUIStartupInput, terminal?: Terminal) {
     this.startup = startup;
@@ -376,6 +380,9 @@ export class DaemonTUI {
     this.focusedControllerDispose = undefined;
     await cleanup(() => this.mainControllerDispose?.());
     this.mainControllerDispose = undefined;
+    await cleanup(() => {
+      this.contentContinuations.dispose();
+    });
     await cleanup(() => this.controller?.close());
     this.controller = undefined;
     await cleanup(() => {
@@ -661,7 +668,9 @@ export class DaemonTUI {
   private toggleToolOutput(): void {
     const expanded = !this.state.toolOutputExpanded;
     this.state.toolOutputExpanded = expanded;
+    this.contentContinuations.setExpanded(expanded);
     this.renderer.setExpanded(expanded);
+    this.refreshFocusedTranscript();
   }
 
   /** Returns false when the todo list fits and there is nothing to toggle. */
@@ -1153,10 +1162,14 @@ export class DaemonTUI {
       subscribe: (input, onSignal) => sessionView.subscribe(input, watchReconnect(onSignal)),
     }, sessionId);
     this.controller = controller;
+    this.contentContinuations.setTarget(controller, 'main');
+    this.contentContinuations.setExpanded(this.state.toolOutputExpanded);
     const unsubscribe = controller.subscribe(() => this.renderSession(controller.getState()));
+    const unsubscribeContent = controller.subscribeContent(() => this.refreshFocusedTranscript());
     const unsubscribeInterrupted = controller.subscribeInterruptedPrompt((content) => this.restorePromptDraft(content));
     this.mainControllerDispose = () => {
       unsubscribe();
+      unsubscribeContent();
       unsubscribeInterrupted();
     };
     await controller.open();
@@ -3381,6 +3394,7 @@ export class DaemonTUI {
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
     this.focusedAgentId = agentId;
+    this.contentContinuations.setTarget(controller, agentId);
     controller.setFocusedAgent(agentId);
     if (agentId === 'main') {
       this.renderTranscript(controller.getState());
@@ -3391,12 +3405,25 @@ export class DaemonTUI {
     render();
   }
 
+  private refreshFocusedTranscript(): void {
+    const controller = this.controller;
+    if (controller === undefined) return;
+    const view =
+      this.focusedAgentId === 'main'
+        ? controller.getState()
+        : controller.getAgentState(this.focusedAgentId);
+    this.renderTranscript(view);
+  }
+
   private renderTranscript(view: SessionViewState): void {
+    this.contentContinuations.syncBlocks(view.blocks, view.detailLoads);
     this.renderer.sync(view.blocks, {
       liveTurnId: view.busy ? latestTurnId(view.blocks) : undefined,
       forest: this.controller?.getForest(),
       tasks: view.tasks,
       ingress: this.focusedAgentId === 'main' ? view.durableIngress : undefined,
+      toolMetaRevision: this.contentContinuations.getRevision(),
+      resolveBlockMeta: (block) => this.contentContinuations.resolveBlockMeta(block, view.detailLoads),
     });
   }
 
@@ -3555,16 +3582,31 @@ export class DaemonTUI {
         void this.client.klient.session(controller.sessionId).approvals.list().then((requests) => {
           if (this.controller !== controller || this.activeInteractionId !== interaction.id) return;
           const request = requests.find((item) => item.id === interaction.request.approval_id);
-          if (request !== undefined) this.showApproval(interaction, adaptApprovalRequest({
-            ...request,
-            toolCallId: request.toolCallId ?? interaction.request.tool_call_id ?? interaction.request.approval_id,
-          }));
+          if (request !== undefined) {
+            const toolCallId =
+              request.toolCallId ?? interaction.request.tool_call_id ?? interaction.request.approval_id;
+            this.showApproval(
+              interaction,
+              adaptApprovalRequest(
+                { ...request, toolCallId },
+                this.findToolArgsForApproval(interaction, toolCallId),
+              ),
+            );
+          }
         }).catch((error: unknown) => {
           if (this.controller !== controller || this.activeInteractionId !== interaction.id) return;
           this.activeInteractionId = undefined;
           this.showStatus(`Could not load approval: ${formatErrorMessage(error)} Run /reload to retry.`, 'error');
         });
-      } else this.showApproval(interaction, approvalPanelData(interaction));
+      } else {
+        this.showApproval(
+          interaction,
+          approvalPanelData(
+            interaction,
+            this.findToolArgsForApproval(interaction, interaction.request.tool_call_id),
+          ),
+        );
+      }
     } else this.showQuestion(interaction);
   }
 
@@ -3578,8 +3620,9 @@ export class DaemonTUI {
           this.showStatus(formatErrorMessage(error), 'error');
         }),
       () => this.toggleToolOutput(),
-      (preview) => this.mountEditorReplacement(new ApprovalPreviewViewer({
+      (preview, allBlocks) => this.mountEditorReplacement(new ApprovalPreviewViewer({
         block: preview,
+        blocks: allBlocks,
         maxRows: () => {
           const { terminal, footer, dockContainer, activityContainer, todoPanelContainer } = this.state;
           const width = Math.max(1, terminal.columns - 2 * CHROME_GUTTER);
@@ -3591,6 +3634,30 @@ export class DaemonTUI {
       this.interactionArming(),
     );
     this.mountEditorReplacement(panel);
+  }
+
+  private findToolArgsForApproval(
+    interaction: ApprovalBlock,
+    toolCallId: string | undefined,
+  ): unknown {
+    if (toolCallId === undefined || this.controller === undefined) return undefined;
+    const candidateAgents = [
+      interaction.originAgentId,
+      this.focusedAgentId,
+      'main',
+    ].filter((id): id is string => id !== undefined && id.length > 0);
+    for (const agentId of new Set(candidateAgents)) {
+      const blocks =
+        agentId === 'main'
+          ? this.controller.getState().blocks
+          : this.controller.getAgentState(agentId).blocks;
+      for (const item of blocks) {
+        if (item.kind === 'tool' && item.toolCallId === toolCallId) {
+          return item.args;
+        }
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -3828,15 +3895,18 @@ function isSettledInteractionError(error: unknown): boolean {
   );
 }
 
-function approvalPanelData(block: ApprovalBlock): ApprovalPanelData {
+function approvalPanelData(block: ApprovalBlock, toolArgs?: unknown): ApprovalPanelData {
   const request = block.request;
-  return adaptApprovalRequest({
-    turnId: request.turn_id,
-    toolCallId: request.tool_call_id,
-    toolName: request.tool_name,
-    action: request.action,
-    display: request.tool_input_display ?? { kind: 'generic', summary: request.action },
-  } as Parameters<typeof adaptApprovalRequest>[0]);
+  return adaptApprovalRequest(
+    {
+      turnId: request.turn_id,
+      toolCallId: request.tool_call_id,
+      toolName: request.tool_name,
+      action: request.action,
+      display: request.tool_input_display ?? { kind: 'generic', summary: request.action },
+    } as Parameters<typeof adaptApprovalRequest>[0],
+    toolArgs,
+  );
 }
 
 

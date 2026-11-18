@@ -446,10 +446,6 @@ export class SessionBranchService extends Service implements ISessionBranchServi
         }
 
         if (done) {
-          await branchHandle.accessor.get(IEventDispatcher).dispatch(new AgentBranchSealed({
-            sealed: true,
-            foldId,
-          }));
           await this.metadata.updateAgent(branchId, (current) => ({
             ...current,
             completedAt: current?.completedAt ?? Date.now(),
@@ -457,6 +453,10 @@ export class SessionBranchService extends Service implements ISessionBranchServi
               ...current.labels,
               branchSealed: 'true',
             },
+          }));
+          await branchHandle.accessor.get(IEventDispatcher).dispatch(new AgentBranchSealed({
+            sealed: true,
+            foldId,
           }));
           sealed = true;
           handedBackCount = await this.handBackQueuedPrompts(branchHandle, targetHandle);
@@ -523,7 +523,6 @@ export class SessionBranchService extends Service implements ISessionBranchServi
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'branchId must identify a branch agent.');
     }
     const handle = await this.ensureLiveAgent(branchId);
-    await handle.accessor.get(IEventDispatcher).dispatch(new AgentToolLockChanged({ locked: input.locked }));
     await this.metadata.updateAgent(branchId, (current: AgentMeta) => ({
       ...current,
       labels: {
@@ -531,6 +530,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
         toolsLocked: input.locked ? 'true' : 'false',
       },
     }));
+    await handle.accessor.get(IEventDispatcher).dispatch(new AgentToolLockChanged({ locked: input.locked }));
     return { branchId, toolsLocked: input.locked };
   }
 }

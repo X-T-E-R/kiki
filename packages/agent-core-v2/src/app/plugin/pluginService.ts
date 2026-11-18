@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, relative } from 'node:path';
 
@@ -12,7 +13,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { IConfigService } from '#/app/config/config';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
-import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
+import { PLUGIN_SETTINGS_SECTION, readSanitizedPluginSettings } from './settingsConfigSection';
 import { LifecycleScope } from '#/app/scopes';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import type { SkillRoot } from '#/app/skillCatalog/types';
@@ -26,6 +27,7 @@ import { PluginManager } from './manager';
 import { resolveInstallSource } from './source';
 import {
   type PluginChangeEvent,
+  type PluginHookSnapshot,
   type GetPluginInfoInput,
   type InstallPluginInput,
   IPluginService,
@@ -103,6 +105,7 @@ export class PluginService extends Service implements IPluginService {
   private mutationQueue: Promise<void> = Promise.resolve();
   private readonly previewController = new AbortController();
   private readonly previews = new Set<Promise<unknown>>();
+  private readonly ignorePluginErrorStateInUsage = new AsyncLocalStorage<boolean>();
   private changing: { readonly affected?: readonly string[]; draining: boolean } | undefined;
   private readonly projectionTotals = emptyRequestProjectionMetrics();
   private readonly projectionByPlugin = new Map<string, MutableRequestProjectionMetrics>();
@@ -132,10 +135,17 @@ export class PluginService extends Service implements IPluginService {
       inheritedHomeDir: inheritance.plugins ? inheritance.baseHomeDir : undefined,
       discoverSkills: (roots) => discovery.discover(roots),
     });
-    if (usage !== undefined) this._register(usage.registerPluginStateReader((id) => {
-      const plugin = this.manager.info(id);
-      return plugin === undefined ? { allowed: false, globalEnabled: false } : { allowed: plugin.enabled && plugin.state === 'ok', globalEnabled: plugin.globalEnabled };
-    }));
+    if (usage !== undefined && typeof usage.registerPluginStateReader === 'function') {
+      this._register(usage.registerPluginStateReader((id) => {
+        const plugin = this.manager.info(id);
+        if (plugin === undefined) return { allowed: false, globalEnabled: false };
+        const allowErrorState = this.ignorePluginErrorStateInUsage.getStore() === true;
+        return {
+          allowed: plugin.enabled && (allowErrorState || plugin.state === 'ok'),
+          globalEnabled: plugin.globalEnabled,
+        };
+      }));
+    }
     this._register({ dispose: async () => {
       this.previewController.abort();
       await Promise.allSettled(this.previews);
@@ -235,7 +245,7 @@ export class PluginService extends Service implements IPluginService {
         throw new Error2(PluginErrors.codes.PLUGIN_NOT_FOUND, `Plugin ${input.id} is not installed`);
       }
       await this.configService.ready;
-      const all = PluginSettingsSectionSchema.parse(this.configService.get(PLUGIN_SETTINGS_SECTION));
+      const all = readSanitizedPluginSettings(this.configService.get(PLUGIN_SETTINGS_SECTION));
       if (input.id in all) {
         const { [input.id]: _removed, ...rest } = all;
         await this.configService.replace(PLUGIN_SETTINGS_SECTION, rest);
@@ -434,8 +444,30 @@ export class PluginService extends Service implements IPluginService {
     });
   }
 
-  enabledHooks(workspaceId?: string, sessionId?: string): Promise<readonly HookDef[]> {
-    return this.runSecurityConsumptionRead(async () => this.filterUsage(this.manager.enabledHooks(), workspaceId, (entry) => entry.pluginId, sessionId));
+  inspectHooks(workspaceId?: string, sessionId?: string): Promise<PluginHookSnapshot> {
+    return this.runSecurityConsumptionRead(async () => {
+      const [hooks, failures] = await Promise.all([
+        this.filterUsage(this.manager.healthyEnabledHooks(), workspaceId, (entry) => entry.pluginId, sessionId),
+        this.ignorePluginErrorStateInUsage.run(
+          true,
+          () => this.filterUsage(this.manager.brokenHookPlugins(), workspaceId, (entry) => entry.pluginId, sessionId),
+        ),
+      ]);
+      return { hooks, failures };
+    });
+  }
+
+  async enabledHooks(workspaceId?: string, sessionId?: string): Promise<readonly HookDef[]> {
+    const snapshot = await this.inspectHooks(workspaceId, sessionId);
+    const failure = snapshot.failures[0];
+    if (failure !== undefined) {
+      throw new Error2(
+        PluginErrors.codes.PLUGIN_LOAD_FAILED,
+        `Failed to load hooks from plugin "${failure.pluginId}": ${failure.message}`,
+        { details: { id: failure.pluginId } },
+      );
+    }
+    return snapshot.hooks;
   }
 
   enabledHookRules(workspaceId?: string, sessionId?: string): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]> {
@@ -456,9 +488,7 @@ export class PluginService extends Service implements IPluginService {
     if (!this.snapshotLoaded) return { strategy: 'passthrough' };
     const installed = this.manager.enabledRequestProjections();
     if (installed.length === 0) return { strategy: 'passthrough' };
-    const rawSettings = this.configService.get(PLUGIN_SETTINGS_SECTION);
-    const parsedSettings = PluginSettingsSectionSchema.safeParse(rawSettings);
-    const settingsByPlugin = parsedSettings.success ? parsedSettings.data : {};
+    const settingsByPlugin = readSanitizedPluginSettings(this.configService.get(PLUGIN_SETTINGS_SECTION));
     const candidates = new Set(
       [input.modelAlias, input.modelId, input.modelName]
         .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -501,7 +531,7 @@ export class PluginService extends Service implements IPluginService {
     sessionId: string | undefined,
   ): Promise<boolean> {
     if (workspaceId === '*') return true;
-    if (this.usage === undefined) {
+    if (this.usage === undefined || !this.usage.enabled()) {
       return this.manager.info(pluginId)?.globalEnabled === true;
     }
     return this.usage.allows(workspaceId, pluginId, sessionId);
@@ -535,10 +565,16 @@ export class PluginService extends Service implements IPluginService {
 
   private async filterUsage<T>(entries: readonly T[], workspaceId: string | undefined, owner: (entry: T) => string | undefined, sessionId?: string): Promise<readonly T[]> {
     if (workspaceId === '*') return entries;
+    const allowErrorState = this.ignorePluginErrorStateInUsage.getStore() === true;
     const allowed = await Promise.all(entries.map(async (entry) => {
       const id = owner(entry);
       if (id === undefined) return true;
-      return this.usage === undefined ? this.manager.info(id)?.globalEnabled === true : this.usage.allows(workspaceId, id, sessionId);
+      if (this.usage === undefined || !this.usage.enabled()) {
+        const info = this.manager.info(id);
+        if (info === undefined || !info.enabled) return false;
+        return (allowErrorState || info.state === 'ok') && info.globalEnabled;
+      }
+      return this.usage.allows(workspaceId, id, sessionId);
     }));
     return entries.filter((_, index) => allowed[index]);
   }

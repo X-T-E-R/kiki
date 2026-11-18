@@ -74,7 +74,7 @@ const LONG_SCRIPT = [
   'bash -lc \'set -euo pipefail',
   '$ErrorActionPreference="Stop"',
   '$ProgressPreference="SilentlyContinue"',
-  '$base="E:/Programs/AI/EasyAgent/systems/kiki"',
+  '$base="C:/Projects/ExampleApp/systems/kiki"',
   'if(-not(Test-Path $base)){throw "workspace missing"}',
   '$extract=Join-Path $base ".tmp/extract"',
   'if(@(Get-ChildItem $extract -Force).Count -ne 0){throw "extract folder not empty; preserve contents"}',

@@ -71,6 +71,7 @@ import {
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
+import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
 import { useGuardedNavigate } from './dirtyGuard';
 import { runNewSessionHandoff } from '../lib/newSessionHandoff';
 import { readFirstSessionMessage, writeFirstSessionMessage, type FirstSessionMessage } from '../lib/newSessionCreation';
@@ -1141,6 +1142,7 @@ export function useNewSessionDraft({
         saveOutcome();
         void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+        invalidatePersonaSessionLists(queryClient);
         if (!intentScope.active || createdForRetry.current?.creationId !== creationId) return;
         setCreatedSessionId(session.id);
         if (intent.cancelled) {

@@ -19,7 +19,7 @@ import { parseManifest, type ParsedManifestResult } from './manifest';
 import { resolvePluginPrerequisites } from './prerequisites';
 import { currentPluginId, RENAMED_PLUGIN_IDS, resolveInstalledPluginId } from './renamedPlugins';
 import { resolveInstallSource } from './source';
-import { readInstalled, writeInstalled, type InstalledFile, type InstalledRecord } from './store';
+import { readInheritedInstalled, readInstalled, writeInstalled, type InstalledFile, type InstalledRecord } from './store';
 import type { PluginAgentRoot } from './types';
 import {
   normalizePluginId,
@@ -29,6 +29,7 @@ import {
   type PluginCapabilityState,
   type PluginCommandDef,
   type PluginGithubMetadata,
+  type PluginHookLoadFailure,
   type PluginInfo,
   type PluginMcpServerEntry,
   type PluginMcpServerInfo,
@@ -81,12 +82,19 @@ export class PluginManager {
     const file = await readInstalled(this.kimiHomeDir);
     const next = new Map<string, PluginRecord>();
     const renamed = file.plugins.some((entry) => currentPluginId(entry.id) !== entry.id);
+    let migrationFailed = false;
     for (const entry of preferredInstalledEntries(file.plugins)) {
-      const migrated = await this.migrateRenamedEntry(entry);
-      next.set(migrated.id, await this.materialize(migrated));
+      try {
+        const migrated = await this.migrateRenamedEntry(entry);
+        next.set(migrated.id, await this.materialize(migrated));
+      } catch (error) {
+        migrationFailed = true;
+        const id = currentPluginId(entry.id);
+        next.set(id, fallbackErrorRecord(entry, error, this.records.get(id)));
+      }
     }
     await this.mergeInheritedRecords(next);
-    if (renamed) await this.persist(next);
+    if (renamed && !migrationFailed) await this.persist(next);
     this.records = next;
   }
 
@@ -115,19 +123,14 @@ export class PluginManager {
 
   private async mergeInheritedRecords(records: Map<string, PluginRecord>): Promise<void> {
     if (this.inheritedHomeDir === undefined) return;
-    let inherited: InstalledFile | undefined;
-    try {
-      inherited = await readInstalled(this.inheritedHomeDir);
-    } catch {
-      inherited = undefined;
-    }
-    for (const entry of preferredInstalledEntries(inherited?.plugins ?? [])) {
+    const inherited = await readInheritedInstalled(this.inheritedHomeDir);
+    for (const entry of preferredInstalledEntries(inherited)) {
       const id = currentPluginId(entry.id);
       if (records.has(id)) continue;
       try {
         records.set(id, { ...(await this.materialize({ ...entry, id })), inherited: true });
-      } catch {
-        continue;
+      } catch (error) {
+        records.set(id, { ...fallbackErrorRecord({ ...entry, id }, error, this.records.get(id)), inherited: true });
       }
     }
   }
@@ -506,7 +509,10 @@ export class PluginManager {
         const migrated = await this.migrateRenamedEntry(entry);
         next.set(migrated.id, await this.materialize(migrated));
       } catch (error) {
-        errors.push({ id: currentPluginId(entry.id), message: (error as Error).message });
+        const id = currentPluginId(entry.id);
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({ id, message });
+        next.set(id, fallbackErrorRecord(entry, error, this.records.get(id)));
       }
     }
     await this.mergeInheritedRecords(next);
@@ -519,18 +525,10 @@ export class PluginManager {
     return { added, removed, errors };
   }
 
-  enabledHooks(): readonly HookDef[] {
+  healthyEnabledHooks(): readonly HookDef[] {
     const out: HookDef[] = [];
     for (const record of this.records.values()) {
-      if (!record.enabled || record.legacyHooksAbsent === true) continue;
-      if (record.state !== 'ok' || record.manifest === undefined) {
-        const message = record.diagnostics.find((diagnostic) => diagnostic.severity === 'error')?.message;
-        throw new Error2(
-          PluginErrors.codes.PLUGIN_LOAD_FAILED,
-          `Failed to load hooks from plugin "${record.id}": ${message ?? 'invalid plugin state'}`,
-          { details: { id: record.id } },
-        );
-      }
+      if (!record.enabled || record.state !== 'ok' || record.manifest === undefined) continue;
       for (const hook of record.manifest.hooks ?? []) {
         out.push({
           ...hook,
@@ -544,6 +542,34 @@ export class PluginManager {
       }
     }
     return out;
+  }
+
+  brokenHookPlugins(): readonly PluginHookLoadFailure[] {
+    const out: PluginHookLoadFailure[] = [];
+    for (const record of this.records.values()) {
+      if (!record.enabled || record.legacyHooksAbsent === true) continue;
+      if (record.state !== 'ok' || record.manifest === undefined) {
+        const message = record.diagnostics.find((diagnostic) => diagnostic.severity === 'error')?.message;
+        out.push({
+          pluginId: record.id,
+          defaultEnabled: record.defaultEnabled ?? false,
+          message: message ?? 'invalid plugin state',
+        });
+      }
+    }
+    return out;
+  }
+
+  enabledHooks(): readonly HookDef[] {
+    const failure = this.brokenHookPlugins()[0];
+    if (failure !== undefined) {
+      throw new Error2(
+        PluginErrors.codes.PLUGIN_LOAD_FAILED,
+        `Failed to load hooks from plugin "${failure.pluginId}": ${failure.message}`,
+        { details: { id: failure.pluginId } },
+      );
+    }
+    return this.healthyEnabledHooks();
   }
 
   enabledHookRules(): readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[] {
@@ -1016,6 +1042,33 @@ async function rollbackManagedPluginCopy(copy: ManagedPluginCopy): Promise<void>
   if (copy.previousRoot !== undefined) {
     await renameWithRetry(copy.previousRoot, copy.root);
   }
+}
+
+function fallbackErrorRecord(
+  entry: InstalledRecord,
+  error: unknown,
+  previous?: PluginRecord,
+): PluginRecord {
+  const id = currentPluginId(entry.id);
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    id,
+    root: entry.root,
+    source: entry.source ?? 'local-path',
+    enabled: entry.enabled,
+    defaultEnabled: entry.defaultEnabled ?? false,
+    state: 'error',
+    installedAt: entry.installedAt,
+    updatedAt: entry.updatedAt,
+    originalSource: entry.originalSource,
+    capabilities: entry.capabilities,
+    github: entry.github,
+    zipSha256: entry.zipSha256,
+    rollback: entry.rollback,
+    skillCount: 0,
+    legacyHooksAbsent: previous?.legacyHooksAbsent,
+    diagnostics: [{ severity: 'error', message }],
+  };
 }
 
 async function recordFrom(input: {

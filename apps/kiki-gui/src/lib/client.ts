@@ -136,6 +136,8 @@ import type {
   PersonaImportPreview,
   PersonaImportResponse,
   PersonaPutInput,
+  PersonaSessionHeadsQuery,
+  PersonaSessionHeadsResponse,
   PersonaSnapshot,
   PersonaState,
   PersonaStateUpdate,
@@ -3712,6 +3714,13 @@ export class KikiClient {
 
   listPersonas(options: { readonly includeArchived?: boolean } = {}): Promise<readonly PersonaSummary[]> {
     return this.run(() => this.rest.personas.list(options));
+  }
+
+  listPersonaSessionHeads(
+    query: PersonaSessionHeadsQuery = {},
+    options?: import('@kiki/klient').HttpRestRequestOptions,
+  ): Promise<PersonaSessionHeadsResponse> {
+    return this.run(() => this.rest.personas.sessionHeads(query, options));
   }
 
   getPersona(id: string): Promise<PersonaSnapshot> {

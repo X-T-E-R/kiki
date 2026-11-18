@@ -1295,4 +1295,241 @@ describe('PluginService (plugin boundary)', () => {
       await host.dispose();
     }
   });
+
+  it('isolates broken hook plugins per workspace and session instead of locking unaffected scopes', async () => {
+    const home = await makeHome();
+    const brokenRoot = await makePluginDir('broken-guard', {
+      hooks: [{ event: 'UserPromptSubmit', matcher: '[broken', command: 'echo deny' }],
+    });
+    const healthyRoot = await makePluginDir('healthy-guard', {
+      hooks: [{ event: 'UserPromptSubmit', command: 'echo allow' }],
+    });
+    createdDirs.push(brokenRoot, healthyRoot);
+    await writeInstalledFile(home, JSON.stringify({
+      version: 1,
+      plugins: [
+        {
+          ...installedFile('broken-guard', brokenRoot, true).plugins[0]!,
+          defaultEnabled: false,
+        },
+        ...installedFile('healthy-guard', healthyRoot, true).plugins,
+      ],
+    }));
+
+    let stateReader: Parameters<IPluginUsageService['registerPluginStateReader']>[0] | undefined;
+    const workspaceOverrides: Record<string, Record<string, boolean>> = {
+      'workspace-lab': { 'broken-guard': true },
+      'workspace-prod': {},
+    };
+    const sessionOverrides: Record<string, Record<string, boolean>> = {
+      'workspace-lab:session-safe': { 'broken-guard': false },
+    };
+    const scopedUsage: IPluginUsageService = {
+      _serviceBrand: undefined,
+      enabled: () => true,
+      read: async (workspaceId) => ({
+        workspaceId,
+        revision: 0,
+        overrides: workspaceOverrides[workspaceId] ?? {},
+        applyState: 'applied',
+        errors: [],
+      }),
+      readSession: async (workspaceId, sessionId) => ({
+        workspaceId,
+        sessionId,
+        revision: 0,
+        overrides: sessionOverrides[`${workspaceId}:${sessionId}`] ?? {},
+        applyState: 'applied',
+        errors: [],
+      }),
+      registerPluginStateReader: (reader) => {
+        stateReader = reader;
+        return {
+          dispose: () => {
+            if (stateReader === reader) stateReader = undefined;
+          },
+        };
+      },
+      allows: async (workspaceId, pluginId, sessionId) => {
+        const state = stateReader?.(pluginId);
+        if (state?.allowed === false) return false;
+        const global = state?.globalEnabled ?? true;
+        if (workspaceId === undefined) return global;
+        const wsChoice = workspaceOverrides[workspaceId]?.[pluginId] ?? global;
+        if (sessionId === undefined) return wsChoice;
+        return sessionOverrides[`${workspaceId}:${sessionId}`]?.[pluginId] ?? wsChoice;
+      },
+      applySession: async (value) => value,
+      set: async ({ workspaceId }) => ({
+        workspaceId,
+        revision: 0,
+        overrides: workspaceOverrides[workspaceId] ?? {},
+        applyState: 'applied',
+        errors: [],
+      }),
+      onDidChange: Event.None as IPluginUsageService['onDidChange'],
+      onDidApply: Event.None as IPluginUsageService['onDidApply'],
+    };
+
+    const host = makeHost(home, stubProviderService(), {}, scopedUsage);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await expect(svc.getPluginInfo({ id: 'broken-guard' })).resolves.toMatchObject({
+        state: 'error',
+        enabled: true,
+        defaultEnabled: false,
+      });
+
+      const wildcard = await svc.inspectHooks!('*');
+      expect(wildcard.hooks.map((item) => item.pluginId)).toEqual(['healthy-guard']);
+      expect(wildcard.failures).toEqual([
+        expect.objectContaining({ pluginId: 'broken-guard', defaultEnabled: false }),
+      ]);
+
+      await expect(svc.enabledHooks('workspace-prod', 'session-prod')).resolves.toEqual([
+        expect.objectContaining({ pluginId: 'healthy-guard', command: 'echo allow' }),
+      ]);
+      await expect(svc.enabledHooks('workspace-lab', 'session-safe')).resolves.toEqual([
+        expect.objectContaining({ pluginId: 'healthy-guard', command: 'echo allow' }),
+      ]);
+      await expect(svc.enabledHooks()).resolves.toEqual([
+        expect.objectContaining({ pluginId: 'healthy-guard', command: 'echo allow' }),
+      ]);
+
+      await expect(svc.enabledHooks('workspace-lab', 'session-affected')).rejects.toMatchObject({
+        code: 'plugin.load_failed',
+        message: expect.stringContaining('Failed to load hooks from plugin "broken-guard"'),
+      });
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it('retains scoped fail-closed hook protection across reload when a guard plugin fails materialization, and tolerates malformed sibling pluginSettings', async () => {
+    const home = await makeHome();
+    const guardRoot = await makePluginDir('reload-guard', {
+      skills: './skills/',
+      hooks: [{ event: 'PreToolUse', command: 'echo guard' }],
+    });
+    const projRoot = await makePluginDir('proj-demo', {
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        requestProjection: {
+          schemaVersion: 1,
+          strategySetting: 'strategy',
+          modelsSetting: 'targetModels',
+          defaultStrategy: 'tool_result_appendix',
+          defaultModels: ['demo-model'],
+        },
+        settings: {
+          schemaVersion: 1,
+          schema: {
+            type: 'object',
+            properties: {
+              strategy: { type: 'string', enum: ['passthrough', 'tool_result_appendix'] },
+              targetModels: { type: 'string' },
+            },
+          },
+        },
+      },
+    });
+    await mkdir(path.join(guardRoot, 'skills'), { recursive: true });
+    createdDirs.push(guardRoot, projRoot);
+    await writeInstalledFile(home, JSON.stringify({
+      version: 1,
+      plugins: [
+        ...installedFile('reload-guard', guardRoot, true).plugins,
+        ...installedFile('proj-demo', projRoot, true).plugins,
+      ],
+    }));
+
+    let failSkillDiscovery = false;
+    let stateReader: Parameters<IPluginUsageService['registerPluginStateReader']>[0] | undefined;
+    const workspaceOverrides: Record<string, Record<string, boolean>> = {
+      'ws-off': { 'reload-guard': false },
+    };
+    const sessionOverrides: Record<string, Record<string, boolean>> = {
+      'ws-off:s-reenabled': { 'reload-guard': true },
+    };
+    const usage: IPluginUsageService = {
+      _serviceBrand: undefined,
+      enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: workspaceOverrides[workspaceId] ?? {}, applyState: 'applied', errors: [] }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: sessionOverrides[`${workspaceId}:${sessionId}`] ?? {}, applyState: 'applied', errors: [] }),
+      registerPluginStateReader: (reader) => {
+        stateReader = reader;
+        return { dispose: () => { if (stateReader === reader) stateReader = undefined; } };
+      },
+      allows: async (workspaceId, pluginId, sessionId) => {
+        const state = stateReader?.(pluginId);
+        if (state?.allowed === false) return false;
+        const global = state?.globalEnabled ?? true;
+        if (workspaceId === undefined) return global;
+        const wsChoice = workspaceOverrides[workspaceId]?.[pluginId] ?? global;
+        if (sessionId === undefined) return wsChoice;
+        return sessionOverrides[`${workspaceId}:${sessionId}`]?.[pluginId] ?? wsChoice;
+      },
+      applySession: async (value) => value,
+      set: async ({ workspaceId }) => ({ workspaceId, revision: 0, overrides: workspaceOverrides[workspaceId] ?? {}, applyState: 'applied', errors: [] }),
+      onDidChange: Event.None as IPluginUsageService['onDidChange'],
+      onDidApply: Event.None as IPluginUsageService['onDidApply'],
+    };
+
+    const sections: Record<string, unknown> = {
+      pluginSettings: {
+        'BAD_KEY!': { invalid: true },
+        'proj-demo': { strategy: 'passthrough', targetModels: 'demo-model' },
+      },
+    };
+    const host = createScopedTestHost([
+      stubPair(IBootstrapService, stubBootstrap(home, {})),
+      stubPair(IProviderService, stubProviderService()),
+      stubPair(IConfigService, {
+        _serviceBrand: undefined,
+        ready: Promise.resolve(),
+        get: (key: string) => sections[key] ?? {},
+        replace: async (key: string, value: unknown) => {
+          sections[key] = value;
+        },
+      } as unknown as IConfigService),
+      stubPair(ISkillDiscovery, {
+        _serviceBrand: undefined,
+        discover: async (roots) => {
+          if (failSkillDiscovery && roots.some((root) => root.plugin?.id === 'reload-guard')) {
+            throw new Error('EACCES skill scan boom');
+          }
+          return { skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] };
+        },
+      } satisfies ISkillDiscovery),
+      stubPair(IPluginUsageService, usage),
+    ]);
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await expect(svc.enabledHooks('ws-default', 's-1')).resolves.toEqual([
+        expect.objectContaining({ pluginId: 'reload-guard' }),
+      ]);
+      await expect(svc.resolveRequestProjection({ modelAlias: 'demo-model', workspaceId: 'ws-default' })).resolves.toMatchObject({
+        strategy: 'passthrough',
+      });
+
+      failSkillDiscovery = true;
+      const summary = await svc.reloadPlugins();
+      expect(summary.errors).toEqual([{ id: 'reload-guard', message: 'EACCES skill scan boom' }]);
+      expect((await svc.listPlugins()).map((item) => item.id).toSorted()).toEqual(['proj-demo', 'reload-guard']);
+
+      await expect(svc.enabledHooks('ws-default', 's-1')).rejects.toMatchObject({
+        code: 'plugin.load_failed',
+        message: expect.stringContaining('reload-guard'),
+      });
+      await expect(svc.enabledHooks('ws-off', 's-safe')).resolves.toEqual([]);
+      await expect(svc.enabledHooks('ws-off', 's-reenabled')).rejects.toMatchObject({
+        code: 'plugin.load_failed',
+        message: expect.stringContaining('reload-guard'),
+      });
+
+      await expect(svc.removePlugin({ id: 'proj-demo' })).resolves.toBeUndefined();
+    } finally {
+      await host.dispose();
+    }
+  });
 });

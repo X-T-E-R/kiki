@@ -788,4 +788,46 @@ describe('ApprovalPanelComponent external permission options', () => {
       expect(line.length).toBeLessThanOrEqual(48);
     }
   });
+
+  it('renders separate diff blocks per edit entry, indicates overflow past 5 blocks, and passes all blocks to Ctrl+E preview', () => {
+    const opened: Array<{ first: unknown; all: unknown }> = [];
+    const blocks = Array.from({ length: 6 }, (_, i) => ({
+      type: 'diff' as const,
+      path: 'src/multi.ts',
+      old_text: `old_${String(i + 1)}`,
+      new_text: `new_${String(i + 1)}`,
+    }));
+    const dialog = new ApprovalPanelComponent(
+      {
+        data: {
+          id: 'approval_multi',
+          tool_call_id: 'tool_multi',
+          tool_name: 'Edit',
+          action: 'edit file',
+          description: '',
+          display: blocks,
+          choices: [
+            { label: 'Approve once', response: 'approved' },
+            { label: 'Reject', response: 'rejected' },
+          ],
+        },
+      },
+      () => {},
+      undefined,
+      (first, all) => {
+        opened.push({ first, all });
+      },
+    );
+
+    const out = strip(dialog.render(80).join('\n'));
+    expect(out).toContain('old_1');
+    expect(out).toContain('new_5');
+    expect(out).not.toContain('new_6');
+    expect(out).toContain('… +1 more (Ctrl+E preview all)');
+
+    dialog.handleInput('\x05');
+    expect(opened).toHaveLength(1);
+    expect(opened[0]?.first).toEqual(blocks[0]);
+    expect(opened[0]?.all).toEqual(blocks);
+  });
 });

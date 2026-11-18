@@ -129,6 +129,7 @@ export interface ToolCallFrame {
   readonly attachmentIds?: AttachmentId[];
   readonly display?: unknown;
   readonly error?: string;
+  readonly note?: string;
   /** Stable reason for a failure the engine reported, e.g. `codex_mcp_approval_denied`. */
   readonly errorCode?: string;
   /**
@@ -169,7 +170,7 @@ export type TranscriptFrame = (TextFrame | ThinkingFrame | ToolCallFrame | Notic
 
 /** Keep routing and undo identity without retaining a durably released tool's body. */
 export function releaseToolFramePayload(frame: ToolCallFrame): ToolCallFrame {
-  const { input: _input, output: _output, display: _display, error: _error, inputText: _inputText, progress: _progress, ...identity } = frame;
+  const { input: _input, output: _output, display: _display, error: _error, note: _note, inputText: _inputText, progress: _progress, ...identity } = frame;
   return identity;
 }
 

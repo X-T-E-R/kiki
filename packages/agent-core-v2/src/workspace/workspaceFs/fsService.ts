@@ -487,9 +487,9 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const indexed = await this.indexedSearch(req, signal);
     if (indexed !== undefined) return indexed;
     const query = req.query.toLowerCase();
-    const rules = req.follow_gitignore ? await this.hostFs.readText(this.path.join(this.workDir, '.gitignore')).catch(() => '') : '';
+    const rules = req.follow_gitignore ? (await this.readRootGitignore()) ?? '' : '';
     signal?.throwIfAborted();
-    const matcher = req.follow_gitignore ? ignore().add(['.git/', rules]) : undefined;
+    const matcher = req.follow_gitignore ? ignore().add('.git/').add(rules) : undefined;
     const binding = JSON.stringify([this.workDir, this.runtimeId, query, req.limit, req.follow_gitignore, req.include_globs ?? null, req.exclude_globs ?? null, rules]);
     const stack = readSearchCursor(req.cursor, binding, this.path.separator);
     if (query === '' && stack.length !== 1) throw invalidSearchCursor();
@@ -538,7 +538,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       visited += 1;
       const relPath = frame.path === '' ? entry.name : `${frame.path}/${entry.name}`;
       const isDir = entry.isDirectory && !entry.isSymbolicLink;
-      if (entry.name === '.git' || (query === '' && isHidden(entry.name)) || (!isDir && isSensitiveFile(relPath))) continue;
+      if (VCS_METADATA_DIRS.has(entry.name.toLowerCase()) || (query === '' && isHidden(entry.name)) || (!isDir && isSensitiveFile(relPath))) continue;
       if (matcher?.ignores(isDir ? `${relPath}/` : relPath)) continue;
       if (isDir && query !== '') stack.push({ path: relPath, offset: 0 });
       if (req.include_globs && !matchesAnyGlob(relPath, req.include_globs)) continue;
@@ -1031,7 +1031,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     }
     for (const entry of entries) {
       const { name } = entry;
-      if (name === '.git') continue;
+      if (VCS_METADATA_DIRS.has(name.toLowerCase())) continue;
       const childRel = rootRel === '' ? name : `${rootRel}/${name}`;
       const isDir = entry.isDirectory && entry.isSymbolicLink !== true;
       if (matcher) {
@@ -1050,16 +1050,26 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     }
   }
 
+  private async readRootGitignore(): Promise<string | undefined> {
+    try {
+      return await this.hostFs.readText(this.path.join(this.workDir, '.gitignore'));
+    } catch {
+      const entries = await this.hostFs.readdir(this.workDir).catch(() => []);
+      const match = entries.find((entry) => entry.isFile && entry.name.toLowerCase() === '.gitignore');
+      if (match === undefined || match.name === '.gitignore') return undefined;
+      return this.hostFs.readText(this.path.join(this.workDir, match.name)).catch(() => undefined);
+    }
+  }
+
   private async matcher(): Promise<Ignore | undefined> {
     const cwd = this.workDir;
     const cached = this.gitignoreCache.get(cwd);
     if (cached !== undefined) return cached;
     const ig = ignore();
     ig.add('.git/');
-    try {
-      const contents = await this.hostFs.readText(this.path.join(this.workDir, '.gitignore'));
+    const contents = await this.readRootGitignore();
+    if (contents !== undefined) {
       ig.add(contents);
-    } catch {
     }
     this.gitignoreCache.set(cwd, ig);
     return ig;

@@ -113,6 +113,7 @@ import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon, resolvePluginSlotIconName, Spinner } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
+import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { JoinRoomDialog, NewThreadRoomDialog } from './room/ThreadRoomDialogs';
 import { isSubagentSession, ROOM_MAX_MEMBERS, useThreadCommsEnabled } from './room/threadRooms';
@@ -1008,10 +1009,10 @@ export function Sidebar({
   const isNarrowDesktop = useMediaQuery('(max-width: 1279px)');
   const isCollapsed = isDesktop && (layoutPrefs.sidebarCollapsed ?? isNarrowDesktop);
 
-  const refreshSessions = useCallback(
-    () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
-    [queryClient],
-  );
+  const refreshSessions = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    invalidatePersonaSessionLists(queryClient);
+  }, [queryClient]);
   const actionContext: SessionActionContext = useMemo(
     () => ({ client, host, refreshSessions, navigate }),
     [client, host, refreshSessions, navigate],
@@ -1323,6 +1324,7 @@ export function Sidebar({
         // anything; if the clicked root is gone, keep the failed ids and reason
         // in the existing sidebar alert so surviving children can be retried.
         const reason = error instanceof Error ? error.message : String(error);
+        invalidatePersonaSessionLists(queryClient);
         void queryClient
           .invalidateQueries({ queryKey: ['sessions'] })
           .catch(() => undefined)

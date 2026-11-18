@@ -6,8 +6,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session } from '@kiki/protocol';
-import { resetLayoutPreferencesForTests } from '@kiki/session-core/settings';
+import type { PersonaSessionHeadsQuery, Session } from '@kiki/protocol';
+import { resetLayoutPreferencesForTests, writeLayoutPreferences } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
 import { buildPersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
@@ -24,7 +24,7 @@ const navigate = vi.fn();
 const directory = vi.hoisted(() => ({ entries: [] as unknown[] }));
 const listSessions = vi.hoisted(() => vi.fn(async (_params?: { persona?: string }) => ({ items: [] as unknown[], has_more: false })));
 const listPersonaSessionHeads = vi.hoisted(() =>
-  vi.fn(async (_params?: { per_persona_limit: number; include_private: boolean }): Promise<PersonaSessionHeadsMap> => ({})),
+  vi.fn(async (_params?: PersonaSessionHeadsQuery): Promise<PersonaSessionHeadsMap> => ({})),
 );
 const updatePersona = vi.hoisted(() => vi.fn(async (_id: string, patch: { pinned?: boolean; hidden?: boolean }) => ({
   version: 1 as const,
@@ -298,7 +298,10 @@ describe('reliable persona conversation discovery and unified inline expansion',
 
     // 1 single aggregate request across all 3 personas; 0 per-persona listSessions calls!
     expect(listPersonaSessionHeads).toHaveBeenCalledTimes(1);
-    expect(listPersonaSessionHeads).toHaveBeenCalledWith({ per_persona_limit: 10, include_private: true });
+    expect(listPersonaSessionHeads).toHaveBeenCalledWith(
+      { per_persona_limit: 10, include_private: false, private_only: undefined },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(listSessions).not.toHaveBeenCalled();
 
     // Alt+Tab `invalidateQueries({ queryKey: ['sessions'] })` must NOT trigger any persona head or switcher refetch.
@@ -337,47 +340,117 @@ describe('reliable persona conversation discovery and unified inline expansion',
     expect(container.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
   });
 
-  it('preserves unread status on cold and private serverItems outside the global slice without misclassifying seen/empty historical threads', async () => {
-    const globalSlice = [
-      hers({ id: 'topic_loaded_read', title: '小柚 · 首屏已读', last_seq: 3, updated_at: '2026-11-17T10:00:00Z' }),
-    ];
+  it('strictly obeys filters.private ("hide" by default, "include", and "only") so private sessions never leak into counts, unread badges, or running expansion when hidden', async () => {
+    const publicRead = hers({ id: 'topic_public_read', title: '小柚 · 公开已读', last_seq: 3, updated_at: '2026-11-17T10:00:00Z' });
+    const privateRunning = hers({
+      id: 'topic_private_running',
+      title: '小柚 · 绝密进行中标题',
+      private: true,
+      busy: true,
+      last_seq: 8,
+      updated_at: '2026-11-18T10:00:00Z',
+    });
+    const privateUnread = hers({
+      id: 'topic_private_unread',
+      title: '小柚 · 绝密未读标题',
+      private: true,
+      last_seq: 5,
+      updated_at: '2026-11-16T10:00:00Z',
+    });
+    const coldUnread = hers({
+      id: 'topic_cold_unread',
+      title: '小柚 · 公开冷未读',
+      last_seq: 5,
+      updated_at: '2026-10-12T10:00:00Z',
+    });
     const seen = {
       home_you: 4,
-      topic_loaded_read: 3,
+      topic_public_read: 3,
       topic_cold_seen: 6,
       topic_cold_unread: 2,
+      topic_private_unread: 1,
     };
+
+    // 1. Default (`filters.private` omitted => 'hide'): private running/unread sessions must NOT leak!
     directory.entries = buildPersonaDirectory(
       [{ id: 'xiao-you', name: '小柚', revision: 'rev-1', archived: false, homeSessionId: 'home_you' }],
       [],
-      globalSlice,
+      [publicRead, privateRunning, privateUnread],
       seen,
     );
-    expect((directory.entries[0] as PersonaDirectoryEntry).unreadCount).toBe(0);
+    listPersonaSessionHeads.mockResolvedValue({
+      'xiao-you': {
+        total: 3,
+        items: [
+          hers({ id: 'home_you', title: '小柚', last_seq: 4, updated_at: '2026-11-10T10:00:00Z' }),
+          publicRead,
+          hers({ id: 'topic_cold_seen', title: '小柚 · 已读冷归档', last_seq: 6, updated_at: '2026-09-01T10:00:00Z' }),
+        ],
+      },
+    });
+    const hiddenContainer = await render([publicRead, privateRunning, privateUnread], undefined, '/', seen);
+    await flush();
+    expect(listPersonaSessionHeads).toHaveBeenLastCalledWith(
+      { per_persona_limit: 10, include_private: false, private_only: undefined },
+      expect.any(Object),
+    );
+    expect(hiddenContainer.querySelector('[data-persona-unread-count]')).toBeNull();
+    expect(hiddenContainer.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
+    expect(hiddenContainer.textContent).not.toContain('绝密进行中标题');
+    expect(hiddenContainer.textContent).not.toContain('绝密未读标题');
+    expect(hiddenContainer.querySelector('[data-persona-switcher-toggle="xiao-you"]')?.getAttribute('data-persona-thread-count')).toBe('3');
 
+    // 2. `filters.private: 'include'`: preserves unread status on cold and private serverItems without misclassifying seen/empty threads.
+    writeLayoutPreferences({ filters: { status: [], workspaces: [], archived: 'hide', private: 'include' } });
+    directory.entries = buildPersonaDirectory(
+      [{ id: 'xiao-you', name: '小柚', revision: 'rev-1', archived: false, homeSessionId: 'home_you' }],
+      [],
+      [publicRead],
+      seen,
+    );
     listPersonaSessionHeads.mockResolvedValue({
       'xiao-you': {
         total: 6,
         items: [
           hers({ id: 'home_you', title: '小柚', last_seq: 4, updated_at: '2026-11-10T10:00:00Z' }),
-          globalSlice[0]!,
+          publicRead,
           hers({ id: 'topic_cold_seen', title: '小柚 · 已读冷归档', last_seq: 6, updated_at: '2026-09-01T10:00:00Z' }),
           hers({ id: 'topic_cold_empty', title: '小柚 · 空草稿归档', last_seq: 0, updated_at: '2026-08-01T10:00:00Z' }),
-          hers({ id: 'topic_cold_unread', title: '小柚 · 冷会话新回复', last_seq: 5, updated_at: '2026-10-12T10:00:00Z' }),
-          hers({ id: 'topic_private_unread', title: '小柚 · 私有未读对话', private: true, last_seq: 2, updated_at: '2026-11-16T10:00:00Z' }),
+          coldUnread,
+          privateUnread,
         ],
       },
     });
 
-    const container = await render(globalSlice, undefined, '/', seen);
+    const includedContainer = await render([publicRead], undefined, '/', seen);
     await flush();
-
-    // Only the 2 genuinely unread server-only threads count as unread; seen/empty historical threads stay read.
-    expect(container.querySelector('[data-persona-unread-count="2"]')).not.toBeNull();
-    expect(subthreadIds(container)).toEqual(['topic_private_unread', 'topic_cold_unread']);
-    const lifeMarks = [...container.querySelectorAll('[data-persona-subthreads="xiao-you"] [data-life]')].map((el) => el.getAttribute('data-life'));
+    expect(listPersonaSessionHeads).toHaveBeenLastCalledWith(
+      { per_persona_limit: 10, include_private: true, private_only: undefined },
+      expect.any(Object),
+    );
+    expect(includedContainer.querySelector('[data-persona-unread-count="2"]')).not.toBeNull();
+    expect(subthreadIds(includedContainer)).toEqual(['topic_private_unread', 'topic_cold_unread']);
+    const lifeMarks = [...includedContainer.querySelectorAll('[data-persona-subthreads="xiao-you"] [data-life]')].map((el) => el.getAttribute('data-life'));
     expect(lifeMarks).toEqual(['done', 'done']);
-    expect(container.querySelector('[data-persona-subthreads-more="xiao-you"]')?.textContent).toContain('+3');
+    expect(includedContainer.querySelector('[data-persona-subthreads-more="xiao-you"]')?.textContent).toContain('+3');
+
+    // 3. `filters.private: 'only'`: requests private_only: true and excludes public conversations.
+    writeLayoutPreferences({ filters: { status: [], workspaces: [], archived: 'hide', private: 'only' } });
+    listPersonaSessionHeads.mockResolvedValue({
+      'xiao-you': {
+        total: 1,
+        items: [privateUnread],
+      },
+    });
+    const onlyPrivateContainer = await render([publicRead, privateUnread], undefined, '/', seen);
+    await flush();
+    expect(listPersonaSessionHeads).toHaveBeenLastCalledWith(
+      { per_persona_limit: 10, include_private: true, private_only: true },
+      expect.any(Object),
+    );
+    expect(onlyPrivateContainer.querySelector('[data-persona-unread-count="1"]')).not.toBeNull();
+    expect(subthreadIds(onlyPrivateContainer)).toEqual(['topic_private_unread']);
+    expect(onlyPrivateContainer.querySelector('[data-persona-switcher-toggle="xiao-you"]')?.getAttribute('data-persona-thread-count')).toBe('1');
   });
 
   it('keeps loaded conversations visible while server queries are still in flight or reject', async () => {

@@ -14,7 +14,9 @@ const PLAN_REJECT_CHOICES: ApprovalPanelChoice[] = [
   { label: 'Revise', response: 'rejected', selected_label: 'Revise', requires_feedback: true },
 ];
 
-export function adaptApprovalRequest(event: ApprovalRequest): ApprovalPanelData {
+const FILE_IO_MULTI_EDIT_SEPARATOR = '\n…\n';
+
+export function adaptApprovalRequest(event: ApprovalRequest, toolArgs?: unknown): ApprovalPanelData {
   const external = externalPermissionFromDisplay(event.display);
   if (external !== undefined) {
     return {
@@ -25,7 +27,7 @@ export function adaptApprovalRequest(event: ApprovalRequest): ApprovalPanelData 
       ...adaptExternalPermission(external),
     };
   }
-  const resolved = resolveDisplay(event.toolName, event.display, event.action);
+  const resolved = resolveDisplay(event.toolName, event.display, event.action, toolArgs);
   return {
     id: event.toolCallId,
     tool_call_id: event.toolCallId,
@@ -144,10 +146,31 @@ function resolveDisplay(
   toolName: string,
   display: ToolInputDisplay,
   action: string,
+  toolArgs?: unknown,
 ): ResolvedDisplay {
   if (display.kind === 'generic' && isRecord(display.detail)) {
     const extracted = extractFromArgs(toolName, display.detail);
     if (extracted !== null) return extracted;
+  }
+  if (
+    display.kind === 'file_io' &&
+    display.operation === 'edit' &&
+    isRecord(toolArgs) &&
+    toolArgs['edits'] !== undefined
+  ) {
+    const pairs = editPairs(toolArgs['edits']);
+    if (pairs !== undefined) {
+      const path = display.path ?? stringField(toolArgs, 'path') ?? stringField(toolArgs, 'file_path') ?? '';
+      return {
+        blocks: pairs.map((pair) => ({
+          type: 'diff' as const,
+          path,
+          old_text: pair.oldText,
+          new_text: pair.newText,
+        })),
+        description: describeApproval(display, action),
+      };
+    }
   }
   return {
     blocks: adaptDisplay(display),
@@ -390,6 +413,16 @@ function adaptDisplay(display: ToolInputDisplay): DisplayBlock[] {
         typeof display.before === 'string' &&
         typeof display.after === 'string'
       ) {
+        const beforeParts = display.before.split(FILE_IO_MULTI_EDIT_SEPARATOR);
+        const afterParts = display.after.split(FILE_IO_MULTI_EDIT_SEPARATOR);
+        if (beforeParts.length > 1 && beforeParts.length === afterParts.length) {
+          return beforeParts.map((oldText, idx) => ({
+            type: 'diff' as const,
+            path,
+            old_text: oldText,
+            new_text: afterParts[idx] ?? '',
+          }));
+        }
         return [{ type: 'diff', path, old_text: display.before, new_text: display.after }];
       }
       return [

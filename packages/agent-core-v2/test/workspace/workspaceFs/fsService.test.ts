@@ -1642,4 +1642,47 @@ describe('WorkspaceFsService symlink confinement', () => {
     const res = await fs.read({ path: 'src/a.ts', offset: 0, length: 1024, encoding: 'utf-8' });
     expect(res.content).toBe('content');
   });
+
+  it('excludes uppercase .GIT metadata directories and honors uppercase .GITIGNORE rules across search and suggest', async () => {
+    const fs = makeSession(
+      {
+        '.GIT/config': 'core',
+        '.GIT/hooks/pre-commit.ts': 'hook',
+        '.GITIGNORE': 'ignored-dir/\n*.secret.ts\n',
+        'ignored-dir/skip.ts': 'skip',
+        'src/drop.secret.ts': 'drop',
+        'src/keep.ts': 'keep',
+      },
+      (args) => (args[0] === 'rg' && args[1] === '--version' ? { stdout: '', exitCode: 1 } : { stdout: '', exitCode: 0 }),
+    );
+    const searchRes = await fs.search({ query: 'ts', limit: 50, follow_gitignore: true });
+    expect(searchRes.items.map((item) => item.path)).toEqual(['src/keep.ts']);
+
+    const unignoredSearch = await fs.search({ query: 'config', limit: 50, follow_gitignore: false });
+    expect(unignoredSearch.items.map((item) => item.path)).toEqual([]);
+
+    const suggestRes = await fs.suggest({
+      query: 'ts',
+      limit: 50,
+      follow_gitignore: true,
+      show_hidden: true,
+    });
+    expect(suggestRes.items.map((item) => item.path)).toEqual(['src/keep.ts']);
+
+    const rgUpperFs = makeSession(
+      {},
+      (args) => {
+        if (args[0] === 'rg' && args[1] === '--version') return { stdout: 'ripgrep 14.0.0', exitCode: 0 };
+        if (args.includes('--files')) return { stdout: '.GIT/x.ts\nsrc/.JJ/y.ts\nok.ts\n', exitCode: 0 };
+        return { stdout: '', exitCode: 0 };
+      },
+    );
+    const rgSuggest = await rgUpperFs.suggest({
+      query: 'ts',
+      limit: 50,
+      follow_gitignore: true,
+      show_hidden: true,
+    });
+    expect(rgSuggest.items.map((item) => item.path)).toEqual(['ok.ts']);
+  });
 });

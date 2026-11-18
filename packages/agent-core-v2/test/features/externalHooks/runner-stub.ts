@@ -5,6 +5,7 @@ import type { HookDef } from '#/features/externalHooks/internal/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
+import type { PluginHookLoadFailure } from '#/app/plugin/types';
 import type { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import type { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
@@ -22,6 +23,8 @@ export function makeHookRunner(
     cwd?: string;
     loadError?: Error;
     pluginHooks?: readonly HookDef[];
+    pluginHookFailures?: readonly PluginHookLoadFailure[];
+    inspectHooks?: IPluginService['inspectHooks'];
     usage?: IPluginUsageService;
     sessions?: ISessionIndex;
     onTriggered?: (event: string, target: string, count: number) => void;
@@ -46,6 +49,27 @@ export function makeHookRunner(
     {
       _serviceBrand: undefined,
       enabledHooks: async () => options.pluginHooks ?? [],
+      inspectHooks: options.inspectHooks ?? (options.pluginHookFailures === undefined
+        ? undefined
+        : async (workspaceId?: string, sessionId?: string) => {
+          const allHooks = options.pluginHooks ?? [];
+          const allFailures = options.pluginHookFailures ?? [];
+          if (workspaceId === '*') return { hooks: allHooks, failures: allFailures };
+          if (options.usage === undefined || !options.usage.enabled()) {
+            return {
+              hooks: allHooks,
+              failures: allFailures.filter((item) => item.defaultEnabled),
+            };
+          }
+          const allowedFailures = await Promise.all(
+            allFailures.map(async (item) =>
+              await options.usage!.allows(workspaceId, item.pluginId, sessionId) ? item : undefined),
+          );
+          return {
+            hooks: allHooks,
+            failures: allowedFailures.filter((item): item is PluginHookLoadFailure => item !== undefined),
+          };
+        }),
       onDidReload: Event.None as IPluginService['onDidReload'],
     } as unknown as IPluginService,
     {

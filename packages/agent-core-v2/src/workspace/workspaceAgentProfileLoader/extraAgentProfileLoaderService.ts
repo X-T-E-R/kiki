@@ -137,7 +137,7 @@ export class ExtraAgentProfileLoaderService
         resources.add(
           handle.onDidChange(() => {
             this.watchDebounce.cancelAndSet(() => {
-              void this.reload().catch((error) => {
+              void this.reloadFromWatch().catch((error) => {
                 this.log.warn(`agent profile loader "extra" reload failed: ${String(error)}`);
               });
             }, WATCH_DEBOUNCE_MS);

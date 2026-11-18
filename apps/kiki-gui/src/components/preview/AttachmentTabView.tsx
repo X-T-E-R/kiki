@@ -191,7 +191,7 @@ export function PreviewAttachmentView({
       isImageAttachment &&
       (canonicalItem.fileId !== undefined || canonicalItem.url !== undefined)
     ) {
-      mediaPreview.openGalleryImage(canonicalItem);
+      mediaPreview.openGalleryImage(canonicalItem, undefined, fallbackSrc);
       return;
     }
     onOpenImage(fallbackSrc, name, trustedPath);
@@ -275,7 +275,7 @@ export function PreviewAttachmentView({
     setHtmlPreviewState({ status: 'loading' });
     const openHtml = async () => {
       if (fileId !== undefined && sessionId !== undefined) {
-        return await client.openHtmlPreview({
+        return client.openHtmlPreview({
           session_id: sessionId,
           file_id: fileId,
           source_id: sourceId,
@@ -284,7 +284,7 @@ export function PreviewAttachmentView({
       }
       const hostPath = !remoteScope && source.kind === 'host-file' ? resolveHostPath(source.path, workspaceRoot) : undefined;
       if (hostPath !== undefined) {
-        return await client.openHtmlPreview({ path: hostPath, workspace_root: workspaceRoot });
+        return client.openHtmlPreview({ path: hostPath, workspace_root: workspaceRoot });
       }
       throw new Error('html_preview_unavailable');
     };

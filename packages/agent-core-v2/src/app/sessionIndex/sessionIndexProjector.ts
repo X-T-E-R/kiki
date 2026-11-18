@@ -37,6 +37,8 @@ import {
 
 const WRITE_CHUNK = 500;
 const SCAN_CONCURRENCY = 16;
+const SUMMARY_READ_CONCURRENCY = 4;
+const LARGE_METADATA_BYTES = 65_536;
 const SHARED_SCAN_REUSE_MS = 30_000;
 const FINGERPRINT_REUSE_MS = 30 * 60_000;
 const COOPERATIVE_YIELD_BUDGET_MS = 12;
@@ -56,6 +58,35 @@ function createCooperativeYield(): (force?: boolean) => Promise<void> {
       scheduleImmediate(resolve);
     });
     lastYieldAt = monotonicMs();
+  };
+}
+
+function isLargeFingerprint(fingerprint: SessionSourceFingerprint): boolean {
+  return (
+    fingerprint.directSize >= LARGE_METADATA_BYTES ||
+    fingerprint.nestedSize >= LARGE_METADATA_BYTES
+  );
+}
+
+function createLargeReadGate(
+  maybeYield: (force?: boolean) => Promise<void>,
+): <T>(operation: () => Promise<T>) => Promise<T> {
+  let tail: Promise<void> = Promise.resolve();
+  return <T>(operation: () => Promise<T>): Promise<T> => {
+    const run = async (): Promise<T> => {
+      await maybeYield(true);
+      try {
+        return await operation();
+      } finally {
+        await maybeYield(true);
+      }
+    };
+    const next = tail.then(run, run);
+    tail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   };
 }
 
@@ -95,6 +126,8 @@ interface ScanSlot {
 
 interface CachedFingerprint {
   readonly fingerprint: SessionSourceFingerprint;
+  readonly summary?: SessionSummary;
+  readonly summaryResolved?: boolean;
   readonly checkedAt: number;
   readonly sequence: number;
 }
@@ -245,6 +278,8 @@ export class SessionIndexProjector {
       this.fingerprintGeneration = generation;
     }
     const changed = options?.changedSessions;
+    const maybeYield = createCooperativeYield();
+    const runLargeRead = createLargeReadGate(maybeYield);
     const nextFingerprintCache = new Map<string, CachedFingerprint>();
     const sequence = ++this.fingerprintSequence;
     const invalidationEpoch = this.fingerprintInvalidationEpoch;
@@ -261,6 +296,7 @@ export class SessionIndexProjector {
     const currentWorkspaceSessions = new Map<string, readonly string[]>();
     const currentSessionOwners = new Map<string, number>();
     for (const workspaceId of currentWorkspaceIds) {
+      await maybeYield();
       const sessionIds = changed === undefined
         ? [...await listSessionIds(storage, sessionsScope, workspaceId, log)].toSorted()
         : [...new Set([
@@ -279,12 +315,15 @@ export class SessionIndexProjector {
     let sourceMaxMtimeMs = (await storage.mtime(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY)) ?? 0;
 
     for (const workspaceId of currentWorkspaceIds) {
+      await maybeYield();
       const sessionIds = currentWorkspaceSessions.get(workspaceId) ?? [];
       const previousWorkspace = await queryStore.get<SessionWorkspaceSource>(workspaces, workspaceId);
       const previousSessionIds = previousWorkspace?.sessionIds ?? [];
       const previousSessionSet = new Set(previousSessionIds);
       const candidates = changed === undefined ? sessionIds : changed.filter((entry) => entry.workspaceId === workspaceId).map((entry) => entry.id);
       const previousFingerprints = await queryStore.getMany<SessionSourceFingerprint>(sources, candidates);
+      let fingerprintedCount = 0;
+      const fingerprintBySession = new Map<string, SessionSourceFingerprint>();
       const fingerprintEntries = await mapBounded(candidates, SCAN_CONCURRENCY, async (sessionId) => {
         const key = `${workspaceId}/${sessionId}`;
         const cached = this.fingerprintCache.get(key);
@@ -295,11 +334,25 @@ export class SessionIndexProjector {
         const fingerprint = reusable
           ? cached.fingerprint
           : await sessionStateFingerprint(storage, sessionsScope, workspaceId, sessionId, log);
-        nextFingerprintCache.set(key, { fingerprint, checkedAt: reusable ? cached.checkedAt : checkedAt, sequence });
+        const carrySummary =
+          cached !== undefined &&
+          cached.summaryResolved === true &&
+          fingerprintEquals(cached.fingerprint, fingerprint);
+        nextFingerprintCache.set(key, {
+          fingerprint,
+          summary: carrySummary ? cached.summary : undefined,
+          summaryResolved: carrySummary ? true : undefined,
+          checkedAt: reusable ? cached.checkedAt : checkedAt,
+          sequence,
+        });
+        fingerprintBySession.set(sessionId, fingerprint);
+        fingerprintedCount += 1;
+        await maybeYield(fingerprintedCount % COOPERATIVE_SCAN_ITEMS === 0);
         return { sessionId, fingerprint };
       });
       const changedCandidates: string[] = [];
       for (const { sessionId, fingerprint } of fingerprintEntries) {
+        await maybeYield();
         sourceMaxMtimeMs = Math.max(
           sourceMaxMtimeMs,
           fingerprint.directMtimeMs,
@@ -312,25 +365,70 @@ export class SessionIndexProjector {
           changedCandidates.push(sessionId);
         }
       }
+      let summaryReadCount = 0;
       const changedResults = await mapBounded(
         changedCandidates,
-        SCAN_CONCURRENCY,
-        async (sessionId) => ({
-          sessionId,
-          result: await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log),
-        }),
+        SUMMARY_READ_CONCURRENCY,
+        async (sessionId) => {
+          const key = `${workspaceId}/${sessionId}`;
+          const fingerprint = fingerprintBySession.get(sessionId);
+          const cached = this.fingerprintCache.get(key);
+          if (
+            options?.reuseFingerprints === true &&
+            fingerprint !== undefined &&
+            cached !== undefined &&
+            cached.summaryResolved === true &&
+            checkedAt - cached.checkedAt < FINGERPRINT_REUSE_MS &&
+            fingerprintEquals(cached.fingerprint, fingerprint)
+          ) {
+            summaryReadCount += 1;
+            await maybeYield(summaryReadCount % COOPERATIVE_SCAN_ITEMS === 0);
+            return {
+              sessionId,
+              result:
+                cached.summary !== undefined
+                  ? ({ kind: 'found', summary: cached.summary } as const)
+                  : ({ kind: 'missing' } as const),
+            };
+          }
+          const result =
+            fingerprint !== undefined && isLargeFingerprint(fingerprint)
+              ? await runLargeRead(() =>
+                  readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log),
+                )
+              : await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+          summaryReadCount += 1;
+          await maybeYield(summaryReadCount % COOPERATIVE_SCAN_ITEMS === 0);
+          return { sessionId, result };
+        },
       );
       const changedIds: string[] = [];
       const nextSummaries = new Map<string, SessionSummary>();
       for (const entry of changedResults) {
+        await maybeYield();
+        const key = `${workspaceId}/${entry.sessionId}`;
         if (entry.result.kind === 'error') {
           if (changed !== undefined) throw entry.result.error;
-          nextFingerprintCache.delete(`${workspaceId}/${entry.sessionId}`);
+          nextFingerprintCache.delete(key);
           continue;
         }
         changedIds.push(entry.sessionId);
+        const existingCache = nextFingerprintCache.get(key);
         if (entry.result.kind === 'found') {
           nextSummaries.set(entry.sessionId, entry.result.summary);
+          if (existingCache !== undefined) {
+            nextFingerprintCache.set(key, {
+              ...existingCache,
+              summary: entry.result.summary,
+              summaryResolved: true,
+            });
+          }
+        } else if (existingCache !== undefined) {
+          nextFingerprintCache.set(key, {
+            ...existingCache,
+            summary: undefined,
+            summaryResolved: true,
+          });
         }
       }
       const changedSet = new Set(changedIds);
@@ -359,6 +457,7 @@ export class SessionIndexProjector {
         else if (summary !== undefined) activeSessionIds.add(sessionId);
       }
       for (const sessionId of affectedIds) {
+        await maybeYield();
         const oldSummary = oldSummaries.get(sessionId);
         const nextSummary = nextSummaries.get(sessionId);
         if (changed !== undefined && oldSummary !== undefined && oldSummary.workspaceId !== workspaceId) {
@@ -382,6 +481,7 @@ export class SessionIndexProjector {
         }
       }
       for (const { sessionId, fingerprint } of fingerprintEntries) {
+        await maybeYield();
         if (changedSet.has(sessionId)) {
           ops.push({ kind: 'put', collection: sources, key: sessionId, value: fingerprint });
         }
@@ -422,6 +522,7 @@ export class SessionIndexProjector {
 
     const currentWorkspaceSet = new Set(currentWorkspaceIds);
     for (const workspaceId of changed === undefined ? previousWorkspaceIds : []) {
+      await maybeYield();
       if (currentWorkspaceSet.has(workspaceId)) continue;
       const previousWorkspace = await queryStore.get<SessionWorkspaceSource>(workspaces, workspaceId);
       const removedIds = (previousWorkspace?.sessionIds ?? []).filter(
@@ -464,7 +565,7 @@ export class SessionIndexProjector {
         }
       }
     };
-    if (options?.reuseFingerprints === true) retainFingerprints();
+    retainFingerprints();
     return async () => {
       if (ops.length > 0) await advanceSessionIndexRevision(queryStore);
       await this.batchChunks(ops);
@@ -495,12 +596,13 @@ export class SessionIndexProjector {
     const workspaceSources = new Map<string, SessionWorkspaceSource>();
     let sourceMaxMtimeMs = (await storage.mtime(SESSION_INDEX_SCOPE, SESSION_INDEX_KEY)) ?? 0;
     const maybeYield = createCooperativeYield();
+    const runLargeRead = createLargeReadGate(maybeYield);
     let scannedCount = 0;
     for (const workspaceId of await listWorkspaceIds(storage, sessionsScope, log)) {
       const sessionIds = [
         ...await listSessionIds(storage, sessionsScope, workspaceId, log),
       ].toSorted();
-      const found = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => {
+      const fingerprinted = await mapBounded(sessionIds, SCAN_CONCURRENCY, async (sessionId) => {
         const fingerprint = await sessionStateFingerprint(
           storage,
           sessionsScope,
@@ -508,11 +610,25 @@ export class SessionIndexProjector {
           sessionId,
           log,
         );
-        const result = await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
         scannedCount += 1;
         await maybeYield(scannedCount % COOPERATIVE_SCAN_ITEMS === 0);
-        return { sessionId, fingerprint, result };
+        return { sessionId, fingerprint };
       });
+      let summaryReadCount = 0;
+      const found = await mapBounded(
+        fingerprinted,
+        SUMMARY_READ_CONCURRENCY,
+        async ({ sessionId, fingerprint }) => {
+          const result = isLargeFingerprint(fingerprint)
+            ? await runLargeRead(() =>
+                readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log),
+              )
+            : await readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+          summaryReadCount += 1;
+          await maybeYield(summaryReadCount % COOPERATIVE_SCAN_ITEMS === 0);
+          return { sessionId, fingerprint, result };
+        },
+      );
       const activeSessionIds: string[] = [];
       const archivedSessionIds: string[] = [];
       for (const item of found) {
@@ -543,7 +659,7 @@ export class SessionIndexProjector {
     let chunk: WriteOp[] = [];
     for (const op of ops) {
       chunk.push(op);
-      if ((chunk.length & 63) === 0) await maybeYield();
+      if ((chunk.length & 15) === 0) await maybeYield();
       if (chunk.length === WRITE_CHUNK) {
         await this.deps.queryStore.batch(chunk);
         chunk = [];

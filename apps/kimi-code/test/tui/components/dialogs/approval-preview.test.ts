@@ -168,4 +168,27 @@ describe('ApprovalPreviewViewer', () => {
     const second = viewer.render(80).join('\n');
     expect(first).toBe(second);
   });
+
+  it('renders all diff entries when blocks contains multiple edits', () => {
+    const blocks = [
+      { type: 'diff' as const, path: 'src/multi.ts', old_text: 'one', new_text: 'ONE' },
+      { type: 'diff' as const, path: 'src/multi.ts', old_text: 'two', new_text: 'TWO' },
+    ];
+    const viewer = new ApprovalPreviewViewer(
+      {
+        block: blocks[0]!,
+        blocks,
+        onClose: () => {},
+        maxRows: () => 24,
+      },
+      { columns: 100, rows: 24 } as never,
+    );
+
+    const text = strip(viewer.render(100).join('\n'));
+    expect(text).toContain('src/multi.ts (2 edits)');
+    expect(text).toContain('Edit 1/2');
+    expect(text).toContain('Edit 2/2');
+    expect(text).toContain('ONE');
+    expect(text).toContain('TWO');
+  });
 });

@@ -47,18 +47,18 @@ CLI 和 TUI 是一个终端界面，由输入框、对话视图和状态栏组�
 
 ### Plan 模式
 
-Plan 模式下，Agent 先输出行动计划，等待你确认后才动手修改文件，适合复杂或高风险任务。
+Plan 模式下，Agent 先调研并写出行动计划，再动手修改其他文件，适合复杂或高风险任务；规划期间的工具限制见 [Plan 模式工具](../reference/tools.md#plan-模式)。
 
 - 切换：`Shift-Tab` 或 `/plan`
 - 清除当前计划：`/plan clear`（仅空闲时）
 
-Agent 给出方案后会停下来等你：批准、拒绝，或要求修改。退出 Plan 模式需要你确认，即使开着 YOLO 模式也一样；Auto 和「替我审批」是例外，计划退出自动批准，并在记录里标为 "Auto-approved"。
+在默认的 `free` Plan gate 下，Agent 调用 `ExitPlanMode` 会直接退出 Plan 模式而无需人工确认（记录中标为 "Auto-approved"，同时提醒 Agent 你尚未审阅该计划，是否开始执行遵循你的原始指令）。将 Plan gate 设为 `gated` 后，Manual 模式下退出 Plan 模式会停下来等你批准、拒绝或要求修改；Auto、「替我审批」和 YOLO 模式则会自动批准退出。
 
 ### 权限模式
 
 `/permission` 在 Manual、Auto、「替我审批」和 YOLO 之间切换。
 
-**YOLO 模式**（`/yolo`）自动批准 Agent 的文件访问，包括 `.env`、SSH 私钥等敏感目标。显式 deny 规则仍优先。退出 Plan 模式仍要审核，Agent 也仍可能向你提问。
+**YOLO 模式**（`/yolo`）自动批准 Agent 的文件访问（包括 `.env`、SSH 私钥等敏感目标）以及 `gated` 下的计划退出。显式 deny 规则仍优先，Agent 也仍可能向你提问。
 
 **Auto 模式**（`/auto`）自动批准普通工具调用和计划退出，访问敏感文件和工作区里指向外部目标的链接时才会问。显式 deny 规则仍会拦截，危险 Bash 命令默认也仍会请求审批，除非关掉该检查。
 

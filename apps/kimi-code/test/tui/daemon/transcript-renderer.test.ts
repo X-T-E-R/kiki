@@ -9,6 +9,10 @@ import { adaptQuestionResponse } from '#/tui/interactions/question-adapter';
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import type { ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { createBlockComponent, DaemonTranscriptRenderer, TranscriptNoteComponent } from '#/tui/daemon/transcript-renderer';
+import {
+  DaemonContentContinuationManager,
+  type ContentContinuationController,
+} from '#/tui/daemon/content-continuation';
 
 function strip(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '').replaceAll(/\u001B\]133;[ABC]\u0007/g, '');
@@ -989,5 +993,185 @@ describe('DaemonTranscriptRenderer', () => {
     for (const line of rendered) {
       expect(visibleWidth(line)).toBeLessThanOrEqual(56);
     }
+  });
+
+  it('pumps bounded tool and shell continuations on Ctrl+O expand, surfaces side-channel notes, and releases leases on collapse (#67, #68)', () => {
+    const released: string[] = [];
+    let contentRevision = 1;
+    let toolOutput = `${'0'.repeat(1024)}`;
+    let shellOutput = `BEGIN_ISSUE6_LINES\n${'x'.repeat(1005)}`;
+    const toolFrameSource = { kind: 'frame' as const, id: 'f-tool', turnId: 't0', stepId: 's0' };
+    const shellFrameSource = { kind: 'frame' as const, id: 'f-shell', turnId: 't0', stepId: 's0' };
+    let toolRefs = [
+      {
+        source: toolFrameSource,
+        revision: 'rev-1',
+        path: ['output'],
+        kind: 'text' as const,
+        direction: 'forward' as const,
+        offset: 1024,
+        total: 2048,
+      },
+    ];
+    let shellRefs = [
+      {
+        source: shellFrameSource,
+        revision: 'rev-1',
+        path: ['output'],
+        kind: 'text' as const,
+        direction: 'forward' as const,
+        offset: 1024,
+        total: 4096,
+      },
+    ];
+    const notesByToolId = new Map<string, string>([
+      [
+        'call_edit_1',
+        'Note: stale.txt changed on disk since you last read it; the edit was applied because the text it replaced still matched exactly.',
+      ],
+    ]);
+    const hydratedNotes = new Map<string, string>();
+
+    const controller: ContentContinuationController = {
+      beginContentRead(agentId, source, roots) {
+        const key = `${agentId}:${source.kind}:${source.id}:${roots.join(',')}`;
+        if (source.id === 'f-tool') {
+          toolOutput = `${'0'.repeat(1024)}\nEND_TOOL_CONTINUATION`;
+          toolRefs = [];
+          contentRevision += 1;
+        } else if (source.id === 'f-shell') {
+          shellOutput = `BEGIN_ISSUE6_LINES\n${'x'.repeat(1005)}\nEND_ISSUE6_LINES`;
+          shellRefs = [];
+          contentRevision += 1;
+        }
+        return {
+          release() {
+            released.push(key);
+          },
+          retry() {},
+        };
+      },
+      contentRefsFor(_agentId, source) {
+        if (source.kind === 'frame' && source.id === 'f-tool') return toolRefs;
+        if (source.kind === 'frame' && source.id === 'f-shell') return shellRefs;
+        return [];
+      },
+      isContentRange() {
+        return false;
+      },
+      async readContentRange() {
+        return '';
+      },
+      async loadTranscriptDetail() {
+        return true;
+      },
+      async lookupToolCall(_agentId, toolCallId) {
+        const note = notesByToolId.get(toolCallId);
+        if (note !== undefined) {
+          hydratedNotes.set(toolCallId, note);
+          contentRevision += 1;
+          return { status: 'found', frame: { note } };
+        }
+        return { status: 'found', frame: {} };
+      },
+      getToolCallDetail(_agentId, toolCallId) {
+        const note = hydratedNotes.get(toolCallId);
+        return note === undefined ? undefined : { status: 'found', frame: { note } };
+      },
+      getContentRevision() {
+        return contentRevision;
+      },
+    };
+
+    const manager = new DaemonContentContinuationManager();
+    manager.setTarget(controller, 'main');
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+
+    const currentBlocks = (): Block[] => [
+      {
+        kind: 'tool',
+        id: 'block-edit',
+        frameId: 'f-edit',
+        stepId: 's0',
+        turnId: 't0',
+        toolCallId: 'call_edit_1',
+        name: 'Edit',
+        argsText: '{"path":"stale.txt","old_string":"a","new_string":"b"}',
+        args: { path: 'stale.txt', old_string: 'a', new_string: 'b' },
+        display: undefined,
+        description: undefined,
+        status: 'done',
+        output: 'Edited stale.txt',
+        isError: false,
+        durationMs: 10,
+        progressText: undefined,
+      },
+      {
+        kind: 'tool',
+        id: 'block-wait',
+        frameId: 'f-tool',
+        stepId: 's0',
+        turnId: 't0',
+        toolCallId: 'call_wait_1',
+        name: 'TaskWait',
+        argsText: '{"timeout":5}',
+        args: { timeout: 5 },
+        display: undefined,
+        description: undefined,
+        status: 'done',
+        output: toolOutput,
+        outputPending: toolRefs.length > 0,
+        isError: false,
+        durationMs: 20,
+        progressText: undefined,
+      },
+      {
+        kind: 'shell',
+        id: 'block-shell',
+        frameId: 'f-shell',
+        stepId: 's0',
+        turnId: 't0',
+        commandId: 'call_bash_1',
+        command: 'seq 1 5000',
+        output: shellOutput,
+        done: true,
+        isError: false,
+      },
+    ];
+
+    const syncView = () => {
+      const blocks = currentBlocks();
+      manager.syncBlocks(blocks);
+      renderer.sync(blocks, {
+        toolMetaRevision: manager.getRevision(),
+        resolveBlockMeta: (block) => manager.resolveBlockMeta(block),
+      });
+    };
+
+    syncView();
+    const collapsedOut = strip(container.render(120).join('\n'));
+    expect(collapsedOut).toContain('stale.txt changed on disk since you last read it');
+    expect(collapsedOut).not.toContain('END_TOOL_CONTINUATION');
+    expect(collapsedOut).not.toContain('END_ISSUE6_LINES');
+    expect(released).toEqual([]);
+
+    manager.setExpanded(true);
+    renderer.setExpanded(true);
+    syncView();
+    syncView();
+
+    const expandedOut = strip(container.render(120).join('\n'));
+    expect(expandedOut).toContain('END_TOOL_CONTINUATION');
+    expect(expandedOut).toContain('BEGIN_ISSUE6_LINES');
+    expect(expandedOut).toContain('END_ISSUE6_LINES');
+
+    manager.setExpanded(false);
+    renderer.setExpanded(false);
+    expect(released).toEqual([
+      'main:frame:f-tool:output,error,note',
+      'main:frame:f-shell:output,error,note',
+    ]);
+    renderer.dispose();
   });
 });

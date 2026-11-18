@@ -141,7 +141,7 @@ export class WorkspaceAgentProfileLoaderService
     this._register(
       handle.onDidChange(() => {
         this.watchDebounce.cancelAndSet(() => {
-          void this.reload().catch((error) => {
+          void this.reloadFromWatch().catch((error) => {
             this.log.warn(`agent profile loader "workspace" reload failed: ${String(error)}`);
           });
         }, WATCH_DEBOUNCE_MS);

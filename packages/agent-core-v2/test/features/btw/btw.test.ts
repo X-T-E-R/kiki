@@ -780,6 +780,8 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       };
 
       let branchSealed = false;
+      let branchToolsLocked = false;
+      const observedLabelsAtDispatch: Array<{ event: string; labels?: Record<string, string>; completedAt?: number }> = [];
       const branchPromptEnqueue = vi.fn(async () => ({ id: 'bp-1' }));
       const branchHandle = {
         id: 'branch-side-1',
@@ -789,7 +791,21 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
               return {
                 dispatch: vi.fn(async (ev: unknown) => {
                   dispatchedBranchEvents.push(ev);
-                  if (ev instanceof AgentBranchSealed) branchSealed = ev.sealed;
+                  if (ev instanceof AgentBranchSealed) {
+                    branchSealed = ev.sealed;
+                    observedLabelsAtDispatch.push({
+                      event: 'agent.branch_sealed',
+                      labels: { ...agentsMeta['branch-side-1']?.labels },
+                      completedAt: agentsMeta['branch-side-1']?.completedAt,
+                    });
+                  }
+                  if (ev instanceof AgentToolLockChanged) {
+                    branchToolsLocked = ev.locked;
+                    observedLabelsAtDispatch.push({
+                      event: 'agent.tool_lock_changed',
+                      labels: { ...agentsMeta['branch-side-1']?.labels },
+                    });
+                  }
                 }),
               };
             }
@@ -803,7 +819,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
               return {
                 get: (key: unknown) => {
                   if (key === branchSealedKey) return branchSealed;
-                  if (key === branchToolLockKey) return false;
+                  if (key === branchToolLockKey) return branchToolsLocked;
                   if (key === turnKey) return { nextTurnId: 3 };
                   return undefined;
                 },
@@ -878,6 +894,9 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       expect(dispatchedBranchEvents.some((ev) => ev instanceof BranchBase)).toBe(true);
       expect(branchPromptEnqueue).toHaveBeenCalledWith(expect.objectContaining({ waitForLaunch: false }));
 
+      await branchService.setToolsLocked({ branchId: 'branch-side-1', locked: true });
+      await branchService.setToolsLocked({ branchId: 'branch-side-1', locked: false });
+
       const prompted = await branchService.foldBranch({ branchId: 'branch-side-1' });
       expect(prompted.status).toBe('prompted');
       expect(prompted.sealed).toBe(false);
@@ -933,6 +952,21 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       const undoCutAfterMerge = computeUndoCut(mainMessages, 1);
       expect(undoCutAfterMerge.removedCount).toBe(1);
       expect(mainMessages.slice(0, undoCutAfterMerge.cutIndex).some((m) => m.origin?.kind === 'branch_fold')).toBe(false);
+      expect(observedLabelsAtDispatch).toEqual([
+        {
+          event: 'agent.tool_lock_changed',
+          labels: expect.objectContaining({ toolsLocked: 'true' }),
+        },
+        {
+          event: 'agent.tool_lock_changed',
+          labels: expect.objectContaining({ toolsLocked: 'false' }),
+        },
+        {
+          event: 'agent.branch_sealed',
+          labels: expect.objectContaining({ branchSealed: 'true' }),
+          completedAt: expect.any(Number),
+        },
+      ]);
     } finally {
       disposables.dispose();
     }

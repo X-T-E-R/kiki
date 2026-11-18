@@ -18,6 +18,7 @@ import { AgentWorkspace, countPendingInteractions, HEADER_ICON_BUTTON, nowReceip
 import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
 import { PhoneRemoteSpaceLine } from './PageChrome';
+import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine, type PendingRuntimeControls } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -4160,7 +4161,10 @@ boundExecution,
     () => ({
       client,
       host,
-      refreshSessions: () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
+      refreshSessions: () => {
+        void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+        invalidatePersonaSessionLists(queryClient);
+      },
       navigate,
     }),
     [client, host, queryClient, navigate],
@@ -4502,6 +4506,7 @@ boundExecution,
         // Open-tail fork: navigate only — nothing auto-runs in the copy.
         const fork = await controller.forkFromMessage(messageId, seed);
         queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
+        invalidatePersonaSessionLists(queryClient);
         pushToast({ tone: 'success', text: t('action.forkDoneSession') });
         void navigate(`/s/${fork.id}`);
       })()

@@ -2231,4 +2231,34 @@ describe('ToolCallComponent', () => {
       component.dispose();
     });
   });
+
+  describe('side-channel notes and continuation status (#67, #68)', () => {
+    it('shows actionable notes collapsed and reveals <system> metadata plus continuation status when expanded without altering Read line count', () => {
+      const component = new ToolCallComponent(
+        { id: 'call_read_note', name: 'Read', args: { path: 'stale.txt' } },
+        {
+          tool_call_id: 'call_read_note',
+          output: '1\talpha\n2\tbeta',
+          note: 'Note: ignored unknown argument(s): fixture_probe.\n<system>2 lines read starting at line 1. Total lines in file: 2.</system>',
+          continuationStatus: { state: 'loading' },
+        },
+        stubTui(30),
+      );
+
+      const collapsed = strip(component.render(120).join('\n'));
+      expect(collapsed).toContain('2 lines');
+      expect(collapsed).toContain('Note: ignored unknown argument(s): fixture_probe.');
+      expect(collapsed).not.toContain('2 lines read starting at line 1');
+      expect(collapsed).not.toContain('Loading full output…');
+
+      component.setExpanded(true);
+      const expanded = strip(component.render(120).join('\n'));
+      expect(expanded).toContain('Note: ignored unknown argument(s): fixture_probe.');
+      expect(expanded).toContain('2 lines read starting at line 1. Total lines in file: 2.');
+      expect(expanded).not.toContain('<system>');
+      expect(expanded).toContain('Loading full output…');
+
+      component.dispose();
+    });
+  });
 });

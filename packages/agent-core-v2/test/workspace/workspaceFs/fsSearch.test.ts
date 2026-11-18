@@ -160,6 +160,10 @@ describe('local workspace search indexes', () => {
       expect(inventory.entries).toContainEqual(expect.objectContaining({ path: 'empty', kind: 'directory' }));
       expect(workspacePathInventory(root, 2)).toEqual({ entries: [], overflow: true });
       await rm(join(root, '.git'), { recursive: true });
+      await mkdir(join(root, '.GIT'), { recursive: true });
+      await writeFile(join(root, '.GIT', 'config'), 'secret');
+      expect(workspacePathInventory(root, 250_000).entries.some(entry => entry.path.toLowerCase() === '.git' || entry.path.toLowerCase().startsWith('.git/'))).toBe(false);
+      await rm(join(root, '.GIT'), { recursive: true });
       await writeFile(join(root, '.git'), 'gitdir: example');
       expect(workspacePathInventory(root, 250_000).entries.some(entry => entry.path === '.git')).toBe(false);
       const deep = join(root, ...Array.from({ length: 70 }, () => 'd'));

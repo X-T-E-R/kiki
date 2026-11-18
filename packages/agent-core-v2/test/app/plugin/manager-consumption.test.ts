@@ -1032,4 +1032,41 @@ describe('PluginManager inherited installs', () => {
     expect(baseFile.plugins).toHaveLength(1);
     expect(baseFile.plugins[0]?.root.startsWith(await realpath(baseHome))).toBe(true);
   });
+
+  it('preserves valid inherited plugins when a sibling base-home entry is malformed and keeps failed inherited hook plugins fail-closed', async () => {
+    const baseHome = await makeKimiHome();
+    const home = await makeKimiHome();
+    const guardSource = await makePlugin('base-guard', {
+      skills: true,
+      hooks: [{ event: 'PreToolUse', command: 'echo base-guard' }],
+    });
+    const baseManager = new PluginManager({ kimiHomeDir: baseHome });
+    await baseManager.load();
+    await baseManager.install(guardSource);
+    await baseManager.setEnabled('base-guard', true);
+
+    const baseInstalledPath = path.join(baseHome, 'plugins', 'installed.json');
+    const baseRaw = JSON.parse(await readFile(baseInstalledPath, 'utf8')) as { version: number; plugins: unknown[] };
+    baseRaw.plugins.push({ id: 'dangling-entry', enabled: true });
+    await writeFile(baseInstalledPath, JSON.stringify(baseRaw), 'utf8');
+
+    let failBaseSkills = false;
+    const manager = new PluginManager({
+      kimiHomeDir: home,
+      inheritedHomeDir: baseHome,
+      discoverSkills: async () => {
+        if (failBaseSkills) throw new Error('base skill scan failed');
+        return { skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] };
+      },
+    });
+    await manager.load();
+    expect(manager.healthyEnabledHooks().map((item) => item.pluginId)).toEqual(['base-guard']);
+
+    failBaseSkills = true;
+    await manager.reload();
+    expect(manager.get('base-guard')).toMatchObject({ state: 'error', inherited: true });
+    expect(manager.brokenHookPlugins()).toEqual([
+      expect.objectContaining({ pluginId: 'base-guard', defaultEnabled: true, message: 'base skill scan failed' }),
+    ]);
+  });
 });

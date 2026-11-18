@@ -219,6 +219,12 @@ export interface RequestProjectionDecision {
   readonly pluginId?: string;
 }
 
+export interface PluginHookLoadFailure {
+  readonly pluginId: string;
+  readonly defaultEnabled: boolean;
+  readonly message: string;
+}
+
 export interface RequestProjectionMetrics {
   readonly evaluatedRequests: number;
   readonly matchedRequests: number;

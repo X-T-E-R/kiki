@@ -5,6 +5,7 @@ import {
   isBotOrRoomSession,
   mergePersonaConversations,
   sessionBelongsToPersona,
+  sessionMatchesPrivateFilter,
   sessionPersonaId,
   shouldHideFromSessionGroups,
 } from './personaSessionUtils';
@@ -22,8 +23,13 @@ describe('persona session attribution', () => {
     const bound = session({ agent_config: { model: '', profile: 'writer', persona: { id: 'a', name: 'A' } } });
     const oldBot = session({ metadata: { cwd: '/fixture/home', bot_persona_id: 'a' } });
     const room = session({ metadata: { cwd: '/fixture/room', room_persona_id: 'a', room_member_of: 'fixture-room' } });
-    expect([bound, oldBot, room].map((item) => sessionPersonaId(item))).toEqual(['a', 'a', 'a']);
-    expect([bound, oldBot, room].every((item) => sessionBelongsToPersona(item, 'a'))).toBe(true);
+    const legacyMeta = session({ metadata: { cwd: '/fixture/legacy', persona_id: 'a' } });
+    expect([bound, oldBot, room, legacyMeta].map((item) => sessionPersonaId(item))).toEqual(['a', 'a', 'a', 'a']);
+    expect([bound, oldBot, room, legacyMeta].every((item) => sessionBelongsToPersona(item, 'a'))).toBe(true);
+    expect(sessionMatchesPrivateFilter(session({ private: true }), 'hide')).toBe(false);
+    expect(sessionMatchesPrivateFilter(session({ private: true }), 'include')).toBe(true);
+    expect(sessionMatchesPrivateFilter(session({ private: true }), 'only')).toBe(true);
+    expect(sessionMatchesPrivateFilter(session({ private: false }), 'only')).toBe(false);
     expect(sessionBelongsToPersona(session({ agent_config: { model: '', profile: 'writer' } }), 'a')).toBe(false);
     expect(sessionBelongsToPersona(bound, 'b')).toBe(false);
   });

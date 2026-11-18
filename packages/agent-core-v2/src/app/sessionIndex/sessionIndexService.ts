@@ -129,6 +129,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private reconcileFlight: Promise<void> | undefined;
   private disposeFlight: Promise<void> | undefined;
   private reconcileRequest = 0;
+  private forcedReconcileRequest = 0;
   private reuseReconcileFingerprints = true;
   private nextReconcileRetryAt = 0;
   private reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
@@ -502,6 +503,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const retryAfterMs = this.nextReconcileRetryAt - Date.now();
     if (this.reconcileFlight === undefined && retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
     this.reconcileRequest += 1;
+    if (options?.reuseFingerprints !== true) {
+      this.forcedReconcileRequest = this.reconcileRequest;
+    }
     this.reuseReconcileFingerprints &&= options?.reuseFingerprints === true;
     if (this.reconcileFlight !== undefined) return this.reconcileFlight;
     this.reconcileRetryTimer.cancel();
@@ -517,10 +521,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   private async runReconcile(): Promise<void> {
+    let reuseAttemptFingerprints = this.reuseReconcileFingerprints;
     for (let attempt = 0; attempt < RECONCILE_MAX_ATTEMPTS; attempt++) {
       this.checkReconcileActive(attempt);
       const request = this.reconcileRequest;
-      const reuseFingerprints = this.reuseReconcileFingerprints;
+      const reuseFingerprints = reuseAttemptFingerprints;
       const mutated = new Map<string, string | undefined>();
       const subscription = this.mirror.onDidChange(({ id, workspaceId }) => mutated.set(id, workspaceId));
       let committed = false;
@@ -545,11 +550,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             return false;
           }
           if (this.mirror.epoch() !== baseline.epoch || revision?.seq !== baseline.revision) {
-            wipeAllFingerprints = mutated.size === 0 || !knownMutationsOnly;
+            wipeAllFingerprints = mutated.size === 0 || !knownMutationsOnly || this.forcedReconcileRequest > request;
             return false;
           }
           if (request !== this.reconcileRequest) {
-            wipeAllFingerprints = !knownMutationsOnly;
+            wipeAllFingerprints = !knownMutationsOnly || this.forcedReconcileRequest > request;
             return false;
           }
           await commit();
@@ -559,12 +564,14 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       } finally {
         subscription.dispose();
         if (!committed) {
-          if (wipeAllFingerprints) {
+          if (wipeAllFingerprints || this.forcedReconcileRequest > request) {
             this.projector.invalidateFingerprint();
+            reuseAttemptFingerprints = false;
           } else {
             for (const [id, workspaceId] of mutated) {
               if (workspaceId !== undefined) this.projector.invalidateFingerprint(workspaceId, id);
             }
+            reuseAttemptFingerprints = true;
           }
         }
       }

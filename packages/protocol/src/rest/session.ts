@@ -103,6 +103,34 @@ export const listSessionsQuerySchema = cursorQuerySchema.and(
 });
 export type ListSessionsQuery = z.infer<typeof listSessionsQuerySchema>;
 
+export const personaSessionHeadsQuerySchema = z.object({
+  per_persona_limit: z.coerce.number().int().min(1).max(100).default(10),
+  include_private: booleanQueryParam,
+  private_only: booleanQueryParam,
+}).superRefine((value, ctx) => {
+  if (value.private_only === true && value.include_private === false) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'private_only and include_private are mutually exclusive',
+      path: ['private_only'],
+    });
+  }
+});
+export interface PersonaSessionHeadsQuery {
+  readonly per_persona_limit?: number;
+  readonly include_private?: boolean;
+  readonly private_only?: boolean;
+}
+
+export const personaSessionHeadBucketSchema = z.object({
+  total: z.number().int().nonnegative(),
+  items: z.array(sessionSchema),
+});
+export type PersonaSessionHeadBucket = z.infer<typeof personaSessionHeadBucketSchema>;
+
+export const personaSessionHeadsResponseSchema = z.record(z.string(), personaSessionHeadBucketSchema);
+export type PersonaSessionHeadsResponse = z.infer<typeof personaSessionHeadsResponseSchema>;
+
 export const getSessionResponseSchema = sessionSchema;
 export type GetSessionResponse = z.infer<typeof getSessionResponseSchema>;
 

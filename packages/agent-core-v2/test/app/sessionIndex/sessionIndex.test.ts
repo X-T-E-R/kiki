@@ -4871,4 +4871,85 @@ describe('FileSessionIndex (read model)', () => {
       clearInterval(interval);
     }
   });
+
+  it('yields during planReconcile over large metadata files and reuses clean fingerprints and summaries across superseded reconcile attempts', async () => {
+    const largeAgents: Record<string, { parentAgentId: string; resultSummary: string }> = {};
+    for (let i = 0; i < 120; i++) {
+      largeAgents[`child-${i}`] = {
+        parentAgentId: 'main',
+        resultSummary: 'x'.repeat(800),
+      };
+    }
+    for (let i = 0; i < 24; i++) {
+      await seedSession(`s-clean-${i}`, { title: `clean-${i}`, createdAt: 1, updatedAt: i + 1 });
+    }
+    for (let i = 0; i < 4; i++) {
+      await seedSession(`s-large-${i}`, {
+        title: `large-initial-${i}`,
+        createdAt: 1,
+        updatedAt: 100 + i,
+        agents: largeAgents,
+      });
+    }
+    const storage = new CountingStorage(homeDir);
+    const docs = new JsonAtomicDocumentStore(storage);
+    const store = build(storage, true, new AppendLogStore(storage), docs);
+    await store.prepare();
+
+    for (let i = 0; i < 4; i++) {
+      await seedSession(`s-large-${i}`, {
+        title: `large-drift-${i}`,
+        createdAt: 1,
+        updatedAt: 200 + i,
+        agents: largeAgents,
+      });
+    }
+
+    let immediateTicks = 0;
+    let pumping = true;
+    const pumpImmediate = (): void => {
+      if (!pumping) return;
+      immediateTicks += 1;
+      setImmediate(pumpImmediate);
+    };
+    setImmediate(pumpImmediate);
+
+    const projector = (store as unknown as { projector: SessionIndexProjector }).projector;
+    const originalPlan = projector.planReconcile.bind(projector);
+    const docGetSpy = vi.spyOn(docs, 'get');
+    const mtimeSpy = vi.spyOn(storage, 'mtime');
+    let attemptIndex = 0;
+    let attemptTwoDocReads = 0;
+    let attemptTwoStats = 0;
+    const planSpy = vi.spyOn(projector, 'planReconcile').mockImplementation(async (gen, opts) => {
+      attemptIndex += 1;
+      const beforeReads = docGetSpy.mock.calls.length;
+      const beforeStats = mtimeSpy.mock.calls.length;
+      const commit = await originalPlan(gen, opts);
+      if (attemptIndex === 1) {
+        await seedSession('s-clean-0', { title: 'mutated-during-attempt-1', createdAt: 1, updatedAt: 999 });
+        mirror.record(summary('s-clean-0', { title: 'mutated-during-attempt-1', updatedAt: 999 }));
+        await mirror.drain();
+      } else if (attemptIndex === 2) {
+        attemptTwoDocReads = docGetSpy.mock.calls.length - beforeReads;
+        attemptTwoStats = mtimeSpy.mock.calls.length - beforeStats;
+      }
+      return commit;
+    });
+
+    try {
+      await store.reconcileNow();
+      expect(attemptIndex).toBe(2);
+      expect(immediateTicks).toBeGreaterThanOrEqual(4);
+      expect(attemptTwoDocReads).toBeLessThanOrEqual(2);
+      expect(attemptTwoStats).toBeLessThan(30);
+      expect((await store.get('s-large-3'))?.title).toBe('large-drift-3');
+      expect((await store.get('s-clean-0'))?.title).toBe('mutated-during-attempt-1');
+    } finally {
+      pumping = false;
+      planSpy.mockRestore();
+      docGetSpy.mockRestore();
+      mtimeSpy.mockRestore();
+    }
+  }, 20_000);
 });

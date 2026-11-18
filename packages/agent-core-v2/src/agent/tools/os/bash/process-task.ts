@@ -21,6 +21,27 @@ export type ProcessTaskOutputCallback = (
 ) => void;
 
 const STREAM_DRAIN_GRACE_MS = 250;
+const STREAM_DRAIN_MAX_MS = 5_000;
+
+interface StreamActivityTracker {
+  touch(): void;
+  subscribe(listener: () => void): () => void;
+}
+
+function createStreamActivityTracker(): StreamActivityTracker {
+  const listeners = new Set<() => void>();
+  return {
+    touch() {
+      for (const listener of listeners) listener();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
 
 export class ProcessTask implements AgentTask {
   readonly kind = 'process' as const;
@@ -43,9 +64,10 @@ export class ProcessTask implements AgentTask {
   }
 
   async start(sink: AgentTaskSink): Promise<void> {
+    const activity = createStreamActivityTracker();
     const streamDrained = Promise.all([
-      observeProcessStream(this.proc.stdout, 'stdout', sink, this.onOutput),
-      observeProcessStream(this.proc.stderr, 'stderr', sink, this.onOutput),
+      observeProcessStream(this.proc.stdout, 'stdout', sink, this.onOutput, activity),
+      observeProcessStream(this.proc.stderr, 'stderr', sink, this.onOutput, activity),
     ]).then(() => undefined);
     void streamDrained.catch(() => {});
 
@@ -62,13 +84,13 @@ export class ProcessTask implements AgentTask {
     let settlement: AgentTaskSettlement;
     try {
       const exitCode = await this.proc.wait();
-      await waitForStreamDrain(streamDrained);
+      await waitForStreamDrain(streamDrained, activity);
       this.exitCode = exitCode;
       settlement = {
         status: sink.signal.aborted ? 'killed' : exitCode === 0 ? 'completed' : 'failed',
       };
     } catch (error: unknown) {
-      await waitForStreamDrainSettled(streamDrained);
+      await waitForStreamDrainSettled(streamDrained, activity);
       this.exitCode = this.proc.exitCode;
       settlement = {
         status: sink.signal.aborted ? 'killed' : 'failed',
@@ -127,24 +149,47 @@ export class ProcessTask implements AgentTask {
   }
 }
 
-async function waitForStreamDrain(streamDrained: Promise<void>): Promise<void> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+async function waitForStreamDrain(
+  streamDrained: Promise<void>,
+  activity?: StreamActivityTracker,
+): Promise<void> {
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let maxTimer: ReturnType<typeof setTimeout> | undefined;
+  let unsubscribe: (() => void) | undefined;
+  let resolveTimeout!: () => void;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    resolveTimeout = resolve;
+  });
+  let settled = false;
+  const finishTimeout = (): void => {
+    if (settled) return;
+    settled = true;
+    resolveTimeout();
+  };
   try {
-    await Promise.race([
-      streamDrained,
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, STREAM_DRAIN_GRACE_MS);
-        timeout.unref?.();
-      }),
-    ]);
+    const resetIdle = (): void => {
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+      idleTimer = setTimeout(finishTimeout, STREAM_DRAIN_GRACE_MS);
+      idleTimer.unref?.();
+    };
+    resetIdle();
+    unsubscribe = activity?.subscribe(resetIdle);
+    maxTimer = setTimeout(finishTimeout, STREAM_DRAIN_MAX_MS);
+    maxTimer.unref?.();
+    await Promise.race([streamDrained, timeoutPromise]);
   } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
+    unsubscribe?.();
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    if (maxTimer !== undefined) clearTimeout(maxTimer);
   }
 }
 
-async function waitForStreamDrainSettled(streamDrained: Promise<void>): Promise<void> {
+async function waitForStreamDrainSettled(
+  streamDrained: Promise<void>,
+  activity?: StreamActivityTracker,
+): Promise<void> {
   try {
-    await waitForStreamDrain(streamDrained);
+    await waitForStreamDrain(streamDrained, activity);
   } catch {
   }
 }
@@ -154,10 +199,12 @@ function observeProcessStream(
   kind: ProcessTaskOutputKind,
   sink: AgentTaskSink,
   onOutput?: ProcessTaskOutputCallback,
+  activity?: StreamActivityTracker,
 ): Promise<void> {
   stream.setEncoding('utf8');
   const onData = (chunk: string): void => {
     if (chunk.length === 0) return;
+    activity?.touch();
     sink.appendOutput(chunk);
     if (sink.signal.aborted) return;
     onOutput?.(kind, chunk);
@@ -216,8 +263,10 @@ export function createProcessExecutor(
   onOutput?: ProcessTaskOutputCallback,
 ): (signal: AbortSignal, output: (data: string) => void) => Promise<ProcessTaskResult> {
   return async (signal, output) => {
+    const activity = createStreamActivityTracker();
     const forwardOutput = (chunk: string, kind: ProcessTaskOutputKind): void => {
       if (chunk.length === 0) return;
+      activity.touch();
       output(chunk);
       if (signal.aborted) return;
       onOutput?.(kind, chunk);
@@ -242,7 +291,7 @@ export function createProcessExecutor(
 
     try {
       const exitCode = await proc.wait();
-      await waitForStreamDrain(streamDrained);
+      await waitForStreamDrain(streamDrained, activity);
       signal.removeEventListener('abort', requestStop);
       await stopPromise;
       await disposeProcess(proc);
@@ -253,7 +302,7 @@ export function createProcessExecutor(
       }
       return { exitCode };
     } catch (error: unknown) {
-      await waitForStreamDrainSettled(streamDrained);
+      await waitForStreamDrainSettled(streamDrained, activity);
       signal.removeEventListener('abort', requestStop);
       await stopPromise;
       await disposeProcess(proc);

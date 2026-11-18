@@ -11,6 +11,7 @@ import type {
   EnabledPluginSystemPrompt,
   PluginAgentRoot,
   PluginCommandDef,
+  PluginHookLoadFailure,
   PluginInfo,
   PluginMcpServerEntry,
   PluginMutationSummary,
@@ -58,6 +59,11 @@ export interface PluginChangeEvent extends IWaitUntil {
   readonly reportFailure?: (error: unknown) => void;
 }
 
+export interface PluginHookSnapshot {
+  readonly hooks: readonly HookDef[];
+  readonly failures: readonly PluginHookLoadFailure[];
+}
+
 export interface IPluginService {
   readonly _serviceBrand: undefined;
 
@@ -81,6 +87,7 @@ export interface IPluginService {
   enabledMcpServers(workspaceId?: string, sessionId?: string): Promise<Record<string, McpServerConfig>>;
   mcpServerEntries(): Promise<readonly PluginMcpServerEntry[]>;
   enabledHooks(workspaceId?: string, sessionId?: string): Promise<readonly HookDef[]>;
+  inspectHooks?(workspaceId?: string, sessionId?: string): Promise<PluginHookSnapshot>;
   enabledHookRules(workspaceId?: string, sessionId?: string): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]>;
   enabledRequestProjections(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginRequestProjection[]>;
   resolveRequestProjection(input: {

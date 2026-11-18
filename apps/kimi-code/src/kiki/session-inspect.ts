@@ -101,6 +101,7 @@ export interface ToolTimelineEntry extends TimelineBase {
   readonly input: unknown;
   readonly output: unknown;
   readonly error: string | null;
+  readonly note: string | null;
 }
 
 export interface NoticeTimelineEntry extends TimelineBase {
@@ -950,6 +951,7 @@ function appendFrame(
   }
   const input = frame.input === undefined ? null : frame.input;
   const output = frame.output === undefined ? null : frame.output;
+  const note = frame.note ?? null;
   timeline.push({
     type: 'tool',
     id: frame.toolCallId,
@@ -957,10 +959,11 @@ function appendFrame(
     timestamp: frame.startedAt ?? fallbackTimestamp,
     name: frame.name,
     state: frame.state,
-    summary: toolSummary(frame.name, input, output, frame.error),
+    summary: toolSummary(frame.name, input, output, frame.error, frame.note),
     input,
     output,
     error: frame.error ?? null,
+    note,
   });
 }
 
@@ -1004,11 +1007,21 @@ function originTurnId(origin: unknown): string | null {
   return typeof turnId === 'number' && Number.isFinite(turnId) ? `t${turnId}` : null;
 }
 
-function toolSummary(name: string, input: unknown, output: unknown, error: string | undefined): string {
+function toolSummary(
+  name: string,
+  input: unknown,
+  output: unknown,
+  error: string | undefined,
+  note?: string,
+): string {
   const parts = [name];
   if (input !== null) parts.push(compactValue(input));
   if (error !== undefined) parts.push(`error: ${error}`);
   else if (output !== null) parts.push(`→ ${compactValue(output)}`);
+  if (note !== undefined && note.trim().length > 0) {
+    const cleaned = note.replaceAll(/<\/?system>/gu, '').replaceAll(/\s+/gu, ' ').trim();
+    if (cleaned.length > 0) parts.push(`[${cleaned}]`);
+  }
   return truncate(parts.join(' '), 240);
 }
 

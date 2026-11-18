@@ -1,6 +1,13 @@
 import { IPersonaStore, type PersonaCardFormat, type PersonaImportPreview } from '@kiki/agent-core-v2/app/persona/personaStore';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
-import { personaHomeInputSchema, personaHomeResponseSchema, personaStateUpdateSchema, sessionSchema, type Session } from '@kiki/protocol';
+import {
+  personaHomeInputSchema,
+  personaHomeResponseSchema,
+  personaSessionHeadsQuerySchema,
+  personaSessionHeadsResponseSchema,
+  personaStateUpdateSchema,
+  type Session,
+} from '@kiki/protocol';
 import { ISessionIndex, IWorkspacePersistence, IWorkspaceService, type Scope, type SessionSummary } from '@kiki/agent-core-v2';
 import {
   ErrorCode as ProtocolErrorCode,
@@ -37,22 +44,6 @@ import { resolveSessionFacts, toWireSession } from './sessions';
 interface PersonaCursorReader {
   getCursor(sessionId: string): Promise<{ readonly seq: number } | undefined> | { readonly seq: number } | undefined;
 }
-
-const personaSessionHeadsQuerySchema = z.object({
-  per_persona_limit: z.coerce.number().int().min(1).max(100).default(10),
-  include_private: z.preprocess(
-    (value) => (value === 'false' || value === false ? false : value === 'true' || value === true ? true : undefined),
-    z.boolean().default(true),
-  ),
-});
-
-const personaSessionHeadsResponseSchema = z.record(
-  z.string(),
-  z.object({
-    total: z.number().int().nonnegative(),
-    items: z.array(sessionSchema),
-  }),
-);
 
 interface PersonasRouteHost {
   get(
@@ -135,7 +126,8 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
   }, async (req, reply) => {
     try {
       const perPersonaLimit = req.query.per_persona_limit;
-      const includePrivate = req.query.include_private;
+      const privateOnly = req.query.private_only === true;
+      const includePrivate = privateOnly || req.query.include_private === true;
       const [catalog, personaList] = await Promise.all([
         core.accessor.get(IWorkspacePersistence).load(),
         core.accessor.get(IPersonaStore).list({ includeArchived: true }),
@@ -162,7 +154,8 @@ export function registerPersonasRoutes(app: PersonasRouteHost, core: Scope, broa
         if (page.items.length === 0) break;
         for (const summary of page.items) {
           if (summary.archived) continue;
-          if (!includePrivate && summary.private === true) continue;
+          const isPrivate = summary.private === true;
+          if (privateOnly ? !isPrivate : (!includePrivate && isPrivate)) continue;
           const cwd = summary.cwd ?? roots.get(summary.workspaceId);
           if (cwd === undefined) continue;
           const personaId = resolveSessionPersonaId(core, summary);

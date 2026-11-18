@@ -486,7 +486,7 @@ Use settings formats to give both the generic settings form and your own panel t
 }
 ```
 
-`format` applies only to non-secret strings. `kiki-model` stores a configured model ID; `kiki-connection` stores a connection ID. For a required property, `requiredUnless` names another non-secret string in the same schema: a nonempty alternate value satisfies that field's requirement. It does not change storage or select a connection by itself. Keep local API settings only if your plugin's own adapter supports them; media generation continues to use its media adapter.
+Each property declares `type` (`string`, `boolean`, `number`, or `integer`, with optional `minimum`, `maximum`, `enum`, and `placeholder`; Kiki validates `integer` and numeric bounds when saving settings). `format` applies only to non-secret strings. `kiki-model` stores a configured model ID; `kiki-connection` stores a connection ID. For a required property, `requiredUnless` names another non-secret string in the same schema: a nonempty alternate value satisfies that field's requirement. It does not change storage or select a connection by itself. When a plugin with other valid contributions has an invalid `x-kiki.settings` schema, Kiki disables only its settings form and records a warning unless a media or ASR declaration depends on those settings. Keep local API settings only if your plugin's own adapter supports them; media generation continues to use its media adapter.
 
 Inside a registered tool, stream a configured model with `context.models.stream()`:
 
@@ -829,7 +829,7 @@ A plugin can declare hook rules in its manifest that run on lifecycle events whi
 
 Plugin hooks work like global ones — [Hooks](./hooks.md) has the event list, the stdin JSON payload, and how exit codes affect the main flow. Three differences:
 
-- They run only while the plugin is **enabled**.
+- They run only while the plugin is **enabled** in the active workspace and session scope. If an enabled plugin with hooks (or with an unreadable manifest whose hook declarations cannot be verified) fails to load, blocking events fail closed with that plugin's ID and diagnostic only in scopes where the plugin is active.
 - Each hook's working directory is the plugin root, so `command` can use `./` paths inside the plugin.
 - The process gets two extra environment variables: `KIKI_HOME` and `KIKI_PLUGIN_ROOT`.
 

@@ -1,14 +1,25 @@
 import type { PersonaSummary, Session } from '@kiki/protocol';
+import type { SessionPrivateFilter } from '@kiki/session-core/settings';
 
 /** The actual binding wins; metadata is the compatibility source for cold/legacy sessions. */
 export function sessionPersonaId(session: Session): string | undefined {
   const bound = session.agent_config?.persona?.id;
   if (bound) return bound;
   const metadata = session.metadata;
-  const bot = metadata?.['bot_persona_id'];
-  if (typeof bot === 'string' && bot !== '') return bot;
-  const room = metadata?.['room_persona_id'];
-  return typeof room === 'string' && room !== '' ? room : undefined;
+  for (const key of ['bot_persona_id', 'room_persona_id', 'persona_id'] as const) {
+    const candidate = metadata?.[key];
+    if (typeof candidate === 'string' && candidate !== '') return candidate;
+  }
+  return undefined;
+}
+
+export function sessionMatchesPrivateFilter(
+  session: Pick<Session, 'private'>,
+  mode: SessionPrivateFilter = 'hide',
+): boolean {
+  if (mode === 'hide') return session.private !== true;
+  if (mode === 'only') return session.private === true;
+  return true;
 }
 
 /** With a directory, only the current home is hidden; replaced legacy homes stay in history. */

@@ -44,11 +44,11 @@ const initialSnapshot: ImSessionSnapshot = {
       mobile_interactions: true,
     },
     {
-      id: 'b-wx-chenmo',
+      id: 'b-wx-alice',
       provider_instance_id: 'wx-main',
       provider_kind: 'wechat_bridge',
       account_id: 'wx-1',
-      identity: { chat_id: 'wxid_chenmo', topic_id: '0', sender_id: 'wxid_chenmo', sender_name: '陈默' },
+      identity: { chat_id: 'wxid_alice', topic_id: '0', sender_id: 'wxid_alice', sender_name: 'Alice' },
       session_id: 'sess_release_044',
       enabled: true,
       session_enabled: true,

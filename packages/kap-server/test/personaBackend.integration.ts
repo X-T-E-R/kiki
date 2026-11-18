@@ -479,5 +479,36 @@ describe('persona backend contracts', () => {
     expect(heads.data['nia-director']?.total).toBe(1);
     expect(heads.data['nia-director']?.items.map((item) => item.id)).toEqual(['cold-director']);
     expect(Object.keys(heads.data).sort()).toEqual(['nia-director', 'nia-fast']);
+
+    await liveHandle.accessor.get(ISessionMetadata).update({ private: true });
+    const publicHeads = await request<Record<string, { total: number; items: Session[] }>>('/personas/session-heads?per_persona_limit=10');
+    expect(publicHeads.code, publicHeads.msg).toBe(0);
+    expect(publicHeads.data['nia-fast']?.total).toBe(1);
+    expect(publicHeads.data['nia-fast']?.items.map((item) => item.id)).toEqual(['cold-fast']);
+
+    const privateOnlyHeads = await request<Record<string, { total: number; items: Session[] }>>('/personas/session-heads?per_persona_limit=10&private_only=true');
+    expect(privateOnlyHeads.code, privateOnlyHeads.msg).toBe(0);
+    expect(privateOnlyHeads.data['nia-fast']?.total).toBe(1);
+    expect(privateOnlyHeads.data['nia-fast']?.items.map((item) => item.id)).toEqual([liveSession.id]);
+    expect(privateOnlyHeads.data['nia-director']).toBeUndefined();
+
+    const conflictHeads = await request('/personas/session-heads?private_only=true&include_private=false');
+    expect(conflictHeads.code).toBe(40001);
+
+    await liveHandle.accessor.get(ISessionMetadata).update({ private: false });
+    liveProfile.applyBindingSnapshot({
+      ...liveProfile.data(),
+      personaId: undefined,
+      personaRevision: undefined,
+      personaOverrides: undefined,
+      persona: undefined,
+    });
+    const unboundPoint = await request<Session>(`/sessions/${liveSession.id}`);
+    expect(unboundPoint.data.agent_config.persona).toBeUndefined();
+    const unboundQuery = await request<{ items: { id: string; meta: { persona_id?: string } }[] }>('/sessions/query?page_size=50');
+    expect(unboundQuery.data.items.find((item) => item.id === liveSession.id)?.meta.persona_id).toBeUndefined();
+    const unboundHeads = await request<Record<string, { total: number; items: Session[] }>>('/personas/session-heads?per_persona_limit=10&include_private=true');
+    expect(unboundHeads.data['nia-fast']?.items.map((item) => item.id)).toEqual(['cold-fast']);
+    expect(unboundHeads.data['nia-director']?.items.map((item) => item.id)).toEqual(['cold-director']);
   });
 });

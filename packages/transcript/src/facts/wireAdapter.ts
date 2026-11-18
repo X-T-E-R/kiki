@@ -1865,6 +1865,7 @@ export class TranscriptWireAdapter {
           result: {
             output: content.map(textOfPart).join(''),
             isError: message['isError'] === true,
+            note: stringOf(message['note']),
           },
         },
         record.time,
@@ -2450,6 +2451,8 @@ export class TranscriptWireAdapter {
     const result = objectOf(event['result']);
     const output = result?.['output'];
     const isError = result?.['isError'] === true;
+    const rawNote = stringOf(result?.['note']);
+    const note = rawNote !== undefined && rawNote.trim().length > 0 ? rawNote : undefined;
     const media = mediaPartsOf(Array.isArray(output) ? output : []);
     const attachmentIds = media.length === 0
       ? hit.frame.attachmentIds
@@ -2461,6 +2464,7 @@ export class TranscriptWireAdapter {
       output,
       attachmentIds,
       error: isError && typeof output === 'string' ? output : undefined,
+      note,
       errorCode: isError ? stringOf(result?.['errorCode']) : undefined,
       endedAt: isoOf(time),
     };

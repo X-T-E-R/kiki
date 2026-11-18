@@ -403,6 +403,15 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       list: (options) => transport.json<readonly PersonaSummary[]>('/personas', {
         query: { includeArchived: options?.includeArchived },
       }),
+      sessionHeads: (query, options) => transport.json<import('@kiki/protocol').PersonaSessionHeadsResponse>('/personas/session-heads', {
+        query: query === undefined ? undefined : {
+          per_persona_limit: query.per_persona_limit,
+          include_private: query.include_private,
+          private_only: query.private_only,
+        },
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
+      }),
       get: (id) => transport.json<PersonaSnapshot>(`/personas/${encodeURIComponent(id)}`),
       ensureHome: (id) => transport.json(`/personas/${encodeURIComponent(id)}/home`, { method: 'POST' }),
       setHome: (id, sessionId) => transport.json(`/personas/${encodeURIComponent(id)}/home`, { method: 'PUT', body: { sessionId } }),

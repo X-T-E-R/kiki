@@ -32,7 +32,7 @@ import {
 import type { AgentTaskSettlement } from '#/agent/task/types';
 import { userCancellationReason } from '#/_base/utils/abort';
 import { IConfigService } from '#/app/config/config';
-import { ProcessTask } from '#/agent/tools/os/bash/process-task';
+import { createProcessExecutor, ProcessTask } from '#/agent/tools/os/bash/process-task';
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
@@ -2184,5 +2184,50 @@ describe('Bash concurrency classification', () => {
     'cat a | xargs rm',
   ])('keeps %s serial', (command) => {
     expect(isConcurrencySafeBash(command)).toBe(false);
+  });
+});
+
+describe('single-long-line active stream drain (#69)', () => {
+  it('keeps draining stdout past 250ms after proc.wait() resolves while chunks continue arriving', async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    let disposed = false;
+    const proc: IHostProcess = {
+      _serviceBrand: undefined,
+      stdin: { end: vi.fn(), write: vi.fn() } as unknown as Writable,
+      stdout,
+      stderr,
+      pid: 999,
+      exitCode: 0,
+      wait: async () => 0,
+      kill: async () => {},
+      dispose: async () => {
+        disposed = true;
+        stdout.destroy();
+        stderr.destroy();
+      },
+    };
+
+    const chunk = '0'.repeat(15_000);
+    setTimeout(() => stdout.write(`BEGIN\n${chunk}`), 60);
+    setTimeout(() => stdout.write(chunk), 150);
+    setTimeout(() => stdout.write(chunk), 240);
+    setTimeout(() => stdout.write(`${chunk}\nEND\n`), 330);
+    setTimeout(() => {
+      stdout.end();
+      stderr.end();
+    }, 350);
+
+    let captured = '';
+    const run = createProcessExecutor(proc);
+    const result = await run(new AbortController().signal, (data) => {
+      captured += data;
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(disposed).toBe(true);
+    expect(captured.startsWith('BEGIN\n0000')).toBe(true);
+    expect(captured.endsWith('0000\nEND\n')).toBe(true);
+    expect(captured.length).toBe('BEGIN\n'.length + 60_000 + '\nEND\n'.length);
   });
 });

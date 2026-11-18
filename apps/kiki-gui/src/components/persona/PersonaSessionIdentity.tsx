@@ -29,7 +29,7 @@ import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { useMediaQuery } from '../../lib/layoutHooks';
+import { useLayoutPreferences, useMediaQuery } from '../../lib/layoutHooks';
 import { ROOM_ITEMS_QUERY_KEY } from '../../lib/useConversationList';
 import { DisclosureChevron } from '../icons';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
@@ -37,7 +37,7 @@ import { PersonaConversationSwitcher } from './PersonaConversationSwitcher';
 import { buildPersonaDirectory } from './usePersonaDirectory';
 import { usePersonaList } from './usePersonas';
 import { usePersonaSwitcherConversations } from './usePersonaSwitcherConversations';
-import { mergePersonaConversations, sessionPersonaId } from './personaSessionUtils';
+import { mergePersonaConversations, sessionMatchesPrivateFilter, sessionPersonaId } from './personaSessionUtils';
 
 export interface PersonaSessionIdentityProps {
   readonly session: Session;
@@ -96,7 +96,10 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
   // when the switcher opens, not on every visit to the conversation. The
   // sidebar's switcher reads the same entry.
   const queryClient = useQueryClient();
-  const conversationsQuery = usePersonaSwitcherConversations(personaId, open);
+  const layoutPrefs = useLayoutPreferences();
+  const rawPrivateFilter = layoutPrefs.filters.private ?? 'hide';
+  const effectivePrivateFilter = session.private === true && rawPrivateFilter === 'hide' ? 'include' : rawPrivateFilter;
+  const conversationsQuery = usePersonaSwitcherConversations(personaId, open, effectivePrivateFilter);
   const loadedConversations = useMemo(() => {
     if (!open || personaId === undefined) return [session];
     const seenIds = new Set<string>([session.id]);
@@ -104,7 +107,7 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
     for (const [, cached] of queryClient.getQueriesData<SessionListData>({ queryKey: ['sessions'] })) {
       for (const page of cached?.pages ?? []) {
         for (const item of page.items) {
-          if (!seenIds.has(item.id)) {
+          if (!seenIds.has(item.id) && sessionMatchesPrivateFilter(item, effectivePrivateFilter)) {
             seenIds.add(item.id);
             list.push(item);
           }
@@ -112,7 +115,7 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
       }
     }
     return list;
-  }, [open, personaId, queryClient, session]);
+  }, [effectivePrivateFilter, open, personaId, queryClient, session]);
   const conversations = useMemo(
     () => (personaId === undefined
       ? []

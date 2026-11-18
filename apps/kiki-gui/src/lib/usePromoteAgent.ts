@@ -7,6 +7,7 @@ import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 
 import { useI18n } from '../i18n';
 import { useOptionalConnection } from '../state/connection';
+import { invalidatePersonaSessionLists } from './personaFreshness';
 import { pushToast } from './toasts';
 
 const promotionFlights = new WeakMap<object, Set<string>>();
@@ -89,7 +90,10 @@ export function usePromoteAgent(sessionId: string | undefined, agentId: string |
     void promoteAgentToThread({
       client,
       host: {},
-      refreshSessions: () => { void queryClient?.invalidateQueries({ queryKey: ['sessions'] }); },
+      refreshSessions: () => {
+        void queryClient?.invalidateQueries({ queryKey: ['sessions'] });
+        if (queryClient !== undefined) invalidatePersonaSessionLists(queryClient);
+      },
       navigate: (path) => { void navigate(path); },
     }, sessionId, agentId)
       .catch((error: unknown) => {

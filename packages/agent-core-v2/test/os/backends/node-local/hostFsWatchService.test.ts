@@ -329,7 +329,7 @@ describe('host filesystem change notifications', () => {
     expect(rig.warnings).toHaveLength(1);
   });
 
-  it('uses the filtered fallback watcher for an OS home directory or filesystem root', async () => {
+  it('uses the filtered fallback watcher for an OS home directory, app home, or filesystem root', async () => {
     const rig = signalRig({ platform: 'win32', homeDir: 'C:\\Users\\Example' });
 
     handle = rig.service.watch('c:\\users\\example\\', { signal: true, recursive: true });
@@ -337,8 +337,17 @@ describe('host filesystem change notifications', () => {
     expect(rig.attempts).toEqual([]);
 
     await handle.dispose();
+    handle = rig.service.watch('C:\\Users\\Example\\.kiki', {
+      signal: true,
+      recursive: true,
+      ignored: subtreeWatchFilter('C:\\Users\\Example\\.kiki', ['C:\\Users\\Example\\.kiki\\agents']),
+    });
+    expect(rig.fallbackRoots).toEqual(['c:\\users\\example\\', 'C:\\Users\\Example\\.kiki']);
+    expect(rig.attempts).toEqual([]);
+
+    await handle.dispose();
     handle = rig.service.watch('D:\\', { signal: true, recursive: true });
-    expect(rig.fallbackRoots).toEqual(['c:\\users\\example\\', 'D:\\']);
+    expect(rig.fallbackRoots).toEqual(['c:\\users\\example\\', 'C:\\Users\\Example\\.kiki', 'D:\\']);
     expect(rig.attempts).toEqual([]);
   });
 

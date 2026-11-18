@@ -20,6 +20,7 @@ import { readTopLevelThreads } from '../lib/threadDisplayMemory';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
+import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
@@ -229,6 +230,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
     setOutcome(NO_FAILURES);
     void client.restoreSession(session.id)
       .then(async () => {
+        invalidatePersonaSessionLists(queryClient);
         await Promise.all([refresh(), queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined)]);
       })
       .catch((error: unknown) => {

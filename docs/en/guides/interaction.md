@@ -47,18 +47,18 @@ The panel usually offers **Approve for this session**, which remembers approval 
 
 ### Plan mode
 
-In Plan mode the agent first outputs an action plan and waits for your approval before modifying any files — useful for complex or high-risk tasks.
+In Plan mode the agent researches and writes an action plan before modifying other files — useful for complex or high-risk tasks. See [Plan mode tools](../reference/tools.md#plan-mode) for the tool restrictions while planning.
 
 - Toggle: `Shift-Tab` or `/plan`
 - Clear the current plan: `/plan clear` (only while idle)
 
-After writing the plan the agent pauses for you: approve it, reject it, or ask for changes. Leaving Plan mode asks for confirmation even when YOLO mode is on — except in Auto and Approve for me, where the exit is approved for you and marked "Auto-approved" in the transcript.
+With the default `free` Plan gate, calling `ExitPlanMode` leaves Plan mode immediately without a review prompt (marked "Auto-approved" in the transcript, while reminding the agent that you have not reviewed the plan so it follows your original instructions on whether to start implementing). When the Plan gate is set to `gated`, `ExitPlanMode` pauses for you in manual mode — approve the plan, reject it, or ask for changes — while Auto, Approve for me, and YOLO approve the exit automatically.
 
 ### Permission modes
 
 `/permission` switches between Manual, Auto, Approve for me, and YOLO.
 
-**YOLO mode** (`/yolo`) approves agent file access without asking, including sensitive targets such as `.env` or SSH keys. An explicit deny rule still wins. Leaving Plan mode still asks, and the agent can still put questions to you.
+**YOLO mode** (`/yolo`) approves agent file access and gated plan exits without asking, including sensitive targets such as `.env` or SSH keys. An explicit deny rule still wins, and the agent can still put questions to you.
 
 **Auto mode** (`/auto`) approves ordinary tool actions and plan exits without prompting, and asks before sensitive files and workspace links to external targets. Explicit deny rules still block matching calls, and dangerous Bash commands still request approval unless that guard is turned off.
 

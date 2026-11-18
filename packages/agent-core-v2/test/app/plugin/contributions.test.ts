@@ -4,9 +4,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { TestInstantiationService } from '#/_base/di/test';
+import { IConfigService } from '#/app/config/config';
 import { PluginManager } from '#/app/plugin/manager';
 import { parseManifest } from '#/app/plugin/manifest';
 import { PluginHost } from '#/app/plugin/host';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginSettingsService, PluginSettingsService } from '#/app/plugin/pluginSettingsService';
+import { StubConfigService } from '../../kosong/stubs';
 
 const homes: string[] = [];
 async function temp(): Promise<string> {
@@ -629,5 +635,116 @@ describe('plugin extension compatibility and consent', () => {
       },
     }));
     expect((await parseManifest(root)).diagnostics.map((item) => item.message).join(' ')).toContain('unknown panel');
+  });
+
+  it('supports integer, minimum, maximum, placeholder, and enum in x-kiki.settings and locally degrades invalid settings when other contributions are valid', async () => {
+    const root = await temp();
+    await writeFile(path.join(root, 'entry.mjs'), 'export function register() {}');
+    await writeFile(path.join(root, 'panel.html'), '<h1>Panel</h1>');
+    const validWithInteger = {
+      name: 'remote-bridge',
+      'x-kiki': {
+        engines: { kiki: '^0.4.3' },
+        entry: './entry.mjs',
+        permissions: { uiPanel: true },
+        tools: [{
+          schemaVersion: 1,
+          name: 'ping_remote',
+          description: 'Ping remote host',
+        }],
+        panels: [{ schemaVersion: 1, id: 'status', label: 'Status', slot: 'sidebar', path: './panel.html' }],
+        settings: {
+          schemaVersion: 1,
+          schema: {
+            type: 'object',
+            properties: {
+              pollSeconds: {
+                type: 'integer',
+                minimum: 8,
+                maximum: 1000,
+                default: 30,
+                placeholder: '8-1000',
+                localizations: { zh: { title: '轮询间隔', placeholder: '8 到 1000 秒' } },
+              },
+              mode: {
+                type: 'string',
+                enum: ['auto', 'manual'],
+                default: 'auto',
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(validWithInteger));
+    const parsedValid = await parseManifest(root);
+    expect(parsedValid.diagnostics).toEqual([]);
+    expect(parsedValid.manifest?.kiki?.settings?.schema.properties['pollSeconds']).toMatchObject({
+      type: 'number',
+      integer: true,
+      minimum: 8,
+      maximum: 1000,
+      default: 30,
+      placeholder: '8-1000',
+    });
+
+    const degradedSettingsManifest = {
+      ...validWithInteger,
+      hooks: [{ event: 'PreToolUse', command: 'echo ok' }],
+      'x-kiki': {
+        ...validWithInteger['x-kiki'],
+        settings: {
+          schemaVersion: 1,
+          schema: {
+            type: 'object',
+            properties: {
+              pollSeconds: {
+                type: 'integer',
+                minimum: 100,
+                maximum: 10,
+                typoField: true,
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(degradedSettingsManifest));
+    const parsedDegraded = await parseManifest(root);
+    expect(parsedDegraded.diagnostics.filter((item) => item.severity === 'error')).toEqual([]);
+    expect(parsedDegraded.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warn',
+        message: expect.stringContaining('Invalid x-kiki.settings (settings form disabled)'),
+      }),
+    ]);
+    expect(parsedDegraded.manifest?.kiki?.settings).toBeUndefined();
+    expect(parsedDegraded.manifest?.kiki?.tools?.map((tool) => tool.name)).toEqual(['ping_remote']);
+    expect(parsedDegraded.manifest?.kiki?.panels?.map((panel) => panel.id)).toEqual(['status']);
+    expect(parsedDegraded.manifest?.hooks).toHaveLength(1);
+
+    const ix = new TestInstantiationService();
+    const config = new StubConfigService({
+      pluginSettings: {
+        'INVALID_UPPERCASE_KEY!': { bad: true },
+        'remote-bridge': { pollSeconds: 20, mode: 'manual' },
+      },
+    });
+    ix.stub(IConfigService, config);
+    ix.stub(IPluginService, {
+      getPluginInfo: async () => ({ id: 'remote-bridge', manifest: parsedValid.manifest }),
+    } as unknown as IPluginService);
+    ix.set(IPluginSettingsService, new SyncDescriptor(PluginSettingsService));
+    try {
+      const settings = ix.get(IPluginSettingsService);
+      await expect(settings.forExecution('remote-bridge')).resolves.toEqual({ pollSeconds: 20, mode: 'manual' });
+      await expect(settings.update({ pluginId: 'remote-bridge', values: { pollSeconds: 12.5 } })).rejects.toThrow('Expected integer');
+      await expect(settings.update({ pluginId: 'remote-bridge', values: { pollSeconds: 4 } })).rejects.toThrow('at least 8');
+      await expect(settings.update({ pluginId: 'remote-bridge', values: { pollSeconds: 1001 } })).rejects.toThrow('at most 1000');
+      await settings.update({ pluginId: 'remote-bridge', values: { pollSeconds: 64 } });
+      await expect(settings.forExecution('remote-bridge')).resolves.toEqual({ pollSeconds: 64, mode: 'manual' });
+    } finally {
+      await ix.dispose();
+    }
   });
 });

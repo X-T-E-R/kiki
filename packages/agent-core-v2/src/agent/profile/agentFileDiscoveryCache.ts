@@ -16,6 +16,7 @@ interface DiscoveryEntry {
 interface DiscoveryCache {
   readonly entries: Map<string, DiscoveryEntry>;
   readonly flights: Map<string, Promise<AgentFileDiscoveryResult>>;
+  readonly revalidations: Map<string, Promise<AgentFileDiscoveryResult>>;
   readonly warnings: Map<string, string>;
 }
 
@@ -87,7 +88,7 @@ export function discoverCachedAgentFiles(
   const cacheOwner = unwrapHostFs(fs);
   let cache = caches.get(cacheOwner);
   if (cache === undefined) {
-    cache = { entries: new Map(), flights: new Map(), warnings: new Map() };
+    cache = { entries: new Map(), flights: new Map(), revalidations: new Map(), warnings: new Map() };
     caches.set(cacheOwner, cache);
   }
   const key = JSON.stringify([roots, options?.includeRoutes === true]);
@@ -96,10 +97,22 @@ export function discoverCachedAgentFiles(
   const existing = cache.flights.get(key);
   if (existing !== undefined) {
     if (!revalidate) return existing;
-    return existing.then(
-      () => discoverCachedAgentFiles(fs, roots, warn, options),
-      () => discoverCachedAgentFiles(fs, roots, warn, options),
-    );
+    let pending = cache.revalidations.get(key);
+    if (pending === undefined) {
+      const owner = cache;
+      pending = existing.then(
+        () => {
+          owner.revalidations.delete(key);
+          return discoverCachedAgentFiles(fs, roots, warn, { ...options, revalidate: true });
+        },
+        () => {
+          owner.revalidations.delete(key);
+          return discoverCachedAgentFiles(fs, roots, warn, { ...options, revalidate: true });
+        },
+      );
+      cache.revalidations.set(key, pending);
+    }
+    return pending;
   }
   const savedNow = cache.entries.get(key);
   if (savedNow !== undefined && !revalidate && freshnessMs > 0 && monotonicMs() - savedNow.verifiedAt < freshnessMs) {

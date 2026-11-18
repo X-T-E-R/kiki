@@ -54,7 +54,7 @@ export class WorkspacePathIndex {
     if (cacheDir !== undefined) this.trigram = new WorkspaceTrigramIndex(this.root, cacheDir, cpu);
     try {
       this.watcher = watch(this.root, { recursive: true }, (_kind, filename) => {
-        if (filename !== null && filename.split(/[\\/]/u).some(part => ['.git', '.hg', '.svn', '.jj', '.bzr', '.sl'].includes(part))) return;
+        if (filename !== null && filename.split(/[\\/]/u).some(part => ['.git', '.hg', '.svn', '.jj', '.bzr', '.sl'].includes(part.toLowerCase()))) return;
         if (filename === null) this.invalidate();
         else void this.mutation(resolve(this.root, filename));
       });
@@ -89,7 +89,7 @@ export class WorkspacePathIndex {
   async mutation(path: string): Promise<void> {
     const local = relative(this.root, resolve(path)).replaceAll('\\', '/');
     if (this.disposed || local === '..' || local.startsWith('../') || isAbsolute(local)) return;
-    if (local === '' || ['.gitignore', '.ignore', '.rgignore'].includes(basename(local))) { this.invalidate(); return; }
+    if (local === '' || ['.gitignore', '.ignore', '.rgignore'].includes(basename(local).toLowerCase())) { this.invalidate(); return; }
     const key = pathIdentity(local);
     if (!this.overflowed) this.trigram?.dirty(this.byPath.get(key)?.path ?? local);
     const previous = this.pathUpdates.get(key) ?? Promise.resolve();

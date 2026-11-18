@@ -39,7 +39,7 @@ All flags are optional — run `kiki` directly to enter an interactive session:
 `-r` / `--resume` is a hidden alias for `--session`; `--yes` and `--auto-approve` are hidden aliases for `--yolo` and are not shown in help output.
 
 ::: warning
-`--yolo` skips human approval for regular tool calls, including file writes and shell command execution. Use it only in trusted working directories. Plan mode exit approval is not bypassed by `--yolo`; `Bash` inside Plan mode is handled under the regular allow rules.
+`--yolo` skips human approval for regular tool calls (including file writes and shell command execution) and gated Plan mode exits. Use it only in trusted working directories. `Bash` inside Plan mode is handled under the regular allow rules.
 :::
 
 ### Flag Conflict Rules

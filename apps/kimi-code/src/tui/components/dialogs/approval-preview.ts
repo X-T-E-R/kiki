@@ -38,6 +38,7 @@ export type ApprovalPreviewBlock = DiffDisplayBlock | FileContentDisplayBlock;
 
 export interface ApprovalPreviewViewerProps {
   readonly block: ApprovalPreviewBlock;
+  readonly blocks?: readonly ApprovalPreviewBlock[];
   readonly onClose: () => void;
   readonly maxRows?: () => number;
 }
@@ -71,7 +72,7 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
     super();
     this.props = props;
     this.terminal = terminal;
-    const built = buildBody(props.block);
+    const built = buildBody(props.block, props.blocks);
     this.bodyLines = built.lines;
     this.headerTitle = built.title;
   }
@@ -120,7 +121,7 @@ export class ApprovalPreviewViewer extends Container implements Focusable {
   }
 
   override invalidate(): void {
-    const built = buildBody(this.props.block);
+    const built = buildBody(this.props.block, this.props.blocks);
     this.bodyLines = built.lines;
     this.headerTitle = built.title;
     this.wrapped = undefined;
@@ -216,11 +217,46 @@ interface BuiltBody {
   title: string;
 }
 
-function buildBody(block: ApprovalPreviewBlock): BuiltBody {
+function buildBody(
+  block: ApprovalPreviewBlock,
+  blocks?: readonly ApprovalPreviewBlock[],
+): BuiltBody {
+  if (blocks !== undefined && blocks.length > 1) {
+    const diffBlocks = blocks.filter((item): item is DiffDisplayBlock => item.type === 'diff');
+    if (diffBlocks.length > 1) {
+      return buildMultiDiffBody(diffBlocks);
+    }
+  }
   if (block.type === 'diff') {
     return buildDiffBody(block);
   }
   return buildFileContentBody(block);
+}
+
+function buildMultiDiffBody(blocks: readonly DiffDisplayBlock[]): BuiltBody {
+  const lines: string[] = [];
+  let firstHeader = '';
+  for (let idx = 0; idx < blocks.length; idx++) {
+    const item = blocks[idx];
+    if (item === undefined) continue;
+    const rendered = renderDiffLinesClustered(item.old_text, item.new_text, item.path, {
+      contextLines: 3,
+      oldStart: item.old_start ?? 1,
+      newStart: item.new_start ?? 1,
+    });
+    const [header = '', ...rest] = rendered;
+    if (idx === 0) firstHeader = stripLeadingSpace(header);
+    if (idx > 0) lines.push('');
+    lines.push(
+      `${currentTheme.fg('textDim', `Edit ${String(idx + 1)}/${String(blocks.length)}`)}  ${stripLeadingSpace(header)}`,
+    );
+    lines.push(...rest);
+  }
+  const path = blocks[0]?.path ?? '';
+  const title = path.length > 0
+    ? `${currentTheme.fg('textStrong', path)} ${currentTheme.fg('textDim', `(${String(blocks.length)} edits)`)}`
+    : firstHeader;
+  return { lines, title };
 }
 
 function buildDiffBody(block: DiffDisplayBlock): BuiltBody {

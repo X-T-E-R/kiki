@@ -4,7 +4,7 @@
 
 ## 理解陌生项目
 
-接手没读过的代码前，先开 Plan 模式（Agent 先写出打算怎么做、得到你同意后才动文件）比较稳妥。启动 CLI 时加 `--plan`，或在会话中按 `Shift-Tab`、输入 `/plan`：
+接手没读过的代码前，先开 Plan 模式（Agent 先写出行动计划再改项目文件，详见 [Plan 模式](../guides/interaction.md#plan-模式)）比较稳妥。启动 CLI 时加 `--plan`，或在会话中按 `Shift-Tab`、输入 `/plan`：
 
 ```text
 帮我梳理这个仓库的整体架构。重点说清楚：
@@ -99,7 +99,7 @@ src/parser/markdown.ts 目前几乎没有测试。请补一组单元测试，覆
 帮我调研一下 TypeScript 里几种主流的依赖注入方案（tsyringe、inversify、awilix），从 API 风格、装饰器依赖、运行时开销三个维度对比，给一份不超过一页的建议。
 ```
 
-确认安全的批量任务可以不再逐条审批：启动 CLI 时加 `--yolo`，或在会话中输入 `/yolo`，两者都会把会话切到 YOLO 模式，工具调用（包括读取敏感文件）不再询问，除非被权限规则显式拒绝；退出 Plan 模式时仍会审核。想收窄范围，就在[配置文件](../configuration/config-files.md#permission)的 `[permission]` 段为特定工具预置允许规则。
+确认安全的批量任务可以不再逐条审批：启动 CLI 时加 `--yolo`，或在会话中输入 `/yolo`，两者都会把会话切到 YOLO 模式，工具调用（包括读取敏感文件）不再询问，除非被权限规则显式拒绝。想收窄范围，就在 [配置文件](../configuration/config-files.md#permission) 的 `[permission]` 段为特定工具预置允许规则。
 
 ## 文档拆读、表格核对与调研写作
 

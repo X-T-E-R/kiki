@@ -192,6 +192,7 @@ export const toolCallFrameSchema = z.object({
   attachmentIds: z.array(z.string()).optional(),
   display: z.unknown().optional(),
   error: z.string().optional(),
+  note: z.string().optional(),
   errorCode: z.string().optional(),
   inputText: z.string().optional(),
   progress: toolFrameProgressSchema.optional(),

@@ -714,17 +714,18 @@ describe('WorkspaceService (file-backed)', () => {
   });
 
   it('hashes one Windows path identity across case, separators, trailing slashes, and dot segments', () => {
-    const typed = encodeWorkDirKey('C:/Programs/AI/EasyAgent');
-    const equivalent = encodeWorkDirKey('c:\\programs\\ai\\easyagent\\.\\nested\\..\\');
+    const typed = encodeWorkDirKey('C:/Projects/ExampleApp');
+    const equivalent = encodeWorkDirKey('c:\\projects\\exampleapp\\.\\nested\\..\\');
 
     expect(typed).toBe(equivalent);
-    expect(typed).toBe('wd_easyagent_3c8e4457f2bf');
-    expect(workspaceRootKey('C:/Programs/AI/EasyAgent/./nested/../')).toBe('c:/programs/ai/easyagent');
+    expect(typed).toMatch(/^wd_exampleapp_[0-9a-f]{12}$/);
+    expect(workspaceRootKey('C:/Projects/ExampleApp/./nested/../')).toBe('c:/projects/exampleapp');
   });
 
   it('keeps an existing legacy workspace bucket when rebuilding from its session index', async () => {
-    const root = 'C:/Programs/AI/EasyAgent';
-    const legacyId = 'wd_easyagent_8e4e4acd13e0';
+    const root = 'C:/Projects/ExampleApp';
+    const legacyId = encodeLegacyWorkDirKey(root);
+    expect(legacyId).not.toBe(encodeWorkDirKey(root));
     await seedSessionIndex([{
       sessionId: 'legacy-session',
       sessionDir: join(homeDir, 'sessions', legacyId, 'legacy-session'),
@@ -738,8 +739,9 @@ describe('WorkspaceService (file-backed)', () => {
   });
 
   it('reuses a legacy workspace bucket found on disk when the catalog is missing', async () => {
-    const root = 'C:/Programs/AI/EasyAgent';
-    const legacyId = 'wd_easyagent_8e4e4acd13e0';
+    const root = 'C:/Projects/ExampleApp';
+    const legacyId = encodeLegacyWorkDirKey(root);
+    expect(legacyId).not.toBe(encodeWorkDirKey(root));
     await fsp.mkdir(join(homeDir, 'sessions', legacyId, 'legacy-session'), { recursive: true });
 
     const workspace = await build(allDirsHostFs()).createOrTouch(root);

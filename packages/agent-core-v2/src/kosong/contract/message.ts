@@ -38,6 +38,8 @@ export interface ThinkPart {
   reasoningDetails?: readonly Record<string, unknown>[];
   /** Suppresses display without removing provider round-trip material. */
   hidden?: boolean;
+  /** Provenance key of the originating model target for opaque reasoning replay. */
+  reasoningOrigin?: string;
 }
 
 export interface ImageURLPart {
@@ -116,12 +118,16 @@ export function mergeInPlace(target: StreamedMessagePart, source: StreamedMessag
 
   if (target.type === 'think' && source.type === 'think') {
     if (target.encrypted !== undefined || target.redacted !== undefined || source.redacted !== undefined || target.reasoningDetails !== undefined || source.reasoningDetails !== undefined ||
-      target.reasoningKey !== source.reasoningKey || target.hidden !== source.hidden) {
+      target.reasoningKey !== source.reasoningKey || target.hidden !== source.hidden ||
+      (target.reasoningOrigin !== undefined && source.reasoningOrigin !== undefined && target.reasoningOrigin !== source.reasoningOrigin)) {
       return false;
     }
     target.think += source.think;
     if (source.encrypted !== undefined) {
       target.encrypted = source.encrypted;
+    }
+    if (source.reasoningOrigin !== undefined) {
+      target.reasoningOrigin = source.reasoningOrigin;
     }
     return true;
   }

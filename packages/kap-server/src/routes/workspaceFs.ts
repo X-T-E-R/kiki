@@ -284,7 +284,7 @@ async function handleFsContent(
       const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview({
         name: abs, size: st.size, mediaType: guessMime(abs, isBinary),
         stream: (range) => createReadStream(abs, range),
-      }, undefined, signal, `${homeDir}\0${etag}`));
+      }, undefined, signal, `${homeDir}\0${abs}\0${etag}`));
       if (reply.raw.destroyed) return;
       const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
       const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);

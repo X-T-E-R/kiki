@@ -2020,7 +2020,7 @@ export class SessionEventBroadcaster {
         try {
           if (suppressedByTranscript(envelope, sub.transcriptGrades)) {
             if (target.sendRosterHint !== undefined && (
-              event.type === 'agent.status.updated' && event.agentId !== MAIN_AGENT_ID ||
+              (event.type === 'agent.status.updated' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed') && event.agentId !== MAIN_AGENT_ID ||
               event.type === 'subagent.spawned' || event.type === 'subagent.started' || event.type === 'subagent.suspended' ||
               event.type === 'subagent.completed' || event.type === 'subagent.failed'
             )) target.sendRosterHint(envelope);
@@ -2151,7 +2151,12 @@ export function isGlobalEvent(type: string): boolean {
 }
 
 function isAgentLifecycleEvent(type: string): boolean {
-  return type === 'agent.created' || type === 'agent.disposed';
+  return (
+    type === 'agent.created' ||
+    type === 'agent.disposed' ||
+    type === 'agent.branch_sealed' ||
+    type === 'agent.tool_lock_changed'
+  );
 }
 
 function matchesAgentFilter(envelope: EventEnvelope, filter: AgentFilter): boolean {

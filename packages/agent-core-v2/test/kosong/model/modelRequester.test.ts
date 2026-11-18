@@ -1134,3 +1134,180 @@ describe('dynamic protocol adapter generations', () => {
     }
   });
 });
+
+describe('opaque reasoning target provenance (#76)', () => {
+  it('stamps reasoningOrigin without secrets, replays on same/alias/effort-changed targets, omits across model/endpoint/protocol switches while preserving canonical history and tool signatures, and replays again on switch-back', async () => {
+    const { formatReasoningOrigin, normalizeReasoningEndpoint } = await import('#/kosong/model/reasoningOrigin');
+    const anthropicClaude = {
+      ...modelWith(staticAuth()),
+      id: 'claude-primary-alias',
+      name: 'claude-sonnet-4-6',
+      protocol: 'anthropic' as const,
+      providerType: 'anthropic',
+      providerName: 'corp-anthropic',
+      baseUrl: 'https://user:SECRET_TOKEN@api.example.test/v1/',
+      preferredThinkingEffort: 'medium',
+    };
+    const anthropicClaudeAltAliasEffort = {
+      ...anthropicClaude,
+      id: 'claude-secondary-alias',
+      preferredThinkingEffort: 'high',
+      baseUrl: 'https://api.example.test/v1',
+    };
+    const anthropicOtherModel = {
+      ...anthropicClaude,
+      id: 'claude-opus-alias',
+      name: 'claude-opus-4-6',
+    };
+    const openaiTarget = {
+      ...anthropicClaude,
+      id: 'gpt-responses',
+      name: 'gpt-5',
+      protocol: 'openai_responses' as const,
+      providerType: 'openai_responses',
+      providerName: 'corp-openai',
+      baseUrl: 'https://openai.example.test/v1',
+      maxCompletionTokens: 4_096,
+      maxContextSize: 100_000,
+    };
+
+    expect(normalizeReasoningEndpoint(anthropicClaude.baseUrl)).toBe('https://api.example.test/v1');
+    const originA = formatReasoningOrigin(anthropicClaude);
+    expect(originA).not.toContain('SECRET_TOKEN');
+    expect(formatReasoningOrigin(anthropicClaudeAltAliasEffort)).toBe(originA);
+    expect(formatReasoningOrigin(anthropicOtherModel)).not.toBe(originA);
+
+    const providerA = new FakeChatProvider();
+    providerA.handler = async () =>
+      streamOf([
+        { type: 'think', think: 'deliberate plan', encrypted: 'sig-claude-turn1' },
+        { type: 'think', think: '', redacted: 'redacted-claude-turn1' },
+        { type: 'text', text: 'Calling tool.' },
+        {
+          type: 'function',
+          id: 'call_1',
+          name: 'Read',
+          arguments: '{"path":"a.ts"}',
+          extras: { anthropic_tool_signature: 'tool-sig-keep', thought_signature_b64: 'gemini-tool-sig-keep' },
+        },
+      ]);
+    const requesterA = new ModelRequesterImpl(anthropicClaude, registryReturning(providerA));
+    const turn1Events = await collect(requesterA.request(INPUT));
+    const finishA = turn1Events.find((event) => event.type === 'finish');
+    expect(finishA?.type).toBe('finish');
+    const canonicalAssistant = (finishA as Extract<typeof finishA, { type: 'finish' }>).message;
+    expect(canonicalAssistant.content).toEqual([
+      { type: 'think', think: 'deliberate plan', encrypted: 'sig-claude-turn1', reasoningOrigin: originA },
+      { type: 'think', think: '', redacted: 'redacted-claude-turn1', reasoningOrigin: originA },
+      { type: 'text', text: 'Calling tool.' },
+    ]);
+    const canonicalSnapshot = structuredClone(canonicalAssistant);
+
+    const initialUser: Message = { role: 'user', content: [{ type: 'text', text: 'Inspect a.ts' }], toolCalls: [] };
+    const historyWithTurn1: Message[] = [
+      initialUser,
+      canonicalAssistant,
+      { role: 'tool', toolCallId: 'call_1', content: [{ type: 'text', text: 'file body' }], toolCalls: [] },
+      { role: 'user', content: [{ type: 'text', text: 'Next step' }], toolCalls: [] },
+    ];
+
+    const providerSameTarget = new FakeChatProvider();
+    const requesterAliasEffort = new ModelRequesterImpl(
+      anthropicClaudeAltAliasEffort,
+      registryReturning(providerSameTarget),
+    );
+    await collect(requesterAliasEffort.request({ ...INPUT, messages: historyWithTurn1 }));
+    expect((providerSameTarget.calls[0]?.history as Message[] | undefined)?.[1]?.content).toEqual(canonicalSnapshot.content);
+
+    const providerOtherModel = new FakeChatProvider();
+    const requesterOtherModel = new ModelRequesterImpl(
+      anthropicOtherModel,
+      registryReturning(providerOtherModel),
+    );
+    await collect(requesterOtherModel.request({ ...INPUT, messages: historyWithTurn1 }));
+    const otherModelHistory = providerOtherModel.calls[0]?.history as Message[] | undefined;
+    expect(otherModelHistory?.[1]?.content).toEqual([
+      { type: 'think', think: 'deliberate plan', reasoningKey: undefined, hidden: undefined },
+      { type: 'text', text: 'Calling tool.' },
+    ]);
+    expect(otherModelHistory?.[1]?.toolCalls[0]?.extras).toEqual({
+      anthropic_tool_signature: 'tool-sig-keep',
+      thought_signature_b64: 'gemini-tool-sig-keep',
+    });
+
+    const attribution = {
+      logicalRequestId: 'fixture-request',
+      sessionId: 'fixture-session',
+      agentId: 'main',
+      purpose: 'test',
+      waitBudget: { waitedMs: 0 },
+    } as const;
+    const providerOpenAI = new FakeChatProvider();
+    providerOpenAI.handler = async () =>
+      streamOf([
+        { type: 'think', think: '', encrypted: 'enc-openai-turn2' },
+      ]);
+    const requesterOpenAI = new ModelRequesterImpl(openaiTarget, registryReturning(providerOpenAI));
+    const turn2Events = await collect(
+      requesterOpenAI.request(
+        { ...INPUT, messages: historyWithTurn1 },
+        undefined,
+        {
+          attribution,
+          usedContextTokens: 99_500,
+        },
+      ),
+    );
+    expect(providerOpenAI.calls[0]?.options?.maxCompletionTokens).toBe(4_096);
+    expect(providerOpenAI.calls[0]?.options?.usedContextTokens).toBeUndefined();
+    const turn2Assistant = (
+      turn2Events.find((event) => event.type === 'finish') as Extract<
+        (typeof turn2Events)[number],
+        { type: 'finish' }
+      >
+    ).message;
+    expect(turn2Assistant.content).toEqual([
+      {
+        type: 'think',
+        think: '',
+        encrypted: 'enc-openai-turn2',
+        reasoningOrigin: formatReasoningOrigin(openaiTarget),
+      },
+    ]);
+
+    expect(canonicalAssistant).toEqual(canonicalSnapshot);
+
+    const historyAfterTurn2: Message[] = [
+      ...historyWithTurn1,
+      turn2Assistant,
+      { role: 'user', content: [{ type: 'text', text: 'Back to Claude' }], toolCalls: [] },
+    ];
+    const providerBackToA = new FakeChatProvider();
+    const requesterBackToA = new ModelRequesterImpl(anthropicClaude, registryReturning(providerBackToA));
+    await collect(requesterBackToA.request({ ...INPUT, messages: historyAfterTurn2 }));
+    const sentBackHistory = providerBackToA.calls[0]!.history as Message[];
+    expect(sentBackHistory[1]?.content).toEqual(canonicalSnapshot.content);
+    expect(sentBackHistory.some((msg) => msg.content.some((part) => part.type === 'think' && part.encrypted === 'enc-openai-turn2'))).toBe(false);
+    expect(sentBackHistory.every((msg) => !(msg.role === 'assistant' && msg.content.length === 0 && msg.toolCalls.length === 0))).toBe(true);
+
+    const unmarkedHistory: Message[] = [
+      initialUser,
+      {
+        role: 'assistant',
+        content: [{ type: 'think', think: 'legacy reasoning', encrypted: 'legacy-sig' }],
+        toolCalls: [],
+      },
+    ];
+    const providerLegacyOmit = new FakeChatProvider();
+    await collect(
+      new ModelRequesterImpl(openaiTarget, registryReturning(providerLegacyOmit)).request(
+        { ...INPUT, messages: unmarkedHistory },
+        undefined,
+        { attribution, unmarkedOpaquePolicy: 'omit' },
+      ),
+    );
+    expect((providerLegacyOmit.calls[0]?.history as Message[] | undefined)?.[1]?.content).toEqual([
+      { type: 'think', think: 'legacy reasoning', reasoningKey: undefined, hidden: undefined },
+    ]);
+  });
+});

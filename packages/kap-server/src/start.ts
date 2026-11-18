@@ -1302,7 +1302,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       web,
       transcriptService,
     });
-    registerHostMediaPreviewRoutes(app, core, transcriptService);
+    registerHostMediaPreviewRoutes(app, core, transcriptService, opts.sshManaged !== true);
   }
   const peerTls = exposureClass === 'loopback' && opts.sshManaged !== true && opts.disableAuth !== true ? await preparing(loadPeerTlsIdentity(homeDir)) : undefined;
   const pairingHooks: { current?: PairingHooks } = {};

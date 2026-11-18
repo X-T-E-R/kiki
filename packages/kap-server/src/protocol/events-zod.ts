@@ -599,6 +599,19 @@ export const agentDisposedEventSchema = z.object({
   time: z.number().optional(),
 });
 
+export const agentBranchSealedEventSchema = z.object({
+  type: z.literal('agent.branch_sealed'),
+  sealed: z.boolean(),
+  foldId: z.string(),
+  time: z.number().optional(),
+});
+
+export const agentToolLockChangedEventSchema = z.object({
+  type: z.literal('agent.tool_lock_changed'),
+  locked: z.boolean(),
+  time: z.number().optional(),
+});
+
 export const sessionWorktreeChangedEventSchema = z.object({
   type: z.literal('session.worktree.changed'),
   worktreeId: z.string(), state: z.string(), inspection: z.unknown().optional(),
@@ -1127,6 +1140,8 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   agentStatusUpdatedEventSchema,
   agentCreatedEventSchema,
   agentDisposedEventSchema,
+  agentBranchSealedEventSchema,
+  agentToolLockChangedEventSchema,
   sessionMetaUpdatedEventSchema,
   sessionWorktreeChangedEventSchema,
   sessionCreatedEventSchema,

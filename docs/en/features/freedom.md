@@ -52,7 +52,7 @@ A sign-in that completes adds that account's models to the catalog. **[Connectio
 
 **Approve for me** behaves like Auto but routes policy-generated approval requests to a reviewer you configured first. An explicit `ask` rule still comes to you; a confident reviewer decision is recorded with reviewer attribution; and uncertain or unavailable review falls back to your ordinary approval panel.
 
-Plan mode is a separate axis: the agent produces a plan and waits for your approval before modifying files. Exiting Plan mode requires confirmation even in YOLO, except in Auto and Approve for me, where plan exits are auto-approved and marked as such. See [Interaction and input](/en/guides/interaction#permission-modes) and [`/permission` in the config reference](/en/configuration/config-files#permission).
+Plan mode is a separate axis: the agent researches and writes a plan before modifying other files. With the default `free` Plan gate, calling `ExitPlanMode` leaves Plan mode immediately (marked "Auto-approved"); with the `gated` Plan gate, leaving Plan mode asks for your review in Manual mode and auto-approves in Auto, Approve for me, and YOLO. See [Interaction and input](/en/guides/interaction#plan-mode) and [`/permission` in the config reference](/en/configuration/config-files#permission).
 
 ## Lifecycle hooks
 

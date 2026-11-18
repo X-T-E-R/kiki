@@ -4,7 +4,7 @@ Each section below is a situation you will actually hit, with prompts you can se
 
 ## Understanding an unfamiliar project
 
-Plan mode (the agent writes out what it intends to do and waits for your go-ahead before touching files) is worth turning on before you ask for changes in code you have not read yet. Start the CLI with `--plan`, press `Shift-Tab`, or type `/plan` in a session:
+Plan mode (the agent writes out an action plan before modifying project files; see [Plan mode](../guides/interaction.md#plan-mode)) is worth turning on before you ask for changes in code you have not read yet. Start the CLI with `--plan`, press `Shift-Tab`, or type `/plan` in a session:
 
 ```text
 Give me an overview of this repository's architecture. Specifically:
@@ -99,7 +99,7 @@ Analyze the access logs in logs/ from the past 7 days. For each API path, comput
 Research the main dependency injection options for TypeScript (tsyringe, inversify, awilix). Compare them across three dimensions: API style, decorator requirements, and runtime overhead. Give me a recommendation that fits on one page.
 ```
 
-For a batch of work you already trust, you can stop approving each call. Start the CLI with `--yolo` or type `/yolo` in a session — both switch the session to YOLO mode, where tool calls including reads of sensitive files run without asking, unless a permission rule denies them. Exiting Plan mode is still reviewed. For a narrower option, pre-approve specific tools in the `[permission]` section of [Configuration files](../configuration/config-files.md#permission).
+For a batch of work you already trust, you can stop approving each call. Start the CLI with `--yolo` or type `/yolo` in a session — both switch the session to YOLO mode, where tool calls including reads of sensitive files run without asking, unless a permission rule denies them. For a narrower option, pre-approve specific tools in the `[permission]` section of [Configuration files](../configuration/config-files.md#permission).
 
 ## Documents, spreadsheets, and research
 

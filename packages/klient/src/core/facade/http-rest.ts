@@ -522,6 +522,7 @@ export interface HttpRestFacade {
   readonly rooms: GlobalRoomsFacade;
   readonly personas: {
     list(options?: { readonly includeArchived?: boolean }): Promise<readonly PersonaSummary[]>;
+    sessionHeads(query?: import('@kiki/protocol').PersonaSessionHeadsQuery, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').PersonaSessionHeadsResponse>;
     get(id: string): Promise<PersonaSnapshot>;
     ensureHome(id: string): Promise<{ readonly homeSessionId: string }>;
     setHome(id: string, sessionId: string): Promise<import('@kiki/protocol').PersonaState>;

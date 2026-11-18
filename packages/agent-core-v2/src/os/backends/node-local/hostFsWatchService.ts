@@ -24,7 +24,7 @@ import {
   IHostFsWatchService,
 } from '#/os/interface/hostFsWatch';
 
-const DEFAULT_IGNORED = (p: string): boolean => /(?:^|[/\\])\.git(?:$|[/\\])/.test(p);
+const DEFAULT_IGNORED = (p: string): boolean => /(?:^|[/\\])\.git(?:$|[/\\])/i.test(p);
 
 const NATIVE_RETRY_BASE_MS = 1000;
 const NATIVE_RETRY_MAX_MS = 30000;
@@ -362,7 +362,7 @@ export class HostFsWatchService implements IHostFsWatchService {
         subtree: ignored.subtree === undefined ? undefined : (changed: string) => ignored.subtree!(requestedPath(changed)),
       }),
     };
-    const handle = useNativeRecursive(watchOptions, this.runtime.platform) && !isExpansiveNativeRoot(watched, this.runtime)
+    const handle = useNativeRecursive(watchOptions, this.runtime.platform) && !isExpansiveNativeRoot(watched, this.runtime, watchOptions)
       ? new SignalWatchHandle(watched, watchOptions, this.runtime, this.reportError)
       : this.runtime.watchFallback(watched, watchOptions, this.reportError);
     if (watched === path) return handle;
@@ -400,7 +400,11 @@ function useNativeRecursive(
   );
 }
 
-function isExpansiveNativeRoot(root: string, runtime: HostFsWatchRuntime): boolean {
+function isExpansiveNativeRoot(
+  root: string,
+  runtime: HostFsWatchRuntime,
+  options?: HostFsWatchOptions,
+): boolean {
   const pathApi = runtime.platform === 'win32' ? win32 : posix;
   const normalizedRoot = normalizeWatchRoot(root, runtime.platform);
   const normalizedHome = normalizeWatchRoot(runtime.homeDir, runtime.platform);
@@ -408,7 +412,20 @@ function isExpansiveNativeRoot(root: string, runtime: HostFsWatchRuntime): boole
     pathApi.parse(pathApi.resolve(root)).root,
     runtime.platform,
   );
-  return normalizedRoot === normalizedHome || normalizedRoot === filesystemRoot;
+  if (normalizedRoot === normalizedHome || normalizedRoot === filesystemRoot) {
+    return true;
+  }
+  if (options?.ignored?.subtree !== undefined) {
+    const defaultAppHome = normalizeWatchRoot(pathApi.join(runtime.homeDir, '.kiki'), runtime.platform);
+    if (normalizedRoot === defaultAppHome) return true;
+    for (const envKey of ['KIKI_HOME', 'KIMI_CODE_HOME'] as const) {
+      const configured = process.env[envKey];
+      if (configured !== undefined && configured !== '' && normalizedRoot === normalizeWatchRoot(configured, runtime.platform)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function normalizeWatchRoot(root: string, platform: NodeJS.Platform): string {

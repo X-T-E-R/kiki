@@ -7,7 +7,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { IPluginService } from './plugin';
 import { currentPluginId } from './renamedPlugins';
 import { scriptSources, scriptEnvironmentKey } from './mediaSourceSettings';
-import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
+import { PLUGIN_SETTINGS_SECTION, readSanitizedPluginSettings } from './settingsConfigSection';
 import type { PluginSettings, PluginExtension, PluginMediaSourceGroup } from './contributions';
 import { builtinHistory } from '#/app/pluginImport/builtinHistory';
 
@@ -94,8 +94,10 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
       }
       const storageKey = property.secret ? secretKey(key) : key;
       if (value === null) delete updated[storageKey];
-      else if (typeof value !== property.type) throw new Error(`Invalid type for setting ${key}`);
-      else updated[storageKey] = value;
+      else {
+        assertValidSettingValue(key, property, value);
+        updated[storageKey] = value;
+      }
     }
     if (extension?.mediaScriptProvider !== undefined) scriptSources(updated);
     await this.configService.replace(PLUGIN_SETTINGS_SECTION, { ...current, [pluginId]: updated });
@@ -110,7 +112,7 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
     for (const [key, property] of Object.entries(schema?.properties ?? {})) {
       if (property.secret && extension?.permissions?.secrets !== true) continue;
       const value = stored[property.secret ? secretKey(key) : key];
-      if (value !== undefined && typeof value === property.type) own[key] = value;
+      if (isValidSettingValue(property, value)) own[key] = value;
     }
     return own;
   }
@@ -129,7 +131,7 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
 
   private async all(): Promise<Record<string, Record<string, string | number | boolean>>> {
     await this.configService.ready;
-    const stored = PluginSettingsSectionSchema.parse(this.configService.get(PLUGIN_SETTINGS_SECTION));
+    const stored = readSanitizedPluginSettings(this.configService.get(PLUGIN_SETTINGS_SECTION));
     const out: Record<string, Record<string, string | number | boolean>> = {};
     for (const [id, values] of Object.entries(stored)) {
       const current = currentPluginId(id);
@@ -140,6 +142,41 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
 }
 
 function secretKey(key: string): string { return `plugin_${key}_secret`; }
+
+function isValidSettingValue(property: Property, value: unknown): value is string | number | boolean {
+  if (typeof value !== property.type) return false;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return false;
+    if (property.integer === true && !Number.isInteger(value)) return false;
+    if (property.minimum !== undefined && value < property.minimum) return false;
+    if (property.maximum !== undefined && value > property.maximum) return false;
+  }
+  return true;
+}
+
+function assertValidSettingValue(
+  key: string,
+  property: Property,
+  value: string | number | boolean,
+): void {
+  if (typeof value !== property.type) {
+    throw new Error(`Invalid type for setting ${key}`);
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(`Invalid number for setting ${key}`);
+    }
+    if (property.integer === true && !Number.isInteger(value)) {
+      throw new Error(`Expected integer for setting ${key}`);
+    }
+    if (property.minimum !== undefined && value < property.minimum) {
+      throw new Error(`Value for setting ${key} must be at least ${property.minimum}`);
+    }
+    if (property.maximum !== undefined && value > property.maximum) {
+      throw new Error(`Value for setting ${key} must be at most ${property.maximum}`);
+    }
+  }
+}
 
 type PropertyMap = PluginSettings['schema']['properties'];
 type Property = PropertyMap[string];

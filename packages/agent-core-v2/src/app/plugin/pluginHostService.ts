@@ -202,9 +202,19 @@ export class PluginHostService extends Service implements IPluginHostService {
     const installed = await this.plugins.listPlugins();
     const registrations: PluginImAdapterRegistration[] = [];
     for (const summary of installed.filter((item) => item.enabled && item.state === 'ok')) {
-      const info = await this.plugins.getPluginInfo({ id: summary.id });
+      const info = await this.plugins.getPluginInfo({ id: summary.id }).catch(() => undefined);
+      if (info === undefined || !info.enabled || info.state !== 'ok') continue;
       try { await this.checkDependencies(info); } catch { continue; }
-      const settings = await this.settings.forExecution(info.id);
+      let settings: Record<string, string | number | boolean>;
+      try {
+        settings = await this.settings.forExecution(info.id);
+      } catch (error) {
+        this.logger?.current?.warn('plugin IM adapter settings load failed', {
+          pluginId: info.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
       for (const definition of info.manifest?.kiki?.imAdapters ?? []) {
         const providerKind = `plugin:${info.id}/${definition.id}` as const;
         registrations.push({ pluginId: info.id, definition, providerKind, instanceId: providerKind,
@@ -371,24 +381,36 @@ export class PluginHostService extends Service implements IPluginHostService {
       const ids = [...new Set([...Object.keys(current ?? {}), ...Object.keys(previous ?? {})])]
         .filter((id) => !this.ownSettingsWrites.has(id) && JSON.stringify(current?.[id]) !== JSON.stringify(previous?.[id]));
       if (ids.length === 0) return;
-      void Promise.all([
+      void Promise.allSettled([
         this.reconcileExtensionPorts(ids),
         this.reconcileResidents(ids, true),
-      ]).then(() => this.reconcileImAdapters()).catch((error: unknown) => {
-        this.logger?.current?.warn('plugin resident settings reconciliation failed', {
+      ]).then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            this.logger?.current?.warn('plugin resident settings reconciliation failed', {
+              error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+            });
+          }
+        }
+        return this.reconcileImAdapters();
+      }).catch((error: unknown) => {
+        this.logger?.current?.warn('plugin IM adapter settings reconciliation failed', {
           error: error instanceof Error ? error.message : String(error),
         });
       });
     }));
-    this.ready = Promise.resolve().then(() => Promise.all([
+    this.ready = Promise.resolve().then(() => Promise.allSettled([
       this.reconcileExtensionPorts(),
       this.reconcileResidents(),
-    ]).then(() => undefined));
-    void this.ready.catch((error: unknown) => {
-      this.logger?.current?.warn('plugin initial resident activation failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    ]).then((results) => {
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          this.logger?.current?.warn('plugin initial resident activation failed', {
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          });
+        }
+      }
+    }));
     this._register(toDisposable(() => this.stopAll()));
   }
 
@@ -838,11 +860,19 @@ export class PluginHostService extends Service implements IPluginHostService {
       plugin.state === 'ok' && (affected === undefined || affected.includes(plugin.id)));
     const prepared = (await Promise.all(matched.map(async (plugin) => {
       if (this.closing) return undefined;
-      const info = await this.plugins.getPluginInfo({ id: plugin.id });
-      if (info.manifest?.kiki?.activation !== 'app' || this.closing) return undefined;
-      try { await this.checkDependencies(info); } catch { return undefined; }
-      const settings = await this.settings.forExecution(info.id);
-      return { info, settings };
+      try {
+        const info = await this.plugins.getPluginInfo({ id: plugin.id });
+        if (!info.enabled || info.state !== 'ok' || info.manifest?.kiki?.activation !== 'app' || this.closing) return undefined;
+        await this.checkDependencies(info);
+        const settings = await this.settings.forExecution(info.id);
+        return { info, settings };
+      } catch (error) {
+        this.logger?.current?.warn('plugin resident preparation failed', {
+          pluginId: plugin.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return undefined;
+      }
     }))).filter((item): item is { info: PluginInfo; settings: Record<string, string | number | boolean> } => item !== undefined);
     if (this.closing || prepared.length === 0) return;
     const lifecycle = this.activatePrepared(prepared, reconfigure);
@@ -874,8 +904,10 @@ export class PluginHostService extends Service implements IPluginHostService {
   async list(): Promise<readonly PluginToolRegistration[]> {
     const installed = await this.plugins.listPlugins();
     const enabled = installed.filter((plugin) => plugin.enabled && plugin.state === 'ok');
-    const info = await Promise.all(enabled.map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
-    return info.flatMap((plugin) => (plugin.manifest?.kiki?.tools ?? []).map((definition) => ({ pluginId: plugin.id, definition })));
+    const infos = await Promise.all(enabled.map((plugin) => this.plugins.getPluginInfo({ id: plugin.id }).catch(() => undefined)));
+    return infos
+      .filter((plugin): plugin is PluginInfo => plugin !== undefined && plugin.enabled && plugin.state === 'ok')
+      .flatMap((plugin) => (plugin.manifest?.kiki?.tools ?? []).map((definition) => ({ pluginId: plugin.id, definition })));
   }
 
   private quotaCache: (() => Promise<{ readonly sources: readonly import('@kiki/protocol').PluginHarnessQuotaSnapshot[] }>) | undefined;
@@ -896,8 +928,8 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   async listHarnessQuotaSources(): Promise<readonly PluginHarnessQuotaSource[]> {
     const installed = await this.plugins.listPlugins();
-    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
-    return infos.filter((info) => info.enabled && info.state === 'ok').flatMap((info) =>
+    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id }).catch(() => undefined)));
+    return infos.filter((info): info is PluginInfo => info !== undefined && info.enabled && info.state === 'ok').flatMap((info) =>
       (info.manifest?.kiki?.harnessQuotaSources ?? []).map(({ id, label, engineIds, minRefreshIntervalMs }) => ({
         id: `plugin:${info.id}/${id}`, label, engineIds: [...engineIds], minRefreshIntervalMs: Math.max(300_000, minRefreshIntervalMs ?? 300_000),
       })));
@@ -918,8 +950,8 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   async listHarnessAccountSources(): Promise<readonly PluginHarnessAccountSource[]> {
     const installed = await this.plugins.listPlugins();
-    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
-    return infos.filter((info) => info.enabled && info.state === 'ok').flatMap((info) =>
+    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id }).catch(() => undefined)));
+    return infos.filter((info): info is PluginInfo => info !== undefined && info.enabled && info.state === 'ok').flatMap((info) =>
       (info.manifest?.kiki?.harnessAccountSources ?? []).map(({ id, label, engineIds }) => ({
         id: `plugin:${info.id}/${id}`, label, engineIds: [...engineIds],
       })));
@@ -961,19 +993,27 @@ export class PluginHostService extends Service implements IPluginHostService {
   async listMediaProviders(): Promise<readonly PluginMediaProviderRegistration[]> {
     await this.connections?.ready;
     const installed = await this.plugins.listPlugins();
-    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
+    const loadedInfos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id }).catch(() => undefined)));
+    const infos = loadedInfos.filter((info): info is PluginInfo => info !== undefined && info.enabled && info.state === 'ok');
     const replaced = new Set(infos.flatMap((info) => (info.manifest?.kiki?.mediaSources ?? []).flatMap((group) => group.legacyPluginId === undefined ? [] : [group.legacyPluginId])));
     const items = await Promise.all(infos.filter((info) => !replaced.has(info.id)).map(async (info) => {
-      const settings = await this.settings.forExecution(info.id);
-      const definitions = info.manifest?.kiki?.mediaProviders ?? [];
-      const scriptId = info.manifest?.kiki?.mediaScriptProvider;
-      const expanded = definitions.filter((definition) => definition.id !== scriptId);
-      if (scriptId !== undefined) {
-        const script = definitions.find((definition) => definition.id === scriptId)!;
-        expanded.push(...scriptSources(settings).filter((source) => source.enabled && !source.removed).map((source) => scriptDefinition(source, script.resumeVersion)));
+      try {
+        const settings = await this.settings.forExecution(info.id);
+        const definitions = info.manifest?.kiki?.mediaProviders ?? [];
+        const scriptId = info.manifest?.kiki?.mediaScriptProvider;
+        const expanded = definitions.filter((definition) => definition.id !== scriptId);
+        if (scriptId !== undefined) {
+          const script = definitions.find((definition) => definition.id === scriptId);
+          if (script !== undefined) {
+            expanded.push(...scriptSources(settings).filter((source) => source.enabled && !source.removed).map((source) => scriptDefinition(source, script.resumeVersion)));
+          }
+        }
+        const entries = await Promise.all(expanded.map((definition) => this.mediaEntry(info, settings, definition.id)));
+        return entries.filter((entry) => entry !== undefined).map((entry) => entry.registration);
+      } catch (error) {
+        this.logger?.current?.warn('media provider discovery failed for plugin', { pluginId: info.id, error });
+        return [];
       }
-      const entries = await Promise.all(expanded.map((definition) => this.mediaEntry(info, settings, definition.id)));
-      return entries.filter((entry) => entry !== undefined).map((entry) => entry.registration);
     }));
     return items.flat();
   }

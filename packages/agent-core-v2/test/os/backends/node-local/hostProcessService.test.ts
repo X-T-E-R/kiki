@@ -1178,4 +1178,33 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     vi.stubEnv('KIKI_WINDOWS_PROCESS_HELPER', process.execPath);
     await expect(spawnOwned(process.execPath)).rejects.toMatchObject({ code: 'os.process.spawn_failed', details: { phase: 'launch' } });
   });
+
+  it('preserves >60 KB and >200 KB single-long-line stdout without newlines across fast Git Bash and Node exits on Windows', async () => {
+    const bashCmd = "printf 'BEGIN_ISSUE69\\n'; printf '%060000d\\n' 0; printf 'END_ISSUE69\\n'";
+    const bashProc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', bashCmd], { ownedProcessLifetime: 'owner' });
+    bashProc.stdin.end();
+    const bashOutPromise = collect(bashProc.stdout);
+    expect(await bashProc.wait()).toBe(0);
+    await bashProc.dispose();
+    const bashOut = await bashOutPromise;
+    expect(bashOut.length).toBe('BEGIN_ISSUE69\n'.length + 60_000 + 1 + 'END_ISSUE69\n'.length);
+    expect(bashOut.startsWith('BEGIN_ISSUE69\n00000000')).toBe(true);
+    expect(bashOut.endsWith('00000000\nEND_ISSUE69\n')).toBe(true);
+
+    const hugeLine = `${'A'.repeat(220_000)}TAIL_MARKER`;
+    const nodeProc = await spawnOwned(
+      process.execPath,
+      ['-e', `process.stdout.write('A'.repeat(220000) + 'TAIL_MARKER');`],
+      { ownedProcessLifetime: 'owner' },
+    );
+    nodeProc.stdin.end();
+    const chunks: string[] = [];
+    nodeProc.stdout.setEncoding('utf8');
+    nodeProc.stdout.on('data', (chunk: string) => {
+      chunks.push(chunk);
+    });
+    expect(await nodeProc.wait()).toBe(0);
+    await nodeProc.dispose();
+    expect(chunks.join('')).toBe(hugeLine);
+  });
 });

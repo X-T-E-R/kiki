@@ -47,7 +47,7 @@ Some commands are only available in the idle state. Executing these commands whi
 
 | Command | Alias | Description | Always available |
 | --- | --- | --- | --- |
-| `/yolo [on\|off]` | `/yes` | Toggle YOLO mode. Without arguments, flips the current state; explicitly passing `on`/`off` forces the setting. When enabled, skips approval for regular tool calls; Plan mode exit approval is not affected | Yes |
+| `/yolo [on\|off]` | `/yes` | Toggle YOLO mode. Without arguments, flips the current state; explicitly passing `on`/`off` forces the setting. When enabled, skips approval for regular tool calls and gated Plan mode exits | Yes |
 | `/auto [on\|off]` | — | Toggle Auto mode. Routine tools are approved automatically; protected actions still ask, and the agent can still ask questions. Select "Approve for me" through `/permission` to route protected approvals to a reviewer first | Yes |
 | `/plan [on\|off]` | — | Toggle Plan mode. Without arguments, flips the current state; explicitly passing `on`/`off` forces the setting. Simply toggling does not create an empty plan file | Yes |
 | `/plan clear` | — | Clear the current plan | No |
@@ -58,7 +58,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/todos` | — | Expand or collapse a truncated todo list, like `Ctrl-T` | Yes |
 
 ::: warning
-`/yolo` skips approval for regular tool calls. Please make sure you understand the potential risks before enabling it. Plan mode exit approval is not bypassed by `/yolo`; `Bash` inside Plan mode is still subject to the regular `/yolo` allow rules.
+`/yolo` skips approval for regular tool calls and gated Plan mode exits. Please make sure you understand the potential risks before enabling it. `Bash` inside Plan mode is still subject to the regular `/yolo` allow rules.
 :::
 
 ## Autonomous Goal

@@ -18,11 +18,13 @@ import type {
   Block,
   MessageBlock,
   NoticeBlock,
+  ShellBlock,
   SystemBlock,
   ToolBlock,
   UserBlock,
 } from '@kiki/session-core/session/transcript/types';
 
+import type { ResolvedBlockContinuationMeta } from './content-continuation';
 import { ImageThumbnail } from '#/tui/components/media/image-thumbnail';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
 import { ThinkingComponent } from '#/tui/components/messages/thinking';
@@ -32,12 +34,14 @@ import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
 import type { ImageAttachment } from '#/tui/utils/image-attachment-store';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
+import { parseToolSideChannelNote } from '#/tui/utils/tool-note';
 import { parseImageMeta } from '#/utils/image/image-mime';
 
 interface MountedBlock {
   readonly kind: Block['kind'];
   readonly component: Component;
   block: Block;
+  metaKey?: string;
 }
 
 export class DaemonTranscriptRenderer {
@@ -87,7 +91,8 @@ export class DaemonTranscriptRenderer {
       ingress === this.lastIngress &&
       context.liveTurnId === this.context.liveTurnId &&
       context.tasks === this.context.tasks &&
-      context.forest === this.context.forest
+      context.forest === this.context.forest &&
+      context.toolMetaRevision === this.context.toolMetaRevision
     ) {
       return;
     }
@@ -223,10 +228,13 @@ export class DaemonTranscriptRenderer {
     const append = (node: DisplayNode): void => {
       switch (node.kind) {
         case 'history-fold':
-          if (node.failed > 0) { node.members.forEach(append); return; }
+          if (node.failed > 0 || this.nodeHasActionableNote(node)) { node.members.forEach(append); return; }
           break;
         case 'tool-group':
-          if (groupHasRunning(node) || groupHasError(node)) { node.members.forEach(append); return; }
+          if (groupHasRunning(node) || groupHasError(node) || this.nodeHasActionableNote(node)) {
+            node.members.forEach(append);
+            return;
+          }
           break;
         case 'subagent-group':
         case 'media-run':
@@ -269,20 +277,44 @@ export class DaemonTranscriptRenderer {
     for (const component of components) this.container.addChild(component);
   }
 
+  private nodeHasActionableNote(node: DisplayNode): boolean {
+    const resolve = this.context.resolveBlockMeta;
+    if (resolve === undefined) return false;
+    if (
+      node.kind === 'history-fold' ||
+      node.kind === 'tool-group' ||
+      node.kind === 'subagent-group' ||
+      node.kind === 'media-run'
+    ) {
+      return node.members.some((member) => this.nodeHasActionableNote(member));
+    }
+    if (node.kind === 'tool' || node.kind === 'shell') {
+      const meta = resolve(node);
+      return meta?.note !== undefined && parseToolSideChannelNote(meta.note).actionableLines.length > 0;
+    }
+    return false;
+  }
+
   private updateOrCreate(block: Block): MountedBlock {
     const mounted = this.mounted.get(block.id);
-    if (mounted?.block === block) return mounted;
+    const meta =
+      block.kind === 'tool' || block.kind === 'shell'
+        ? this.context.resolveBlockMeta?.(block)
+        : undefined;
+    const nextMetaKey = serializeMetaKey(meta, this.expanded);
+    if (mounted?.block === block && mounted.metaKey === nextMetaKey) return mounted;
     if (
       mounted !== undefined &&
       mounted.kind === block.kind &&
-      !requiresReplacement(mounted.block, block)
+      !requiresReplacement(mounted.block, block, mounted.metaKey, nextMetaKey)
     ) {
-      updateMountedBlock(mounted.component, block);
+      updateMountedBlock(mounted.component, block, meta);
       mounted.block = block;
+      mounted.metaKey = nextMetaKey;
       return mounted;
     }
     if (mounted !== undefined) disposeComponent(mounted.component);
-    const component = createBlockComponent(block, this.ui, this.workDir);
+    const component = createBlockComponent(block, this.ui, this.workDir, meta, this.expanded);
     if (
       component instanceof ToolCallComponent ||
       component instanceof DaemonUserMessageComponent ||
@@ -294,17 +326,24 @@ export class DaemonTranscriptRenderer {
     if (component instanceof DaemonUserMessageComponent) {
       component.setShowTimestamp(this.showTimestamps);
     }
-    const next = {
+    const next: MountedBlock = {
       kind: block.kind,
       component,
       block,
+      metaKey: nextMetaKey,
     };
     this.mounted.set(block.id, next);
     return next;
   }
 }
 
-export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): Component {
+export function createBlockComponent(
+  block: Block,
+  ui?: TUI,
+  workDir?: string,
+  meta?: ResolvedBlockContinuationMeta,
+  expanded = false,
+): Component {
   switch (block.kind) {
     case 'user':
       return new DaemonUserMessageComponent(block);
@@ -313,7 +352,7 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
     case 'thinking':
       return new ThinkingComponent(block.text, true, block.streaming ? 'live' : 'finalized', ui);
     case 'tool':
-      return createToolComponent(block, ui, workDir);
+      return createToolComponent(block, ui, workDir, meta);
     case 'message':
       return new DaemonMessageComponent(block);
     case 'subagent':
@@ -337,11 +376,7 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
         0,
       );
     case 'shell': {
-      const command = block.command ?? block.output;
-      const output = block.command === undefined || block.output === '' ? '' : `\n${block.output}`;
-      const body = `${block.done ? '$' : '…'} ${command}${output}`;
-      if (!block.done || block.isError) return new Text(currentTheme.fg(block.isError ? 'error' : 'text', body), 2, 0);
-      return new ProcessDetail(`$ ${command.split(/\r?\n/u, 1)[0]}`, body, 'text');
+      return renderShellBlockComponent(block, meta, expanded);
     }
     case 'skill':
       return new Text(currentTheme.dim(`/${block.name}${block.args === undefined ? '' : ` ${block.args}`}`), 2, 0);
@@ -367,11 +402,13 @@ export function createBlockComponent(block: Block, ui?: TUI, workDir?: string): 
   }
 }
 
-interface TranscriptContext {
+export interface TranscriptContext {
   readonly liveTurnId?: string;
   readonly forest?: AgentForest;
   readonly tasks?: readonly EndingTask[];
   readonly ingress?: readonly import('@kiki/protocol').PromptItem[];
+  readonly toolMetaRevision?: number;
+  readonly resolveBlockMeta?: (block: ToolBlock | ShellBlock) => ResolvedBlockContinuationMeta | undefined;
 }
 
 class TranscriptSummary implements Component {
@@ -746,8 +783,13 @@ function imageThumbnail(item: MediaRef): ImageThumbnail | undefined {
   return new ImageThumbnail(attachment);
 }
 
-function requiresReplacement(previous: Block, next: Block): boolean {
-  if (previous === next) return false;
+function requiresReplacement(
+  previous: Block,
+  next: Block,
+  previousMetaKey?: string,
+  nextMetaKey?: string,
+): boolean {
+  if (previous === next && previousMetaKey === nextMetaKey) return false;
   if (
     (previous.kind === 'user' || previous.kind === 'assistant') &&
     previous.kind === next.kind &&
@@ -767,11 +809,59 @@ function requiresReplacement(previous: Block, next: Block): boolean {
   );
 }
 
+function serializeMetaKey(
+  meta: ResolvedBlockContinuationMeta | undefined,
+  expanded: boolean,
+): string | undefined {
+  if (meta === undefined) return undefined;
+  return JSON.stringify([
+    meta.note,
+    expanded ? meta.rangeSuffix : undefined,
+    expanded ? meta.continuationStatus : undefined,
+  ]);
+}
+
+function renderShellBlockComponent(
+  block: ShellBlock,
+  meta?: ResolvedBlockContinuationMeta,
+  expanded = false,
+): Component {
+  const fullOutput = `${block.output}${meta?.rangeSuffix ?? ''}`;
+  const command = block.command ?? fullOutput;
+  const output = block.command === undefined || fullOutput === '' ? '' : `\n${fullOutput}`;
+  const noteInfo = parseToolSideChannelNote(meta?.note);
+  const extraLines: string[] = [...noteInfo.actionableLines];
+  if (expanded) {
+    extraLines.push(...noteInfo.systemLines);
+    const status = meta?.continuationStatus;
+    if (status?.state === 'loading') {
+      extraLines.push('Loading full output…');
+    } else if (status?.state === 'error') {
+      extraLines.push(`Could not load full output: ${status.message} (toggle Ctrl+O to retry)`);
+    } else if (status?.state === 'partial') {
+      extraLines.push(`Showing ${String(status.loaded)} of ${String(status.total)} characters`);
+    }
+  }
+  const suffix = extraLines.length === 0 ? '' : `\n${extraLines.join('\n')}`;
+  const body = `${block.done ? '$' : '…'} ${command}${output}${suffix}`;
+  if (!block.done || block.isError) {
+    return new Text(currentTheme.fg(block.isError ? 'error' : 'text', body), 2, 0);
+  }
+  const firstLine = command.split(/\r?\n/u, 1)[0] ?? '';
+  const summaryNote =
+    noteInfo.actionableLines.length > 0 ? ` · ${noteInfo.actionableLines[0]}` : '';
+  return new ProcessDetail(`$ ${firstLine}${summaryNote}`, body, 'text');
+}
+
 function mediaKey(media: readonly MediaRef[] | undefined): string {
   return JSON.stringify(media ?? []);
 }
 
-function updateMountedBlock(component: Component, block: Block): void {
+function updateMountedBlock(
+  component: Component,
+  block: Block,
+  meta?: ResolvedBlockContinuationMeta,
+): void {
   switch (block.kind) {
     case 'assistant':
       (component as DaemonAssistantMessageComponent).updateContent(block.text, {
@@ -786,8 +876,8 @@ function updateMountedBlock(component: Component, block: Block): void {
     }
     case 'tool': {
       const tool = component as ToolCallComponent;
-      tool.updateToolCall(toolCallData(block));
-      const result = toolResultData(block);
+      tool.updateToolCall(toolCallData(block, meta));
+      const result = toolResultData(block, meta);
       if (result !== undefined) tool.setResult(result);
       return;
     }
@@ -816,29 +906,43 @@ function updateMountedBlock(component: Component, block: Block): void {
   }
 }
 
-function createToolComponent(block: ToolBlock, ui?: TUI, workDir?: string): ToolCallComponent {
-  const result = toolResultData(block);
-  return new ToolCallComponent(toolCallData(block), result, ui, workDir);
+function createToolComponent(
+  block: ToolBlock,
+  ui?: TUI,
+  workDir?: string,
+  meta?: ResolvedBlockContinuationMeta,
+): ToolCallComponent {
+  const result = toolResultData(block, meta);
+  return new ToolCallComponent(toolCallData(block, meta), result, ui, workDir);
 }
 
-function toolCallData(block: ToolBlock): ToolCallBlockData {
+function toolCallData(
+  block: ToolBlock,
+  meta?: ResolvedBlockContinuationMeta,
+): ToolCallBlockData {
   return {
     id: block.toolCallId,
     name: block.name,
     args: asRecord(block.args, block.argsText),
     description: block.description,
     display: block.display,
-    result: toolResultData(block),
+    result: toolResultData(block, meta),
     turnId: block.turnId,
   };
 }
 
-function toolResultData(block: ToolBlock): ToolResultBlockData | undefined {
+function toolResultData(
+  block: ToolBlock,
+  meta?: ResolvedBlockContinuationMeta,
+): ToolResultBlockData | undefined {
   if (block.status === 'running') return undefined;
+  const baseOutput = block.output === undefined ? '' : displayValue(block.output);
   return {
     tool_call_id: block.toolCallId,
-    output: block.output === undefined ? '' : displayValue(block.output),
+    output: meta?.rangeSuffix === undefined ? baseOutput : `${baseOutput}${meta.rangeSuffix}`,
     is_error: block.status === 'error' || block.isError === true,
+    note: meta?.note,
+    continuationStatus: meta?.continuationStatus,
   };
 }
 

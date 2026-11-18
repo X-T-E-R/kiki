@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { Error2, ErrorCodes } from '#/errors';
+import { VCS_METADATA_DIRS } from './fsSearch';
 
 const frameSchema = z.object({
   path: z.string().refine((path) => path === '' || path.split('/').every((part) =>
@@ -38,7 +39,7 @@ export function readSearchCursor(
       const parent = parsed.stack[i - 1]!.path;
       const child = parsed.stack[i]!.path;
       if (separator === '\\' && /[\\:]/u.test(child)) throw invalidSearchCursor();
-      if (child === '' || child.includes('/') || child === '.git') throw invalidSearchCursor();
+      if (child === '' || child.includes('/') || VCS_METADATA_DIRS.has(child.toLowerCase())) throw invalidSearchCursor();
       parsed.stack[i]!.path = parent === '' ? child : `${parent}/${child}`;
     }
     return parsed.stack;

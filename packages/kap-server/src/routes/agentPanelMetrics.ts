@@ -238,8 +238,11 @@ export async function readPersistedAgentPanelMetrics(
     const missing: string[] = [];
     const now = Date.now();
     for (const agentId of wanted) {
-      const cached = state.cache.get(sourceFor(agentId));
+      const sourceKey = sourceFor(agentId);
+      const cached = state.cache.get(sourceKey);
       if (cached !== undefined && cached.expiresAt > now && cached.liveRecords === options.mutableUsageRecords?.[agentId]) {
+        state.cache.delete(sourceKey);
+        state.cache.set(sourceKey, cached);
         result.set(agentId, toPersistedMetrics(cached.usage, pricing));
         contexts.set(agentId, cached.context);
       } else {
@@ -290,7 +293,22 @@ export async function readPersistedAgentPanelMetrics(
     const checkpointReady = missing.filter(id => runtime.get(id)?.checkpointReady === true && runtime.get(id)?.facts.panelAccounting !== undefined);
     if (checkpointReady.length > 0) {
       const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, checkpointReady, options.signal);
-      for (const id of checkpointReady) result.set(id, toPersistedMetrics(resolvedUsage(id, persistedUsageOf(rows[id])), pricing));
+      for (const id of checkpointReady) {
+        const usage = resolvedUsage(id, persistedUsageOf(rows[id]));
+        result.set(id, toPersistedMetrics(usage, pricing));
+        const sourceKey = sourceFor(id);
+        if (usage.complete && !options.signal?.aborted && valid.has(sourceKey)) {
+          const ttl = mutable.has(id)
+            ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
+            : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
+          cachePersistedMetrics(state, sourceKey, {
+            expiresAt: Date.now() + ttl,
+            liveRecords: options.mutableUsageRecords?.[id],
+            usage,
+            context: runtime.get(id)?.context ?? EMPTY_PERSISTED_CONTEXT,
+          });
+        }
+      }
       for (let index = missing.length - 1; index >= 0; index--) if (result.has(missing[index]!)) missing.splice(index, 1);
       if (missing.length === 0) return finish();
     }
@@ -387,7 +405,9 @@ function cachePersistedMetrics(
   key: string,
   entry: PersistedMetricsCacheEntry,
 ): void {
-  if (!state.cache.has(key) && state.cache.size >= PERSISTED_METRICS_CACHE_MAX_ENTRIES) {
+  if (state.cache.has(key)) {
+    state.cache.delete(key);
+  } else if (state.cache.size >= PERSISTED_METRICS_CACHE_MAX_ENTRIES) {
     const oldest = state.cache.keys().next().value;
     if (oldest !== undefined) state.cache.delete(oldest);
   }

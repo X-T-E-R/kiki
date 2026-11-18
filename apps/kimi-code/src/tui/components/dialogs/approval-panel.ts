@@ -248,7 +248,10 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
   private request: PendingApproval;
   private readonly onToggleToolOutput: (() => void) | undefined;
   private readonly onOpenPreview:
-    | ((block: DiffDisplayBlock | FileContentDisplayBlock) => void)
+    | ((
+        block: DiffDisplayBlock | FileContentDisplayBlock,
+        blocks?: readonly (DiffDisplayBlock | FileContentDisplayBlock)[],
+      ) => void)
     | undefined;
   private readonly arming: ArmingWindow;
   /** True while a response promise returned by the host is pending. */
@@ -264,7 +267,10 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
     request: PendingApproval,
     onResponse: (response: ApprovalPanelResponse) => void | Promise<unknown>,
     onToggleToolOutput?: () => void,
-    onOpenPreview?: (block: DiffDisplayBlock | FileContentDisplayBlock) => void,
+    onOpenPreview?: (
+      block: DiffDisplayBlock | FileContentDisplayBlock,
+      blocks?: readonly (DiffDisplayBlock | FileContentDisplayBlock)[],
+    ) => void,
     arming: ArmingOptions = {},
   ) {
     super();
@@ -339,9 +345,9 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
     }
 
     if (matchesKey(data, Key.ctrl('e'))) {
-      const previewable = this.findPreviewableBlock();
-      if (previewable !== undefined && this.onOpenPreview !== undefined) {
-        this.onOpenPreview(previewable);
+      const previewable = this.findPreviewableBlocks();
+      if (previewable.length > 0 && this.onOpenPreview !== undefined) {
+        this.onOpenPreview(previewable[0]!, previewable);
       }
       return;
     }
@@ -464,6 +470,16 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
           lines.push(indent(line));
         }
       }
+      const hiddenCount = dedupedBlocks.length - visibleBlocks.length;
+      if (hiddenCount > 0) {
+        lines.push(
+          indent(
+            dim(
+              `… +${String(hiddenCount)} more${hasPreviewable ? ' (Ctrl+E preview all)' : ''}`,
+            ),
+          ),
+        );
+      }
     } else if (data.description) {
       lines.push('');
       for (const descLine of data.description.split('\n')) {
@@ -528,11 +544,11 @@ export class ApprovalPanelComponent extends Container implements Focusable, Mous
     return lines.map((line) => truncateToWidth(line, width));
   }
 
-  private findPreviewableBlock(): DiffDisplayBlock | FileContentDisplayBlock | undefined {
-    for (const block of this.request.data.display) {
-      if (block.type === 'diff' || block.type === 'file_content') return block;
-    }
-    return undefined;
+  private findPreviewableBlocks(): Array<DiffDisplayBlock | FileContentDisplayBlock> {
+    return this.request.data.display.filter(
+      (block): block is DiffDisplayBlock | FileContentDisplayBlock =>
+        block.type === 'diff' || block.type === 'file_content',
+    );
   }
 
   private choiceAt(index: number): ApprovalPanelChoice | undefined {

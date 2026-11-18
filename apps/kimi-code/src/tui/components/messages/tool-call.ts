@@ -35,6 +35,7 @@ import type { TokenUsage } from '@kiki/node-sdk';
 import { appendStreamingArgsPreview } from '#/tui/utils/event-payload';
 import { decodeMcpToolName } from '#/tui/utils/mcp-tool-name';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
+import { parseToolSideChannelNote } from '#/tui/utils/tool-note';
 import { formatTokenCount } from '#/utils/usage/usage-format';
 import { PlanBoxComponent } from './plan-box';
 import { BlankLine } from './blank-line';
@@ -776,6 +777,7 @@ export class ToolCallComponent extends Container implements MouseRoutable {
     this.buildProgressBlock();
     this.buildLiveOutputBlock();
     this.buildContent();
+    this.buildResultMetaBlock();
     this.buildSubagentBlock();
     this.syncStreamingProgressTimer();
     this.syncSubagentElapsedTimer();
@@ -1668,6 +1670,7 @@ export class ToolCallComponent extends Container implements MouseRoutable {
     this.buildProgressBlock();
     this.buildLiveOutputBlock();
     this.buildContent();
+    this.buildResultMetaBlock();
     this.buildSubagentBlock();
   }
 
@@ -1680,6 +1683,7 @@ export class ToolCallComponent extends Container implements MouseRoutable {
     this.buildProgressBlock();
     this.buildLiveOutputBlock();
     this.buildContent();
+    this.buildResultMetaBlock();
     this.buildSubagentBlock();
   }
 
@@ -2374,6 +2378,46 @@ export class ToolCallComponent extends Container implements MouseRoutable {
     });
     for (const component of components) {
       this.addChild(component);
+    }
+  }
+
+  private buildResultMetaBlock(): void {
+    const { result } = this;
+    if (result === undefined || this.isSingleSubagentView()) return;
+
+    const parsedNote = parseToolSideChannelNote(result.note);
+    for (const line of parsedNote.actionableLines) {
+      this.addChild(new Text(currentTheme.fg('warning', line), 2, 0));
+    }
+    if (this.expanded) {
+      for (const line of parsedNote.systemLines) {
+        this.addChild(new Text(currentTheme.dim(line), 2, 0));
+      }
+      const status = result.continuationStatus;
+      if (status?.state === 'loading') {
+        this.addChild(new Text(currentTheme.dim('Loading full output…'), 2, 0));
+      } else if (status?.state === 'error') {
+        this.addChild(
+          new Text(
+            currentTheme.fg(
+              'warning',
+              `Could not load full output: ${status.message} (toggle Ctrl+O to retry)`,
+            ),
+            2,
+            0,
+          ),
+        );
+      } else if (status?.state === 'partial') {
+        this.addChild(
+          new Text(
+            currentTheme.dim(
+              `Showing ${String(status.loaded)} of ${String(status.total)} characters`,
+            ),
+            2,
+            0,
+          ),
+        );
+      }
     }
   }
 

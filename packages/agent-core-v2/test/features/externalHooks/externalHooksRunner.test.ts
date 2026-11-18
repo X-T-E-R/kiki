@@ -384,4 +384,74 @@ describe('ExternalHooksRunnerService', () => {
     expect(runner.hasHooksFor('SessionHeartbeat')).toBe(true);
     expect(runner.hasHooksFor('Stop')).toBe(false);
   });
+
+  it('isolates broken hook plugins by workspace and session scope while failing closed with plugin diagnostics where active', async () => {
+    const sessionWorkspaces: Record<string, string> = {
+      'session-prod': 'workspace-prod',
+      'session-lab': 'workspace-lab',
+      'session-lab-safe': 'workspace-lab',
+    };
+    const runner = makeHookRunner(
+      [{ event: 'UserPromptSubmit', command: nodeCommand('process.stdout.write("user-ok");'), timeout: 5 }],
+      {
+        pluginHooks: [
+          {
+            pluginId: 'healthy-guard',
+            event: 'UserPromptSubmit',
+            command: nodeCommand('process.stdout.write("healthy-plugin-ok");'),
+            timeout: 5,
+          },
+        ],
+        pluginHookFailures: [
+          {
+            pluginId: 'broken-lab-guard',
+            defaultEnabled: false,
+            message: 'Invalid hook matcher "[unclosed"',
+          },
+        ],
+        usage: {
+          enabled: () => true,
+          allows: async (workspaceId: string | undefined, pluginId: string, sessionId?: string) => {
+            if (pluginId === 'healthy-guard') return true;
+            if (pluginId === 'broken-lab-guard') {
+              if (sessionId === 'session-lab-safe') return false;
+              return workspaceId === 'workspace-lab';
+            }
+            return false;
+          },
+        } as unknown as IPluginUsageService,
+        sessions: {
+          get: async (id: string) => (sessionWorkspaces[id] === undefined ? undefined : { workspaceId: sessionWorkspaces[id] }),
+        } as unknown as ISessionIndex,
+      },
+    );
+    try {
+      const prodResults = await triggerBlockingResults(runner, 'UserPromptSubmit', {
+        sessionId: 'session-prod',
+        matcherValue: 'hello',
+      });
+      expect(prodResults.map((item) => item.stdout)).toEqual(['user-ok', 'healthy-plugin-ok']);
+
+      const safeLabResults = await triggerBlockingResults(runner, 'UserPromptSubmit', {
+        sessionId: 'session-lab-safe',
+        matcherValue: 'hello',
+      });
+      expect(safeLabResults.map((item) => item.stdout)).toEqual(['user-ok', 'healthy-plugin-ok']);
+
+      const blockedLab = await runner.triggerBlock('UserPromptSubmit', {
+        sessionId: 'session-lab',
+        matcherValue: 'hello',
+      });
+      expect(blockedLab).toEqual({
+        block: true,
+        reason: 'Failed to evaluate UserPromptSubmit hooks: Plugin "broken-lab-guard" failed to load its hooks: Invalid hook matcher "[unclosed"',
+      });
+
+      await expect(
+        runner.fireAndForgetTrigger('Notification', { sessionId: 'session-lab' }),
+      ).resolves.toEqual([]);
+    } finally {
+      await runner.dispose();
+    }
+  });
 });

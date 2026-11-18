@@ -11,7 +11,7 @@ import {
   VideoUploadUnsupportedError,
 } from '#/kosong/contract/errors';
 import type { VideoURLPart } from '#/kosong/contract/message';
-import { generate, type GenerateResult } from '#/kosong/contract/generate';
+import { generate, readGenerateFailureFacts, type GenerateResult } from '#/kosong/contract/generate';
 import type {
   ChatProvider,
   GenerateOptions,
@@ -33,6 +33,13 @@ import {
   type ModelRequestTiming,
 } from './modelRequester';
 import { isApiDefault } from './parameters';
+import {
+  formatReasoningOrigin,
+  projectMessagesForModelTarget,
+  stampMessageReasoningOrigin,
+  stampMessageReasoningOriginInPlace,
+  stampStreamPartReasoningOrigin,
+} from './reasoningOrigin';
 import { verifyAndApplyPreBaselinePatch } from './requestInvariantGuard';
 
 /** The request executor — the only production code that calls
@@ -166,12 +173,20 @@ export class ModelRequesterImpl implements ModelRequester {
   ): Promise<void> {
     signal?.throwIfAborted();
     this.assertAdapterBinding();
+    const reasoningOrigin = formatReasoningOrigin(this.model);
+    const projectedMessages = projectMessagesForModelTarget(input.messages, reasoningOrigin, {
+      unmarkedOpaquePolicy: params?.unmarkedOpaquePolicy,
+    });
+    const historyUnchanged = projectedMessages === input.messages;
     const configured = this.model.generationParameters;
     const preferredTokens = this.model.maxCompletionTokens;
     const requestedTokens = params?.maxCompletionTokens;
     const limit = Math.min(preferredTokens ?? Infinity, requestedTokens ?? Infinity, this.model.maxOutputSize ?? Infinity);
     const maxContextTokens = params?.maxContextTokens ?? this.model.maxContextSize;
-    const canClampToWindow = maxContextTokens > 0 && params?.usedContextTokensTrusted !== false;
+    const canClampToWindow =
+      maxContextTokens > 0 &&
+      params?.usedContextTokensTrusted !== false &&
+      (params?.usedContextTokensTrusted === true || historyUnchanged);
     const usedContextTokens = canClampToWindow ? params?.usedContextTokens : undefined;
     const available = canClampToWindow ? maxContextTokens - (usedContextTokens ?? 0) : Infinity;
     if (available <= 0) {
@@ -230,6 +245,7 @@ export class ModelRequesterImpl implements ModelRequester {
 
     const options = verifyAndApplyPreBaselinePatch({
       ...input,
+      messages: projectedMessages,
       logicalRequestId: params.attribution.logicalRequestId,
       sessionId: params.attribution.sessionId,
       agentId: params.attribution.agentId,
@@ -267,11 +283,15 @@ export class ModelRequesterImpl implements ModelRequester {
               provider,
               input.systemPrompt,
               [...input.tools],
-              [...input.messages],
+              [...projectedMessages],
               {
                 onMessagePart: (part) => {
                   firstChunkAt ??= Date.now();
-                  queue.push({ type: 'part', part, responseInstanceId });
+                  queue.push({
+                    type: 'part',
+                    part: stampStreamPartReasoningOrigin(part, reasoningOrigin),
+                    responseInstanceId,
+                  });
                 },
               },
               { ...options, signal: requestSignal, auth, responsesTransport, responsesWebSocket: selection?.config, responsesBaselinePolicyKey },
@@ -287,6 +307,10 @@ export class ModelRequesterImpl implements ModelRequester {
         params.retry,
       );
     } catch (error) {
+      const failureFacts = readGenerateFailureFacts(error);
+      if (failureFacts !== undefined) {
+        stampMessageReasoningOriginInPlace(failureFacts.message, reasoningOrigin);
+      }
       if (isAbortError(error) || signal?.aborted === true) throw error;
       throw translateProviderError(error);
     }
@@ -296,7 +320,7 @@ export class ModelRequesterImpl implements ModelRequester {
     }
     queue.push({
       type: 'finish',
-      message: result.message,
+      message: stampMessageReasoningOrigin(result.message, reasoningOrigin),
       providerFinishReason: result.finishReason ?? undefined,
       completionAuthority: result.completionAuthority,
       rawFinishReason: result.rawFinishReason ?? undefined,

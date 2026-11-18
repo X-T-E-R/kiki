@@ -44,6 +44,15 @@ export abstract class AgentProfileLoaderBase extends Service {
     await this.readyPromise;
   }
 
+  protected reloadFromWatch(): Promise<void> {
+    if (this.lastGoodContribution === undefined) {
+      return this.reload();
+    }
+    const refreshed = this.enqueue({ revalidate: true });
+    void refreshed.catch(() => undefined);
+    return refreshed;
+  }
+
   protected abstract load(): Promise<AgentProfileContribution>;
 
   protected get workspaceKey(): string | undefined {

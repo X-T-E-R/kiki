@@ -71,7 +71,7 @@ describe('thinking-only continuation', () => {
     try {
       await (await prompt(local)).completion;
       expect(create).toHaveBeenCalledTimes(1);
-      expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE });
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) });
       expect(local.contextData().history.some((message) =>
         message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === CONTINUE))).toBe(false);
       await local.expectResumeMatches();
@@ -167,8 +167,8 @@ describe('thinking-only continuation', () => {
       expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
       expect(create).toHaveBeenCalledTimes(2);
       expect(storedThinking(local)).toContainEqual(kind === 'normal'
-        ? { type: 'think', think: THINKING, encrypted: SIGNATURE }
-        : { type: 'think', think: 'plan', encrypted: 'sig-plan' });
+        ? { type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }
+        : { type: 'think', think: 'plan', encrypted: 'sig-plan', reasoningOrigin: expect.any(String) });
       expect(continued(local)).toBe(false);
       await local.expectResumeMatches();
     } finally {
@@ -403,7 +403,7 @@ describe('thinking-only continuation', () => {
     try {
       await (await prompt(local)).completion;
       expect(create).toHaveBeenCalledTimes(1);
-      expect(storedThinking(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThinking(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }]);
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -658,7 +658,7 @@ describe('thinking-only continuation', () => {
     const local = anthropicAgent(create);
     try {
       await (await prompt(local)).completion;
-      expect(storedThinking(local)).toEqual([{ type: 'think', think: '', encrypted: SIGNATURE }]);
+      expect(storedThinking(local)).toEqual([{ type: 'think', think: '', encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }]);
       expect(local.allEvents.filter((event) => event.event === 'thinking.delta')).toEqual([]);
       await (await prompt(local, 'Next request')).completion;
       expect(thinkingOf(create.mock.calls[1]?.[0])).toEqual([{ thinking: '', signature: SIGNATURE }]);
@@ -682,7 +682,7 @@ describe('thinking-only continuation', () => {
     try {
       await (await prompt(local)).completion;
       expect(create).toHaveBeenCalledTimes(1);
-      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', encrypted: SIGNATURE });
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', encrypted: SIGNATURE, reasoningOrigin: expect.any(String) });
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -706,7 +706,7 @@ describe('thinking-only continuation', () => {
       });
       expect(await handle.completion).toMatchObject({ state: 'cancelled' });
       expect(create).toHaveBeenCalledTimes(1);
-      expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE });
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) });
       expect(local.contextData().history.some((message) => message.role === 'user' &&
         message.content.some((part) => part.type === 'text' && part.text === CONTINUE))).toBe(false);
       await local.expectResumeMatches();
@@ -777,7 +777,7 @@ describe('zero-output continuation', () => {
       const terminal = await (await prompt(local)).completion;
       expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
       expect(create).toHaveBeenCalledTimes(1);
-      expect(storedThinking(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE }]);
+      expect(storedThinking(local)).toEqual([{ type: 'think', think: THINKING, encrypted: SIGNATURE, reasoningOrigin: expect.any(String) }]);
       expect(continued(local)).toBe(false);
       await local.expectResumeMatches();
     } finally {
@@ -823,7 +823,7 @@ describe('zero-output continuation', () => {
       expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
       expect(create).toHaveBeenCalledTimes(1);
       expect(continued(local)).toBe(false);
-      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', redacted: 'redacted-example' });
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', redacted: 'redacted-example', reasoningOrigin: expect.any(String) });
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -839,7 +839,7 @@ describe('zero-output continuation', () => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(tailRole(create.mock.calls[1]?.[0])).toBe('user');
       expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
-      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', encrypted: SIGNATURE });
+      expect(storedThinking(local)).toContainEqual({ type: 'think', think: '', encrypted: SIGNATURE, reasoningOrigin: expect.any(String) });
       await local.expectResumeMatches();
     } finally {
       await local.dispose();

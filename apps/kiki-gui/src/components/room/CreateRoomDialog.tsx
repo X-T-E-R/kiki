@@ -13,6 +13,7 @@ import { useI18n } from '../../i18n';
 import { ROOMS_QUERY_KEY, useBotRoomApi } from '../../lib/botRooms';
 import { useConnection } from '../../state/connection';
 import { SidePanel } from '../SidePanel';
+import { invalidatePersonaSessionLists } from '../../lib/personaFreshness';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { PersonaAvatar, personaAvatarOf } from '../persona/PersonaAvatar';
@@ -58,6 +59,7 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
     onSuccess: (room) => {
       void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      invalidatePersonaSessionLists(queryClient);
       onClose();
       void navigate(`/rooms/${encodeURIComponent(room.id)}`);
     },

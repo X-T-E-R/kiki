@@ -833,3 +833,55 @@ function makeInspection() {
     warnings: [],
   };
 }
+
+describe('tool side-channel notes in session show (#67)', () => {
+  it('projects tool.result note into offline inspection JSON and rendered text output', async () => {
+    const sessionDir = join(homeDir, 'sessions', 'wd_note', SESSION_ID);
+    const agentDir = join(sessionDir, 'agents', 'main');
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, 'state.json'),
+      JSON.stringify({
+        id: SESSION_ID,
+        title: 'Note inspection',
+        cwd: '/repo/note',
+        createdAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_010_000,
+        agents: { main: { type: 'main', model: 'example-model', status: 'completed' } },
+      }),
+    );
+    const staleNote =
+      'Note: stale.txt changed on disk since you last read it; the edit was applied because the text it replaced still matched exactly.';
+    const wire = [
+      { type: 'turn.prompt', turnId: 0, origin: { kind: 'user' }, input: [{ type: 'text', text: 'patch stale.txt' }], time: 1_700_000_001_000 },
+      { type: 'context.append_loop_event', time: 1_700_000_002_000, event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-0' } },
+      { type: 'context.append_loop_event', time: 1_700_000_003_000, event: { type: 'tool.call', turnId: 0, step: 1, stepUuid: 'step-0', toolCallId: 'call_stale', name: 'Edit', args: { path: 'stale.txt' } } },
+      {
+        type: 'context.append_loop_event',
+        time: 1_700_000_004_000,
+        event: {
+          type: 'tool.result',
+          turnId: 0,
+          step: 1,
+          stepUuid: 'step-0',
+          toolCallId: 'call_stale',
+          result: { output: 'Edited stale.txt', isError: false, note: staleNote },
+        },
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 1_700_000_005_000 },
+    ];
+    await writeFile(join(agentDir, 'wire.jsonl'), `${wire.map((row) => JSON.stringify(row)).join('\n')}\n`);
+
+    const report = await inspectOfflineSession({ homeDir, reference: SESSION_ID });
+    const toolEntry = report.timeline.find((entry) => entry.type === 'tool');
+    expect(toolEntry).toMatchObject({
+      type: 'tool',
+      id: 'call_stale',
+      name: 'Edit',
+      output: 'Edited stale.txt',
+      note: staleNote,
+    });
+    const rendered = renderSessionInspection(report);
+    expect(rendered).toContain('stale.txt changed on disk since you last read it');
+  });
+});

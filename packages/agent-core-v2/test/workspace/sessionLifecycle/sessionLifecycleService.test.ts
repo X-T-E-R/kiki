@@ -1465,7 +1465,7 @@ describe('SessionLifecycleService fork cron ownership', () => {
     ];
     const rewrite = vi.fn();
     const createAgent = vi.fn(async () => {});
-    const update = vi.fn(async () => {});
+    const update = vi.fn(async (_patch?: Record<string, unknown>) => {});
     const target = {
       id: 'external-fork',
       dispose: vi.fn(),

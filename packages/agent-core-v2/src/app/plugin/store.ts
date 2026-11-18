@@ -29,6 +29,18 @@ export interface InstalledFile {
 
 const EMPTY: InstalledFile = { version: 1, plugins: [] };
 
+function isValidInstalledRecord(entry: unknown): entry is InstalledRecord {
+  if (typeof entry !== 'object' || entry === null) return false;
+  const candidate = entry as { id?: unknown; root?: unknown; enabled?: unknown };
+  return (
+    typeof candidate.id === 'string'
+    && candidate.id.trim() !== ''
+    && typeof candidate.root === 'string'
+    && candidate.root.trim() !== ''
+    && typeof candidate.enabled === 'boolean'
+  );
+}
+
 export async function readInstalled(kimiHomeDir: string): Promise<InstalledFile> {
   const filePath = path.join(kimiHomeDir, INSTALLED_REL);
   let text: string;
@@ -55,7 +67,35 @@ export async function readInstalled(kimiHomeDir: string): Promise<InstalledFile>
       { details: { path: filePath } },
     );
   }
+  const invalidIndex = parsed.plugins.findIndex((entry) => !isValidInstalledRecord(entry));
+  if (invalidIndex >= 0) {
+    const offendingId = typeof (parsed.plugins[invalidIndex] as { id?: unknown } | null)?.id === 'string'
+      ? ` ("${(parsed.plugins[invalidIndex] as { id: string }).id}")`
+      : '';
+    throw new Error2(
+      ErrorCodes.PLUGIN_LOAD_FAILED,
+      `Failed to parse ${filePath}: plugin entry at index ${invalidIndex}${offendingId} is missing id, root, or boolean enabled`,
+      { details: { path: filePath, index: invalidIndex } },
+    );
+  }
   return parsed;
+}
+
+export async function readInheritedInstalled(kimiHomeDir: string): Promise<readonly InstalledRecord[]> {
+  const filePath = path.join(kimiHomeDir, INSTALLED_REL);
+  let text: string;
+  try {
+    text = await readFile(filePath, 'utf8');
+  } catch {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(text) as { plugins?: unknown };
+    if (typeof parsed !== 'object' || parsed === null || !Array.isArray(parsed.plugins)) return [];
+    return parsed.plugins.filter(isValidInstalledRecord);
+  } catch {
+    return [];
+  }
 }
 
 export async function writeInstalled(kimiHomeDir: string, data: InstalledFile): Promise<void> {

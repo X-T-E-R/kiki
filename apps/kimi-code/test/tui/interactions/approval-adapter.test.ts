@@ -398,3 +398,74 @@ describe('external permission options (ACP harness)', () => {
     }
   });
 });
+
+describe('multi-edit file_io approval (#66)', () => {
+  it('splits DISPLAY_EDIT_SEPARATOR-joined file_io edit display into one diff block per entry', () => {
+    const adapted = adaptApprovalRequest({
+      toolCallId: 'tc-multi-edit',
+      toolName: 'Edit',
+      action: 'edit file',
+      display: {
+        kind: 'file_io',
+        operation: 'edit',
+        path: '/outside/multi.txt',
+        before: 'alpha = 1\n…\nbeta = 2',
+        after: 'alpha = 10\n…\nbeta = 20',
+      },
+    });
+
+    expect(adapted.display).toEqual([
+      {
+        type: 'diff',
+        path: '/outside/multi.txt',
+        old_text: 'alpha = 1',
+        new_text: 'alpha = 10',
+      },
+      {
+        type: 'diff',
+        path: '/outside/multi.txt',
+        old_text: 'beta = 2',
+        new_text: 'beta = 20',
+      },
+    ]);
+  });
+
+  it('prefers structured toolArgs.edits when provided so literal separator text inside a hunk stays intact', () => {
+    const adapted = adaptApprovalRequest(
+      {
+        toolCallId: 'tc-multi-edit-args',
+        toolName: 'Edit',
+        action: 'edit file',
+        display: {
+          kind: 'file_io',
+          operation: 'edit',
+          path: '/outside/literal.txt',
+          before: 'first\n…\nhunk\n…\nsecond',
+          after: 'FIRST\n…\nHUNK\n…\nSECOND',
+        },
+      },
+      {
+        path: '/outside/literal.txt',
+        edits: [
+          { old_string: 'first\n…\nhunk', new_string: 'FIRST\n…\nHUNK' },
+          { old_string: 'second', new_string: 'SECOND' },
+        ],
+      },
+    );
+
+    expect(adapted.display).toEqual([
+      {
+        type: 'diff',
+        path: '/outside/literal.txt',
+        old_text: 'first\n…\nhunk',
+        new_text: 'FIRST\n…\nHUNK',
+      },
+      {
+        type: 'diff',
+        path: '/outside/literal.txt',
+        old_text: 'second',
+        new_text: 'SECOND',
+      },
+    ]);
+  });
+});

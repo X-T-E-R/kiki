@@ -21,6 +21,7 @@ import type { SessionSeenMap } from '@kiki/session-core/settings';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { invalidatePersonaSessionLists } from '../../lib/personaFreshness';
 import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { ROOM_ITEMS_QUERY_KEY } from '../../lib/useConversationList';
 import { useConnection } from '../../state/connection';
@@ -138,6 +139,7 @@ export function PersonaConversationsSection({
         void queryClient.invalidateQueries({ queryKey: PERSONAS_QUERY_KEY });
         void queryClient.invalidateQueries({ queryKey: personaQueryKey(persona.id) });
         void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+        invalidatePersonaSessionLists(queryClient);
         void queryClient.invalidateQueries({ queryKey: ['bots'] });
       };
       pushUndoToast({

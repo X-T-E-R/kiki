@@ -12,6 +12,8 @@ import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/
 import { quoteWindowsArgument } from './windowsCommandLine';
 
 const CONTROL_TIMEOUT_MS = 5_000;
+const STREAM_EOF_IDLE_MS = 250;
+const STREAM_EOF_MAX_MS = 2_000;
 const RELEASE_EXIT_CAPABILITY = 'release-exit-v2';
 const UNRELEASED_EXIT_CODE = 6;
 
@@ -71,8 +73,12 @@ class WindowsProcessTree implements IHostProcess {
   private retainedEmpty = false;
   private releaseWriteError: Error | undefined;
   private pendingCommand: 'kill' | 'release' | 'retain' | undefined;
+  private readonly outputSocket: Socket;
+  private readonly errorSocket: Socket | undefined;
 
   constructor(private readonly child: ChildProcess, private readonly control: Socket, input: Socket, output: Socket, error: Socket, mergeStderr: boolean, private readonly ownerLifetime: boolean) {
+    this.outputSocket = output;
+    this.errorSocket = mergeStderr ? undefined : error;
     this.stdin = new Writable({
       write(chunk: Buffer, _encoding, done) { input.write(chunk, done); },
       final(done) { input.end(() => { input.destroy(); done(); }); },
@@ -216,12 +222,20 @@ class WindowsProcessTree implements IHostProcess {
         const response = await this.request('release');
         if (response !== 'released' && response !== 'terminated') throw this.decodeError(response);
       }
+      if (this.killPromise === undefined && (this.retainedEmpty || !this.ownerLifetime)) {
+        await this.drainStreamsBeforeClose();
+      }
       this.disposed = true;
       this.control.destroy();
       this.closeStreams();
     }
     await this.withDeadline(this.helperExited.promise, 'deadline');
     this.releaseListener?.();
+  }
+
+  private async drainStreamsBeforeClose(): Promise<void> {
+    const sockets = this.errorSocket === undefined ? [this.outputSocket] : [this.outputSocket, this.errorSocket];
+    await Promise.all(sockets.map((socket) => waitSocketEndWithIdleGrace(socket)));
   }
 
   private async request(command: 'kill' | 'release' | 'retain'): Promise<string> {
@@ -396,4 +410,44 @@ export async function spawnWindowsProcessTree(command: string, args: readonly st
       details: { command, helper, phase: 'launch' }, cause: error,
     });
   } finally { child.off('error', onError); }
+}
+
+function waitSocketEndWithIdleGrace(socket: Socket): Promise<void> {
+  if (socket.readableEnded || socket.destroyed) {
+    return Promise.resolve();
+  }
+  let resolveDone!: () => void;
+  const donePromise = new Promise<void>((resolve) => {
+    resolveDone = resolve;
+  });
+  let settled = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let maxTimer: ReturnType<typeof setTimeout> | undefined;
+  const finish = (): void => {
+    if (settled) return;
+    settled = true;
+    socket.off('data', onData);
+    socket.off('end', finish);
+    socket.off('close', finish);
+    socket.off('error', finish);
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    if (maxTimer !== undefined) clearTimeout(maxTimer);
+    resolveDone();
+  };
+  const resetIdle = (): void => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(finish, STREAM_EOF_IDLE_MS);
+    idleTimer.unref?.();
+  };
+  const onData = (): void => {
+    resetIdle();
+  };
+  socket.on('data', onData);
+  socket.once('end', finish);
+  socket.once('close', finish);
+  socket.once('error', finish);
+  resetIdle();
+  maxTimer = setTimeout(finish, STREAM_EOF_MAX_MS);
+  maxTimer.unref?.();
+  return donePromise;
 }

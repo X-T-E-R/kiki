@@ -89,6 +89,11 @@ import {
 import type { ModelOverrides } from '#/kosong/model/model.types';
 import { IModelService } from '#/kosong/model/model';
 import { completionBudgetParams, resolveCompletionBudget } from '#/kosong/model/completionBudget';
+import {
+  formatReasoningOrigin,
+  projectMessagesForModelTarget,
+  type UnmarkedOpaqueReasoningPolicy,
+} from '#/kosong/model/reasoningOrigin';
 import { resolveThinkingKeep, type ThinkingConfig } from '#/kosong/model/thinking';
 import {
   DEFAULT_MODEL_SECTION,
@@ -134,6 +139,7 @@ import {
 } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { WarningIssued } from '#/agent/profile/profileOps';
+import { modelSwitchCompletionsKey } from '#/agent/modelSwitch/modelSwitchOps';
 import {
   IRequestIdentityRegistry,
   type RequestIdentityDimensions,
@@ -672,18 +678,23 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         projectedBatches,
         projectedMessages,
       });
+      const unmarkedOpaquePolicy = this.unmarkedOpaquePolicyFor(request.model);
       const input = {
         systemPrompt: request.systemPrompt,
         tools: request.tools,
-        messages: projectDynamicToolSchemas(
-          await this.mediaResolver.resolve(
-            projected,
-            request.requester,
-            signal,
-            params.headers,
+        messages: projectMessagesForModelTarget(
+          projectDynamicToolSchemas(
+            await this.mediaResolver.resolve(
+              projected,
+              request.requester,
+              signal,
+              params.headers,
+            ),
+            request.model.protocol,
+            usesKimiToolSchema(request.model.providerType),
           ),
-          request.model.protocol,
-          usesKimiToolSchema(request.model.providerType),
+          request.model,
+          { unmarkedOpaquePolicy },
         ),
       };
       this.warnAboutAnthropicThinkingEffort(request);
@@ -744,6 +755,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           ...params,
           preBaselinePatch,
           streamTaps: extensions?.activeStreamTaps(),
+          unmarkedOpaquePolicy,
           usedContextTokensTrusted: params.usedContextTokensTrusted === true &&
             this.tokenCounting.isCurrentContextMeasured() &&
             isUnchangedModelHistory(this.context.get(), request.messages) &&
@@ -1409,6 +1421,31 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       this.turnConfigs.set(turnId, snapshot);
     }
     return snapshot;
+  }
+
+  private unmarkedOpaquePolicyFor(targetModel: Model): UnmarkedOpaqueReasoningPolicy {
+    if (!this.states.has(modelSwitchCompletionsKey)) return 'retain';
+    const currentEpoch = this.states.has(contextWindowEpochKey)
+      ? this.states.get(contextWindowEpochKey)
+      : 0;
+    const targetOrigin = formatReasoningOrigin(targetModel);
+    for (const completion of this.states.get(modelSwitchCompletionsKey).values()) {
+      const { receipt } = completion;
+      if (receipt.mode !== 'direct' || receipt.windowEpoch !== currentEpoch) continue;
+      for (const alias of [receipt.fromModel, receipt.toModel]) {
+        if (!alias) continue;
+        try {
+          const candidate = this.profile.getRuntimeRequester(
+            alias,
+            this.profile.getRecipeModelSettings(alias),
+          ).model;
+          if (formatReasoningOrigin(candidate) !== targetOrigin) return 'omit';
+        } catch {
+          return 'omit';
+        }
+      }
+    }
+    return 'retain';
   }
 
   private resolveRequestIdentityPolicy(
