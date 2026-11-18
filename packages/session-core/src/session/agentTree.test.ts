@@ -2113,32 +2113,28 @@ describe('live agent status during partial history recovery', () => {
   });
 
   it("preserves persisted model and thinkingEffort on a completed branch when a tail-first wire window omits byte-0 profile.bind", () => {
-    const completedBranchSnapshot: AgentTranscriptSnapshot = {
-      agentId: "agent-352",
+    const completedBranchSnapshot = snapshot({
       items: [
         {
           kind: "turn",
           turnId: "t0",
+          ordinal: 0,
           state: "completed",
+          origin: { kind: "user" },
           startedAt: "2026-11-18T10:00:00.000Z",
           endedAt: "2026-11-18T10:01:00.000Z",
           steps: [],
         },
       ],
-      tasks: [],
-      interactions: [],
-      prompts: [],
-      todos: [],
-      meta: {},
       hasMoreOlder: true,
-    };
-    const branchRosterRow: SnapshotSubagent = {
+    });
+    const branchRosterRow = compactSnapshot({
       id: "agent-352",
       parent_agent_id: "main",
       profile: "agent",
       label: "上下文保留窗口与分支解耦设计",
       name_source: "user_label",
-      status: "idle",
+      status: "completed",
       activity_status: "idle",
       status_source: "metadata",
       is_branch: true,
@@ -2148,7 +2144,7 @@ describe('live agent status during partial history recovery', () => {
       executor_id: "native",
       live: false,
       created_at: "2026-11-18T09:59:50.000Z",
-    };
+    });
 
     const forest = sessionAgentForestFromAgentSnapshots(
       new Map([["main", snapshot()], ["agent-352", completedBranchSnapshot]]),
@@ -2164,14 +2160,14 @@ describe('live agent status during partial history recovery', () => {
     });
 
     const completedForest = buildAgentForest([], [
-      {
+      roster({
         agentId: "agent-352",
         parentAgentId: "main",
         status: "completed",
         isBranch: true,
         branchSeed: "fresh",
-      },
-      {
+      }),
+      roster({
         agentId: "agent-352",
         parentAgentId: "main",
         status: "idle",
@@ -2181,7 +2177,7 @@ describe('live agent status during partial history recovery', () => {
         model: "fixture/kiki-pro",
         thinkingEffort: "high",
         executorId: "native",
-      },
+      }),
     ]);
     expect(completedForest.byId["agent-352"]).toMatchObject({
       isBranch: true,

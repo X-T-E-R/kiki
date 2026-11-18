@@ -4372,7 +4372,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(24);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(25);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -4382,7 +4382,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const ref = { refId: 'ar:message-1:worker', profile: 'worker', executor: 'example-acp', configuration: 'profile', label: 'Worker' };
@@ -4398,6 +4398,7 @@ describe('TranscriptService live integration', () => {
         { type: 'turn.ended', turnId: 1, reason: 'cancelled', time: 12_000 },
         { type: 'profile.bind', modelAlias: 'example/old', thinkingEffort: 'high', time: 13_000 },
         { type: 'config.update', modelAlias: 'example/new', thinkingEffort: 'low', time: 14_000 },
+        { type: 'permission.set_mode', mode: 'yolo', source: 'binding', time: 14_500 },
         { type: 'full_compaction.begin', source: 'auto', time: 15_000 },
         { type: 'context.apply_compaction', summary: 'committed summary', time: 16_000 },
         { type: 'full_compaction.complete', time: 16_001 },
@@ -4473,7 +4474,7 @@ describe('TranscriptService live integration', () => {
         expect(expected?.items.filter((item) => item.kind === 'marker' && item.marker === 'model.switch')).toEqual([
           expect.objectContaining({ payload: { from: 'example/old', to: 'example/new' } }),
         ]);
-        expect(expected?.meta.agent).toMatchObject({ model: 'example/new', thinkingEffort: 'low', contextTokens: 109786, maxContextTokens: 200000, contextUsage: 0.54893 });
+        expect(expected?.meta.agent).toMatchObject({ model: 'example/new', thinkingEffort: 'low', permission: 'yolo', contextTokens: 109786, maxContextTokens: 200000, contextUsage: 0.54893 });
         expect(expected?.tasks).toContainEqual(expect.objectContaining({ thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' }));
         expect(expected?.items.filter((item) => item.kind === 'marker' && item.marker === 'compaction')).toEqual([
           expect.objectContaining({ payload: expect.objectContaining({ phase: 'completed', summary: 'committed summary' }) }),
@@ -4484,7 +4485,7 @@ describe('TranscriptService live integration', () => {
         const accepted = expected?.prompts.find(prompt => prompt.promptId === 'accepted-not-delivered');
         expect(accepted).toMatchObject({ status: 'queued', steerAccepted: true, userMessageId: 'logical-accepted' });
         expect(accepted?.steeredAt).toBeUndefined();
-        expect(checkpoint?.format).toBe(24);
+        expect(checkpoint?.format).toBe(25);
         const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
         expect(boundary).toMatchObject({ state: 'failed',
           error: 'example_stream_reset: Example worker connection was reset.',

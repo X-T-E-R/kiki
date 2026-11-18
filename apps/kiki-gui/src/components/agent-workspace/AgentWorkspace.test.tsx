@@ -3561,18 +3561,19 @@ it('inherits model and yolo permission on a branch bound to constrained profile:
     toolCallCount: 1,
     childIds: [],
   };
+  const mainNode: AgentTreeNode = {
+    agentId: 'main',
+    name: 'main',
+    label: 'Main session',
+    status: 'completed',
+    busy: false,
+    toolCallCount: 2,
+    childIds: ['agent-352'],
+  };
   const forest: AgentForest = {
-    roots: ['main'],
+    roots: [mainNode],
     byId: {
-      main: {
-        agentId: 'main',
-        name: 'main',
-        label: 'Main session',
-        status: 'completed',
-        busy: false,
-        toolCallCount: 2,
-        childIds: ['agent-352'],
-      },
+      main: mainNode,
       'agent-352': branchNode,
     },
   };
@@ -3601,7 +3602,8 @@ it('inherits model and yolo permission on a branch bound to constrained profile:
   });
   await settle();
 
-  expect(dock.querySelector('[data-composer-model-alert]')).toBeNull();
+  expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
+  expect(dock.querySelector('[data-model-menu-blocked]')).toBeNull();
   expect(dock.textContent).not.toContain('profile:agent');
   expect(dock.textContent).not.toContain('跟随默认：未知');
   expect(dock.textContent).toContain('kiki-pro');
@@ -3649,18 +3651,19 @@ it.each([
     toolCallCount: 0,
     childIds: [],
   };
+  const mainNode: AgentTreeNode = {
+    agentId: 'main',
+    name: 'main',
+    label: 'Main',
+    status: 'completed',
+    busy: false,
+    toolCallCount: 0,
+    childIds: [agentId],
+  };
   const forest: AgentForest = {
-    roots: ['main'],
+    roots: [mainNode],
     byId: {
-      main: {
-        agentId: 'main',
-        name: 'main',
-        label: 'Main',
-        status: 'completed',
-        busy: false,
-        toolCallCount: 0,
-        childIds: [agentId],
-      },
+      main: mainNode,
       [agentId]: childNode,
     },
   };
