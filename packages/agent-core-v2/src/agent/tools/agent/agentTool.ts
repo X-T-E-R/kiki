@@ -21,6 +21,7 @@ import {
   type AgentTaskOutputSnapshot,
   type RegisterAgentTaskOptions,
 } from '#/agent/task/task';
+import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import {
   formatSubagentParentSteering,
@@ -115,6 +116,7 @@ const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (sch
 const PARENT_NOTIFY_DESCRIPTION =
   'Subagents may use AgentNotify only when the parent must change course before their final result; routine progress belongs in the final receipt.';
 const AGENT_RUN_SLOW_PHASE_MS = 1000;
+export const MAIN_FOREGROUND_AUTO_DETACH_MS = 15_000;
 const RESUME_FIXED_ARGUMENTS = ['workDir', 'additionalDirs', 'executor_launch'] as const;
 
 type AgentRunPhase = 'launch_prepare' | 'dispatch' | 'started' | 'task_register';
@@ -154,6 +156,7 @@ export class SubagentTool implements ISubagentTool {
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
     @IAdhocEndpointVault private readonly endpointVault: IAdhocEndpointVault,
+    @ref(IAgentGoalService) private readonly goals?: LiveRef<IAgentGoalService>,
   ) {
     this.callerAgentId = scopeContext.agentId;
     this.isMainCaller = scopeContext.agentId === MAIN_AGENT_ID && scopeContext.parentAgentId === undefined;
@@ -763,11 +766,19 @@ export class SubagentTool implements ISubagentTool {
         if (resumeRecord !== undefined && allocatedTaskId !== undefined) {
           await writeResumeRecord(this.metadata, handle.agentId, { ...resumeRecord, taskId: allocatedTaskId });
         }
+        const mainOutsideGoal =
+          this.isMainCaller && this.goals?.current?.getGoal().goal?.status !== 'active';
+        const autoBackgroundMainWait = mainOutsideGoal && !runInBackground && allowBackground;
+        const foregroundTimeoutMs = autoBackgroundMainWait
+          ? timeoutMs > 0
+            ? Math.min(timeoutMs, MAIN_FOREGROUND_AUTO_DETACH_MS)
+            : MAIN_FOREGROUND_AUTO_DETACH_MS
+          : timeoutMs;
         const registerOptions: RegisterAgentTaskOptions = {
           taskId: allocatedTaskId,
           ownerTurnId: turnId,
           detached: runInBackground,
-          timeoutMs,
+          timeoutMs: runInBackground ? timeoutMs : foregroundTimeoutMs,
           detachTimeoutMs: timeoutMs,
           autoBackgroundOnTimeout: !runInBackground && allowBackground,
           signal: runInBackground ? undefined : context.taskOwnerSignal ?? signal,
@@ -885,9 +896,15 @@ export class SubagentTool implements ISubagentTool {
       const release = pause === undefined ? await releasePromise : await abortable(releasePromise, pause);
       if (release === 'detached' || release === 'timeout_detached') {
         const output = formatBackgroundAgentResult(taskId, handle, runLabel);
-        return { allowsTurnEndWithSendMessage: true, output: this.withMainProfileNotice(handle, steer?.aborted === true
-          ? `${output}\nNew input ended this foreground wait. Read the new input before deciding what to do next. The subagent has not been stopped; completion still arrives via automatic notification.`
-          : output) };
+        const trailingNote = steer?.aborted === true
+          ? 'New input ended this foreground wait. Read the new input before deciding what to do next. The subagent has not been stopped; completion still arrives via automatic notification.'
+          : release === 'timeout_detached'
+            ? 'Foreground wait moved to background; the subagent has not been stopped and completion arrives via automatic notification. Do independent work or end the turn.'
+            : undefined;
+        return {
+          allowsTurnEndWithSendMessage: true,
+          output: this.withMainProfileNotice(handle, trailingNote === undefined ? output : `${output}\n${trailingNote}`),
+        };
       }
       return await this.formatForegroundResult(taskId, handle, timeoutMs);
     } catch (error) {

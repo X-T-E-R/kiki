@@ -135,6 +135,7 @@ function commandExists(command: string, platform: NodeJS.Platform): boolean {
     if (platform === 'win32') {
       const result = spawnSync('cmd', ['/c', 'where', command], {
         stdio: 'ignore',
+        windowsHide: true,
       });
       return result.status === 0;
     }
@@ -207,6 +208,7 @@ export async function launchDetached(cmd: LaunchCommand): Promise<void> {
       detached: true,
       stdio: 'ignore',
       shell: cmd.shell,
+      windowsHide: cmd.shell === true ? true : undefined,
       windowsVerbatimArguments: cmd.windowsVerbatimArguments,
     });
     child.once('error', (err) => {

@@ -690,6 +690,7 @@ export class PluginHost {
           KIKI_PLUGIN_ROOT: path.dirname(this.entry),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
       });
       this.child = child;
       this.exited = new Promise<void>((resolveExit) => {

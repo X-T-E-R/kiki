@@ -83,7 +83,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .boolean()
       .optional()
       .describe(
-        'Omitted: main runs in background; subagents wait in foreground, including resume and goal mode. Set false explicitly for a genuine same-turn dependency, or true to return a task receipt and receive automatic completion notification. New steer input releases a main foreground wait without stopping the child.',
+        'Omitted: main runs in background and receives an automatic completion notification; subagents wait in foreground, including resume and goal mode. Set true to return a task receipt immediately, or false only for subagents or profiles without background task tools. On main outside active goal mode, foreground waits auto-detach to background after 15s, and new steer input releases them immediately without stopping the child.',
       ),
     endpoint: adhocEndpointInputSchema.optional().describe('Ad-hoc native API endpoint. Use base_url, upstream model, and api_key_env (recommended) or api_key. Credentials are session-local; never combined with model_alias. A credential-only override can reauthenticate a saved child.'),
     base_url: z.string().optional(),

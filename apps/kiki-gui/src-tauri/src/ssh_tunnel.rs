@@ -143,6 +143,11 @@ impl TunnelManager {
         self.connect_to_with_command(profile, token, staged, |args| {
             let mut command = Command::new(ssh);
             command.args(args);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
             command
         })
     }

@@ -46,6 +46,7 @@ import {
   normalizeSubagentEndpointInput,
   type SubagentToolInput,
 } from '#/agent/tools/agent/agent';
+import { MAIN_FOREGROUND_AUTO_DETACH_MS } from '#/agent/tools/agent/agentTool';
 import { DEFAULT_SUBAGENT_TIMEOUT_MS, SUBAGENT_SECTION } from '#/session/subagent/configSection';
 import { roleBindingAdvisories } from '#/session/subagent/modelConstraints';
 import { Error2, ErrorCodes } from '#/errors';
@@ -645,8 +646,8 @@ describe('SubagentToolInputSchema', () => {
   it('describes background notification without requiring root to keep its turn open', () => {
     const properties = agentSchemaProperties<{ description?: string }>();
     expect(properties['background']?.description).toContain('automatic completion notification');
-    expect(properties['background']?.description).toContain('main runs in background; subagents wait in foreground');
-    expect(properties['background']?.description).toContain('Set false explicitly for a genuine same-turn dependency');
+    expect(properties['background']?.description).toContain('main runs in background and receives an automatic completion notification; subagents wait in foreground');
+    expect(properties['background']?.description).toContain('auto-detach to background after 15s');
     expect(properties['background']?.description).toContain('including resume and goal mode');
     expect(properties['background']?.description).not.toContain('Prefer false');
   });
@@ -905,7 +906,7 @@ describe('AgentRun tool description', () => {
     expect(description).toContain('Omitting `background` runs in background for main and waits in foreground for subagents');
     expect(description).toContain('main should do independent work or end its turn while waiting');
     expect(description).toContain('the task and session continue');
-    expect(description).toContain('Set `background=false` explicitly for a genuine same-turn dependency');
+    expect(description).toContain('automatically detaches into background after 15s');
     expect(description).toContain('Do not poll TaskWait/TaskOutput/AgentList just to keep a main turn open');
     expect(description).toContain('A subagent must resolve its own dependencies before sending its final receipt');
     expect(description).toContain('Subagent timeout: 2 hours.');
@@ -1545,6 +1546,52 @@ describe('AgentRun tool execution contract', () => {
     expect(detach).not.toHaveBeenCalled();
     expect(result.output).toContain('status: completed');
     expect(context.allEvents.filter((event) => event.type === '[rpc]' && event.event === 'task.notified')).toHaveLength(0);
+  });
+
+  it('auto-detaches a main foreground subagent wait after 15s outside goal mode while keeping goal mode synchronous', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const completion = deferred<{ readonly summary: string }>();
+      const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'], runCompletion: () => completion.promise });
+      const context = createAgentToolContext(lifecycle);
+      context.get(IAgentProfileService).update({ activeToolNames: ['AgentRun', 'TaskList', 'TaskOutput', 'TaskStop'] });
+      const pending = executeTool(agentTool(context), { turnId: 0, toolCallId: 'foreground-auto-detach',
+        args: { prompt: 'Long work', description: 'Long subagent work', model_alias: 'mock-model', background: false },
+        signal });
+      const tasks = context.get(IAgentTaskService);
+      await vi.waitFor(() => expect(tasks.list(false)).toHaveLength(1));
+      expect(tasks.list(false)[0]).toMatchObject({ detached: false, status: 'running', timeoutMs: MAIN_FOREGROUND_AUTO_DETACH_MS });
+      await vi.advanceTimersByTimeAsync(MAIN_FOREGROUND_AUTO_DETACH_MS - 1_000);
+      expect(tasks.list(false)[0]).toMatchObject({ detached: false, status: 'running' });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = await pending;
+      const task = tasks.list(false)[0]!;
+      expect(result.allowsTurnEndWithSendMessage).toBe(true);
+      expect(result.output).toContain('Foreground wait moved to background');
+      expect(task).toMatchObject({ detached: true, status: 'running' });
+      expect(lifecycle.run.mock.calls[0]![2].signal.aborted).toBe(false);
+      completion.resolve({ summary: 'backgrounded completion' });
+      expect(await tasks.wait(task.taskId)).toMatchObject({ detached: true, status: 'completed' });
+
+      const goalCompletion = deferred<{ readonly summary: string }>();
+      const goalLifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-goal-child'], runCompletion: () => goalCompletion.promise });
+      const goalContext = createAgentToolContext(goalLifecycle);
+      goalContext.get(IAgentProfileService).update({ activeToolNames: ['AgentRun', 'TaskList', 'TaskOutput', 'TaskStop'] });
+      await goalContext.get(IAgentGoalService).createGoal({ objective: 'Finish whole pipeline' });
+      let goalReturned = false;
+      const goalPending = executeTool(agentTool(goalContext), { turnId: 0, toolCallId: 'goal-foreground',
+        args: { prompt: 'Goal step', description: 'Goal subagent step', model_alias: 'mock-model', background: false },
+        signal }).then((res) => { goalReturned = true; return res; });
+      const goalTasks = goalContext.get(IAgentTaskService);
+      await vi.waitFor(() => expect(goalTasks.list(false)).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(MAIN_FOREGROUND_AUTO_DETACH_MS + 10_000);
+      expect(goalReturned).toBe(false);
+      expect(goalTasks.list(false)[0]).toMatchObject({ detached: false, status: 'running' });
+      goalCompletion.resolve({ summary: 'goal child done' });
+      expect((await goalPending).output).toContain('[summary]\ngoal child done');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('processes send-now input while a detached foreground child continues and delivers its notification once', async () => {
@@ -3379,9 +3426,11 @@ describe('AgentRun tool execution contract', () => {
     await vi.waitFor(() => {
       expect(context.get(IAgentTaskService).list(false)).toHaveLength(1);
     });
-    expect(context.get(IAgentTaskService).list(false)[0]).toMatchObject({ timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS });
-    await vi.advanceTimersByTimeAsync(DEFAULT_SUBAGENT_TIMEOUT_MS);
-    expect(context.get(IAgentTaskService).list(false)[0]).toMatchObject({ detached: true });
+    expect(context.get(IAgentTaskService).list(false)[0]).toMatchObject({
+      timeoutMs: MAIN_FOREGROUND_AUTO_DETACH_MS,
+    });
+    await vi.advanceTimersByTimeAsync(MAIN_FOREGROUND_AUTO_DETACH_MS);
+    expect(context.get(IAgentTaskService).list(false)[0]).toMatchObject({ detached: true, timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS });
     const result = await resultPromise;
 
     expect(result.isError).not.toBe(true);
