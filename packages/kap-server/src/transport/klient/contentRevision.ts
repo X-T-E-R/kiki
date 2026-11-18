@@ -1,30 +1,70 @@
 import { createHash } from 'node:crypto';
 
 const revisions = new WeakMap<object, string>();
+const shortStringRevisions = new Map<string, string>();
+const primitiveRevisions = new Map<string, string>();
+const MAX_SHORT_STRING_CACHE = 4096;
+const MAX_SHORT_STRING_LEN = 128;
+
+function hashShortString(value: string): string {
+  const cached = shortStringRevisions.get(value);
+  if (cached !== undefined) return cached;
+  const digest = createHash('sha256').update(`string:${value.length}:${value}`).digest('hex');
+  if (shortStringRevisions.size >= MAX_SHORT_STRING_CACHE) {
+    const oldest = shortStringRevisions.keys().next().value;
+    if (oldest !== undefined) shortStringRevisions.delete(oldest);
+  }
+  shortStringRevisions.set(value, digest);
+  return digest;
+}
+
+function hashPrimitive(tag: string): string {
+  const cached = primitiveRevisions.get(tag);
+  if (cached !== undefined) return cached;
+  const digest = createHash('sha256').update(tag).digest('hex');
+  if (primitiveRevisions.size < 2048) primitiveRevisions.set(tag, digest);
+  return digest;
+}
 
 export function contentRevision(value: unknown): string {
-  const existing = value !== null && typeof value === 'object' ? revisions.get(value) : undefined;
-  if (existing !== undefined) return existing;
-  const hash = createHash('sha256');
   if (typeof value === 'string') {
+    if (value.length <= MAX_SHORT_STRING_LEN) return hashShortString(value);
+    const hash = createHash('sha256');
     hash.update(`string:${value.length}:`);
+    if (value.length <= 4096) {
+      hash.update(value);
+      return hash.digest('hex');
+    }
     for (let offset = 0; offset < value.length;) {
       let end = Math.min(value.length, offset + 4096);
       if (end < value.length && /[\uD800-\uDBFF]/u.test(value[end - 1]!)) end -= 1;
       hash.update(value.slice(offset, end));
       offset = end;
     }
-  } else if (value !== null && typeof value === 'object') {
-    if (Array.isArray(value)) {
-      hash.update(`array:${value.length}:`);
-      for (const child of value) hash.update(contentRevision(child));
-    } else {
-      const entries = Object.entries(value);
-      hash.update(`object:${entries.length}:`);
-      for (const [key, child] of entries) { hash.update(contentRevision(key)); hash.update(contentRevision(child)); }
+    return hash.digest('hex');
+  }
+  if (value === null || typeof value !== 'object') {
+    return hashPrimitive(`${typeof value}:${String(value)};`);
+  }
+  const existing = revisions.get(value);
+  if (existing !== undefined) return existing;
+  const hash = createHash('sha256');
+  if (Array.isArray(value)) {
+    hash.update(`array:${value.length}:`);
+    for (const child of value) hash.update(contentRevision(child));
+  } else {
+    const entries = Object.entries(value);
+    hash.update(`object:${entries.length}:`);
+    for (const [key, child] of entries) {
+      hash.update(hashShortStringKey(key));
+      hash.update(contentRevision(child));
     }
-  } else hash.update(`${typeof value}:${String(value)};`);
+  }
   const revision = hash.digest('hex');
-  if (value !== null && typeof value === 'object') revisions.set(value, revision);
+  revisions.set(value, revision);
   return revision;
+}
+
+function hashShortStringKey(key: string): string {
+  return key.length <= MAX_SHORT_STRING_LEN ? hashShortString(key) : contentRevision(key);
 }

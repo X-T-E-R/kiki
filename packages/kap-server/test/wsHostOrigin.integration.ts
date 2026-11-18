@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -52,7 +52,7 @@ describe('WS upgrade Host/Origin checks', () => {
   let v1Url: string;
   const sockets: WebSocket[] = [];
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-ws-host-origin-'));
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -66,13 +66,16 @@ describe('WS upgrade Host/Origin checks', () => {
     v1Url = `ws://127.0.0.1:${server.port}/api/ws`;
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     for (const ws of sockets.splice(0)) {
       try {
         ws.close();
       } catch {
       }
     }
+  });
+
+  afterAll(async () => {
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -102,20 +105,28 @@ describe('WS upgrade Host/Origin checks', () => {
   });
 
   it('allows an explicitly allowed Origin', async () => {
-    await server?.close();
-    server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '127.0.0.1',
-      port: 0,
-      homeDir: home,
-      logLevel: 'silent',
-      authTokenService: fixedTokenAuth('test-token'),
-      corsOrigins: ['https://app.example.test'],
-    });
-    TOKEN = server.localOwnerToken;
-    const url = `ws://127.0.0.1:${server.port}/api/ws`;
-    const ws = await openConn(url, { headers: { origin: 'https://app.example.test' } });
-    sockets.push(ws);
-    expect(ws.readyState).toBe(WebSocket.OPEN);
+    const customHome = await mkdtemp(join(tmpdir(), 'kimi-server-v2-ws-cors-origin-'));
+    let customServer: RunningServer | undefined;
+    try {
+      customServer = await startServer({
+        hostIdentity: TEST_HOST_IDENTITY,
+        host: '127.0.0.1',
+        port: 0,
+        homeDir: customHome,
+        logLevel: 'silent',
+        authTokenService: fixedTokenAuth('test-token'),
+        corsOrigins: ['https://app.example.test'],
+      });
+      TOKEN = customServer.localOwnerToken;
+      const url = `ws://127.0.0.1:${customServer.port}/api/ws`;
+      const ws = await openConn(url, { headers: { origin: 'https://app.example.test' } });
+      ws.close();
+      expect(ws.url).toBe(url);
+    } finally {
+      if (customServer !== undefined) {
+        await customServer.close();
+      }
+      await rm(customHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 });

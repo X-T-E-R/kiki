@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -82,7 +82,7 @@ describe('WS upgrade auth', () => {
   let v1Url: string;
   const sockets: WebSocket[] = [];
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-ws-upgrade-auth-'));
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -104,6 +104,16 @@ describe('WS upgrade auth', () => {
       } catch {
       }
     }
+    if (server !== undefined) {
+      await vi.waitFor(() => {
+        if ((server as RunningServer).connectionRegistry.size() !== 0) {
+          throw new Error('waiting for socket close');
+        }
+      });
+    }
+  });
+
+  afterAll(async () => {
     if (server !== undefined) {
       await server.close();
       server = undefined;

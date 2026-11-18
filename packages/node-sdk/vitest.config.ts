@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
+import { DEFAULT_VITEST_EXCLUDE } from '../../build/vitest-default-excludes.mjs';
 
 export default defineConfig({
   resolve: {
@@ -17,6 +18,7 @@ export default defineConfig({
       KIKI_LOG_LEVEL: 'off',
     },
     include: ['test/**/*.{test,integration,e2e}.ts'],
+    exclude: DEFAULT_VITEST_EXCLUDE,
     // Every harness in this suite boots the v2 engine in-process against a
     // fresh temp home: config hydration, the session-index projection and the
     // workspace store put a single `createKimiHarness` in the seconds range,

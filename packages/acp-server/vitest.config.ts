@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { defineConfig, type Plugin } from 'vitest/config';
 
 import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
+import { DEFAULT_VITEST_EXCLUDE } from '../../build/vitest-default-excludes.mjs';
 
 function findPackageRoot(importer: string | undefined): string | undefined {
   if (!importer) return undefined;
@@ -49,5 +50,6 @@ export default defineConfig({
   test: {
     name: 'acp-server',
     include: ['test/**/*.{test,integration,e2e}.ts'],
+    exclude: DEFAULT_VITEST_EXCLUDE,
   },
 });

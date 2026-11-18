@@ -157,6 +157,13 @@
   ],
   "ignorePatterns": [
     "dist/",
+    "**/dist/**",
+    "out/",
+    "**/out/**",
+    ".tmp/",
+    "**/.tmp/**",
+    ".worktrees/",
+    "**/.worktrees/**",
     "coverage/",
     "node_modules/",
     "apps/*/scripts/",

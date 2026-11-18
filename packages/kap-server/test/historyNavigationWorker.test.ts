@@ -416,4 +416,26 @@ describe('history navigation worker boundaries', () => {
       expect(await navigation.scan(SESSION, AGENT)).toMatchObject({ complete: true, recordsRead: 0 });
     } finally { await navigation.close(); await rm(home, { recursive: true, force: true }); }
   });
+
+  it('resolves cold turns beyond 2 MiB within the 32 MiB first-screen tail without full prefix projection', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-32m-tail-'));
+    const wirePath = join(home, 'wire.jsonl');
+    const source = Object.assign(transcriptStub(wirePath), {
+      readRetainedColdTurn: async () => undefined,
+      readColdWindowTurn: async () => undefined,
+      readProjectedColdTurn: async () => { throw new Error('main-thread fold'); },
+    });
+    const navigation = new HistoryNavigation(join(home, 'navigation.sqlite'), source);
+    try {
+      const deepPrefix = wireLine({ type: 'llm.request', systemPrompt: 'p'.repeat(1 << 20) }).repeat(12);
+      const newerTail = wireLine({ type: 'llm.request', systemPrompt: 't'.repeat(1 << 20) }).repeat(8) + turnWire(21);
+      await writeFile(wirePath, deepPrefix + turnWire(20) + newerTail);
+      const result = await navigation.readCanonicalEntity(SESSION, AGENT, { kind: 'turn', id: 't20' }, new AbortController().signal);
+      expect(result.status).toBe('found');
+      expect(navigation.canonicalReadReport().projectionBytes).toBeLessThanOrEqual(9 << 20);
+    } finally {
+      await navigation.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });

@@ -5,12 +5,12 @@ import {
   rebindTurnContentRefs,
   type AgentTranscript,
   type AgentTranscriptSnapshot,
+  type TranscriptAttachment,
   type TranscriptOperation,
   type TranscriptResponse,
 } from '@kiki/transcript';
 import { boundedEntity, ENTITY_BYTES } from './boundedContent';
 import { inlineMediaId } from '../../services/inlineMedia';
-import type { TranscriptAttachment } from '@kiki/transcript';
 
 export function boundedAttachment(attachment: TranscriptAttachment, agentId: string, maxBytes?: number): TranscriptAttachment {
   const fileId = inlineMediaId(attachment, agentId);
@@ -168,10 +168,28 @@ function nestedContentWindow(item: AgentTranscriptSnapshot['items'][number]): bo
   return item.steps.some((step) => step.frames.some((frame) => (frame.contentRefs?.length ?? 0) > 0));
 }
 
+const memoizedBoundedItems = new WeakMap<object, string>();
+const memoizedJsonBytes = new WeakMap<object, number>();
+
+function cachedEntityBytes(value: object): number {
+  const hit = memoizedJsonBytes.get(value);
+  if (hit !== undefined) return hit;
+  const computed = jsonBytes(value);
+  memoizedJsonBytes.set(value, computed);
+  return computed;
+}
+
 function boundedItem(item: AgentTranscriptSnapshot['items'][number], agentId: string, direction: 'head' | 'tail' = 'head'): AgentTranscriptSnapshot['items'][number] {
-  if (item.kind === 'taskref' || (item.contentRefs?.length ?? 0) > 0 || nestedContentWindow(item)) return item;
+  const tag = `${agentId}\0${direction}`;
+  if (memoizedBoundedItems.get(item) === tag) return item;
+  if (item.kind === 'taskref' || (item.contentRefs?.length ?? 0) > 0 || nestedContentWindow(item)) {
+    memoizedBoundedItems.set(item, tag);
+    return item;
+  }
   const preview = boundedEntity(item, { kind: item.kind, id: itemId(item) }, undefined, agentId, direction);
-  return preview.kind === 'turn' ? rebindTurnContentRefs(preview) : preview;
+  const result = preview.kind === 'turn' ? rebindTurnContentRefs(preview) : preview;
+  memoizedBoundedItems.set(result, tag);
+  return result;
 }
 
 export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'head'): AgentTranscriptSnapshot {
@@ -193,12 +211,12 @@ function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, d
   for (let offset = 0; offset < items.length; offset += 1) {
     const item = items[direction === 'head' ? offset : items.length - 1 - offset]!;
     const projected = boundedItem(item, agentId, direction);
-    const size = jsonBytes(projected) + 1;
+    const size = cachedEntityBytes(projected) + 1;
     if (selected.length > 0 && bytes + size > budget) break;
     selected.push(projected);
     bytes += size;
   }
-  return direction === 'head' ? selected : selected.reverse();
+  return direction === 'head' ? selected : selected.toReversed();
 }
 
 function boundedCollection<T extends object>(

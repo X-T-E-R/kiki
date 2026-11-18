@@ -1306,6 +1306,46 @@ describe('stepRetry plugin', () => {
     expect(rpcEvents('turn.step.retrying')).toHaveLength(1);
   });
 
+  it.each([
+    { label: 'uncommitted stream overload after thinking', retryable: undefined, expectedCalls: 2, expectedOutcome: 'completed' as const },
+    { label: 'explicitly non-retryable stream overload', retryable: false, expectedCalls: 1, expectedOutcome: 'failed' as const },
+  ])('handles mid-stream overload event ($label) without replaying committed output', async ({ retryable, expectedCalls, expectedOutcome }) => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async (_provider, _system, _tools, _history, callbacks) => {
+        calls += 1;
+        if (calls === 1) {
+          await callbacks?.onMessagePart?.({ type: 'think', think: 'uncommitted reasoning', encrypted: 'sig-overload' });
+          const overload = attachErrorDetails(new APIProviderOverloadedError(503, 'stream overloaded'), {
+            errorSource: 'provider_event',
+            upstreamErrorCode: 'overloaded_error',
+            upstream_retryable: retryable,
+          });
+          throw overload;
+        }
+        return {
+          id: 'overload-recovered',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'recovered from stream overload' }], toolCalls: [] },
+          usage: emptyUsage(),
+          finishReason: 'completed',
+          rawFinishReason: 'stop',
+        };
+      }),
+      { initialConfig: { retry: { policies: [{ match: '.*', backoff: 1 }] } } },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe(expectedOutcome);
+    expect(calls).toBe(expectedCalls);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(expectedCalls - 1);
+    if (expectedOutcome === 'completed') {
+      expect(result).toEqual({ type: 'completed', steps: 1, truncated: false });
+      expect(JSON.stringify(ctx.contextData().history)).not.toContain('sig-overload');
+    }
+  });
+
   it('does not replay a parsed 429 after output, and keeps the provider status', async () => {
     vi.useFakeTimers();
     const parsed = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-429'), {

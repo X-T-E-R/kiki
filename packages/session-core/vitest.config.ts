@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+import { DEFAULT_VITEST_EXCLUDE } from '../../build/vitest-default-excludes.mjs';
 
 export default defineConfig({
   resolve: {
@@ -25,5 +26,6 @@ export default defineConfig({
   test: {
     name: 'session-core',
     include: ['src/**/*.{test,integration,e2e}.ts'],
+    exclude: DEFAULT_VITEST_EXCLUDE,
   },
 });

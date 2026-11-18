@@ -26,9 +26,17 @@ export function pnpmSpawnArgs(args, env = process.env) {
   });
 }
 
-export function runPromoteTests({ spawn = spawnSync, env = process.env } = {}) {
+export const LOCAL_REAL_CORPUS_PROMOTE_COMMAND = {
+  label: 'real-corpus quick performance gate',
+  args: ['run', 'perf:real-corpus:quick'],
+};
+
+export function runPromoteTests({ spawn = spawnSync, env = process.env, withRealCorpus = false } = {}) {
   let failed = false;
-  for (const entry of PROMOTE_TEST_COMMANDS) {
+  const commands = withRealCorpus
+    ? [...PROMOTE_TEST_COMMANDS, LOCAL_REAL_CORPUS_PROMOTE_COMMAND]
+    : PROMOTE_TEST_COMMANDS;
+  for (const entry of commands) {
     const launch = pnpmLaunch(entry.args, env);
     const result = spawn(launch.command, pnpmSpawnArgs(launch.args, env), { stdio: 'inherit', env, ...pnpmSpawnOptions(env) });
     if (result.error || result.status !== 0) failed = true;
@@ -37,5 +45,7 @@ export function runPromoteTests({ spawn = spawnSync, env = process.env } = {}) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = runPromoteTests();
+  process.exitCode = runPromoteTests({
+    withRealCorpus: process.argv.includes('--with-real-corpus'),
+  });
 }

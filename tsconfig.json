@@ -36,9 +36,12 @@
     "apps/*/test/**/*.tsx"
   ],
   "exclude": [
-    "node_modules",
-    "dist",
-    "coverage",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/out/**",
+    "**/coverage/**",
+    "**/.tmp/**",
+    "**/.worktrees/**",
     "**/*.disabled/**",
     "**/*.disabled"
   ]

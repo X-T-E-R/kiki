@@ -139,6 +139,29 @@ void test('empty selection is explicitly incomplete instead of a pass', () => {
   assert.match(selected.reasons[0], /no pass claim/);
 });
 
+void test('ignores nested .tmp, .worktrees, dist, and out transient paths while keeping real changes', () => {
+  const onlyScratch = selectAffected({
+    changes: [
+      { status: '?', path: 'apps/kimi-code/.tmp/t3-tree/test/stale.test.ts' },
+      { status: '?', path: '.worktrees/build-123/packages/base/src/value.ts' },
+      { status: 'M', path: 'packages/base/dist/index.mjs' },
+      { status: '?', path: 'apps/vscode/out/extension.js' },
+    ],
+    packages,
+  });
+  assert.equal(onlyScratch.mode, 'none');
+
+  const mixed = selectAffected({
+    changes: [
+      { status: '?', path: 'apps/kimi-code/.tmp/t3-tree/test/stale.test.ts' },
+      { status: 'M', path: 'packages/base/src/value.ts' },
+    ],
+    packages,
+  });
+  assert.equal(mixed.mode, 'focused');
+  assert.deepEqual(mixed.packages, ['@fixture/base']);
+});
+
 void test('base collection includes untracked files and rejects a missing base', async t => {
   const { root, base } = await repositoryFixture(t);
   await writeFile(join(root, 'packages/base/src/untracked.ts'), 'export {};\n');

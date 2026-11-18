@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
+import { DEFAULT_VITEST_EXCLUDE } from '../../build/vitest-default-excludes.mjs';
 import { pdfAssetsPlugin } from './vite/pdfAssets';
 
 /**
@@ -54,5 +55,6 @@ export default defineConfig({
   test: {
     name: 'gui',
     include: ['src/**/*.{test,integration,e2e}.ts', 'src/**/*.{test,integration,e2e}.tsx'],
+    exclude: DEFAULT_VITEST_EXCLUDE,
   },
 });

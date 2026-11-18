@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -59,12 +59,18 @@ describe('server-v2 gui store routes', () => {
   let home: string | undefined;
   let server: RunningServer | undefined;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-gui-store-'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
   });
 
   afterEach(async () => {
+    if (server !== undefined) {
+      await appOf(server).inject({ method: 'POST', url: '/api/gui/store/clear' });
+    }
+  });
+
+  afterAll(async () => {
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -218,9 +224,12 @@ describe('server-v2 gui store routes', () => {
     expect(envelopeOf((await api.inject({ method: 'POST', url: '/api/gui/shortcuts/reset?platform=windows', payload: {} })).json()).code).toBe(0);
   });
 
-  it.skipIf(process.platform === 'win32')('writes gui.toml with 0600 permissions', async () => {
+  it('writes gui.toml with 0600 permissions where POSIX modes apply', async () => {
     await setItem(appOf(server as RunningServer), 'theme', 'modern');
-    const mode = (await stat(join(home as string, 'gui.toml'))).mode & 0o777;
-    expect(mode).toBe(0o600);
+    const info = await stat(join(home as string, 'gui.toml'));
+    expect(info.size).toBeGreaterThan(0);
+    if (process.platform !== 'win32') {
+      expect(info.mode & 0o777).toBe(0o600);
+    }
   });
 });

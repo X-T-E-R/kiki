@@ -100,9 +100,18 @@ export function parseNameStatus(output) {
   return changes;
 }
 
+const TRANSIENT_ARTIFACT_SEGMENT = /(?:^|\/)(?:\.tmp|\.worktrees|dist|out)(?:\/|$)/;
+
+function isTransientArtifactPath(path) {
+  return TRANSIENT_ARTIFACT_SEGMENT.test(slash(path));
+}
+
 function dedupeChanges(changes) {
   const byIdentity = new Map();
   for (const change of changes) {
+    if (isTransientArtifactPath(change.path) && (!change.oldPath || isTransientArtifactPath(change.oldPath))) {
+      continue;
+    }
     const key = `${change.status[0]}\0${change.oldPath ?? ''}\0${change.path}`;
     byIdentity.set(key, change);
   }
@@ -268,6 +277,7 @@ function focusedCommands(changes, selected, affected) {
 }
 
 export function selectAffected({ changes, packages }) {
+  changes = dedupeChanges(changes);
   if (changes.length === 0) {
     return {
       mode: 'none',

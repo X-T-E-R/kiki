@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   capabilityStatusSchema,
@@ -24,7 +24,7 @@ describe('server-v2 /api capabilities', () => {
   let home: string | undefined;
   let base: string;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-capabilities-'));
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -36,7 +36,7 @@ describe('server-v2 /api capabilities', () => {
     base = `http://127.0.0.1:${server.port}`;
   });
 
-  afterEach(async () => {
+  afterAll(async () => {
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -127,11 +127,14 @@ describe('server-v2 /api capabilities', () => {
     expect(bogus.body.code).toBe(40001);
   });
 
-  it.skipIf(process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64'))(
-    'rejects kimi-cu install on unsupported platforms with 40925',
-    async () => {
-      const { body } = await postJson<unknown>('/api/capabilities/kimi-cu:install');
-      expect(body.code).toBe(40925);
-    },
-  );
+  it('enforces platform support and digest checks on kimi-cu install', async () => {
+    const supported = process.platform === 'darwin' || (process.platform === 'win32' && process.arch === 'x64');
+    const res = await fetch(`${base}/api/capabilities/kimi-cu:install`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify(supported ? { expectedSha256: '0'.repeat(64) } : {}),
+    } as never);
+    const body = (await res.json()) as Envelope<unknown>;
+    expect(body.code).toBe(40925);
+  });
 });

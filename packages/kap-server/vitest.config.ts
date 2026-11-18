@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
+import { DEFAULT_VITEST_EXCLUDE } from '../../build/vitest-default-excludes.mjs';
 
 // `rawTextPlugin` is required because server-v2 pulls in agent-core-v2's full
 // barrel, which imports `*.md?raw` prompt templates.
@@ -40,7 +41,7 @@ const parallel = {
     ...sharedTestOptions,
     name: 'kap-server',
     include: ['test/**/*.{test,integration,e2e}.ts'],
-    exclude: SERIAL_FILES,
+    exclude: [...DEFAULT_VITEST_EXCLUDE, ...SERIAL_FILES],
     fileParallelism: true,
     maxWorkers: 4,
     sequence: { groupOrder: 1 },
@@ -55,6 +56,7 @@ const serial = {
     ...sharedTestOptions,
     name: 'kap-server-serial',
     include: SERIAL_FILES,
+    exclude: DEFAULT_VITEST_EXCLUDE,
     fileParallelism: false,
   },
 };

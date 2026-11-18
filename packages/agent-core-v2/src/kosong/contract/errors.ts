@@ -411,15 +411,17 @@ export function isRetryableMissingTerminalError(error: unknown): boolean {
 }
 
 export function isRetryableUncommittedStreamOverloadError(error: unknown): boolean {
+  if (hasExplicitRetryVeto(error)) return false;
   return isRetryableUncommittedProviderError(error, (cause, code) => {
+    const details = providerErrorMetadata(cause);
+    if (details['errorSource'] !== 'provider_event') return false;
     if (cause instanceof APIProviderOverloadedError || cause instanceof APIProviderRateLimitError) return true;
     if (cause instanceof APIStatusError && !(cause instanceof APIProviderQuotaExhaustedError) &&
       (cause.statusCode === 429 || (cause.statusCode >= 500 && cause.statusCode <= 599))) {
       return true;
     }
-    const details = providerErrorMetadata(cause);
     const type = details['upstreamErrorType'];
-    return details['errorSource'] === 'provider_event' && (
+    return (
       code === 'server_error' || code === 'overloaded_error' || code === 'service_unavailable' ||
       type === 'service_unavailable_error' || type === 'server_error' || type === 'overloaded_error'
     );

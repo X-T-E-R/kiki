@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -58,19 +58,22 @@ describe('production auth wiring', () => {
   let base: string;
   const sockets: WebSocket[] = [];
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-auth-wiring-'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     for (const ws of sockets.splice(0)) {
       try {
         ws.close();
       } catch {
       }
     }
+  });
+
+  afterAll(async () => {
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -79,19 +82,6 @@ describe('production auth wiring', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
-  });
-
-  it.skipIf(process.platform === 'win32')('writes a 0600 token file at boot and keeps it on close', async () => {
-    const p = join(home as string, 'server.token');
-    const info = await stat(p);
-    expect(info.mode & 0o777).toBe(0o600);
-    const token = (await readFile(p, 'utf8')).trim();
-    expect(token.length).toBeGreaterThan(0);
-
-    await (server as RunningServer).close();
-    server = undefined;
-    const after = await stat(p);
-    expect(after.mode & 0o777).toBe(0o600);
   });
 
   it('gates HTTP: 200 with the token, 401 without', async () => {
@@ -131,5 +121,26 @@ describe('production auth wiring', () => {
     expect(firstFrame).toMatchObject({ type: 'server_hello' });
 
     await expectRejected(wsUrl);
+  });
+
+  it('writes token files at boot and preserves them across server close', async () => {
+    const ownerPath = join(home as string, 'server.local-owner');
+    const ownerToken = (await readFile(ownerPath, 'utf8')).trim();
+    expect(ownerToken.length).toBeGreaterThan(0);
+
+    const tokenPath = join(home as string, 'server.token');
+    const beforeInfo = await stat(tokenPath);
+    if (process.platform !== 'win32') {
+      expect(beforeInfo.mode & 0o777).toBe(0o600);
+    }
+
+    await (server as RunningServer).close();
+    server = undefined;
+
+    const afterInfo = await stat(tokenPath);
+    expect(afterInfo.size).toBeGreaterThan(0);
+    if (process.platform !== 'win32') {
+      expect(afterInfo.mode & 0o777).toBe(0o600);
+    }
   });
 });

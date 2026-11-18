@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+import { DEFAULT_VITEST_EXCLUDE } from '../../build/vitest-default-excludes.mjs';
 
 export default defineConfig({
   resolve: {
@@ -12,6 +13,7 @@ export default defineConfig({
     maxWorkers: 4,
     sequence: { groupOrder: 1 },
     include: ['test/**/*.{test,integration,e2e}.ts'],
+    exclude: DEFAULT_VITEST_EXCLUDE,
     setupFiles: ['test/setup.ts'],
   },
 });

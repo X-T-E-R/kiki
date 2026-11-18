@@ -200,7 +200,7 @@ for (const pkg of PACKAGES) {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
         const p = path.join(d, e.name);
         if (e.isDirectory()) {
-          if (e.name !== 'node_modules') stack.push(p);
+          if (!['node_modules', '.tmp', '.worktrees', 'dist', 'out'].includes(e.name)) stack.push(p);
         } else if (/\.(ts|tsx|mts)$/.test(e.name)) {
           files.push(p);
         }

@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { DEFAULT_VITEST_EXCLUDE } from "../../build/vitest-default-excludes.mjs";
 
 // pi-tui's suite is written for `node:test` and runs through the package
 // `test` script (`node --test test/*.test.ts`). Vitest cannot execute
@@ -8,6 +9,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
 	test: {
 		include: [],
+		exclude: DEFAULT_VITEST_EXCLUDE,
 		passWithNoTests: true,
 	},
 });

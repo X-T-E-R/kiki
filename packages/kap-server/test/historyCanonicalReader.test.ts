@@ -130,7 +130,8 @@ describe('source-backed canonical detail', () => {
     turn7.splice(3, 0, ...Array.from({ length: 48 }, (_, index) => event({ type: 'content.part', turnId: 7,
       stepUuid: 'step-7', uuid: `t7-middle-${index}`, part: { type: 'text', text: `${index}:` + 'x'.repeat(150_000) } })));
     const turn8 = turnRecords(8, 't8 complete output');
-    const records = [...turn6, ...turn7, ...turn8];
+    const newerTail = Array.from({ length: 18 }, (_, idx) => turnRecords(9 + idx, 'w'.repeat(20_000))).flat();
+    const records = [...turn6, ...turn7, ...turn8, ...newerTail];
     const f = await fixture(records);
     const signal = new AbortController().signal;
     try {
@@ -143,7 +144,8 @@ describe('source-backed canonical detail', () => {
       const coldT8 = await f.service.readColdWindowTurn('s', 'main', 't8', signal);
       expect(coldT8?.stepsPartial).toBeUndefined();
       const fastT8 = await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't8' }, signal) as TranscriptTurn;
-      expect(fastT8).toEqual(canonicalWithPositionedTurn(records, 8));
+      expect(fastT8).toEqual(coldT8);
+      expect(fastT8).toMatchObject({ turnId: 't8', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 't8 complete output' }] }] });
       const coldT6 = await f.service.readColdWindowTurn('s', 'main', 't6', signal);
       expect(coldT6?.stepsPartial).toBeUndefined();
       const fastT6 = await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't6' }, signal) as TranscriptTurn;
@@ -160,7 +162,7 @@ describe('source-backed canonical detail', () => {
 
   it('reads an earlier page body without replacing its cold window with the latest tail', async () => {
     const records = [...Array.from({ length: 100 }, (_, index) => turnRecords(index, 'x'.repeat(100_000))).flat(),
-      ...turnRecords(100, 'earlier page body'), ...Array.from({ length: 10 }, (_, index) => turnRecords(index + 101, 'y'.repeat(200_000))).flat()];
+      ...turnRecords(100, 'earlier page body'), ...Array.from({ length: 25 }, (_, index) => turnRecords(index + 101, 'y'.repeat(100_000))).flat()];
     const f = await fixture(records);
     const signal = new AbortController().signal;
     try {
@@ -170,8 +172,8 @@ describe('source-backed canonical detail', () => {
       expect(snapshot?.items).toContainEqual(expect.objectContaining({ kind: 'turn', turnId: 't104' }));
       const boundary = await f.service.coldWindowBoundary('s', 'main');
       const reads = f.service.memoryReport().coldReads.bytes;
-      expect(await f.service.readProjectedColdTurn('s', 'main', 't104', signal)).toMatchObject({ turnId: 't104', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'y'.repeat(200_000) }] }] });
-      expect(await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't104' }, signal)).toMatchObject({ turnId: 't104', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'y'.repeat(200_000) }] }] });
+      expect(await f.service.readProjectedColdTurn('s', 'main', 't104', signal)).toMatchObject({ turnId: 't104', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'y'.repeat(100_000) }] }] });
+      expect(await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't104' }, signal)).toMatchObject({ turnId: 't104', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'y'.repeat(100_000) }] }] });
       expect(f.nav.canonicalReadReport().projectionBytes).toBe(0);
       expect(await f.service.coldWindowBoundary('s', 'main')).toEqual(boundary);
       expect(f.service.memoryReport().coldReads.bytes).toBe(reads);
@@ -418,7 +420,12 @@ describe('source-backed canonical detail', () => {
   });
 
   it.each(['retained', 'projected'] as const)('keeps absolute source coordinates in an unindexed large %s detail and upgrades indexed ordinals', async (mode) => {
-    const prefix = Array.from({ length: 13 }, () => ({ type: 'fixture.padding', text: 'x'.repeat(700_000) }));
+    const paddingPrefix = Array.from({ length: 13 }, () => ({ type: 'fixture.padding', text: 'x'.repeat(700_000) }));
+    const tailFiller = Array.from({ length: 20 }, (_, idx) => [
+      { type: 'turn.prompt', turnId: 80 + idx, promptId: `p-${80 + idx}`, input: [{ type: 'text', text: `q-${idx}` }], origin: { kind: 'user' }, time: 900 + idx },
+      { type: 'turn.ended', turnId: 80 + idx, reason: 'completed', time: 950 + idx },
+    ]).flat();
+    const prefix = [...paddingPrefix, ...tailFiller];
     const target = turnRecords(100, 'EXACT TAIL 汉😀');
     const legacyText = 'SOURCE ADDRESSED 汉😀 '.repeat(100);
     target.splice(6, 0, event({ type: 'content.part', turnId: 100, stepUuid: 'step-100', part: { type: 'text', text: legacyText } }));

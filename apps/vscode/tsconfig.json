@@ -10,5 +10,5 @@
     "esModuleInterop": true
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["dist", "node_modules"]
+  "exclude": ["**/dist/**", "**/out/**", "**/node_modules/**", "**/.tmp/**", "**/.worktrees/**"]
 }

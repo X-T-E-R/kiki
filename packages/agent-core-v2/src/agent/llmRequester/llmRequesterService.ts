@@ -740,9 +740,10 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
 
       let responseRedacted = false;
       let responseComplete = false;
-      const rawResponseObserver = new DeferredResponseCapture(this.responseCapture?.observe({ providerId: request.model.providerName, model: request.model.name,
+      const observedCapture = this.responseCapture?.observe({ providerId: request.model.providerName, model: request.model.name,
         thinkingEffort: request.thinkingEffort, protocol: request.model.protocol,
-        turnId: request.source?.turnId, step: request.source?.type === 'turn' ? request.source.step : undefined, cacheKey: params.cacheKey }));
+        turnId: request.source?.turnId, step: request.source?.type === 'turn' ? request.source.step : undefined, cacheKey: params.cacheKey });
+      const rawResponseObserver = observedCapture === undefined ? undefined : new DeferredResponseCapture(observedCapture);
       const extensions = this.extensions?.current;
       const extensionSignal = signal ?? new AbortController().signal;
       try {
@@ -855,7 +856,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         }
         throw error;
       } finally {
-        rawResponseObserver.settle(responseComplete && !responseRedacted);
+        rawResponseObserver?.settle(responseComplete && !responseRedacted);
       }
 
       this.usage.record(request.modelAlias, usage ?? emptyUsage(), request.source, {
@@ -922,7 +923,9 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         });
         const malformedFunctionCall = source?.type === 'turn' && !attemptObservedVisibleContent && isRetryableMalformedFunctionCallError(error);
         const missingTerminal = source?.type === 'turn' && !attemptObservedSubstantiveOutput && isRetryableMissingTerminalError(error);
-        const uncommittedOverload = source?.type === 'turn' && !attemptObservedSubstantiveOutput && isRetryableUncommittedStreamOverloadError(error);
+        const uncommittedOverload = source?.type === 'turn' &&
+          (attemptObservedOutput ? !attemptObservedSubstantiveOutput : requestDeliveryProvenance(error) !== 'executed') &&
+          isRetryableUncommittedStreamOverloadError(error);
         const discardRetry = malformedFunctionCall || missingTerminal || uncommittedOverload;
         if (source?.type === 'operation' && retryPolicy?.retry === false) attachErrorDetails(error, { retry_policy_veto: true });
         if (retry === 'never' || retryPolicy?.retry === false || (hasExplicitRetryVeto(error) && !discardRetry) ||

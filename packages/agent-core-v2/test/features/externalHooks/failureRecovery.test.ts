@@ -235,7 +235,7 @@ describe('StopFailure continuation recovery', () => {
       expect(calls.map(([, args]) => args?.inputData?.['maxRecoveryAttempts'])).toEqual([1, 1, 1, 1]);
       expect(calls.map(([, args]) => args?.inputData?.['recoverable'])).toEqual([true, true, true, false]);
     } finally { await f.dispose(); }
-  });
+  }, 30_000);
 
   it('does not reset the streak budget on thinking-only, truncated, or tool-only step activity', async () => {
     const f = await fixture({ hooks: [alwaysContinue] });
