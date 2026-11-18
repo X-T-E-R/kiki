@@ -213,7 +213,9 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
       if (current.pauseOperationId !== input.pauseOperationId) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Execution control requires the current pause operation');
       }
-      const queuedOwners = this.document.requiredAgents ?? current.agents.map(agent => agent.agentId);
+      const queuedOwners = this.document.requiredAgents !== undefined && this.document.checkpointComplete
+        ? this.document.requiredAgents
+        : [...new Set([...(this.document.requiredAgents ?? []), ...current.agents.map(agent => agent.agentId)])];
       if (cancel) {
         const alreadyCanceled = current.phase === 'running' && current.cancelPauseOperationId !== undefined;
         const liveCheckpoint = current.phase === 'paused' && queuedOwners.every(agentId => this.participants.has(agentId)) &&

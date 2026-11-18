@@ -7,7 +7,7 @@ import { isLegacyTlsError, peerFetch } from './peerTls';
 import { hostname, networkInterfaces } from 'node:os';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection } from '@kiki/protocol';
+import { bridgeGrantSchema, connectionIdentitySchema, isDirectConnectionHost, normalizePairingCode, parsePairingUri, type BridgeGrant, type BridgeOperation, type ConnectionIdentity, type ConnectionPairInput, type RemoteConnection, type SpacePlatform } from '@kiki/protocol';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 import { AdmissionError } from './admission';
 import { PairingBridgeRetirementError, validateEndpoint, type RemoteConnectionManager } from './manager';
@@ -37,6 +37,9 @@ export class PairingRateLimit {
 export function machineLabel(): string {
   const name = hostname().replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 128);
   return name === '' ? 'Kiki' : name;
+}
+export function currentSpacePlatform(): SpacePlatform {
+  return process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux';
 }
 export function directAddresses(interfaces = networkInterfaces()): string[] {
   const hosts = new Set<string>();

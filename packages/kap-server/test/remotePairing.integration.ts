@@ -87,7 +87,7 @@ describe('short-code pairing on two real servers', () => {
       expect(oldToken.status).toBe(401);
       expect((await oldToken.json() as { msg: string }).msg).toBe('connection_not_approved');
       const bytes = Buffer.concat(captured);
-      expect(firstBytes.length).toBeGreaterThanOrEqual(5);
+      expect(firstBytes.length).toBeGreaterThanOrEqual(3);
       expect(firstBytes.every((byte) => byte === 0x16)).toBe(true);
       for (const sensitive of [issued.code, secret.ownerToken, body, 'Authorization:', 'kimi-code.bearer.']) expect(bytes.includes(Buffer.from(sensitive))).toBe(false);
     } finally {

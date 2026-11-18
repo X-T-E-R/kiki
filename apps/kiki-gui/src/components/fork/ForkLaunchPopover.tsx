@@ -25,6 +25,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
   canBranch,
   canSideQuestion,
   busy,
+  openRequest,
   onOpenSession,
   onOpenBranch,
   onForkSession,
@@ -37,6 +38,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
   canBranch: boolean;
   canSideQuestion: boolean;
   busy?: boolean;
+  openRequest?: { readonly seq: number; readonly focusBranch?: boolean };
   onOpenSession: (sessionId: string) => void;
   onOpenBranch: (agentId: string) => void;
   onForkSession: (seed: SessionSeedMode) => void;
@@ -50,6 +52,19 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
   const [branchTask, setBranchTask] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const branchInputRef = useRef<HTMLInputElement>(null);
+  const handledSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (openRequest === undefined || openRequest.seq === handledSeqRef.current) return;
+    handledSeqRef.current = openRequest.seq;
+    setOpen(true);
+    if (openRequest.focusBranch && !coarse) {
+      requestAnimationFrame(() => {
+        branchInputRef.current?.focus();
+      });
+    }
+  }, [openRequest, coarse]);
 
   const hasLineage = origin !== undefined || offshoots.length > 0;
   const hasActions = canFork || canBranch || canSideQuestion;
@@ -237,6 +252,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
             {canBranch ? (
               <div className="rounded-lg border border-hairline bg-surface/45 p-1.5">
                 <input
+                  ref={branchInputRef}
                   type="text"
                   data-fork-popover-branch-input
                   value={branchTask}

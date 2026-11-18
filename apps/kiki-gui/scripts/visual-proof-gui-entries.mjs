@@ -132,8 +132,8 @@ const GROUPS = [
     name: 'btw',
     fixture: 'btw',
     async run({ page, open, shot }) {
-      await open('/s/session_fixture_btw', 'textarea[data-composer]');
-      const composer = page.locator('textarea[data-composer]').first();
+      await open('/s/session_fixture_btw', '[data-composer]');
+      const composer = page.locator('[data-composer]').first();
       // A main turn in flight: the side question must leave it running.
       await composer.fill('开始升级。');
       await composer.press('Enter');
@@ -141,14 +141,17 @@ const GROUPS = [
       await composer.fill('/bt');
       await page.waitForSelector('[data-composer-menu]');
       await shot('btw-slash-menu');
-      await composer.fill('/btw --frozen-lockfile 到底管什么？');
+      await composer.focus();
+      await page.keyboard.press('End');
+      await page.keyboard.type('w --frozen-lockfile 到底管什么？');
       await composer.press('Enter');
-      await page.waitForSelector('[data-agent-tab-workspace="btw-1"]', { timeout: 15_000 });
-      await page.waitForFunction(() => (document.querySelector('[data-agent-tab-workspace="btw-1"]')?.textContent ?? '').includes('悄悄改写'), undefined, { timeout: 15_000 });
+      await page.waitForSelector('[data-btw-floating-card="btw-1"]', { timeout: 15_000 });
+      await page.waitForFunction(() => (document.querySelector('[data-btw-floating-card="btw-1"]')?.textContent ?? '').includes('悄悄改写'), undefined, { timeout: 15_000 });
+      if (await page.locator('[data-agent-tab-workspace]').count() > 0) throw new Error('side question unexpectedly opened right-side split workspace');
       if (await page.locator('[data-header-working]').count() === 0) throw new Error('main turn stopped by the side question');
       await shot('btw-answer');
-      await page.click('[data-session-actions] button[aria-haspopup="menu"]');
-      await page.waitForSelector('[data-side-question]');
+      await page.click('[data-header-fork-trigger]');
+      await page.waitForSelector('[data-fork-popover-action="btw"]');
       await shot('btw-header-menu');
     },
   },

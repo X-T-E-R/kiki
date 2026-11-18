@@ -99,6 +99,7 @@ export class PluginService extends Service implements IPluginService {
   private activeReloadPromise: Promise<ReloadSummary> | undefined;
   private snapshotLoaded = false;
   private loadError: Error | undefined;
+  private pendingMutations = 0;
   private mutationQueue: Promise<void> = Promise.resolve();
   private readonly previewController = new AbortController();
   private readonly previews = new Set<Promise<unknown>>();
@@ -369,7 +370,7 @@ export class PluginService extends Service implements IPluginService {
   }
 
   listPluginCommands(workspaceId?: string, sessionId?: string): Promise<readonly PluginCommandDef[]> {
-    return this.runSerializedOperation(async () => this.filterUsage(await this.manager.enabledCommands(), workspaceId, (entry) => entry.pluginId, sessionId));
+    return this.runManagementRead(async () => this.filterUsage(await this.manager.enabledCommands(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
   checkUpdates(): Promise<readonly PluginUpdateStatus[]> {
@@ -555,7 +556,9 @@ export class PluginService extends Service implements IPluginService {
   }
 
   private async runManagementRead<T>(operation: () => Promise<T>): Promise<T> {
-    await this.waitForPendingMutations();
+    if (!this.snapshotLoaded || this.pendingMutations > 0) {
+      await this.waitForPendingMutations();
+    }
     this.assertLoaded();
     return operation();
   }
@@ -568,7 +571,9 @@ export class PluginService extends Service implements IPluginService {
   }
 
   private async runSecurityConsumptionRead<T>(operation: () => Promise<T>): Promise<T> {
-    await this.waitForPendingMutations();
+    if (!this.snapshotLoaded || this.pendingMutations > 0) {
+      await this.waitForPendingMutations();
+    }
     if (!this.snapshotLoaded) this.assertLoaded();
     return operation();
   }
@@ -596,7 +601,10 @@ export class PluginService extends Service implements IPluginService {
   }
 
   private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.mutationQueue.then(operation);
+    this.pendingMutations += 1;
+    const result = this.mutationQueue.then(operation).finally(() => {
+      this.pendingMutations -= 1;
+    });
     this.mutationQueue = result.then(
       () => undefined,
       () => undefined,

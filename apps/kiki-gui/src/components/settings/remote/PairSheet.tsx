@@ -1,11 +1,11 @@
 /**
  * PairSheet — unified pairing sheet with two explicit directions (#21):
- * - `'outbound'`: "Pair a space on another computer" (address + pairing code,
- *   or SSH when available in the desktop app; opt-in `requestBridge` unchecked
- *   by default).
+ * - `'outbound'`: "Pair a space on another computer" (address + pairing code or
+ *   one-click `kiki://pair` URI, or SSH in the desktop app; `requestBridge` and
+ *   `borrowTools` enabled by default).
  * - `'inbound'`: "Pairing code" (pre-consent screen naming what the peer can do
- *   and what generating a code switches on before any request is sent; opt-in
- *   thread messages unchecked by default).
+ *   and what generating a code switches on before any request is sent; thread
+ *   messages and tool sharing enabled by default).
  *
  * Renders as a `SidePanel` (right sheet on desktop, full-height sheet on
  * phones).

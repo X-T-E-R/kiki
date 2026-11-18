@@ -161,11 +161,21 @@ function isTypingTarget(target: EventTarget | null): boolean {
     && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]') !== null);
 }
 
-function sessionLabel(session: Session, untitled: string): string {
-  if (session.title.trim() !== '') return session.title;
-  if (session.last_prompt !== undefined && session.last_prompt.trim() !== '') {
-    return session.last_prompt;
+function sessionLabel(
+  session: Session,
+  untitled: string,
+  nestedForkParentTitle?: string,
+): string {
+  const title = session.title.trim();
+  const prompt = session.last_prompt?.trim() ?? '';
+  if (nestedForkParentTitle !== undefined && title.startsWith('Fork: ')) {
+    const rest = title.slice(6).trim();
+    if (rest !== '' && rest !== nestedForkParentTitle) return rest;
+    if (prompt !== '' && prompt !== nestedForkParentTitle) return prompt;
+    if (rest !== '') return rest;
   }
+  if (title !== '') return session.title;
+  if (prompt !== '') return session.last_prompt!;
   return untitled;
 }
 
@@ -2469,7 +2479,9 @@ function SessionRow({
   // Row states: blocked, cleanup pending, running, finished-unseen, caught up.
   // Weight and marker carry the difference; the active row still wins on lift.
   const rowState = sessionRowState(session, seen);
-  const label = resolveTitle(sessionLabel(session, untitled));
+  const label = resolveTitle(
+    sessionLabel(session, untitled, nested && relation?.kind === 'fork' ? parentTitle : undefined),
+  );
   const elapsed = useElapsedSince(activity === undefined ? undefined : anchorFor(activity));
   // A running row says how long: m:ss in the first hour, a compact duration
   // through the first day, then whole days. The workspace stays on the same

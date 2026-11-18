@@ -292,3 +292,81 @@ it('resumeAgentTask wires TaskStop cancellation to turn.cancel and restores coll
   expect(cancel).toHaveBeenCalledTimes(1);
   expect(settledStatus).toBe('killed');
 });
+
+it('cold cancelPause after interrupted pausing materializes settling participants even when requiredAgents is empty', async () => {
+  const documents = new Map<string, unknown>();
+  const agents = { parent: { parentAgentId: null }, child: { parentAgentId: 'parent' } };
+  const disposables = new DisposableStore();
+  const handles = new Map<string, IAgentScopeHandle>();
+  let control!: ISessionExecutionControl;
+  const neverSettle = new Promise<undefined>(() => {});
+  const registerHandle = (id: string) => {
+    const prompt = { hasQueuedWork: () => id === 'parent' } as IAgentPromptService;
+    const tasks = {
+      hasUnfinishedWork: () => false,
+      list: () => [],
+      findPausedAgentTask: vi.fn(async () => undefined),
+      settlePausedAgentTask: vi.fn(async () => undefined),
+    } as unknown as IAgentTaskService;
+    const scope = { parentAgentId: id === 'child' ? 'parent' : undefined } as IAgentScopeContext;
+    const lifecycle = { list: () => [...handles.values()], get: (target: string) => handles.get(target) } as unknown as IAgentLifecycleService;
+    const metadata = { snapshot: () => ({ id: 'fixture-session', createdAt: 0, updatedAt: 0, archived: false, agents }) } as unknown as ISessionMetadata;
+    handles.set(id, {
+      kind: 'agent',
+      id,
+      accessor: {
+        get: (token) => {
+          if (token === IAgentPromptService) return prompt as never;
+          if (token === IAgentTaskService) return tasks as never;
+          if (token === IAgentScopeContext) return scope as never;
+          if (token === IAgentLifecycleService) return lifecycle as never;
+          if (token === ISessionMetadata) return metadata as never;
+          throw new Error('Unexpected service lookup');
+        },
+      },
+      dispose: () => {},
+    });
+  };
+  const create = vi.fn(async ({ agentId }: { agentId?: string }) => {
+    if (agentId === undefined) throw new Error('Explicit identity required');
+    registerHandle(agentId);
+    control.register(agentId, { pause: async () => undefined, resume: async () => undefined, turnId: () => undefined });
+    return handles.get(agentId)!;
+  });
+  const services = () => createServices(disposables, { additionalServices: (reg) => {
+    reg.definePartialInstance(IAtomicDocumentStore, {
+      get: async <T>(_scope: string, key: string) => documents.get(key) as T | undefined,
+      set: async (_scope, key, value) => { documents.set(key, structuredClone(value)); },
+    });
+    reg.definePartialInstance(ISessionContext, makeSessionContext({ sessionId: 'fixture-session', workspaceId: 'fixture-workspace', sessionScope: 'sessions/fixture', sessionDir: '/fixture', cwd: '/fixture' }));
+    reg.definePartialInstance(ISessionMetadata, { update: async () => {}, snapshot: () => ({ id: 'fixture-session', createdAt: 0, updatedAt: 0, archived: false, agents }) });
+    reg.definePartialInstance(IAgentLifecycleService, { list: () => [...handles.values()], get: (id) => handles.get(id), create });
+    reg.define(ISessionExecutionControl, SessionExecutionControl);
+  } });
+  try {
+    control = services().get(ISessionExecutionControl);
+    registerHandle('parent');
+    registerHandle('child');
+    const parentReg = control.register('parent', { pause: () => neverSettle, resume: async () => undefined });
+    const childReg = control.register('child', { pause: () => neverSettle, resume: async () => undefined });
+    await expect(control.pause({ operationId: 'hot-switch:interrupted' })).resolves.toMatchObject({ phase: 'pausing' });
+    expect(documents.get('execution-control.json')).toMatchObject({
+      checkpointComplete: false,
+      requiredAgents: [],
+      state: { phase: 'pausing' },
+    });
+
+    await Promise.all([parentReg.dispose(), childReg.dispose()]);
+    handles.clear();
+    control = services().get(ISessionExecutionControl);
+    await control.ready();
+    await expect(control.read()).resolves.toMatchObject({ phase: 'failed', pauseOperationId: 'hot-switch:interrupted' });
+
+    await expect(
+      control.cancelPause({ operationId: 'hot-switch:interrupted:cancelPause', pauseOperationId: 'hot-switch:interrupted' }),
+    ).resolves.toMatchObject({ phase: 'running', agents: [] });
+    expect(create.mock.calls.map(([input]) => input.agentId)).toEqual(['parent', 'child']);
+  } finally {
+    await disposables.dispose();
+  }
+});

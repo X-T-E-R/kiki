@@ -112,6 +112,7 @@ export const pairCodeCreateOutputSchema = z.object({
   target: connectionIdentitySchema,
   suggestedEndpoints: z.array(z.string()),
   tlsFingerprint: fingerprintSchema.optional(),
+  bridgeOperations: bridgeOperationsSchema.optional(),
 }).strict();
 export type PairCodeCreateOutput = z.infer<typeof pairCodeCreateOutputSchema>;
 export const connectionPairInputSchema = z.object({

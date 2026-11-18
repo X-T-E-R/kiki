@@ -21,8 +21,7 @@ import type {
   RemoteToolMediaAttachment,
 } from '@kiki/protocol';
 import { AdmissionError } from '../connections/admission';
-import { machineLabel } from '../connections/pairing';
-import { currentSpacePlatform } from '../connections/spaceSummary';
+import { currentSpacePlatform, machineLabel } from '../connections/pairing';
 
 const MAX_EXPORTED_TOOLS = 512;
 const MAX_REMOTE_MEDIA_BYTES = 11 * 1024 * 1024;
@@ -144,7 +143,40 @@ function shapeOutputWithMedia(output: ExecutableToolOutput, collector: RemoteAtt
   };
 }
 
-export async function listExportedTools(core: Scope, workspaceId?: string): Promise<BridgeToolsListResult> {
+async function resolveRemoteWorkspace(
+  core: Scope,
+  requestedWorkspaceId: string | undefined,
+  requireExplicit: boolean,
+): Promise<{ id: string; root: string } | undefined> {
+  const workspaces = optionalService(core, IWorkspaceService);
+  if (workspaces === undefined) return undefined;
+  if (requestedWorkspaceId !== undefined) {
+    const found = await workspaces.get(requestedWorkspaceId);
+    if (found === undefined && requireExplicit) {
+      throw new AdmissionError(404, 'workspace_not_found');
+    }
+    return found === undefined ? undefined : { id: found.id, root: found.root };
+  }
+  const list = await workspaces.list();
+  if (list.length === 0) return undefined;
+  const sorted = [...list].sort(
+    (a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.lastOpenedAt - a.lastOpenedAt) || a.id.localeCompare(b.id),
+  );
+  return { id: sorted[0]!.id, root: sorted[0]!.root };
+}
+
+export async function listExportedTools(
+  core: Scope,
+  workspaceId?: string,
+  options?: { signal?: AbortSignal; materializeCold?: boolean },
+): Promise<BridgeToolsListResult> {
+  const signal = options?.signal;
+  const materializeCold = options?.materializeCold !== false;
+  signal?.throwIfAborted();
+  const targetWorkspace = await resolveRemoteWorkspace(core, workspaceId, workspaceId !== undefined && materializeCold);
+  signal?.throwIfAborted();
+  const effectiveWorkspaceId = targetWorkspace?.id ?? workspaceId;
+
   const tools: RemoteExportedTool[] = [];
   const seenNames = new Set<string>();
 
@@ -152,13 +184,15 @@ export async function listExportedTools(core: Scope, workspaceId?: string): Prom
   const pluginUsage = optionalService(core, IPluginUsageService);
   if (pluginHosts !== undefined) {
     const registrations = await pluginHosts.list();
+    signal?.throwIfAborted();
     const allowedByPlugin = new Map<string, boolean>();
     for (const { pluginId, definition } of registrations) {
       if (tools.length >= MAX_EXPORTED_TOOLS) break;
       if (pluginUsage !== undefined) {
         let allowed = allowedByPlugin.get(pluginId);
         if (allowed === undefined) {
-          allowed = await pluginUsage.allows(workspaceId, pluginId);
+          allowed = await pluginUsage.allows(effectiveWorkspaceId, pluginId);
+          signal?.throwIfAborted();
           allowedByPlugin.set(pluginId, allowed);
         }
         if (!allowed) continue;
@@ -180,38 +214,51 @@ export async function listExportedTools(core: Scope, workspaceId?: string): Prom
 
   const workspaceInstances = optionalService(core, IWorkspaceInstanceManager);
   if (workspaceInstances !== undefined && tools.length < MAX_EXPORTED_TOOLS) {
-    const candidates = workspaceId !== undefined
-      ? (workspaceInstances.get(workspaceId) !== undefined ? [workspaceInstances.get(workspaceId)!] : [])
-      : workspaceInstances.list();
-    for (const instance of candidates) {
-      if (tools.length >= MAX_EXPORTED_TOOLS) break;
-      let manager;
+    const refWorkspaceId = targetWorkspace?.id ?? workspaceId ?? (optionalService(core, IWorkspaceService) === undefined ? workspaceInstances.list()[0]?.id : undefined);
+    if (refWorkspaceId !== undefined && (materializeCold || workspaceInstances.get(refWorkspaceId) !== undefined)) {
+      let lease;
       try {
-        const mcp = instance.program.mcp;
-        await mcp.ready;
-        manager = mcp.connectionManager();
+        lease = await workspaceInstances.acquire({ workspaceId: refWorkspaceId, root: targetWorkspace?.root });
       } catch {
-        continue;
+        lease = undefined;
       }
-      for (const serverEntry of manager.list()) {
-        if (tools.length >= MAX_EXPORTED_TOOLS) break;
-        if (serverEntry.status !== 'connected') continue;
-        const resolved = manager.resolved(serverEntry.name);
-        if (resolved === undefined) continue;
-        for (const tool of resolved.tools) {
-          if (tools.length >= MAX_EXPORTED_TOOLS) break;
-          if (!resolved.enabledNames.has(tool.name)) continue;
-          const remoteName = qualifyMcpToolName(serverEntry.name, tool.name);
-          if (seenNames.has(remoteName)) continue;
-          seenNames.add(remoteName);
-          tools.push({
-            remoteName,
-            kind: 'mcp',
-            serverName: serverEntry.name,
-            toolName: tool.name,
-            description: tool.description.slice(0, 16384),
-            parameters: (tool.parameters ?? { type: 'object', properties: {} }) as Record<string, unknown>,
-          });
+      if (lease !== undefined) {
+        try {
+          signal?.throwIfAborted();
+          let manager;
+          try {
+            const mcp = lease.instance.program.mcp;
+            await mcp.ready;
+            signal?.throwIfAborted();
+            manager = mcp.connectionManager();
+          } catch {
+            manager = undefined;
+          }
+          if (manager !== undefined) {
+            for (const serverEntry of manager.list()) {
+              if (tools.length >= MAX_EXPORTED_TOOLS) break;
+              if (serverEntry.status !== 'connected') continue;
+              const resolved = manager.resolved(serverEntry.name);
+              if (resolved === undefined) continue;
+              for (const tool of resolved.tools) {
+                if (tools.length >= MAX_EXPORTED_TOOLS) break;
+                if (!resolved.enabledNames.has(tool.name)) continue;
+                const remoteName = qualifyMcpToolName(serverEntry.name, tool.name);
+                if (seenNames.has(remoteName)) continue;
+                seenNames.add(remoteName);
+                tools.push({
+                  remoteName,
+                  kind: 'mcp',
+                  serverName: serverEntry.name,
+                  toolName: tool.name,
+                  description: tool.description.slice(0, 16384),
+                  parameters: (tool.parameters ?? { type: 'object', properties: {} }) as Record<string, unknown>,
+                });
+              }
+            }
+          }
+        } finally {
+          lease.dispose();
         }
       }
     }
@@ -231,21 +278,22 @@ export async function callExportedTool(
   signal: AbortSignal,
 ): Promise<BridgeToolsCallResult> {
   signal.throwIfAborted();
-  const effectiveWorkspaceId = targetWorkspaceScope === '*' ? input.workspaceId : targetWorkspaceScope;
+  const requestedWorkspaceId = targetWorkspaceScope === '*' ? input.workspaceId : targetWorkspaceScope;
+  const targetWorkspace = await resolveRemoteWorkspace(core, requestedWorkspaceId, requestedWorkspaceId !== undefined);
+  signal.throwIfAborted();
+  const effectiveWorkspaceId = targetWorkspace?.id ?? requestedWorkspaceId;
 
   const pluginHosts = optionalService(core, IPluginHostService);
   const pluginUsage = optionalService(core, IPluginUsageService);
   if (pluginHosts !== undefined) {
     const registrations = await pluginHosts.list();
+    signal.throwIfAborted();
     const match = registrations.find(({ pluginId, definition }) => pluginToolName(pluginId, definition.name) === input.remoteName);
     if (match !== undefined) {
       if (pluginUsage !== undefined && !(await pluginUsage.allows(effectiveWorkspaceId, match.pluginId))) {
         throw new AdmissionError(403, 'bridge_operation_denied');
       }
-      const workspaces = optionalService(core, IWorkspaceService);
-      const workspaceRoot = effectiveWorkspaceId !== undefined && workspaces !== undefined
-        ? (await workspaces.get(effectiveWorkspaceId))?.root
-        : undefined;
+      signal.throwIfAborted();
       const collector = new RemoteAttachmentCollector();
       const result = await pluginHosts.execute(
         match.pluginId,
@@ -254,7 +302,7 @@ export async function callExportedTool(
         signal,
         undefined,
         {
-          workspaceRoot,
+          workspaceRoot: targetWorkspace?.root,
           workspaceId: effectiveWorkspaceId,
           imageIn: true,
           attachmentStore: collector.store,
@@ -268,41 +316,55 @@ export async function callExportedTool(
 
   const workspaceInstances = optionalService(core, IWorkspaceInstanceManager);
   if (workspaceInstances !== undefined) {
-    const candidates = effectiveWorkspaceId !== undefined
-      ? (workspaceInstances.get(effectiveWorkspaceId) !== undefined ? [workspaceInstances.get(effectiveWorkspaceId)!] : [])
-      : workspaceInstances.list();
-    for (const instance of candidates) {
-      let manager;
+    const refWorkspaceId = targetWorkspace?.id ?? requestedWorkspaceId ?? (optionalService(core, IWorkspaceService) === undefined ? workspaceInstances.list()[0]?.id : undefined);
+    if (refWorkspaceId !== undefined) {
+      let lease;
       try {
-        const mcp = instance.program.mcp;
-        await mcp.ready;
-        manager = mcp.connectionManager();
+        lease = await workspaceInstances.acquire({ workspaceId: refWorkspaceId, root: targetWorkspace?.root });
       } catch {
-        continue;
+        lease = undefined;
       }
-      for (const serverEntry of manager.list()) {
-        if (serverEntry.status !== 'connected') continue;
-        const resolved = manager.resolved(serverEntry.name);
-        if (resolved === undefined) continue;
-        for (const tool of resolved.tools) {
-          if (!resolved.enabledNames.has(tool.name)) continue;
-          if (qualifyMcpToolName(serverEntry.name, tool.name) !== input.remoteName) continue;
-          const lease = await resolved.admitCall?.();
-          if (resolved.admitCall !== undefined && lease === undefined) {
-            throw new AdmissionError(409, 'remote_tool_unavailable');
-          }
+      if (lease !== undefined) {
+        try {
+          signal.throwIfAborted();
+          let manager;
           try {
-            const mcpResult = await resolved.client.callTool(tool.name, input.arguments, signal);
-            const collector = new RemoteAttachmentCollector();
-            const execResult = await mcpResultToExecutableOutput(mcpResult, input.remoteName, {
-              signal,
-              attachmentStore: collector.store,
-            });
-            const shaped = shapeOutputWithMedia(execResult.output, collector);
-            return execResult.isError === true ? { ...shaped, isError: true } : shaped;
-          } finally {
-            lease?.release();
+            const mcp = lease.instance.program.mcp;
+            await mcp.ready;
+            signal.throwIfAborted();
+            manager = mcp.connectionManager();
+          } catch {
+            manager = undefined;
           }
+          if (manager !== undefined) {
+            for (const serverEntry of manager.list()) {
+              if (serverEntry.status !== 'connected') continue;
+              const resolved = manager.resolved(serverEntry.name);
+              if (resolved === undefined) continue;
+              for (const tool of resolved.tools) {
+                if (!resolved.enabledNames.has(tool.name)) continue;
+                if (qualifyMcpToolName(serverEntry.name, tool.name) !== input.remoteName) continue;
+                const callLease = await resolved.admitCall?.();
+                if (resolved.admitCall !== undefined && callLease === undefined) {
+                  throw new AdmissionError(409, 'remote_tool_unavailable');
+                }
+                try {
+                  const mcpResult = await resolved.client.callTool(tool.name, input.arguments, signal);
+                  const collector = new RemoteAttachmentCollector();
+                  const execResult = await mcpResultToExecutableOutput(mcpResult, input.remoteName, {
+                    signal,
+                    attachmentStore: collector.store,
+                  });
+                  const shaped = shapeOutputWithMedia(execResult.output, collector);
+                  return execResult.isError === true ? { ...shaped, isError: true } : shaped;
+                } finally {
+                  callLease?.release();
+                }
+              }
+            }
+          }
+        } finally {
+          lease.dispose();
         }
       }
     }

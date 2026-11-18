@@ -78,20 +78,20 @@ describe('pairing codes', () => {
     const claimed = await target.claimPair(live.code, source, 'Source');
     expect(claimed.peerToken).toHaveLength(43);
     expect(claimed.allowBridge).toBe(true);
-    expect(claimed.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create', 'tools']);
+    expect(claimed.bridgeOperations).toEqual(['read', 'send', 'wait']);
     await expect(target.claimPair(live.code, source, 'Source')).rejects.toThrow('invalid_pairing_code');
     expect(target.matchBearer(claimed.peerToken)?.id).toBe(claimed.grantId);
   });
 
-  it('defaults bridgeOperations to all six operations and preserves explicit subsets across createPairCode, claimPair, and approvePeer', async () => {
+  it('defaults pair codes to least-privilege operations, defaults owner approvals to all six operations, and preserves explicit subsets', async () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-pair-ops-')); homes.push(home);
     const target = new ConnectionAdmission(home, identity('target'));
     const sourceA = identity('source-a');
     const sourceB = identity('source-b');
     const defaultCode = await target.createPairCode();
-    expect(defaultCode.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create', 'tools']);
+    expect(defaultCode.bridgeOperations).toEqual(['read', 'send', 'wait']);
     const claimedDefault = await target.claimPair(defaultCode.code, sourceA, 'Source A');
-    expect(claimedDefault.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create', 'tools']);
+    expect(claimedDefault.bridgeOperations).toEqual(['read', 'send', 'wait']);
 
     const subsetCode = await target.createPairCode({ bridgeOperations: ['read', 'send', 'tools'] });
     expect(subsetCode.bridgeOperations).toEqual(['read', 'send', 'tools']);

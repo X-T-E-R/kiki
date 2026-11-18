@@ -21,6 +21,7 @@ import {
   type Block,
   type QuestionBlock,
 } from '@kiki/session-core/session';
+import { isEphemeralBtwNode } from '../agent-panel/InspectorBranches';
 
 /**
  * Agent state as the graph reads it. `unknown` is a real state, kept distinct
@@ -123,7 +124,7 @@ export function railVisibility(agentId: string, surfaceAgentId: string): RailVis
 export function descendantIds(forest: AgentForest, rootId: string): string[] {
   const isBranchNode = (id: string) => {
     const node = forest.byId[id];
-    return node?.isBranch === true || node?.branchSealed === true;
+    return node?.isBranch === true || node?.branchSealed === true || isEphemeralBtwNode(node);
   };
   const out: string[] = [];
   const seen = new Set<string>([rootId]);
@@ -179,7 +180,7 @@ export function fleetUnder(forest: AgentForest, rootId: string, waitingIds: Read
     if (seen.has(id)) return;
     seen.add(id);
     const node = forest.byId[id];
-    if (node === undefined) return;
+    if (node === undefined || isEphemeralBtwNode(node)) return;
     out.push({
       id,
       label: node.label,
@@ -447,12 +448,14 @@ export function firstLevelBranchIds(forest: AgentForest, rootAgentId: string = M
   if (rootAgentId !== MAIN_AGENT_ID) {
     return (forest.byId[rootAgentId]?.childIds ?? []).filter((id) => {
       const node = forest.byId[id];
-      return node !== undefined && node.isBranch !== true && node.branchSealed !== true;
+      return node !== undefined && node.isBranch !== true && node.branchSealed !== true && !isEphemeralBtwNode(node);
     });
   }
   const main = forest.byId[MAIN_AGENT_ID];
-  if (main !== undefined) return [...main.childIds];
-  return forest.roots.map((node) => node.agentId).filter((id) => id !== MAIN_AGENT_ID);
+  if (main !== undefined) return main.childIds.filter((id) => !isEphemeralBtwNode(forest.byId[id]));
+  return forest.roots
+    .filter((node) => node.agentId !== MAIN_AGENT_ID && !isEphemeralBtwNode(node))
+    .map((node) => node.agentId);
 }
 
 /**

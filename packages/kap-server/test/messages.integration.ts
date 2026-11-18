@@ -860,11 +860,27 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     ]);
     const expected_cursor = await cursor(id);
 
-    const atUser = await postJson<{ id: string }>(`/api/sessions/${id}:fork`, {
+    const atUser = await postJson<{
+      id: string;
+      forked_from?: {
+        session_id: string;
+        through_message_id?: string;
+        through_user_message?: boolean;
+        turn_index?: number;
+        seed?: string;
+      };
+    }>(`/api/sessions/${id}:fork`, {
       through_message_id: 'fork_user_2',
       expected_cursor,
     });
     expect(atUser.code, JSON.stringify(atUser)).toBe(0);
+    expect(atUser.data.forked_from).toMatchObject({
+      session_id: id,
+      through_message_id: 'fork_user_2',
+      through_user_message: true,
+      turn_index: 1,
+      seed: 'verbatim',
+    });
     const userForkMessages = await getJson<PageWire>(
       `/api/sessions/${atUser.data.id}/messages?page_size=100`,
     );
@@ -874,11 +890,27 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       'fork_user_1',
     ]);
 
-    const atAssistant = await postJson<{ id: string }>(`/api/sessions/${id}:fork`, {
+    const atAssistant = await postJson<{
+      id: string;
+      forked_from?: {
+        session_id: string;
+        through_message_id?: string;
+        through_user_message?: boolean;
+        turn_index?: number;
+        seed?: string;
+      };
+    }>(`/api/sessions/${id}:fork`, {
       through_message_id: 'fork_assistant_1',
       expected_cursor,
     });
     expect(atAssistant.code, JSON.stringify(atAssistant)).toBe(0);
+    expect(atAssistant.data.forked_from).toMatchObject({
+      session_id: id,
+      through_message_id: 'fork_assistant_1',
+      through_user_message: false,
+      turn_index: 0,
+      seed: 'verbatim',
+    });
     const assistantForkMessages = await getJson<PageWire>(
       `/api/sessions/${atAssistant.data.id}/messages?page_size=100`,
     );

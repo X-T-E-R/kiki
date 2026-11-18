@@ -24,7 +24,29 @@ interface CachedWorkspaceCatalogs {
 interface InFlightCatalogRequest {
   readonly token: symbol;
   readonly generation: number;
+  readonly controller: AbortController;
   readonly promise: Promise<readonly RemoteBorrowedSpaceCatalog[]>;
+}
+
+function awaitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 export class RemoteSpaceToolBridgeService
@@ -39,11 +61,18 @@ export class RemoteSpaceToolBridgeService
   private readonly cache = new Map<string, CachedWorkspaceCatalogs>();
   private readonly inFlight = new Map<string, InFlightCatalogRequest>();
 
+  private abortInFlight(): void {
+    for (const entry of this.inFlight.values()) {
+      entry.controller.abort();
+    }
+    this.inFlight.clear();
+  }
+
   [REMOTE_SPACE_TOOL_ROUTER](connector: RemoteSpaceToolConnector | undefined): void {
     this.connector = connector;
     this.cacheGeneration += 1;
     this.cache.clear();
-    this.inFlight.clear();
+    this.abortInFlight();
     this.onDidChangeEmitter.fire();
   }
 
@@ -52,7 +81,7 @@ export class RemoteSpaceToolBridgeService
     for (const entry of this.cache.values()) {
       entry.expiresAt = 0;
     }
-    this.inFlight.clear();
+    this.abortInFlight();
     this.onDidChangeEmitter.fire();
   }
 
@@ -61,6 +90,7 @@ export class RemoteSpaceToolBridgeService
   }
 
   async listBorrowedTools(input: ListRemoteSpaceToolsInput): Promise<readonly RemoteBorrowedSpaceCatalog[]> {
+    input.signal?.throwIfAborted();
     const connector = this.connector;
     if (connector === undefined) return [];
     const workspaceId = input.caller.workspaceId;
@@ -70,14 +100,18 @@ export class RemoteSpaceToolBridgeService
     }
     const existing = this.inFlight.get(workspaceId);
     if (existing !== undefined && existing.generation === this.cacheGeneration) {
-      return existing.promise;
+      return awaitWithSignal(existing.promise, input.signal);
     }
     const generation = this.cacheGeneration;
     const token = Symbol('inFlight');
+    const controller = new AbortController();
     const promise = (async (): Promise<readonly RemoteBorrowedSpaceCatalog[]> => {
       try {
-        const catalogs = await connector.listBorrowedTools(input);
-        if (generation === this.cacheGeneration && this.connector === connector) {
+        const catalogs = await connector.listBorrowedTools({
+          caller: input.caller,
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted && generation === this.cacheGeneration && this.connector === connector) {
           this.cache.set(workspaceId, {
             catalogs,
             expiresAt: Date.now() + DEFAULT_CACHE_TTL_MS,
@@ -93,8 +127,8 @@ export class RemoteSpaceToolBridgeService
         }
       }
     })();
-    this.inFlight.set(workspaceId, { token, generation, promise });
-    return promise;
+    this.inFlight.set(workspaceId, { token, generation, controller, promise });
+    return awaitWithSignal(promise, input.signal);
   }
 
   async callBorrowedTool(input: CallRemoteSpaceToolInput): Promise<BridgeToolsCallResult> {
@@ -109,7 +143,7 @@ export class RemoteSpaceToolBridgeService
     this.connector = undefined;
     this.cacheGeneration += 1;
     this.cache.clear();
-    this.inFlight.clear();
+    this.abortInFlight();
     super.dispose();
   }
 }

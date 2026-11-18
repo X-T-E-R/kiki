@@ -3419,7 +3419,7 @@ describe('explicit unknown timing', () => {
 
 describe('message row actions', () => {
   beforeAll(startEditFixture, 30_000);
-  it('shows edit/fork on settled user rows and regenerate/fork on the latest final reply only', async () => {
+  it('shows edit/fork on settled user rows, fork on settled final replies, and regenerate on the latest final reply only', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,
       onEditMessage: () => undefined,
@@ -3439,8 +3439,8 @@ describe('message row actions', () => {
     expect(rows).toHaveLength(4);
     // Tiled first (copy / edit / regenerate / fork), then what the `⋯` holds.
     expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork', 'link']);
-    // An older assistant row copies but never regenerates.
-    expect(rowActionButtons(rows[1]!)).toEqual(['copy', 'link']);
+    // An older settled final reply supports fork, while regenerate stays on the latest reply.
+    expect(rowActionButtons(rows[1]!)).toEqual(['copy', 'fork', 'link']);
     expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'edit', 'fork', 'link']);
     expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'fork', 'link']);
   });
@@ -3656,6 +3656,63 @@ describe('message row actions', () => {
     await act(async () => { click(link); });
     expect(writeText).toHaveBeenCalledWith('/s/session_test?block=assistant-m2-0');
     expect(messageLinkHref('session_x', 'agent/1', 'user-m1')).toBe('/s/session_x/agent/agent%2F1?block=user-m1');
+  });
+
+  it('renders TimelineOffshootRail inline under diverged blocks and exposes onBranchHead on the latest reply only', async () => {
+    const onBranchHead = vi.fn();
+    const onOpenForkSession = vi.fn();
+    const onOpenBranchAgent = vi.fn();
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+      onBranchHead,
+    };
+    const offshootsByBlockId = new Map([
+      [
+        'assistant-m2-0',
+        [
+          { key: 'fork:sess-child-1', kind: 'fork' as const, id: 'sess-child-1', title: 'Paper-ink timeline', createdAtMs: 10 },
+          { key: 'branch:agent-b1', kind: 'branch' as const, id: 'agent-b1', title: 'Compare Redis lock', branchState: 'running' as const, createdAtMs: 20 },
+        ],
+      ],
+    ]);
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'user-m1', text: 'first turn', userMessageId: 'm1' }),
+        assistantBlock('assistant-m2-0', 'first reply'),
+      ],
+      rowActions,
+      undefined,
+      { offshootsByBlockId, onOpenForkSession, onOpenBranchAgent },
+    );
+
+    const rail = container.querySelector('[data-timeline-offshoot-rail]');
+    expect(rail).not.toBeNull();
+    await act(async () => {
+      click(container.querySelector<HTMLButtonElement>('[data-offshoot-id="sess-child-1"]')!);
+      click(container.querySelector<HTMLButtonElement>('[data-offshoot-id="agent-b1"]')!);
+    });
+    expect(onOpenForkSession).toHaveBeenCalledWith('sess-child-1');
+    expect(onOpenBranchAgent).toHaveBeenCalledWith('agent-b1');
+
+    const userRow = container.querySelector('[data-block-id="user-m1"]')!;
+    const assistantRow = container.querySelector('[data-block-id="assistant-m2-0"]')!;
+    await act(async () => {
+      click(userRow.querySelector<HTMLButtonElement>('[data-row-fork-options]')!);
+    });
+    expect(userRow.querySelector('[data-row-branch-here]')).toBeNull();
+
+    await act(async () => {
+      click(assistantRow.querySelector<HTMLButtonElement>('[data-row-fork-options]')!);
+    });
+    const branchBtn = assistantRow.querySelector<HTMLButtonElement>('[data-row-branch-here]');
+    expect(branchBtn).not.toBeNull();
+    await act(async () => {
+      click(branchBtn!);
+    });
+    expect(onBranchHead).toHaveBeenCalledTimes(1);
   });
 
   it('edits inline: prefilled editor submits through onEditMessage', async () => {

@@ -37,6 +37,8 @@ import { shiftTextPresentation, type TextPresentation, type ContentRef, type Goa
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer, SessionSeedMode } from '@kiki/protocol';
+import type { TimelineOffshootItem } from './fork/forkLineageModel';
+import { TimelineOffshootRail } from './fork/TimelineOffshootRail';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
@@ -72,6 +74,7 @@ import {
   groupHasRunning,
   groupSummary,
   latestFinalAssistantBlockId,
+  settledFinalAssistantBlockIds,
   latestTurnId,
   MAIN_AGENT_ID,
   readSubagentEndings,
@@ -337,6 +340,7 @@ export interface TranscriptRowActions {
   loadEditAttachments?: (block: UserBlock, signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
   onRegenerate: (block: AssistantBlock) => void;
   onFork: (block: UserBlock | AssistantBlock, seed?: SessionSeedMode) => void | Promise<unknown>;
+  onBranchHead?: (seed?: SessionSeedMode) => void;
   forkBusy?: boolean;
   /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
   canFork?: boolean;
@@ -1136,14 +1140,17 @@ const AssistantMessage = memo(function AssistantMessage({
   block,
   rowActions,
   isLatestFinal = false,
+  canForkReply = false,
   annotations,
   stopShownByTail = false,
   deliveredReply = false,
 }: {
   block: AssistantBlock;
   rowActions?: TranscriptRowActions;
-  /** Latest completed turn's final reply — the regenerate/fork anchor. */
+  /** Latest completed turn's final reply — the regenerate/branch anchor. */
   isLatestFinal?: boolean;
+  /** Any completed turn's final tool-less reply — eligible for `:fork`. */
+  canForkReply?: boolean;
   /** The visible turn tail already carries this turn's stop. */
   stopShownByTail?: boolean;
   /** This assistant text is the reply the message view speaks. */
@@ -1176,7 +1183,7 @@ const AssistantMessage = memo(function AssistantMessage({
   );
   const showActions =
     !block.streaming &&
-    (block.text !== '' || (rowActions !== undefined && isLatestFinal));
+    (block.text !== '' || (rowActions !== undefined && (isLatestFinal || canForkReply)));
   return (
     <div
       ref={tapActions.rowRef}
@@ -1248,11 +1255,12 @@ const AssistantMessage = memo(function AssistantMessage({
           copyText={incomplete ? undefined : (isOutputLayerActive ? readingText : block.text)}
           linkHref={messageLink?.(block.id)}
           canRegenerate={rowActions !== undefined && isLatestFinal}
-          canFork={rowActions !== undefined && rowActions.canFork !== false && isLatestFinal}
+          canFork={rowActions !== undefined && rowActions.canFork !== false && (isLatestFinal || canForkReply)}
           forkBusy={rowActions?.forkBusy}
           disabled={rowActions?.disabled ?? false}
           onRegenerate={() => { rowActions?.onRegenerate(block); }}
           onFork={(seed) => rowActions?.onFork(block, seed)}
+          onBranch={rowActions !== undefined && rowActions.canFork !== false && isLatestFinal ? rowActions.onBranchHead : undefined}
         />
       ) : null}
     </div>
@@ -2964,6 +2972,7 @@ const BlockView = memo(function BlockView({
   onOpenAgent,
   rowActions,
   latestFinalAssistantId,
+  canForkReply = false,
   annotations,
   stoppedTailTurnId,
   deliveredReply = false,
@@ -2973,6 +2982,8 @@ const BlockView = memo(function BlockView({
   stoppedTailTurnId?: string;
   /** This assistant text is the reply the message view speaks. */
   deliveredReply?: boolean;
+  /** Settled final reply of a completed turn — eligible for `:fork`. */
+  canForkReply?: boolean;
   readOnly: boolean;
   onResolveApproval: (
     approvalId: string,
@@ -3061,6 +3072,7 @@ const BlockView = memo(function BlockView({
           block={block}
           rowActions={liveRowActions}
           isLatestFinal={block.id === latestFinalAssistantId}
+          canForkReply={canForkReply}
           annotations={annotations}
           stopShownByTail={stoppedTailTurnId !== undefined && sameTurn(block.turnId, stoppedTailTurnId)}
           deliveredReply={deliveredReply}
@@ -4070,6 +4082,7 @@ type TranscriptRowProps = {
    * reader was told.
    */
   promotedReplyIds?: ReadonlySet<string>;
+  forkableAssistantIds?: ReadonlySet<string>;
 };
 
 function nodeUsesAgentNames(node: RenderNode): boolean {
@@ -4117,6 +4130,12 @@ function promotionEqual(previous: TranscriptRowProps, next: TranscriptRowProps):
   return ids.every((id) => previous.promotedReplyIds?.has(id) === next.promotedReplyIds?.has(id));
 }
 
+function forkableAssistantEqual(previous: TranscriptRowProps, next: TranscriptRowProps): boolean {
+  if (previous.forkableAssistantIds === next.forkableAssistantIds) return true;
+  const ids = [...assistantIdsOf(previous.node), ...assistantIdsOf(next.node)];
+  return ids.every((id) => previous.forkableAssistantIds?.has(id) === next.forkableAssistantIds?.has(id));
+}
+
 /**
  * One transcript row. This memo boundary is what keeps a streaming delta
  * from re-rendering the whole tree: the reducer preserves block identity
@@ -4153,6 +4172,7 @@ const TranscriptRow = memo(
     onLocateDispatch,
     blockOrder,
     promotedReplyIds,
+    forkableAssistantIds,
   }: TranscriptRowProps) {
     // data-turn-id makes a turn addressable from outside the transcript (the
     // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
@@ -4214,6 +4234,7 @@ const TranscriptRow = memo(
             onOpenAgent={onOpenAgent}
             rowActions={rowActions}
             latestFinalAssistantId={latestFinalAssistantId}
+            canForkReply={forkableAssistantIds?.has(member.id) === true}
             annotations={member.id === node.id ? annotations : undefined}
             stoppedTailTurnId={stoppedTailTurnId}
             deliveredReply={promotedReplyIds?.has(member.id) === true}
@@ -4262,7 +4283,8 @@ const TranscriptRow = memo(
     prev.onCancelQueued === next.onCancelQueued &&
     prev.onOpenAgent === next.onOpenAgent &&
     prev.onLocateDispatch === next.onLocateDispatch &&
-    promotionEqual(prev, next),
+    promotionEqual(prev, next) &&
+    forkableAssistantEqual(prev, next),
 );
 
 /**
@@ -4725,6 +4747,9 @@ export const Transcript = memo(function Transcript({
   forest,
   onOpenAgent,
   rowActions,
+  offshootsByBlockId,
+  onOpenForkSession,
+  onOpenBranchAgent,
   visible = true,
   connected,
   view = 'process',
@@ -4769,6 +4794,9 @@ export const Transcript = memo(function Transcript({
   forest?: AgentForest;
   onOpenAgent?: (agentId: string) => void;
   rowActions?: TranscriptRowActions;
+  offshootsByBlockId?: ReadonlyMap<string, readonly TimelineOffshootItem[]>;
+  onOpenForkSession?: (sessionId: string) => void;
+  onOpenBranchAgent?: (agentId: string) => void;
   /**
    * Composer draft annotations: while the draft quotes part of a message, the
    * quoted range is marked in the timeline and the popover edits the draft
@@ -5226,6 +5254,11 @@ export const Transcript = memo(function Transcript({
   // Regenerate/fork anchor: the latest completed turn's final assistant reply.
   // Changes only at turn boundaries, so the page memos survive token deltas.
   const latestFinalAssistantId = useMemo(() => latestFinalAssistantBlockId(blocks, {
+    busy: state.busy,
+    liveTurnId: runningTurnId,
+    incompleteTurnIds: state.incompleteTurnIds,
+  }), [blocks, state.busy, runningTurnId, state.incompleteTurnIds]);
+  const forkableAssistantIds = useMemo(() => settledFinalAssistantBlockIds(blocks, {
     busy: state.busy,
     liveTurnId: runningTurnId,
     incompleteTurnIds: state.incompleteTurnIds,
@@ -6910,7 +6943,16 @@ export const Transcript = memo(function Transcript({
                         onLocateDispatch={handleLocateDispatch}
                         blockOrder={blockOrder}
                         promotedReplyIds={promotedReplyIds}
+                        forkableAssistantIds={forkableAssistantIds}
                       />
+                      {(node.kind === 'user' || node.kind === 'assistant') && offshootsByBlockId?.has(node.id) === true ? (
+                        <TimelineOffshootRail
+                          items={offshootsByBlockId.get(node.id)}
+                          align={node.kind === 'user' ? 'right' : 'left'}
+                          onOpenFork={(forkSessionId) => { onOpenForkSession?.(forkSessionId); }}
+                          onOpenBranch={(branchAgentId) => { (onOpenBranchAgent ?? onOpenAgent)?.(branchAgentId); }}
+                        />
+                      ) : null}
                     </div>
                   )}
                   {isTurnTail && turnTailId !== undefined && (normalizedTurnId === undefined || !incompleteTurns.has(normalizedTurnId)) ? (

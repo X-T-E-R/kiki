@@ -803,6 +803,10 @@ impl BackendManager {
                     let node_options = resource_defaults::node_options(&original_node_options)
                         .map_err(|error| DesktopStartupFailure::plain(format!("Cannot size the Kiki backend heap: {error}")))?;
                     let injected_heap = if node_options == original_node_options { "" } else { node_options.split_whitespace().last().unwrap_or("") };
+                    let threadpool_size = env::var("UV_THREADPOOL_SIZE")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| "32".to_string());
                     let command = app
                         .shell()
                         .sidecar("kiki-server")
@@ -812,6 +816,7 @@ impl BackendManager {
                             ))
                         })?
                         .args(args)
+                        .env("UV_THREADPOOL_SIZE", &threadpool_size)
                         .env("KIKI_HOME", &runtime.kiki_home)
                         .env("NODE_OPTIONS", &node_options)
                         .env("KIKI_INJECTED_HEAP_OPTION", injected_heap)

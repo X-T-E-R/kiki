@@ -5,18 +5,16 @@ import {
   IPluginUsageService,
   ISessionActivityView,
   ISessionManager,
+  IWorkspaceInstanceManager,
   IWorkspaceService,
   type Scope,
 } from '@kiki/agent-core-v2';
 import type { ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
 import type { ISessionScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 import type { IDisposable } from '@kiki/agent-core-v2/_base/di/lifecycle';
-import type { SpacePlatform, SpaceSummary } from '@kiki/protocol';
-import { machineLabel } from './pairing';
-
-export function currentSpacePlatform(): SpacePlatform {
-  return process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux';
-}
+import type { SpaceSummary } from '@kiki/protocol';
+import { listExportedTools } from '../threadBridge/remoteToolsHost';
+import { currentSpacePlatform, machineLabel } from './pairing';
 
 function optionalService<T>(core: Scope, id: ServiceIdentifier<T>): T | undefined {
   try {
@@ -106,25 +104,11 @@ export class SpaceSummaryProjection {
         }
       } catch {}
       try {
-        const hosts = optionalService(this.core, IPluginHostService);
-        const usage = optionalService(this.core, IPluginUsageService);
-        if (hosts !== undefined) {
-          const tools = await hosts.list();
-          let count = 0;
-          if (usage === undefined) {
-            count = tools.length;
-          } else {
-            const allowedByPlugin = new Map<string, boolean>();
-            for (const entry of tools) {
-              let allowed = allowedByPlugin.get(entry.pluginId);
-              if (allowed === undefined) {
-                allowed = await usage.allows(undefined, entry.pluginId);
-                allowedByPlugin.set(entry.pluginId, allowed);
-              }
-              if (allowed) count += 1;
-            }
-          }
-          if (!this.disposed) this.borrowableToolCount = count;
+        const hasToolSources = optionalService(this.core, IPluginHostService) !== undefined
+          || optionalService(this.core, IWorkspaceInstanceManager) !== undefined;
+        if (hasToolSources) {
+          const exported = await listExportedTools(this.core, undefined, { materializeCold: false });
+          if (!this.disposed) this.borrowableToolCount = exported.tools.length;
         }
       } catch {}
     })().finally(() => {

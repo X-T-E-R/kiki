@@ -22,8 +22,21 @@ export const MERGED_BRANCH_INLINE_LIMIT = 5;
 
 export type BranchLifecycleState = 'waiting' | 'running' | 'open' | 'merged' | 'failed';
 
+export function isEphemeralBtwNode(
+  node: Pick<AgentTreeNode, 'agentId' | 'label' | 'toolsLocked' | 'branchSealed' | 'nameSource'> | undefined,
+): boolean {
+  if (node === undefined || node.branchSealed === true) return false;
+  if (/^(?:btw|agent[-_]btw)[-_]/i.test(node.agentId)) return true;
+  return node.toolsLocked === true && (node.label === 'BTW' || node.label.trim() === '' || node.nameSource === 'unreported');
+}
+
 export function isSessionBranchNode(node: AgentTreeNode | undefined): node is AgentTreeNode {
-  return node !== undefined && node.agentId !== MAIN_AGENT_ID && (node.isBranch === true || node.branchSealed === true);
+  return (
+    node !== undefined &&
+    node.agentId !== MAIN_AGENT_ID &&
+    (node.isBranch === true || node.branchSealed === true) &&
+    !isEphemeralBtwNode(node)
+  );
 }
 
 export function branchLifecycleState(node: AgentTreeNode, waiting: ReadonlySet<string>): BranchLifecycleState {

@@ -1076,6 +1076,7 @@ describe('Thread-message permissions on pairing rows (#20)', () => {
 
     const rowWriter = document.querySelector('[data-remote-connection="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]')!;
     expect(rowWriter.textContent).toContain('Can’t be opened');
+    expect(rowWriter.querySelector('[data-remote-bridge-only]')?.textContent).toContain('Thread messages only. Its owner has to allow browsing as well before it can be opened here.');
     expect(rowWriter.textContent).toContain('Thread messages: outgoing only');
     expect(rowWriter.querySelector('[data-remote-enter="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]')).toBeNull();
 

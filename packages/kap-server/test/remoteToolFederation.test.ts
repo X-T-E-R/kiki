@@ -199,7 +199,10 @@ describe('space bridge zero-workspace pairing, telemetry, and remote tool federa
       const betaHandshake = await betaClient.rest!.connections.handshake();
       expect(['win32', 'linux', 'darwin']).toContain(betaHandshake.platform);
 
-      const pairCode = await betaClient.rest!.connections.createPairCode({});
+      const pairCode = await betaClient.rest!.connections.createPairCode({
+        allowBridge: true,
+        bridgeOperations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
+      });
       expect(pairCode.suggestedEndpoints.length).toBeGreaterThan(0);
 
       const paired = await alphaClient.rest!.connections.pair({
@@ -318,16 +321,19 @@ describe('space bridge zero-workspace pairing, telemetry, and remote tool federa
       const storedWsPng = await betaCreatedMain.accessor.get(ISessionMediaStore).read(wsMediaRef.fileId);
       expect(Buffer.from(storedWsPng!.data).toString('base64')).toBe(TINY_PNG_BASE64);
 
+      const largeInput = `ws-large-${'p'.repeat(320 * 1024)}`;
       const wsLargeResult = await betaToolBridge.callBorrowedTool({
         bridgeId: reverseLink.grant.id,
         connectionId: reverseLink.connectionId,
         caller: { workspaceId: betaWorkspaces[0]!.id, sessionId: createdOnBeta.id },
         remoteName: 'plugin__alpha_probe__ping',
-        arguments: { input: 'ws-large', large: true },
+        arguments: { input: largeInput, large: true },
         callId: 'ws-large-call',
       });
-      expect(wsLargeResult.media).toHaveLength(1);
-      expect(wsLargeResult.media![0]!.dataBase64.length).toBeGreaterThan(200 * 1024);
+      expect(JSON.stringify(wsLargeResult.output)).toContain('ws-large-ppp');
+      expect(wsLargeResult.media?.length).toBeGreaterThanOrEqual(1);
+      const wsPngMedia = wsLargeResult.media!.find((item) => item.mimeType === 'image/png');
+      expect(wsPngMedia?.dataBase64.length).toBeGreaterThan(200 * 1024);
 
       await alphaClient.rest!.threadBridges.setBorrowTools(outboundLink!.grant.id, false);
       expect(await alphaToolBridge.listBorrowedTools({ caller: { workspaceId: alphaWsId, sessionId: 'alpha-main' } })).toEqual([]);
@@ -359,13 +365,44 @@ describe('space bridge zero-workspace pairing, telemetry, and remote tool federa
         callId: 'revoked-tools',
       })).rejects.toThrow('bridge_operation_denied');
 
+      await expect(alphaClient.rest!.threadBridges.syncConnection(paired.id, {
+        operations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
+        borrowTools: true,
+      })).rejects.toThrow('bridge_operation_denied');
+
+      const storedGuiSecret = await alpha.remoteConnections.secrets.read<{ grant: string }>({
+        connectionId: alpha.remoteConnections.get(paired.id).credentialRef,
+        purpose: 'gui',
+      });
+      const bareRequestRes = await fetch(`http://127.0.0.1:${beta.port}/api/thread-bridges/peer/request-bridge`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${storedGuiSecret.grant}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      });
+      const bareRequestJson = await bareRequestRes.json() as { code: number; data?: { bridge?: Array<{ grant: { id: string; operations: string[] }; credential: string }> } };
+      expect(bareRequestJson.code).toBe(0);
+      expect(bareRequestJson.data?.bridge?.[0]?.grant.operations).toEqual(['read', 'send', 'wait', 'wake', 'create']);
+      expect(bareRequestJson.data?.bridge?.[0]?.grant.operations).not.toContain('tools');
+
+      await alphaClient.rest!.threadBridges.syncConnection(paired.id, {
+        operations: ['read', 'send', 'wait', 'wake', 'create'],
+        borrowTools: true,
+      });
+      const latestBetaInbound = (await betaClient.rest!.threadBridges.status()).inbound.find((g) => !g.revoked && g.source.homeId === alpha.admission.identity.homeId)!;
+      expect(latestBetaInbound.id).not.toBe(betaInbound.id);
+
+      await betaClient.rest!.threadBridges.setOperations(latestBetaInbound.id, ['read', 'send', 'wait', 'wake', 'create', 'tools']);
       const synced = await alphaClient.rest!.threadBridges.syncConnection(paired.id, {
         operations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
         borrowTools: true,
       });
-      expect(synced.outbound.find((l) => l.connectionId === paired.id)?.grant.operations).toContain('tools');
+      const refreshedLink = synced.outbound.find((l) => l.connectionId === paired.id && !l.grant.revoked)!;
+      expect(refreshedLink.grant.operations).toContain('tools');
       const afterSyncResult = await alphaToolBridge.callBorrowedTool({
-        bridgeId: outboundLink!.grant.id,
+        bridgeId: refreshedLink.grant.id,
         connectionId: paired.id,
         caller: { workspaceId: alphaWsId, sessionId: 'alpha-main' },
         remoteName: 'plugin__beta_camera__snap',
@@ -395,7 +432,11 @@ describe('space bridge zero-workspace pairing, telemetry, and remote tool federa
     const alphaClient = createKlient({ endpoint: `http://127.0.0.1:${alpha.port}`, token: alpha.localOwnerToken });
     const betaClient = createKlient({ endpoint: `http://127.0.0.1:${beta.port}`, token: beta.localOwnerToken });
     try {
-      const pairCode = await betaClient.rest!.connections.createPairCode({});
+      const pairCode = await betaClient.rest!.connections.createPairCode({
+        allowBridge: true,
+        bridgeOperations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
+      });
+      expect(pairCode.bridgeOperations).toEqual(['read', 'send', 'wait', 'wake', 'create', 'tools']);
       const paired = await alphaClient.rest!.connections.pair({
         endpoint: formatPairingUri({ endpoint: pairCode.suggestedEndpoints[0]!, code: pairCode.code }),
         code: pairCode.code,
@@ -426,6 +467,20 @@ describe('space bridge zero-workspace pairing, telemetry, and remote tool federa
         backgroundSummary: false,
       });
       await expect(alphaClient.rest!.threadBridges.syncConnection(disallowedConn.id, {})).rejects.toThrow('bridge_operation_denied');
+
+      const leastPrivCode = await betaClient.rest!.connections.createPairCode({});
+      expect(leastPrivCode.bridgeOperations).toEqual(['read', 'send', 'wait']);
+      const leastPrivConn = await alphaClient.rest!.connections.pair({
+        endpoint: formatPairingUri({ endpoint: leastPrivCode.suggestedEndpoints[0]!, code: leastPrivCode.code }),
+        code: leastPrivCode.code,
+        requestBridge: false,
+        backgroundSummary: false,
+      });
+      await expect(alphaClient.rest!.threadBridges.syncConnection(leastPrivConn.id, {
+        operations: ['read', 'send', 'wait', 'tools'],
+      })).rejects.toThrow('bridge_operation_denied');
+      const leastPrivSynced = await alphaClient.rest!.threadBridges.syncConnection(leastPrivConn.id, {});
+      expect(leastPrivSynced.outbound.find((l) => l.connectionId === leastPrivConn.id && !l.grant.revoked)?.grant.operations).toEqual(['read', 'send', 'wait']);
     } finally {
       await alphaClient.close();
       await betaClient.close();

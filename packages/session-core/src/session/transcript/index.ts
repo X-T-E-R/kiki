@@ -69,6 +69,7 @@ export {
   assistantMessageIdFromBlockId,
   EARLIER_PROMPT_OUTCOMES_ID,
   latestFinalAssistantBlockId,
+  settledFinalAssistantBlockIds,
   mergeResponseThinking,
   overlaySnapshotSubagentFields,
   projectAgentTranscriptView,

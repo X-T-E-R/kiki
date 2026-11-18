@@ -1,4 +1,4 @@
-process.env['UV_THREADPOOL_SIZE'] ??= '32';
+import './native/threadpool';
 import './native/worker-heap';
 import { initializeMainHeap } from './native/main-heap';
 import { PROCESS_NAME } from './constant/identity';

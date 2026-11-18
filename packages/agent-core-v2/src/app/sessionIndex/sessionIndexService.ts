@@ -524,6 +524,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       const mutated = new Map<string, string | undefined>();
       const subscription = this.mirror.onDidChange(({ id, workspaceId }) => mutated.set(id, workspaceId));
       let committed = false;
+      let wipeAllFingerprints = true;
       try {
         const baseline = await this.mirror.runExclusive(async () => ({
           epoch: this.mirror.epoch(),
@@ -538,7 +539,19 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           this.checkReconcileActive(attempt + 1);
           const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
           const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
-          if (request !== this.reconcileRequest || this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return false;
+          const knownMutationsOnly = [...mutated.values()].every(workspaceId => workspaceId !== undefined);
+          if (manifest?.seq !== baseline.generation) {
+            wipeAllFingerprints = true;
+            return false;
+          }
+          if (this.mirror.epoch() !== baseline.epoch || revision?.seq !== baseline.revision) {
+            wipeAllFingerprints = mutated.size === 0 || !knownMutationsOnly;
+            return false;
+          }
+          if (request !== this.reconcileRequest) {
+            wipeAllFingerprints = !knownMutationsOnly;
+            return false;
+          }
           await commit();
           this.generation = baseline.generation;
           return true;
@@ -546,9 +559,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       } finally {
         subscription.dispose();
         if (!committed) {
-          if (mutated.size > 0 && [...mutated.values()].every(workspaceId => workspaceId !== undefined)) {
-            for (const [id, workspaceId] of mutated) this.projector.invalidateFingerprint(workspaceId, id);
-          } else this.projector.invalidateFingerprint();
+          if (wipeAllFingerprints) {
+            this.projector.invalidateFingerprint();
+          } else {
+            for (const [id, workspaceId] of mutated) {
+              if (workspaceId !== undefined) this.projector.invalidateFingerprint(workspaceId, id);
+            }
+          }
         }
       }
       if (committed && request === this.reconcileRequest) {

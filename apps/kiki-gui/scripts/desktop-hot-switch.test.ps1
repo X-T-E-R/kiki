@@ -758,7 +758,7 @@ try {
     & {
         $ownerToken = $fixtureToken
         $ast = [Management.Automation.Language.Parser]::ParseFile($hotSwitch, [ref]$null, [ref]$null)
-        foreach ($definition in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Call-Local', 'Execution', 'Lifecycle', 'Try-RuntimeSwitch') }, $false)) {
+        foreach ($definition in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Call-Local', 'Execution', 'Lifecycle', 'Try-RuntimeSwitch', 'Release-OurPauses') }, $false)) {
             . ([scriptblock]::Create($definition.Extent.Text))
         }
         function Invoke-RestMethod {
@@ -817,6 +817,31 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
         finally {
             $VerbosePreference = $previousVerbosePreference
         }
+
+        function Get-ObjectProperty([object]$Target, [string]$Name) {
+            if ($null -eq $Target) { return $null }
+            $prop = $Target.PSObject.Properties[$Name]
+            if ($null -ne $prop) { return $prop.Value }
+            return $null
+        }
+        function Execution([object]$Server, [string]$Id, [string]$Method, [object[]]$Arguments = @()) {
+            if ($Method -eq 'read') {
+                return [pscustomobject]@{ phase = 'failed'; pauseOperationId = 'hot-switch:stuck' }
+            }
+            throw 'cancelPause RPC failed'
+        }
+        $state = [pscustomobject]@{
+            sessions = @([pscustomobject]@{ id = 'session-failed'; pauseId = 'hot-switch:stuck' })
+        }
+        $threwOnAllowCancel = $false
+        try {
+            Release-OurPauses ([pscustomobject]@{ instance = $server }) $true 3>$null
+        }
+        catch {
+            $threwOnAllowCancel = $true
+            Assert-Contains 'Failed to release 1 paused session(s)' $_.Exception.Message 'Release-OurPauses did not surface failed cancelPause details.'
+        }
+        Assert-True $threwOnAllowCancel 'Release-OurPauses swallowed a failed pause release when AllowCancel was true.'
     }
     $cscPath = Resolve-Csc
     [IO.Directory]::CreateDirectory((Join-Path $homePath 'server\instances')) | Out-Null

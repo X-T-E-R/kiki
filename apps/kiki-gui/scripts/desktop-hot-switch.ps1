@@ -231,7 +231,7 @@ function Release-OurPauses([object]$Target, [bool]$AllowCancel) {
             $failures += "$($item.id): $msg"
         }
     }
-    if (-not $AllowCancel -and $failures.Count -gt 0) {
+    if ($failures.Count -gt 0) {
         throw ("Failed to release $($failures.Count) paused session(s): " + ($failures -join '; '))
     }
 }

@@ -1523,7 +1523,16 @@ describe('SessionLifecycleService fork cron ownership', () => {
       expect(copied).toContainEqual(sourceRecords[2]);
       expect(copied.some((record) => record.type === 'task.started' || record.type === 'subagent.spawned')).toBe(false);
       expect(copied.some((record) => record.type === 'context.append_message' && record.message?.origin?.kind === 'task')).toBe(false);
-      expect(update).toHaveBeenCalledWith(expect.objectContaining({ custom: undefined }));
+      expect(update).toHaveBeenCalledWith(expect.objectContaining({
+        custom: {
+          forked_from: expect.objectContaining({
+            sessionId: 'session-1',
+            title: 'External source',
+            seed: 'verbatim',
+          }),
+        },
+      }));
+      expect((update.mock.calls[0]?.[0] as { custom?: Record<string, unknown> } | undefined)?.custom?.['externalClient']).toBeUndefined();
     } finally {
       materialize.mockRestore();
       announce.mockRestore();

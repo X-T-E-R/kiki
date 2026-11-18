@@ -18,7 +18,7 @@ import {
   type CallRemoteSpaceToolInput, type ListRemoteSpaceToolsInput, type RemoteBorrowedSpaceCatalog, type RemoteSpaceToolConnector,
 } from '@kiki/agent-core-v2/app/remoteTools/remoteSpaceToolBridge';
 import {
-  bridgePolicySchema, bridgeInstallSchema, bridgeListSchema, bridgeReadSchema, bridgeSendSchema, bridgeWaitSchema, bridgeCreateSchema, type BridgeCreate, peerBridgeInstallSchema,
+  bridgePolicySchema, bridgeGrantSchema, bridgeInstallSchema, bridgeListSchema, bridgeReadSchema, bridgeSendSchema, bridgeWaitSchema, bridgeCreateSchema, type BridgeCreate, peerBridgeInstallSchema,
   bridgeOperationsSchema, bridgeToolsListSchema, bridgeToolsListResultSchema, bridgeToolsCallSchema, bridgeToolsCallResultSchema,
   type BridgeGrant, type BridgePolicy, type BridgeLink, type BridgeSend, type BridgeReceipt, type BridgeOperation, type ConnectionIdentity, type PeerBridgeInstall,
   type BridgeToolsCall, type BridgeToolsCallResult, type BridgeToolsList, type BridgeToolsListResult,
@@ -70,6 +70,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
   private readonly lifetime = new AbortController();
   private timer?: ReturnType<typeof setInterval>;
   private connectionSubscription?: { dispose(): void };
+  private remoteToolConnectionSignature = '';
   private readonly threads: IThreadCommunicationService;
   private readonly sessions: ISessionIndex;
   private readonly mailbox: IThreadMailboxStore;
@@ -84,12 +85,22 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     this.changeListeners.add(listener);
     return { dispose: () => { this.changeListeners.delete(listener); } };
   }
+  private computeRemoteToolConnectionSignature(): string {
+    const relevantIds = new Set(this.state.outbound.filter((entry) => !entry.grant.revoked).map((entry) => entry.connectionId));
+    if (relevantIds.size === 0) return '';
+    return this.connections.list()
+      .filter((record) => relevantIds.has(record.id))
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((record) => `${record.id}:${record.enabled ? 1 : 0}:${record.state}:${record.label}:${record.summary?.value.platform ?? ''}:${record.summary?.value.borrowable_tool_count ?? ''}`)
+      .join('|');
+  }
   private notifyRemoteTools(): void {
     try {
       remoteSpaceToolCapability(this.core.accessor.get(IRemoteSpaceToolBridgeService)).notifyChanged();
     } catch {}
   }
   private emitChange(): void {
+    this.remoteToolConnectionSignature = this.computeRemoteToolConnectionSignature();
     for (const listener of this.changeListeners) listener();
     this.notifyRemoteTools();
   }
@@ -97,11 +108,17 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     try { this.state = JSON.parse((await readPrivateFile(this.path)).toString('utf8')) as State;
       if (!Array.isArray(this.state.inbound) || !Array.isArray(this.state.outbox) || !Array.isArray(this.state.outbound) || !Number.isSafeInteger(this.state.nextSeq)) throw new Error('Invalid bridge store');
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    this.remoteToolConnectionSignature = this.computeRemoteToolConnectionSignature();
     spaceThreadCapability(this.threads)[SPACE_THREAD_ROUTER](this);
     try {
       remoteSpaceToolCapability(this.core.accessor.get(IRemoteSpaceToolBridgeService))[REMOTE_SPACE_TOOL_ROUTER](this);
     } catch {}
-    this.connectionSubscription = this.connections.onDidChange(() => { this.notifyRemoteTools(); });
+    this.connectionSubscription = this.connections.onDidChange(() => {
+      const nextSignature = this.computeRemoteToolConnectionSignature();
+      if (nextSignature === this.remoteToolConnectionSignature) return;
+      this.remoteToolConnectionSignature = nextSignature;
+      this.notifyRemoteTools();
+    });
     this.timer = setInterval(() => { void this.retry().catch(() => {}); }, 1000); this.timer.unref();
     void this.retry().catch(() => {});
   }
@@ -318,12 +335,17 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
   async setOperations(id: string, operations: readonly BridgeOperation[]): Promise<void> {
     const next = [...new Set(operations)];
     if (next.length === 0) throw new AdmissionError(400, 'invalid_bridge_setting');
+    let parentConnectionGrantId: string | undefined;
     await this.change(() => {
       const entry = this.state.inbound.find((g) => g.grant.id === id);
       if (entry === undefined) throw new AdmissionError(404, 'bridge_not_found');
       if (entry.grant.revoked) denied('bridge_revoked');
       entry.grant.operations = next;
+      parentConnectionGrantId = entry.connectionGrantId;
     });
+    if (parentConnectionGrantId !== undefined) {
+      await this.admission.setBridgeOperations(parentConnectionGrantId, next);
+    }
     this.emitChange();
   }
   async setBorrowTools(id: string, borrowTools: boolean): Promise<void> {
@@ -339,14 +361,20 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     if (peer === undefined) denied('connection_not_approved');
     if (!peer.allowBridge) denied('bridge_operation_denied');
     if (input.existingBridgeId !== undefined) {
-      const existing = this.state.inbound.find((entry) => entry.grant.id === input.existingBridgeId && entry.connectionGrantId === peer.id);
+      const existing = this.state.inbound.find((entry) => entry.grant.id === input.existingBridgeId && entry.connectionGrantId === peer.id && !entry.grant.revoked);
       if (existing !== undefined) {
-        if (existing.grant.revoked) denied('bridge_operation_denied');
+        const cap = peer.bridgeOperations !== undefined
+          ? existing.grant.operations.filter((op) => peer.bridgeOperations!.includes(op))
+          : existing.grant.operations;
         if (input.operations !== undefined) {
           const next = [...new Set(input.operations)];
           if (next.length === 0) throw new AdmissionError(400, 'invalid_bridge_setting');
-          if (next.some((op) => !existing.grant.operations.includes(op))) denied('bridge_operation_denied');
+          if (next.some((op) => !cap.includes(op))) denied('bridge_operation_denied');
           await this.change(() => { existing.grant.operations = next; });
+          this.emitChange();
+        } else if (cap.length !== existing.grant.operations.length) {
+          if (cap.length === 0) denied('bridge_operation_denied');
+          await this.change(() => { existing.grant.operations = [...cap]; });
           this.emitChange();
         }
         return { updatedGrant: { ...existing.grant } };
@@ -356,11 +384,22 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     if (activeInbound.length === 0 && this.state.inbound.some((entry) => entry.connectionGrantId === peer.id && entry.grant.revoked)) {
       denied('bridge_operation_denied');
     }
-    const allowedCap = activeInbound.length > 0
-      ? new Set(activeInbound.flatMap((entry) => entry.grant.operations))
-      : undefined;
-    if (allowedCap !== undefined && input.operations !== undefined && input.operations.some((op) => !allowedCap.has(op))) {
-      denied('bridge_operation_denied');
+    let approvedCeiling: BridgeOperation[];
+    if (activeInbound.length > 0) {
+      const activeOps = [...new Set(activeInbound.flatMap((entry) => entry.grant.operations))];
+      approvedCeiling = peer.bridgeOperations === undefined
+        ? activeOps
+        : activeOps.filter((op) => peer.bridgeOperations!.includes(op));
+    } else {
+      approvedCeiling = peer.bridgeOperations !== undefined
+        ? [...peer.bridgeOperations]
+        : ['read', 'send', 'wait'];
+    }
+    if (approvedCeiling.length === 0) denied('bridge_operation_denied');
+    if (input.operations !== undefined) {
+      const next = [...new Set(input.operations)];
+      if (next.length === 0) throw new AdmissionError(400, 'invalid_bridge_setting');
+      if (next.some((op) => !approvedCeiling.includes(op))) denied('bridge_operation_denied');
     }
     const staleIds = activeInbound.map((entry) => entry.grant.id);
     if (staleIds.length > 0) {
@@ -379,6 +418,7 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
       source: peer.source,
       sourceLabel: input.sourceLabel ?? 'Kiki',
       sourceWorkspaces: input.sourceWorkspaces ?? [],
+      approvedOperations: approvedCeiling,
       requestedOperations: input.operations,
     });
     return { bridge };
@@ -414,7 +454,23 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
         throw new AdmissionError(response.ok ? 409 : response.status, typeof envelope.msg === 'string' ? envelope.msg : 'bridge_sync_failed');
       }
       if (envelope.data.updatedGrant !== undefined && existingLink !== undefined) {
-        const updatedGrant = envelope.data.updatedGrant;
+        const updatedGrant = bridgeGrantSchema.parse(envelope.data.updatedGrant);
+        if (
+          updatedGrant.id !== existingLink.grant.id
+          || updatedGrant.revoked
+          || !updatedGrant.enabled
+          || updatedGrant.expiresAt <= Date.now()
+          || updatedGrant.revision < existingLink.grant.revision
+          || !sameIdentity(updatedGrant.source, this.admission.identity)
+          || !sameIdentity(updatedGrant.target, existingLink.grant.target)
+          || updatedGrant.sourceScope.workspaceId !== existingLink.grant.sourceScope.workspaceId
+          || updatedGrant.sourceScope.sessionId !== existingLink.grant.sourceScope.sessionId
+          || updatedGrant.targetScope.workspaceId !== existingLink.grant.targetScope.workspaceId
+          || updatedGrant.targetScope.sessionId !== existingLink.grant.targetScope.sessionId
+          || (input.operations !== undefined && updatedGrant.operations.some((op) => !input.operations!.includes(op)))
+        ) {
+          denied('bridge_identity_mismatch');
+        }
         await this.change(() => {
           existingLink.grant = updatedGrant;
           if (input.borrowTools !== undefined) existingLink.borrowTools = input.borrowTools;
@@ -596,11 +652,11 @@ export class SpaceThreadBridge implements SpaceThreadConnector, RemoteSpaceToolC
     }
     return this.threads.listThreads({ workspaceId: targetWorkspaceId, cursor: input.cursor, limit: input.limit });
   }
-  async inboundToolsList(grant: BridgeGrant, input: BridgeToolsList): Promise<BridgeToolsListResult> {
+  async inboundToolsList(grant: BridgeGrant, input: BridgeToolsList, signal?: AbortSignal): Promise<BridgeToolsListResult> {
     this.checkInbound(grant, input, 'tools');
     if (grant.targetScope.workspaceId !== '*' && input.workspaceId !== undefined && input.workspaceId !== grant.targetScope.workspaceId) denied('bridge_target_scope');
     const effectiveWorkspaceId = grant.targetScope.workspaceId === '*' ? input.workspaceId : grant.targetScope.workspaceId;
-    return listExportedTools(this.core, effectiveWorkspaceId);
+    return listExportedTools(this.core, effectiveWorkspaceId, { signal });
   }
   async inboundToolsCall(grant: BridgeGrant, input: BridgeToolsCall, signal: AbortSignal): Promise<BridgeToolsCallResult> {
     this.checkInbound(grant, input, 'tools');
@@ -1147,7 +1203,7 @@ export async function registerSpaceThreadBridge(app: FastifyInstance, core: Scop
         : operation === 'read' ? await bridge.inboundRead(grant, bridgeReadSchema.parse(req.body), signal)
         : operation === 'send' ? await bridge.inboundSend(grant, bridgeSendSchema.parse(req.body))
         : operation === 'create' ? await bridge.inboundCreate(grant, bridgeCreateSchema.parse(req.body))
-        : operation === 'tools_list' ? await bridge.inboundToolsList(grant, bridgeToolsListSchema.parse(req.body))
+        : operation === 'tools_list' ? await bridge.inboundToolsList(grant, bridgeToolsListSchema.parse(req.body), signal)
         : operation === 'tools_call' ? await bridge.inboundToolsCall(grant, bridgeToolsCallSchema.parse(req.body), signal)
         : await bridge.inboundWait(grant, bridgeWaitSchema.parse(req.body), signal);
       signal.throwIfAborted(); return { identity: admission.identity, result };

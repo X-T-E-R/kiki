@@ -58,10 +58,14 @@ import { isTimelineViewShortcut, useTimelineView, type TimelineView } from './me
 import { TimelineMenuRows, TimelineViewSwitch } from './message/TimelineViewSwitch';
 import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
 import { PersonaSettingsDialog } from './persona/PersonaSettingsUpdate';
-import { SettingsSegmented } from './settings/SettingsPrimitives';
 import { sessionPersonaId } from './persona/personaSessionUtils';
 import { WorktreeMark } from './WorktreeMark';
 import { PromotedFromMark } from './PromotedFromMark';
+import { BtwFloatingCard } from './fork/BtwFloatingCard';
+import { ForkLaunchPopover } from './fork/ForkLaunchPopover';
+import { ForkProvenanceMark } from './fork/ForkProvenanceMark';
+import { buildSessionForkLineage, type ForkOriginSummary, type SessionForkLineage } from './fork/forkLineageModel';
+import { waitingAgentIds as collectWaitingAgentIds } from './rail-variants/model';
 import {
   contentSegmentKey,
   isSessionRemainderRef,
@@ -426,6 +430,13 @@ function Header({
   freshContextAvailable = false,
   onSideQuestion,
   onOpenBranch,
+  forkLineage,
+  forkPopoverOpenRequest,
+  forkLaunchBusy = false,
+  onOpenForkSession,
+  onOpenBranchAgent,
+  onForkSessionWithSeed,
+  onStartBranchWithSeed,
   view,
   onView,
   onDelivery,
@@ -450,6 +461,13 @@ function Header({
   freshContextAvailable?: boolean;
   onSideQuestion?: () => void;
   onOpenBranch?: () => void;
+  forkLineage?: SessionForkLineage;
+  forkPopoverOpenRequest?: { readonly seq: number; readonly focusBranch?: boolean };
+  forkLaunchBusy?: boolean;
+  onOpenForkSession?: (sessionId: string) => void;
+  onOpenBranchAgent?: (agentId: string) => void;
+  onForkSessionWithSeed?: (seed: SessionSeedMode) => void;
+  onStartBranchWithSeed?: (task: string, seed: SessionSeedMode, openMode?: 'route' | 'split') => void;
   view: TimelineView;
   onView: (view: TimelineView) => void;
   onDelivery: (delivery: 'reply' | 'message') => void;
@@ -531,6 +549,7 @@ function Header({
                     cwd={session.metadata.cwd}
                     worktree={session.worktree}
                     promotedFrom={session.promoted_from}
+                    forkOrigin={isNarrow ? undefined : forkLineage?.origin}
                     editing={renaming}
                     onEditingChange={setRenaming}
                     onRename={onRenameSession}
@@ -544,12 +563,16 @@ function Header({
                 cwd={session.metadata.cwd}
                 worktree={session.worktree}
                 promotedFrom={session.promoted_from}
+                forkOrigin={isNarrow ? undefined : forkLineage?.origin}
                 editing={renaming}
                 onEditingChange={setRenaming}
                 onRename={onRenameSession}
                 onOpenRail={railAvailable ? onToggleRail : undefined}
               />
             )}
+            {isNarrow && forkLineage?.origin !== undefined && !renaming ? (
+              <ForkProvenanceMark origin={forkLineage.origin} className="max-w-full text-[11px] leading-3.5" />
+            ) : null}
             <PhoneRemoteSpaceLine />
           </div>
           {session.ephemeral === true ? <TemporaryMark className="self-center" /> : null}
@@ -571,6 +594,26 @@ function Header({
           {/* 消息 | 过程 exists for a message-delivering conversation, on the
               header from sm up; the ⋯ menu carries it below. */}
           {deliveryCapable ? <TimelineViewSwitch view={view} onChange={onView} className="hidden sm:flex" /> : null}
+          {forkLineage !== undefined &&
+          onOpenForkSession !== undefined &&
+          onOpenBranchAgent !== undefined &&
+          onForkSessionWithSeed !== undefined &&
+          onStartBranchWithSeed !== undefined ? (
+            <ForkLaunchPopover
+              origin={forkLineage.origin}
+              offshoots={forkLineage.allOffshoots}
+              canFork={!harnessDenies(harness, 'fork')}
+              canBranch={!harnessDenies(harness, 'fork')}
+              canSideQuestion={!harnessDenies(harness, 'fork') && onSideQuestion !== undefined}
+              busy={forkLaunchBusy}
+              openRequest={forkPopoverOpenRequest}
+              onOpenSession={onOpenForkSession}
+              onOpenBranch={onOpenBranchAgent}
+              onForkSession={onForkSessionWithSeed}
+              onStartBranch={onStartBranchWithSeed}
+              onStartSideQuestion={() => { onSideQuestion?.(); }}
+            />
+          ) : null}
           <SessionActionsMenu
             terminalAvailable={terminalAvailable}
             terminalOpen={terminalOpen}
@@ -694,6 +737,7 @@ export function SessionTitle({
   cwd,
   worktree,
   promotedFrom,
+  forkOrigin,
   editing,
   onEditingChange,
   onRename,
@@ -705,6 +749,8 @@ export function SessionTitle({
   worktree?: Session['worktree'];
   /** Present only for a thread opened from a subagent. */
   promotedFrom?: Session['promoted_from'];
+  /** Present only for a session forked from an earlier conversation. */
+  forkOrigin?: ForkOriginSummary;
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
   /** Rejects when the rename did not land; the caller has already reported why. */
@@ -839,6 +885,7 @@ export function SessionTitle({
       ) : null}
       {!editing ? <WorktreeMark worktree={worktree} className="max-w-[8rem] shrink-[50] self-center sm:max-w-[12rem]" /> : null}
       {!editing ? <PromotedFromMark origin={promotedFrom} className="max-w-[10rem] shrink-[60] self-center sm:max-w-[14rem]" /> : null}
+      {!editing ? <ForkProvenanceMark origin={forkOrigin} className="max-w-[12rem] shrink-[55] self-center sm:max-w-[16rem]" /> : null}
     </div>
   );
 }
@@ -4211,11 +4258,32 @@ boundExecution,
   const { progress: compactionProgress, seed: seedCompactionProgress } = useCompactionProgress(client, sessionId);
   const compactionHintShownRef = useRef(false);
 
-  const [seedDialog, setSeedDialog] = useState<{
-    readonly kind: 'branch' | 'fork';
-    readonly seed: SessionSeedMode;
-    readonly busy: boolean;
-  } | null>(null);
+  const [forkPopoverOpenRequest, setForkPopoverOpenRequest] = useState<{
+    readonly seq: number;
+    readonly focusBranch?: boolean;
+  } | undefined>(undefined);
+  const openForkPopover = useCallback((focusBranch = false) => {
+    setForkPopoverOpenRequest((current) => ({ seq: (current?.seq ?? 0) + 1, focusBranch }));
+  }, []);
+  const [forkingSession, setForkingSession] = useState(false);
+  const handleForkSessionWithSeed = useCallback(
+    (seed: SessionSeedMode) => {
+      const record = state.session;
+      if (record === undefined || forkingSession) return;
+      setForkingSession(true);
+      void forkSession(actionContext, record, { seed })
+        .catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
+          });
+        })
+        .finally(() => {
+          setForkingSession(false);
+        });
+    },
+    [actionContext, forkingSession, locale, state.session, t],
+  );
 
   const runSessionAction = useCallback(
     (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => {
@@ -4232,7 +4300,7 @@ boundExecution,
         return;
       }
       if (action === 'fork') {
-        setSeedDialog({ kind: 'fork', seed: 'verbatim', busy: false });
+        openForkPopover(false);
       } else if (action === 'export') {
         void exportSessionArchive(actionContext, record)
           .then((saved) => {
@@ -4260,7 +4328,7 @@ boundExecution,
           });
       }
     },
-    [actionContext, state.session, t, locale, currentBoundModel, openModelSwitchPanel, seedCompactionProgress],
+    [actionContext, state.session, t, locale, currentBoundModel, openModelSwitchPanel, seedCompactionProgress, openForkPopover],
   );
 
   const confirmUndoRun = useCallback(() => {
@@ -4466,10 +4534,27 @@ boundExecution,
     [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, loadMessageEditAttachments, handleRegenerate, handleForkMessage, forkingMessage, composerEngine?.fork],
   );
 
-  const forestRaw = useMemo(
-    () => controller?.getForest() ?? sessionAgentForest(state),
-    [controller, state],
-  );
+  const [btwSessionKeys, setBtwSessionKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const forestRaw = useMemo(() => {
+    const raw = controller?.getForest() ?? sessionAgentForest(state);
+    let patchedById: Record<string, (typeof raw.byId)[string]> | undefined;
+    for (const [id, node] of Object.entries(raw.byId)) {
+      if (btwSessionKeys.has(`${sessionId}:${id}`) && node.branchSealed !== true && node.toolsLocked !== true) {
+        patchedById ??= { ...raw.byId };
+        patchedById[id] = {
+          ...node,
+          isBranch: true,
+          toolsLocked: true,
+          label: 'BTW',
+        };
+      }
+    }
+    if (patchedById === undefined) return raw;
+    return {
+      byId: patchedById,
+      roots: raw.roots.map((root) => patchedById[root.agentId] ?? root),
+    };
+  }, [btwSessionKeys, controller, sessionId, state]);
   // Content-stabilized forest: rebuilt per publish above, but identical in
   // content across streaming deltas — keep the previous object so downstream
   // derivations (mainTranscriptBlocks) and Transcript's row/page memos are
@@ -4488,105 +4573,122 @@ boundExecution,
         void navigateVisits(`/s/${sessionId}`);
         return;
       }
+      const node = forest.byId[agentId];
+      const isBranch = node?.isBranch === true || node?.branchSealed === true;
       const mode = liveSettings.subagentPanelOpenMode;
-      if (mode === 'fullscreen' || previewRef.current === null) {
+      if (isBranch || mode === 'fullscreen' || previewRef.current === null) {
         void navigateVisits(agentDetailPath(sessionId, agentId));
         return;
       }
-      const node = forest.byId[agentId];
       const title = node?.label ?? agentId;
       previewRef.current.openAgentPanel(agentId, title);
     },
-    [forest, liveSettings.subagentPanelOpenMode, navigate, sessionId],
+    [forest, liveSettings.subagentPanelOpenMode, navigateVisits, sessionId],
   );
   // `/btw` and the header's "Side question": fork a tool-less side agent from
-  // the main context and open it as a preview tab beside the conversation, so
-  // the main turn keeps running untouched. The tab carries its own composer;
-  // a question typed after `/btw` is sent to it straight away.
+  // the main context and anchor a compact ephemeral floating card right above
+  // the main Composer so the main turn and any right-hand file preview stay
+  // completely untouched.
   const [sideQuestionPending, setSideQuestionPending] = useState(false);
+  const [activeBtw, setActiveBtw] = useState<{
+    readonly sessionId: string;
+    readonly agentId: string;
+    readonly sendingInitial: boolean;
+  } | null>(null);
+  const shownBtw = activeBtw?.sessionId === sessionId ? activeBtw : null;
+  const btwSeqRef = useRef(1);
+  const handleSendBtwQuestion = useCallback(
+    async (agentId: string, text: string) => {
+      const seq = ++btwSeqRef.current;
+      try {
+        await client.sendAgentMessage(sessionId, agentId, text, undefined, `btw-${agentId}-${seq}`);
+      } catch (error) {
+        pushToast({ tone: 'error', text: t('btw.failed', { detail: sessionActionErrorText(locale, error) }) });
+        throw error;
+      }
+    },
+    [client, locale, sessionId, t],
+  );
   const startSideQuestion = useCallback((question?: string) => {
     if (sideQuestionPending) return;
     setSideQuestionPending(true);
     void (async () => {
+      let createdAgentId: string | undefined;
       try {
         const agentId = await client.startSideQuestion(sessionId);
+        createdAgentId = agentId;
+        setBtwSessionKeys((prev) => {
+          const key = `${sessionId}:${agentId}`;
+          if (prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.add(key);
+          return next;
+        });
         (client as { noteNativeAgent?: (sid: string, aid: string) => void }).noteNativeAgent?.(sessionId, agentId);
-        const title = t('btw.tabTitle');
-        if (previewRef.current !== null) {
-          previewRef.current.openAgentPanel(agentId, title);
-          focusAgentTabWhenMounted(agentId);
-        } else {
-          void navigate(agentDetailPath(sessionId, agentId));
-        }
         const text = question?.trim() ?? '';
+        setActiveBtw({ sessionId, agentId, sendingInitial: text !== '' });
         if (text !== '') {
           await client.sendAgentMessage(sessionId, agentId, text, undefined, `btw-${agentId}-1`);
         }
+        void controller?.resync();
       } catch (error) {
         pushToast({ tone: 'error', text: t('btw.failed', { detail: sessionActionErrorText(locale, error) }) });
       } finally {
+        if (createdAgentId !== undefined) {
+          setActiveBtw((current) =>
+            current !== null && current.agentId === createdAgentId
+              ? { ...current, sendingInitial: false }
+              : current,
+          );
+        }
         setSideQuestionPending(false);
       }
     })();
-  }, [client, locale, navigate, sessionId, sideQuestionPending, t]);
+  }, [client, controller, locale, sessionId, sideQuestionPending, t]);
 
   const [branchPending, setBranchPending] = useState(false);
-  const startBranch = useCallback((task?: string, seed: SessionSeedMode = 'fresh') => {
-    if (branchPending) return;
-    if (task === undefined && seedDialog === null) {
-      setSeedDialog({ kind: 'branch', seed: 'fresh', busy: false });
-      return;
-    }
-    setBranchPending(true);
-    void (async () => {
-      try {
-        const cleanTask = task?.trim() ?? '';
-        const created = await client.createBranch(sessionId, {
-          seed,
-          tools_locked: false,
-          task: cleanTask === '' ? undefined : cleanTask,
-          title: cleanTask === '' ? undefined : cleanTask.slice(0, 64),
-        });
-        await controller?.resync();
-        const title = cleanTask === '' ? t('branch.tabTitle') : cleanTask.slice(0, 48);
-        if (previewRef.current !== null) {
-          previewRef.current.openAgentPanel(created.agent_id, title);
-          focusAgentTabWhenMounted(created.agent_id);
-        } else {
-          void navigate(agentDetailPath(sessionId, created.agent_id));
-        }
-      } catch (error) {
-        pushToast({ tone: 'error', text: t('branch.failed', { detail: sessionActionErrorText(locale, error) }) });
-      } finally {
-        setBranchPending(false);
-        setSeedDialog(null);
+  const startBranch = useCallback(
+    (task?: string, seed: SessionSeedMode = 'verbatim', openMode: 'route' | 'split' = 'route') => {
+      if (branchPending) return;
+      if (task === undefined) {
+        openForkPopover(true);
+        return;
       }
-    })();
-  }, [branchPending, client, controller, locale, navigate, seedDialog, sessionId, t]);
-
-  const confirmSeedDialog = useCallback(() => {
-    if (seedDialog === null || seedDialog.busy) return;
-    if (seedDialog.kind === 'branch') {
-      setSeedDialog((current) => current === null ? null : { ...current, busy: true });
-      startBranch('', seedDialog.seed);
-      return;
-    }
-    const record = state.session;
-    if (record === undefined) {
-      setSeedDialog(null);
-      return;
-    }
-    setSeedDialog((current) => current === null ? null : { ...current, busy: true });
-    void forkSession(actionContext, record, { seed: seedDialog.seed })
-      .then(() => { setSeedDialog(null); })
-      .catch((error: unknown) => {
-        setSeedDialog(null);
-        pushToast({
-          tone: 'error',
-          text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
-        });
-      });
-  }, [actionContext, locale, seedDialog, startBranch, state.session, t]);
+      setBranchPending(true);
+      void (async () => {
+        try {
+          const cleanTask = task.trim();
+          const created = await client.createBranch(sessionId, {
+            seed,
+            tools_locked: false,
+            task: cleanTask === '' ? undefined : cleanTask,
+            title: cleanTask === '' ? undefined : cleanTask.slice(0, 64),
+          });
+          await controller?.resync();
+          const title = cleanTask === '' ? t('branch.tabTitle') : cleanTask.slice(0, 48);
+          if (openMode === 'split' && previewRef.current !== null) {
+            previewRef.current.openAgentPanel(created.agent_id, title);
+            focusAgentTabWhenMounted(created.agent_id);
+          } else {
+            void navigateVisits(agentDetailPath(sessionId, created.agent_id));
+          }
+        } catch (error) {
+          pushToast({ tone: 'error', text: t('branch.failed', { detail: sessionActionErrorText(locale, error) }) });
+        } finally {
+          setBranchPending(false);
+        }
+      })();
+    },
+    [branchPending, client, controller, locale, navigateVisits, openForkPopover, sessionId, t],
+  );
+  const openForkSession = useCallback(
+    (targetSessionId: string) => {
+      if (targetSessionId !== '' && targetSessionId !== sessionId) {
+        void navigateVisits(`/s/${targetSessionId}`);
+      }
+    },
+    [navigateVisits, sessionId],
+  );
   // Route-shell seams for the agent workspace: back-to-session and the
   // route-level agent open (the spawn jump-back and the preview tab's "open in
   // page" — the source visit keeps its preview snapshot, so the return arrow
@@ -5291,6 +5393,34 @@ boundExecution,
     ),
     [state.blocks],
   );
+  const waitingBranchAgentIds = useMemo(() => collectWaitingAgentIds(trayItems), [trayItems]);
+  const forkLineage = useMemo(
+    () =>
+      buildSessionForkLineage({
+        currentSessionId: sessionId,
+        currentSession: state.session,
+        sessions,
+        forest,
+        waitingAgentIds: waitingBranchAgentIds,
+        blocks: timelineState.blocks,
+        hasOlder: timelineState.hasMoreHistory,
+        untitledLabel: t('sidebar.untitled'),
+      }),
+    [sessionId, state.session, sessions, forest, waitingBranchAgentIds, timelineState.blocks, timelineState.hasMoreHistory, t],
+  );
+  const handleBranchHead = useCallback(
+    (seed?: SessionSeedMode) => {
+      startBranch('', seed ?? 'verbatim', 'route');
+    },
+    [startBranch],
+  );
+  const transcriptRowActionsWithBranch = useMemo<TranscriptRowActions>(
+    () => ({
+      ...transcriptRowActions,
+      onBranchHead: composerEngine?.fork === false ? undefined : handleBranchHead,
+    }),
+    [transcriptRowActions, composerEngine?.fork, handleBranchHead],
+  );
   const trayAgentNames = useMemo(() => {
     const names = new Map<string, string>();
     if (forest !== undefined) {
@@ -5741,6 +5871,13 @@ boundExecution,
             freshContextAvailable={conversationStarted}
             onSideQuestion={() => { startSideQuestion(); }}
             onOpenBranch={() => { startBranch(); }}
+            forkLineage={forkLineage}
+            forkPopoverOpenRequest={forkPopoverOpenRequest}
+            forkLaunchBusy={forkingSession || branchPending || sideQuestionPending}
+            onOpenForkSession={openForkSession}
+            onOpenBranchAgent={openAgentRoute}
+            onForkSessionWithSeed={handleForkSessionWithSeed}
+            onStartBranchWithSeed={startBranch}
             view={timelineView} onView={setTimelineView}
             onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
             harness={harness}
@@ -5758,7 +5895,10 @@ boundExecution,
             onRetryPending: retryPendingSubmission,
             forest,
             onOpenAgent: openAgent,
-            rowActions: transcriptRowActions,
+            rowActions: transcriptRowActionsWithBranch,
+            offshootsByBlockId: forkLineage.byBlockId,
+            onOpenForkSession: openForkSession,
+            onOpenBranchAgent: openAgentRoute,
             draftAnnotations: annotations,
             onSaveDraftAnnotation: handleUpdateAnnotation,
             onRemoveDraftAnnotation: handleRemoveAnnotation,
@@ -5770,6 +5910,20 @@ boundExecution,
             onUpdateAnnotation={handleUpdateAnnotation}
           />,
           dock: <>
+            {shownBtw !== null ? (
+              <BtwFloatingCard
+                sessionId={sessionId}
+                agentId={shownBtw.agentId}
+                controller={controller}
+                sendingInitial={shownBtw.sendingInitial}
+                onSendQuestion={handleSendBtwQuestion}
+                onExpandFullView={(btwAgentId) => {
+                  setActiveBtw(null);
+                  openAgentRoute(btwAgentId);
+                }}
+                onClose={() => { setActiveBtw(null); }}
+              />
+            ) : null}
             <SubmissionRecovery sessionId={sessionId} state={state} />
             <ResyncStatusBanner
               resyncing={state.resyncing} resyncFailed={state.resyncFailed}
@@ -5877,34 +6031,6 @@ boundExecution,
         onConfirm={confirmUndoRun}
         onCancel={() => { setConfirmUndo(false); }}
       />
-      <ConfirmDialog
-        open={seedDialog !== null}
-        overlayId="confirm-seed-mode"
-        tone="default"
-        busy={seedDialog?.busy === true}
-        title={t(seedDialog?.kind === 'branch' ? 'menu.branch' : 'menu.fork')}
-        confirmLabel={t(seedDialog?.kind === 'branch' ? 'menu.branch' : 'menu.fork')}
-        confirmData={{ 'data-seed-confirm': seedDialog?.kind ?? '' }}
-        onConfirm={confirmSeedDialog}
-        onCancel={() => { setSeedDialog(null); }}
-      >
-        <div className="flex items-center justify-between gap-3 pt-1">
-          <span className="text-[13px] text-ink-soft">{t('transcript.branch.seedLabel')}</span>
-          <SettingsSegmented
-            ariaLabel={t('transcript.branch.seedLabel')}
-            dataAttr="data-seed-choice"
-            value={seedDialog?.seed ?? 'fresh'}
-            disabled={seedDialog?.busy === true}
-            choices={(['fresh', 'compact', 'verbatim'] as const).map((mode) => ({
-              value: mode,
-              label: t(`transcript.branch.seed.${mode}`),
-            }))}
-            onChange={(next) => {
-              setSeedDialog((current) => current === null ? null : { ...current, seed: next });
-            }}
-          />
-        </div>
-      </ConfirmDialog>
       <ConfirmDialog
         open={batchConfirm !== undefined}
         overlayId="confirm-batch-approvals"

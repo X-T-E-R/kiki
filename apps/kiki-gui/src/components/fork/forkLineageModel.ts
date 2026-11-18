@@ -18,6 +18,7 @@ import {
   branchLifecycleState,
   collectSessionBranches,
   extractBranchFoldSummaries,
+  isEphemeralBtwNode,
   type BranchLifecycleState,
 } from '../agent-panel/InspectorBranches';
 
@@ -55,28 +56,28 @@ function parseTimestamp(iso: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function cleanForkDisplayTitle(rawTitle: string, parentTitle: string | undefined, untitledLabel: string): string {
+function cleanForkDisplayTitle(
+  rawTitle: string,
+  parentTitle: string | undefined,
+  lastPrompt: string | undefined,
+  untitledLabel: string,
+): string {
   const trimmed = plainInline(rawTitle).trim();
-  if (trimmed === '') return untitledLabel;
+  const promptText = lastPrompt === undefined ? '' : plainInline(lastPrompt).trim();
+  if (trimmed === '') return promptText || untitledLabel;
   if (trimmed.startsWith('Fork: ')) {
     const rest = trimmed.slice(6).trim();
     if (rest !== '' && rest !== parentTitle) return rest;
+    if (promptText !== '' && promptText !== parentTitle) return promptText;
+    if (rest !== '') return rest;
   }
   return trimmed;
 }
 
 function parseTurnIdOrdinal(turnId: string | undefined): number | undefined {
-  if (turnId === undefined || !/^\d+$/.test(turnId)) return undefined;
-  const parsed = Number(turnId);
+  if (turnId === undefined || !/^t?\d+$/.test(turnId)) return undefined;
+  const parsed = Number(turnId.startsWith('t') ? turnId.slice(1) : turnId);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
-}
-
-function isEphemeralBtwNode(node: {
-  readonly toolsLocked?: boolean;
-  readonly branchSealed?: boolean;
-  readonly label: string;
-}): boolean {
-  return node.toolsLocked === true && node.branchSealed !== true && (node.label === 'BTW' || node.label.trim() === '');
 }
 
 export function buildSessionForkLineage(input: {
@@ -130,7 +131,7 @@ export function buildSessionForkLineage(input: {
       key: `fork:${candidate.id}`,
       kind: 'fork',
       id: candidate.id,
-      title: cleanForkDisplayTitle(candidate.title, parentTitle, untitledLabel),
+      title: cleanForkDisplayTitle(candidate.title, parentTitle, candidate.last_prompt, untitledLabel),
       seed: from.seed,
       turnIndex: from.turn_index,
       messageId: from.through_message_id,
@@ -183,8 +184,10 @@ export function buildSessionForkLineage(input: {
   }
 
   const blockIdByMessageId = new Map<string, string>();
+  const blockTurnOrdinalById = new Map<string, number>();
   const turnClosingBlockByTurnId = new Map<number, { userBlockId?: string; closingBlockId: string }>();
   const sequentialTurns: { userBlockId: string; closingBlockId: string }[] = [];
+  let activeSequentialIndex = -1;
 
   for (const block of blocks) {
     if (block.kind === 'user') {
@@ -194,6 +197,10 @@ export function buildSessionForkLineage(input: {
       }
       const turnOrdinal = parseTurnIdOrdinal(block.turnId);
       if (turnOrdinal !== undefined) {
+        blockTurnOrdinalById.set(block.id, turnOrdinal);
+        if (block.userMessageId !== undefined && block.userMessageId !== '') {
+          blockTurnOrdinalById.set(block.userMessageId, turnOrdinal);
+        }
         const existing = turnClosingBlockByTurnId.get(turnOrdinal);
         turnClosingBlockByTurnId.set(turnOrdinal, {
           userBlockId: existing?.userBlockId ?? block.id,
@@ -202,6 +209,9 @@ export function buildSessionForkLineage(input: {
       }
       if (block.branchFold === undefined && block.agentMessage === undefined) {
         sequentialTurns.push({ userBlockId: block.id, closingBlockId: block.id });
+        activeSequentialIndex = sequentialTurns.length - 1;
+      } else {
+        activeSequentialIndex = -1;
       }
     } else if (block.kind === 'assistant') {
       blockIdByMessageId.set(block.id, block.id);
@@ -210,14 +220,18 @@ export function buildSessionForkLineage(input: {
       }
       const turnOrdinal = parseTurnIdOrdinal(block.turnId);
       if (turnOrdinal !== undefined) {
+        blockTurnOrdinalById.set(block.id, turnOrdinal);
+        if (block.messageId !== undefined && block.messageId !== '') {
+          blockTurnOrdinalById.set(block.messageId, turnOrdinal);
+        }
         const existing = turnClosingBlockByTurnId.get(turnOrdinal);
         turnClosingBlockByTurnId.set(turnOrdinal, {
           userBlockId: existing?.userBlockId,
           closingBlockId: block.id,
         });
       }
-      if (sequentialTurns.length > 0) {
-        sequentialTurns[sequentialTurns.length - 1]!.closingBlockId = block.id;
+      if (activeSequentialIndex >= 0) {
+        sequentialTurns[activeSequentialIndex]!.closingBlockId = block.id;
       }
     }
   }
@@ -237,23 +251,43 @@ export function buildSessionForkLineage(input: {
       item.messageId !== undefined ? blockIdByMessageId.get(item.messageId) : undefined;
 
     if (targetBlockId !== undefined && item.kind === 'branch') {
-      const turnOrdinal = item.turnIndex;
-      if (turnOrdinal !== undefined) {
-        const byTurn = turnClosingBlockByTurnId.get(turnOrdinal);
-        if (byTurn !== undefined) targetBlockId = byTurn.closingBlockId;
+      const matchedTurn = blockTurnOrdinalById.get(targetBlockId) ?? item.turnIndex;
+      if (matchedTurn !== undefined) {
+        const byTurn = turnClosingBlockByTurnId.get(matchedTurn);
+        if (byTurn !== undefined) {
+          targetBlockId = byTurn.closingBlockId;
+        }
       }
     }
 
     if (targetBlockId === undefined && item.turnIndex !== undefined) {
-      const byTurnId = turnClosingBlockByTurnId.get(item.turnIndex);
-      if (byTurnId !== undefined) {
-        targetBlockId =
-          item.throughUserMessage === true && byTurnId.userBlockId !== undefined
-            ? byTurnId.userBlockId
-            : byTurnId.closingBlockId;
+      if (item.kind === 'branch') {
+        const byTurnId = turnClosingBlockByTurnId.get(item.turnIndex);
+        if (byTurnId !== undefined) {
+          targetBlockId =
+            item.throughUserMessage === true && byTurnId.userBlockId !== undefined
+              ? byTurnId.userBlockId
+              : byTurnId.closingBlockId;
+        } else if (
+          !hasOlder &&
+          !turnClosingBlockByTurnId.has(0) &&
+          item.turnIndex >= 0 &&
+          item.turnIndex < sequentialTurns.length
+        ) {
+          const seq = sequentialTurns[item.turnIndex]!;
+          targetBlockId = item.throughUserMessage === true ? seq.userBlockId : seq.closingBlockId;
+        }
       } else if (!hasOlder && item.turnIndex >= 0 && item.turnIndex < sequentialTurns.length) {
         const seq = sequentialTurns[item.turnIndex]!;
         targetBlockId = item.throughUserMessage === true ? seq.userBlockId : seq.closingBlockId;
+      } else {
+        const byTurnId = turnClosingBlockByTurnId.get(item.turnIndex);
+        if (byTurnId !== undefined) {
+          targetBlockId =
+            item.throughUserMessage === true && byTurnId.userBlockId !== undefined
+              ? byTurnId.userBlockId
+              : byTurnId.closingBlockId;
+        }
       }
     }
 

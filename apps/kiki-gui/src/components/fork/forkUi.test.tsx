@@ -178,6 +178,68 @@ describe('buildSessionForkLineage', () => {
     expect(lineage.byBlockId.get('u-1')?.map((item) => item.id)).toEqual(['s-fork-1']);
     expect(lineage.byBlockId.get('a-1')?.map((item) => item.id)).toEqual(['b-explore']);
   });
+
+  it('keeps wire turnId and user turn_index aligned across branchFold turns and deduplicates Fork: titles', () => {
+    const current = makeSession('s-main', { title: 'Main Architecture' });
+    const blocksWithFold: readonly Block[] = [
+      { kind: 'user', id: 'u-0', userMessageId: 'msg-u0', turnId: '0', text: 'First prompt', createdAt: '2026-11-18T00:00:00Z' },
+      { kind: 'assistant', id: 'a-0', messageId: 'msg-a0', turnId: '0', text: 'First reply', streaming: false, createdAt: '2026-11-18T00:00:05Z' },
+      {
+        kind: 'user',
+        id: 'u-fold',
+        userMessageId: 'msg-fold',
+        turnId: '1',
+        text: 'Merged branch summary',
+        branchFold: { branchId: 'b-merged', branchTitle: 'Merged' },
+        createdAt: '2026-11-18T00:01:00Z',
+      },
+      { kind: 'assistant', id: 'a-fold', messageId: 'msg-afold', turnId: '1', text: 'Noted.', streaming: false, createdAt: '2026-11-18T00:01:05Z' },
+      { kind: 'user', id: 'u-2', userMessageId: 'msg-u2', turnId: '2', text: 'Second user prompt', createdAt: '2026-11-18T00:02:00Z' },
+      { kind: 'assistant', id: 'a-2', messageId: 'msg-a2', turnId: '2', text: 'Second reply', streaming: false, createdAt: '2026-11-18T00:02:05Z' },
+    ];
+    const unrenamedFork = makeSession('s-fork-2', {
+      title: 'Fork: Main Architecture',
+      last_prompt: 'Explore zero-copy transport',
+      forked_from: {
+        session_id: 's-main',
+        turn_index: 1,
+        through_user_message: false,
+        seed: 'verbatim',
+        forked_at: '2026-11-18T00:03:00Z',
+      },
+    });
+    const postFoldBranch = makeBranchNode('b-wire-2', {
+      label: 'Wire Turn 2 Branch',
+      branchBaseTurnId: 2,
+      createdAt: '2026-11-18T00:04:00Z',
+    });
+    const btwFixtureNode = makeBranchNode('btw-1', {
+      label: '名称尚未读取',
+      toolsLocked: false,
+      createdAt: '2026-11-18T00:05:00Z',
+    });
+    const lineage = buildSessionForkLineage({
+      currentSessionId: 's-main',
+      currentSession: current,
+      sessions: [current, unrenamedFork],
+      forest: {
+        roots: [],
+        byId: {
+          'b-wire-2': postFoldBranch,
+          'btw-1': btwFixtureNode,
+        },
+      },
+      waitingAgentIds: new Set(),
+      blocks: blocksWithFold,
+      untitledLabel: '未命名会话',
+    });
+
+    expect(lineage.allOffshoots.map((item) => item.id)).toEqual(['b-wire-2', 's-fork-2']);
+    expect(lineage.byBlockId.get('a-0')).toBeUndefined();
+    expect(lineage.byBlockId.get('a-fold')).toBeUndefined();
+    expect(lineage.byBlockId.get('a-2')?.map((item) => item.id)).toEqual(['b-wire-2', 's-fork-2']);
+    expect(lineage.byBlockId.get('a-2')?.find((item) => item.id === 's-fork-2')?.title).toBe('Explore zero-copy transport');
+  });
 });
 
 describe('ForkProvenanceMark & TimelineOffshootRail', () => {
@@ -301,5 +363,29 @@ describe('ForkLaunchPopover & BtwFloatingCard', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens ForkLaunchPopover programmatically via openRequest', () => {
+    const onStartBranch = vi.fn();
+    const { container: popContainer } = mount(
+      <ForkLaunchPopover
+        origin={undefined}
+        offshoots={[]}
+        canFork
+        canBranch
+        canSideQuestion
+        openRequest={{ seq: 1, focusBranch: true }}
+        onOpenSession={() => undefined}
+        onOpenBranch={() => undefined}
+        onForkSession={() => undefined}
+        onStartBranch={onStartBranch}
+        onStartSideQuestion={() => undefined}
+      />,
+    );
+    expect(popContainer.querySelector('[data-header-fork-popover]')).not.toBeNull();
+    act(() => {
+      popContainer.querySelector<HTMLButtonElement>('[data-fork-popover-action="branch"]')!.click();
+    });
+    expect(onStartBranch).toHaveBeenCalledWith('', 'verbatim', 'route');
   });
 });

@@ -15,7 +15,6 @@ import { Service } from '#/_base/di/service';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { buildDaemonFileUrl, mediaExtensionForMime } from '#/agent/media/mediaRef';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
-import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import {
   IRemoteSpaceToolBridgeService,
@@ -69,6 +68,7 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly refreshes = new Set<Promise<void>>();
   private activeRefreshCount = 0;
+  private activeController: AbortController | undefined;
   private dirty = true;
   private revision = 0;
   private closing = false;
@@ -78,7 +78,6 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
     @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
     @ISessionContext private readonly session?: ISessionContext,
     @ISessionMediaStore private readonly attachmentStore?: ISessionMediaStore,
-    @IAgentProfileService private readonly profile?: IAgentProfileService,
   ) {
     super();
     this._register(this.remoteBridge.onDidChange(() => {
@@ -96,11 +95,8 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
   }
 
   async ready(): Promise<void> {
-    let pending: Promise<void>;
-    do {
-      pending = this.refreshQueue;
-      await pending;
-    } while (pending !== this.refreshQueue);
+    const current = this.refreshQueue;
+    await current;
   }
 
   private async refreshIfNeeded(signal?: AbortSignal): Promise<void> {
@@ -116,18 +112,24 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
   private queueRefresh(signal?: AbortSignal): Promise<void> {
     const revision = ++this.revision;
     this.dirty = false;
+    this.activeController?.abort();
+    const controller = new AbortController();
+    this.activeController = controller;
+    const effectiveSignal = signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal]);
     this.activeRefreshCount += 1;
-    const work = this.refresh(revision, signal);
+    const work = this.refresh(revision, effectiveSignal);
     this.refreshQueue = work;
     this.refreshes.add(work);
     void work.then(
       () => {
         this.activeRefreshCount -= 1;
         this.refreshes.delete(work);
+        if (this.activeController === controller) this.activeController = undefined;
       },
       () => {
         this.activeRefreshCount -= 1;
         this.refreshes.delete(work);
+        if (this.activeController === controller) this.activeController = undefined;
       },
     );
     return work;
@@ -162,12 +164,10 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
       if (this.registrations.has(name)) continue;
       if (this.registry.resolve(name) !== undefined) continue;
       const tool = this.buildExecutableTool(target);
-      const disposable = this._register(
-        this.registry.register(tool, {
-          source: target.tool.kind,
-          disclosure: 'deferred',
-        }),
-      );
+      const disposable = this.registry.register(tool, {
+        source: target.tool.kind,
+        disclosure: 'deferred',
+      });
       this.registrations.set(name, { disposable, signature: target.signature });
     }
   }
@@ -241,16 +241,21 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
           .digest('hex')
           .slice(0, 32);
         const fileId = `f_remote_${hash}`;
-        const materializedPath = await this.attachmentStore.materialize({
-          fileId,
-          size: bytes.length,
-          name: safeName,
-          mimeType,
-          stream: () => Readable.from([bytes]),
-          signal,
-        });
-        if (materializedPath !== undefined || (await this.attachmentStore.open(fileId)) !== undefined) {
-          localUri = buildDaemonFileUrl(fileId);
+        try {
+          const materializedPath = await this.attachmentStore.materialize({
+            fileId,
+            size: bytes.length,
+            name: safeName,
+            mimeType,
+            stream: () => Readable.from([bytes]),
+            signal,
+          });
+          if (materializedPath !== undefined || (await this.attachmentStore.open(fileId)) !== undefined) {
+            localUri = buildDaemonFileUrl(fileId);
+          }
+        } catch (error) {
+          signal.throwIfAborted();
+          onUnexpectedError(error);
         }
       }
       localUri ??= `data:${mimeType};base64,${bytes.toString('base64')}`;
@@ -269,10 +274,11 @@ export class AgentRemoteToolService extends Service implements IAgentRemoteToolS
   override async dispose(): Promise<void> {
     this.closing = true;
     this.revision += 1;
+    this.activeController?.abort();
+    this.activeController = undefined;
     await Promise.allSettled(this.refreshes);
     await dispose([...this.registrations.values()].map((entry) => entry.disposable));
     this.registrations.clear();
-    void this.profile;
     await super.dispose();
   }
 }

@@ -12,8 +12,7 @@ import { okEnvelope, errEnvelope } from '../envelope';
 import { AdmissionError, ConnectionAdmission, sameIdentity } from '../services/connections/admission';
 import { isPeerFrameAllowed, peerAudience } from '../services/connections/audience';
 import { BROKER_BODY_BYTES, BROKER_FS_READ_BODY_BYTES, BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES, RemoteConnectionManager } from '../services/connections/manager';
-import { directEndpoints, machineLabel, pairOutbound, PairingRateLimit, type PairingHooks } from '../services/connections/pairing';
-import { currentSpacePlatform } from '../services/connections/spaceSummary';
+import { currentSpacePlatform, directEndpoints, machineLabel, pairOutbound, PairingRateLimit, type PairingHooks } from '../services/connections/pairing';
 import { webPrincipal, type WebAccess } from '../services/webAccess';
 import { pooledPinnedAgent, requirePinnedTls } from '../services/connections/peerTls';
 import type { MintPluginPanelDocument } from './pluginPanelDocuments';
@@ -54,7 +53,7 @@ export function registerRemoteConnectionRoutes(app: FastifyInstance, admission: 
     return respond(req.id, reply, async () => {
       const created = await admission.createPairCode(pairCodeCreateInputSchema.parse(req.body ?? {}));
       const extras = hooks.current === undefined ? [] : await hooks.current.endpoints();
-      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras) };
+      return { code: created.code, expiresAt: created.expiresAt, target: admission.identity, tlsFingerprint: tlsFingerprint(), suggestedEndpoints: directEndpoints({ host: req.socket.localAddress ?? '127.0.0.1', port: req.socket.localPort ?? 0 }, extras), bridgeOperations: created.bridgeOperations };
     });
   });
   app.post('/api/remote-connections/pair/claim', { bodyLimit: 8192 }, async (req, reply) => {

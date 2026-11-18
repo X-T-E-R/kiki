@@ -885,7 +885,10 @@ export class AgentPromptService implements IAgentPromptService {
     @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
     @IWorkAdmissionService private readonly workAdmission: IWorkAdmissionService,
   ) {
-    let executionWasHeld = executionControl.isHeld();
+    let executionWasHeld = false;
+    void executionControl.read().then((initial) => {
+      if (initial.phase !== 'running') executionWasHeld = true;
+    }, () => undefined);
     const executionSubscription = executionControl.onDidChange((state) => {
       const held = state.phase !== 'running';
       if (executionControl.isDurablyPaused()) this.releaseDurablyPausedAdmissions();
@@ -908,6 +911,8 @@ export class AgentPromptService implements IAgentPromptService {
     this.states.contributeState(promptIdentityKey);
     this.dispatcher.hooks.onDidRestore.register('prompt-queue', async (_ctx, next) => {
       await this.restorePendingQueue();
+      const restored = await this.executionControl.read().catch(() => undefined);
+      if (restored !== undefined && restored.phase !== 'running') executionWasHeld = true;
       await next();
     });
     const taskSettlementSubscription = eventBus.subscribe(TaskSettlementReady, () => {

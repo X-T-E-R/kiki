@@ -94,8 +94,10 @@ export interface RosterInput {
   readonly doneOpen: boolean;
 }
 
+import { isEphemeralBtwNode } from './InspectorBranches';
+
 function isConversationBranch(node: AgentTreeNode): boolean {
-  return node.isBranch === true || node.branchSealed === true;
+  return node.isBranch === true || node.branchSealed === true || isEphemeralBtwNode(node);
 }
 
 function childrenOf(forest: AgentForest, rootId: string): AgentTreeNode[] {

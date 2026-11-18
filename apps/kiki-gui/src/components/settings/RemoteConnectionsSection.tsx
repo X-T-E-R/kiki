@@ -356,7 +356,6 @@ function RemoteConnectionRow({ record, busy, threadFact, onEnter, onVerifyFinger
   const platformLabel = spacePlatformLabel(summary?.platform);
   const rttMs = record.state === 'online' ? (summary?.rttMs ?? record.rttMs) : undefined;
   const borrowableTools = summary?.borrowableTools;
-  const hasHardwareMeta = platformLabel !== undefined || rttMs !== undefined || (borrowableTools !== undefined && borrowableTools > 0);
   return (
     <div role="listitem" data-remote-connection={record.id} data-remote-purpose={record.purposes.join('+')}
       data-remote-stale={summary !== null && summary.stale ? '' : undefined}
@@ -394,48 +393,55 @@ function RemoteConnectionRow({ record, busy, threadFact, onEnter, onVerifyFinger
             <span className="whitespace-nowrap font-mono text-ink-soft">{fingerprint(record.pinnedFingerprint, 16, 8)}</span>
           </p>
         ) : null}
-        <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-ink-faint" data-remote-facts>
-          {platformLabel !== undefined ? (
-            <span className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-ink-soft" data-remote-platform={summary?.platform}>
-              {platformLabel}
+        <div className="mt-0.5 overflow-hidden">
+          <p className="flex flex-wrap items-center gap-x-3.5 gap-y-0.5 text-[11.5px] text-ink-faint" data-remote-facts>
+            {platformLabel !== undefined ? (
+              <span className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-ink-soft" data-remote-platform={summary?.platform}>
+                {platformLabel}
+              </span>
+            ) : null}
+            {rttMs !== undefined ? (
+              <span className="relative inline-flex items-center tabular-nums before:pointer-events-none before:absolute before:-left-2 before:text-ink-faint before:content-['·']" data-remote-rtt>
+                {rttMs} ms
+              </span>
+            ) : null}
+            {borrowableTools !== undefined && borrowableTools > 0 ? (
+              <span className="relative inline-flex items-center tabular-nums before:pointer-events-none before:absolute before:-left-2 before:text-ink-faint before:content-['·']" data-remote-tools>
+                {tp('st.remote.borrowableTools', borrowableTools)}
+              </span>
+            ) : null}
+            <span className="relative inline-flex items-center before:pointer-events-none before:absolute before:-left-2 before:text-ink-faint before:content-['·']" data-remote-openable={canOpen ? 'yes' : 'no'}>
+              {t(canOpen ? 'st.remote.canOpen' : 'st.remote.cantOpen')}
             </span>
-          ) : null}
-          {rttMs !== undefined ? (
-            <>
-              {platformLabel !== undefined ? <span aria-hidden>·</span> : null}
-              <span className="tabular-nums" data-remote-rtt>{rttMs} ms</span>
-            </>
-          ) : null}
-          {borrowableTools !== undefined && borrowableTools > 0 ? (
-            <>
-              {platformLabel !== undefined || rttMs !== undefined ? <span aria-hidden>·</span> : null}
-              <span className="tabular-nums" data-remote-tools>{tp('st.remote.borrowableTools', borrowableTools)}</span>
-            </>
-          ) : null}
-          {hasHardwareMeta ? <span aria-hidden>·</span> : null}
-          <span data-remote-openable={canOpen ? 'yes' : 'no'}>
-            {t(canOpen ? 'st.remote.canOpen' : 'st.remote.cantOpen')}
-          </span>
-          {threadFact !== null ? (
-            <>
-              <span aria-hidden>·</span>
+            {threadFact !== null ? (
               <span
-                className={threadFact === 'unreadable' ? 'text-amber-ink' : undefined}
+                className={`relative inline-flex items-center before:pointer-events-none before:absolute before:-left-2 before:text-ink-faint before:content-['·']${threadFact === 'unreadable' ? ' text-amber-ink' : ''}`}
                 data-remote-thread-messages={threadFact}
               >
                 {t(threadMessageFactKey(threadFact))}
               </span>
-            </>
-          ) : null}
-          {hasCounts ? (
-            <span className="inline-flex flex-wrap items-center gap-x-2" data-remote-summary>
-              <span aria-hidden>·</span>
-              {summary.busy > 0 ? <span className="tabular-nums">{t('st.remote.busy', { count: summary.busy })}</span> : null}
-              {summary.busy > 0 && summary.needsYou > 0 ? <span aria-hidden>·</span> : null}
-              {summary.needsYou > 0 ? <span className="tabular-nums text-attention">{t('st.remote.needsYou', { count: summary.needsYou })}</span> : null}
-            </span>
-          ) : null}
-        </p>
+            ) : null}
+            {hasCounts ? (
+              <span className="contents" data-remote-summary>
+                {summary.busy > 0 ? (
+                  <span className="relative inline-flex items-center tabular-nums before:pointer-events-none before:absolute before:-left-2 before:text-ink-faint before:content-['·']">
+                    {t('st.remote.busy', { count: summary.busy })}
+                  </span>
+                ) : null}
+                {summary.needsYou > 0 ? (
+                  <span className="relative inline-flex items-center tabular-nums text-attention before:pointer-events-none before:absolute before:-left-2 before:text-ink-faint before:content-['·']">
+                    {t('st.remote.needsYou', { count: summary.needsYou })}
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+          </p>
+        </div>
+        {!hasGuiPurpose(record) ? (
+          <p className="mt-0.5 text-[11px] text-ink-faint" data-remote-bridge-only>
+            {t('st.remote.bridgeOnly')}
+          </p>
+        ) : null}
         {failure !== null && record.state !== 'online' ? (
           <p className="mt-0.5 truncate text-[11.5px] text-amber-ink" data-remote-error title={record.lastError}>
             {t(failure)}

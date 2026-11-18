@@ -50,7 +50,7 @@ export const TimelineOffshootRail = memo(function TimelineOffshootRail({
   return (
     <div
       data-timeline-offshoot-rail
-      className={`mt-1.5 flex items-start gap-1.5 ${align === 'right' ? 'justify-end pr-2' : 'pl-2'}`}
+      className={`mt-5 flex items-start gap-1.5 ${align === 'right' ? 'justify-end pr-0.5' : 'pl-2'}`}
     >
       {align === 'left' ? (
         <span

@@ -499,22 +499,22 @@ function RemoteSpaceRow({
             {stateText}
           </span>
           {!opening && metaParts.length > 0 ? (
-            <>
+            <span className="inline-flex items-center gap-1.5">
               <span aria-hidden>·</span>
               <span data-space-remote-meta className="tabular-nums">{metaParts.join(' · ')}</span>
-            </>
+            </span>
           ) : null}
           {!opening && summary !== null && summary.busy > 0 ? (
-            <>
+            <span className="inline-flex items-center gap-1.5">
               <span aria-hidden>·</span>
               <span data-space-remote-busy className="tabular-nums">{t('sidebar.space.remoteBusy', { count: summary.busy })}</span>
-            </>
+            </span>
           ) : null}
           {!opening && summary !== null && summary.needsYou > 0 ? (
-            <>
+            <span className="inline-flex items-center gap-1.5">
               <span aria-hidden>·</span>
               <span data-space-remote-needs className="tabular-nums text-attention">{t('sidebar.space.remoteNeedsYou', { count: summary.needsYou })}</span>
-            </>
+            </span>
           ) : null}
         </span>
       </span>

@@ -319,8 +319,9 @@ class KlientHttpConnection {
     try {
       const encoded = encodeJsonFrame(frame);
       const size = Buffer.byteLength(encoded);
-      const bridgeCreate = frame.type === 'bridge_request' && (frame.data as { operation: string }).operation === 'create';
-      const bufferLimit = bridgeCreate ? Math.max(BROKER_WS_BUFFER_BYTES, size) : BROKER_WS_BUFFER_BYTES;
+      const operation = frame.type === 'bridge_request' ? (frame.data as { operation?: string } | undefined)?.operation : undefined;
+      const maxBridgeFrame = operation === 'tools_call' ? 5 * 1024 * 1024 : operation === 'create' || operation === 'send' ? 1024 * 1024 : 0;
+      const bufferLimit = maxBridgeFrame > 0 ? BROKER_WS_BUFFER_BYTES + Math.min(size, maxBridgeFrame) : BROKER_WS_BUFFER_BYTES;
       if (this.peer && this.socket.bufferedAmount + size > bufferLimit) { this.socket.close(4008, 'slow consumer; reload current window'); this.dispose(); return false; }
       this.socket.send(encoded);
       return true;

@@ -4796,6 +4796,42 @@ export function latestFinalAssistantBlockId(
   return undefined;
 }
 
+export function settledFinalAssistantBlockIds(
+  blocks: readonly Block[],
+  options: { readonly busy?: boolean; readonly liveTurnId?: string; readonly incompleteTurnIds?: readonly string[] } = {},
+): ReadonlySet<string> {
+  const latestBlock = blocks.findLast((block) => blockTurnId(block) !== undefined);
+  const latestTurn = latestBlock === undefined ? undefined : blockTurnId(latestBlock);
+  const runningTurn = normalizeTurnId(options.liveTurnId ?? (options.busy ? latestTurn : undefined));
+  const excluded = new Set((options.incompleteTurnIds ?? []).map(normalizeTurnId));
+  const toolTurns = new Set<string>();
+  const streamingTurns = new Set<string>();
+  const pickedTurns = new Set<string>();
+  const result = new Set<string>();
+  let unscopedTurn = 0;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    const turnId = normalizeTurnId(blockTurnId(block));
+    const key = turnId ?? `unscoped-${unscopedTurn}`;
+    if (block.kind === 'tool' || block.kind === 'shell' || block.kind === 'approval' || block.kind === 'question' ||
+        block.kind === 'subagent' || block.kind === 'subagent-event' && block.event === 'sent' ||
+        block.kind === 'message' && block.origin === 'send_message') toolTurns.add(key);
+    if (block.kind === 'assistant') {
+      if (block.streaming) streamingTurns.add(key);
+      if (!block.streaming && !toolTurns.has(key) && !streamingTurns.has(key) && !pickedTurns.has(key) &&
+          !excluded.has(turnId) && (runningTurn === undefined || turnId !== runningTurn) &&
+          !(options.busy && turnId === undefined && unscopedTurn === 0)) {
+        pickedTurns.add(key);
+        if (result.size === 0 || assistantMessageIdFromBlock(block) !== undefined) {
+          result.add(block.id);
+        }
+      }
+    }
+    if (block.kind === 'user' && turnId === undefined) unscopedTurn += 1;
+  }
+  return result;
+}
+
 export function assistantMessageIdFromBlockId(blockId: string): string | undefined {
   if (blockId.startsWith('assistant-live-') || blockId.startsWith('agent-frame-')) return undefined;
   const match = /^assistant-(.+)-(?:\d+|media)$/.exec(blockId);

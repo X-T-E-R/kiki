@@ -47,7 +47,7 @@ const ID_STALE_GRANT = 'f9421b0d-6c88-4e5e-a372-0ac4d5ed8917';
 const MINUTE = 60_000;
 /** Text assertions follow the locale the runner asked for; ids and counts do not. */
 const STALE = { en: 'as of', zh: '截至' };
-const REMOVE_BODY = { en: 'does not shut that space down', zh: '不会关掉对方空间' };
+const REMOVE_BODY = { en: 'does not shut the other side down', zh: '不会关掉对方' };
 const GATE_BODY = { en: 'Each space still needs its own row', zh: '还需在下方单独允许' };
 const ONCE = { en: 'Valid once', zh: '有效一次' };
 const NOT_SAVED = { en: 'not saved', zh: '不会保存' };
@@ -69,10 +69,14 @@ function recordsFixture() {
   return [
     {
       // A long name on purpose: it must truncate instead of pushing the state out.
-      id: ID_B, label: 'Workstation B — GPU server (office)', endpoint: 'https://b.example.test', target: identity(HOME_B, 'gpu-box'),
-      credentialRef: ID_B, purposes: ['gui'], enabled: true, backgroundSummary: true, state: 'online',
+      id: ID_B, label: 'Workstation B — GPU cluster server (office rack 4)', endpoint: 'https://b.example.test', target: identity(HOME_B, 'gpu-box'),
+      credentialRef: ID_B, purposes: ['gui', 'bridge'], enabled: true, backgroundSummary: true, state: 'online', rttMs: 14,
       lastConnectedAt: now - 40_000, activeLeases: 1,
-      summary: { value: { online: true, busy_sessions: 3, needs_you_sessions: 2, revision: 'r-42', as_of: now - 3_000 }, lastSeen: now - 3_000, stale: false },
+      summary: {
+        value: { online: true, busy_sessions: 3, needs_you_sessions: 2, revision: 'r-42', as_of: now - 3_000, platform: 'linux', arch: 'x64', hostname: 'gpu-box', workspace_count: 2, borrowable_tool_count: 4 },
+        lastSeen: now - 3_000,
+        stale: false,
+      },
     },
     {
       id: ID_HOME, label: 'Kiki at home', endpoint: 'https://home.example.test:8443', target: identity('b81c44a7-2f30-4d95-9e6a-3c17f2b8d406', 'home-desktop'),
@@ -131,6 +135,46 @@ function inboundFixture() {
  * so a screenshot can be paired with what the form actually saved.
  */
 async function serveConnections(page, state) {
+  await page.route('**/api/thread-bridges**', async (route) => {
+    const bridgeGrant = {
+      id: 'b1111111-2222-4333-8444-555555555555',
+      revision: 1,
+      enabled: true,
+      revoked: false,
+      createdAt: now - 3600_000,
+      expiresAt: now + 365 * 24 * 3600_000,
+      source: identity('77aa11bb-22cc-4dd3-8ee4-99ff00aa11bb', 'this-machine'),
+      target: identity(HOME_B, 'gpu-box'),
+      sourceScope: { workspaceId: '*' },
+      targetScope: { workspaceId: '*' },
+      operations: ['read', 'send', 'wait', 'wake', 'create', 'tools'],
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: {
+          inbound: [{
+            ...bridgeGrant,
+            id: 'b2222222-2222-4333-8444-555555555555',
+            source: identity(HOME_B, 'gpu-box'),
+            target: identity('77aa11bb-22cc-4dd3-8ee4-99ff00aa11bb', 'this-machine'),
+            sourceLabel: 'Workstation B',
+          }],
+          outbound: [{
+            connectionId: ID_B,
+            enabled: true,
+            borrowTools: true,
+            targetLabel: 'Workstation B',
+            grant: bridgeGrant,
+          }],
+        },
+        request_id: 'fixture-bridges',
+      }),
+    });
+  });
   await page.route('**/api/remote-connections**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -331,6 +375,10 @@ async function outbound(context) {
   await openSpaces(context, '[data-remote-connections]');
   await page.waitForSelector(`[data-remote-connection="${ID_B}"]`);
   expect(await page.locator('[data-remote-connection]').count() === 5, 'every registered connection is listed for management');
+  expect(await page.locator(`[data-remote-connection="${ID_B}"] [data-remote-platform="linux"]`).count() === 1, 'platform chip renders from SpaceSummary');
+  expect((await page.textContent(`[data-remote-connection="${ID_B}"] [data-remote-rtt]`))?.includes('14 ms') === true, 'live RTT renders from RemoteConnection');
+  expect((await page.textContent(`[data-remote-connection="${ID_B}"] [data-remote-tools]`))?.includes('4') === true, 'borrowable tool count renders from SpaceSummary');
+  expect(await page.getAttribute(`[data-remote-connection="${ID_B}"] [data-remote-thread-messages]`, 'data-remote-thread-messages') === 'both', 'bidirectional thread bridge status renders cleanly');
   expect(await page.locator(`[data-remote-connection="${ID_BRIDGE}"] [data-remote-bridge-only]`).count() === 1, 'a thread-message-only connection says so');
   expect(await page.locator(`[data-remote-connection="${ID_BRIDGE}"] [data-remote-enter]`).count() === 0, 'a thread-message-only connection offers no way in');
   expect(await page.locator(`[data-remote-connection="${ID_B}"] [data-remote-enter]`).count() === 1, 'a browsable connection offers the switch');

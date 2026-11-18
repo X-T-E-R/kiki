@@ -540,7 +540,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             [ISessionContextSourceReloader, {
               _serviceBrand: undefined,
               reload: async (trigger?: string) => {
-                if (trigger === 'restore' && this.plugins.hasLoadedSnapshot()) {
+                if (trigger !== undefined && trigger !== 'manual' && this.plugins.hasLoadedSnapshot()) {
                   return { instructionsChanged: false, pluginsChanged: false };
                 }
                 const beforeInstructions = JSON.stringify(this.workspaceInstructions.snapshot);
