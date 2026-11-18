@@ -129,9 +129,19 @@ export async function snapshotPanelCapabilities(
   const activeToolNames = snapshot.activeToolsKnown ? snapshot.activeToolNames : definition.tools;
   const profileToolSource = snapshot.boundProfile ?? definition;
   const explicitProfileTools = profileToolSource.tools === undefined ? undefined : [...profileToolSource.tools];
+  const config = session.accessor.get(IConfigService);
+  const defaultModel = delegationPosition === 'main' &&
+    (snapshot.executorId === undefined || snapshot.executorId === 'native') &&
+    snapshot.endpoint === undefined
+    ? definition.modelAlias ?? config.get<string>('default_model')
+    : undefined;
+  const resolvedSnapshotModel = snapshot.modelAlias !== undefined && snapshot.modelAlias !== ''
+    ? snapshot.modelAlias
+    : defaultModel !== undefined && defaultModel !== '' ? defaultModel : undefined;
   const binding: PanelBindingData = {
     ...snapshot,
-    ...projectPersistedAgentThinking(session, snapshot, definition),
+    modelAlias: resolvedSnapshotModel,
+    ...projectPersistedAgentThinking(session, { ...snapshot, modelAlias: resolvedSnapshotModel }, definition),
     activeToolNames,
     toolAllowPolicies: persisted ? snapshot.toolAllowPolicies : snapshot.toolAllowPolicies ?? definition.toolAllowPolicies,
     disallowedTools: persisted ? snapshot.disallowedTools : snapshot.disallowedTools ?? definition.disallowedTools,
@@ -144,7 +154,6 @@ export async function snapshotPanelCapabilities(
     serviceTier: snapshot.serviceTier ?? definition.serviceTier,
     profileSource: snapshot.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
   };
-  const config = session.accessor.get(IConfigService);
   const policy = {
     profile: {
       executionRestriction: binding.executionRestriction,
@@ -446,8 +455,9 @@ export function frozenPanelModelProfile(
   scope: Pick<Scope, 'accessor'>,
   data: PanelBindingData,
   position: 'main' | 'sub',
+  fallbackProfile?: PanelProfileDefinition,
 ): AgentPanelProfile {
-  const profile = data.boundProfile ?? {
+  const profile = data.boundProfile ?? fallbackProfile ?? {
     name: data.profileName ?? 'unknown',
     modelAlias: data.modelAlias,
     executor: data.executorId,
@@ -466,7 +476,7 @@ export function frozenPanelModelProfile(
 
 function endpointModelMenu(
   data: PanelBindingData,
-  profile: PanelBindingData['boundProfile'],
+  profile: PanelProfileDefinition | undefined,
 ): ReturnType<typeof projectAgentModelMenu> {
   const alias = data.modelAlias ?? materializeAdhocModel(data.endpoint!).id;
   return {
@@ -494,7 +504,7 @@ function panelProfile(
   const routeDetached = data.routeDetached === true || inferRouteDetached(scope, data) ? true : undefined;
   const thinkingEffort = data.effectiveThinkingLevel ?? data.thinkingLevel;
   return {
-    ...frozenPanelModelProfile(scope, data, position),
+    ...frozenPanelModelProfile(scope, data, position, definition),
     name: data.profileName ?? definition?.name ?? 'unknown',
     description: definition?.description,
     source: resolution.sourceId,

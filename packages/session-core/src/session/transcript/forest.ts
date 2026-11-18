@@ -693,8 +693,11 @@ export function sessionAgentForestFromAgentSnapshots(
     const row = snapshotRows.get(agentId);
     const meta = snapshot.meta.agent;
     const preferRoster = coldAgents?.has(agentId) === true || rosterCurrentAgents?.has(agentId) === true;
-    const model = preferRoster ? row?.model ?? meta?.model : meta?.model;
-    const thinking = preferRoster ? row?.thinking_effort ?? meta?.thinkingEffort : meta?.thinkingEffort;
+    const branchFallback = node.isBranch === true || row?.is_branch === true;
+    const model = preferRoster ? row?.model ?? meta?.model : meta?.model ?? (branchFallback ? row?.model : undefined);
+    const thinking = preferRoster
+      ? row?.thinking_effort ?? meta?.thinkingEffort
+      : meta?.thinkingEffort ?? (branchFallback ? row?.thinking_effort : undefined);
     if (model !== undefined || thinking !== undefined) {
       node = { ...node, model: model ?? node.model, thinkingEffort: thinking ?? node.thinkingEffort };
       byId[agentId] = node;

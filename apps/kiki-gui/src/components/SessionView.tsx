@@ -49,7 +49,12 @@ import { useRailMode } from './rail-variants/shell';
 import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
 import { useInspectorFocusTracking } from './inspectorFocus';
 import { ActionSheet } from './overlays/ActionSheet';
-import { SelectionQuoteButton } from './SelectionQuoteButton';
+import {
+  restoreSentAnnotations,
+  serializeSelectionCarryover,
+  updateStoredAnnotations,
+  useConversationAnnotations,
+} from './agent-workspace/useConversationAnnotations';
 import { useStableForest, type TranscriptRowActions } from './Transcript';
 import { mergeLoadedAttachments } from './RowActions';
 import { Icon } from './icons';
@@ -102,7 +107,6 @@ import {
   resolveComposerModelOverrides,
   readDraft,
   recoverSubmittedDraft,
-  removeAnnotation,
   restorePromptToDraft,
   subscribeDraftAppends,
   writeComposerState,
@@ -113,9 +117,6 @@ import {
   type ComposerModelChoice,
   type ComposerModelBindingChange,
   type SelectionAnnotation,
-  type SelectionSourceAnchor,
-  createAnnotation,
-  collectDraftAnnotationTargets,
   boundExecutionChoice,
   sendsLegacyControl,
   namesLegacyControl,
@@ -1787,34 +1788,7 @@ function hasDurableRecord(controller: Pick<SessionController, 'getDurableIngress
 }
 
 
-/** Put a failed prompt's notes back in front of any the user added since. */
-export function restoreSentAnnotations<T extends { readonly id: string }>(
-  current: readonly T[],
-  sent: readonly T[],
-): readonly T[] {
-  const present = new Set(current.map((annotation) => annotation.id));
-  const missing = sent.filter((annotation) => !present.has(annotation.id));
-  return missing.length === 0 ? current : [...missing, ...current];
-}
-
-function updateStoredAnnotations(
-  sessionId: string,
-  update: (current: readonly SelectionAnnotation[]) => readonly SelectionAnnotation[],
-): void {
-  const saved = readComposerState(sessionId);
-  writeComposerState(sessionId, {
-    ...saved,
-    attachments: saved.attachments ?? [],
-    quotes: [],
-    annotations: update(saved.annotations ?? []),
-    permissionMode: saved.permissionMode,
-    planMode: saved.planMode,
-    planGate: saved.planGate,
-    goalObjective: saved.goalObjective,
-    modelOverride: saved.modelOverride,
-    effortOverride: saved.effortOverride,
-  });
-}
+export { restoreSentAnnotations };
 
 export function recoverFailedSubmission(
   currentText: string,
@@ -2537,38 +2511,24 @@ export function SessionView({
   draftRef.current = draft;
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
-  // One ordered selection list: an empty comment is a quote. Older quote-only
-  // composer chrome is normalized at this boundary instead of becoming a
-  // second live data source.
-  const [annotations, setAnnotations] = useState<readonly SelectionAnnotation[]>(() => {
-    const restored = restoredComposer.annotations ?? [];
-    if (restoredComposer.quotes !== undefined) {
-      return [...restored, ...restoredComposer.quotes.map((item) => ({ ...item, comment: '' }))];
-    }
-    const legacy = restoredComposer.quote;
-    return legacy === null || legacy === undefined
-      ? restored
-      : [...restored, createAnnotation(legacy, '', restoredComposer.quoteSource)];
+  const mainTranscriptBlocksRef = useRef<readonly Block[]>([]);
+  const {
+    annotations,
+    setAnnotations,
+    annotationsRef: draftSelectionsRef,
+    onRemove: handleRemoveAnnotation,
+    onUpdate: handleUpdateAnnotation,
+    onLocate: handleLocateAnnotation,
+    surface: annotationSurface,
+  } = useConversationAnnotations({
+    storageKey: sessionId,
+    sessionId,
+    blocks: () => mainTranscriptBlocksRef.current,
+    isMutationLocked: () => queueEditRef.current?.loading === true,
   });
-  const draftSelectionsRef = useRef(annotations);
-  draftSelectionsRef.current = annotations;
-  const transcriptQuoteRef = useRef<HTMLDivElement>(null);
   const focusComposer = useCallback(() => {
     // Return focus to the composer so the user can type the follow-up at once.
     document.querySelector<HTMLElement>('[data-composer]')?.focus();
-  }, []);
-  const handleAnnotateSelection = useCallback((text: string, comment: string, source?: SelectionSourceAnchor | null) => {
-    const annotation = createAnnotation(text, comment, source);
-    setAnnotations((current) => [...current, annotation]);
-    return annotation.id;
-  }, []);
-  const handleRemoveAnnotation = useCallback((id: string) => {
-    if (queueEditRef.current?.loading === true) return;
-    setAnnotations((current) => removeAnnotation(current, id));
-  }, []);
-  const handleUpdateAnnotation = useCallback((id: string, comment: string) => {
-    if (queueEditRef.current?.loading === true) return;
-    setAnnotations((current) => current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)));
   }, []);
 
   const knownSession = sessions.find((item) => item.id === sessionId);
@@ -3590,10 +3550,8 @@ export function SessionView({
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
         // back. The wire protocol stays untouched.
-        const carry = selectionCarryoverPresentation(annotations, []);
-        const quotedText = `${carry.prefix}${text}`;
-        const presentation = { spans: [...carry.presentation.spans, ...(options?.presentation?.spans ?? []).map((span) => ({ ...span, start: span.start + carry.prefix.length, end: span.end + carry.prefix.length }))] };
-        const content = options?.firstMessage?.submission?.content ?? buildPromptContent(quotedText, composerAttachments, presentation.spans.length === 0 ? undefined : presentation);
+        const carry = serializeSelectionCarryover(annotations, text, options?.presentation);
+        const content = options?.firstMessage?.submission?.content ?? buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
         if (content === null || pendingSendRef.current) return;
         const textPart = content.find((part) => part.type === 'text');
         // Local echo shows the mention-folded text; a media-only message
@@ -5392,6 +5350,7 @@ boundExecution,
     ),
     [state.blocks, forest, pendingSubmission, mainDurableIngress],
   );
+  mainTranscriptBlocksRef.current = mainTranscriptBlocks;
   // One object per (state, blocks) pair, so the memoized timeline skips the
   // renders this component does for its own reasons (draft edits, clocks).
   const timelineState = useMemo(
@@ -5495,10 +5454,6 @@ boundExecution,
     }
   ), [trayItems, trayAgentNames, reviewRequest?.seq, mainTimelineActions.resolveApproval, mainTimelineActions.answerQuestion, mainTimelineActions.dismissQuestion, handleBatchResolve,
     controller, state.detailLoads, state.contentRefs, sessionId, permissionMode, handlePermissionChange]);
-  const handleLocateAnnotation = useCallback((annotation: SelectionAnnotation) => {
-    const blockId = collectDraftAnnotationTargets(mainTranscriptBlocks, [annotation]).keys().next().value;
-    if (blockId !== undefined) navigateTimeline({ kind: 'annotation', blockId, annotationId: annotation.id }, { sessionId });
-  }, [mainTranscriptBlocks, navigateTimeline, sessionId]);
   // The composer footer carries connection facts and reading continuation only;
   // each message keeps its own send lifecycle on the timeline.
   const composerStatusNotice = useMemo(() => {
@@ -5926,16 +5881,8 @@ boundExecution,
             offshootsByBlockId: forkLineage.byBlockId,
             onOpenForkSession: openForkSession,
             onOpenBranchAgent: openAgentRoute,
-            draftAnnotations: annotations,
-            onSaveDraftAnnotation: handleUpdateAnnotation,
-            onRemoveDraftAnnotation: handleRemoveAnnotation,
           },
-          timelineRef: transcriptQuoteRef,
-          timelineOverlay: <SelectionQuoteButton
-            containerRef={transcriptQuoteRef}
-            onAnnotate={handleAnnotateSelection}
-            onUpdateAnnotation={handleUpdateAnnotation}
-          />,
+          annotations: annotationSurface,
           dock: <>
             {shownBtw !== null ? (
               <BtwFloatingCard

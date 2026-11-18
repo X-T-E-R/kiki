@@ -2111,4 +2111,80 @@ describe('live agent status during partial history recovery', () => {
     expect(merged.byId["agent-285"]?.parentAgentId).toBe("branch-281");
     expect(merged.byId["agent-286"]?.parentAgentId).toBe("branch-281");
   });
+
+  it("preserves persisted model and thinkingEffort on a completed branch when a tail-first wire window omits byte-0 profile.bind", () => {
+    const completedBranchSnapshot = snapshot({
+      items: [
+        {
+          kind: "turn",
+          turnId: "t0",
+          ordinal: 0,
+          state: "completed",
+          origin: { kind: "user" },
+          startedAt: "2026-11-18T10:00:00.000Z",
+          endedAt: "2026-11-18T10:01:00.000Z",
+          steps: [],
+        },
+      ],
+      hasMoreOlder: true,
+    });
+    const branchRosterRow = compactSnapshot({
+      id: "agent-352",
+      parent_agent_id: "main",
+      profile: "agent",
+      label: "上下文保留窗口与分支解耦设计",
+      name_source: "user_label",
+      status: "completed",
+      activity_status: "idle",
+      status_source: "metadata",
+      is_branch: true,
+      branch_seed: "fresh",
+      model: "fixture/kiki-pro",
+      thinking_effort: "high",
+      executor_id: "native",
+      live: false,
+      created_at: "2026-11-18T09:59:50.000Z",
+    });
+
+    const forest = sessionAgentForestFromAgentSnapshots(
+      new Map([["main", snapshot()], ["agent-352", completedBranchSnapshot]]),
+      [branchRosterRow],
+    );
+    expect(forest.byId["agent-352"]).toMatchObject({
+      isBranch: true,
+      branchSeed: "fresh",
+      status: "idle",
+      model: "fixture/kiki-pro",
+      thinkingEffort: "high",
+      executorId: "native",
+    });
+
+    const completedForest = buildAgentForest([], [
+      roster({
+        agentId: "agent-352",
+        parentAgentId: "main",
+        status: "completed",
+        isBranch: true,
+        branchSeed: "fresh",
+      }),
+      roster({
+        agentId: "agent-352",
+        parentAgentId: "main",
+        status: "idle",
+        statusSource: "metadata",
+        isBranch: true,
+        branchSeed: "fresh",
+        model: "fixture/kiki-pro",
+        thinkingEffort: "high",
+        executorId: "native",
+      }),
+    ]);
+    expect(completedForest.byId["agent-352"]).toMatchObject({
+      isBranch: true,
+      status: "completed",
+      model: "fixture/kiki-pro",
+      thinkingEffort: "high",
+      executorId: "native",
+    });
+  });
 });

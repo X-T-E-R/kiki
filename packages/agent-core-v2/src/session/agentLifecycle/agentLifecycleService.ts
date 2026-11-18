@@ -721,7 +721,14 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
             model: override.model ?? (override.execution === undefined ? sourceData.modelAlias : undefined),
             thinking: override.thinking ?? (override.execution === undefined ? sourceData.thinkingLevel : undefined),
           }
-        : undefined;
+        : sourceData.profileName === undefined && sourceData.execution === undefined &&
+            (override?.model !== undefined || override?.thinking !== undefined)
+          ? {
+              profile: opts?.labels?.['profileName'] ?? DEFAULT_AGENT_PROFILE_NAME,
+              model: override.model,
+              thinking: override.thinking === null ? undefined : override.thinking,
+            }
+          : undefined;
     if (overrideBinding === undefined && sourceData.endpoint !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Ad-hoc endpoint credentials cannot be inherited by a session branch. Select a catalog model before branching.');
     const child = await this.create({
       agentId: opts?.agentId,
@@ -738,7 +745,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           : opts?.labels,
     });
     const childProfile = child.accessor.get(IAgentProfileService);
-    if (overrideBinding === undefined && sourceData.profileName !== undefined) {
+    if (overrideBinding === undefined && (sourceData.profileName !== undefined || sourceData.execution !== undefined)) {
       childProfile.applyBindingSnapshot(sourceData);
       const dynamicPrompt = source.accessor.get(IAgentStateService).get(dynamicPromptKey);
       if (dynamicPrompt !== undefined) await child.accessor.get(IEventDispatcher).dispatch(new ProfileDynamicSnapshot(dynamicPrompt));

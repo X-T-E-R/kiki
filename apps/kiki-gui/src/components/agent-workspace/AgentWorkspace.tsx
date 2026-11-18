@@ -31,12 +31,14 @@ import {
   sessionAgentForest,
   type AgentForest,
   type AgentTreeNode,
+  type Block,
   type SessionController,
   type SessionViewState,
   type SubagentBlock,
   type TranscriptDetailKind,
 } from '@kiki/session-core/session';
 import {
+  normalizeSelectableModelAlias,
   resolveCatalogModel,
   settingsServerSnapshot,
   settingsSnapshot,
@@ -45,7 +47,7 @@ import {
 
 import { useI18n } from '../../i18n';
 import type { I18nKey } from '@kiki/session-core/i18n';
-import type { ContentRef } from '@kiki/transcript';
+import { projectPresentedText, type ContentRef } from '@kiki/transcript';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, isDefinitivePromptRejection } from '../../lib/client';
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../../lib/fsSearchFeed';
 import { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
@@ -70,8 +72,10 @@ import { Icon } from '../icons';
 import type { ComponentType } from 'react';
 import type { MediaPreviewProvider as OwnedMediaPreviewProvider } from '../mediaPreview';
 import { PreviewToggleButton } from '../PreviewToggleButton';
-import type { MediaPreviewApi } from '../mediaPreviewContext';
+import { useMediaPreview, type MediaPreviewApi } from '../mediaPreviewContext';
+import { ConversationDockColumn } from '../ConversationDockColumn';
 import { RightRail } from '../RightRail';
+import { SelectionQuoteButton } from '../SelectionQuoteButton';
 import { Transcript } from '../Transcript';
 import {
   AdmissionScope,
@@ -84,6 +88,14 @@ import {
 import { TranscriptDetailProvider, type TranscriptEntityKind } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
 import { useAgentTimeline } from './useAgentTimeline';
+import {
+  normalizeStoredAnnotations,
+  restoreSentAnnotations,
+  serializeSelectionCarryover,
+  updateStoredAnnotations,
+  useConversationAnnotations,
+  type ConversationAnnotationSurface,
+} from './useConversationAnnotations';
 import { useModelSwitchFlow } from './useModelSwitchFlow';
 import { registerOverlay } from '../../lib/uiBusy';
 
@@ -268,6 +280,7 @@ export interface AgentWorkspaceProps {
     readonly timeline: ComponentProps<typeof Transcript>;
     readonly dock: ReactNode;
     readonly rail: ReactNode;
+    readonly annotations?: ConversationAnnotationSurface;
     readonly timelineRef?: RefObject<HTMLDivElement | null>;
     readonly timelineOverlay?: ReactNode;
   };
@@ -277,7 +290,7 @@ export interface AgentWorkspaceProps {
  * input seat stays owned by ConversationShell, not by this portal. */
 function WorkspaceSurface({
   target, controller, slots, header, timeline, dock, rail, railIsOverlay, railOpen, onCloseRail,
-  timelineRef, timelineOverlay,
+  annotations, timelineRef, timelineOverlay,
 }: {
   target: AgentWorkspaceTarget;
   controller: SessionController | null;
@@ -289,6 +302,7 @@ function WorkspaceSurface({
   railIsOverlay: boolean;
   railOpen: boolean;
   onCloseRail: () => void;
+  annotations?: ConversationAnnotationSurface;
   timelineRef?: RefObject<HTMLDivElement | null>;
   timelineOverlay?: ReactNode;
 }) {
@@ -318,6 +332,18 @@ function WorkspaceSurface({
     (kind: TranscriptEntityKind) => controller?.loadTranscriptEntities(target.agentId, kind) ?? Promise.resolve(false),
     [controller, target.agentId],
   );
+  const effectiveTimeline = useMemo(
+    () =>
+      annotations === undefined
+        ? timeline
+        : {
+            ...timeline,
+            draftAnnotations: annotations.items,
+            onSaveDraftAnnotation: annotations.onUpdate,
+            onRemoveDraftAnnotation: annotations.onRemove,
+          },
+    [annotations, timeline],
+  );
   return (
     <TranscriptDetailProvider
       controller={controller ?? undefined}
@@ -330,13 +356,20 @@ function WorkspaceSurface({
       loadEntities={loadEntities}
     >
       {slots.header !== null ? createPortal(header, slots.header) : null}
-      <div ref={timelineRef} className="contents" data-agent-workspace-target={target.agentId}>
+      <div ref={annotations?.containerRef ?? timelineRef} className="contents" data-agent-workspace-target={target.agentId}>
         {/* One list instance per agent. Child row ids are turn-scoped
             (`agent-turn-t1-prompt`), so two agents share row keys; a reused
             virtualizer would carry one agent's measured sizes, scroll anchor
             and initial-scroll state into the other. */}
-        <Transcript key={`${target.sessionId}:${target.agentId}`} {...timeline} />
+        <Transcript key={`${target.sessionId}:${target.agentId}`} {...effectiveTimeline} />
       </div>
+      {annotations !== undefined ? (
+        <SelectionQuoteButton
+          containerRef={annotations.containerRef}
+          onAnnotate={annotations.onAnnotate}
+          onUpdateAnnotation={annotations.onUpdate}
+        />
+      ) : null}
       {timelineOverlay}
       {slots.dock !== null ? createPortal(dock, slots.dock) : null}
       {/* Below lg the session shell's shared rail never mounts: the routed
@@ -673,6 +706,7 @@ export function AgentWorkspace(props: WorkspaceCompositionProps) {
         slots={props.slots ?? ambientSlots ?? EMPTY_SLOTS}
         header={main.header}
         timeline={main.timeline}
+        annotations={main.annotations}
         timelineRef={main.timelineRef}
         timelineOverlay={main.timelineOverlay}
         dock={main.dock}
@@ -720,6 +754,19 @@ function ChildAgentWorkspace({
   const liveSettings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const queryClient = useQueryClient();
   const { sessionId, agentId } = target;
+  const ambientMediaPreview = useMediaPreview();
+  const localPreviewRef = useRef<MediaPreviewApi>(null);
+  const effectivePreviewRef = previewApiRef ?? localPreviewRef;
+  const handleOpenImage = useCallback(
+    (src: string, name?: string) => {
+      if (ambientMediaPreview !== null) {
+        ambientMediaPreview.openImage(src, name);
+        return;
+      }
+      effectivePreviewRef.current?.openImage(src, name);
+    },
+    [ambientMediaPreview, effectivePreviewRef],
+  );
   const promoteAction = usePromoteAgent(sessionId, agentId);
   // Target identity owns both the composition and Composer's transient state.
   // A remount reads the old target back rather than discarding its unsent work.
@@ -728,6 +775,20 @@ function ChildAgentWorkspace({
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
     () => readComposerState(draftKey).attachments ?? [],
   );
+  const timelineBlocksRef = useRef<readonly Block[]>([]);
+  const {
+    annotations,
+    setAnnotations,
+    onRemove: handleRemoveAnnotation,
+    onUpdate: handleUpdateAnnotation,
+    onLocate: handleLocateAnnotation,
+    surface: annotationSurface,
+  } = useConversationAnnotations({
+    storageKey: draftKey,
+    sessionId,
+    agentId,
+    blocks: () => timelineBlocksRef.current,
+  });
   const setDraft = (text: string) => {
     writeDraft(draftKey, text);
     setDraftState(text);
@@ -736,7 +797,8 @@ function ChildAgentWorkspace({
     const chrome = readComposerState(draftKey);
     writeComposerState(draftKey, {
       attachments,
-      annotations: chrome.annotations ?? [],
+      quotes: [],
+      annotations,
       permissionMode: chrome.permissionMode,
       planMode: chrome.planMode,
       planGate: chrome.planGate,
@@ -744,7 +806,7 @@ function ChildAgentWorkspace({
       modelOverride: chrome.modelOverride,
       effortOverride: chrome.effortOverride,
     });
-  }, [draftKey, attachments]);
+  }, [draftKey, attachments, annotations]);
   useEffect(() => () => { flushDrafts(); }, []);
   const contextSlots = useOptionalConversationShell()?.slots;
   const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
@@ -782,10 +844,12 @@ function ChildAgentWorkspace({
   useEffect(() => subscribeDraftAppends((key) => {
     if (key !== draftKey) return;
     const restored = readDraft(draftKey);
+    const chrome = readComposerState(draftKey);
     draftRef.current = restored;
     setDraftState(restored);
-    setAttachments(readComposerState(draftKey).attachments ?? []);
-  }), [draftKey]);
+    setAttachments(chrome.attachments ?? []);
+    setAnnotations(normalizeStoredAnnotations(chrome));
+  }), [draftKey, setAnnotations]);
   const handleDraftChange = (next: string) => {
     if (next !== draftRef.current) {
       pendingSendRef.current = null;
@@ -826,6 +890,19 @@ function ChildAgentWorkspace({
     enabled: controller === null || agentLiveState.transcriptReady || agentLiveState.loaded,
     staleTime: 60_000,
   });
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: () => client.getConfig(),
+    enabled: typeof client.getConfig === 'function' && (controller === null || agentLiveState.transcriptReady || agentLiveState.loaded),
+    staleTime: 60_000,
+  });
+  const capabilitiesQuery = useQuery({
+    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
+    queryFn: () => client.getAgentCapabilities({ session_id: sessionId, agent_id: agentId }),
+    enabled: typeof client.getAgentCapabilities === 'function' && (controller === null || agentLiveState.transcriptReady || agentLiveState.loaded),
+    staleTime: 30_000,
+  });
+  const capabilitiesProfile = capabilitiesQuery.data?.profile;
   const parentAgentId =
     (controller?.getForest() ?? sessionAgentForest(sessionState)).byId[agentId]?.parentAgentId;
   const subscribeParentAgent = useCallback(
@@ -867,8 +944,20 @@ function ChildAgentWorkspace({
   useEffect(() => {
     if (!headerBusy) setExternalBindingSetting(undefined);
   }, [headerBusy]);
+  const isBranch = selectedNode?.isBranch === true;
+  const parentModel = nestedParentId !== undefined ? parentAgentState.model : sessionState.model;
+  const parentThinkingEffort = nestedParentId !== undefined ? parentAgentState.thinkingEffort : sessionState.thinkingEffort;
+  const parentPermissionMode = nestedParentId !== undefined ? parentAgentState.permissionMode : sessionState.permissionMode;
+  const configuredDefaultModel = normalizeSelectableModelAlias(
+    configQuery.data?.default_model ?? liveSettings.defaultModel,
+  );
+  const boundChildModel = normalizeSelectableModelAlias(
+    agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model ?? capabilitiesProfile?.model,
+  );
   const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
-  const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
+  const displayModel =
+    boundChildModel ??
+    (isBranch ? (normalizeSelectableModelAlias(parentModel) ?? configuredDefaultModel) : undefined);
   const resolvedCrumbs = useMemo(() => {
     if (crumbs.length > 0) return crumbs;
     const sessionLabel = sessionState.session?.title || t('sv.sessionCrumb');
@@ -932,7 +1021,6 @@ function ChildAgentWorkspace({
   const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
     executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
   };
-  const isBranch = selectedNode?.isBranch === true;
   const branchSealed = selectedNode?.branchSealed === true;
   const branchToolsLocked = selectedNode?.toolsLocked === true;
   const branchSeed = selectedNode?.branchSeed;
@@ -1005,13 +1093,15 @@ function ChildAgentWorkspace({
     useSwitchDependency = true,
   ) => {
     if (!agentKnown) return;
-    const content = buildPromptContent(text, composerAttachments, options?.presentation);
+    const carry = serializeSelectionCarryover(annotations, text, options?.presentation);
+    const submittedText = carry.quotedText;
+    const content = buildPromptContent(submittedText, composerAttachments, carry.presentation);
     if (content === null) return;
     const appendTiming = externalExecutor ? undefined : (options?.appendTiming ?? liveSettings.defaultAppendTiming);
     const skills = externalExecutor ? undefined : options?.skills;
     // Timing stays on the stored submission, outside this identity: a plain
     // retry after an unknown result must replay the original one-shot choice.
-    const payload = JSON.stringify([text, content, useSwitchDependency, skills]);
+    const payload = JSON.stringify([submittedText, content, useSwitchDependency, skills]);
     const previous = pendingSendRef.current;
     // A lost acceptance retries the original execution payload, even if the queue advances.
     const submission = previous?.scope === sendScope && previous.payload === payload
@@ -1023,7 +1113,7 @@ function ChildAgentWorkspace({
     // Native text-only sends use the key as their prompt id, so the echo can
     // hand over to the projected row; other sends drop it when they settle.
     const keyedEcho = !externalExecutor && !hasNonTextAttachment;
-    setSendEcho({ scope: sendScope, agentId, id: submission.key, text, content, createdAt: new Date().toISOString(),
+    setSendEcho({ scope: sendScope, agentId, id: submission.key, text: submittedText, content, createdAt: new Date().toISOString(),
       slow: false, preserved: false, retryable: false, status: 'sending' });
     revealOwnSend(false);
     let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
@@ -1032,10 +1122,10 @@ function ChildAgentWorkspace({
       // child send shape and add the seventh/eighth args only when needed.
       const effectiveTiming = submission.appendTiming === 'agent_idle' ? undefined : submission.appendTiming;
       receipt = submission.skills !== undefined
-        ? await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch, effectiveTiming, submission.skills)
+        ? await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch, effectiveTiming, submission.skills)
         : effectiveTiming === undefined
-          ? await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch)
-          : await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch, effectiveTiming);
+          ? await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch)
+          : await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch, effectiveTiming);
     } catch (error) {
       if (isDefinitivePromptRejection(error)) {
         clearSendEcho(submission.key);
@@ -1077,7 +1167,11 @@ function ChildAgentWorkspace({
     if (keyedEcho) {
       setSendEcho((current) => current?.id === submission.key ? { ...current, settledOnServer: true } : current);
     } else clearSendEcho(submission.key);
-    if (controller !== null && sessionState.cursor.epoch?.startsWith('cold:') === true) {
+    if (
+      controller !== null &&
+      typeof controller.resync === 'function' &&
+      sessionState.cursor?.epoch?.startsWith('cold:') === true
+    ) {
       void controller.resync();
     }
     if (pendingSendRef.current !== submission) return;
@@ -1088,6 +1182,13 @@ function ChildAgentWorkspace({
     setSendNotice(null);
     setDraft('');
     setAttachments([]);
+    if (carry.sentIds.size > 0) {
+      if (composerOwnerActive.current) {
+        setAnnotations((current) => current.filter((annotation) => !carry.sentIds.has(annotation.id)));
+      } else {
+        updateStoredAnnotations(draftKey, (current) => current.filter((item) => !carry.sentIds.has(item.id)));
+      }
+    }
     if (receipt === null) return;
     // A persisted external agent returns a durable-mailbox acceptance. Native
     // children return null and take the ordinary prompt path, whose delivery
@@ -1135,18 +1236,23 @@ function ChildAgentWorkspace({
     skills?: readonly PromptSkillActivation[],
   ) => {
     if (!agentKnown) return;
-    const content = buildPromptContent(text, composerAttachments, presentation);
+    const submittedDraft = projectPresentedText(text, presentation);
+    const carry = serializeSelectionCarryover(annotations, text, presentation);
+    const content = buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
     if (content === null) return;
     if (controller === null) throw new Error(t('subagent.composerUnavailable'));
     draftRef.current = '';
     setSendNotice(null);
     setDraft('');
     setAttachments([]);
+    if (carry.sentIds.size > 0) {
+      setAnnotations((current) => current.filter((annotation) => !carry.sentIds.has(annotation.id)));
+    }
     revealOwnSend(true);
     try {
       const result = await controller.sendPromptNow({
         agentId,
-        text,
+        text: carry.quotedText,
         content,
         skills: externalExecutor ? undefined : skills,
       });
@@ -1161,7 +1267,16 @@ function ChildAgentWorkspace({
       }
     } catch (error) {
       const reason = error instanceof SendNowError ? error.reason : 'submit';
-      if (reason !== 'unknown') recoverSubmittedDraft(draftKey, text, composerAttachments);
+      if (reason !== 'unknown') {
+        recoverSubmittedDraft(draftKey, submittedDraft, composerAttachments);
+        if (carry.sentAnnotations.length > 0) {
+          if (composerOwnerActive.current) {
+            setAnnotations((current) => restoreSentAnnotations(current, carry.sentAnnotations));
+          } else {
+            updateStoredAnnotations(draftKey, (current) => restoreSentAnnotations(current, carry.sentAnnotations));
+          }
+        }
+      }
       const cause = error instanceof SendNowError ? error.cause : error;
       pushToast({
         tone: 'error',
@@ -1264,12 +1379,18 @@ function ChildAgentWorkspace({
       ? undefined
       : externalExecutor ? displayModel : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
     if (current !== undefined && target === current) return;
-    // External executors own their context. Native children without history
-    // also have nothing to hand over, so both use a plain binding change.
-    if (externalExecutor || agentLiveState.blocks.length === 0) {
+    const hasConversationBlocks = agentLiveState.blocks.some(
+      (block) => block.kind === 'user' || block.kind === 'assistant' || block.kind === 'tool' || block.kind === 'message',
+    );
+    // External executors own their context. Unbound agents or native children
+    // without history also have nothing to hand over, so use a plain binding change.
+    if (externalExecutor || boundChildModel === undefined || (!isBranch && !hasConversationBlocks)) {
       try {
         await client.setAgentModel(sessionId, agentId, model);
         if (externalExecutor && headerBusy) setExternalBindingSetting(previous => ({ model, thinking: previous?.thinking ?? displayEffort }));
+        await queryClient.invalidateQueries({
+          queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
+        });
       } catch (error) {
         // The pick is a server-side rebind that can fail (a closed child whose
         // persisted binding cannot be restored). Swallow it here — the select is
@@ -1299,7 +1420,11 @@ function ChildAgentWorkspace({
     setModelSwitchDialog({ fromModel: current, toModel: current, initialMode: 'fresh' });
   };
   const displayEffort =
-    agentLiveState.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
+    agentLiveState.thinkingEffort ??
+    selectedNode?.thinkingEffort ??
+    selectedSubagent?.thinkingEffort ??
+    capabilitiesProfile?.thinking_effort ??
+    (isBranch && boundChildModel === undefined ? parentThinkingEffort : undefined);
   // The effort ladder comes from the DISPLAY model's catalog row: a bare alias
   // on the node (`k3-256k`) resolves to the provider row that owns
   // `support_efforts`. Resumable agents retain their binding controls.
@@ -1378,7 +1503,10 @@ function ChildAgentWorkspace({
   const runtimeWriteQueue = useRef(Promise.resolve());
   const runtimeRevision = useRef({ permission: 0, plan: 0 });
   const confirmedRuntime = useRef<{ permission?: PermissionMode; plan?: boolean }>({});
-  const permissionMode = permissionOverride ?? agentLiveState.permissionMode ?? 'manual';
+  const inheritedPermissionMode = isBranch
+    ? (parentPermissionMode ?? liveSettings.defaultPermissionMode)
+    : undefined;
+  const permissionMode = permissionOverride ?? agentLiveState.permissionMode ?? inheritedPermissionMode ?? 'manual';
   const planMode = planOverride ?? agentLiveState.planMode ?? false;
   const persistRuntimeControl = (run: () => Promise<void>, rollback: () => void, settled: () => void) => {
     runtimeWriteQueue.current = runtimeWriteQueue.current.then(run).catch((error: unknown) => {
@@ -1454,6 +1582,7 @@ function ChildAgentWorkspace({
     });
     return changed ? settled : blocks;
   }, [agentBlocks, agentId, childDurableIngress, echoOwned, scopedEcho]);
+  timelineBlocksRef.current = timelineBlocks;
   const childAdmissionScope = useAdmissionScope({
     ingress: childDurableIngress,
     agentId,
@@ -1539,6 +1668,7 @@ function ChildAgentWorkspace({
         onCancelQueued: handleCancelQueued,
         visible: transcriptVisible,
       }}
+      annotations={annotationSurface}
       dock={<div className="space-y-2 pt-2">
         <ResyncStatusBanner
           resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}
@@ -1546,11 +1676,11 @@ function ChildAgentWorkspace({
           onRetry={controller === null ? undefined : () => { void controller.resync(); }}
         />
         {isBranch && !branchSealed ? (
-          <div
+          <ConversationDockColumn
             data-branch-fold-bar={agentId}
-            className="flex flex-wrap items-center justify-between gap-2 px-6 text-[12px] text-ink-soft"
+            innerClassName="flex flex-wrap items-center justify-between gap-2 px-1 text-[12px] text-ink-soft"
           >
-            <span className="truncate">
+            <span className="min-w-0 truncate">
               {branchToolsLocked ? t('transcript.branch.toolsLocked') : branchSeamLabel}
             </span>
             <div className="flex shrink-0 items-center gap-2">
@@ -1575,25 +1705,36 @@ function ChildAgentWorkspace({
                 {t(branchFolding ? 'transcript.branch.folding' : 'transcript.branch.foldAction')}
               </button>
             </div>
-          </div>
+          </ConversationDockColumn>
         ) : null}
         {sendNotice?.scope === sendScope ? (
-          <p role="alert" className="rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
-            {sendNotice.text}
-          </p>
+          <ConversationDockColumn>
+            <p role="alert" className="rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
+              {sendNotice.text}
+            </p>
+          </ConversationDockColumn>
         ) : null}
-        {executorBindingQuery.isError && reportedExecutorId === undefined ? <p role="status" className="text-[12px] text-ink-faint">
-          {t('diagnostics.error')} · {executorBindingQuery.error.message}
-          <button type="button" className="ml-2 underline" onClick={() => { void executorBindingQuery.refetch(); }}>{t('common.retry')}</button>
-        </p> : null}
-        {externalExecutor ? <p data-runtime-modes-external className="px-6 text-[12px] text-ink-faint">{t('subagent.runtimeModesExternal')}</p> : null}
+        {executorBindingQuery.isError && reportedExecutorId === undefined ? (
+          <ConversationDockColumn>
+            <p role="status" className="px-1 text-[12px] text-ink-faint">
+              {t('diagnostics.error')} · {executorBindingQuery.error.message}
+              <button type="button" className="ml-2 underline" onClick={() => { void executorBindingQuery.refetch(); }}>{t('common.retry')}</button>
+            </p>
+          </ConversationDockColumn>
+        ) : null}
+        {externalExecutor ? (
+          <ConversationDockColumn data-runtime-modes-external>
+            <p className="px-1 text-[12px] text-ink-faint">{t('subagent.runtimeModesExternal')}</p>
+          </ConversationDockColumn>
+        ) : null}
         <Composer
-          variant="subagent" replyingTo={displayName} busy={headerBusy} disabled={composerDisabled}
+          variant="subagent" replyingTo={isBranch ? undefined : displayName} busy={headerBusy} disabled={composerDisabled}
+          delegationPosition={isBranch ? 'main' : 'sub'}
           boundExecution={childExecution}
           engine={executorId === undefined ? { label: t('composer.unknown'), fork: false, images: false } : undefined}
           disabledPlaceholder={t('subagent.composerUnavailable')}
           value={draft} onChange={handleDraftChange}
-          model={displayModel} defaultModel={displayModel} serverDefaultModel={displayModel}
+          model={displayModel} defaultModel={displayModel} serverDefaultModel={configuredDefaultModel ?? displayModel}
           modelSource="session" permissionMode={permissionMode}
           pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
             from: modelSwitches.active.receipt.fromModel,
@@ -1623,6 +1764,11 @@ function ChildAgentWorkspace({
           fsSearch={agentKnown ? handleFsSearch : undefined}
           mentionScopeKey={`${scopeId}:${sessionId}`}
           attachments={attachments} onChangeAttachments={handleAttachmentsChange}
+          annotations={annotations}
+          onRemoveAnnotation={handleRemoveAnnotation}
+          onUpdateAnnotation={handleUpdateAnnotation}
+          onLocateAnnotation={handleLocateAnnotation}
+          onOpenImage={handleOpenImage}
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={handlePermissionChange}
           onChangePlanMode={handlePlanChange}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
@@ -1692,7 +1838,7 @@ function ChildAgentWorkspace({
       sessionViewState={agentState}
       agentForest={forest}
       onOpenSubagent={navigation.openAgent}
-      apiRef={previewApiRef}
+      apiRef={effectivePreviewRef}
       controller={controller}
       workspaceSessionState={sessionState}
       workspaceNavigation={navigation}

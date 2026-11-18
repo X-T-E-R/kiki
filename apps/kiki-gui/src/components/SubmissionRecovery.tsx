@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { forgetUnconfirmedSubmission, readUnconfirmedSubmissions, restorePromptToDraft, type UnconfirmedSubmission } from '@kiki/session-core/composer';
 import type { SessionViewState } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { ConversationDockColumn } from './ConversationDockColumn';
 import { Icon } from './icons';
 
 const ACTION = 'h-7 shrink-0 rounded-md text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none';
@@ -37,12 +38,12 @@ export function SubmissionRecovery({ sessionId, state }: { readonly sessionId: s
   };
   const single = items.length === 1;
   return (
-    <div className="px-6 pb-2" data-submission-recovery-wrapper>
+    <ConversationDockColumn className="pb-2" data-submission-recovery-wrapper>
       <section
         role="status"
         aria-label={tp('sv.submissionRecovery.title', items.length)}
         data-submission-recovery
-        className="anim-enter mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-[10px] border border-hairline bg-canvas py-1 pr-1 pl-3"
+        className="anim-enter rounded-[10px] border border-hairline bg-canvas py-1 pr-1 pl-3"
       >
         {single ? null : (
           <p className="flex min-h-7 items-center gap-2 text-[13px] text-ink-soft" title={t('sv.submissionRecovery.body')}>
@@ -90,6 +91,6 @@ export function SubmissionRecovery({ sessionId, state }: { readonly sessionId: s
           })}
         </ul>
       </section>
-    </div>
+    </ConversationDockColumn>
   );
 }

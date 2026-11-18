@@ -29,6 +29,7 @@ import type { GoalBudgetPatch, GoalFollowUpTiming, GoalSnapshot } from '@kiki/pr
 import { API_CODES, ApiError } from '../lib/client';
 import type { UpdateAgentGoalInput } from '../lib/client';
 import { useI18n } from '../i18n';
+import { ConversationDockColumn } from './ConversationDockColumn';
 import { DisclosureChevron, Icon, Spinner } from './icons';
 import { InlineEditor } from './InlineEditor';
 import { LifeMark } from './LifeMark';
@@ -724,12 +725,12 @@ export function RecoveryHoldBar({
   if (count <= 0) return null;
   if (compact) {
     return (
-      <div className="px-6 pb-1.5" data-recovery-hold-wrapper>
+      <ConversationDockColumn className="pb-1.5" data-recovery-hold-wrapper>
         <div
           data-recovery-hold-compact
           role="status"
           aria-label={t('sv.queueRecovered.title')}
-          className="anim-enter mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] items-center justify-end gap-2"
+          className="anim-enter flex items-center justify-end gap-2"
         >
           <button
             type="button"
@@ -740,12 +741,11 @@ export function RecoveryHoldBar({
             {t('sv.queueRecovered.confirm')}
           </button>
         </div>
-      </div>
+      </ConversationDockColumn>
     );
   }
   return (
-    <div className="px-6 pb-2" data-recovery-hold-wrapper>
-      <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
+    <ConversationDockColumn className="pb-2" data-recovery-hold-wrapper>
       <section
         data-recovery-hold
         role="status"
@@ -775,7 +775,6 @@ export function RecoveryHoldBar({
           </button>
         </div>
       </section>
-      </div>
-    </div>
+    </ConversationDockColumn>
   );
 }

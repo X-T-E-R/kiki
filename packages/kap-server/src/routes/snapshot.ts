@@ -502,7 +502,8 @@ function orderSnapshotSubagents(subagents: readonly SnapshotSubagent[]): Snapsho
 
 function readBoundModel(main: IAgentScopeHandle): string | undefined {
   try {
-    return main.accessor.get(IAgentProfileService).getModel();
+    const model = main.accessor.get(IAgentProfileService).getModel();
+    return model !== '' ? model : undefined;
   } catch {
     return undefined;
   }
