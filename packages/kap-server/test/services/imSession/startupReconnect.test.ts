@@ -1,8 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { SessionRunState, SessionSink } from '@nb-corp/nb-im';
+import { createFeishuSessionAdapter, createOneBotSessionAdapter, createOneBotWsTransport, createTelegramSessionAdapter, type SessionRunState, type SessionSink, type SessionSpec } from '@nb-corp/nb-im';
 import { imSessionSnapshotSchema } from '@kiki/protocol';
 import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +12,7 @@ import type { ImSessionAdapter } from '../../../src/services/imSession/adapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { FakeImAdapter } from '../../../src/services/imSession/fakeAdapter';
 import { HubSessionAdapter, loadHubFactories } from '../../../src/services/imSession/hubAdapter';
+import { oneBotIdentityTransport } from '../../../src/services/imSession/oneBotIdentity';
 import type { ImSessionPorts } from '../../../src/services/imSession/ports';
 
 class PendingAdapter extends FakeImAdapter {
@@ -456,6 +458,138 @@ describe('im session startup reconnect', () => {
       open.splice(0);
       if (server !== undefined) await new Promise<void>((resolve) => server!.close(() => resolve()));
       await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('projects Feishu SDK reconnect callbacks, bounds hung Telegram polls, and recovers half-open OneBot sockets through HubSessionAdapter', async () => {
+    let feishuHandlers: Parameters<NonNullable<Extract<SessionSpec, { platform: 'feishu_app' }>['connection']>['open']>[0] | undefined;
+    const feishuHub = new HubSessionAdapter(createFeishuSessionAdapter({
+      platform: 'feishu_app',
+      instance_id: 'fs-reconnect-phase',
+      app_id: 'cli_0011223344556670',
+      app_secret: 'offline-secret',
+      connection: {
+        async open(next) {
+          feishuHandlers = next;
+          return { ok: true };
+        },
+        async send() { return { ok: true, message_id: 'om_1' }; },
+      },
+      retry_ms: 0,
+    }, { async load() { return undefined; }, async save() {} }));
+    await feishuHub.start(async () => undefined);
+    try {
+      expect(feishuHub.connectionPhase()).toBe('running');
+      feishuHandlers?.onReconnecting?.();
+      expect(feishuHub.connectionPhase()).toBe('reconnecting');
+      feishuHandlers?.onReconnected?.();
+      expect(feishuHub.connectionPhase()).toBe('running');
+    } finally {
+      await feishuHub.stop();
+    }
+
+    let polls = 0;
+    let hungAborted = 0;
+    const httpServer = createHttpServer((req, res) => {
+      req.resume();
+      const method = req.url?.slice(1);
+      if (method === 'getMe') {
+        res.setHeader('content-type', 'application/json');
+        res.end('{"ok":true,"result":{"id":42}}');
+        return;
+      }
+      if (method === 'getWebhookInfo') {
+        res.setHeader('content-type', 'application/json');
+        res.end('{"ok":true,"result":{"url":""}}');
+        return;
+      }
+      polls += 1;
+      if (polls === 1 || polls >= 3) {
+        res.on('close', () => { if (!res.writableEnded) hungAborted += 1; });
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        ok: true,
+        result: [{ update_id: 9, message: { message_id: 1, text: 'after-hung-poll', chat: { id: 9, type: 'private' }, from: { id: 8 } } }],
+      }));
+    });
+    await new Promise<void>((resolve) => { httpServer.listen(0, '127.0.0.1', () => { resolve(); }); });
+    const httpAddr = httpServer.address();
+    if (httpAddr === null || typeof httpAddr === 'string') throw new Error('http_port_missing');
+    const tgReceived: string[] = [];
+    const tgHub = new HubSessionAdapter(createTelegramSessionAdapter({
+      platform: 'telegram',
+      instance_id: 'tg-hung-poll-hub',
+      token: '999999:IIIIIIIIIIIIIIIIIIII',
+      retry_ms: 5,
+      poll_timeout_ms: 25,
+      transport: {
+        async call(request, signal) {
+          const response = await fetch(`http://127.0.0.1:${httpAddr.port}/${request.method}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(request.json ?? {}),
+            signal,
+          });
+          return { http_status: response.status, body: await response.json() as unknown };
+        },
+        async download() { return { ok: false }; },
+      },
+    }, { async load() { return undefined; }, async save() {} }));
+    try {
+      await tgHub.start(async (event) => { if (event.text) tgReceived.push(event.text); });
+      await until(() => tgReceived.length === 1, 'Telegram hung poll did not recover through HubSessionAdapter');
+      expect(tgReceived).toEqual(['after-hung-poll']);
+      expect(hungAborted).toBeGreaterThanOrEqual(1);
+    } finally {
+      await tgHub.stop().catch(() => undefined);
+      await new Promise<void>((resolve) => { httpServer.close(() => { resolve(); }); });
+    }
+
+    const wsPort = await freePort();
+    const wsServer = await listen(wsPort);
+    let connections = 0;
+    let pings = 0;
+    let responsive = true;
+    wsServer.on('connection', (socket) => {
+      connections += 1;
+      if (connections > 1) responsive = true;
+      const originalPong = socket.pong;
+      socket.pong = (...args: Parameters<typeof socket.pong>) => {
+        if (responsive) originalPong.apply(socket, args);
+      };
+      socket.on('ping', () => { pings += 1; });
+      socket.on('message', (data) => {
+        const text = Buffer.isBuffer(data) ? data.toString('utf8') : Array.isArray(data) ? Buffer.concat(data).toString('utf8') : Buffer.from(data).toString('utf8');
+        const frame = JSON.parse(text) as { action?: string; echo?: string };
+        if (frame.action === 'get_login_info' && frame.echo) {
+          socket.send(JSON.stringify({ echo: frame.echo, status: 'ok', retcode: 0, data: { user_id: 777 } }));
+        }
+      });
+    });
+    const identitySource = oneBotIdentityTransport(createOneBotWsTransport({ pingIntervalMs: 25, pongTimeoutMs: 20 }));
+    const onebotHub = new HubSessionAdapter(createOneBotSessionAdapter({
+      platform: 'qq_onebot_v11',
+      mode: 'forward',
+      endpoint: `ws://127.0.0.1:${wsPort}/api`,
+      instance_id: 'qq-half-open-hub',
+      transport: identitySource.transport,
+      retry_ms: 5,
+    }, { async load() { return undefined; }, async save() {} }), undefined, identitySource);
+    try {
+      await onebotHub.start(async () => undefined);
+      expect(onebotHub.listenerAccountId).toBe('777');
+      await until(() => pings >= 2, 'OneBot ping watchdog did not fire');
+      expect(connections).toBe(1);
+      expect(onebotHub.connectionPhase()).toBe('running');
+      responsive = false;
+      await until(() => connections >= 2 && onebotHub.connectionPhase() === 'running', 'OneBot half-open socket did not reconnect');
+      expect(connections).toBe(2);
+    } finally {
+      await onebotHub.stop().catch(() => undefined);
+      for (const client of wsServer.clients) client.terminate();
+      await new Promise<void>((resolve) => { wsServer.close(() => { resolve(); }); });
     }
   });
 });

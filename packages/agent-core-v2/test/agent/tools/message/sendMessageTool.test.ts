@@ -975,7 +975,7 @@ describe('SendMessage completion guidance', () => {
       expect(historyText(2)).toContain('Continue.');
       expect(sendCalls()).toEqual(['progress-send', 'failed-send', 'final-send']);
       await ctx.expectResumeMatches();
-    } finally { await rejected.dispose(); }
+    } finally { rejected.dispose(); }
   });
 
   it.each([true, false])('invalidates an explicit final delivery when paired with an unconfirmed SendMessage in either order (unconfirmedFirst=%s)', async (unconfirmedFirst) => {
@@ -994,7 +994,7 @@ describe('SendMessage completion guidance', () => {
       expect(ctx.llmCalls).toHaveLength(3);
       expect(historyText(2)).toContain('Continue.');
       await ctx.expectResumeMatches();
-    } finally { await unconfirmed.dispose(); }
+    } finally { unconfirmed.dispose(); }
   });
 
   it('does not arm silent post-delivery turn end when SendMessage explicitly passes end_turn=false', async () => {
@@ -1070,7 +1070,7 @@ describe('SendMessage completion guidance', () => {
       expect(await agentWakeup.completion).toMatchObject({ state: 'completed' });
       expect(ctx.contextData().history.some(message => message.role === 'user' && message.content.some(part => part.type === 'text' && part.text === 'Continue.'))).toBe(false);
     } finally {
-      retryHandler.dispose();
+      await retryHandler.dispose();
     }
   });
 
@@ -1113,7 +1113,7 @@ describe('SendMessage completion guidance', () => {
     expect(outcome.state).toBe('completed');
     expect(ctx.llmCalls).toHaveLength(usedBudget ? 3 : 2);
     expect(ctx.contextData().history.flatMap(message => message.content)).toContainEqual({
-      type: 'think', think: 'The reply is delivered; wait for notifications.', encrypted: 'sig-post-delivery',
+      type: 'think', think: 'The reply is delivered; wait for notifications.', encrypted: 'sig-post-delivery', reasoningOrigin: expect.any(String),
     });
     expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
     await ctx.expectResumeMatches();
@@ -1131,7 +1131,7 @@ describe('SendMessage completion guidance', () => {
     const outcome = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Reply once.' }] });
     expect(outcome.state).toBe('completed');
     expect(ctx.llmCalls).toHaveLength(2);
-    if (thinking) expect(ctx.contextData().history.flatMap(message => message.content)).toContainEqual({ type: 'think', think: 'Wait quietly.', encrypted: 'sig-quiet' });
+    if (thinking) expect(ctx.contextData().history.flatMap(message => message.content)).toContainEqual({ type: 'think', think: 'Wait quietly.', encrypted: 'sig-quiet', reasoningOrigin: expect.any(String) });
     expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
     await ctx.expectResumeMatches();
   });
@@ -1200,7 +1200,7 @@ describe('SendMessage completion guidance', () => {
       internal.pumpTurns();
       expect(await resumed!.result).toMatchObject({ type: 'completed', steps: 2 });
       expect(ctx.llmCalls).toHaveLength(2);
-      expect(ctx.contextData().history.flatMap(message => message.content)).toContainEqual({ type: 'think', think: 'Wait for notifications.', encrypted: 'sig-resumed' });
+      expect(ctx.contextData().history.flatMap(message => message.content)).toContainEqual({ type: 'think', think: 'Wait for notifications.', encrypted: 'sig-resumed', reasoningOrigin: expect.any(String) });
       await ctx.expectResumeMatches();
     } finally {
       release();

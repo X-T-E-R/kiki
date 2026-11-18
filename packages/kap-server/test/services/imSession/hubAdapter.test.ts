@@ -1,7 +1,12 @@
+import dns from 'node:dns/promises';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer, request as httpRequest } from 'node:http';
+import https from 'node:https';
+import { syncBuiltinESMExports } from 'node:module';
+import { getDefaultAutoSelectFamily, setDefaultAutoSelectFamily } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createFeishuSessionAdapter, createOneBotSessionAdapter, createTelegramSessionAdapter, createWechatSessionAdapter, SESSION_CAPABILITIES, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-corp/nb-im';
+import { createDiscordSessionAdapter, createFeishuSessionAdapter, createOneBotSessionAdapter, createSafeHttpTransport, createTelegramSessionAdapter, createWechatSessionAdapter, SESSION_CAPABILITIES, telegramHttps, wecomHttps, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-corp/nb-im';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, mimeAllowed, sessionSpec } from '../../../src/services/imSession/hubAdapter';
@@ -286,13 +291,23 @@ it('uses the packaged WeChat poller to recover optional-ret updates and keeps tw
     async load() { return undefined; }, async save() {},
   });
   const hub = new HubSessionAdapter(raw);
-  const start = hub.start(async (event) => { identities.push(event.identity); receivedEvents.push(event); if (identities.length === 2) admitted(); });
+  const start = hub.start(async (event) => { identities.push(event.identity); receivedEvents.push(event); if (identities.length === 4) admitted(); });
   try {
     await reconnecting;
     expect(hub.connectionPhase()).toBe('reconnecting');
     expect(hub.connectionDetail()).toMatchObject({ code: 'api_error', http_status: 200, ret: -2, failure_count: 1 });
     expect(JSON.stringify(hub.connectionDetail())).not.toContain('private-error');
-    release(JSON.stringify({ get_updates_buf: 'next', msgs: ['a', 'b'].map((id) => ({ message_id: id, from_user_id: id, to_user_id: 'bot', message_type: 1, message_state: 2, context_token: `context-${id}`, item_list: [{ type: 1, text_item: { text: `current-${id}` }, ref_msg: id === 'a' ? { title: 'misleading title', message_item: { msg_id: 'older-a', type: 1, text_item: { text: 'actual quote' } } } : { title: 'title only', message_item: { msg_id: 'older-b', type: 2 } } }] })) }));
+    release(JSON.stringify({
+      get_updates_buf: 'next',
+      msgs: [
+        { message_id: 'a', from_user_id: 'a', to_user_id: 'bot', message_type: 1, message_state: 2, context_token: 'context-a', item_list: [{ type: 1, text_item: { text: 'current-a' }, ref_msg: { title: 'misleading title', message_item: { msg_id: 'older-a', type: 1, text_item: { text: 'actual quote' } } } }] },
+        { message_id: 'b', from_user_id: 'b', to_user_id: 'bot', message_type: 1, message_state: 2, context_token: 'context-b', item_list: [{ type: 1, text_item: { text: 'current-b' }, ref_msg: { title: 'title only', message_item: { msg_id: 'older-b', type: 2 } } }] },
+        { message_id: 'c', from_user_id: 'c', to_user_id: 'bot', message_type: 1, message_state: 2, context_token: 'context-c', item_list: [
+          { type: 1, text_item: { text: 'current-c' }, ref_msg: { title: 'not quote', message_item: { msg_id: 'older-c', type: 1, text_item: { text: '😀'.repeat(1025) } } } },
+          { type: 1, text_item: { text: 'current-d' }, ref_msg: { title: 'blank ref ignored', message_item: { msg_id: '   ', type: 1, text_item: { text: '   ' } } } },
+        ] },
+      ],
+    }));
     await start;
     await received;
     expect(hub.connectionPhase()).toBe('running');
@@ -300,9 +315,13 @@ it('uses the packaged WeChat poller to recover optional-ret updates and keeps tw
     expect(receivedEvents).toMatchObject([
       { kind: 'text', text: 'current-a', preview: 'current-a', replyToMessageId: 'older-a', quotedText: 'actual quote' },
       { kind: 'text', text: 'current-b', preview: 'current-b', replyToMessageId: 'older-b' },
+      { kind: 'text', text: 'current-c', preview: 'current-c', replyToMessageId: 'older-c', quotedText: `${'😀'.repeat(1024)}…` },
+      { kind: 'text', text: 'current-d', preview: 'current-d' },
     ]);
     expect(receivedEvents[1]?.quotedText).toBeUndefined();
-    for (const identity of identities) await hub.sendText({ identity, text: 'reply', code: 'reply' });
+    expect(receivedEvents[3]?.replyToMessageId).toBeUndefined();
+    expect(receivedEvents[3]?.quotedText).toBeUndefined();
+    for (const identity of identities.slice(0, 2)) await hub.sendText({ identity, text: 'reply', code: 'reply' });
     expect(requests.map((request) => request['msg'])).toEqual([
       expect.objectContaining({ to_user_id: 'a', context_token: 'context-a' }),
       expect.objectContaining({ to_user_id: 'b', context_token: 'context-b' }),
@@ -338,11 +357,13 @@ it('returns the real packaged WeChat send receipt through the Kiki hub', async (
       .toMatchObject({ messageId: '7520810038038921608' });
   }
   expect(calls).toHaveLength(3);
-  body = '{"ret":-2,"errmsg":"prepare failed"}';
+  body = '{"ret":-2,"errmsg":"prepare failed","message_id":7520810038038921608}';
   await expect(hub.sendText({ identity, text: 'pong', code: 'reply' })).rejects.toThrow('wechat_rejected');
+  body = '{"message_id":"   "}';
+  await expect(hub.sendText({ identity, text: 'pong', code: 'reply' })).rejects.toThrow('wechat_unconfirmed');
   body = '';
   await expect(hub.sendText({ identity, text: 'pong', code: 'reply' })).rejects.toThrow('wechat_unconfirmed');
-  expect(calls).toHaveLength(5);
+  expect(calls).toHaveLength(6);
 });
 
 describe('strict session media', () => {
@@ -443,6 +464,79 @@ describe('strict session media', () => {
         detail: 'feishu_rejected',
       });
       expect(sent).toHaveLength(7);
+    } finally {
+      await hub.stop();
+    }
+  });
+
+  it('maps inbound Feishu native video and late bot identity updates onto ImInboundEvent', async () => {
+    let handlers: Parameters<NonNullable<Extract<SessionSpec, { platform: 'feishu_app' }>['connection']>['open']>[0] | undefined;
+    const downloadedKeys: string[] = [];
+    const raw = createFeishuSessionAdapter({
+      platform: 'feishu_app',
+      instance_id: 'packaged-feishu-video-inbound',
+      app_id: 'cli_0011223344556679',
+      app_secret: 'offline-secret',
+      connection: {
+        async open(next) {
+          handlers = next;
+          return { ok: true };
+        },
+        async send(request) {
+          if (request.op === 'download') {
+            downloadedKeys.push(`${request.resource_type}:${request.resource_key}`);
+            return { ok: true, bytes: Uint8Array.of(21, 22, 23) };
+          }
+          return { ok: true, message_id: 'om_vid_out' };
+        },
+      },
+      retry_ms: 0,
+    }, { async load() { return undefined; }, async save() {} });
+    const hub = new HubSessionAdapter(raw);
+    const events: import('../../../src/services/imSession/adapter').ImInboundEvent[] = [];
+    await hub.start(async (event) => { events.push(event); });
+    try {
+      await handlers?.onMessage({
+        event_id: 'ev-video-before-bot-id',
+        app_id: 'cli_0011223344556679',
+        sender: { sender_id: { open_id: 'ou_sender' } },
+        message: {
+          message_id: 'om_vid_in_1',
+          chat_id: 'oc_group',
+          chat_type: 'group',
+          message_type: 'media',
+          content: JSON.stringify({ file_key: 'fk_real_video', image_key: 'img_cover_ignored', file_name: 'walkthrough.mp4' }),
+          mentions: [{ key: '@_user_1', id: { open_id: 'ou_late_bot' }, name: 'Kiki' }],
+        },
+      });
+      handlers?.onBotIdentity?.('ou_late_bot');
+      await handlers?.onMessage({
+        event_id: 'ev-text-after-bot-id',
+        app_id: 'cli_0011223344556679',
+        sender: { sender_id: { open_id: 'ou_sender' } },
+        message: {
+          message_id: 'om_text_in_2',
+          chat_id: 'oc_group',
+          chat_type: 'group',
+          message_type: 'text',
+          content: JSON.stringify({ text: '@_user_1 now identified' }),
+          mentions: [{ key: '@_user_1', id: { open_id: 'ou_late_bot' }, name: 'Kiki' }],
+        },
+      });
+      expect(downloadedKeys).toEqual(['file:fk_real_video']);
+      expect(events[0]).toMatchObject({
+        sourceMessageId: 'om_vid_in_1',
+        kind: 'video',
+        mentioned: undefined,
+        mentionIds: ['ou_late_bot'],
+        media: { name: 'walkthrough.mp4', mediaType: 'video/mp4', bytes: Uint8Array.of(21, 22, 23) },
+      });
+      expect(events[1]).toMatchObject({
+        sourceMessageId: 'om_text_in_2',
+        kind: 'text',
+        mentioned: true,
+        mentionIds: ['ou_late_bot'],
+      });
     } finally {
       await hub.stop();
     }
@@ -777,6 +871,222 @@ describe('strict session media', () => {
       });
     } finally {
       await onebotHub.stop();
+    }
+
+    let discordHandlers: Parameters<NonNullable<Extract<SessionSpec, { platform: 'discord' }>['connection']>['run']>[0] | undefined;
+    const discordRaw = createDiscordSessionAdapter({
+      platform: 'discord',
+      instance_id: 'packaged-discord-rich',
+      bot_token: 'discord-offline-token',
+      retry_ms: 0,
+      connection: {
+        async run(handlers, _store, _scope, signal) {
+          discordHandlers = handlers;
+          handlers.onReady('bot');
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener('abort', () => { resolve(); }, { once: true });
+          });
+        },
+        async send() { return ['d_out']; },
+        async download(url) {
+          if (url === 'https://cdn.discordapp.com/fail.png') throw new Error('download_failed');
+          return Uint8Array.of(4, 5, 6);
+        },
+      },
+    }, { async load() { return undefined; }, async save() {} });
+    const discordHub = new HubSessionAdapter(discordRaw);
+    const discordEvents: unknown[] = [];
+    await discordHub.start(async (event) => { discordEvents.push(event); });
+    try {
+      await discordHandlers?.onEvent({
+        id: '901',
+        channel_id: '11',
+        channel: { type: 1 },
+        author: { id: 'user_1' },
+        content: 'Discord caption survives failure',
+        attachments: [{ url: 'https://cdn.discordapp.com/fail.png', filename: 'broken.png', content_type: 'image/png', size: 3 }],
+      });
+      await discordHandlers?.onEvent({
+        id: '902',
+        channel_id: '11',
+        channel: { type: 1 },
+        author: { id: 'user_1' },
+        content: 'Two Discord attachments',
+        attachments: [
+          { url: 'https://cdn.discordapp.com/ok.png', filename: 'first.png', content_type: 'image/png', size: 3 },
+          { url: 'https://cdn.discordapp.com/fail.png', filename: 'second.png', content_type: 'image/png', size: 3 },
+        ],
+      });
+      expect(discordEvents).toHaveLength(2);
+      expect(discordEvents[0]).toMatchObject({
+        eventId: 'discord:bot:901:0',
+        sourceMessageId: '901',
+        kind: 'message',
+        text: 'Discord caption survives failure',
+        parts: [
+          { kind: 'text', text: 'Discord caption survives failure' },
+          { kind: 'image', text: 'download_failed' },
+        ],
+      });
+      expect(discordEvents[1]).toMatchObject({
+        eventId: 'discord:bot:902:0',
+        sourceMessageId: '902',
+        kind: 'message',
+        parts: [
+          { kind: 'text', text: 'Two Discord attachments' },
+          { kind: 'image', media: { name: 'first.png', mediaType: 'image/png', bytes: Uint8Array.of(4, 5, 6) } },
+          { kind: 'image', text: 'download_failed' },
+        ],
+      });
+    } finally {
+      await discordHub.stop();
+    }
+  });
+
+  it('uses Node 24 single-address pinned IPv4 lookup for packaged Telegram session polling, media download, sends, and outbound notifications', async () => {
+    const seen: [string | undefined, string | undefined][] = [];
+    let updatesPolled = 0;
+    const server = createServer((req, res) => {
+      seen.push([req.method, req.url]);
+      req.resume();
+      res.setHeader('connection', 'close');
+      if (req.method === 'GET') {
+        res.end('pinned-photo-bytes');
+        return;
+      }
+      if (req.url?.endsWith('/getMe')) {
+        res.end('{"ok":true,"result":{"id":42,"username":"PinnedBot"}}');
+        return;
+      }
+      if (req.url?.endsWith('/getWebhookInfo')) {
+        res.end('{"ok":true,"result":{"url":""}}');
+        return;
+      }
+      if (req.url?.endsWith('/getUpdates')) {
+        updatesPolled += 1;
+        if (updatesPolled === 1) {
+          res.end(JSON.stringify({
+            ok: true,
+            result: [{
+              update_id: 1,
+              message: {
+                message_id: 99,
+                caption: 'Pinned photo',
+                photo: [{ file_id: 'file_1', file_size: 18 }],
+                chat: { id: 7, type: 'private' },
+                from: { id: 8 },
+              },
+            }],
+          }));
+          return;
+        }
+        res.end('{"ok":true,"result":[]}');
+        return;
+      }
+      if (req.url?.endsWith('/getFile')) {
+        res.end('{"ok":true,"result":{"file_path":"photos/a.jpg","file_size":18}}');
+        return;
+      }
+      res.end('{"ok":true,"result":{"message_id":42,"errcode":0}}');
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.listen(0, '127.0.0.1', () => { resolve(); }).once('error', reject);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('server_port_missing');
+    const port = address.port;
+    const publicIp = '93.184.216.34';
+    const previousAutoSelect = getDefaultAutoSelectFamily();
+    setDefaultAutoSelectFamily(true);
+    const resolve4Spy = vi.spyOn(dns, 'resolve4').mockImplementation((async (host: string) => {
+      expect(['api.telegram.org', 'qyapi.weixin.qq.com', 'example.com']).toContain(host);
+      return [publicIp];
+    }) as typeof dns.resolve4);
+    const resolve6Spy = vi.spyOn(dns, 'resolve6').mockImplementation((async () => []) as unknown as typeof dns.resolve6);
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((options: https.RequestOptions, onResponse?: (res: import('node:http').IncomingMessage) => void) => {
+      expect(options.agent).toBe(false);
+      expect(options.family).toBe(4);
+      expect(typeof options.lookup).toBe('function');
+      const pinnedLookup = options.lookup!;
+      return httpRequest({
+        ...options,
+        protocol: 'http:',
+        hostname: 'pinned.example.test',
+        port,
+        lookup: (_host, lookupOptions, done) => {
+          expect(lookupOptions.all).not.toBe(true);
+          pinnedLookup(options.hostname ?? '', lookupOptions, (error, resolvedAddress, resolvedFamily) => {
+            if (error) {
+              done(error, '', 4);
+              return;
+            }
+            expect(resolvedAddress).toBe(publicIp);
+            expect(resolvedFamily).toBe(4);
+            done(null, '127.0.0.1', 4);
+          });
+        },
+      }, onResponse);
+    }) as typeof https.request);
+    syncBuiltinESMExports();
+
+    const token = '123456:AAAAAAAAAAAAAAAAAAAA';
+    let photoReceived!: () => void;
+    const photoPromise = new Promise<void>((resolve) => { photoReceived = resolve; });
+    const admitted: import('../../../src/services/imSession/adapter').ImInboundEvent[] = [];
+    const raw = createTelegramSessionAdapter({
+      platform: 'telegram',
+      instance_id: 'packaged-tg-pinned-ipv4',
+      token,
+      retry_ms: 50,
+    }, { async load() { return undefined; }, async save() {} });
+    const hub = new HubSessionAdapter(raw);
+    try {
+      await hub.start(async (event) => {
+        admitted.push(event);
+        photoReceived();
+      });
+      await photoPromise;
+      expect(admitted[0]).toMatchObject({
+        sourceMessageId: '99',
+        kind: 'image',
+        text: 'Pinned photo',
+      });
+      expect(Buffer.from(admitted[0]?.media?.bytes ?? []).toString('utf8')).toBe('pinned-photo-bytes');
+
+      const sent = await hub.sendText({
+        identity: { chatId: '7', senderId: '8', topicId: '0' },
+        text: 'hello over pinned ipv4',
+        code: 'reply',
+      });
+      expect(sent.messageId).toBe('42');
+
+      expect(await telegramHttps.post(token, '{}', () => 'ready')).toMatchObject({ status: 200 });
+      expect(await wecomHttps.post('fixture-key', '{}', () => 'ready')).toMatchObject({ status: 200 });
+      expect(await createSafeHttpTransport().post({
+        url: 'https://example.com/webhook',
+        body: '{}',
+        content_type: 'application/json',
+      }, () => 'ready')).toMatchObject({ status: 200 });
+
+      expect(seen).toEqual(expect.arrayContaining([
+        ['POST', `/bot${token}/getMe`],
+        ['POST', `/bot${token}/getWebhookInfo`],
+        ['POST', `/bot${token}/getUpdates`],
+        ['POST', `/bot${token}/getFile`],
+        ['GET', `/file/bot${token}/photos/a.jpg`],
+        ['POST', `/bot${token}/sendMessage`],
+        ['POST', '/cgi-bin/webhook/send?key=fixture-key'],
+        ['POST', '/webhook'],
+      ]));
+    } finally {
+      await hub.stop().catch(() => undefined);
+      requestSpy.mockRestore();
+      resolve4Spy.mockRestore();
+      resolve6Spy.mockRestore();
+      syncBuiltinESMExports();
+      setDefaultAutoSelectFamily(previousAutoSelect);
+      await new Promise<void>((resolve) => { server.close(() => { resolve(); }); });
     }
   });
 });
