@@ -17,12 +17,27 @@ export type AgentRunOutcomeRead =
   | { readonly ok: false; readonly error: unknown };
 
 export async function readCommittedAgentRunOutcomes(
-  metadata: Pick<ISessionMetadata, 'read'> | undefined,
+  metadata: Pick<ISessionMetadata, 'read' | 'readAgentWithOutcome'> | undefined,
+  agentIds?: ReadonlySet<string>,
 ): Promise<AgentRunOutcomeRead> {
   if (metadata === undefined) return { ok: true, outcomes: new Map() };
   try {
     const data = await metadata.read();
-    return { ok: true, outcomes: outcomesFromAgentRegistry(data.agents) };
+    if (data.agents === undefined) return { ok: true, outcomes: new Map() };
+    const hydrated: Record<string, AgentMeta> = {};
+    for (const [agentId, meta] of Object.entries(data.agents)) {
+      if (agentIds !== undefined && !agentIds.has(agentId)) continue;
+      if (typeof meta.taskId !== 'string' || meta.taskId.length === 0) continue;
+      if (
+        metadata.readAgentWithOutcome !== undefined &&
+        (meta.status === 'completed' || (meta.status === 'failed' && meta.error !== 'terminated'))
+      ) {
+        hydrated[agentId] = (await metadata.readAgentWithOutcome(agentId)) ?? meta;
+      } else {
+        hydrated[agentId] = meta;
+      }
+    }
+    return { ok: true, outcomes: outcomesFromAgentRegistry(hydrated) };
   } catch (error) {
     return { ok: false, error };
   }

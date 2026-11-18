@@ -728,32 +728,33 @@ export class WireService extends Service implements IWireService {
   }
 
   private appendRecordLow(record: WireRecord): void {
-    const serialized = `${JSON.stringify(record)}\n`;
+    const encodedLine = wireTextEncoder.encode(`${JSON.stringify(record)}\n`);
     const isOpen = this.transcriptEpoch?.state === 'open';
-    const expectedBytes = (isOpen && this.transcriptEpoch?.trusted && this.epochExpectedHash !== undefined) ||
-      this.openingAppends !== undefined
-      ? Buffer.from(serialized)
-      : undefined;
+    const shouldHash = (isOpen && this.transcriptEpoch?.trusted && this.epochExpectedHash !== undefined) ||
+      this.openingAppends !== undefined;
     this.log.append(this.wireScope, AGENT_WIRE_RECORD_KEY, record, {
+      encodedLine,
       onError: (error) => { this.epochAppendFailed = true; onUnexpectedError(error); },
     });
     if (isOpen) {
       this.epochAcceptedRecords += 1;
     } else if (this.openingAppends !== undefined) {
       this.openingAppends.records += 1;
-      if (expectedBytes !== undefined) {
-        this.openingAppends.hash.update(expectedBytes);
-        this.openingAppends.bytes += expectedBytes.byteLength;
+      if (shouldHash) {
+        this.openingAppends.hash.update(encodedLine);
+        this.openingAppends.bytes += encodedLine.byteLength;
       }
     }
-    this.appendedBytes += expectedBytes?.byteLength ?? Buffer.byteLength(serialized);
+    this.appendedBytes += encodedLine.byteLength;
     for (const listener of this.appendListeners) listener(this.appendedBytes);
-    if (isOpen && expectedBytes !== undefined && this.epochExpectedHash !== undefined) {
-      this.epochExpectedHash.update(expectedBytes);
-      this.epochExpectedSize += expectedBytes.byteLength;
+    if (isOpen && shouldHash && this.epochExpectedHash !== undefined) {
+      this.epochExpectedHash.update(encodedLine);
+      this.epochExpectedSize += encodedLine.byteLength;
     }
   }
 }
+
+const wireTextEncoder = new TextEncoder();
 
 class WireBoundaryMismatch extends Error {}
 

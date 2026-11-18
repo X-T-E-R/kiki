@@ -80,7 +80,8 @@ export class SessionBranchService extends Service implements ISessionBranchServi
 
   isBranch(agentId: string): boolean {
     if (agentId === MAIN_AGENT_ID) return false;
-    return this.metadata.snapshot().agents?.[agentId]?.labels?.['branch'] === 'true';
+    const agent = this.metadata.peekAgent !== undefined ? this.metadata.peekAgent(agentId) : this.metadata.snapshot().agents?.[agentId];
+    return agent?.labels?.['branch'] === 'true';
   }
 
   isToolsLocked(agentId: string): boolean {
@@ -88,7 +89,8 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     if (handle !== undefined) {
       return handle.accessor.get(IAgentStateService).get(branchToolLockKey) === true;
     }
-    return this.metadata.snapshot().agents?.[agentId]?.labels?.['toolsLocked'] === 'true';
+    const agent = this.metadata.peekAgent !== undefined ? this.metadata.peekAgent(agentId) : this.metadata.snapshot().agents?.[agentId];
+    return agent?.labels?.['toolsLocked'] === 'true';
   }
 
   isSealed(agentId: string): boolean {
@@ -96,7 +98,8 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     if (handle !== undefined) {
       return handle.accessor.get(IAgentStateService).get(branchSealedKey) === true;
     }
-    return this.metadata.snapshot().agents?.[agentId]?.labels?.['branchSealed'] === 'true';
+    const agent = this.metadata.peekAgent !== undefined ? this.metadata.peekAgent(agentId) : this.metadata.snapshot().agents?.[agentId];
+    return agent?.labels?.['branchSealed'] === 'true';
   }
 
   private assertBranchAllowed(initiator: 'user' | 'agent', toolsLocked: boolean, callerAgentId: string): void {

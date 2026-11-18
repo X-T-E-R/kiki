@@ -17,6 +17,7 @@ export type { PartsTransformer } from '#/wire/record';
 
 export interface StateBlobCodec<S> {
   dehydrate: RecordDehydrator;
+  dehydrateState?(state: S, transform: PartsTransformer): S | Promise<S>;
   rehydrate(state: S, transform: PartsTransformer): S | Promise<S>;
 }
 

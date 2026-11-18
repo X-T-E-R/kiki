@@ -4,11 +4,15 @@ import type { CpuRequest, CpuResponse } from './protocol';
 import { fromErrorPayload } from '#/_base/errors/serialize';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 
+const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
+const WARM_WORKER_FLOOR = 1;
+
 export interface CpuPoolOptions {
   readonly maxWorkers?: number;
   readonly maxQueue?: number;
   readonly maxQueuedBytes?: number;
   readonly timeoutMs?: number;
+  readonly idleTimeoutMs?: number;
 }
 
 export interface CpuRequestOptions {
@@ -40,6 +44,7 @@ interface Slot {
   worker?: Worker;
   active?: Pending;
   retiring?: Promise<number>;
+  idleTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class CpuWorkerPool {
@@ -49,6 +54,7 @@ export class CpuWorkerPool {
   private readonly maxQueue: number;
   private readonly maxQueuedBytes: number;
   private readonly timeoutMs: number;
+  private readonly idleTimeoutMs: number;
   private queuedBytes = 0;
   private serial = 0;
   private closing?: Promise<void>;
@@ -59,6 +65,15 @@ export class CpuWorkerPool {
     this.maxQueue = positiveInteger(options.maxQueue ?? RESOURCE_DEFAULTS.cpuQueue, 'maxQueue');
     this.maxQueuedBytes = positiveInteger(options.maxQueuedBytes ?? RESOURCE_DEFAULTS.cpuQueuedBytes, 'maxQueuedBytes');
     this.timeoutMs = positiveInteger(options.timeoutMs ?? 30_000, 'timeoutMs');
+    this.idleTimeoutMs = positiveInteger(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, 'idleTimeoutMs');
+  }
+
+  get liveWorkerCount(): number {
+    let count = 0;
+    for (const slot of this.slots) {
+      if (slot.worker !== undefined && slot.retiring === undefined) count += 1;
+    }
+    return count;
   }
 
   request<T>(operation: unknown, options: CpuRequestOptions = {}): Promise<T> {
@@ -84,12 +99,14 @@ export class CpuWorkerPool {
   private pump(): void {
     if (this.closing !== undefined) return;
     while (this.waiting.length > 0) {
-      let slot = this.slots.find((candidate) => candidate.active === undefined && candidate.retiring === undefined);
+      let slot = this.slots.find((candidate) => candidate.worker !== undefined && candidate.active === undefined && candidate.retiring === undefined)
+        ?? this.slots.find((candidate) => candidate.active === undefined && candidate.retiring === undefined);
       if (slot === undefined) {
-        if (this.slots.length >= this.size) return;
+        if (this.slots.length >= this.size) break;
         slot = {};
         this.slots.push(slot);
       }
+      this.clearIdleTimer(slot);
       const pending = this.waiting.shift()!;
       this.queuedBytes -= pending.bytes;
       slot.active = pending;
@@ -103,6 +120,59 @@ export class CpuWorkerPool {
         void this.retire(slot);
       }
     }
+    this.reconcileIdleTimers();
+  }
+
+  private clearIdleTimer(slot: Slot): void {
+    if (slot.idleTimer !== undefined) {
+      clearTimeout(slot.idleTimer);
+      slot.idleTimer = undefined;
+    }
+  }
+
+  private reconcileIdleTimers(): void {
+    if (this.closing !== undefined || this.waiting.length > 0) {
+      for (const slot of this.slots) this.clearIdleTimer(slot);
+      return;
+    }
+    const live = this.slots.filter((slot) => slot.worker !== undefined && slot.retiring === undefined);
+    if (live.length <= WARM_WORKER_FLOOR) {
+      for (const slot of this.slots) this.clearIdleTimer(slot);
+      return;
+    }
+    let warmReserved = live.filter((slot) => slot.active !== undefined).length;
+    for (const slot of live) {
+      if (slot.active !== undefined) {
+        this.clearIdleTimer(slot);
+        continue;
+      }
+      if (warmReserved < WARM_WORKER_FLOOR) {
+        warmReserved += 1;
+        this.clearIdleTimer(slot);
+        continue;
+      }
+      if (slot.idleTimer === undefined) {
+        slot.idleTimer = setTimeout(() => { this.onIdleTimeout(slot); }, this.idleTimeoutMs);
+        slot.idleTimer.unref?.();
+      }
+    }
+  }
+
+  private onIdleTimeout(slot: Slot): void {
+    slot.idleTimer = undefined;
+    if (
+      this.closing !== undefined ||
+      slot.active !== undefined ||
+      slot.worker === undefined ||
+      slot.retiring !== undefined ||
+      this.waiting.length > 0 ||
+      this.liveWorkerCount <= WARM_WORKER_FLOOR
+    ) {
+      this.reconcileIdleTimers();
+      return;
+    }
+    void this.retire(slot);
+    this.reconcileIdleTimers();
   }
 
   private spawn(slot: Slot): Worker {
@@ -128,13 +198,17 @@ export class CpuWorkerPool {
       if (slot.active !== undefined) this.settle(slot.active, new CpuWorkerError('CPU_WORKER_EXIT', 'CPU worker failed', { cause }));
       slot.active = undefined;
       void this.retire(slot);
+      this.reconcileIdleTimers();
     });
     worker.on('exit', (code) => {
       if (slot.worker !== worker) return;
+      this.clearIdleTimer(slot);
       if (slot.active !== undefined) this.settle(slot.active, new CpuWorkerError('CPU_WORKER_EXIT', `CPU worker exited (${code})`));
       slot.active = undefined;
       slot.worker = undefined;
       slot.retiring = undefined;
+      const index = this.slots.indexOf(slot);
+      if (index >= 0) this.slots.splice(index, 1);
       this.pump();
     });
     return worker;
@@ -152,10 +226,12 @@ export class CpuWorkerPool {
     if (slot === undefined) return;
     slot.active = undefined;
     const retired = this.retire(slot);
+    this.reconcileIdleTimers();
     void Promise.resolve(retired).then(() => this.settle(pending, error), () => this.settle(pending, error));
   }
 
   private retire(slot: Slot): Promise<number> | undefined {
+    this.clearIdleTimer(slot);
     if (slot.worker === undefined || slot.retiring !== undefined) return slot.retiring;
     slot.retiring = slot.worker.terminate();
     void slot.retiring.catch(() => {});
@@ -175,12 +251,15 @@ export class CpuWorkerPool {
     this.closing = Promise.resolve();
     for (const pending of this.waiting.splice(0)) this.settle(pending, error);
     this.queuedBytes = 0;
-    for (const slot of this.slots) {
+    const retiring: Promise<number>[] = [];
+    for (const slot of [...this.slots]) {
+      this.clearIdleTimer(slot);
       if (slot.active !== undefined) this.settle(slot.active, error);
       slot.active = undefined;
-      void this.retire(slot);
+      const termination = this.retire(slot);
+      if (termination !== undefined) retiring.push(termination);
     }
-    this.closing = Promise.all(this.slots.flatMap((slot) => slot.retiring === undefined ? [] : [slot.retiring])).then(() => {});
+    this.closing = Promise.all(retiring).then(() => {});
     return this.closing;
   }
 }

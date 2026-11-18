@@ -1850,4 +1850,28 @@ describe('WireService flush', () => {
     expect(flushed).toBe(true);
     expect(records).toEqual([{ type: 'wire.test.gated', time: 1 }]);
   });
+
+  it('encodes each canonical wire record once across WireService proof hashing and AppendLogStore flush', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    let toJsonCalls = 0;
+    const record: WireRecord = {
+      type: 'wire.test.single_encode',
+      text: '单次编码🚀',
+      time: 42,
+      toJSON() {
+        toJsonCalls += 1;
+        return { type: 'wire.test.single_encode', text: '单次编码🚀', time: 42 };
+      },
+    };
+    wire.appendRecord(record);
+    await wire.flush();
+    expect(toJsonCalls).toBe(1);
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    const readBack: WireRecord[] = [];
+    for await (const item of wire.readJournal()) {
+      readBack.push(item);
+    }
+    expect(readBack).toContainEqual({ type: 'wire.test.single_encode', text: '单次编码🚀', time: 42 });
+  });
 });

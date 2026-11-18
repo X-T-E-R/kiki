@@ -75,7 +75,8 @@ async function returnReceipt(child: IAgentScopeHandle, parentId: string, receipt
   const receiptId = createHash('sha256').update(`${child.id}:${String(receipt.turnId)}`).digest('hex');
   const taskId = `agent-receipt-${receiptId.slice(0, 56)}-${receiptId.slice(56)}`;
   const metadata = child.accessor.get(ISessionMetadata);
-  if (metadata.snapshot().agents?.[child.id]?.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local') {
+  const currentAgent = metadata.peekAgent !== undefined ? metadata.peekAgent(child.id) : metadata.snapshot().agents?.[child.id];
+  if (currentAgent?.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL] === 'local') {
     const delivered = new AutonomousReceiptDelivered({ turnId: receipt.turnId });
     await retry(() => child.accessor.get(IEventDispatcher).dispatchDurably(delivered));
     return;

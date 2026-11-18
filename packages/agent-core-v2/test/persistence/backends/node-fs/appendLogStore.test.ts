@@ -9,6 +9,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { AppendLogCorruptedError, IAppendLogStore, type AppendLogTruncation } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { encodeJsonLines } from '#/persistence/jsonLines';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
@@ -1261,5 +1262,63 @@ describe('AppendLogStore', () => {
     record.append<Rec>(SCOPE, KEY, { n: 1 });
     await expect(record.flush()).rejects.toThrow('disk full');
     expect(events).toEqual([`${SCOPE}/${KEY}`]);
+  });
+
+  it('reuses pre-encoded UTF-8 lines without re-stringifying, avoids 1 MiB scratch buffers on tiny flushes, and recovers partial UTF-8 suffixes', async () => {
+    const chunks = [...encodeJsonLines([{ n: 1, text: '你好🚀' }])];
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.buffer.byteLength).toBeLessThan(65_536);
+
+    const typedRecord = {
+      type: 'wire.test',
+      text: '日本語🛰',
+      toJSON() {
+        stringifyCalls += 1;
+        return { type: this.type, text: this.text };
+      },
+    };
+    let stringifyCalls = 0;
+    const preEncoded = enc.encode(`${JSON.stringify(typedRecord)}\n`);
+    expect(stringifyCalls).toBe(1);
+
+    const projected: unknown[] = [];
+    record.registerProjection({
+      key: KEY,
+      prepare: (_scope, records) => [...records],
+      commit: async (_position, records) => {
+        projected.push(...records);
+      },
+      onError: (err) => {
+        throw err;
+      },
+    });
+
+    const originalAppend = storage.append.bind(storage);
+    const observedBuffers: number[] = [];
+    let failFirst = true;
+    const partialCut = 7;
+    const partialFailure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'disk full mid-write', {
+      details: { errno: 'ENOSPC', committed: true },
+    });
+    storage.append = async (scope, key, data, options) => {
+      observedBuffers.push(data.buffer.byteLength);
+      if (failFirst) {
+        failFirst = false;
+        await originalAppend(scope, key, data.subarray(0, partialCut), options);
+        throw partialFailure;
+      }
+      await originalAppend(scope, key, data, options);
+    };
+
+    record.append(SCOPE, KEY, typedRecord, { encodedLine: preEncoded });
+    await expect(record.flush(SCOPE, KEY)).rejects.toBe(partialFailure);
+    expect(stringifyCalls).toBe(1);
+    expect(projected).toEqual([]);
+
+    await record.flush(SCOPE, KEY);
+    expect(stringifyCalls).toBe(1);
+    expect(projected).toEqual([typedRecord]);
+    expect(observedBuffers.every((size) => size < 65_536)).toBe(true);
+    expect(await collect(SCOPE, KEY)).toEqual([{ type: 'wire.test', text: '日本語🛰' }]);
   });
 });

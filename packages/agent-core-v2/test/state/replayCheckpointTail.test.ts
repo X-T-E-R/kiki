@@ -6,8 +6,9 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
-import { IAgentBlobService } from '#/agent/blob/agentBlobService';
-import { ContextAppendMessage, ContextUndo } from '#/agent/contextMemory/contextEvents';
+import { IAgentBlobService, MISSING_MEDIA_PLACEHOLDER } from '#/agent/blob/agentBlobService';
+import { AgentBlobServiceImpl } from '#/agent/blob/agentBlobServiceImpl';
+import { ContextAppendLoopEvent, ContextAppendMessage, ContextApplyCompaction, ContextUndo } from '#/agent/contextMemory/contextEvents';
 import { IPluginStateRegistryService } from '#/agent/pluginState/pluginState';
 import { PluginStateRegistryService } from '#/agent/pluginState/pluginStateService';
 import { PluginFactRecorded, pluginConversationStateKey, pluginWorldStateKey } from '#/agent/pluginState/pluginStateKeys';
@@ -31,8 +32,10 @@ import { InMemoryStorageService } from '#/persistence/backends/memory/inMemorySt
 import type { StorageReadRange } from '#/persistence/interface/storage';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { BlobStoreService } from '#/persistence/backends/node-fs/blobStoreService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { EventDispatcherService, REPLAY_CHECKPOINT_GROWTH_BYTES } from '#/state/eventDispatcherService';
@@ -1196,5 +1199,227 @@ describe('replay checkpoint tail', () => {
     }
     expect(streamBytes).toBeLessThan(batch * 1024 * 1024);
     expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it('dehydrates multi-MB media data URLs to blobrefs in engine-v1 (>85% smaller), matches canonical replay across tail/undo/compaction, supports legacy inline checkpoints, and falls back to wire when a blob is missing', async () => {
+    function blobHarness(storage: InMemoryStorageService): Harness & { readonly blobs: IBlobStore } {
+      const root = disposables.add(new TestInstantiationService());
+      root.stub(IFileSystemStorageService, storage);
+      root.stub(ILogService, noopLogger);
+      root.stub(ITelemetryService, noopTelemetryService);
+      root.stub(IAgentScopeContext, {
+        _serviceBrand: undefined,
+        agentId: 'main',
+        scope: (subKey?: string) => (subKey === undefined || subKey === '' ? SCOPE : `${SCOPE}/${subKey}`),
+      });
+      root.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+      root.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
+      root.set(IBlobStore, new SyncDescriptor(BlobStoreService));
+      root.set(IAgentBlobService, new SyncDescriptor(AgentBlobServiceImpl));
+      root.set(IEventBus, new SyncDescriptor(EventBusService));
+      root.set(IWireService, new SyncDescriptor(WireService));
+      root.set(IAgentStateService, new AgentStateService());
+      root.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
+      const state = root.get(IAgentStateService);
+      state.contributeState(contextMemoryKey);
+      state.contributeState(contextRevisionKey);
+      state.contributeState(usageKey);
+      state.contributeState(promptQueueKey);
+      state.contributeState(promptAdmissionKey);
+      return {
+        storage,
+        docs: root.get(IAtomicDocumentStore),
+        blobs: root.get(IBlobStore),
+        wire: root.get(IWireService),
+        dispatcher: root.get(IEventDispatcher),
+        state,
+      };
+    }
+
+    const pngBytes = Buffer.alloc(1_200_000, 0xab);
+    const jpegBytes = Buffer.alloc(900_000, 0xcd);
+    const pngUri = `data:image/png;base64,${pngBytes.toString('base64')}`;
+    const jpegUri = `data:image/jpeg;base64,${jpegBytes.toString('base64')}`;
+    const expandedBytes = Buffer.byteLength(pngUri) + Buffer.byteLength(jpegUri);
+
+    const storage = new InMemoryStorageService();
+    const first = blobHarness(storage);
+    await first.wire.seal();
+    await first.dispatcher.restore();
+    await first.dispatcher.dispatchDurably(new ContextAppendMessage({
+      message: {
+        id: 'u1',
+        role: 'user',
+        content: [
+          { type: 'text', text: 'inspect first image' },
+          { type: 'image_url', imageUrl: { url: pngUri } },
+        ],
+        toolCalls: [],
+        origin: { kind: 'user', originalInput: [{ type: 'image_url', imageUrl: { url: pngUri } }] },
+      },
+    }));
+    await first.dispatcher.dispatchDurably(new ContextAppendLoopEvent({
+      event: {
+        type: 'step.begin',
+        uuid: 'step-1',
+      },
+    }));
+    await first.dispatcher.dispatchDurably(new ContextAppendLoopEvent({
+      event: {
+        type: 'tool.call',
+        stepUuid: 'step-1',
+        toolCallId: 'call-1',
+        name: 'ReadMediaFile',
+        args: { path: 'sample.jpg' },
+      },
+    }));
+    await first.dispatcher.dispatchDurably(new ContextAppendLoopEvent({
+      event: {
+        type: 'tool.result',
+        toolCallId: 'call-1',
+        result: {
+          output: [
+            { type: 'text', text: 'loaded media' },
+            { type: 'image_url', imageUrl: { url: jpegUri } },
+          ],
+        },
+      },
+    }));
+    await first.dispatcher.dispatchDurably(new ContextAppendLoopEvent({
+      event: {
+        type: 'step.end',
+        uuid: 'step-1',
+        finishReason: 'stop',
+      },
+    }));
+
+    expect(await first.dispatcher.saveReplayCheckpoint?.()).toBe(true);
+    const rawCheckpoint = (await storage.read(CHECKPOINT_SCOPE, `${CHECKPOINT_KEY}.json`)) ??
+      (await storage.read(CHECKPOINT_SCOPE, CHECKPOINT_KEY));
+    expect(rawCheckpoint).toBeDefined();
+    expect(rawCheckpoint!.byteLength).toBeLessThan(expandedBytes * 0.15);
+    const rawText = new TextDecoder().decode(rawCheckpoint!);
+    expect(rawText).toContain('blobref:image/png;');
+    expect(rawText).toContain('blobref:image/jpeg;');
+    expect(rawText).not.toContain(pngUri.slice(0, 128));
+
+    const exactRestore = blobHarness(storage);
+    const exactReads = watchReads(exactRestore.wire);
+    await exactRestore.dispatcher.restore();
+    expect(exactReads.full).toBe(0);
+    expect(exactReads.tails).toEqual([]);
+    expect(exactRestore.state.get(contextMemoryKey)).toEqual(first.state.get(contextMemoryKey));
+
+    const tailBytes = Buffer.alloc(64_000, 0xef);
+    const tailUri = `data:image/webp;base64,${tailBytes.toString('base64')}`;
+    await exactRestore.dispatcher.dispatchDurably(new ContextAppendMessage({
+      message: {
+        id: 'u2',
+        role: 'user',
+        content: [{ type: 'text', text: 'temporary prompt' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+    }));
+    await exactRestore.dispatcher.dispatchDurably(new ContextUndo({
+      count: 1,
+      replacementPrompt: {
+        schemaVersion: 1,
+        promptId: 'p-edit',
+        userMessageId: 'u2',
+        createdAt: '2026-11-18T00:00:00.000Z',
+        message: {
+          id: 'u2',
+          role: 'user',
+          content: [
+            { type: 'text', text: 'edited prompt with media' },
+            { type: 'image_url', imageUrl: { url: tailUri } },
+          ],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+        alreadyMaterialized: true,
+        appendTiming: 'agent_idle',
+        revision: 1,
+        queueIndex: 0,
+      },
+    }));
+    await exactRestore.dispatcher.dispatchDurably(new ContextApplyCompaction({
+      summary: 'compacted summary',
+      compactedCount: 3,
+      tokensBefore: 6000,
+    }));
+
+    const tailRestore = blobHarness(storage);
+    const tailReads = watchReads(tailRestore.wire);
+    await tailRestore.dispatcher.restore();
+    expect(tailReads.full).toBe(0);
+    expect(tailReads.tails).toHaveLength(1);
+
+    const canonicalStorage = new InMemoryStorageService();
+    for (const key of await storage.list(SCOPE)) {
+      const data = await storage.read(SCOPE, key);
+      if (data !== undefined) await canonicalStorage.write(SCOPE, key, data);
+    }
+    for (const key of await storage.list(`${SCOPE}/blobs`)) {
+      const data = await storage.read(`${SCOPE}/blobs`, key);
+      if (data !== undefined) await canonicalStorage.write(`${SCOPE}/blobs`, key, data);
+    }
+    const canonical = blobHarness(canonicalStorage);
+    const canonicalReads = watchReads(canonical.wire);
+    await canonical.dispatcher.restore();
+    expect(canonicalReads.full).toBe(1);
+    expect(tailRestore.state.get(contextMemoryKey)).toEqual(canonical.state.get(contextMemoryKey));
+
+    const legacyInlineStorage = new InMemoryStorageService();
+    const legacyNoop = harness(legacyInlineStorage);
+    await legacyNoop.wire.seal();
+    await legacyNoop.dispatcher.restore();
+    await legacyNoop.dispatcher.dispatchDurably(new ContextAppendMessage({
+      message: {
+        id: 'legacy-1',
+        role: 'user',
+        content: [{ type: 'image_url', imageUrl: { url: tailUri } }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+    }));
+    expect(await legacyNoop.dispatcher.saveReplayCheckpoint?.()).toBe(true);
+    const legacyReader = blobHarness(legacyInlineStorage);
+    const legacyReads = watchReads(legacyReader.wire);
+    await legacyReader.dispatcher.restore();
+    expect(legacyReads.full).toBe(0);
+    expect(legacyReader.state.get(contextMemoryKey)[0]?.content[0]).toEqual({
+      type: 'image_url',
+      imageUrl: { url: tailUri },
+    });
+
+    const missingBlobStorage = new InMemoryStorageService();
+    const seeded = blobHarness(missingBlobStorage);
+    await seeded.wire.seal();
+    await seeded.dispatcher.restore();
+    await seeded.dispatcher.dispatchDurably(new ContextAppendMessage({
+      message: {
+        id: 'm1',
+        role: 'user',
+        content: [{ type: 'image_url', imageUrl: { url: pngUri } }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+    }));
+    expect(await seeded.dispatcher.saveReplayCheckpoint?.()).toBe(true);
+    const blobKeys = await seeded.blobs.list(`${SCOPE}/blobs`);
+    expect(blobKeys.length).toBeGreaterThan(0);
+    for (const key of blobKeys) {
+      await seeded.blobs.delete(`${SCOPE}/blobs`, key);
+    }
+    const fallback = blobHarness(missingBlobStorage);
+    const fallbackReads = watchReads(fallback.wire);
+    await fallback.dispatcher.restore();
+    expect(fallbackReads.full).toBe(1);
+    expect(fallback.state.get(contextMemoryKey)[0]?.content[0]).toEqual({
+      type: 'image_url',
+      imageUrl: { url: MISSING_MEDIA_PLACEHOLDER },
+    });
   });
 });

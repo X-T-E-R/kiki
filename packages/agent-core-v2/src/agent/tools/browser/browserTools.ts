@@ -176,7 +176,10 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
 
   private isInteractiveConversationAgent(): boolean {
     if (this.agent.agentId === MAIN_AGENT_ID || this.agent.isBranch === true) return true;
-    const meta = this.optionalService(ISessionMetadata)?.snapshot?.().agents?.[this.agent.agentId];
+    const sessionMetadata = this.optionalService(ISessionMetadata);
+    const meta = sessionMetadata?.peekAgent !== undefined
+      ? sessionMetadata.peekAgent(this.agent.agentId)
+      : sessionMetadata?.snapshot?.().agents?.[this.agent.agentId];
     return meta?.type === 'main' || meta?.labels?.['branch'] === 'true';
   }
 

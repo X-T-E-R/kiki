@@ -289,13 +289,13 @@ export class SessionExecutionControl extends Disposable implements ISessionExecu
   }
 
   private requiredOwners(agentIds: readonly string[]): readonly string[] {
-    const agents = this.metadata.snapshot().agents;
+    const fallbackAgents = this.metadata.peekAgent === undefined ? this.metadata.snapshot().agents : undefined;
     const visited = new Set<string>();
     const required: string[] = [];
     const visit = (agentId: string): void => {
       if (visited.has(agentId)) return;
       visited.add(agentId);
-      const meta = agents?.[agentId];
+      const meta = this.metadata.peekAgent !== undefined ? this.metadata.peekAgent(agentId) : fallbackAgents?.[agentId];
       const parent = meta?.delegator?.kind === 'agent' ? meta.delegator.agentId : meta?.parentAgentId;
       if (parent !== undefined && parent !== null) visit(parent);
       required.push(agentId);

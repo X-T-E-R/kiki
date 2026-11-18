@@ -37,6 +37,13 @@ export class ByteLruCache {
     this.map.set(key, value);
   }
 
+  delete(key: string): boolean {
+    const existing = this.map.get(key);
+    if (existing === undefined) return false;
+    this.currentBytes -= existing.byteLength;
+    return this.map.delete(key);
+  }
+
   private evictOldest(): void {
     const oldest = this.map.keys().next().value;
     if (oldest === undefined) return;

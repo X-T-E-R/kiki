@@ -10,7 +10,7 @@ import { restoreSignal, timeRestorePhase } from '#/session/agentLifecycle/restor
 import { type CollectionView } from '#/_base/di/collection';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { CheckpointBlobMissingError, IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IPluginStateRegistryService, type PluginCheckpointInterpretationEntry } from '#/agent/pluginState/pluginState';
@@ -590,18 +590,26 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       }
       if (!this.checkpointStable(generation, revision)) return false;
       phase = 'encode';
-      const payload: ReplayCheckpointPayload = {
-        states: keys.map((key) => {
-          const meta = this.ensureMeta(key);
-          return {
-            name: key.name,
-            value: this.agentState.get(key),
-            meta: keepsUndoCheckpoints(key) || meta.checkpoints.length > 0
-              ? meta
-              : { history: [], checkpoints: [], nextPatchId: meta.nextPatchId },
-          };
-        }),
-      };
+      const offloadTransform: PartsTransformer = (parts) =>
+        this.blobService.offloadParts(parts as readonly ContentPart[]) as Promise<readonly unknown[]>;
+      const serializedStates: ReplayCheckpointPayload['states'][number][] = [];
+      for (const key of keys) {
+        const meta = this.ensureMeta(key);
+        const rawValue = this.agentState.get(key);
+        const dehydrateState = key.replayable.blobs?.dehydrateState;
+        const value = dehydrateState === undefined
+          ? rawValue
+          : await dehydrateState(rawValue, offloadTransform);
+        if (!this.checkpointStable(generation, revision)) return false;
+        serializedStates.push({
+          name: key.name,
+          value,
+          meta: keepsUndoCheckpoints(key) || meta.checkpoints.length > 0
+            ? meta
+            : { history: [], checkpoints: [], nextPatchId: meta.nextPatchId },
+        });
+      }
+      const payload: ReplayCheckpointPayload = { states: serializedStates };
       const pluginInterpretation = this.checkpointPluginInterpretation();
       const graph = await encodeReplayCheckpointGraphAsync(payload);
       if (!this.checkpointStable(generation, revision)) return false;
@@ -723,19 +731,26 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     const context = { agentId: this.scope.current?.agentId };
     const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(this.log.current, context, name, action);
     try {
-      const checkpointRestored = await phase('checkpoint_restore', () => this.restoreReplayCheckpoint());
+      let checkpointRestored = await phase('checkpoint_restore', () => this.restoreReplayCheckpoint());
       if (checkpointRestored === undefined) {
         await phase('journal_replay', () => this.replayJournal());
-      } else if (checkpointRestored.tailByte !== undefined) {
+        await phase('state_rehydrate', () => this.rehydrateStates(false));
+      } else {
         try {
-          await phase('journal_tail_replay', () => this.replayJournal(checkpointRestored.tailByte));
+          if (checkpointRestored.tailByte !== undefined) {
+            await phase('journal_tail_replay', () => this.replayJournal(checkpointRestored!.tailByte));
+          }
+          await phase('state_rehydrate', () => this.rehydrateStates(true));
         } catch (error) {
-          if (!(error instanceof JournalTailUnreadableError)) throw error;
+          if (!(error instanceof JournalTailUnreadableError) && !(error instanceof CheckpointBlobMissingError)) {
+            throw error;
+          }
+          checkpointRestored = undefined;
           this.resetReplayableState();
           await phase('journal_replay', () => this.replayJournal());
+          await phase('state_rehydrate', () => this.rehydrateStates(false));
         }
       }
-      await phase('state_rehydrate', () => this.rehydrateStates());
       const unresolved = new Set<string>();
       for (const clock of ['conversation', 'world'] as const) {
         const key = pluginStateKeys[clock];
@@ -803,9 +818,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     );
   }
 
-  private async rehydrateStates(): Promise<void> {
-    const transform: PartsTransformer = (parts) =>
-      this.blobService.loadParts(parts as readonly ContentPart[]) as Promise<readonly unknown[]>;
+  private async rehydrateStates(strict = false): Promise<void> {
+    const transform: PartsTransformer = strict && this.blobService.loadPartsStrict !== undefined
+      ? (parts) => this.blobService.loadPartsStrict!(parts as readonly ContentPart[]) as Promise<readonly unknown[]>
+      : (parts) => this.blobService.loadParts(parts as readonly ContentPart[]) as Promise<readonly unknown[]>;
     for (const key of this.folded.states) {
       const codec = key.replayable.blobs;
       if (codec?.rehydrate === undefined) continue;

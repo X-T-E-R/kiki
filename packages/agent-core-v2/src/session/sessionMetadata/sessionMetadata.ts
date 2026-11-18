@@ -212,6 +212,11 @@ export interface ISessionMetadata {
    * Calls share one copy until the metadata changes, so callers must not mutate it.
    */
   snapshot(): SessionMeta;
+  isPrivate?(): boolean;
+  isArchived?(): boolean;
+  peekAgent?(agentId: string): AgentMeta | undefined;
+  readAgentWithOutcome?(agentId: string): Promise<AgentMeta | undefined>;
+  readHydrated?(): Promise<SessionMeta>;
   getAgentExecutor(agentId: string): Promise<string | undefined>;
   usage(): SessionUsageSummary | undefined;
   recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void;

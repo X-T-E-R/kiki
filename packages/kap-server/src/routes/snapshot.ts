@@ -663,6 +663,27 @@ export async function readBrowseSnapshotContent(
       const candidates = sessionAgentRoster(sessionId, state.captured.meta, state.subagents, state.captured.runtime);
       const subagents = orderSnapshotSubagents(enrichSnapshotSubagents(candidates, state.captured.meta.agents,
         broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, candidates.map((agent) => agent.id))));
+      const index = ref.path[1];
+      const receiptField = ref.path[2];
+      if (typeof index === 'number' && (receiptField === 'output_preview' || receiptField === 'stop_reason') && metadata.readAgentWithOutcome !== undefined) {
+        try {
+          return readContentSegment({ subagents }, ref);
+        } catch (error) {
+          if (!(error instanceof ContentChangedError)) throw error;
+        }
+        const candidate = subagents[index];
+        if (candidate !== undefined) {
+          const outcome = await metadata.readAgentWithOutcome(candidate.id);
+          timing.signal?.throwIfAborted();
+          if (outcome !== undefined) {
+            subagents[index] = {
+              ...candidate,
+              output_preview: outcome.resultSummary ?? candidate.output_preview,
+              stop_reason: outcome.error ?? candidate.stop_reason,
+            };
+          }
+        }
+      }
       return readContentSegment({ subagents }, ref);
     }
     const lease = await timeSessionViewPhase('snapshot_content_acquire', fields,

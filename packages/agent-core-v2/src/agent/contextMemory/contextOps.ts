@@ -39,9 +39,20 @@ async function dehydrateMessages(
   const result: ContextMessage[] = [];
   for (const msg of messages) {
     const parts = await transform(msg.content);
-    if (parts !== msg.content) {
+    const origin = msg.origin;
+    const originalInput = origin?.kind === 'user' && origin.originalInput !== undefined
+      ? await transform(origin.originalInput)
+      : undefined;
+    const nextOrigin = origin?.kind === 'user' && originalInput !== undefined && originalInput !== origin.originalInput
+      ? { ...origin, originalInput: [...originalInput] as ContentPart[] }
+      : origin;
+    if (parts !== msg.content || nextOrigin !== origin) {
       changed = true;
-      result.push({ ...msg, content: [...parts] as ContentPart[] });
+      result.push({
+        ...msg,
+        content: parts === msg.content ? msg.content : [...parts] as ContentPart[],
+        origin: nextOrigin,
+      });
     } else {
       result.push(msg);
     }
@@ -98,6 +109,10 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
     schema: z.custom<ContextMessage[]>(),
     blobs: {
       dehydrate: dehydrateRecord,
+      dehydrateState: async (state, transform) => {
+        const { changed, result } = await dehydrateMessages(state, transform);
+        return changed ? result : state;
+      },
       rehydrate: async (state, transform) => {
         const { changed, result } = await dehydrateMessages(state, transform);
         return changed ? result : state;

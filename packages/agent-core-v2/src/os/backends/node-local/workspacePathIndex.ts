@@ -14,6 +14,8 @@ export interface WorkspacePathSnapshot {
 
 type PreparedEntry = WorkspacePathEntry & { readonly charMask: number };
 
+const MUTATION_COALESCE_MS = 16;
+
 function pathIdentity(path: string): string { return process.platform === 'win32' ? path.toLowerCase() : path; }
 
 function characterMask(text: string, asciiOnly = false): number {
@@ -30,17 +32,23 @@ function characterMask(text: string, asciiOnly = false): number {
 export class WorkspacePathIndex {
   private watcher?: FSWatcher;
   private timer?: ReturnType<typeof setTimeout>;
+  private publishTimer?: ReturnType<typeof setTimeout>;
   private repair?: ReturnType<typeof setInterval>;
   private pending?: Promise<void>;
   private revision = 0;
   private snapshotRevision = 0;
   private current?: WorkspacePathSnapshot;
+  private hasBaseSnapshot = false;
+  private snapshotDirty = false;
   private prepared = new Map<string, PreparedEntry>();
   private byPath = new Map<string, WorkspacePathEntry>();
+  private directoryCounts = new Map<string, number>();
+  private readonly pendingTrigramPatches = new Map<string, WorkspacePathEntry | undefined>();
   private readonly pathUpdates = new Map<string, Promise<void>>();
   private readonly globCache = new Map<string, readonly string[]>();
   private readonly fuzzyCache = new Map<string, readonly WorkspacePathEntry[]>();
   private readonly controller = new AbortController();
+  private started = false;
   private disposed = false;
   private watching = false;
   private overflowed = false;
@@ -48,10 +56,16 @@ export class WorkspacePathIndex {
   error?: unknown;
 
   get isOverflowed(): boolean { return this.overflowed; }
+  get isStarted(): boolean { return this.started; }
 
   constructor(readonly root: string, private readonly cpu: ICpuWorkerService, cacheDir?: string) {
     this.root = resolve(root);
     if (cacheDir !== undefined) this.trigram = new WorkspaceTrigramIndex(this.root, cacheDir, cpu);
+  }
+
+  private ensureStarted(triggerRefresh = true): void {
+    if (this.started || this.disposed) return;
+    this.started = true;
     try {
       this.watcher = watch(this.root, { recursive: true }, (_kind, filename) => {
         if (filename !== null && filename.split(/[\\/]/u).some(part => ['.git', '.hg', '.svn', '.jj', '.bzr', '.sl'].includes(part.toLowerCase()))) return;
@@ -61,23 +75,37 @@ export class WorkspacePathIndex {
       this.watcher.on('error', error => {
         this.error = error;
         this.watching = false;
-        this.current = undefined;
+        this.clearPublishedState();
         this.trigram?.invalidate();
         this.watcher?.close();
       });
       this.watcher.unref();
       this.watching = true;
-    } catch (error) { this.error = error; }
+    } catch (error) {
+      this.error = error;
+    }
     if (this.watching) {
-      void this.refresh();
       this.repair = setInterval(() => this.invalidate(), 10 * 60_000);
       this.repair.unref();
+      if (triggerRefresh) void this.refresh();
+    }
+  }
+
+  private clearPublishedState(): void {
+    this.current = undefined;
+    this.hasBaseSnapshot = false;
+    this.snapshotDirty = false;
+    this.pendingTrigramPatches.clear();
+    if (this.publishTimer !== undefined) {
+      clearTimeout(this.publishTimer);
+      this.publishTimer = undefined;
     }
   }
 
   invalidate(): void {
+    if (!this.started || this.disposed) return;
     this.revision++;
-    this.current = undefined;
+    this.clearPublishedState();
     this.trigram?.invalidate();
     this.globCache.clear();
     this.fuzzyCache.clear();
@@ -86,42 +114,109 @@ export class WorkspacePathIndex {
     this.timer.unref();
   }
 
+  private insertPathEntry(key: string, entry: WorkspacePathEntry): void {
+    if (!this.byPath.has(key)) {
+      let slash = key.indexOf('/');
+      while (slash !== -1) {
+        const ancestor = key.slice(0, slash);
+        this.directoryCounts.set(ancestor, (this.directoryCounts.get(ancestor) ?? 0) + 1);
+        slash = key.indexOf('/', slash + 1);
+      }
+    }
+    this.byPath.set(key, entry);
+    this.prepared.set(key, { ...entry, charMask: characterMask(entry.path) });
+  }
+
+  private deletePathEntry(key: string): void {
+    if (!this.byPath.delete(key)) return;
+    this.prepared.delete(key);
+    let slash = key.indexOf('/');
+    while (slash !== -1) {
+      const ancestor = key.slice(0, slash);
+      const next = (this.directoryCounts.get(ancestor) ?? 0) - 1;
+      if (next <= 0) this.directoryCounts.delete(ancestor);
+      else this.directoryCounts.set(ancestor, next);
+      slash = key.indexOf('/', slash + 1);
+    }
+  }
+
+  private schedulePublish(): void {
+    if (this.publishTimer !== undefined) clearTimeout(this.publishTimer);
+    this.publishTimer = setTimeout(() => {
+      this.publishTimer = undefined;
+      if (this.pathUpdates.size === 0) this.publishPendingMutations();
+    }, MUTATION_COALESCE_MS);
+    this.publishTimer.unref();
+  }
+
+  private publishPendingMutations(): void {
+    if (this.publishTimer !== undefined) {
+      clearTimeout(this.publishTimer);
+      this.publishTimer = undefined;
+    }
+    if (!this.snapshotDirty || !this.hasBaseSnapshot || this.disposed) return;
+    this.snapshotDirty = false;
+    const next: WorkspacePathSnapshot = {
+      revision: ++this.snapshotRevision,
+      entries: [...this.byPath.values()],
+    };
+    this.current = next;
+    if (this.pendingTrigramPatches.size > 0) {
+      const patches = [...this.pendingTrigramPatches];
+      this.pendingTrigramPatches.clear();
+      this.trigram?.patchBatch(next, patches);
+    }
+  }
+
   async mutation(path: string): Promise<void> {
+    if (!this.started || this.disposed) return;
     const local = relative(this.root, resolve(path)).replaceAll('\\', '/');
-    if (this.disposed || local === '..' || local.startsWith('../') || isAbsolute(local)) return;
-    if (local === '' || ['.gitignore', '.ignore', '.rgignore'].includes(basename(local).toLowerCase())) { this.invalidate(); return; }
+    if (local === '..' || local.startsWith('../') || isAbsolute(local)) return;
+    if (local === '' || ['.gitignore', '.ignore', '.rgignore'].includes(basename(local).toLowerCase())) {
+      this.invalidate();
+      return;
+    }
     const key = pathIdentity(local);
     if (!this.overflowed) this.trigram?.dirty(this.byPath.get(key)?.path ?? local);
     const previous = this.pathUpdates.get(key) ?? Promise.resolve();
     const update = previous.then(async () => {
       if (this.disposed) return;
-      if (this.current === undefined) {
+      if (!this.hasBaseSnapshot) {
         if (!this.overflowed) this.invalidate();
         return;
       }
       const epoch = this.revision;
       const display = this.byPath.get(key)?.path ?? local;
-      const entry = await this.cpu.request<WorkspacePathEntry | undefined>({ type: 'workspace.path', root: this.root, path: resolve(this.root, display) },
-        { signal: this.controller.signal, timeoutMs: 30_000 });
-      if (this.disposed || this.current === undefined || epoch !== this.revision) return;
+      const entry = await this.cpu.request<WorkspacePathEntry | undefined>(
+        { type: 'workspace.path', root: this.root, path: resolve(this.root, display) },
+        { signal: this.controller.signal, timeoutMs: 30_000 },
+      );
+      if (this.disposed || !this.hasBaseSnapshot || epoch !== this.revision) return;
       if (entry?.kind === 'directory') {
         const old = this.byPath.get(key);
         if (old?.kind !== 'directory' || old.ino !== entry.ino) this.invalidate();
         return;
       }
       if (entry === undefined) {
-        for (const existing of this.byPath.keys()) if (existing === key || existing.startsWith(`${key}/`)) {
-          this.byPath.delete(existing);
-          this.prepared.delete(existing);
+        this.deletePathEntry(key);
+        if ((this.directoryCounts.get(key) ?? 0) > 0) {
+          const prefix = `${key}/`;
+          for (const existing of [...this.byPath.keys()]) {
+            if (existing.startsWith(prefix)) {
+              const childDisplay = this.byPath.get(existing)?.path ?? existing;
+              this.deletePathEntry(existing);
+              this.pendingTrigramPatches.set(childDisplay, undefined);
+            }
+          }
         }
       } else {
-        this.byPath.set(key, entry);
-        this.prepared.set(key, { ...entry, charMask: characterMask(entry.path) });
+        this.insertPathEntry(key, entry);
       }
-      this.current = { revision: ++this.snapshotRevision, entries: [...this.byPath.values()] };
+      this.snapshotDirty = true;
       this.globCache.clear();
       this.fuzzyCache.clear();
-      this.trigram?.patch(this.current, display, entry);
+      this.pendingTrigramPatches.set(display, entry);
+      this.schedulePublish();
     }).catch(error => {
       if (!this.disposed) { this.error = error; this.invalidate(); }
     }).finally(() => { if (this.pathUpdates.get(key) === update) this.pathUpdates.delete(key); });
@@ -134,6 +229,7 @@ export class WorkspacePathIndex {
   }
 
   async refresh(): Promise<void> {
+    this.ensureStarted(false);
     if (this.pending !== undefined) {
       await this.pending;
       while (this.pending !== undefined) await this.pending;
@@ -146,9 +242,10 @@ export class WorkspacePathIndex {
         if (inventory.overflow) {
           if (this.disposed || revision !== this.revision) return;
           this.overflowed = true;
-          this.current = undefined;
+          this.clearPublishedState();
           this.prepared.clear();
           this.byPath.clear();
+          this.directoryCounts.clear();
           this.globCache.clear();
           this.fuzzyCache.clear();
           this.trigram?.invalidate();
@@ -156,11 +253,21 @@ export class WorkspacePathIndex {
         }
         const prepared = new Map<string, PreparedEntry>();
         const byPath = new Map<string, WorkspacePathEntry>();
+        const directoryCounts = new Map<string, number>();
         for (let offset = 0; offset < inventory.entries.length; offset += 512) {
           if (this.disposed || revision !== this.revision) return;
           for (const entry of inventory.entries.slice(offset, offset + 512)) {
-            prepared.set(pathIdentity(entry.path), { ...entry, charMask: characterMask(entry.path) });
-            byPath.set(pathIdentity(entry.path), entry);
+            const key = pathIdentity(entry.path);
+            if (!byPath.has(key)) {
+              let slash = key.indexOf('/');
+              while (slash !== -1) {
+                const ancestor = key.slice(0, slash);
+                directoryCounts.set(ancestor, (directoryCounts.get(ancestor) ?? 0) + 1);
+                slash = key.indexOf('/', slash + 1);
+              }
+            }
+            prepared.set(key, { ...entry, charMask: characterMask(entry.path) });
+            byPath.set(key, entry);
           }
           await yieldToEventLoop();
         }
@@ -168,8 +275,16 @@ export class WorkspacePathIndex {
         this.overflowed = false;
         this.prepared = prepared;
         this.byPath = byPath;
+        this.directoryCounts = directoryCounts;
+        this.snapshotDirty = false;
+        this.pendingTrigramPatches.clear();
+        if (this.publishTimer !== undefined) {
+          clearTimeout(this.publishTimer);
+          this.publishTimer = undefined;
+        }
         this.globCache.clear();
         this.fuzzyCache.clear();
+        this.hasBaseSnapshot = true;
         this.current = { revision: ++this.snapshotRevision, entries: inventory.entries };
         this.trigram?.rebuild(this.current);
         this.error = undefined;
@@ -182,15 +297,21 @@ export class WorkspacePathIndex {
     while (this.pending !== undefined) await this.pending;
   }
 
-  snapshot(): WorkspacePathSnapshot | undefined { return this.current; }
+  snapshot(): WorkspacePathSnapshot | undefined {
+    this.ensureStarted(true);
+    this.publishPendingMutations();
+    return this.current;
+  }
 
   mtime(path: string): number | undefined {
-    if (this.current === undefined) return undefined;
+    if (!this.hasBaseSnapshot) return undefined;
     return this.byPath.get(pathIdentity(relative(this.root, path).replaceAll('\\', '/')))?.mtimeMs;
   }
 
   async glob(directory: string, pattern: string): Promise<readonly string[] | undefined> {
+    this.ensureStarted(true);
     await this.whenSettled();
+    this.publishPendingMutations();
     if (this.current === undefined || pattern.includes('{') && pattern.includes('/')) return undefined;
     const prefix = relative(this.root, resolve(directory)).replaceAll('\\', '/');
     if (prefix === '..' || prefix.startsWith('../') || isAbsolute(prefix)) return undefined;
@@ -214,6 +335,8 @@ export class WorkspacePathIndex {
   }
 
   fuzzy(query: string, pathMode: boolean): readonly WorkspacePathEntry[] | undefined {
+    this.ensureStarted(true);
+    this.publishPendingMutations();
     if (this.current === undefined) return undefined;
     if (query === '') {
       return this.current.entries.filter(entry => !entry.sensitive);
@@ -238,10 +361,12 @@ export class WorkspacePathIndex {
     this.controller.abort();
     this.watcher?.close();
     if (this.timer !== undefined) clearTimeout(this.timer);
+    if (this.publishTimer !== undefined) clearTimeout(this.publishTimer);
     if (this.repair !== undefined) clearInterval(this.repair);
-    this.current = undefined;
+    this.clearPublishedState();
     this.prepared.clear();
     this.byPath.clear();
+    this.directoryCounts.clear();
     this.globCache.clear();
     this.fuzzyCache.clear();
     await Promise.all([this.pending, this.whenSettled(), this.trigram?.dispose()]);
