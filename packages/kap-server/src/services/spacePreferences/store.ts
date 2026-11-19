@@ -110,19 +110,21 @@ function stagedPath(path: string, id: string): string { return `${path}.space-${
 function parseJournal(contents: string): z.infer<typeof journalSchema> | undefined {
   try { return journalSchema.parse(JSON.parse(contents)); } catch { return undefined; }
 }
-async function staleLock(lock: string): Promise<boolean> {
-  const owner = Number(await text(join(lock, 'owner')).catch(() => undefined));
-  if (!Number.isSafeInteger(owner) || owner <= 0 || owner === process.pid) return false;
-  try { process.kill(owner, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+async function deadLockToken(lock: string): Promise<string | undefined> {
+  const [pid = '', token = pid] = (await text(join(lock, 'owner')).catch(() => undefined) ?? '').trim().split(/\s+/);
+  const owner = Number(pid);
+  if (!Number.isSafeInteger(owner) || owner <= 0 || owner === process.pid || !/^[\w-]+$/.test(token)) return undefined;
+  try { process.kill(owner, 0); return undefined; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? token : undefined; }
 }
 async function reclaimStaleLock(lock: string): Promise<boolean> {
-  const guard = `${lock}.reclaim`;
-  try { await mkdir(guard); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false; throw error; }
-  try {
-    if (!await staleLock(lock)) return false;
-    await rm(lock, { recursive: true, force: true });
-    return true;
-  } finally { await rm(guard, { recursive: true, force: true }); }
+  const token = await deadLockToken(lock);
+  if (token === undefined) return false;
+  try { await rename(lock, `${lock}.stale-${token}`); return true; } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return true;
+    if (code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'EPERM') return false;
+    throw error;
+  }
 }
 async function fileHash(path: string): Promise<string> { return hash(await readFile(path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; })); }
 
@@ -593,7 +595,7 @@ export class SpacePreferencesStore {
       }
     }
     try {
-      await writeFile(join(lock, 'owner'), String(process.pid), { mode: 0o600 });
+      await writeDurable(join(lock, 'owner'), `${process.pid} ${randomUUID()}`);
       await this.recover(home, main);
       return await work();
     } finally { await rm(lock, { recursive: true, force: true }); }
