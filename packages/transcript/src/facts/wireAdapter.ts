@@ -3,7 +3,7 @@ import { normalizeStoredExternalToolDisplay } from './externalToolDisplay';
 import { projectTurnError } from './errorProjection';
 import { projectGoalChange } from './goalProjection';
 import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
-import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
+import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin, stringOf } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { contentTextPresentation, readTextPresentation } from '../contract/presentation';
 import { mediaUrlFromPart, parseDaemonFileRefFileId, sessionMediaIdFromBlobUrl } from '../contract/mediaRef';
@@ -3391,10 +3391,6 @@ function deliveryOrigin(value: unknown, messageOrigin: unknown): MessageDelivery
   if (value === 'user' || value === 'queue' || value === 'mailbox' || value === 'recovery' || value === 'injection') return value;
   if (messageOrigin === 'agent_message') return 'mailbox';
   return messageOrigin === undefined || messageOrigin === 'user' ? 'user' : 'injection';
-}
-
-function stringOf(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
 }
 
 function numberOf(value: unknown): number | undefined {

@@ -109,8 +109,6 @@ export interface WsConnectionV1Options {
   readonly maxBackpressureRounds?: number;
   /** Heartbeat ping cadence; `0` disables it and omits `heartbeat_ms`. */
   readonly heartbeatIntervalMs?: number;
-  /** @deprecated Use `heartbeatIntervalMs`; retained for kiki host compatibility. */
-  readonly heartbeatMs?: number;
 }
 
 export class WsConnectionV1 implements BroadcastTarget {
@@ -191,7 +189,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.maxBackpressureRounds =
       opts.maxBackpressureRounds ?? DEFAULT_MAX_BACKPRESSURE_ROUNDS;
     this.heartbeatIntervalMs =
-      opts.heartbeatIntervalMs ?? opts.heartbeatMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+      opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.lastInboundAt = Date.now();
 
     this.socket.on('message', (data: RawData) => this.onMessage(data));

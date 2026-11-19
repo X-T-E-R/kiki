@@ -1,10 +1,14 @@
-function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined {
+export function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Readonly<Record<string, unknown>> : undefined;
 }
 
-function stringOf(value: unknown): string | undefined {
+export function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+export function nonEmptyStringOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
 export function isUndoAnchorOrigin(value: unknown): boolean {

@@ -1020,15 +1020,15 @@ describe('WsConnectionV1 heartbeat', () => {
     conn.close();
   });
 
-  it('supports the legacy heartbeatMs option and zero disables the heartbeat', () => {
+  it('supports heartbeatIntervalMs overrides and zero disables the heartbeat', () => {
     const socket = new FakeSocket();
-    const conn = makeConn(socket, { heartbeatMs: 25 });
+    const conn = makeConn(socket, { heartbeatIntervalMs: 25 });
     const hello = socket.frames()[0] as { payload: { heartbeat_ms?: number } };
     expect(hello.payload.heartbeat_ms).toBe(25);
     conn.close();
 
     const disabledSocket = new FakeSocket();
-    const disabled = makeConn(disabledSocket, { heartbeatMs: 0 });
+    const disabled = makeConn(disabledSocket, { heartbeatIntervalMs: 0 });
     const disabledHello = disabledSocket.frames()[0] as { payload: { heartbeat_ms?: number } };
     expect(disabledHello.payload.heartbeat_ms).toBeUndefined();
     disabledSocket.sent = [];

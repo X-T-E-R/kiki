@@ -32,8 +32,6 @@ export interface RegisterWsV1Options {
   readonly maxBackpressureRounds?: number;
   /** Heartbeat ping cadence override; `0` disables the heartbeat. */
   readonly heartbeatIntervalMs?: number;
-  /** @deprecated Use `heartbeatIntervalMs`; retained for kiki host compatibility. */
-  readonly heartbeatMs?: number;
 }
 
 export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketServer {
@@ -65,7 +63,6 @@ const wss = new WebSocketServer({
       maxOutboundBufferBytes: opts.maxOutboundBufferBytes,
       maxBackpressureRounds: opts.maxBackpressureRounds,
       heartbeatIntervalMs: opts.heartbeatIntervalMs,
-      heartbeatMs: opts.heartbeatMs,
     });
     socket.on('close', () => registry.remove(conn.id));
   });

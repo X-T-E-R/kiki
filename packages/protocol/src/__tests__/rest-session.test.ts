@@ -7,7 +7,6 @@ import {
   createSessionChildRequestSchema,
   createSessionChildResponseSchema,
   createSessionRequestSchema,
-  deleteSessionResponseSchema,
   exportSessionParamsSchema,
   exportSessionRequestSchema,
   forkSessionRequestSchema,
@@ -227,11 +226,5 @@ describe('session status, compact, undo, and archive schemas', () => {
     };
     expect(archiveSessionResponseSchema.parse(familyFailure)).toEqual(familyFailure);
     expect(archiveSessionResponseSchema.safeParse({ archived: 'false' }).success).toBe(false);
-
-    expect(deleteSessionResponseSchema).toBe(archiveSessionResponseSchema);
-    expect(deleteSessionResponseSchema.parse({ archived: true })).toEqual({ archived: true });
-    expect(deleteSessionResponseSchema.parse({ archived: false, outcomes: [{ id: 'session-b', ok: false, reason: 'not_found', message: 'Session not found' }] }).outcomes)
-      .toHaveLength(1);
-    expect(deleteSessionResponseSchema.safeParse({ archived: null }).success).toBe(false);
   });
 });

@@ -1,4 +1,5 @@
 import { parseAcpToolInput } from './acpToolDisplay';
+import { nonEmptyStringOf as stringOf, objectOf } from './wireIdentity';
 
 /**
  * Project a foreign tool call onto the native tool display from its recorded
@@ -692,12 +693,4 @@ function unique(values: readonly string[]): string[] {
     out.push(value);
   }
   return out;
-}
-
-function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Readonly<Record<string, unknown>> : undefined;
-}
-
-function stringOf(value: unknown): string | undefined {
-  return typeof value === 'string' && value !== '' ? value : undefined;
 }

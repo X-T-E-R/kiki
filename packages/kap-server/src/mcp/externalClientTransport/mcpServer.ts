@@ -163,13 +163,13 @@ function toMcpTool(descriptor: ExternalClientToolDescriptor): Record<string, unk
   };
 }
 
-function normalizeToolResult(value: unknown): CallToolResult {
+export function normalizeToolResult(value: unknown): CallToolResult {
   if (isRecord(value) && Array.isArray(value['content'])) return value as unknown as CallToolResult;
   if (typeof value === 'string') return { content: [{ type: 'text', text: value }] };
   return { content: [{ type: 'text', text: safeJson(value) }] };
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
+export function asRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 

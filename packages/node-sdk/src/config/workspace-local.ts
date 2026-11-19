@@ -1,3 +1,4 @@
+import { isPlainObject } from '@kiki/agent-core-v2/app/config/configPure';
 import type { Kaos } from '@kiki/kaos';
 import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
@@ -299,10 +300,6 @@ async function pathExists(kaos: Kaos, filePath: string): Promise<boolean> {
 function cloneRecord(value: unknown): Record<string, unknown> {
   if (!isPlainObject(value)) return {};
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isPathMissing(error: unknown): boolean {
