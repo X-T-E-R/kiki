@@ -835,6 +835,45 @@ function untrustedManifestMayRequireSegments(bytes: Uint8Array): boolean {
   return false;
 }
 
+async function journalContainsNulByte(filePath: string, signal?: AbortSignal): Promise<boolean> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(filePath, 'r');
+    const chunk = Buffer.alloc(256 * 1024);
+    let offset = 0;
+    for (;;) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, offset);
+      if (bytesRead <= 0) return false;
+      if (chunk.subarray(0, bytesRead).includes(0)) return true;
+      offset += bytesRead;
+    }
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function hasAnySegmentArtifacts(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  located: string | undefined,
+): Promise<boolean> {
+  const listed = await storage.list(scope, `${key}.segments/`).catch(() => [] as readonly string[]);
+  if (listed.length > 0) return true;
+  if (located === undefined) return false;
+  try {
+    const entries = await readdir(`${located}.segments`, { recursive: true, withFileTypes: true });
+    return entries.some((entry) => entry.isFile());
+  } catch {
+    return false;
+  }
+}
+
 async function hasZstdSegmentFiles(located: string): Promise<boolean> {
   try {
     const entries = await readdir(`${located}.segments`, { recursive: true, withFileTypes: true });
@@ -973,7 +1012,7 @@ async function stageAndReplaceFullDenseJournal(
     if (verifiedFile.size !== totalSize || verifiedFile.sha256 !== expectedDigest) {
       throw corrupted(scope, key, 'restore-verification-failed');
     }
-    if (await queryWin32SparseAttribute(stagePath, signal)) {
+    if ((await queryWin32SparseAttribute(stagePath, signal)) === 'sparse') {
       throw corrupted(scope, key, 'staged-unseal-remained-sparse');
     }
 
@@ -1109,11 +1148,20 @@ export async function discardColdUnlocked(
     options.signal?.throwIfAborted();
     const bytes = await storage.read(scope, coldManifestKey(key));
     if (bytes === undefined) {
-      if (options.skipRestoreOriginal !== true && located !== undefined && await detectOrphanedSparseJournal(located)) {
-        throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+      if (options.skipRestoreOriginal !== true && located !== undefined) {
+        if (await detectOrphanedSparseJournal(located)) {
+          throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+        }
+        if (
+          (await hasAnySegmentArtifacts(storage, scope, key, located)) &&
+          (await queryWin32SparseAttribute(located, options.signal)) === 'unknown' &&
+          (await journalContainsNulByte(located, options.signal))
+        ) {
+          throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+        }
       }
       if (located !== undefined) {
-        await removeSparseMarker(located);
+        await removeSparseMarker(located).catch(() => undefined);
       }
       await sweepStaleSegmentDirectories(storage, scope, key, new Set(), options.signal);
       return;
@@ -1189,7 +1237,7 @@ export async function discardColdUnlocked(
     }
 
     if (located !== undefined) {
-      await removeSparseMarker(located);
+      await removeSparseMarker(located).catch(() => undefined);
     }
     await storage.delete(scope, coldManifestKey(key));
     const sealId = sealIdOf(bytes);
@@ -1464,7 +1512,7 @@ async function sealUnlocked(
 
     const finalizePostCommit = async (): Promise<void> => {
       if (clearedFullDenseOnNoReclaim && located !== undefined) {
-        await removeSparseMarker(located);
+        await removeSparseMarker(located).catch(() => undefined);
       }
       if (previous !== undefined) {
         const previousId = sealIdOf(previous);
@@ -1512,7 +1560,7 @@ async function sealUnlocked(
               manifest = { ...manifest, originalRetained: true, sparseRanges: [] };
               const fallbackEncoded = serializeValidatedManifest(manifest, key);
               await writeManifestAtomic(storage, scope, manifestKey, fallbackEncoded);
-              await removeSparseMarker(located);
+              await removeSparseMarker(located).catch(() => undefined);
             } else {
               manifest = { ...manifest, originalRetained: false, sparseRanges: initialSparseRanges };
               const fallbackEncoded = serializeValidatedManifest(manifest, key);

@@ -37,6 +37,7 @@ import {
   detectOrphanedSparseJournal,
   punchSparseRanges,
   queryWin32SparseAttribute,
+  writeSparseMarker,
 } from '#/persistence/backends/node-fs/sparseFile';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import {
@@ -1607,7 +1608,7 @@ describe('cold segment journal', () => {
       expect(compacted.seal).toBeDefined();
       if (process.platform === 'win32') {
         expect(compacted.seal?.originalRetained).toBe(false);
-        expect(await queryWin32SparseAttribute(wirePath)).toBe(true);
+        expect(await queryWin32SparseAttribute(wirePath)).toBe('sparse');
         expect((await stat(`${wirePath}.sparse`)).isFile()).toBe(true);
       }
       return { dir, wirePath };
@@ -1637,7 +1638,7 @@ describe('cold segment journal', () => {
       const beforeMtime = (await stat(unsealCase.wirePath)).mtimeMs;
       await unsealRetainedJournal(unsealCase.wirePath);
       if (process.platform === 'win32') {
-        expect(await queryWin32SparseAttribute(unsealCase.wirePath)).toBe(false);
+        expect(await queryWin32SparseAttribute(unsealCase.wirePath)).toBe('dense');
       }
       await expect(stat(`${unsealCase.wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(stat(`${unsealCase.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -1685,7 +1686,7 @@ describe('cold segment journal', () => {
         await lg.dispose();
         await st.close();
         if (process.platform === 'win32') {
-          expect(await queryWin32SparseAttribute(caseB.wirePath)).toBe(false);
+          expect(await queryWin32SparseAttribute(caseB.wirePath)).toBe('dense');
         }
         await expect(stat(`${caseB.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
         await expect(stat(`${caseB.wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -2630,4 +2631,131 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('detects mid-journal sparse holes when sidecars are missing and helper is unavailable while preserving .zst segments on unseal (Round-5 #1)', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await mkdtemp(join(tmpdir(), 'cold-r5-unknown-attr-'));
+    const storage = new FileStorageService(root);
+    const prevHelperEnv = process.env['KIKI_WINDOWS_PROCESS_HELPER'];
+    try {
+      const scope = 'agents/unknown-attr-hole-327k';
+      await mkdir(join(root, scope), { recursive: true });
+      const wirePath = join(root, scope, KEY);
+      const payload = Buffer.from(
+        Array.from({ length: 340 }, (_, i) => `${JSON.stringify({
+          type: 'note',
+          id: `r5-1-${i}`,
+          text: `UNKNOWN_HELPER_${i}_${'U'.repeat(1_550)}`,
+        })}\n`).join(''),
+      );
+      const cut = payload.indexOf(0x0a, 458_752) + 1;
+      await writeFile(wirePath, payload);
+
+      const sealed = await sealColdSegments(storage, scope, KEY, cut, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 64 * 1024,
+        keepHeadBytes: 327_680,
+      });
+      expect(sealed.originalRetained).toBe(false);
+      expect(sealed.sparseRanges?.[0]?.start).toBe(327_680);
+
+      const segEntriesBefore = (await readdir(`${wirePath}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      expect(segEntriesBefore.length).toBeGreaterThan(0);
+
+      await rm(`${wirePath}.segments.json`);
+      await rm(`${wirePath}.sparse`);
+
+      closeSparseFileWorker();
+      process.env['KIKI_WINDOWS_PROCESS_HELPER'] = '';
+
+      expect(await queryWin32SparseAttribute(wirePath)).toBe('unknown');
+      expect(await detectOrphanedSparseJournal(wirePath)).toBe(true);
+      await expect(unsealRetainedJournal(wirePath)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+
+      const segEntriesAfter = (await readdir(`${wirePath}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      expect(segEntriesAfter.sort()).toEqual(segEntriesBefore.sort());
+    } finally {
+      if (prevHelperEnv === undefined) delete process.env['KIKI_WINDOWS_PROCESS_HELPER'];
+      else process.env['KIKI_WINDOWS_PROCESS_HELPER'] = prevHelperEnv;
+      closeSparseFileWorker();
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('does not fail a committed AppendLogStore.rewrite() when removing a stale .sparse marker hits a transient sharing violation (Round-5 #3)', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await mkdtemp(join(tmpdir(), 'cold-r5-rewrite-marker-'));
+    const storage = new FileStorageService(root);
+    const log = createTestAppendLogStore(storage);
+    let markerBlocker: DatabaseSync | undefined;
+    try {
+      const oldRecords: WireRecord[] = Array.from({ length: 40 }, (_, i) => ({
+        type: 'note',
+        id: `old-m-${i}`,
+        body: `OLD_MARKER_${i}_${'A'.repeat(400)}`,
+      }));
+      const newRecords: WireRecord[] = Array.from({ length: 30 }, (_, i) => ({
+        type: 'note',
+        id: `new-m-${i}`,
+        body: `NEW_MARKER_${i}_${'B'.repeat(400)}`,
+      }));
+      const extraRecord: WireRecord = { type: 'note', id: 'extra-after-rewrite', body: 'APPENDED_OK' };
+
+      for (const rec of oldRecords) log.append(SCOPE, KEY, rec);
+      await log.flush(SCOPE, KEY);
+      const wirePath = join(root, SCOPE, KEY);
+      await writeSparseMarker(wirePath, { confirmedRanges: [{ start: 65_536, end: 131_072 }] });
+
+      const projections: Array<{ rewrite?: boolean; generation: string }> = [];
+      log.registerProjection({
+        key: KEY,
+        prepare: () => undefined,
+        commit: async (commitInfo) => {
+          projections.push({ rewrite: commitInfo.rewrite, generation: commitInfo.generation });
+        },
+        onError: () => {},
+      });
+
+      markerBlocker = new DatabaseSync(`${wirePath}.sparse`, { readOnly: true });
+      await log.rewrite(SCOPE, KEY, newRecords);
+
+      expect(projections).toHaveLength(1);
+      expect(projections[0]?.rewrite).toBe(true);
+      expect(await collect(log)).toEqual(newRecords);
+
+      log.append(SCOPE, KEY, extraRecord);
+      await log.flush(SCOPE, KEY);
+      expect(await collect(log)).toEqual([...newRecords, extraRecord]);
+
+      const reopenStorage = new FileStorageService(root);
+      const reopenLog = createTestAppendLogStore(reopenStorage);
+      try {
+        expect(await collect(reopenLog)).toEqual([...newRecords, extraRecord]);
+      } finally {
+        await reopenLog.dispose();
+        await reopenStorage.close();
+      }
+
+      markerBlocker.close();
+      markerBlocker = undefined;
+
+      await vi.waitFor(async () => {
+        await expect(stat(`${wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
+      }, { timeout: 2_000 });
+    } finally {
+      markerBlocker?.close();
+      await log.dispose();
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 25_000);
 });

@@ -364,10 +364,12 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
               atomic: true,
               preserveDestinationOnError: true,
             });
-            if (located !== undefined && located.length > 0) {
-              await removeSparseMarker(located);
-            }
             committed = { generation, offset, boundary };
+            if (located !== undefined && located.length > 0) {
+              try {
+                await removeSparseMarker(located);
+              } catch {}
+            }
           };
           if (located === undefined || located.length === 0) await replace();
           else await withColdReaderGate(located, replace);

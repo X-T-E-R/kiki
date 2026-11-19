@@ -2,9 +2,10 @@ import { ChildProcess, spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import { join } from 'pathe';
+import { join, resolve } from 'pathe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const schedule = vi.hoisted(() => ({
@@ -662,5 +663,137 @@ describe('FileStorageService — transient access denial during acquisition', ()
       await idleWorker?.terminate();
     }
   }, 20_000);
+
+  it('allows a foreign process to take over an untracked terminated worker .cold.lock while the host process stays alive (Round-5 #2)', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-r5-foreign-beacon-'));
+    const wirePath = join(directory, 'wire.jsonl');
+    await writeFile(wirePath, '{"ok":1}\n');
+    const coldLockPath = `${wirePath}.cold.lock`;
+    const packageRoot = resolve(import.meta.dirname, '../../../..');
+    const fileLockUrl = pathToFileURL(
+      resolve(packageRoot, 'src/persistence/backends/node-fs/fileLock.ts'),
+    ).href;
+    const tsxApiUrl = import.meta.resolve('tsx/esm/api');
+    const tsconfigPath = resolve(packageRoot, 'tsconfig.json');
+    const workerScriptPath = join(directory, 'foreign-worker.mjs');
+    const hostScriptPath = join(directory, 'foreign-host.mjs');
+
+    await writeFile(
+      workerScriptPath,
+      [
+        "import { parentPort, workerData } from 'node:worker_threads';",
+        `import { register as registerTypeScript } from ${JSON.stringify(tsxApiUrl)};`,
+        `registerTypeScript({ tsconfig: ${JSON.stringify(tsconfigPath)} });`,
+        `const { acquireFileLock } = await import(${JSON.stringify(fileLockUrl)});`,
+        "const lock = await acquireFileLock(workerData.lockPath, { waitForMs: 2000, owner: { from: 'foreign-worker' } });",
+        'void lock;',
+        'parentPort.postMessage({ acquired: true });',
+        'while (Atomics.load(workerData.spinFlag, 0) === 1) {}',
+        'setInterval(() => {}, 10000);',
+      ].join('\n'),
+    );
+
+    await writeFile(
+      hostScriptPath,
+      [
+        "import { Worker } from 'node:worker_threads';",
+        'const lockPath = process.argv[2];',
+        'const spinFlag = new Int32Array(new SharedArrayBuffer(4));',
+        'Atomics.store(spinFlag, 0, 1);',
+        `const worker = new Worker(${JSON.stringify(workerScriptPath)}, {`,
+        '  workerData: { lockPath, spinFlag },',
+        '});',
+        "worker.once('message', () => { process.stdout.write('LOCKED_SPINNING\\n'); });",
+        "worker.once('error', (err) => { process.stderr.write(String(err) + '\\n'); process.exit(1); });",
+        "let buf = '';",
+        "process.stdin.on('data', async (chunk) => {",
+        "  buf += chunk.toString('utf8');",
+        "  if (buf.includes('TERMINATE_WORKER')) {",
+        "    buf = '';",
+        '    await worker.terminate();',
+        "    process.stdout.write('WORKER_TERMINATED\\n');",
+        '  }',
+        '});',
+        'setInterval(() => {}, 10000);',
+      ].join('\n'),
+    );
+
+    const child = spawn(
+      process.execPath,
+      [hostScriptPath, coldLockPath],
+      {
+        cwd: packageRoot,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    child.stderr!.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString('utf8');
+    });
+    const waitChildLine = (expected: string): Promise<void> =>
+      new Promise<void>((res, rej) => {
+        const check = (): boolean => {
+          if (stdoutBuf.includes(expected)) {
+            res();
+            return true;
+          }
+          return false;
+        };
+        if (check()) return;
+        const onData = (chunk: Buffer): void => {
+          stdoutBuf += chunk.toString('utf8');
+          if (check()) child.stdout!.off('data', onData);
+        };
+        child.stdout!.on('data', onData);
+        child.once('exit', (code) => {
+          rej(new Error(`foreign host exited early (${String(code)}): ${stderrBuf}`));
+        });
+      });
+
+    try {
+      await waitChildLine('LOCKED_SPINNING');
+      const onDiskBefore = JSON.parse(await readFile(coldLockPath, 'utf8')) as {
+        pid: number;
+        threadId?: number;
+        workerBeacon?: string;
+      };
+      expect(onDiskBefore.pid).toBe(child.pid);
+      expect(onDiskBefore.threadId).toBeGreaterThan(0);
+      expect(typeof onDiskBefore.workerBeacon).toBe('string');
+
+      await expect(acquireFileLock(coldLockPath, { waitForMs: 120 })).rejects.toMatchObject({
+        code: 'storage.locked',
+      });
+
+      child.stdin!.write('TERMINATE_WORKER\n');
+      await waitChildLine('WORKER_TERMINATED');
+      expect(child.exitCode).toBeNull();
+
+      const taken = await acquireFileLock(coldLockPath, {
+        waitForMs: 3_000,
+        owner: { from: 'parent-takeover' },
+      });
+      try {
+        const afterTakeover = JSON.parse(await readFile(coldLockPath, 'utf8')) as {
+          pid: number;
+          owner?: Record<string, unknown>;
+        };
+        expect(afterTakeover.pid).toBe(process.pid);
+        expect(afterTakeover.owner).toEqual({ from: 'parent-takeover' });
+      } finally {
+        await taken.release();
+      }
+    } finally {
+      child.kill('SIGKILL');
+      await new Promise<void>((done) => {
+        if (child.exitCode !== null) done();
+        else child.once('exit', () => done());
+      });
+      closeSparseFileWorker();
+    }
+  }, 25_000);
 });
 

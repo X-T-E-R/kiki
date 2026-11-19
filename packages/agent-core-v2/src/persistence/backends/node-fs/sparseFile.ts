@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, unlinkSync } from 'node:fs';
 import { open, readFile, stat, unlink, utimes } from 'node:fs/promises';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
@@ -21,6 +21,12 @@ const FALLBACK_SPARSE_PROBE_OFFSETS = [
   256 * 1024,
 ] as const;
 const WORKER_IDLE_TIMEOUT_MS = 2_000;
+const SPARSE_MARKER_RETRY_BASE_MS = 25;
+const SPARSE_MARKER_RETRY_MAX_MS = 100;
+const PENDING_SPARSE_MARKER_UNLINKS = new Set<string>();
+let sparseMarkerRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let sparseMarkerRetryDelayMs = SPARSE_MARKER_RETRY_BASE_MS;
+let sparseMarkerExitHooked = false;
 
 export interface SparseRange {
   readonly start: number;
@@ -368,11 +374,70 @@ async function readExistingConfirmedOffsets(filePath: string): Promise<number[]>
 
 export function clearSparseAttributeCache(): void {}
 
+function hookSparseMarkerExit(): void {
+  if (sparseMarkerExitHooked) return;
+  sparseMarkerExitHooked = true;
+  const flushSync = (): void => {
+    for (const markerPath of [...PENDING_SPARSE_MARKER_UNLINKS]) {
+      try {
+        unlinkSync(markerPath);
+        PENDING_SPARSE_MARKER_UNLINKS.delete(markerPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          PENDING_SPARSE_MARKER_UNLINKS.delete(markerPath);
+        }
+      }
+    }
+  };
+  process.on('beforeExit', flushSync);
+  process.on('exit', flushSync);
+}
+
+async function flushPendingSparseMarkerUnlinks(): Promise<void> {
+  if (PENDING_SPARSE_MARKER_UNLINKS.size === 0) return;
+  for (const markerPath of [...PENDING_SPARSE_MARKER_UNLINKS]) {
+    try {
+      await unlink(markerPath);
+      PENDING_SPARSE_MARKER_UNLINKS.delete(markerPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        PENDING_SPARSE_MARKER_UNLINKS.delete(markerPath);
+      }
+    }
+  }
+  if (PENDING_SPARSE_MARKER_UNLINKS.size === 0) {
+    sparseMarkerRetryDelayMs = SPARSE_MARKER_RETRY_BASE_MS;
+    if (sparseMarkerRetryTimer !== undefined) {
+      clearTimeout(sparseMarkerRetryTimer);
+      sparseMarkerRetryTimer = undefined;
+    }
+  }
+}
+
+function scheduleSparseMarkerUnlinkRetry(): void {
+  if (PENDING_SPARSE_MARKER_UNLINKS.size === 0 || sparseMarkerRetryTimer !== undefined) return;
+  hookSparseMarkerExit();
+  const delayMs = sparseMarkerRetryDelayMs;
+  sparseMarkerRetryDelayMs = Math.min(SPARSE_MARKER_RETRY_MAX_MS, sparseMarkerRetryDelayMs * 2);
+  sparseMarkerRetryTimer = setTimeout(() => {
+    sparseMarkerRetryTimer = undefined;
+    void flushPendingSparseMarkerUnlinks().finally(() => {
+      if (PENDING_SPARSE_MARKER_UNLINKS.size > 0) {
+        scheduleSparseMarkerUnlinkRetry();
+      } else {
+        sparseMarkerRetryDelayMs = SPARSE_MARKER_RETRY_BASE_MS;
+      }
+    });
+  }, delayMs);
+  sparseMarkerRetryTimer.unref?.();
+}
+
 export async function writeSparseMarker(
   filePath: string,
   input: number | SparseMarkerInput,
   signal?: AbortSignal,
 ): Promise<void> {
+  PENDING_SPARSE_MARKER_UNLINKS.delete(sparseMarkerPath(filePath));
   const priorConfirmed = await readExistingConfirmedOffsets(filePath);
   const confirmedOffsets = typeof input === 'number'
     ? priorConfirmed
@@ -399,9 +464,44 @@ export async function writeSparseMarker(
 }
 
 export async function removeSparseMarker(filePath: string): Promise<void> {
-  await unlink(sparseMarkerPath(filePath)).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  });
+  await flushPendingSparseMarkerUnlinks();
+  const markerPath = sparseMarkerPath(filePath);
+  try {
+    await unlink(markerPath);
+    PENDING_SPARSE_MARKER_UNLINKS.delete(markerPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      PENDING_SPARSE_MARKER_UNLINKS.delete(markerPath);
+      return;
+    }
+    PENDING_SPARSE_MARKER_UNLINKS.add(markerPath);
+    scheduleSparseMarkerUnlinkRetry();
+    throw error;
+  }
+}
+
+async function hasNulByteAtEverySparseUnit(filePath: string): Promise<boolean | undefined> {
+  let handle;
+  try {
+    handle = await open(filePath, 'r');
+    const info = await handle.stat();
+    if (info.size <= 0) return undefined;
+    const buf = Buffer.alloc(SPARSE_PROBE_BYTES);
+    for (let offset = 0; offset < info.size; offset += SPARSE_UNIT_BYTES) {
+      const probeLen = Math.min(SPARSE_PROBE_BYTES, info.size - offset);
+      if (probeLen <= 0) break;
+      const { bytesRead } = await handle.read(buf, 0, probeLen, offset);
+      if (bytesRead > 0 && buf.subarray(0, bytesRead).includes(0)) {
+        return true;
+      }
+    }
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 async function hasNulByteAtAnyOffset(
@@ -433,7 +533,10 @@ async function hasNulByteAtAnyOffset(
   }
 }
 
+export type Win32SparseAttributeState = 'sparse' | 'dense' | 'unknown';
+
 export async function detectOrphanedSparseJournal(filePath: string): Promise<boolean> {
+  await flushPendingSparseMarkerUnlinks();
   let markerFound = false;
   let confirmedOffsets: number[] = [];
   let markerProbeOffsets: number[] = [];
@@ -468,11 +571,13 @@ export async function detectOrphanedSparseJournal(filePath: string): Promise<boo
         : FALLBACK_SPARSE_PROBE_OFFSETS;
     const nul = await hasNulByteAtAnyOffset(filePath, probes);
     if (nul === true) return true;
-    if (process.platform === 'win32') return queryWin32SparseAttribute(filePath);
-    if (confirmedOffsets.length > 0) {
-      return stat(filePath).then(() => true, () => false);
-    }
-    return nul === undefined;
+    const win32Attr = await queryWin32SparseAttribute(filePath);
+    if (win32Attr === 'sparse') return true;
+    if (win32Attr === 'dense') return false;
+    const unitScan = await hasNulByteAtEverySparseUnit(filePath);
+    if (unitScan === true) return true;
+    if (unitScan === false) return false;
+    return confirmedOffsets.length > 0;
   }
 
   let size: number;
@@ -489,10 +594,11 @@ export async function detectOrphanedSparseJournal(filePath: string): Promise<boo
   );
   const nul = await hasNulByteAtAnyOffset(filePath, fallbackOffsets);
   if (nul === true) return true;
-  if (process.platform === 'win32') {
-    return queryWin32SparseAttribute(filePath);
-  }
-  return false;
+  const win32Attr = await queryWin32SparseAttribute(filePath);
+  if (win32Attr === 'sparse') return true;
+  if (win32Attr === 'dense') return false;
+  const fullUnitScan = await hasNulByteAtEverySparseUnit(filePath);
+  return fullUnitScan === true;
 }
 
 export async function queryWin32ProcessCreationFileTime(
@@ -511,13 +617,19 @@ export async function queryWin32ProcessCreationFileTime(
   }
 }
 
-export async function queryWin32SparseAttribute(filePath: string, signal?: AbortSignal): Promise<boolean> {
-  if (process.platform !== 'win32') return false;
+export async function queryWin32SparseAttribute(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<Win32SparseAttributeState> {
+  if (process.platform !== 'win32') return 'unknown';
   try {
     const [flag] = await runWin32Command(`attrs\t${encodePath(filePath)}`, signal);
-    return flag === '1';
+    if (flag === '1') return 'sparse';
+    if (flag === '0') return 'dense';
+    return 'unknown';
   } catch (error) {
-    if (error instanceof SparseHelperUnavailableError) return false;
+    if (signal?.aborted) throw signal.reason;
+    if (error instanceof SparseHelperUnavailableError) return 'unknown';
     throw error;
   }
 }

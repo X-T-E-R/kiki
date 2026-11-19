@@ -12,9 +12,10 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
+import net from 'node:net';
 import { posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { BroadcastChannel, postMessageToThread, threadId, type Worker } from 'node:worker_threads';
+import { BroadcastChannel, isMainThread, postMessageToThread, threadId, type Worker } from 'node:worker_threads';
 import * as portablePath from 'pathe';
 
 import { queryWin32ProcessCreationFileTime } from '#/persistence/backends/node-fs/sparseFile';
@@ -37,6 +38,7 @@ interface FileLockPayload {
   readonly version: 1;
   readonly pid: number;
   readonly threadId?: number;
+  readonly workerBeacon?: string;
   readonly processStartedAt: number;
   readonly token: string;
   readonly acquiredAt: number;
@@ -81,11 +83,15 @@ const TRACKED_WORKER_JOURNALS = new Map<number, Set<string>>();
 const HOOKED_READER_WORKERS = new WeakSet<Worker>();
 const readerGateDepth = new Map<string, number>();
 const READER_GATE_WAIT_MS = 60_000;
+const WORKER_BEACON_PROBE_TIMEOUT_MS = 250;
 let exitHooked = false;
 let workerProbeHooked = false;
 let readerBroadcast: BroadcastChannel | undefined;
 let pendingUnlinkTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingUnlinkDelayMs = PENDING_UNLINK_RETRY_BASE_MS;
+let localWorkerBeaconPromise: Promise<string | undefined> | undefined;
+let localWorkerBeaconAddress: string | undefined;
+let localWorkerBeaconServer: net.Server | undefined;
 
 interface ReaderLeaseHandle {
   releaseSync(): void;
@@ -107,6 +113,101 @@ function pidAlive(pid: unknown): boolean {
   }
 }
 
+function ensureLocalWorkerBeacon(): Promise<string | undefined> {
+  if (isMainThread || threadId === 0) return Promise.resolve(undefined);
+  if (localWorkerBeaconAddress !== undefined) return Promise.resolve(localWorkerBeaconAddress);
+  if (localWorkerBeaconPromise !== undefined) return localWorkerBeaconPromise;
+  localWorkerBeaconPromise = new Promise<string | undefined>((resolveBeacon) => {
+    const server = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.end();
+    });
+    server.unref();
+    let settled = false;
+    const finish = (address: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      if (address === undefined) {
+        localWorkerBeaconPromise = undefined;
+        try {
+          server.close();
+        } catch {}
+      } else {
+        localWorkerBeaconAddress = address;
+        localWorkerBeaconServer = server;
+      }
+      resolveBeacon(address);
+    };
+    server.once('error', () => finish(undefined));
+    if (process.platform === 'win32') {
+      const pipePath = `\\\\.\\pipe\\kiki-flk-${process.pid}-${threadId}-${randomUUID()}`;
+      server.listen(pipePath, () => finish(pipePath));
+    } else {
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (addr !== null && typeof addr === 'object' && typeof addr.port === 'number' && addr.port > 0) {
+          finish(`tcp:${addr.port}`);
+        } else {
+          finish(undefined);
+        }
+      });
+    }
+  });
+  return localWorkerBeaconPromise;
+}
+
+function probeForeignWorkerBeacon(beacon: string, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
+  let socket: net.Socket;
+  if (beacon.startsWith('\\\\.\\pipe\\')) {
+    socket = net.connect(beacon);
+  } else if (beacon.startsWith('tcp:')) {
+    const port = Number(beacon.slice(4));
+    if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
+      return Promise.resolve(true);
+    }
+    socket = net.connect({ host: '127.0.0.1', port });
+  } else {
+    return Promise.resolve(true);
+  }
+  socket.unref();
+  return new Promise<boolean>((resolveProbe, rejectProbe) => {
+    let settled = false;
+    const cleanupAbort = (): void => {
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const finish = (alive: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanupAbort();
+      socket.destroy();
+      resolveProbe(alive);
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanupAbort();
+      socket.destroy();
+      rejectProbe(signal!.reason);
+    };
+    const timer = setTimeout(() => finish(true), WORKER_BEACON_PROBE_TIMEOUT_MS);
+    timer.unref?.();
+    if (signal !== undefined) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    socket.once('connect', () => finish(true));
+    socket.once('error', (err: NodeJS.ErrnoException) => {
+      finish(err.code !== 'ENOENT' && err.code !== 'ECONNREFUSED');
+    });
+  });
+}
+
 async function ownerProcessAlive(payload: FileLockPayload, signal?: AbortSignal, provedAt?: Map<string, number>): Promise<boolean> {
   signal?.throwIfAborted();
   if (!pidAlive(payload.pid)) return false;
@@ -116,21 +217,32 @@ async function ownerProcessAlive(payload: FileLockPayload, signal?: AbortSignal,
     if (ownerThreadId === 0 || ownerThreadId === threadId) return true;
     return localWorkerThreadAlive(ownerThreadId);
   }
-  if (process.platform !== 'win32') return true;
-  const identity = `${payload.pid}:${payload.processStartedAt}`;
-  const proved = provedAt?.get(identity);
-  if (proved !== undefined && Date.now() - proved < 5_000) return true;
-  const fileTime = await queryWin32ProcessCreationFileTime(payload.pid, signal);
-  if (fileTime === 'dead') return false;
-  if (fileTime === 'unknown') return pidAlive(payload.pid);
-  const startedAt = Number(fileTime) / 10_000 - WINDOWS_EPOCH_OFFSET_MS;
-  if (!Number.isFinite(startedAt) || startedAt < 0 || startedAt > Date.now() + 60_000) return true;
-  const alive = Math.abs(startedAt - payload.processStartedAt) <= 2_000;
-  if (alive && provedAt !== undefined) {
-    if (provedAt.size >= 128) provedAt.delete(provedAt.keys().next().value!);
-    provedAt.set(identity, Date.now());
+  let hostAlive = true;
+  if (process.platform === 'win32') {
+    const identity = `${payload.pid}:${payload.processStartedAt}`;
+    const proved = provedAt?.get(identity);
+    if (proved === undefined || Date.now() - proved >= 5_000) {
+      const fileTime = await queryWin32ProcessCreationFileTime(payload.pid, signal);
+      if (fileTime === 'dead') return false;
+      if (fileTime === 'unknown') {
+        hostAlive = pidAlive(payload.pid);
+      } else {
+        const startedAt = Number(fileTime) / 10_000 - WINDOWS_EPOCH_OFFSET_MS;
+        if (Number.isFinite(startedAt) && startedAt >= 0 && startedAt <= Date.now() + 60_000) {
+          hostAlive = Math.abs(startedAt - payload.processStartedAt) <= 2_000;
+        }
+        if (hostAlive && provedAt !== undefined) {
+          if (provedAt.size >= 128) provedAt.delete(provedAt.keys().next().value!);
+          provedAt.set(identity, Date.now());
+        }
+      }
+    }
   }
-  return alive;
+  if (!hostAlive) return false;
+  if ((payload.threadId ?? 0) > 0 && typeof payload.workerBeacon === 'string' && payload.workerBeacon.length > 0) {
+    return probeForeignWorkerBeacon(payload.workerBeacon, signal);
+  }
+  return true;
 }
 
 function isPayload(value: unknown): value is FileLockPayload {
@@ -140,6 +252,9 @@ function isPayload(value: unknown): value is FileLockPayload {
     payload.threadId !== undefined &&
     (typeof payload.threadId !== 'number' || !Number.isSafeInteger(payload.threadId) || payload.threadId < 0)
   ) {
+    return false;
+  }
+  if (payload.workerBeacon !== undefined && typeof payload.workerBeacon !== 'string') {
     return false;
   }
   return (
@@ -282,6 +397,14 @@ function hookExit(): void {
     for (const leasePath of [...PENDING_READER_UNLINKS]) {
       if (tryUnlinkSyncComplete(leasePath)) PENDING_READER_UNLINKS.delete(leasePath);
     }
+    if (localWorkerBeaconServer !== undefined) {
+      try {
+        localWorkerBeaconServer.close();
+      } catch {}
+      localWorkerBeaconServer = undefined;
+      localWorkerBeaconAddress = undefined;
+      localWorkerBeaconPromise = undefined;
+    }
   };
   process.on('beforeExit', releaseHeld);
   process.on('exit', releaseHeld);
@@ -381,12 +504,14 @@ export async function acquireSharedReadLease(journalPath: string): Promise<{ rel
   await flushPendingReaderUnlinks();
   const directory = sharedReadDirectory(journalPath);
   await mkdir(directory, { recursive: true });
+  const workerBeacon = await ensureLocalWorkerBeacon();
   const token = `${process.pid}:${threadId}:${randomUUID()}`;
   const leasePath = join(directory, `${createHash('sha256').update(token).digest('hex')}.reader`);
   const payload: FileLockPayload = {
     version: 1,
     pid: process.pid,
     threadId,
+    workerBeacon,
     processStartedAt: PROCESS_STARTED_AT,
     token,
     acquiredAt: Date.now(),
@@ -587,12 +712,7 @@ async function sharedReaderAlive(
     }
     return localThreadReaderTokenAlive(leaseThreadId, payload.token);
   }
-  if (process.platform !== 'win32') return true;
-  const proved = provedAt.get(payload.token);
-  if (proved !== undefined && Date.now() - proved < 5_000) return true;
-  const alive = await ownerProcessAlive(payload, signal, provedAt);
-  if (alive) provedAt.set(payload.token, Date.now());
-  return alive;
+  return ownerProcessAlive(payload, signal, provedAt);
 }
 
 export async function withColdReaderGate<T>(journalPath: string, body: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -727,6 +847,7 @@ class FileLock implements IStorageLock {
   private readonly signal?: AbortSignal;
   private readonly provedAt = new Map<string, number>();
   private token = '';
+  private workerBeacon: string | undefined;
   private acquiredAt = 0;
   private held = false;
   private watchPath: string | undefined;
@@ -795,6 +916,7 @@ class FileLock implements IStorageLock {
   async reapIfDead(): Promise<boolean> {
     const seen = await this.inspect();
     if (seen === null || seen.active) return false;
+    this.workerBeacon = await ensureLocalWorkerBeacon();
     this.token = `${process.pid}:${randomUUID()}`;
     this.acquiredAt = Date.now();
     await this.publishWatch(true);
@@ -833,6 +955,7 @@ class FileLock implements IStorageLock {
     this.signal?.throwIfAborted();
     if (this.held) return true;
     hookExit();
+    this.workerBeacon = await ensureLocalWorkerBeacon();
     this.token = `${process.pid}:${threadId}:${randomUUID()}`;
     this.acquiredAt = Date.now();
     await mkdir(dirname(this.lockPath), { recursive: true, mode: this.dirMode });
@@ -1053,6 +1176,7 @@ class FileLock implements IStorageLock {
       version: 1,
       pid: process.pid,
       threadId,
+      workerBeacon: this.workerBeacon,
       processStartedAt: PROCESS_STARTED_AT,
       token: this.token,
       acquiredAt: this.acquiredAt,
