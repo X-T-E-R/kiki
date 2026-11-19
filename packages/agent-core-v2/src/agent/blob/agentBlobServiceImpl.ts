@@ -163,13 +163,30 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
   private async readBlob(hash: string): Promise<Buffer | undefined> {
     const cached = this.cache.get(hash);
     if (cached !== undefined) {
-      const exists = await this.blobs.has(this.storageScope, hash).catch(() => false);
+      let exists: boolean;
+      try {
+        exists = await this.blobs.has(this.storageScope, hash);
+      } catch (error) {
+        if (isBlobNotFoundError(error)) {
+          exists = false;
+        } else {
+          throw error;
+        }
+      }
       if (exists) return cached;
       this.cache.delete?.(hash);
       return undefined;
     }
 
-    const payload = await this.blobs.get(this.storageScope, hash).catch(() => undefined);
+    let payload: Uint8Array | undefined;
+    try {
+      payload = await this.blobs.get(this.storageScope, hash);
+    } catch (error) {
+      if (isBlobNotFoundError(error)) {
+        return undefined;
+      }
+      throw error;
+    }
     if (payload === undefined) return undefined;
 
     const buffer = Buffer.from(payload);
@@ -218,6 +235,18 @@ function isDiskFullError(error: unknown): boolean {
     error !== null &&
     'code' in error &&
     (error as { code?: unknown }).code === 'ENOSPC'
+  );
+}
+
+function isBlobNotFoundError(error: unknown): boolean {
+  if (error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_NOT_FOUND) {
+    return true;
+  }
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ENOENT'
   );
 }
 

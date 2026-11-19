@@ -39,7 +39,7 @@ export class SessionOutcomeMirror extends Disposable implements ISessionOutcomeM
       .then((meta) => {
         if (!this.adopted) this.lastPersisted = meta.lastTurnReason;
       })
-      .catch(() => {});
+      .catch(onUnexpectedError);
     this.attachMain();
     this._register(this.agents.onDidCreate((handle) => {
       if (handle.id === MAIN_AGENT_ID) this.attachMain();

@@ -7,6 +7,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { PromptCompleted, promptLaunchingKey } from '#/agent/prompt/promptService';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { Disposable, MutableDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { LifecycleScope } from '#/app/scopes';
 import { IWorkAdmissionService, type WorkAdmission } from '#/app/workAdmission/workAdmission';
@@ -1100,7 +1101,9 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         normalizeGoalErrorPayload(error).message,
       );
       await this.pauseActiveGoal({ reason }, 'system');
-    } catch {}
+    } catch (pauseError) {
+      onUnexpectedError(pauseError);
+    }
   }
 
   private isTaskWaitAvailable(): boolean {

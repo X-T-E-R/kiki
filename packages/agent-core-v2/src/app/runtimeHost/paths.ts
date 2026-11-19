@@ -164,7 +164,12 @@ async function unlinkQuietly(path: string): Promise<void> {
 
 async function chmodIfSupported(path: string, mode: number): Promise<void> {
   if (process.platform === 'win32') return;
-  await chmod(path, mode).catch(() => undefined);
+  await chmod(path, mode).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOTSUP' || error.code === 'EOPNOTSUPP' || error.code === 'ENOSYS' || error.code === 'EROFS') {
+      return;
+    }
+    throw error;
+  });
 }
 
 async function ensurePrivateDir(runtimeDir: string): Promise<void> {

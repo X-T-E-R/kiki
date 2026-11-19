@@ -18,6 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BroadcastChannel, isMainThread, postMessageToThread, threadId, type Worker } from 'node:worker_threads';
 import * as portablePath from 'pathe';
 
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { queryWin32ProcessCreationFileTime } from '#/persistence/backends/node-fs/sparseFile';
 import {
   isStorageError,
@@ -895,11 +896,20 @@ class FileLock implements IStorageLock {
     return this.runExclusive(async () => {
       if (!this.held) return;
       this.stopHeartbeat();
-      const current = await this.inspect();
-      if (current?.mine === true) await unlink(this.lockPath).catch(() => undefined);
-      await this.removeWatch();
-      this.held = false;
-      HELD.delete(this);
+      try {
+        const current = await this.inspect();
+        if (current?.mine === true) {
+          await unlink(this.lockPath).catch((error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+              onUnexpectedError(error);
+            }
+          });
+        }
+      } finally {
+        await this.removeWatch();
+        this.held = false;
+        HELD.delete(this);
+      }
     });
   }
 

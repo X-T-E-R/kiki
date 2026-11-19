@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { Disposable } from '#/_base/di/lifecycle';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { abortable } from '#/_base/utils/abort';
 import { Emitter, type Event } from '#/_base/event';
@@ -451,7 +452,9 @@ export class RoomService extends Disposable implements IRoomService {
       if (session === undefined) return;
       const main = await ensureMainAgent(session);
       main.accessor.get(IAgentSystemReminderService).appendSystemReminder(text, { kind: 'injection', variant });
-    } catch {}
+    } catch (error) {
+      onUnexpectedError(error);
+    }
   }
 
   async postUserMessage(roomId: string, input: PostUserMessageInput): Promise<RoomMessage> {

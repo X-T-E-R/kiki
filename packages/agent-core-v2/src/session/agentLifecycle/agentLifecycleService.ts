@@ -480,7 +480,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       slot.deferredCreateEvent = false;
       if (slot.handle === handle) slot.handle = undefined;
       if (priorAgentMeta === undefined) {
-        await this.sessionMetadata.unregisterAgent?.(agentId).catch(() => {});
+        await this.sessionMetadata.unregisterAgent?.(agentId).catch((rollbackError) => {
+          this.log.warn('failed to unregister agent metadata during creation rollback', { agentId, error: rollbackError });
+        });
       } else if (appliedAgentMeta !== undefined || bootstrapBinding !== undefined) {
         const prior = priorAgentMeta;
         const written = appliedAgentMeta ?? bootstrapBinding!;
@@ -502,11 +504,15 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
             next.labels = labels;
           }
           return next;
-        }).catch(() => {});
+        }).catch((rollbackError) => {
+          this.log.warn('failed to restore agent metadata during creation rollback', { agentId, error: rollbackError });
+        });
       }
       try {
         await handle.dispose();
-      } catch { }
+      } catch (disposeError) {
+        this.log.warn('failed to dispose agent handle during creation rollback', { agentId, error: disposeError });
+      }
       this.onDidDisposeEmitter.fire(agentId);
       try {
         await wire?.flush();

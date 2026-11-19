@@ -3,6 +3,7 @@ import { basename, extname, join } from 'node:path';
 import { z } from 'zod';
 
 import { createDecorator, IInstantiationService, type LiveRef, type ServiceIdentifier, type ServicesAccessor, ref } from '#/_base/di/instantiation';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { isAbortError } from '#/_base/utils/abort';
 import { isSendMessageToolActive } from '#/agent/toolPolicy/sendMessageAdmission';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -1030,17 +1031,22 @@ export class SendMessageTool implements ISendMessageTool {
       await this.blobs.put(blobScope, hash, data);
       let sourceId: string | undefined;
       if (trustedHostPath !== undefined && documents !== undefined) {
-        sourceId = createHash('sha256')
+        const candidateSourceId = createHash('sha256')
           .update(`${this.session.sessionId}\0${this.agent.agentId}\0${hash}\0${trustedHostPath}`)
           .digest('hex');
-        await documents.set(blobScope, `sources/${sourceId}.json`, {
-          version: 1,
-          sourceId,
-          sessionId: this.session.sessionId,
-          agentId: this.agent.agentId,
-          blobId,
-          path: trustedHostPath,
-        }).catch(() => undefined);
+        try {
+          await documents.set(blobScope, `sources/${candidateSourceId}.json`, {
+            version: 1,
+            sourceId: candidateSourceId,
+            sessionId: this.session.sessionId,
+            agentId: this.agent.agentId,
+            blobId,
+            path: trustedHostPath,
+          });
+          sourceId = candidateSourceId;
+        } catch (error) {
+          onUnexpectedError(error);
+        }
       }
       copied.push({
         blobId,
