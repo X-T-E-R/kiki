@@ -1021,7 +1021,7 @@ export const telemetryEventDefinitions = {
       kind: 'Corruption kind: unparseable middle line or torn final line',
       outcome: 'Whether the on-disk repair succeeded',
       dropped_count: 'Journal lines dropped from the corrupted tail',
-      backup_created: 'Whether a first-time .bak backup of the corrupted file was created',
+      backup_created: 'Whether a numbered backup of the corrupted file was created for this repair',
     },
   }),
   first_launch: defineTelemetryEvent<FirstLaunchEvent>({
