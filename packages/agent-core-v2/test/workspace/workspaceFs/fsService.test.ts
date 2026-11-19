@@ -651,7 +651,7 @@ describe('WorkspaceFsService.search', () => {
       const before = reads.length;
       page = await fs.search({ ...request, cursor: page.next_cursor });
       expect(reads.length - before).toBeLessThanOrEqual(32);
-      expect(page.items.map((hit) => hit.path)).toEqual(page.items.map((hit) => hit.path).sort((a, b) => a.localeCompare(b)));
+      expect(page.items.map((hit) => hit.path)).toEqual(page.items.map((hit) => hit.path).toSorted((a, b) => a.localeCompare(b)));
       all.push(...page.items);
     }
     expect(new Set(all.map((hit) => hit.path))).toEqual(new Set(Object.keys(files)));
@@ -1362,6 +1362,39 @@ describe('WorkspaceFsService.grep', () => {
     expect(streaming?.wasKilled()).toBe(true);
     expect(streaming?.yieldedLines()).toBeLessThan(TOTAL);
   });
+
+  it('kills rg and rejects when the caller signal aborts', async () => {
+    const lines = Array.from({ length: 10_000 }, (_, i) => JSON.stringify({
+      type: 'match',
+      data: { path: { text: 'big.ts' }, lines: { text: `hit ${i}\n` }, line_number: i + 1, submatches: [{ start: 0, end: 3 }] },
+    }));
+    const controller = new AbortController();
+    let streaming: ReturnType<typeof makeStreamingProcess> | undefined;
+    const runner: IHostProcessService = {
+      _serviceBrand: undefined,
+      spawn: async (command, args) => {
+        if (command === 'rg' && args?.[0] === '--version') return fakeProcess('ripgrep 14.1.0', '', 0);
+        streaming = makeStreamingProcess(lines);
+        setImmediate(() => controller.abort());
+        return streaming.proc;
+      },
+    };
+    const fs = makeSession({}, emptyHandler, [], defaultGitStub(), [], runner);
+    const request = {
+      pattern: 'hit',
+      regex: false,
+      case_sensitive: true,
+      follow_gitignore: false,
+      max_files: 200,
+      max_matches_per_file: 100_000,
+      max_total_matches: 100_000,
+      context_lines: 0,
+    };
+    await expect(fs.grep(request, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(streaming?.wasKilled()).toBe(true);
+    expect(streaming?.yieldedLines()).toBeLessThan(lines.length);
+    await expect(fs.grep(request, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
 });
 
 describe('WorkspaceFsService.list', () => {
@@ -1379,7 +1412,7 @@ describe('WorkspaceFsService.list', () => {
       sort: 'name_asc',
       include_git_status: false,
     });
-    const names = result.items.map((i) => i.name).sort();
+    const names = result.items.map((i) => i.name).toSorted();
     expect(names).toEqual(['README.md', 'src']);
     expect(result.items.find((i) => i.name === 'src')?.kind).toBe('directory');
   });
@@ -1395,7 +1428,7 @@ describe('WorkspaceFsService.list', () => {
       sort: 'name_asc',
       include_git_status: false,
     });
-    expect(result.children_by_path?.['src']?.map((i) => i.name).sort()).toEqual([
+    expect(result.children_by_path?.['src']?.map((i) => i.name).toSorted()).toEqual([
       'a.ts',
       'sub',
     ]);
@@ -1456,15 +1489,15 @@ describe('WorkspaceFsService.read', () => {
   });
 
   it('returns base64 for binary content in auto mode', async () => {
-    const fs = makeSession({ 'bin.dat': 'abc\x00def' }, emptyHandler);
+    const fs = makeSession({ 'bin.dat': 'abc\u0000def' }, emptyHandler);
     const result = await fs.read({ path: 'bin.dat', offset: 0, length: 1024, encoding: 'auto' });
     expect(result.encoding).toBe('base64');
     expect(result.is_binary).toBe(true);
-    expect(result.content).toBe(Buffer.from('abc\x00def').toString('base64'));
+    expect(result.content).toBe(Buffer.from('abc\u0000def').toString('base64'));
   });
 
   it('throws fs.is_binary for binary content in utf-8 mode', async () => {
-    const fs = makeSession({ 'bin.dat': 'abc\x00def' }, emptyHandler);
+    const fs = makeSession({ 'bin.dat': 'abc\u0000def' }, emptyHandler);
     await expect(
       fs.read({ path: 'bin.dat', offset: 0, length: 1024, encoding: 'utf-8' }),
     ).rejects.toMatchObject({ code: 'fs.is_binary' });

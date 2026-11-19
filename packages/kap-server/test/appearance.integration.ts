@@ -1,4 +1,7 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import type https from 'node:https';
+import type { AddressInfo, LookupFunction } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildStoredZip } from '../src/lib/storedZip';
 import { readZipEntries } from '../src/lib/zipReader';
-import { fetchRemoteMedia } from '../src/routes/appearance';
+import { createPinnedLookup, fetchRemoteMedia } from '../src/routes/appearance';
 import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -208,6 +211,74 @@ describe('remote background import policy', () => {
     const redirect = (async () => new Response(null, { status: 302, headers: { location: 'https://internal.example/a.png' } })) as unknown as typeof fetch;
     const resolve = async (host: string) => (host === 'internal.example' ? ['10.1.2.3'] : ['93.184.216.34']);
     await expect(fetchRemoteMedia('https://example.com/a.png', resolve, redirect)).rejects.toThrow(/public/);
+  });
+
+  it('pins socket lookup to validated public addresses and blocks DNS rebinding to loopback', async () => {
+    let loopbackHits = 0;
+    const server = http.createServer((_req, res) => {
+      loopbackHits += 1;
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(PNG);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+
+      await expect(new Promise<void>((resolve, reject) => {
+        const req = http.request(
+          `http://localhost:${port}/a.png`,
+          { lookup: createPinnedLookup(['127.0.0.1']), agent: false },
+          () => resolve(),
+        );
+        req.on('error', reject);
+        req.end();
+      })).rejects.toMatchObject({ code: 'ENOTFOUND' });
+      expect(loopbackHits).toBe(0);
+
+      const answers = [['93.184.216.34'], ['127.0.0.1']];
+      let resolved = 0;
+      const resolveHost = async () => answers[Math.min(resolved++, answers.length - 1)]!;
+      const observedLookups: LookupFunction[] = [];
+      const requestImpl = ((
+        _url: URL,
+        options: https.RequestOptions,
+        cb: (res: http.IncomingMessage) => void,
+      ) => {
+        expect(typeof options.lookup).toBe('function');
+        observedLookups.push(options.lookup as LookupFunction);
+        return http.request(`http://127.0.0.1:${port}/a.png`, { method: 'GET', agent: false }, cb);
+      }) as unknown as typeof https.request;
+
+      const media = await fetchRemoteMedia('https://rebind.example/a.png', resolveHost, undefined, requestImpl);
+      expect(media.mime).toBe('image/png');
+      expect(resolved).toBe(1);
+      expect(observedLookups).toHaveLength(1);
+
+      const allResult = await new Promise<unknown>((resolve, reject) => {
+        observedLookups[0]!('localhost', { all: true }, (err, addresses) => {
+          if (err !== null) reject(err);
+          else resolve(addresses);
+        });
+      });
+      expect(allResult).toEqual([{ address: '93.184.216.34', family: 4 }]);
+
+      const singleResult = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+        observedLookups[0]!('localhost', { family: 4 }, (err, address, family) => {
+          if (err !== null) reject(err);
+          else resolve({ address: String(address), family });
+        });
+      });
+      expect(singleResult).toEqual({ address: '93.184.216.34', family: 4 });
+
+      await expect(new Promise<void>((resolve, reject) => {
+        observedLookups[0]!('localhost', { family: 6 }, (err) => {
+          if (err !== null) reject(err);
+          else resolve();
+        });
+      })).rejects.toMatchObject({ code: 'ENOTFOUND' });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it('refuses a page that is not media, whatever its content type claims', async () => {
