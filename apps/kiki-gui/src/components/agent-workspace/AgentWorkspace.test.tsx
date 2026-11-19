@@ -3710,10 +3710,11 @@ it.each([
   expect(annotateBtn).not.toBeNull();
   await act(async () => { annotateBtn!.click(); });
 
-  const commentInput = container.querySelector<HTMLInputElement>('[data-selection-annotate-input]');
+  const commentInput = container.querySelector<HTMLInputElement | HTMLTextAreaElement>('[data-selection-annotate-input]');
   expect(commentInput).not.toBeNull();
   await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const proto = commentInput instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')!.set!;
     setter.call(commentInput, 'Raise cap to 32k?');
     commentInput!.dispatchEvent(new Event('input', { bubbles: true }));
     commentInput!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));

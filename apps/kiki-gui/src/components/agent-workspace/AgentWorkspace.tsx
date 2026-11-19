@@ -109,7 +109,8 @@ import {
 } from '../timeline/AdmissionLine';
 import { TranscriptDetailProvider, type TranscriptEntityKind } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
-import { useAgentTimeline } from './useAgentTimeline';
+import { agentContinuationAvailable, useAgentTimeline } from './useAgentTimeline';
+export { agentContinuationAvailable };
 import {
   normalizeStoredAnnotations,
   restoreSentAnnotations,
@@ -482,22 +483,6 @@ const emptyAgentView = createViewState('');
  * kept read-only and settles as an unavailable target instead of becoming a
  * send gate by accident.
  */
-export function agentContinuationAvailable(input: {
-  readonly controller: SessionController | null;
-  readonly node: AgentTreeNode | undefined;
-  readonly subagent: SubagentBlock | undefined;
-  readonly state: Pick<SessionViewState, 'blocks' | 'model' | 'historyCoverageKind' | 'transcriptReady'>;
-}): boolean {
-  if (input.controller === null) return input.node !== undefined || input.subagent !== undefined;
-  const status = input.node?.status ?? input.subagent?.status;
-  if (status !== undefined && status !== 'unknown') return true;
-  if (input.state.blocks.length > 0 || input.state.model !== undefined) return true;
-  // Test/legacy embeddings may not expose view retention and already provide
-  // an authoritative forest; the real SessionController always has it.
-  if (typeof input.controller.retainAgentView === 'function' && !input.state.transcriptReady) return false;
-  return input.state.historyCoverageKind === 'full';
-}
-
 export function WorkspaceHeader({ children, main = false }: { children: ReactNode; main?: boolean }) {
   // A quiet bar on the sheet's own ground: no rule under it — the sheet edge
   // and the transcript's top padding carry the separation.

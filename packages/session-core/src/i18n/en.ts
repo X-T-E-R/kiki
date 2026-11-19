@@ -2,26 +2,26 @@
  * English dictionary — aggregated from domain modules under `./domains/en/`.
  * Add new keys to the matching domain file in lexicographical order.
  */
-import { agentPanelEn } from './domains/en/agent-panel';
-import { capabilitiesEn } from './domains/en/capabilities';
-import { commonEn } from './domains/en/common';
-import { composerEn } from './domains/en/composer';
-import { cronTasksEn } from './domains/en/cron-tasks';
-import { discoveryOnboardingEn } from './domains/en/discovery-onboarding';
-import { memoryEn } from './domains/en/memory';
-import { personaRoomEn } from './domains/en/persona-room';
-import { previewTermEn } from './domains/en/preview-term';
-import { sidebarEn } from './domains/en/sidebar';
-import { stAgentsEn } from './domains/en/st-agents';
-import { stBrowserCuaEn } from './domains/en/st-browser-cua';
-import { stCoreEn } from './domains/en/st-core';
-import { stExtRecipesEn } from './domains/en/st-ext-recipes';
-import { stGovernanceEn } from './domains/en/st-governance';
-import { stImNotifyEn } from './domains/en/st-im-notify';
-import { stSearchEn } from './domains/en/st-search';
-import { stSpacesRemoteEn } from './domains/en/st-spaces-remote';
-import { transcriptEn } from './domains/en/transcript';
-import { usageEn } from './domains/en/usage';
+import { agentPanelEn } from './domains/en/agent-panel.ts';
+import { capabilitiesEn } from './domains/en/capabilities.ts';
+import { commonEn } from './domains/en/common.ts';
+import { composerEn } from './domains/en/composer.ts';
+import { cronTasksEn } from './domains/en/cron-tasks.ts';
+import { discoveryOnboardingEn } from './domains/en/discovery-onboarding.ts';
+import { memoryEn } from './domains/en/memory.ts';
+import { personaRoomEn } from './domains/en/persona-room.ts';
+import { previewTermEn } from './domains/en/preview-term.ts';
+import { sidebarEn } from './domains/en/sidebar.ts';
+import { stAgentsEn } from './domains/en/st-agents.ts';
+import { stBrowserCuaEn } from './domains/en/st-browser-cua.ts';
+import { stCoreEn } from './domains/en/st-core.ts';
+import { stExtRecipesEn } from './domains/en/st-ext-recipes.ts';
+import { stGovernanceEn } from './domains/en/st-governance.ts';
+import { stImNotifyEn } from './domains/en/st-im-notify.ts';
+import { stSearchEn } from './domains/en/st-search.ts';
+import { stSpacesRemoteEn } from './domains/en/st-spaces-remote.ts';
+import { transcriptEn } from './domains/en/transcript.ts';
+import { usageEn } from './domains/en/usage.ts';
 
 export const enDomains = {
   'agent-panel': agentPanelEn,

@@ -127,6 +127,7 @@ import {
   type LocateOutcome,
   type TimelineTarget,
 } from '../lib/timelineLocate';
+import { registerNavHistoryReset } from '../lib/navHistory';
 import { timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navViewState';
 import { restoreTimelineReading, type TimelineReadingAdapter } from '../lib/timelineReading';
 import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
@@ -2586,6 +2587,9 @@ interface TurnLocateHint {
 }
 const turnLocateHints = new Map<string, TurnLocateHint>();
 const lastReadingSnapshotByScope = new Map<string, TimelineReadingSnapshot>();
+registerNavHistoryReset(() => {
+  lastReadingSnapshotByScope.clear();
+});
 
 /**
  * Attach optional `step` / `q` precision to a `?turn=` deep-link jump without

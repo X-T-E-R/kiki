@@ -2021,6 +2021,7 @@ describe('live and event chrome', () => {
     if (c.locale) localStorage.setItem('kiki.locale', c.locale);
     try {
       const container = await renderTranscript([c.block], undefined, c.snapshotSubagents ? { snapshotSubagents: c.snapshotSubagents } : undefined);
+      expect(container.firstElementChild).not.toBeNull();
       if (c.senderId) {
         const sender = container.querySelector(`[data-agent-message-sender="${c.senderId}"]`);
         if (c.senderText) expect(sender?.textContent).toBe(c.senderText);

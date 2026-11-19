@@ -331,12 +331,20 @@ export function getSnapshot(visitId: string): NavSnapshot | undefined {
   return snapshot;
 }
 
+const resetListeners = new Set<() => void>();
+
+export function registerNavHistoryReset(listener: () => void): () => void {
+  resetListeners.add(listener);
+  return () => { resetListeners.delete(listener); };
+}
+
 export function clearNavHistory(): void {
   entries = [];
   currentIndex = -1;
   snapshots.clear();
   hydrated = true;
   locationConfirmed = false;
+  for (const listener of resetListeners) listener();
   try {
     sessionStorage.removeItem(STORAGE_KEY);
   } catch {

@@ -144,7 +144,7 @@ function usePanelSourceRevisions(
       const currentForest = forestRef.current;
       const currentIds = idsRef.current;
       const cache = cacheRef.current.byId;
-      const parts = new Array<string>(currentIds.length);
+      const parts = Array.from<string>({ length: currentIds.length });
       for (let i = 0; i < currentIds.length; i += 1) {
         const id = currentIds[i]!;
         const state = controller?.getAgentState(id);

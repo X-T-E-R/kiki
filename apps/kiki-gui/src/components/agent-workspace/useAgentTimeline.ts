@@ -1,13 +1,11 @@
 import { useCallback, useId, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import {
-  agentContinuationAvailable,
-} from './AgentWorkspace';
-import {
   createViewState,
   MAIN_AGENT_ID,
   sessionAgentForest,
   type AgentForest,
+  type AgentTreeNode,
   type Block,
   type SessionController,
   type SessionViewState,
@@ -74,6 +72,20 @@ export interface AgentTimelineResult {
  * Shared timeline state, demand lease, pending-interaction count, and row
  * actions for any agent — `main` included.
  */
+export function agentContinuationAvailable(input: {
+  readonly controller: SessionController | null;
+  readonly node: AgentTreeNode | undefined;
+  readonly subagent: SubagentBlock | undefined;
+  readonly state: Pick<SessionViewState, 'blocks' | 'model' | 'historyCoverageKind' | 'transcriptReady'>;
+}): boolean {
+  if (input.controller === null) return input.node !== undefined || input.subagent !== undefined;
+  const status = input.node?.status ?? input.subagent?.status;
+  if (status !== undefined && status !== 'unknown') return true;
+  if (input.state.blocks.length > 0 || input.state.model !== undefined) return true;
+  if (typeof input.controller.retainAgentView === 'function' && !input.state.transcriptReady) return false;
+  return input.state.historyCoverageKind === 'full';
+}
+
 export function useAgentTimeline(
   controller: SessionController | null,
   agentId: string,

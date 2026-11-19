@@ -64,7 +64,7 @@ function useSafeOptionalConnection(): ConnectionValue | null {
 }
 
 function hasBrokerConnection(connection: ConnectionValue | null | undefined): connection is ConnectionValue {
-  return connection != null && typeof connection.config?.url === 'string';
+  return connection !== null && connection !== undefined && typeof connection.config?.url === 'string';
 }
 
 export interface PluginGuiSlotScope {

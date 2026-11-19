@@ -169,7 +169,7 @@ describe('SearchableSelect', () => {
     expect(panel.getAttribute('role')).toBe('presentation');
     const listbox = panel.querySelector<HTMLElement>('[role="listbox"]')!;
     expect(document.activeElement).toBe(listbox);
-    await press(document.activeElement!, 'Escape');
+    await press(document.activeElement as HTMLElement, 'Escape');
     expect(document.querySelector('[data-select-panel]')).toBeNull();
     expect(document.activeElement).toBe(trigger(container));
 

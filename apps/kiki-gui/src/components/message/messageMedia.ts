@@ -194,7 +194,7 @@ export function messageMediaRef(
 }
 
 const MARKDOWN_LINK_RE = /(!?)\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/giu;
-const BARE_URL_RE = /(?<![(\["'])\b(https?:\/\/[^\s<>)\]"']+)/giu;
+const BARE_URL_RE = /(?<![(["'])\b(https?:\/\/[^\s<>)\]"']+)/giu;
 const IMAGE_URL_EXT_RE = /\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#].*)?$/iu;
 
 function cleanCapturedUrl(raw: string): string {

@@ -340,7 +340,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
     async (req, reply) => {
       const { cwd } = req.query;
       if (cwd === undefined) {
-        reply.send(okEnvelope({ skills: (await listGlobalSkills(core)).map(toProtocolSkill) }, req.id));
+        reply.send(okEnvelope({ skills: (await listGlobalSkills(core)).map((skill) => toProtocolSkill(skill)) }, req.id));
         return;
       }
       try {
@@ -355,7 +355,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
       const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), cwd);
       try {
         await preview.skills!.ready;
-        reply.send(okEnvelope({ skills: preview.skills!.catalog.listSkills().map(toProtocolSkill) }, req.id));
+        reply.send(okEnvelope({ skills: preview.skills!.catalog.listSkills().map((skill) => toProtocolSkill(skill)) }, req.id));
       } finally {
         await preview.dispose();
       }
@@ -388,7 +388,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
           }
           const catalog = operation.handle.accessor.get(ISessionSkillCatalog);
           await catalog.ready;
-          const skills = catalog.catalog.listSkills().map(toProtocolSkill);
+          const skills = catalog.catalog.listSkills().map((skill) => toProtocolSkill(skill));
           reply.send(okEnvelope({ skills }, req.id));
           return;
         } finally {
@@ -409,7 +409,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
       const resident = core.accessor.get(IWorkspaceInstanceManager).get(summary.workspaceId);
       if (resident !== undefined && resident.root === effectiveRoot && resident.program.status !== 'degraded') {
         await resident.program.skills.ready;
-        const skills = resident.program.skills.catalog.listSkills().map(toProtocolSkill);
+        const skills = resident.program.skills.catalog.listSkills().map((skill) => toProtocolSkill(skill));
         reply.send(okEnvelope({ skills }, req.id));
         return;
       }
@@ -670,7 +670,7 @@ async function listCachedColdWorkspaceSkills(
   let pending = state.inflight.get(key);
   if (pending === undefined) {
     pending = (async () => {
-      const skills = (await listWorkspaceSkillsForRoot(core, workspaceId, workDir)).map(toProtocolSkill);
+      const skills = (await listWorkspaceSkillsForRoot(core, workspaceId, workDir)).map((skill) => toProtocolSkill(skill));
       if (state.entries.size >= COLD_WORKSPACE_SKILLS_MAX_ENTRIES) {
         const oldest = state.entries.keys().next().value;
         if (oldest !== undefined) state.entries.delete(oldest);
