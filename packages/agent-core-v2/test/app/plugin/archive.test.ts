@@ -1,9 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import { ZipFile } from 'yazl';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ZipFile } from 'yazl';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,6 +11,7 @@ import {
   extractZip,
   MAX_ZIP_DOWNLOAD_BYTES,
   MAX_ZIP_ENTRIES,
+  MAX_ZIP_SINGLE_ENTRY_BYTES,
   MAX_ZIP_UNCOMPRESSED_BYTES,
 } from '#/app/plugin/archive';
 
@@ -20,14 +20,23 @@ vi.mock('node:fs', async (original) => {
   return { ...actual, createWriteStream: vi.fn(actual.createWriteStream) };
 });
 
-async function smallArchive(): Promise<Buffer> {
+async function buildArchive(entries: readonly { path: string; data: Buffer | string }[]): Promise<Buffer> {
   const zip = new ZipFile();
-  zip.addBuffer(Buffer.from(JSON.stringify({ name: 'cancel-archive' })), 'kimi.plugin.json');
-  zip.addBuffer(Buffer.alloc(256 * 1024, 11), 'later.bin');
+  for (const entry of entries) {
+    const buf = typeof entry.data === 'string' ? Buffer.from(entry.data, 'utf8') : entry.data;
+    zip.addBuffer(buf, entry.path);
+  }
   zip.end();
   const chunks: Buffer[] = [];
   for await (const chunk of zip.outputStream) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
+}
+
+async function smallArchive(): Promise<Buffer> {
+  return buildArchive([
+    { path: 'kimi.plugin.json', data: JSON.stringify({ name: 'cancel-archive' }) },
+    { path: 'later.bin', data: Buffer.alloc(64 * 1024, 11) },
+  ]);
 }
 
 describe('plugin archive extraction', () => {
@@ -39,6 +48,13 @@ describe('plugin archive extraction', () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('pins production default archive ceilings', () => {
+    expect(MAX_ZIP_DOWNLOAD_BYTES).toBe(100 * 1024 * 1024);
+    expect(MAX_ZIP_UNCOMPRESSED_BYTES).toBe(200 * 1024 * 1024);
+    expect(MAX_ZIP_SINGLE_ENTRY_BYTES).toBe(200 * 1024 * 1024);
+    expect(MAX_ZIP_ENTRIES).toBe(20_000);
   });
 
   it('waits for an aborted extraction stream to close and writes no subsequent entry', async () => {
@@ -59,137 +75,103 @@ describe('plugin archive extraction', () => {
       expect(opened).toBe(1);
       expect(closed).toBe(1);
       await expect(stat(join(dir, 'out', 'later.bin'))).rejects.toMatchObject({ code: 'ENOENT' });
-      await rm(join(dir, 'out'), { recursive: true });
     } finally {
       write.mockRestore();
     }
   });
 
-  it('rejects a pre-cancelled extraction before creating scratch and rejects malformed input promptly', async () => {
+  it('rejects pre-cancelled, malformed, and path-traversal archives promptly', async () => {
     await expect(extractZip(await smallArchive(), join(dir, 'cancelled'), AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' });
     await expect(stat(join(dir, 'cancelled'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(extractZip(Buffer.from('invalid'), join(dir, 'malformed'))).rejects.toThrow('Failed to open zip');
+    const baseTraversal = await buildArchive([{ path: 'aa/escape.txt', data: 'nope' }]);
+    const traversal = Buffer.from(baseTraversal.toString('latin1').replaceAll('aa/escape.txt', '../escape.txt'), 'latin1');
+    await expect(extractZip(traversal, join(dir, 'escape'))).rejects.toThrow(/invalid relative path|Path traversal/);
   });
 
-  it('cancels a pending download body reader when the caller aborts after headers', async () => {
+  it('cancels a pending download body reader on abort and enforces declared or streamed download limits', async () => {
     const controller = new AbortController();
     let started!: () => void;
     const bodyStarted = new Promise<void>((resolve) => { started = resolve; });
     let cancelled = 0;
     let pulling = false;
-    const stream = new ReadableStream<Uint8Array>({
+    const hangingStream = new ReadableStream<Uint8Array>({
       pull() {
         if (!pulling) {
           pulling = true;
           started();
         }
       },
-      cancel() {
-        cancelled += 1;
-      },
+      cancel() { cancelled += 1; },
     });
-    const fetchMock = vi.fn(async () => new Response(stream));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(hangingStream)));
     try {
       const pending = downloadZip('https://example.test/download.zip', controller.signal).catch((error: unknown) => error);
       await bodyStarted;
       controller.abort();
       expect(await pending).toMatchObject({ name: 'AbortError' });
       expect(cancelled).toBe(1);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }
-  });
 
-  it('rejects a declared oversized download and cancels its body without reading it', async () => {
-    let cancelled = 0;
-    const stream = new ReadableStream<Uint8Array>({
-      cancel() {
-        cancelled += 1;
-      },
-    });
-    const fetchMock = vi.fn(async () => new Response(stream, {
-      headers: { 'content-length': String(MAX_ZIP_DOWNLOAD_BYTES + 1) },
-    }));
-    vi.stubGlobal('fetch', fetchMock);
+    let declaredCancelled = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() { declaredCancelled += 1; },
+    }), { headers: { 'content-length': '513' } })));
     try {
-      await expect(downloadZip('https://example.test/oversized.zip')).rejects.toMatchObject({ code: 'plugin.load_failed' });
-      expect(cancelled).toBe(1);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await expect(downloadZip('https://example.test/oversized.zip', undefined, { maxDownloadBytes: 512 }))
+        .rejects.toMatchObject({ code: 'plugin.load_failed' });
+      expect(declaredCancelled).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(Buffer.alloc(513, 1))));
+    try {
+      await expect(downloadZip('https://example.test/streamed.zip', undefined, { maxDownloadBytes: 512 }))
+        .rejects.toMatchObject({ code: 'plugin.load_failed' });
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it('extracts a zip and detects a nested plugin root', async () => {
-    const source = join(dir, 'source');
-    const nested = join(source, 'plugin');
-    await mkdir(nested, { recursive: true });
-    await writeFile(join(nested, 'kimi.plugin.json'), JSON.stringify({ name: 'zip-demo' }), 'utf8');
-    const zipPath = join(dir, 'plugin.zip');
-    execFileSync('zip', ['-qr', zipPath, '.'], { cwd: source });
+  it('extracts root or nested plugin manifests and enforces download, entry, single-entry, and uncompressed ceilings', async () => {
+    const nested = await buildArchive([{ path: 'plugin/kimi.plugin.json', data: JSON.stringify({ name: 'zip-demo' }) }]);
+    const nestedRoot = await extractZip(nested, join(dir, 'nested'));
+    expect(nestedRoot).toBe(join(dir, 'nested', 'plugin'));
+    await expect(readFile(join(nestedRoot, 'kimi.plugin.json'), 'utf8')).resolves.toContain('zip-demo');
 
-    const outDir = join(dir, 'out');
-    const detectedRoot = await extractZip(await readFile(zipPath), outDir);
+    const manifest = JSON.stringify({ name: 'zip-bound' });
+    const bounded = await buildArchive([
+      { path: 'kimi.plugin.json', data: manifest },
+      { path: 'a.bin', data: Buffer.alloc(100, 1) },
+      { path: 'b.bin', data: Buffer.alloc(101, 2) },
+    ]);
+    const totalUncompressed = Buffer.byteLength(manifest) + 201;
 
-    expect(detectedRoot).toBe(join(outDir, 'plugin'));
-    await expect(readFile(join(detectedRoot, 'kimi.plugin.json'), 'utf8')).resolves.toContain('zip-demo');
+    await expect(extractZip(bounded, join(dir, 'ok'), undefined, {
+      maxDownloadBytes: bounded.byteLength,
+      maxEntries: 3,
+      maxSingleEntryBytes: 101,
+      maxUncompressedBytes: totalUncompressed,
+    })).resolves.toBe(join(dir, 'ok'));
+
+    await expect(extractZip(bounded, join(dir, 'over-dl'), undefined, {
+      maxDownloadBytes: bounded.byteLength - 1,
+    })).rejects.toMatchObject({ code: 'plugin.load_failed' });
+    await expect(stat(join(dir, 'over-dl'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await expect(extractZip(bounded, join(dir, 'over-entries'), undefined, {
+      maxEntries: 2,
+    })).rejects.toMatchObject({ code: 'plugin.load_failed' });
+
+    await expect(extractZip(bounded, join(dir, 'over-single'), undefined, {
+      maxSingleEntryBytes: 100,
+    })).rejects.toMatchObject({ code: 'plugin.load_failed' });
+
+    await expect(extractZip(bounded, join(dir, 'over-uncompressed'), undefined, {
+      maxUncompressedBytes: totalUncompressed - 1,
+    })).rejects.toMatchObject({ code: 'plugin.load_failed' });
   });
-
-  it('extracts a zip that stays under every ceiling', async () => {
-    const source = join(dir, 'source');
-    await mkdir(source, { recursive: true });
-    await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({ name: 'zip-demo' }), 'utf8');
-    const zipPath = join(dir, 'plugin.zip');
-    execFileSync('zip', ['-qr', zipPath, '.'], { cwd: source });
-
-    const outDir = join(dir, 'out');
-    await expect(extractZip(await readFile(zipPath), outDir)).resolves.toBe(outDir);
-  });
-
-  it('rejects a zip buffer above the download limit before extracting', async () => {
-    const oversized = Buffer.alloc(MAX_ZIP_DOWNLOAD_BYTES + 1);
-    await expect(extractZip(oversized, join(dir, 'out'))).rejects.toMatchObject({
-      code: 'plugin.load_failed',
-    });
-    await expect(stat(join(dir, 'out'))).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('rejects a zip whose uncompressed size exceeds the limit', async () => {
-    const source = join(dir, 'source');
-    await mkdir(source, { recursive: true });
-    await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({ name: 'zip-bomb' }), 'utf8');
-    await writeFile(
-      join(source, 'zeros.bin'),
-      Buffer.alloc(MAX_ZIP_UNCOMPRESSED_BYTES / 2, 0),
-    );
-    await writeFile(
-      join(source, 'zeros2.bin'),
-      Buffer.alloc(MAX_ZIP_UNCOMPRESSED_BYTES / 2 + 1, 0),
-    );
-    const zipPath = join(dir, 'plugin.zip');
-    execFileSync('zip', ['-qr', zipPath, '.'], { cwd: source });
-    const buffer = await readFile(zipPath);
-    expect(buffer.byteLength).toBeLessThan(MAX_ZIP_DOWNLOAD_BYTES);
-
-    await expect(extractZip(buffer, join(dir, 'out'))).rejects.toMatchObject({
-      code: 'plugin.load_failed',
-    });
-  }, 30_000);
-
-  it('rejects a zip with more entries than the entry limit', async () => {
-    const source = join(dir, 'source');
-    await mkdir(source, { recursive: true });
-    await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({ name: 'zip-many' }), 'utf8');
-    for (let i = 0; i < MAX_ZIP_ENTRIES; i += 1) {
-      await writeFile(join(source, `f${i}.txt`), 'x', 'utf8');
-    }
-    const zipPath = join(dir, 'plugin.zip');
-    execFileSync('zip', ['-qr', zipPath, '.'], { cwd: source });
-
-    await expect(extractZip(await readFile(zipPath), join(dir, 'out'))).rejects.toMatchObject({
-      code: 'plugin.load_failed',
-    });
-  }, 240_000);
 });

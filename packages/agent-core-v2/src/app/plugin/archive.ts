@@ -10,9 +10,23 @@ import { Error2, ErrorCodes } from '#/errors';
 /** Hard ceilings for untrusted plugin downloads and extraction before consent. */
 export const MAX_ZIP_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 export const MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024;
+export const MAX_ZIP_SINGLE_ENTRY_BYTES = MAX_ZIP_UNCOMPRESSED_BYTES;
 export const MAX_ZIP_ENTRIES = 20_000;
 
-export async function downloadZip(url: string, signal?: AbortSignal): Promise<Buffer> {
+/** Optional internal ceiling overrides for unit tests; production uses the pinned defaults. */
+export interface ArchiveLimits {
+  maxDownloadBytes?: number;
+  maxEntries?: number;
+  maxUncompressedBytes?: number;
+  maxSingleEntryBytes?: number;
+}
+
+export async function downloadZip(
+  url: string,
+  signal?: AbortSignal,
+  limits?: Pick<ArchiveLimits, 'maxDownloadBytes'>,
+): Promise<Buffer> {
+  const maxDownloadBytes = limits?.maxDownloadBytes ?? MAX_ZIP_DOWNLOAD_BYTES;
   signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(5 * 60 * 1000);
   const downloadSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
@@ -27,8 +41,8 @@ export async function downloadZip(url: string, signal?: AbortSignal): Promise<Bu
       );
     }
     const declared = resp.headers.get('content-length');
-    if (declared !== null && Number(declared) > MAX_ZIP_DOWNLOAD_BYTES) {
-      throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Plugin zip exceeds the ${MAX_ZIP_DOWNLOAD_BYTES}-byte download limit`);
+    if (declared !== null && Number(declared) > maxDownloadBytes) {
+      throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Plugin zip exceeds the ${maxDownloadBytes}-byte download limit`);
     }
     const reader = resp.body?.getReader();
     if (reader === undefined) return Buffer.alloc(0);
@@ -43,8 +57,8 @@ export async function downloadZip(url: string, signal?: AbortSignal): Promise<Bu
         downloadSignal.throwIfAborted();
         if (next.done) break;
         bytes += next.value.byteLength;
-        if (bytes > MAX_ZIP_DOWNLOAD_BYTES) {
-          throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Plugin zip exceeds the ${MAX_ZIP_DOWNLOAD_BYTES}-byte download limit`);
+        if (bytes > maxDownloadBytes) {
+          throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Plugin zip exceeds the ${maxDownloadBytes}-byte download limit`);
         }
         chunks.push(Buffer.from(next.value));
       }
@@ -59,12 +73,21 @@ export async function downloadZip(url: string, signal?: AbortSignal): Promise<Bu
   }
 }
 
-export async function extractZip(buffer: Buffer, destDir: string, signal?: AbortSignal): Promise<string> {
+export async function extractZip(
+  buffer: Buffer,
+  destDir: string,
+  signal?: AbortSignal,
+  limits?: ArchiveLimits,
+): Promise<string> {
+  const maxDownloadBytes = limits?.maxDownloadBytes ?? MAX_ZIP_DOWNLOAD_BYTES;
+  const maxEntries = limits?.maxEntries ?? MAX_ZIP_ENTRIES;
+  const maxUncompressedBytes = limits?.maxUncompressedBytes ?? MAX_ZIP_UNCOMPRESSED_BYTES;
+  const maxSingleEntryBytes = limits?.maxSingleEntryBytes ?? maxUncompressedBytes;
   signal?.throwIfAborted();
-  if (buffer.byteLength > MAX_ZIP_DOWNLOAD_BYTES) {
+  if (buffer.byteLength > maxDownloadBytes) {
     throw new Error2(
       ErrorCodes.PLUGIN_LOAD_FAILED,
-      `Plugin zip exceeds the ${MAX_ZIP_DOWNLOAD_BYTES}-byte download limit`,
+      `Plugin zip exceeds the ${maxDownloadBytes}-byte download limit`,
       { details: { bytes: buffer.byteLength } },
     );
   }
@@ -93,12 +116,19 @@ export async function extractZip(buffer: Buffer, destDir: string, signal?: Abort
       if (entry === undefined) break;
       extractionSignal.throwIfAborted();
       entryCount += 1;
-      totalUncompressed += entry.uncompressedSize;
-      if (entryCount > MAX_ZIP_ENTRIES) {
-        throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Plugin zip exceeds the ${MAX_ZIP_ENTRIES}-entry limit`, { details: { entries: entryCount } });
+      if (entryCount > maxEntries) {
+        throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Plugin zip exceeds the ${maxEntries}-entry limit`, { details: { entries: entryCount } });
       }
-      if (totalUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES) {
-        throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Plugin zip exceeds the ${MAX_ZIP_UNCOMPRESSED_BYTES}-byte uncompressed limit`, { details: { uncompressedBytes: totalUncompressed } });
+      if (entry.uncompressedSize > maxSingleEntryBytes) {
+        throw new Error2(
+          ErrorCodes.PLUGIN_LOAD_FAILED,
+          `Plugin zip entry ${entry.fileName} exceeds the ${maxSingleEntryBytes}-byte single-entry limit`,
+          { details: { entry: entry.fileName, uncompressedBytes: entry.uncompressedSize } },
+        );
+      }
+      totalUncompressed += entry.uncompressedSize;
+      if (totalUncompressed > maxUncompressedBytes) {
+        throw new Error2(ErrorCodes.PLUGIN_LOAD_FAILED, `Plugin zip exceeds the ${maxUncompressedBytes}-byte uncompressed limit`, { details: { uncompressedBytes: totalUncompressed } });
       }
       const destPath = path.resolve(destDir, entry.fileName);
       if (destPath !== destDirResolved && !destPath.startsWith(destDirResolved + path.sep)) {

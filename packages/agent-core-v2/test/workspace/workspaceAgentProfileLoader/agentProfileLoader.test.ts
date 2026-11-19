@@ -920,6 +920,8 @@ describe('agent profile loaders + session catalog', () => {
           serviceTier: 'priority',
           tools: ['Read', 'Bash'],
           disallowedTools: ['Write'],
+          executorInstance: 'auto',
+          executorLaunch: { env: { EXAMPLE_FLAG: '1' } },
         });
 
         expect(result.profile).toMatchObject({
@@ -928,6 +930,8 @@ describe('agent profile loaders + session catalog', () => {
           serviceTier: 'priority',
           tools: ['Read', 'Bash'],
           disallowedTools: ['Write'],
+          executorInstance: 'auto',
+          executorLaunch: { env: { EXAMPLE_FLAG: '1' } },
         });
         const text = await readFile(profilePath, 'utf8');
         expect(text).toContain('whenToUse: "Use for focused reviews"');
@@ -935,6 +939,13 @@ describe('agent profile loaders + session catalog', () => {
         expect(text).toContain('service_tier: "priority"');
         expect(text).toContain('tools: ["Read","Bash"]');
         expect(text).toContain('disallowedTools: ["Write"]');
+        expect(text).toContain('executor_instance: "auto"');
+
+        await expect(stack.writer.update({
+          name: 'reviewer',
+          scope: 'user',
+          executorInstance: { account_id: '' },
+        })).rejects.toMatchObject({ code: 'validation.failed' });
 
         const cleared = await stack.writer.update({
           name: 'reviewer',
@@ -944,12 +955,16 @@ describe('agent profile loaders + session catalog', () => {
           serviceTier: null,
           tools: null,
           disallowedTools: null,
+          executorInstance: null,
+          executorLaunch: null,
         });
         expect(cleared.profile.whenToUse).toBeUndefined();
         expect(cleared.profile.thinkingEffort).toBeUndefined();
         expect(cleared.profile.serviceTier).toBeUndefined();
         expect(cleared.profile.tools).toBeUndefined();
         expect(cleared.profile.disallowedTools).toBeUndefined();
+        expect(cleared.profile.executorInstance).toBeUndefined();
+        expect(cleared.profile.executorLaunch).toBeUndefined();
       });
     });
   });

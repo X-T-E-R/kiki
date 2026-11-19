@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { MiniDb } from '../src/index.js';
+import { MiniDb, UniqueViolationError } from '../src/index.js';
 import { encodeFrame, TYPE_SET } from '../src/codec.js';
 import { barrier, waitFor } from './helpers.js';
 
@@ -445,12 +445,34 @@ test('openOrRebuild preserves data when only a sidecar definition file is corrup
     // plain open still throws on the corrupt sidecar...
     await assert.rejects(MiniDb.open({ dir, valueCodec: 'json' }), SyntaxError);
     // ...but openOrRebuild drops the derived sidecars instead of wiping the data
-    db = await MiniDb.openOrRebuild<Record<string, number>>({ dir, valueCodec: 'json', fsyncPolicy: 'no' });
+    let rebuilt = false;
+    db = await MiniDb.openOrRebuild<Record<string, number>>(
+      { dir, valueCodec: 'json', fsyncPolicy: 'no' },
+      { onRebuild: () => (rebuilt = true) },
+    );
+    assert.equal(rebuilt, true);
     assert.equal(db.size, 100);
     assert.deepEqual(db.get('k42'), { n: 42 });
     assert.deepEqual(db.listIndexes(), []); // definitions are lost, not the data; recreate as needed
     await db.createIndex('byN2', { field: 'n' });
     assert.equal(db.findEq('byN2', 42).length, 1);
+    await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('open failure on corrupt index JSON releases the lock', async () => {
+  const dir = await tmpDir();
+  try {
+    let db = await MiniDb.open({ dir, valueCodec: 'json' });
+    await db.set('k', { v: 1 });
+    await db.close();
+    await fs.writeFile(path.join(dir, 'db.indexes.json'), '{ not valid json', 'utf8');
+    await assert.rejects(MiniDb.open({ dir, valueCodec: 'json' }), SyntaxError);
+    await fs.rm(path.join(dir, 'db.indexes.json'), { force: true });
+    db = await MiniDb.open({ dir, valueCodec: 'json' });
+    assert.equal((db.get('k') as { v: number }).v, 1);
     await db.close();
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -587,6 +609,169 @@ test('async reads stay correct across a compaction rotation (disk mode)', async 
       assert.deepEqual(await ro.getAsync(`k${i}`), ro.get(`k${i}`));
     }
     await ro.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('buffer isolation, batch key limit, TTL heap bound/size/validation, and unique-before-eviction', async () => {
+  const dir = await tmpDir();
+  try {
+    // 1) buffer codec get() returns an independent copy
+    const bdb = await MiniDb.open({ dir: path.join(dir, 'buf'), valueCodec: 'buffer' });
+    await bdb.set('k', Buffer.from('hello'));
+    bdb.get('k')![0] = 0xff;
+    assert.equal(bdb.get('k')![0], 0x68);
+    await bdb.close();
+
+    // 2) batch rejects keys > 128 chars, TTL heap bound, size excludes expired, fractional/non-finite TTL
+    const db = await MiniDb.open({ dir: path.join(dir, 'ttl'), valueCodec: 'string', activeExpireIntervalMs: 0 });
+    const longKey = 'k'.repeat(200);
+    await assert.rejects(db.batch([{ op: 'set', key: longKey, value: 'x' }]), /key too long/i);
+    assert.equal(db.get(longKey), undefined);
+
+    for (let i = 0; i < 5000; i++) await db.set('hot', 'v', { ttl: 1_000_000 });
+    assert.ok((db as unknown as { store: { heap: { size: number } } }).store.heap.size < 100);
+
+    await db.set('exp', 'v', { ttl: 1 });
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(db.size, 1);
+    assert.equal(db.scan().length, 1);
+
+    await db.set('frac', 'v', { ttl: 200.9 });
+    const left = db.ttl('frac');
+    assert.ok(left > 0 && left <= 201);
+    await assert.rejects(db.set('inf', 'v', { ttl: Infinity }), /ttl/i);
+    await assert.rejects(db.set('nan', 'v', { ttl: NaN }), /ttl/i);
+    assert.equal(db.get('inf'), undefined);
+    assert.equal(db.get('nan'), undefined);
+    await db.close();
+
+    // 3) unique-conflicting insert is rejected before any LRU eviction side effect
+    const evdb = await MiniDb.open({
+      dir: path.join(dir, 'evict'),
+      valueCodec: 'json',
+      fsyncPolicy: 'no',
+      autoCompact: false,
+      maxMemoryBytes: 190,
+      maxMemoryPolicy: 'evict-lru',
+    });
+    await evdb.createIndex('u', { field: 'u', unique: true });
+    await evdb.set('owner', { u: 'taken', pad: 'x'.repeat(20) });
+    await evdb.set('victim', { u: 'free', pad: 'y'.repeat(20) });
+    evdb.get('owner');
+    const evictionsBefore = evdb.stats.evictions;
+    await assert.rejects(evdb.set('bad', { u: 'taken', pad: 'z'.repeat(100) }), UniqueViolationError);
+    assert.equal(evdb.get('bad'), undefined);
+    assert.ok(evdb.get('owner'));
+    assert.ok(evdb.get('victim'));
+    assert.equal(evdb.stats.evictions, evictionsBefore);
+    await evdb.set('big', { u: 'new', pad: 'z'.repeat(100) });
+    assert.ok(evdb.stats.evictions > evictionsBefore);
+    await evdb.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('backup waits out an in-flight WAL recovery instead of copying the un-acked tail', async () => {
+  const dir = await tmpDir();
+  const backupDir = await tmpDir();
+  const restoreDir = await tmpDir();
+  const db = await MiniDb.open<string>({ dir, valueCodec: 'string', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+  await db.set('k', 'v');
+  const fh = (db as unknown as { wal: { fh: { writev: (...a: unknown[]) => Promise<unknown> } } }).wal.fh;
+  const origWritev = fh.writev.bind(fh);
+  let failWritev = true;
+  fh.writev = async (...a: unknown[]) => (failWritev ? ((failWritev = false), Promise.reject(new Error('injected WAL failure'))) : origWritev(...a));
+
+  const origTruncate = fs.truncate;
+  let releaseTruncate!: () => void;
+  const truncateGate = new Promise<void>((r) => (releaseTruncate = r));
+  (fs as unknown as { truncate: unknown }).truncate = async (p: unknown, len?: number) => {
+    await truncateGate;
+    return origTruncate(p as Parameters<typeof origTruncate>[0], len);
+  };
+  try {
+    await assert.rejects(db.set('bad', 'x'), /injected WAL failure/);
+    const backingUp = db.backup(backupDir, { compact: false });
+    releaseTruncate();
+    await backingUp;
+  } finally {
+    (fs as unknown as { truncate: unknown }).truncate = origTruncate;
+  }
+  assert.equal(db.get('bad'), undefined);
+  await db.close();
+
+  const restored = await MiniDb.restore<string>(backupDir, restoreDir, { valueCodec: 'string', fsyncPolicy: 'no', activeExpireIntervalMs: 0, force: true });
+  assert.equal(restored.get('k'), 'v');
+  assert.equal(restored.get('bad'), undefined);
+  await restored.close();
+  await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  await fs.rm(backupDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  await fs.rm(restoreDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+});
+
+test('non-ASCII multi-byte UTF-8 keys work across CRUD, batch, scan/prefix, recovery, query, and all index types', async () => {
+  const dir = await tmpDir();
+  try {
+    // 1) String codec: CRUD, del, batch, scan, prefix, WAL & snapshot recovery.
+    const sdir = path.join(dir, 'str');
+    let sdb = await MiniDb.open({ dir: sdir, valueCodec: 'string', compactThresholdBytes: 1, autoCompact: false });
+    await sdb.set('é', 'accent');
+    await sdb.set('北京', 'cjk');
+    await sdb.set('key🎉', 'emoji');
+    await sdb.set('café', 'x');
+    assert.equal(sdb.get('é'), 'accent');
+    assert.equal(sdb.get('北京'), 'cjk');
+    assert.equal(sdb.get('key🎉'), 'emoji');
+    assert.equal(sdb.has('é'), true);
+    assert.equal(sdb.has('missing-é'), false);
+    assert.equal(await sdb.del('café'), true);
+    assert.equal(sdb.has('café'), false);
+    assert.equal(await sdb.del('café'), false);
+    await sdb.batch([{ op: 'set', key: '用户:1', value: 'a' }, { op: 'set', key: '用户:2', value: 'b' }, { op: 'set', key: '批1', value: 'gone' }]);
+    await sdb.batch([{ op: 'del', key: '批1' }]);
+    assert.deepEqual(sdb.prefix('用户:').map((r) => r.key).sort(), ['用户:1', '用户:2']);
+    assert.ok(sdb.scan().map((r) => r.key).includes('北京'));
+    await sdb.close();
+
+    sdb = await MiniDb.open({ dir: sdir, valueCodec: 'string', compactThresholdBytes: 1, autoCompact: false });
+    assert.equal(sdb.get('北京'), 'cjk');
+    assert.equal(sdb.get('key🎉'), 'emoji');
+    assert.equal(sdb.get('批1'), undefined);
+    await sdb.compact();
+    await sdb.close();
+
+    sdb = await MiniDb.open({ dir: sdir, valueCodec: 'string' });
+    assert.equal(sdb.get('é'), 'accent');
+    assert.equal(sdb.get('北京'), 'cjk');
+    assert.equal(sdb.get('批1'), undefined);
+    await sdb.close();
+
+    // 2) JSON codec: secondary/range/dt/compound/text indexes, unified query, and reopen.
+    const jdir = path.join(dir, 'json');
+    let jdb = await MiniDb.open({ dir: jdir, valueCodec: 'json' });
+    await jdb.createIndex('byCity', { field: 'city' });
+    await jdb.createIndex('byAge', { field: 'age', type: 'range' });
+    await jdb.createCompoundIndex('byWs', { groupBy: 'ws', orderBy: 'created' });
+    await jdb.createTextIndex('body', { fields: ['bio'] });
+    await jdb.set('用户:北京', { city: 'Paris', age: 30, ws: 'W1', bio: 'hello world' }, { dt: { created: 100 } });
+    await jdb.set('用户:上海', { city: 'Paris', age: 40, ws: 'W1', bio: 'hello there' }, { dt: { created: 200 } });
+    assert.deepEqual(jdb.findEq('byCity', 'Paris').map((r) => r.key).sort(), ['用户:上海', '用户:北京']);
+    assert.deepEqual(jdb.findRange('byAge', { min: 25, max: 35 }).map((r) => r.key), ['用户:北京']);
+    assert.deepEqual(jdb.dtRange('created', { gte: 100, lte: 100 }).map((r) => r.key), ['用户:北京']);
+    assert.deepEqual(jdb.compoundRange('byWs', 'W1').map((r) => r.key), ['用户:北京', '用户:上海']);
+    assert.deepEqual(jdb.search('body', 'world').map((r) => r.key), ['用户:北京']);
+    assert.deepEqual(jdb.query({ key: '用户:北京' }).map((r) => r.key), ['用户:北京']);
+    assert.deepEqual(jdb.query({ key: { prefix: '用户:' } }).map((r) => r.key).sort(), ['用户:上海', '用户:北京']);
+    await jdb.close();
+
+    jdb = await MiniDb.open({ dir: jdir, valueCodec: 'json' });
+    assert.deepEqual(jdb.findEq('byCity', 'Paris').map((r) => r.key).sort(), ['用户:上海', '用户:北京']);
+    assert.equal(jdb.findRange('byAge', { min: 25, max: 35 })[0]!.key, '用户:北京');
+    assert.deepEqual(jdb.search('body', 'world').map((r) => r.key), ['用户:北京']);
+    await jdb.close();
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }

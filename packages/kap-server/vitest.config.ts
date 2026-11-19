@@ -30,6 +30,13 @@ const sharedTestOptions = {
   teardownTimeout: 10_000,
 };
 
+const isExplicitPerfRun =
+  process.env['KIKI_SCALE_GATE'] === '1' ||
+  process.argv.some((arg) => arg.includes('test/perf') || arg.includes('syntheticScalePerf'));
+const defaultExcludes = isExplicitPerfRun
+  ? DEFAULT_VITEST_EXCLUDE
+  : [...DEFAULT_VITEST_EXCLUDE, 'test/perf/**'];
+
 const parallel = {
   plugins: [rawTextPlugin()],
   resolve: {
@@ -41,7 +48,7 @@ const parallel = {
     ...sharedTestOptions,
     name: 'kap-server',
     include: ['test/**/*.{test,integration,e2e}.ts'],
-    exclude: [...DEFAULT_VITEST_EXCLUDE, ...SERIAL_FILES],
+    exclude: [...defaultExcludes, ...SERIAL_FILES],
     fileParallelism: true,
     maxWorkers: 4,
     sequence: { groupOrder: 1 },
@@ -56,7 +63,7 @@ const serial = {
     ...sharedTestOptions,
     name: 'kap-server-serial',
     include: SERIAL_FILES,
-    exclude: DEFAULT_VITEST_EXCLUDE,
+    exclude: defaultExcludes,
     fileParallelism: false,
   },
 };

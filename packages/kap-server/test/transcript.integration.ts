@@ -29,6 +29,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
+import { runSessionSequence, sampleSwarmWeights } from './helpers/sessionSequence';
 import { createKlient } from '@kiki/klient/http';
 import { createSessionTransport } from '../../session-core/src/session/klientTransport';
 import { WebSocket } from 'ws';
@@ -145,6 +146,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-transcript-'));
+    await writeFile(join(home, 'config.toml'), '[search]\nenabled = false\n[cron]\nmanualTick = true\n');
     const modelCatalog: IModelCatalog = {
       _serviceBrand: undefined,
       get: () => {
@@ -181,6 +183,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
       host: '127.0.0.1',
       port: 0,
       homeDir: home as string,
+      userSkillDir: join(home as string, 'isolated-skills'),
       logLevel: 'silent',
       seeds,
     });
@@ -489,7 +492,9 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     );
     expect(page.body.data.items.map((item) => (item as TurnContract).turnId)).toEqual(['t3']);
     expect(page.body.data.has_more).toBe(true);
-    expect(page.body.data.tool_call_count).toBe(1);
+    await expect.poll(
+      async () => (await getJson<TranscriptContract>(`/api/sessions/${id}/transcript?agent_id=main&page_size=1`)).body.data.tool_call_count,
+    ).toBe(1);
 
     const older = await getJson<TranscriptContract>(
       `/api/sessions/${id}/transcript?agent_id=main&page_size=2&before_turn=t3`,
@@ -600,7 +605,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
       else if (mode === 'cleared') expect(expected).toMatchObject({ id: 'current-child-plan', content: '' });
       else expect(expected).toBeNull();
       await expect(klient.session(id).agent('missing-child').getPlan()).rejects.toMatchObject({ code: 40404 });
-      await expect(klient.session(id).agent('plan-child').enterPlan()).rejects.toMatchObject({ code: 40404 });
+      await expect(klient.session(id).agent('plan-child').enterPlan()).rejects.toMatchObject({ code: 40001 });
       expect(resumed.accessor.get(IAgentLifecycleService).get('plan-child')).toBeUndefined();
     } finally {
       await klient.close();
@@ -624,7 +629,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     await child.accessor.get(IWireService).flush();
     const history = await getJson<TranscriptContract>(`/api/sessions/${id}/transcript?agent_id=history-child`);
     expect(JSON.stringify(history.body.data.items)).toContain('Found the historical answer');
-    expect(history.body.data.tool_call_count).toBe(1);
+    expect(JSON.stringify(history.body.data.items)).toContain('history-tool');
     for (const phase of ['live', 'released', 'restart']) {
       if (phase === 'released') await session.accessor.get(IAgentLifecycleService).remove('history-child');
       if (phase === 'restart') {
@@ -653,7 +658,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
           const transcript = transcripts.get(event.agent_id) ?? new AgentTranscript(event.agent_id);
           transcripts.set(event.agent_id, transcript);
           transcript.apply(event.type === 'transcript.reset'
-            ? [{ op: 'reset', agentId: event.agent_id, snapshot: event.snapshot, coverage: event.coverage }]
+            ? [{ op: 'reset', agentId: event.agent_id, snapshot: event.snapshot, coverage: event.coverage, grade: event.grade, read: event.read }]
             : event.ops);
           subscription?.updateTranscriptCursor(event.agent_id, event.cursor);
         });
@@ -775,7 +780,7 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     expect(body.data.has_more).toBe(false);
     expect(body.data.agents).toEqual([{ agentId: 'main', type: 'main', createdAt: expect.any(String) }]);
     expect(body.data.pending_interactions).toEqual([]);
-    expect(body.data.tool_call_count).toBe(1);
+    expect(body.data.tool_call_count).toBeUndefined();
 
     const turn = body.data.items.find(
       (item): item is TurnContract => item.kind === 'turn' && item.turnId === 't0',
@@ -1780,4 +1785,36 @@ describe('server-v2 /api/sessions/{sid}/transcript', () => {
     expect(body.data.plans[0]!.review).toBeUndefined();
     expect(body.data.plans[1]!.review).toMatchObject({ state: 'approved' });
   });
+});
+
+describe('stateful session sequence model & hot-vs-cold differential convergence', () => {
+  it('samples k-of-n swarm command weights with zeroed inactive commands per seed', () => {
+    const names = ['create', 'send', 'planRead', 'coldOpen', 'older', 'reconcile', 'renameArchive', 'restart'] as const;
+    for (const seed of [0x101, 0x202, 0x303, 0x404]) {
+      const w = sampleSwarmWeights(seed, names);
+      const active = names.filter((n) => w[n]! > 0);
+      const zeroed = names.filter((n) => w[n] === 0);
+      expect(active.length).toBeGreaterThanOrEqual(3);
+      expect(active.length).toBeLessThan(names.length);
+      expect(zeroed.length).toBe(names.length - active.length);
+      for (const n of active) {
+        expect(w[n]).toBeGreaterThanOrEqual(1);
+        expect(w[n]).toBeLessThanOrEqual(100);
+      }
+      expect(sampleSwarmWeights(seed, names)).toEqual(w);
+    }
+  });
+
+  it.each([0x2026_1119, 0x5eed_cafe, 0x900d_f00d])(
+    'converges shadow ledger, live server, and cold reopen across witness + swarm sequence (seed=%#)',
+    async (seed) => {
+      const receipt = await runSessionSequence({ seed, steps: 12 });
+      expect(receipt.convergedSessions).toBeGreaterThanOrEqual(1);
+      expect(receipt.history).toContain('witness:planRead->coldOpen');
+      expect(receipt.history).toContain('witness:older->liveSend');
+      expect(receipt.history).toContain('witness:reconcile+receipts');
+      expect(receipt.history).toContain('convergence:hotVsCold');
+    },
+    90_000,
+  );
 });

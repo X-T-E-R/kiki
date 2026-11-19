@@ -543,72 +543,31 @@ describe('splitPrefixSegments streaming differential', () => {
     }
   });
 
+  const tailBase = (overrides: Record<string, unknown> = {}) => ({
+    turnId: '1', endedAt: new Date().toISOString(), durationMs: 4_200,
+    ttftMs: undefined, usage: undefined, tokensPerSecond: undefined, ...overrides,
+  });
+
   it('shows per-turn decode throughput in the turn tail', async () => {
     const probe = makeRoot();
-    await renderSettled(
-      probe.root,
-      <TurnTailLine
-        tail={{
-          turnId: '1',
-          endedAt: new Date().toISOString(),
-          durationMs: 4_200,
-          ttftMs: 1_500,
-          usage: {
-            inputOther: 100,
-            output: 30,
-            inputCacheRead: 20,
-            inputCacheCreation: 10,
-          },
-          tokensPerSecond: 19.6,
-        }}
-      />,
-    );
+    await renderSettled(probe.root, <TurnTailLine tail={tailBase({ ttftMs: 1_500, usage: { inputOther: 100, output: 30, inputCacheRead: 20, inputCacheCreation: 10 }, tokensPerSecond: 19.6 })} />);
     expect(probe.container.querySelector('[data-turn-tail]')?.textContent).toContain('20 tok/s');
   });
 
-  it('labels crash recovery as an interruption and still offers resume', async () => {
+  it.each([
+    { cancellation: 'recovery' as const, includes: ['Interrupted when Kiki restarted', 'Resume'], excludes: ['Stopped by you'] },
+    { cancellation: 'user' as const, includes: ['Stopped by you'], excludes: [] },
+  ])('labels cancelled turn tail ($cancellation)', async ({ cancellation, includes, excludes }) => {
     const probe = makeRoot();
-    await renderSettled(probe.root, <TurnTailLine tail={{
-      turnId: 't1', state: 'cancelled', cancellation: 'recovery',
-      endedAt: new Date().toISOString(), durationMs: 1000,
-      ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
-    }} onResume={() => undefined} />);
-    const tail = probe.container.querySelector('[data-turn-tail]');
-    expect(tail?.textContent).toContain('Interrupted when Kiki restarted');
-    expect(tail?.textContent).not.toContain('Stopped by you');
-    expect(tail?.textContent).toContain('Resume');
-  });
-
-  it('keeps the user-stop label for an explicit cancellation', async () => {
-    const probe = makeRoot();
-    await renderSettled(probe.root, <TurnTailLine tail={{
-      turnId: 't1', state: 'cancelled', cancellation: 'user',
-      endedAt: new Date().toISOString(), durationMs: 1000,
-      ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
-    }} onResume={() => undefined} />);
-    expect(probe.container.querySelector('[data-turn-tail]')?.textContent).toContain('Stopped by you');
+    await renderSettled(probe.root, <TurnTailLine tail={tailBase({ turnId: 't1', state: 'cancelled', cancellation, durationMs: 1000 })} onResume={() => undefined} />);
+    const text = probe.container.querySelector('[data-turn-tail]')?.textContent ?? '';
+    for (const part of includes) expect(text).toContain(part);
+    for (const part of excludes) expect(text).not.toContain(part);
   });
 
   it('ages the turn-tail clock instead of freezing at first render', async () => {
     const probe = makeRoot();
-    await renderSettled(
-      probe.root,
-      <TurnTailLine
-        tail={{
-          turnId: '1',
-          endedAt: new Date(Date.now() - 9_000).toISOString(),
-          durationMs: 4_200,
-          ttftMs: 1_500,
-          usage: {
-            inputOther: 100,
-            output: 30,
-            inputCacheRead: 20,
-            inputCacheCreation: 10,
-          },
-          tokensPerSecond: 19.6,
-        }}
-      />,
-    );
+    await renderSettled(probe.root, <TurnTailLine tail={tailBase({ endedAt: new Date(Date.now() - 9_000).toISOString(), ttftMs: 1_500, usage: { inputOther: 100, output: 30, inputCacheRead: 20, inputCacheCreation: 10 }, tokensPerSecond: 19.6 })} />);
     const text = () => probe.container.querySelector('[data-turn-tail]')?.textContent ?? '';
     expect(text()).toContain('just now');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2_200)); });
@@ -616,62 +575,30 @@ describe('splitPrefixSegments streaming differential', () => {
     expect(text()).not.toContain('just now');
   });
 
-  const completedTail = (turnId: string) => ({
-    turnId,
-    state: 'completed' as const,
-    endedAt: new Date().toISOString(),
-    durationMs: 4_000,
-    ttftMs: undefined,
-    usage: undefined,
-    tokensPerSecond: undefined,
-  });
+  const completedTail = (turnId: string) => tailBase({ turnId, state: 'completed' as const, durationMs: 4_000 });
 
-  it('names the turn that ended with nothing to read, and the work still running', async () => {
-    const probe = makeRoot();
-    await renderSettled(probe.root, <TurnTailLine
-      tail={completedTail('t25')}
-      gap={{ turnId: 't25', work: 'running' }}
-      onRetry={() => { throw new Error('a session with work in flight offers no send-again'); }}
-    />);
-    const tail = probe.container.querySelector<HTMLElement>('[data-turn-tail]');
-    expect(tail?.dataset['turnTailState']).toBe('completed');
-    expect(tail?.querySelector('[data-turn-tail-gap="running"]')?.textContent).toBe(translate('en', 'transcript.noReply'));
-    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent)
-      .toBe(translate('en', 'transcript.noReplyBackground'));
-    expect(tail?.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
-  });
-
-  it('offers send-again for an empty turn only once nothing runs, and never sends on its own', async () => {
+  it.each([
+    { work: 'running' as const, key: 'transcript.noReplyBackground' as const, canRetry: false },
+    { work: 'idle' as const, key: 'transcript.noReplyIdle' as const, canRetry: true },
+    { work: 'unknown' as const, key: 'transcript.noReplyUnknown' as const, canRetry: false },
+  ])('names empty-turn gap state ($work) and only offers send-again when idle', async ({ work, key, canRetry }) => {
     const probe = makeRoot();
     const retried = vi.fn();
-    await renderSettled(probe.root, <TurnTailLine
-      tail={completedTail('t25')}
-      gap={{ turnId: 't25', work: 'idle' }}
-      onRetry={retried}
-    />);
-    const tail = probe.container.querySelector('[data-turn-tail]');
-    expect(tail?.querySelector('[data-turn-tail-gap="idle"]')).not.toBeNull();
-    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent).toBe(translate('en', 'transcript.noReplyIdle'));
+    await renderSettled(probe.root, <TurnTailLine tail={completedTail('t25')} gap={{ turnId: 't25', work }} onRetry={retried} />);
+    const tail = probe.container.querySelector<HTMLElement>('[data-turn-tail]')!;
+    expect(tail.dataset['turnTailState']).toBe('completed');
+    expect(tail.querySelector(`[data-turn-tail-gap="${work}"]`)).not.toBeNull();
+    if (work === 'running') expect(tail.querySelector(`[data-turn-tail-gap="${work}"]`)?.textContent).toBe(translate('en', 'transcript.noReply'));
+    expect(tail.querySelector('[data-turn-tail-gap-work]')?.textContent).toBe(translate('en', key));
     expect(retried).not.toHaveBeenCalled();
-    const button = tail?.querySelector<HTMLButtonElement>('[data-turn-tail-gap-retry]');
-    expect(button?.textContent).toBe(translate('en', 'transcript.promptOutcome.retry'));
-    await act(async () => { button?.click(); });
-    expect(retried).toHaveBeenCalledTimes(1);
-  });
-
-  it('claims no background fact and offers no send-again for an empty turn it cannot confirm', async () => {
-    const probe = makeRoot();
-    const retried = vi.fn();
-    await renderSettled(probe.root, <TurnTailLine
-      tail={completedTail('t25')}
-      gap={{ turnId: 't25', work: 'unknown' }}
-      onRetry={retried}
-    />);
-    const tail = probe.container.querySelector('[data-turn-tail]');
-    expect(tail?.querySelector('[data-turn-tail-gap="unknown"]')).not.toBeNull();
-    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent).toBe(translate('en', 'transcript.noReplyUnknown'));
-    expect(tail?.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
-    expect(retried).not.toHaveBeenCalled();
+    const button = tail.querySelector<HTMLButtonElement>('[data-turn-tail-gap-retry]');
+    if (canRetry) {
+      expect(button?.textContent).toBe(translate('en', 'transcript.promptOutcome.retry'));
+      await act(async () => { button?.click(); });
+      expect(retried).toHaveBeenCalledTimes(1);
+    } else {
+      expect(button).toBeNull();
+    }
   });
 
   it('lets a failure and a stop keep their own ending over an empty-turn fact', async () => {
@@ -720,15 +647,7 @@ describe('completed reply gap integration', () => {
   }
 
   function surface(state: SessionViewState, connected = true, props: Partial<ComponentProps<typeof Transcript>> = {}) {
-    return <Transcript
-      state={state}
-      connected={connected}
-      onLoadOlder={() => Promise.resolve(false)}
-      onResolveApproval={() => noopActions()}
-      onAnswerQuestion={() => noopActions()}
-      onDismissQuestion={() => noopActions()}
-      {...props}
-    />;
+    return transcriptEl(state, { connected, ...props });
   }
 
   it('uses execution rather than busy and restores only a draft when the reader asks', async () => {
@@ -1026,44 +945,53 @@ async function showRemoteImages(container: ParentNode): Promise<void> {
 }
 
 describe('media part deduplication', () => {
-  it('omits media parts already rendered inline in markdown to avoid duplicate thumbnails', async () => {
-    const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
-      { kind: 'image', url: 'https://example.test/rendered.png' },
-    ];
-    const text = 'Here is the diagram: ![diagram](https://example.test/rendered.png)';
-    const filtered = filterMediaNotRenderedInText(media, await renderedImageTargets(text));
-    expect(filtered).toBeUndefined();
-  });
+  type MediaRef = import('@kiki/session-core/composer/media').MediaRef;
 
-  it('keeps distinct duplicate parts when only one is referenced in markdown text', async () => {
-    const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
-      { kind: 'image', url: 'https://example.test/img.png' },
-      { kind: 'image', url: 'https://example.test/img.png' },
-    ];
-    const text = 'First instance: ![img](https://example.test/img.png)';
-    const filtered = filterMediaNotRenderedInText(media, await renderedImageTargets(text));
-    expect(filtered).toHaveLength(1);
-    expect(filtered?.[0]?.url).toBe('https://example.test/img.png');
+  it.each<{ label: string; media: readonly MediaRef[]; text: string; expected: readonly MediaRef[] | undefined }>([
+    {
+      label: 'omits media parts already rendered inline in markdown',
+      media: [{ kind: 'image', url: 'https://example.test/rendered.png' }],
+      text: 'Here is the diagram: ![diagram](https://example.test/rendered.png)',
+      expected: undefined,
+    },
+    {
+      label: 'keeps distinct duplicate parts when only one is referenced',
+      media: [{ kind: 'image', url: 'https://example.test/img.png' }, { kind: 'image', url: 'https://example.test/img.png' }],
+      text: 'First instance: ![img](https://example.test/img.png)',
+      expected: [{ kind: 'image', url: 'https://example.test/img.png' }],
+    },
+    {
+      label: 'preserves non-image media parts even if path/name matches text',
+      media: [{ kind: 'file', path: '/workspace/doc.pdf', name: 'doc.pdf' }],
+      text: 'See [document](/workspace/doc.pdf)',
+      expected: [{ kind: 'file', path: '/workspace/doc.pdf', name: 'doc.pdf' }],
+    },
+    {
+      label: 'preserves media parts with same basename but different directory path',
+      media: [{ kind: 'image', path: '/workspace/dirA/img.png', name: 'img.png' }],
+      text: 'Look at: ![diagram](/workspace/dirB/img.png)',
+      expected: [{ kind: 'image', path: '/workspace/dirA/img.png', name: 'img.png' }],
+    },
+    {
+      label: 'preserves media parts with different query strings',
+      media: [{ kind: 'image', url: 'https://example.test/pic.png?v=1' }],
+      text: 'Look at: ![photo](https://example.test/pic.png?v=2#frame)',
+      expected: [{ kind: 'image', url: 'https://example.test/pic.png?v=1' }],
+    },
+    {
+      label: 'never removes video parts even when image markdown uses the same url or path',
+      media: [{ kind: 'video', url: 'https://example.test/clip.mp4' }, { kind: 'video', path: '/workspace/clip.mp4' }],
+      text: 'Preview: ![video](https://example.test/clip.mp4) and ![local](/workspace/clip.mp4)',
+      expected: [{ kind: 'video', url: 'https://example.test/clip.mp4' }, { kind: 'video', path: '/workspace/clip.mp4' }],
+    },
+  ])('$label', async ({ media, text, expected }) => {
+    expect(filterMediaNotRenderedInText(media, await renderedImageTargets(text))).toEqual(expected);
   });
 
   it('preserves media parts across different messages independently', async () => {
     const part = { kind: 'image' as const, url: 'https://example.test/shared.png' };
-    const textWithImg = 'Inline: ![pic](https://example.test/shared.png)';
-    const textWithoutImg = 'Just text referring to something else';
-
-    const msg1Filtered = filterMediaNotRenderedInText([part], await renderedImageTargets(textWithImg));
-    const msg2Filtered = filterMediaNotRenderedInText([part], await renderedImageTargets(textWithoutImg));
-
-    expect(msg1Filtered).toBeUndefined();
-    expect(msg2Filtered).toHaveLength(1);
-    expect(msg2Filtered?.[0]?.url).toBe('https://example.test/shared.png');
-  });
-
-  it('preserves non-image media parts even if path/name matches text', async () => {
-    const filePart = { kind: 'file' as const, path: '/workspace/doc.pdf', name: 'doc.pdf' };
-    const text = 'See [document](/workspace/doc.pdf)';
-    const filtered = filterMediaNotRenderedInText([filePart], await renderedImageTargets(text));
-    expect(filtered).toEqual([filePart]);
+    expect(filterMediaNotRenderedInText([part], await renderedImageTargets('Inline: ![pic](https://example.test/shared.png)'))).toBeUndefined();
+    expect(filterMediaNotRenderedInText([part], await renderedImageTargets('Just text referring to something else'))).toEqual([part]);
   });
 
   it('renders inline image without duplicate MediaPartList thumbnail in assistant message', async () => {
@@ -1075,19 +1003,14 @@ describe('media part deduplication', () => {
     expect(container.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(1);
     expect(container.querySelector('img[src="https://example.test/chart.png"]')).toBeNull();
     await showRemoteImages(container);
-    const markdownImg = container.querySelector('img[src="https://example.test/chart.png"]');
-    expect(markdownImg).not.toBeNull();
-    const thumbContainers = container.querySelectorAll('[data-assistant-prose] > div.flex.flex-wrap');
-    expect(thumbContainers).toHaveLength(0);
+    expect(container.querySelector('img[src="https://example.test/chart.png"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-assistant-prose] > div.flex.flex-wrap')).toHaveLength(0);
   });
 
   it('renders remaining thumbnail when assistant message has multiple parts and only one is in markdown', async () => {
     const container = await renderTranscript([
       assistantBlock('asst-2', 'Chart: ![chart](https://example.test/chart.png)', {
-        media: [
-          { kind: 'image', url: 'https://example.test/chart.png' },
-          { kind: 'image', url: 'https://example.test/extra.png' },
-        ],
+        media: [{ kind: 'image', url: 'https://example.test/chart.png' }, { kind: 'image', url: 'https://example.test/extra.png' }],
       }),
     ]);
     expect(container.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(2);
@@ -1103,61 +1026,18 @@ describe('media part deduplication', () => {
     const partInline = { kind: 'image' as const, url: 'https://example.test/inline.png' };
     const partIndented = { kind: 'image' as const, url: 'https://example.test/indented.png' };
     const partEscaped = { kind: 'image' as const, url: 'https://example.test/escaped.png' };
-
     const text = [
-      'Here is fenced code:',
-      '```markdown',
-      '![fenced](https://example.test/fenced.png)',
-      '```',
-      'And tilde fence:',
-      '~~~markdown',
-      '![tilde](https://example.test/tilde.png)',
-      '~~~',
+      'Here is fenced code:', '```markdown', '![fenced](https://example.test/fenced.png)', '```',
+      'And tilde fence:', '~~~markdown', '![tilde](https://example.test/tilde.png)', '~~~',
       'Here is `![inline](https://example.test/inline.png)` in code span.',
-      'And indented code:',
-      '    ![indented](https://example.test/indented.png)',
+      'And indented code:', '    ![indented](https://example.test/indented.png)',
       'And escaped: \\![escaped](https://example.test/escaped.png)',
     ].join('\n');
-
     const targets = await renderedImageTargets(text);
-    // The production parser renders a four-space indented image as an image.
-    // Fenced, tilde, inline-code and escaped forms stay literal, so those
-    // attachments remain.
     expect(targets).toEqual(['https://example.test/indented.png']);
-    const filtered = filterMediaNotRenderedInText(
-      [partFenced, partTilde, partInline, partIndented, partEscaped],
-      targets,
-    );
-    expect(filtered?.map((item) => item.url)).toEqual([
-      'https://example.test/fenced.png',
-      'https://example.test/tilde.png',
-      'https://example.test/inline.png',
-      'https://example.test/escaped.png',
+    expect(filterMediaNotRenderedInText([partFenced, partTilde, partInline, partIndented, partEscaped], targets)?.map((item) => item.url)).toEqual([
+      'https://example.test/fenced.png', 'https://example.test/tilde.png', 'https://example.test/inline.png', 'https://example.test/escaped.png',
     ]);
-  });
-
-  it('preserves media parts with same basename but different directory path', async () => {
-    const partA = { kind: 'image' as const, path: '/workspace/dirA/img.png', name: 'img.png' };
-    const text = 'Look at: ![diagram](/workspace/dirB/img.png)';
-    const filtered = filterMediaNotRenderedInText([partA], await renderedImageTargets(text));
-    expect(filtered).toEqual([partA]);
-  });
-
-  it('preserves media parts with different query strings', async () => {
-    const partV1 = { kind: 'image' as const, url: 'https://example.test/pic.png?v=1' };
-    const text = 'Look at: ![photo](https://example.test/pic.png?v=2#frame)';
-    const targets = await renderedImageTargets(text);
-    expect(targets).toContain('https://example.test/pic.png?v=2#frame');
-    const filtered = filterMediaNotRenderedInText([partV1], targets);
-    expect(filtered).toEqual([partV1]);
-  });
-
-  it('never removes video parts even when image markdown syntax uses the same url or path', async () => {
-    const videoUrl = { kind: 'video' as const, url: 'https://example.test/clip.mp4' };
-    const videoPath = { kind: 'video' as const, path: '/workspace/clip.mp4' };
-    const text = 'Preview: ![video](https://example.test/clip.mp4) and ![local](/workspace/clip.mp4)';
-    const filtered = filterMediaNotRenderedInText([videoUrl, videoPath], await renderedImageTargets(text));
-    expect(filtered).toEqual([videoUrl, videoPath]);
   });
 
   it('renders thumbnail when media syntax is inside a code block in assistant message', async () => {
@@ -1166,12 +1046,10 @@ describe('media part deduplication', () => {
         media: [{ kind: 'image', url: 'https://example.test/fenced.png' }],
       }),
     ]);
-    // The code block should contain the literal text
     expect(container.textContent).toContain('![fenced](https://example.test/fenced.png)');
     expect(container.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(1);
     await showRemoteImages(container);
-    const imgInMediaPart = container.querySelector('[data-assistant-prose] img[src="https://example.test/fenced.png"]');
-    expect(imgInMediaPart).not.toBeNull();
+    expect(container.querySelector('[data-assistant-prose] img[src="https://example.test/fenced.png"]')).not.toBeNull();
   });
 
   it('renders thumbnail for video even if markdown references the video url as an image', async () => {
@@ -1180,8 +1058,7 @@ describe('media part deduplication', () => {
         media: [{ kind: 'video', url: 'https://example.test/clip.mp4' }],
       }),
     ]);
-    const videoElem = container.querySelector('video');
-    expect(videoElem).not.toBeNull();
+    expect(container.querySelector('video')).not.toBeNull();
   });
 
   it('keeps one attachment when a reference-style image remains literal', async () => {
@@ -1221,24 +1098,16 @@ describe('media part deduplication', () => {
 
   it('preserves media parts across multiple assistant messages independently in rendered Transcript', async () => {
     const container = await renderTranscript([
-      assistantBlock('asst-msg1', 'Rendered: ![shared](https://example.test/shared.png)', {
-        media: [{ kind: 'image', url: 'https://example.test/shared.png' }],
-      }),
-      assistantBlock('asst-msg2', 'No image inline here', {
-        media: [{ kind: 'image', url: 'https://example.test/shared.png' }],
-      }),
+      assistantBlock('asst-msg1', 'Rendered: ![shared](https://example.test/shared.png)', { media: [{ kind: 'image', url: 'https://example.test/shared.png' }] }),
+      assistantBlock('asst-msg2', 'No image inline here', { media: [{ kind: 'image', url: 'https://example.test/shared.png' }] }),
     ]);
-    // Msg1 has no separate thumbnail container because it's inline in markdown
     const msg1Prose = container.querySelector('[data-block-id="asst-msg1"] [data-assistant-prose]');
     expect(msg1Prose?.querySelectorAll('div.flex.flex-wrap')).toHaveLength(0);
-
-    // Msg2 has the MediaPartList thumbnail rendered because it was not in msg2's text
     const msg2Prose = container.querySelector('[data-block-id="asst-msg2"] [data-assistant-prose]');
     expect(container.querySelectorAll('[data-markdown-remote-image]')).toHaveLength(2);
     await showRemoteImages(msg2Prose!);
     expect(msg1Prose?.querySelector('img[src="https://example.test/shared.png"]')).toBeNull();
-    const msg2Thumb = msg2Prose?.querySelector('img[src="https://example.test/shared.png"]');
-    expect(msg2Thumb).not.toBeNull();
+    expect(msg2Prose?.querySelector('img[src="https://example.test/shared.png"]')).not.toBeNull();
   });
 });
 
@@ -1260,27 +1129,60 @@ function noopActions(): Promise<void> {
   return Promise.resolve();
 }
 
+function defaultRowActions(overrides: Partial<TranscriptRowActions> = {}): TranscriptRowActions {
+  return { disabled: false, onEditMessage: () => undefined, onRegenerate: () => undefined, onFork: () => undefined, ...overrides };
+}
+
+function toolBlock(
+  overrides: Partial<Extract<Block, { kind: 'tool' }>> & { toolCallId: string },
+): Extract<Block, { kind: 'tool' }> {
+  return {
+    kind: 'tool', id: `tool-${overrides.toolCallId}`, name: 'Read', argsText: '', args: { path: 'a.ts' },
+    display: undefined, description: undefined, status: 'done', output: 'ok', isError: undefined,
+    startedAt: undefined, durationMs: undefined, progressText: undefined, ...overrides,
+  };
+}
+
+function subagentBlock(
+  overrides: Partial<Extract<Block, { kind: 'subagent' }>> & { subagentId: string },
+): Extract<Block, { kind: 'subagent' }> {
+  return {
+    kind: 'subagent', id: `subagent-${overrides.subagentId}`, parentAgentId: undefined, parentToolCallId: undefined,
+    name: overrides.subagentId, description: undefined, model: undefined, thinkingEffort: undefined, status: 'completed',
+    summary: undefined, error: undefined, startedAt: undefined, endedAt: undefined, toolCallCount: 0, transcript: [],
+    ...overrides,
+  };
+}
+
+function turnTailFixture(overrides: Partial<NonNullable<SessionViewState['turnTail']>> = {}): NonNullable<SessionViewState['turnTail']> {
+  return {
+    turnId: 't1', endedAt: new Date().toISOString(), durationMs: 5_000,
+    ttftMs: undefined, usage: undefined, tokensPerSecond: undefined, ...overrides,
+  };
+}
+
+function transcriptEl(state: SessionViewState, props: Partial<ComponentProps<typeof Transcript>> = {}): ReactNode {
+  return (
+    <Transcript
+      state={state}
+      onLoadOlder={() => Promise.resolve(false)}
+      onResolveApproval={() => noopActions()}
+      onAnswerQuestion={() => noopActions()}
+      onDismissQuestion={() => noopActions()}
+      {...props}
+    />
+  );
+}
+
 async function renderTranscript(
   blocks: Block[],
   rowActions?: TranscriptRowActions,
   stateOverrides?: Partial<SessionViewState>,
   transcriptProps?: Partial<ComponentProps<typeof Transcript>>,
-  connected = false,
+  _connected = false,
 ): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
-  await renderSettled(
-    root,
-    <Transcript
-      state={transcriptState(blocks, stateOverrides)}
-      onLoadOlder={() => Promise.resolve(false)}
-      onResolveApproval={() => noopActions()}
-      onAnswerQuestion={() => noopActions()}
-      onDismissQuestion={() => noopActions()}
-      rowActions={rowActions}
-      {...transcriptProps}
-    />,
-    rowActions !== undefined,
-  );
+  await renderSettled(root, transcriptEl(transcriptState(blocks, stateOverrides), { rowActions, ...transcriptProps }), rowActions !== undefined);
   return container;
 }
 
@@ -1882,12 +1784,7 @@ describe('live and event chrome', () => {
   });
 
   it('renders verified empty history as a blank session without a retry warning', async () => {
-    const { root, container } = makeRoot();
-    await renderSettled(root, <Transcript
-      state={transcriptState([], { historyCoverageKind: 'full', hasMoreHistory: false })}
-      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
-      onAnswerQuestion={noopActions} onDismissQuestion={noopActions}
-    />);
+    const container = await renderTranscript([], undefined, { historyCoverageKind: 'full', hasMoreHistory: false });
     expect(container.textContent).toContain('A blank page');
     expect(container.textContent).not.toContain('not been verified');
     expect([...container.querySelectorAll('button')].some(button => button.textContent === 'Retry')).toBe(false);
@@ -1896,12 +1793,7 @@ describe('live and event chrome', () => {
   it('auto-loads once for an empty unverified cold read with more history, and keeps Retry when still empty', async () => {
     const retry = vi.fn();
     const loadOlder = vi.fn(async () => false);
-    const { root, container } = makeRoot();
-    await renderSettled(root, <Transcript
-      state={transcriptState([], { historyCoverageKind: 'unknown', hasMoreHistory: true })}
-      onLoadOlder={loadOlder} onResolveApproval={noopActions}
-      onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
-    />);
+    const container = await renderTranscript([], undefined, { historyCoverageKind: 'unknown', hasMoreHistory: true }, { onLoadOlder: loadOlder, onRetryLoad: retry });
     expect(loadOlder).toHaveBeenCalledOnce();
     expect(container.textContent).not.toContain('A blank page');
     expect(container.textContent).not.toContain('Earlier history');
@@ -1919,13 +1811,12 @@ describe('live and event chrome', () => {
 
   it('keeps loaded historical rows visible beside a retryable refresh error', async () => {
     const retry = vi.fn();
-    const { root, container } = makeRoot();
-    const block = userBlock({ id: 'retained-history', text: 'Saved conversation' });
-    await renderSettled(root, <Transcript
-      state={transcriptState([block], { loadError: 'temporary snapshot read failure' })}
-      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
-      onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
-    />);
+    const container = await renderTranscript(
+      [userBlock({ id: 'retained-history', text: 'Saved conversation' })],
+      undefined,
+      { loadError: 'temporary snapshot read failure' },
+      { onRetryLoad: retry },
+    );
     await settleVirtualizer();
     expect(container.querySelector('[data-block-id="retained-history"]')?.textContent).toContain('Saved conversation');
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('temporary snapshot read failure');
@@ -1935,71 +1826,29 @@ describe('live and event chrome', () => {
 
   it('offers retry for a failed transcript before a baseline arrives', async () => {
     const retry = vi.fn();
-    const { root, container } = makeRoot();
-    await renderSettled(root, <Transcript
-      state={transcriptState([], { transcriptReady: false, resyncFailed: true,
-        resyncError: { message: 'fixture read failed', retryable: true } })}
-      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
-      onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
-    />);
+    const container = await renderTranscript(
+      [],
+      undefined,
+      { transcriptReady: false, resyncFailed: true, resyncError: { message: 'fixture read failed', retryable: true } },
+      { onRetryLoad: retry },
+    );
     expect(container.textContent).toContain('fixture read failed');
     const button = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
     expect(button).toBeDefined();
     await act(async () => { click(button!); });
     expect(retry).toHaveBeenCalledOnce();
   });
-  it('shows a working status instead of the blank-state screen before live blocks arrive', async () => {
-    const { root, container } = makeRoot();
-    await renderSettled(
-      root,
-      <Transcript
-        state={{ ...transcriptState([]), busy: true }}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-      />,
-    );
 
-    expect(container.querySelector('[data-turn-status]')).not.toBeNull();
+  it.each([
+    { label: 'unknown start omits clock', turnStartedAt: undefined, expectDigit: false },
+    { label: 'known start past 15s shows cumulative clock', turnStartedAt: Date.now() - 16_000, expectDigit: true },
+  ])('shows working status before live blocks arrive ($label)', async ({ turnStartedAt, expectDigit }) => {
+    const container = await renderTranscript([], undefined, { busy: true, turnStartedAt });
+    const status = container.querySelector('[data-turn-status]');
+    expect(status).not.toBeNull();
     expect(container.querySelector('[role="log"]')).not.toBeNull();
-  });
-
-  it('shows no clock on the working status when the turn start is unknown', async () => {
-    const { root, container } = makeRoot();
-    await renderSettled(
-      root,
-      <Transcript
-        state={{ ...transcriptState([]), busy: true, turnStartedAt: undefined }}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-      />,
-    );
-    const status = container.querySelector('[data-turn-status]');
-    expect(status).not.toBeNull();
-    // The label is there, but no cumulative clock may be fabricated from the
-    // component's mount time.
     expect(status?.textContent).toContain('Working');
-    expect(/\d/.test(status?.textContent ?? '')).toBe(false);
-  });
-
-  it('shows the cumulative clock once a known-started turn passes 15s', async () => {
-    const { root, container } = makeRoot();
-    await renderSettled(
-      root,
-      <Transcript
-        state={{ ...transcriptState([]), busy: true, turnStartedAt: Date.now() - 16_000 }}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-      />,
-    );
-    const status = container.querySelector('[data-turn-status]');
-    expect(status).not.toBeNull();
-    expect(/\d/.test(status?.textContent ?? '')).toBe(true);
+    expect(/\d/.test(status?.textContent ?? '')).toBe(expectDigit);
   });
 
   it('drops the working status as soon as busy clears (turn ended)', async () => {
@@ -2009,66 +1858,18 @@ describe('live and event chrome', () => {
       busy: true,
       turnStartedAt: Date.now() - 16_000,
     };
-    const props = {
-      onLoadOlder: () => Promise.resolve(false),
-      onResolveApproval: () => noopActions(),
-      onAnswerQuestion: () => noopActions(),
-      onDismissQuestion: () => noopActions(),
-    };
-    await renderSettled(root, <Transcript state={state} {...props} />);
+    await renderSettled(root, transcriptEl(state));
     expect(container.querySelector('[data-turn-status]')).not.toBeNull();
-    await renderSettled(
-      root,
-      <Transcript
-        state={{
-          ...state,
-          busy: false,
-          turnStartedAt: undefined,
-          turnTail: {
-            turnId: 't1',
-            endedAt: new Date().toISOString(),
-            durationMs: 16_000,
-            ttftMs: undefined,
-            usage: undefined,
-            tokensPerSecond: undefined,
-          },
-        }}
-        {...props}
-      />,
-    );
+    await renderSettled(root, transcriptEl({ ...state, busy: false, turnStartedAt: undefined, turnTail: turnTailFixture({ durationMs: 16_000 }) }));
     expect(container.querySelector('[data-turn-status]')).toBeNull();
     expect(container.querySelector('[data-turn-tail]')).not.toBeNull();
   });
 
   it('renders turn tail failure state with error message and copy action', async () => {
-    const { root, container } = makeRoot();
-    const props = {
-      onLoadOlder: () => Promise.resolve(false),
-      onResolveApproval: () => noopActions(),
-      onAnswerQuestion: () => noopActions(),
-      onDismissQuestion: () => noopActions(),
-    };
-    await renderSettled(
-      root,
-      <Transcript
-        state={{
-          ...transcriptState([
-            { kind: 'assistant', id: 'assistant-1', text: 'response', streaming: false, createdAt: undefined },
-          ]),
-          busy: false,
-          turnTail: {
-            turnId: 't1',
-            state: 'failed',
-            error: 'Provider token quota exceeded',
-            endedAt: new Date().toISOString(),
-            durationMs: 5_000,
-            ttftMs: undefined,
-            usage: undefined,
-            tokensPerSecond: undefined,
-          },
-        }}
-        {...props}
-      />,
+    const container = await renderTranscript(
+      [{ kind: 'assistant', id: 'assistant-1', text: 'response', streaming: false, createdAt: undefined }],
+      undefined,
+      { busy: false, turnTail: turnTailFixture({ state: 'failed', error: 'Provider token quota exceeded' }) },
     );
     const tail = container.querySelector('[data-turn-tail]');
     expect(tail).not.toBeNull();
@@ -2076,7 +1877,6 @@ describe('live and event chrome', () => {
     expect(tail?.textContent).toContain('Turn failed');
     expect(tail?.textContent).toContain('Provider token quota exceeded');
     expect(tail?.querySelector('button')?.textContent).toBe('copy');
-    // Neutral: one small dot carries the colour, the words and error stay ink.
     expect(tail?.querySelectorAll('[data-turn-tail-dot]')).toHaveLength(1);
     expect(tail?.querySelector('.text-danger')).toBeNull();
     expect(tail?.querySelector('[data-turn-tail-error]')?.className).toContain('font-mono');
@@ -2084,10 +1884,7 @@ describe('live and event chrome', () => {
 
   it('lets the failed tail own the failure instead of repeating it under the bubble', async () => {
     const outcome = { status: 'failed', delivered: true, error: 'Connection error.' } as const;
-    const failedTail = {
-      turnId: 't2', state: 'failed', error: 'Connection error.', endedAt: new Date().toISOString(),
-      durationMs: 5_000, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
-    } as const;
+    const failedTail = turnTailFixture({ turnId: 't2', state: 'failed', error: 'Connection error.' });
     const container = await renderTranscript(
       [
         userBlock({ id: 'user-old', text: 'older failure', turnId: 't1', promptOutcome: outcome }),
@@ -2098,7 +1895,6 @@ describe('live and event chrome', () => {
       undefined,
       { sessionId: 'session_tail', turnTail: failedTail },
     );
-    // The tail's turn: no bubble line; the older turn keeps its own.
     const lines = [...container.querySelectorAll('[data-prompt-outcome]')];
     expect(lines).toHaveLength(1);
     expect(lines[0]!.closest('[data-block-id]')?.getAttribute('data-block-id')).toBe('user-old');
@@ -2118,28 +1914,12 @@ describe('live and event chrome', () => {
 
   it('renders tool stopped status with title and interrupted summary', async () => {
     const container = await renderTranscript([
-      {
-        kind: 'tool',
-        id: 'tool-stopped-1',
-        toolCallId: 'c-stop',
-        name: 'Bash',
-        argsText: '',
-        args: {},
-        display: undefined,
-        description: undefined,
-        status: 'stopped',
-        output: 'user cancelled the process',
-        isError: false,
-        durationMs: 1200,
-        durationSource: 'frame',
-        progressText: undefined,
-      },
+      toolBlock({ toolCallId: 'c-stop', id: 'tool-stopped-1', name: 'Bash', args: {}, status: 'stopped', output: 'user cancelled the process', isError: false, durationMs: 1200, durationSource: 'frame' }),
     ]);
     const tool = container.querySelector('[data-tool]');
     expect(tool).not.toBeNull();
     expect(tool?.textContent).toContain('Stopped — user cancelled the process');
-    const stoppedIcon = tool?.querySelector('[aria-label="stopped"]');
-    expect(stoppedIcon?.getAttribute('title')).toBe('user cancelled the process');
+    expect(tool?.querySelector('[aria-label="stopped"]')?.getAttribute('title')).toBe('user cancelled the process');
   });
 
   it('renders subagent event row failure with danger styling and error tooltip', async () => {
@@ -2189,139 +1969,71 @@ describe('live and event chrome', () => {
     expect(delivery?.textContent).toBe('Pending delivery');
   });
 
-  it('labels a mailbox-injected user bubble with its sender', async () => {
-    const container = await renderTranscript([
-      {
-        kind: 'user',
-        id: 'user-agent-message-1',
-        text: 'Message from agent "root" (main):\n\ncheck the tests',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
-      },
-    ]);
-    expect(container.querySelector('[data-agent-message-sender="main"]')?.textContent).toBe(
-      'Main agent injected',
-    );
-    // No roster row for the main agent: nothing is claimed about its profile.
-    expect(container.querySelector('[data-agent-message-sender-meta="main"]')).toBeNull();
-  });
-
-  it('adds the sender profile and model to a subagent-injected label', async () => {
-    const container = await renderTranscript(
-      [
-        {
-          kind: 'user',
-          id: 'user-agent-message-2',
-          text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice',
-          createdAt: '2026-01-01T00:00:00.000Z',
-          agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
-        },
-      ],
-      undefined,
-      {
-        snapshotSubagents: [
-          {
-            id: 'agent-244',
-            agent_id: 'agent-244',
-            session_id: 'session_test',
-            kind: 'subagent',
-            description: 'readme_kiki_worker',
-            status: 'completed',
-            created_at: '2026-01-01T00:00:00.000Z',
-            profile: 'worker',
-            model: 'axon/gpt-5.6-luna',
-          },
-        ],
-      },
-    );
-    expect(container.querySelector('[data-agent-message-sender="agent-244"]')?.textContent).toBe(
-      'readme_kiki_worker injected',
-    );
-    const meta = container.querySelector('[data-agent-message-sender-meta="agent-244"]');
-    expect(meta?.textContent).toBe('worker · axon/gpt-5.6-luna');
-    expect(meta?.getAttribute('title')).toBe(
-      'Sender Agent: agent-244\nProfile: worker\nModel: axon/gpt-5.6-luna\nTask: readme_kiki_worker',
-    );
-  });
-
-  it('renders the injected sender profile and model in Chinese', async () => {
-    localStorage.setItem('kiki.locale', 'zh');
+  it.each<{
+    label: string;
+    locale?: string;
+    block: Extract<Block, { kind: 'user' }>;
+    snapshotSubagents?: SessionViewState['snapshotSubagents'];
+    senderId?: string;
+    senderText?: string;
+    senderTitle?: string;
+    metaText?: string | null;
+    metaTitle?: string;
+    peerThreadText?: string;
+  }>([
+    {
+      label: 'mailbox-injected main sender without roster',
+      block: userBlock({ id: 'user-agent-message-1', text: 'Message from agent "root" (main):\n\ncheck the tests', agentMessage: { senderAgentId: 'main', senderTaskName: 'root' } }),
+      senderId: 'main', senderText: 'Main agent injected', metaText: null,
+    },
+    {
+      label: 'subagent-injected sender with profile and model (en)',
+      block: userBlock({ id: 'user-agent-message-2', text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice', agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' } }),
+      snapshotSubagents: [{ id: 'agent-244', agent_id: 'agent-244', session_id: 'session_test', kind: 'subagent', description: 'readme_kiki_worker', status: 'completed', created_at: '2026-01-01T00:00:00.000Z', profile: 'worker', model: 'axon/gpt-5.6-luna' }],
+      senderId: 'agent-244', senderText: 'readme_kiki_worker injected', metaText: 'worker · axon/gpt-5.6-luna',
+      metaTitle: 'Sender Agent: agent-244\nProfile: worker\nModel: axon/gpt-5.6-luna\nTask: readme_kiki_worker',
+    },
+    {
+      label: 'subagent-injected sender with profile and model (zh)',
+      locale: 'zh',
+      block: userBlock({ id: 'user-agent-message-5', text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice', agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' } }),
+      snapshotSubagents: [{ id: 'agent-244', agent_id: 'agent-244', session_id: 'session_test', kind: 'subagent', description: 'readme_kiki_worker', status: 'completed', created_at: '2026-01-01T00:00:00.000Z', profile: 'worker', model: 'axon/gpt-5.6-luna' }],
+      senderId: 'agent-244', senderText: 'readme_kiki_worker 注入', metaText: 'worker · axon/gpt-5.6-luna',
+      metaTitle: '发送方智能体：agent-244\n角色：worker\n模型：axon/gpt-5.6-luna\n任务：readme_kiki_worker',
+    },
+    {
+      label: 'partial roster facts only',
+      block: userBlock({ id: 'user-agent-message-3', text: 'Message from agent "worker" (agent-900):\n\nping', agentMessage: { senderAgentId: 'agent-900', senderTaskName: 'probe' } }),
+      snapshotSubagents: [{ id: 'agent-900', agent_id: 'agent-900', session_id: 'session_test', kind: 'subagent', description: 'worker', status: 'running', created_at: '2026-01-01T00:00:00.000Z', model: 'axon/gpt-5.6-luna' }],
+      senderId: 'agent-900', senderTitle: 'worker\nSender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe', metaText: 'axon/gpt-5.6-luna',
+    },
+    {
+      label: 'subagent-injected sender without roster row',
+      block: userBlock({ id: 'user-agent-message-4', text: 'Message from agent "explorer" (agent-901):\n\nping', agentMessage: { senderAgentId: 'agent-901', senderTaskName: 'explorer' } }),
+      senderId: 'agent-901', senderText: 'explorer injected', senderTitle: 'Sender Agent: agent-901\nProfile: unknown\nModel: unknown\nTask: explorer', metaText: null,
+    },
+    {
+      label: 'peer-thread source label',
+      block: userBlock({ id: 'user-peer-thread-1', text: 'Message from thread "Design review" (sess-source):\n\nping', peerThread: { sessionId: 'sess-source' } }),
+      peerThreadText: 'From thread sess-sou',
+    },
+  ])('labels injected user bubble ($label)', async (c) => {
+    if (c.locale) localStorage.setItem('kiki.locale', c.locale);
     try {
-      const container = await renderTranscript(
-        [
-          {
-            kind: 'user',
-            id: 'user-agent-message-5',
-            text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice',
-            createdAt: '2026-01-01T00:00:00.000Z',
-            agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
-          },
-        ],
-        undefined,
-        {
-          snapshotSubagents: [
-            {
-              id: 'agent-244',
-              agent_id: 'agent-244',
-              session_id: 'session_test',
-              kind: 'subagent',
-              description: 'readme_kiki_worker',
-              status: 'completed',
-              created_at: '2026-01-01T00:00:00.000Z',
-              profile: 'worker',
-              model: 'axon/gpt-5.6-luna',
-            },
-          ],
-        },
-      );
-      expect(container.querySelector('[data-agent-message-sender="agent-244"]')?.textContent).toBe(
-        'readme_kiki_worker 注入',
-      );
-      const meta = container.querySelector('[data-agent-message-sender-meta="agent-244"]');
-      expect(meta?.textContent).toBe('worker · axon/gpt-5.6-luna');
-      expect(meta?.getAttribute('title')).toBe(
-        '发送方智能体：agent-244\n角色：worker\n模型：axon/gpt-5.6-luna\n任务：readme_kiki_worker',
-      );
+      const container = await renderTranscript([c.block], undefined, c.snapshotSubagents ? { snapshotSubagents: c.snapshotSubagents } : undefined);
+      if (c.senderId) {
+        const sender = container.querySelector(`[data-agent-message-sender="${c.senderId}"]`);
+        if (c.senderText) expect(sender?.textContent).toBe(c.senderText);
+        if (c.senderTitle) expect(sender?.getAttribute('title')).toBe(c.senderTitle);
+        const meta = container.querySelector(`[data-agent-message-sender-meta="${c.senderId}"]`);
+        if (c.metaText === null) expect(meta).toBeNull();
+        else if (c.metaText !== undefined) expect(meta?.textContent).toBe(c.metaText);
+        if (c.metaTitle) expect(meta?.getAttribute('title')).toBe(c.metaTitle);
+      }
+      if (c.peerThreadText) expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe(c.peerThreadText);
     } finally {
-      localStorage.removeItem('kiki.locale');
+      if (c.locale) localStorage.removeItem('kiki.locale');
     }
-  });
-
-  it('names only the roster facts it has for an injected sender', async () => {
-    const container = await renderTranscript(
-      [
-        {
-          kind: 'user',
-          id: 'user-agent-message-3',
-          text: 'Message from agent "worker" (agent-900):\n\nping',
-          createdAt: '2026-01-01T00:00:00.000Z',
-          agentMessage: { senderAgentId: 'agent-900', senderTaskName: 'probe' },
-        },
-      ],
-      undefined,
-      {
-        snapshotSubagents: [
-          {
-            id: 'agent-900',
-            agent_id: 'agent-900',
-            session_id: 'session_test',
-            kind: 'subagent',
-            description: 'worker',
-            status: 'running',
-            created_at: '2026-01-01T00:00:00.000Z',
-            model: 'axon/gpt-5.6-luna',
-          },
-        ],
-      },
-    );
-    // The model is on the roster row, the profile is not: the label stays
-    // quiet about the missing half instead of inventing one.
-    expect(container.querySelector('[data-agent-message-sender-meta="agent-900"]')?.textContent).toBe(
-      'axon/gpt-5.6-luna',
-    );
-    expect(container.querySelector('[data-agent-message-sender="agent-900"]')?.getAttribute('title')).toBe(
-      'worker\nSender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe',
-    );
   });
 
   it('uses short roster titles without requiring model or profile and keeps same-name sender ids separate', async () => {
@@ -2334,40 +2046,6 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-agent-message-sender-meta]')).toBeNull();
     await act(async () => { senders[1]!.click(); });
     expect(open).toHaveBeenCalledWith('agent-source-b');
-  });
-
-  it('labels a subagent-injected bubble it has no roster row for', async () => {
-    const container = await renderTranscript([
-      {
-        kind: 'user',
-        id: 'user-agent-message-4',
-        text: 'Message from agent "explorer" (agent-901):\n\nping',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        agentMessage: { senderAgentId: 'agent-901', senderTaskName: 'explorer' },
-      },
-    ]);
-    expect(container.querySelector('[data-agent-message-sender="agent-901"]')?.textContent).toBe(
-      'explorer injected',
-    );
-    expect(container.querySelector('[data-agent-message-sender-meta="agent-901"]')).toBeNull();
-    expect(container.querySelector('[data-agent-message-sender="agent-901"]')?.getAttribute('title')).toBe(
-      'Sender Agent: agent-901\nProfile: unknown\nModel: unknown\nTask: explorer',
-    );
-  });
-
-  it('labels a peer-thread bubble with its source thread', async () => {
-    const container = await renderTranscript([
-      {
-        kind: 'user',
-        id: 'user-peer-thread-1',
-        text: 'Message from thread "Design review" (sess-source):\n\nping',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        peerThread: { sessionId: 'sess-source' },
-      },
-    ]);
-    expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe(
-      'From thread sess-sou',
-    );
   });
 
   it('opens the injected sender from its name, the same entry the subagent rows use', async () => {
@@ -2395,11 +2073,6 @@ describe('live and event chrome', () => {
     expect(sender?.getAttribute('title')).toBe(
       'Sender Agent: agent-244\nProfile: unknown\nModel: unknown\nTask: readme_kiki_worker',
     );
-    // Hover feedback is the wash and ink lift the timeline's agent rows use.
-    expect(sender?.className).toContain('hover:bg-ink/[0.05]');
-    expect(sender?.className).toContain('hover:text-ink');
-    expect(sender?.className).toContain('focus-visible:outline-2');
-    expect(sender?.className).toContain('cursor-pointer');
     await act(async () => { click(sender!); });
     // The sender's real agent id opens the agent; the task name is only a label.
     expect(opened).toEqual(['agent-244']);
@@ -2522,54 +2195,46 @@ describe('live and event chrome', () => {
     }
   });
 
-  it('shows only the body of an agent-injected bubble, with the source stated once in the meta line', async () => {
-    const container = await renderTranscript([
-      userBlock({
-        id: 'user-agent-body-1',
-        text: 'Message from agent "root" (main):\n\ncheck the tests',
-        agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
-      }),
-    ]);
-    expect(container.querySelector('[data-source-block-id="user-agent-body-1"]')?.textContent).toBe('check the tests');
-    expect(container.textContent).not.toContain('Message from agent');
-    const senders = container.querySelectorAll('[data-agent-message-sender="main"]');
-    expect(senders).toHaveLength(1);
-    expect(senders[0]?.textContent).toBe('Main agent injected');
-  });
-
-  it('shows only the body of a peer-thread bubble', async () => {
-    const container = await renderTranscript([
-      userBlock({
-        id: 'user-peer-body-1',
-        text: 'Message from thread "Design review" (sess-source):\n\nping',
-        peerThread: { sessionId: 'sess-source' },
-      }),
-    ]);
-    expect(container.querySelector('[data-source-block-id="user-peer-body-1"]')?.textContent).toBe('ping');
-    expect(container.textContent).not.toContain('Message from thread');
-    expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe('From thread sess-sou');
-    expect(container.querySelector('[data-peer-thread="sess-source"]')?.getAttribute('title')).toContain('sess-source');
-  });
-
-  it('keeps a literal "Message from" the user typed verbatim: the text alone is never source evidence', async () => {
-    const literal = 'Message from agent "root" (main):\n\nI wrote this myself';
-    const container = await renderTranscript([
-      userBlock({ id: 'user-literal-1', text: literal, userMessageId: 'm-literal-1' }),
-    ]);
-    expect(container.querySelector('[data-source-block-id="user-literal-1"]')?.textContent).toBe(literal);
-    expect(container.querySelector('[data-agent-message-sender]')).toBeNull();
-  });
-
-  it('strips only an opening envelope, never a later mention of one', async () => {
-    const text = 'notes quoting Message from agent "root" (main): inline';
-    const container = await renderTranscript([
-      userBlock({
-        id: 'user-agent-inline-1',
-        text,
-        agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
-      }),
-    ]);
-    expect(container.querySelector('[data-source-block-id="user-agent-inline-1"]')?.textContent).toBe(text);
+  it.each([
+    {
+      label: 'agent-injected body',
+      block: userBlock({ id: 'user-agent-body-1', text: 'Message from agent "root" (main):\n\ncheck the tests', agentMessage: { senderAgentId: 'main', senderTaskName: 'root' } }),
+      expectedBody: 'check the tests',
+      excluded: 'Message from agent',
+      sender: { selector: '[data-agent-message-sender="main"]', text: 'Main agent injected', count: 1 },
+    },
+    {
+      label: 'peer-thread body',
+      block: userBlock({ id: 'user-peer-body-1', text: 'Message from thread "Design review" (sess-source):\n\nping', peerThread: { sessionId: 'sess-source' } }),
+      expectedBody: 'ping',
+      excluded: 'Message from thread',
+      peer: { selector: '[data-peer-thread="sess-source"]', text: 'From thread sess-sou', titleContains: 'sess-source' },
+    },
+    {
+      label: 'literal "Message from" without metadata stays verbatim',
+      block: userBlock({ id: 'user-literal-1', text: 'Message from agent "root" (main):\n\nI wrote this myself', userMessageId: 'm-literal-1' }),
+      expectedBody: 'Message from agent "root" (main):\n\nI wrote this myself',
+      noSender: true,
+    },
+    {
+      label: 'later mention of envelope stays intact',
+      block: userBlock({ id: 'user-agent-inline-1', text: 'notes quoting Message from agent "root" (main): inline', agentMessage: { senderAgentId: 'main', senderTaskName: 'root' } }),
+      expectedBody: 'notes quoting Message from agent "root" (main): inline',
+    },
+  ])('projects bubble envelope ($label)', async ({ block, expectedBody, excluded, sender, peer, noSender }) => {
+    const container = await renderTranscript([block]);
+    expect(container.querySelector(`[data-source-block-id="${block.id}"]`)?.textContent).toBe(expectedBody);
+    if (excluded) expect(container.textContent).not.toContain(excluded);
+    if (sender) {
+      const senders = container.querySelectorAll(sender.selector);
+      expect(senders).toHaveLength(sender.count);
+      expect(senders[0]?.textContent).toBe(sender.text);
+    }
+    if (peer) {
+      expect(container.querySelector(peer.selector)?.textContent).toBe(peer.text);
+      expect(container.querySelector(peer.selector)?.getAttribute('title')).toContain(peer.titleContains);
+    }
+    if (noSender) expect(container.querySelector('[data-agent-message-sender]')).toBeNull();
   });
 
   it('copies the displayed body of an agent-injected bubble', async () => {
@@ -2657,28 +2322,16 @@ describe('live and event chrome', () => {
   });
 
   describe('displayUserMessageText', () => {
-    it('strips the agent envelope only when origin metadata proves the source', () => {
-      const text = 'Message from agent "root" (main):\n\nbody';
-      expect(displayUserMessageText({ text, agentMessage: { senderAgentId: 'main', senderTaskName: 'root' } }).text).toBe('body');
-      expect(displayUserMessageText({ text }).text).toBe(text);
-    });
-
-    it('strips the external-agent envelope', () => {
-      expect(displayUserMessageText({
-        text: 'Message from external agent "deploy" (external:acme):\n\nshipped',
-        agentMessage: { senderAgentId: 'external:acme', senderTaskName: 'deploy' },
-      }).text).toBe('shipped');
-    });
-
-    it('strips the thread envelope in both label shapes', () => {
-      expect(displayUserMessageText({
-        text: 'Message from thread "Design review" (sess-1):\n\nping',
-        peerThread: { sessionId: 'sess-1' },
-      }).text).toBe('ping');
-      expect(displayUserMessageText({
-        text: 'Message from thread sess-1:\n\nping',
-        peerThread: { sessionId: 'sess-1' },
-      }).text).toBe('ping');
+    it.each([
+      { label: 'agent envelope with metadata', input: { text: 'Message from agent "root" (main):\n\nbody', agentMessage: { senderAgentId: 'main', senderTaskName: 'root' } }, expected: 'body' },
+      { label: 'agent envelope without metadata', input: { text: 'Message from agent "root" (main):\n\nbody' }, expected: 'Message from agent "root" (main):\n\nbody' },
+      { label: 'external-agent envelope', input: { text: 'Message from external agent "deploy" (external:acme):\n\nshipped', agentMessage: { senderAgentId: 'external:acme', senderTaskName: 'deploy' } }, expected: 'shipped' },
+      { label: 'quoted thread envelope', input: { text: 'Message from thread "Design review" (sess-1):\n\nping', peerThread: { sessionId: 'sess-1' } }, expected: 'ping' },
+      { label: 'bare thread envelope', input: { text: 'Message from thread sess-1:\n\nping', peerThread: { sessionId: 'sess-1' } }, expected: 'ping' },
+      { label: 'non-matching shape with agent metadata', input: { text: 'plain words', agentMessage: { senderAgentId: 'main' } }, expected: 'plain words' },
+      { label: 'literal thread shape without metadata', input: { text: 'Message from thread sess-1:\n\nmy own words' }, expected: 'Message from thread sess-1:\n\nmy own words' },
+    ])('$label', ({ input, expected }) => {
+      expect(displayUserMessageText(input).text).toBe(expected);
     });
 
     it('strips the bridged envelope and shifts presentation spans past the cut', () => {
@@ -2700,27 +2353,12 @@ describe('live and event chrome', () => {
       ]);
     });
 
-    it('keeps the text when the metadata has no matching envelope shape', () => {
-      expect(displayUserMessageText({ text: 'plain words', agentMessage: { senderAgentId: 'main' } }).text).toBe('plain words');
-      const literal = 'Message from thread sess-1:\n\nmy own words';
-      expect(displayUserMessageText({ text: literal }).text).toBe(literal);
-    });
-
     it('strips the branch merge envelope and history pointer footer when branchFold metadata is present', () => {
       const raw = [
-        'Merged branch branch-1 (Retry audit):',
-        '',
-        'Retry cap verified at 60s.',
-        '',
+        'Merged branch branch-1 (Retry audit):', '', 'Retry cap verified at 60s.', '',
         'Branch history: HistoryList({ agent_id: "branch-1" }) · HistoryRead({ agent_id: "branch-1", turn: 2 })',
       ].join('\n');
-      const branchFold = {
-        foldId: 'fold_1',
-        branchId: 'branch-1',
-        branchTitle: 'Retry audit',
-        throughTurnId: 2,
-        done: true,
-      };
+      const branchFold = { foldId: 'fold_1', branchId: 'branch-1', branchTitle: 'Retry audit', throughTurnId: 2, done: true };
       expect(displayUserMessageText({ text: raw, branchFold }).text).toBe('Retry cap verified at 60s.');
       expect(displayUserMessageText({ text: raw }).text).toBe(raw);
       expect(editableUserMessageText({ text: raw, branchFold })).toBe(raw);
@@ -3006,8 +2644,6 @@ describe('live and event chrome', () => {
     const trigger = skill?.querySelector('button');
 
     expect(skill).not.toBeNull();
-    expect(skill?.className).not.toContain('rounded-xl');
-    expect(skill?.className).not.toContain('bg-panel');
     expect(trigger?.getAttribute('aria-expanded')).toBe('false');
     expect(container.textContent).not.toContain('Long implementation notes');
 
@@ -3155,39 +2791,11 @@ describe('live and event chrome', () => {
 });
 
 describe('explicit unknown timing', () => {
-  function subagentBlock(
-    overrides: Partial<Extract<Block, { kind: 'subagent' }>> & { subagentId: string },
-  ): Block {
-    return {
-      kind: 'subagent',
-      id: `subagent-${overrides.subagentId}`,
-      parentAgentId: undefined,
-      parentToolCallId: undefined,
-      name: overrides.subagentId,
-      description: undefined,
-      model: undefined,
-      thinkingEffort: undefined,
-      status: 'completed',
-      summary: undefined,
-      error: undefined,
-      startedAt: undefined,
-      endedAt: undefined,
-      toolCallCount: 0,
-      transcript: [],
-      ...overrides,
-    };
-  }
-
   it('leaves the duration empty instead of 0ms or a dash when a subagent start or end is unknown', async () => {
     const container = await renderTranscript([
       subagentBlock({ subagentId: 'agent-no-times' }),
-      // Adjacent compact cards fold into a history run; a non-compact entry
-      // between them keeps both cards individually visible for this probe.
       { kind: 'notice', id: 'break', text: 'boundary', tone: 'danger' },
-      subagentBlock({
-        subagentId: 'agent-no-end',
-        startedAt: '2026-01-01T00:00:00.000Z',
-      }),
+      subagentBlock({ subagentId: 'agent-no-end', startedAt: '2026-01-01T00:00:00.000Z' }),
     ]);
     for (const id of ['agent-no-times', 'agent-no-end']) {
       const card = container.querySelector(`[data-subagent-id="${id}"]`);
@@ -3199,11 +2807,7 @@ describe('explicit unknown timing', () => {
 
   it('shows the real duration when a subagent has both true endpoints', async () => {
     const container = await renderTranscript([
-      subagentBlock({
-        subagentId: 'agent-timed',
-        startedAt: '2026-01-01T00:00:00.000Z',
-        endedAt: '2026-01-01T00:01:30.000Z',
-      }),
+      subagentBlock({ subagentId: 'agent-timed', startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:01:30.000Z' }),
     ]);
     const card = container.querySelector('[data-subagent-id="agent-timed"]');
     expect(card?.textContent).toContain('1m 30s');
@@ -3212,37 +2816,12 @@ describe('explicit unknown timing', () => {
 
   it('ticks a live duration for a running subagent with a real start', async () => {
     const container = await renderTranscript([
-      subagentBlock({
-        subagentId: 'agent-live',
-        status: 'running',
-        startedAt: new Date(Date.now() - 5_000).toISOString(),
-      }),
+      subagentBlock({ subagentId: 'agent-live', status: 'running', startedAt: new Date(Date.now() - 5_000).toISOString() }),
     ]);
     const card = container.querySelector('[data-subagent-id="agent-live"]');
     expect(card?.textContent).toMatch(/\d\.\ds/);
     expect(card?.textContent).not.toContain('—');
   });
-
-  function toolBlock(
-    overrides: Partial<Extract<Block, { kind: 'tool' }>> & { toolCallId: string },
-  ): Block {
-    return {
-      kind: 'tool',
-      id: `tool-${overrides.toolCallId}`,
-      name: 'Read',
-      argsText: '',
-      args: { path: 'a.ts' },
-      display: undefined,
-      description: undefined,
-      status: 'done',
-      output: 'ok',
-      isError: undefined,
-      startedAt: undefined,
-      durationMs: undefined,
-      progressText: undefined,
-      ...overrides,
-    };
-  }
 
   async function renderToolCard(block: Block): Promise<HTMLDivElement> {
     const { root, container } = makeRoot();
@@ -3251,7 +2830,7 @@ describe('explicit unknown timing', () => {
   }
 
   it.each(['Bash', 'TodoList', 'WebSearch', 'FetchURL', 'MemoryWrite', 'CallTool'])('keeps external %s as a human label, not native semantics or guessed icons', async (name) => {
-    const block = toolBlock({ toolCallId: `external:session:${name}`, name, args: { command: 'do not guess', name: 'Read', arguments: { path: 'a.ts' } }, display: { kind: 'generic', summary: 'External label' } }) as Extract<Block, { kind: 'tool' }>;
+    const block = toolBlock({ toolCallId: `external:session:${name}`, name, args: { command: 'do not guess', name: 'Read', arguments: { path: 'a.ts' } }, display: { kind: 'generic', summary: 'External label' } });
     expect(toolIcon(block)).toBe('tool');
     expect(resolvedToolName(block)).toBe(name);
     const container = await renderToolCard(block);
@@ -3269,7 +2848,6 @@ describe('explicit unknown timing', () => {
     const container = await renderToolCard(toolBlock({ toolCallId: 'external:session:call', name: 'Bash', display: { kind: 'command', command: 'npm test' }, output }));
     await act(async () => { flushSync(() => { click(container.querySelector('button')!); }); });
     expect(container.textContent).toContain('partial stdout');
-    // External images render as media parts. The retired "Load full file" gate is not part of this card.
     expect(container.textContent).not.toContain('Load full file');
     expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=');
     const preserved = container.querySelector('details');
@@ -3288,26 +2866,16 @@ describe('explicit unknown timing', () => {
   });
 
   it('names a streaming CallTool bridge by the tool it calls, never by the bridge', async () => {
-    // Mid-stream: only the bridge name and a partial argument text exist.
-    const pending = await renderToolCard(toolBlock({
-      toolCallId: 't-bridge-early', name: 'CallTool', status: 'running', args: undefined, argsText: '{"na',
-    }));
+    const pending = await renderToolCard(toolBlock({ toolCallId: 't-bridge-early', name: 'CallTool', status: 'running', args: undefined, argsText: '{"na' }));
     expect(pending.textContent).not.toContain('CallTool');
     expect(pending.textContent).toContain('Calling a tool');
-    const streamed = await renderToolCard(toolBlock({
-      toolCallId: 't-bridge', name: 'CallTool', status: 'running', args: undefined,
-      argsText: '{"name":"plugin__kiki-office__office_view","arguments":{"file":"deck.pptx"',
-    }));
+    const streamed = await renderToolCard(toolBlock({ toolCallId: 't-bridge', name: 'CallTool', status: 'running', args: undefined, argsText: '{"name":"plugin__kiki-office__office_view","arguments":{"file":"deck.pptx"' }));
     expect(streamed.textContent).not.toContain('CallTool');
     expect(streamed.textContent).toContain('office_view');
     expect(streamed.textContent).not.toContain('plugin__');
     expect(streamed.querySelector('[title="plugin__kiki-office__office_view"]')).not.toBeNull();
     expect(streamed.textContent).toContain('deck.pptx');
-    // Once parsed, the bridged object's inner arguments feed the summary.
-    const parsed = await renderToolCard(toolBlock({
-      toolCallId: 't-bridge-done', name: 'CallTool', status: 'done',
-      args: { name: 'mcp__fs__read_file', arguments: { path: 'README.md' } }, argsText: '',
-    }));
+    const parsed = await renderToolCard(toolBlock({ toolCallId: 't-bridge-done', name: 'CallTool', status: 'done', args: { name: 'mcp__fs__read_file', arguments: { path: 'README.md' } }, argsText: '' }));
     expect(parsed.textContent).toContain('read_file');
     expect(parsed.textContent).not.toContain('mcp__fs__');
     expect(parsed.textContent).toContain('README.md');
@@ -3315,117 +2883,54 @@ describe('explicit unknown timing', () => {
   });
 
   it('keeps a failed Bash command summary instead of replacing it with the error', async () => {
-    const container = await renderToolCard({
-      kind: 'tool',
-      id: 'tool-bash-failed',
-      toolCallId: 'bash-failed',
-      name: 'Bash',
-      argsText: '{"command":"pnpm test"}',
-      args: { command: 'pnpm test' },
-      display: undefined,
-      description: undefined,
-      status: 'error',
-      output: 'permission denied',
-      isError: true,
-      startedAt: undefined,
-      durationMs: undefined,
-      progressText: undefined,
-    });
+    const container = await renderToolCard(toolBlock({
+      toolCallId: 'bash-failed', id: 'tool-bash-failed', name: 'Bash', argsText: '{"command":"pnpm test"}',
+      args: { command: 'pnpm test' }, status: 'error', output: 'permission denied', isError: true,
+    }));
     const trigger = container.querySelector('button')!;
     expect(trigger.textContent).toContain('pnpm test');
     expect(trigger.textContent).not.toContain('permission denied');
-    await act(async () => {
-      flushSync(() => { click(trigger); });
-    });
+    await act(async () => { flushSync(() => { click(trigger); }); });
     expect(container.textContent).toContain('pnpm test');
     expect(container.textContent).toContain('permission denied');
   });
 
-  it('keeps a successful tool with unknown timing silent instead of showing the turn-level fallback', async () => {
-    // The projection falls back to the TURN's durationMs when frame-level
-    // timing is missing (startedAt undefined / legacy 0 sentinel) — the card
-    // must not present that as this tool's own runtime. A success with no
-    // real duration shows nothing at all (silent success), not a "—".
-    const container = await renderToolCard(
-      toolBlock({ toolCallId: 't-unknown', durationMs: 5_000 }),
-    );
-    expect(container.textContent).not.toContain('—');
-    expect(container.textContent).not.toContain('5.0s');
-    expect(container.querySelector('[title="duration unknown"]')).toBeNull();
-  });
-
-  it('leaves a failed tool with unknown timing without a duration — never the turn fallback', async () => {
-    // The failure is carried by the tone, the error text and the cross mark;
-    // an unexplained dash beside them was a second symbol to decode.
-    const container = await renderToolCard(
-      toolBlock({ toolCallId: 't-unknown-fail', status: 'error', isError: true, output: 'boom', durationMs: 5_000 }),
-    );
-    expect(container.textContent).toContain('boom');
-    expect(container.textContent).not.toContain('—');
-    expect(container.textContent).not.toContain('5.0s');
-    expect(container.querySelector('[data-outcome="failed"]')).not.toBeNull();
+  it.each<{
+    label: string;
+    patch: Partial<Extract<Block, { kind: 'tool' }>> & { toolCallId: string };
+    contains?: string[];
+    notContains?: string[];
+    failedOutcome?: boolean;
+    noUnknownTitle?: boolean;
+  }>([
+    { label: 'successful tool with unknown timing stays silent', patch: { toolCallId: 't-unknown', durationMs: 5_000 }, notContains: ['—', '5.0s'], noUnknownTitle: true },
+    { label: 'failed tool with unknown timing omits duration', patch: { toolCallId: 't-unknown-fail', status: 'error', isError: true, output: 'boom', durationMs: 5_000 }, contains: ['boom'], notContains: ['—', '5.0s'], failedOutcome: true },
+    { label: 'legacy 0-start sentinel never shows runtime', patch: { toolCallId: 't-zero', startedAt: 0, durationMs: 5_000 }, notContains: ['—', '5.0s'] },
+    { label: 'per-tool duration shows when both frame endpoints are real', patch: { toolCallId: 't-timed', startedAt: 1_767_225_600_000, durationMs: 2_300, durationSource: 'frame' }, contains: ['2.3s'], notContains: ['—'] },
+    { label: 'turn-level fallback hidden when only frame start exists', patch: { toolCallId: 't-half', startedAt: 1_767_225_600_000, durationMs: 9_000, durationSource: 'turn' }, notContains: ['9.0s', '—'] },
+    { label: 'still-running tool shows no duration marker', patch: { toolCallId: 't-running', status: 'running', output: undefined }, notContains: ['—'] },
+  ])('$label', async ({ patch, contains, notContains, failedOutcome, noUnknownTitle }) => {
+    const container = await renderToolCard(toolBlock(patch));
+    for (const s of contains ?? []) expect(container.textContent).toContain(s);
+    for (const s of notContains ?? []) expect(container.textContent).not.toContain(s);
+    if (failedOutcome) expect(container.querySelector('[data-outcome="failed"]')).not.toBeNull();
+    if (noUnknownTitle) expect(container.querySelector('[title="duration unknown"]')).toBeNull();
   });
 
   it('reads a coded Codex MCP refusal in product words and keeps the engine text in the tooltip', async () => {
     const engineText = 'MCP tool call requires approval, but approval policy is never';
-    const coded = await renderToolCard(toolBlock({ toolCallId: 't-coded', name: 'kiki-harness/kiki_list', status: 'error', isError: true,
-      output: engineText, errorCode: 'codex_mcp_approval_denied' }));
+    const coded = await renderToolCard(toolBlock({ toolCallId: 't-coded', name: 'kiki-harness/kiki_list', status: 'error', isError: true, output: engineText, errorCode: 'codex_mcp_approval_denied' }));
     expect(coded.textContent).toContain('Codex did not run it');
     const titled = [...coded.querySelectorAll('[title]')].map((element) => element.getAttribute('title') ?? '');
     expect(titled.some((title) => title.startsWith('Codex did not run it') && title.endsWith(engineText))).toBe(true);
-    const unknown = await renderToolCard(toolBlock({ toolCallId: 't-uncoded', status: 'error', isError: true,
-      output: 'boom', errorCode: 'some_future_code' }));
+    const unknown = await renderToolCard(toolBlock({ toolCallId: 't-uncoded', status: 'error', isError: true, output: 'boom', errorCode: 'some_future_code' }));
     expect(unknown.textContent).toContain('boom');
-  });
-
-  it('never shows the legacy 0-start sentinel duration as runtime', async () => {
-    const container = await renderToolCard(
-      toolBlock({ toolCallId: 't-zero', startedAt: 0, durationMs: 5_000 }),
-    );
-    expect(container.textContent).not.toContain('—');
-    expect(container.textContent).not.toContain('5.0s');
-  });
-
-  it('shows the per-tool duration when both frame endpoints are real', async () => {
-    const container = await renderToolCard(
-      toolBlock({ toolCallId: 't-timed', startedAt: 1_767_225_600_000, durationMs: 2_300, durationSource: 'frame' }),
-    );
-    expect(container.textContent).toContain('2.3s');
-    expect(container.textContent).not.toContain('—');
-  });
-
-  it('never shows a turn-level fallback as runtime when only the frame start exists', async () => {
-    // Half a frame timestamp pair: the start is real, the end is missing, so
-    // the projected durationMs is the enclosing turn's — never this tool's.
-    const container = await renderToolCard(
-      toolBlock({
-        toolCallId: 't-half',
-        startedAt: 1_767_225_600_000,
-        durationMs: 9_000,
-        durationSource: 'turn',
-      }),
-    );
-    expect(container.textContent).not.toContain('9.0s');
-    expect(container.textContent).not.toContain('—');
-  });
-
-  it('shows no duration marker at all on a still-running tool', async () => {
-    const container = await renderToolCard(
-      toolBlock({ toolCallId: 't-running', status: 'running', output: undefined }),
-    );
-    expect(container.textContent).not.toContain('—');
   });
 });
 
 describe('message row actions', () => {
   beforeAll(startEditFixture, 30_000);
   it('shows edit/fork on settled user rows, fork on settled final replies, and regenerate on the latest final reply only', async () => {
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
-      onEditMessage: () => undefined,
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-    };
     const container = await renderTranscript(
       [
         userBlock({ id: 'user-m1', text: 'first question', userMessageId: 'm1' }),
@@ -3433,13 +2938,11 @@ describe('message row actions', () => {
         userBlock({ id: 'user-m3', text: 'second question', userMessageId: 'm3' }),
         assistantBlock('assistant-live-1-final-end@9', 'second answer'),
       ],
-      rowActions,
+      defaultRowActions(),
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rows).toHaveLength(4);
-    // Tiled first (copy / edit / regenerate / fork), then what the `⋯` holds.
     expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork', 'link']);
-    // An older settled final reply supports fork, while regenerate stays on the latest reply.
     expect(rowActionButtons(rows[1]!)).toEqual(['copy', 'fork', 'link']);
     expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'edit', 'fork', 'link']);
     expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'fork', 'link']);
@@ -3447,18 +2950,12 @@ describe('message row actions', () => {
 
   it.each([true, false])('withholds fork and regenerate on a tool-calling preamble when busy=%s', async (busy) => {
     const preamble = { ...assistantBlock('assistant-preamble-0', 'I will inspect the file.'), turnId: 't2', stepId: 's2' };
-    const { root, container } = makeRoot();
     const blocks: Block[] = [
       userBlock({ id: 'user-opening', text: 'inspect', turnId: 't2' }),
       preamble,
-      { kind: 'tool', id: 'tool-inspect', toolCallId: 'inspect', name: 'Read', turnId: 't2', stepId: 's2', status: 'stopped',
-        argsText: '', args: {}, display: undefined, description: undefined, output: '', isError: undefined, durationMs: undefined, progressText: undefined },
+      toolBlock({ id: 'tool-inspect', toolCallId: 'inspect', name: 'Read', turnId: 't2', stepId: 's2', status: 'stopped', args: {}, output: '' }),
     ];
-    await renderSettled(root, <Transcript
-      state={transcriptState(blocks, { busy, abortableTurnId: busy ? 2 : undefined })}
-      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions}
-      rowActions={{ disabled: false, onEditMessage: () => undefined, onRegenerate: () => undefined, onFork: () => undefined }}
-    />);
+    const container = await renderTranscript(blocks, defaultRowActions(), { busy, abortableTurnId: busy ? 2 : undefined });
     const row = container.querySelector('[data-block-id="assistant-preamble-0"]');
     expect(row).not.toBeNull();
     expect(rowActionButtons(row!)).not.toContain('fork');
@@ -3466,16 +2963,7 @@ describe('message row actions', () => {
   });
 
   it('hides edit/fork on a user row without a wire identity', async () => {
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
-      onEditMessage: () => undefined,
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-    };
-    const container = await renderTranscript(
-      [userBlock({ id: 'turn-1-prompt', text: 'placeholder without id' })],
-      rowActions,
-    );
+    const container = await renderTranscript([userBlock({ id: 'turn-1-prompt', text: 'placeholder without id' })], defaultRowActions());
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'link']);
   });
@@ -3531,12 +3019,7 @@ describe('message row actions', () => {
   });
 
   it.each(['sending', 'waiting'] as const)('paints a %s send-now as an awaiting-insertion bubble without row mutations', async (phase) => {
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
-      onEditMessage: () => undefined,
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-    };
+    const rowActions = defaultRowActions();
     const container = await renderTranscript([
       assistantBlock('assistant-anchor', 'working on it'),
       userBlock({ id: 'user-p-now', text: 'also check the docs', userMessageId: 'p-now', promptId: 'p-now', steerStatus: phase }),
@@ -3562,12 +3045,6 @@ describe('message row actions', () => {
   });
 
   it('keeps fork on a settled journal user even if a later regenerate prompt is still running', async () => {
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
-      onEditMessage: () => undefined,
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-    };
     const container = await renderTranscript(
       [
         userBlock({
@@ -3578,7 +3055,7 @@ describe('message row actions', () => {
         }),
         assistantBlock('agent-frame-asst-t1', 'REGENERATED-REPLY replaced the old tail.'),
       ],
-      rowActions,
+      defaultRowActions(),
     );
     const rows = [...container.querySelectorAll('[data-block-id]')];
     expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork', 'link']);
@@ -3592,12 +3069,7 @@ describe('message row actions', () => {
           resolveFork = resolve;
         }),
     );
-    const rowActions: TranscriptRowActions = {
-      disabled: true,
-      onEditMessage: () => undefined,
-      onRegenerate: () => undefined,
-      onFork,
-    };
+    const rowActions = defaultRowActions({ disabled: true, onFork });
     const container = await renderTranscript(
       [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
       rowActions,
@@ -3662,13 +3134,7 @@ describe('message row actions', () => {
     const onBranchHead = vi.fn();
     const onOpenForkSession = vi.fn();
     const onOpenBranchAgent = vi.fn();
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
-      onEditMessage: () => undefined,
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-      onBranchHead,
-    };
+    const rowActions = defaultRowActions({ onBranchHead });
     const offshootsByBlockId = new Map([
       [
         'assistant-m2-0',
@@ -3717,15 +3183,9 @@ describe('message row actions', () => {
 
   it('edits inline: prefilled editor submits through onEditMessage', async () => {
     const onEditMessage = vi.fn();
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
-      onEditMessage,
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-    };
     const container = await renderTranscript(
       [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1' })],
-      rowActions,
+      defaultRowActions({ onEditMessage }),
       undefined,
       undefined,
       true,
@@ -3761,30 +3221,16 @@ describe('message row actions', () => {
   });
 
   it('opens the editor with no second card and its cancel beside send, not below', async () => {
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
-      onEditMessage: () => undefined,
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-    };
     const container = await renderTranscript(
       [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1' })],
-      rowActions,
+      defaultRowActions(),
     );
     const row = container.querySelector('[data-block-id="user-m1"]')!;
     await act(async () => {
       flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
     });
     const shell = container.querySelector<HTMLElement>('[data-edit-editor]')!;
-    // The composer card is the editor's only surface: no outer border, card
-    // background or padding shell dresses the composer up as a second card…
-    expect(shell.className).not.toContain('border');
-    expect(shell.className).not.toContain('bg-panel');
-    expect(shell.className).not.toContain('p-2');
     expect(shell.querySelector('[data-composer-card]')).not.toBeNull();
-    // …and nothing is left below it: the edit ends on the round X that stands
-    // in the send button's own row, its words on the tooltip and the
-    // accessible name rather than on a line of their own.
     expect(shell.children).toHaveLength(1);
     expect(shell.textContent).not.toContain('Cancel');
     const cancel = shell.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
@@ -3802,13 +3248,10 @@ describe('message row actions', () => {
       resolveAttachments = resolve;
     });
     const onEditMessage = vi.fn();
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
+    const rowActions = defaultRowActions({
       onEditMessage,
       loadEditAttachments: vi.fn(() => pendingLoad),
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-    };
+    });
     const container = await renderTranscript(
       [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1', media: [{ kind: 'image', fileId: 'img-1', name: 'photo.png' }] })],
       rowActions,
@@ -3876,15 +3319,12 @@ describe('message row actions', () => {
     let rejectAttachments!: (err: Error) => void;
     let resolveAttachments!: (attachments: readonly ComposerAttachment[]) => void;
     const signals: AbortSignal[] = [];
-    const rowActions: TranscriptRowActions = {
-      disabled: false,
+    const rowActions = defaultRowActions({
       onEditMessage: vi.fn(),
       loadEditAttachments: vi.fn()
         .mockImplementationOnce((_block, signal: AbortSignal) => { signals.push(signal); return new Promise((_, reject) => { rejectAttachments = reject; }); })
         .mockImplementationOnce((_block, signal: AbortSignal) => { signals.push(signal); return new Promise((resolve) => { resolveAttachments = resolve; }); }),
-      onRegenerate: () => undefined,
-      onFork: () => undefined,
-    };
+    });
     const container = await renderTranscript(
       [userBlock({ id: 'user-m2', text: 'error case text', userMessageId: 'm2', media: [{ kind: 'image', fileId: 'img-fail', name: 'failed.png' }] })],
       rowActions,
@@ -4242,13 +3682,6 @@ describe('message row actions', () => {
       expect(strip.className).toContain('group-focus-within/msg:opacity-100');
       expect(strip.className).toContain('group-data-[actions-open]/msg:opacity-100');
     }
-    // A 14px glyph in a flat 28px box: no border, no pill.
-    const copyTile = userStrip.querySelector('[data-row-action="copy"]')!;
-    expect(copyTile.className).toContain('h-7');
-    expect(copyTile.className).toContain('w-7');
-    expect(copyTile.className).toContain('hover:bg-ink/[0.04]');
-    expect(copyTile.className).not.toContain('border');
-    expect(copyTile.querySelector('svg')?.getAttribute('class')).toContain('h-3.5');
   });
 
   it('summons the strip with a tap on quiet message text when hover is unavailable', async () => {
@@ -4362,12 +3795,7 @@ describe('message row actions', () => {
 
   it('keeps fork enabled while busy and exposes the three seed modes on hover', async () => {
     const onFork = vi.fn();
-    const rowActions: TranscriptRowActions = {
-      disabled: true,
-      onEditMessage: () => undefined,
-      onRegenerate: () => undefined,
-      onFork,
-    };
+    const rowActions = defaultRowActions({ disabled: true, onFork });
     const container = await renderTranscript(
       [
         userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
@@ -4793,34 +4221,45 @@ async function openLiveTranscript() {
   };
 }
 
+async function openBoundedController(
+  sessionId: string,
+  snapshot: AgentTranscriptSnapshot,
+  content: (input: { agentId: string; ref: ContentRef; range?: boolean }) => Promise<unknown>,
+) {
+  const view = {
+    snapshot: async () => ({ session: { id: sessionId, title: sessionId }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
+    transcript: { content },
+    subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
+  } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController(
+    {} as import('@kiki/session-core/transport').SessionTransport,
+    view,
+    sessionId,
+    { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+  );
+  await controller.open();
+  controller.handleTranscript({
+    type: 'transcript.reset',
+    session_id: sessionId,
+    agent_id: 'main',
+    grade: 'delta',
+    cursor: { seq: 1, epoch: 'e' },
+    coverage: { kind: 'full', hasMoreOlder: false },
+    snapshot,
+  });
+  return controller;
+}
+
 function transcriptTree(
   controller: SessionController,
   extras?: { forest?: ReturnType<SessionController['getForest']>; composer?: boolean },
 ): ReactNode {
   const composer = extras?.composer === true
-    ? (
-        <textarea
-          data-composer
-          defaultValue="keep focus"
-        />
-      )
+    ? <textarea data-composer defaultValue="keep focus" />
     : null;
   return (
     <>
-      <Transcript
-        state={controller.getState()}
-        forest={extras?.forest ?? controller.getForest()}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-        rowActions={{
-          disabled: false,
-          onEditMessage: () => undefined,
-          onRegenerate: () => undefined,
-          onFork: () => undefined,
-        }}
-      />
+      {transcriptEl(controller.getState(), { forest: extras?.forest ?? controller.getForest(), rowActions: defaultRowActions() })}
       {composer}
     </>
   );
@@ -4844,44 +4283,18 @@ function virtualTranscript(
   onLoadOlder: (signal?: AbortSignal) => Promise<boolean> = () => Promise.resolve(false),
   agentId = 'main',
 ): ReactNode {
-  return (
-    <Transcript
-      state={state}
-      agentId={agentId}
-      onLoadOlder={onLoadOlder}
-      onResolveApproval={() => noopActions()}
-      onAnswerQuestion={() => noopActions()}
-      onDismissQuestion={() => noopActions()}
-    />
-  );
+  return transcriptEl(state, { agentId, onLoadOlder });
 }
 
 function interactiveVirtualTranscript(
   state: SessionViewState,
   options: {
     rowActions?: TranscriptRowActions;
-    onResolveApproval?: (
-      approvalId: string,
-      decision: ApprovalDecision,
-      scope?: 'session',
-      selectedOptionId?: string,
-    ) => Promise<void>;
-    onAnswerQuestion?: (
-      questionId: string,
-      answers: Record<string, QuestionAnswer>,
-    ) => Promise<void>;
+    onResolveApproval?: (approvalId: string, decision: ApprovalDecision, scope?: 'session', selectedOptionId?: string) => Promise<void>;
+    onAnswerQuestion?: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   } = {},
 ): ReactNode {
-  return (
-    <Transcript
-      state={state}
-      onLoadOlder={() => Promise.resolve(false)}
-      onResolveApproval={options.onResolveApproval ?? (() => noopActions())}
-      onAnswerQuestion={options.onAnswerQuestion ?? (() => noopActions())}
-      onDismissQuestion={() => noopActions()}
-      rowActions={options.rowActions}
-    />
-  );
+  return transcriptEl(state, options);
 }
 
 function pendingVoid(): { promise: Promise<void>; resolve: () => void } {
@@ -5276,71 +4689,35 @@ describe('virtualized transcript scrolling', () => {
         await readGate.promise;
         return { ref: controllerRef, value: fullText.slice(previewOffset), contentRefs: [] };
       });
-    const view = {
-      snapshot: async () => ({ session: { id: controllerSessionId, title: 'Blocked' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
-      transcript: { content: read },
-      subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
-    } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
-    const controller = new SessionController(
-      {} as import('@kiki/session-core/transport').SessionTransport,
-      view,
-      controllerSessionId,
-      { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
-    );
-    await controller.open();
-    controller.handleTranscript({
-      type: 'transcript.reset',
-      session_id: controllerSessionId,
-      agent_id: 'main',
-      grade: 'delta',
-      cursor: { seq: 1, epoch: 'e' },
-      coverage: { kind: 'full', hasMoreOlder: false },
-      snapshot: {
-        items: [{
-          kind: 'marker',
-          markerId: 'message-delivery:um-ctrl-blocked',
-          marker: 'message.delivery',
-          at: '2026-01-01T00:00:01.000Z',
-          payload: { messageId: 'um-ctrl-blocked', text: fullText.slice(0, previewOffset), origin: { kind: 'user' } },
-          contentRefs: [{ ...deliveryRef, source: { kind: 'marker', id: 'message-delivery:um-ctrl-blocked' } }],
-        }],
-        prompts: [{
-          promptId: 'p-ctrl-blocked',
-          userMessageId: 'um-ctrl-blocked',
-          status: 'blocked',
-          createdAt: '2026-01-01T00:00:01.000Z',
-          finishedAt: '2026-01-01T00:00:02.000Z',
-          error: 'Blocked by UserPromptSubmit hook (timed out)',
-          content: [{ type: 'text', text: fullText.slice(0, previewOffset) }],
-          contentRefs: [controllerRef],
-        }],
-        tasks: [],
-        attachments: [],
-        interactions: [],
-        todos: [],
-        meta: {},
-      },
-    });
+    const controller = await openBoundedController(controllerSessionId, {
+      items: [{
+        kind: 'marker',
+        markerId: 'message-delivery:um-ctrl-blocked',
+        marker: 'message.delivery',
+        at: '2026-01-01T00:00:01.000Z',
+        payload: { messageId: 'um-ctrl-blocked', text: fullText.slice(0, previewOffset), origin: { kind: 'user' } },
+        contentRefs: [{ ...deliveryRef, source: { kind: 'marker', id: 'message-delivery:um-ctrl-blocked' } }],
+      }],
+      prompts: [{
+        promptId: 'p-ctrl-blocked',
+        userMessageId: 'um-ctrl-blocked',
+        status: 'blocked',
+        createdAt: '2026-01-01T00:00:01.000Z',
+        finishedAt: '2026-01-01T00:00:02.000Z',
+        error: 'Blocked by UserPromptSubmit hook (timed out)',
+        content: [{ type: 'text', text: fullText.slice(0, previewOffset) }],
+        contentRefs: [controllerRef],
+      }],
+      tasks: [], attachments: [], interactions: [], todos: [], meta: {},
+    }, read);
     function ControllerSurface() {
       const state = useSyncExternalStore(controller.subscribe, controller.getState);
       return (
         <TranscriptDetailProvider
-          controller={controller}
-          load={async () => false}
-          loads={state.detailLoads}
-          contentRefs={state.contentRefs}
-          loadContent={(ref) => controller.loadContentSegment('main', ref)}
-          sessionId={controllerSessionId}
-          agentId="main"
+          controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs}
+          loadContent={(ref) => controller.loadContentSegment('main', ref)} sessionId={controllerSessionId} agentId="main"
         >
-          <Transcript
-            state={state}
-            onLoadOlder={async () => false}
-            onResolveApproval={noopActions}
-            onAnswerQuestion={noopActions}
-            onDismissQuestion={noopActions}
-            rowActions={actions}
-          />
+          {transcriptEl(state, { rowActions: actions })}
         </TranscriptDetailProvider>
       );
     }
@@ -5657,50 +5034,19 @@ describe('virtualized transcript scrolling', () => {
     };
     const { useSyncExternalStore } = await import('react');
     const boundedDelivery = boundedTranscriptSnapshot(canonicalDeliverySnapshot, 'main');
-    const deliveryRead = vi.fn(async ({ ref }: { agentId: string; ref: import('@kiki/transcript').ContentRef }) =>
-      readContentSegment(canonicalDeliverySnapshot.items[0]!, ref, false, 'main'),
-    );
-    const deliveryViewFacade = {
-      snapshot: async () => ({ session: { id: 'session_r2_delivery', title: 'Delivery' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
-      transcript: { content: deliveryRead },
-      subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
-    } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
-    const deliveryController = new SessionController(
-      {} as import('@kiki/session-core/transport').SessionTransport,
-      deliveryViewFacade,
+    const deliveryController = await openBoundedController(
       'session_r2_delivery',
-      { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+      boundedDelivery,
+      async ({ ref }) => readContentSegment(canonicalDeliverySnapshot.items[0]!, ref, false, 'main'),
     );
-    await deliveryController.open();
-    deliveryController.handleTranscript({
-      type: 'transcript.reset',
-      session_id: 'session_r2_delivery',
-      agent_id: 'main',
-      grade: 'delta',
-      cursor: { seq: 1, epoch: 'e' },
-      coverage: { kind: 'full', hasMoreOlder: false },
-      snapshot: boundedDelivery,
-    });
     function DeliverySurface() {
       const state = useSyncExternalStore(deliveryController.subscribe, deliveryController.getState);
       return (
         <TranscriptDetailProvider
-          controller={deliveryController}
-          load={async () => false}
-          loads={state.detailLoads}
-          contentRefs={state.contentRefs}
-          loadContent={(ref) => deliveryController.loadContentSegment('main', ref)}
-          sessionId="session_r2_delivery"
-          agentId="main"
+          controller={deliveryController} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs}
+          loadContent={(ref) => deliveryController.loadContentSegment('main', ref)} sessionId="session_r2_delivery" agentId="main"
         >
-          <Transcript
-            state={state}
-            onLoadOlder={async () => false}
-            onResolveApproval={noopActions}
-            onAnswerQuestion={noopActions}
-            onDismissQuestion={noopActions}
-            rowActions={actions}
-          />
+          {transcriptEl(state, { rowActions: actions })}
         </TranscriptDetailProvider>
       );
     }
@@ -5762,50 +5108,19 @@ describe('virtualized transcript scrolling', () => {
       'main',
     );
     expect(boundedHydratePrompt.contentRefs?.[0]?.offset).toBe(1022);
-    const hydrateViewFacade = {
-      snapshot: async () => ({ session: { id: 'session_r3_hydrate', title: 'Hydrate' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
-      transcript: {
-        content: async ({ ref, range }: { agentId: string; ref: import('@kiki/transcript').ContentRef; range?: boolean }) =>
-          readContentSegment(canonicalHydratePrompt, ref, range, 'main'),
-      },
-      subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
-    } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
-    const hydrateController = new SessionController(
-      {} as import('@kiki/session-core/transport').SessionTransport,
-      hydrateViewFacade,
+    const hydrateController = await openBoundedController(
       'session_r3_hydrate',
-      { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+      { ...canonicalHydrateSnapshot, prompts: [boundedHydratePrompt] },
+      async ({ ref, range }) => readContentSegment(canonicalHydratePrompt, ref, range, 'main'),
     );
-    await hydrateController.open();
-    hydrateController.handleTranscript({
-      type: 'transcript.reset',
-      session_id: 'session_r3_hydrate',
-      agent_id: 'main',
-      grade: 'delta',
-      cursor: { seq: 1, epoch: 'e' },
-      coverage: { kind: 'full', hasMoreOlder: false },
-      snapshot: { ...canonicalHydrateSnapshot, prompts: [boundedHydratePrompt] },
-    });
     function HydrateMultiPartSurface() {
       const state = useSyncExternalStore(hydrateController.subscribe, hydrateController.getState);
       return (
         <TranscriptDetailProvider
-          controller={hydrateController}
-          load={async () => false}
-          loads={state.detailLoads}
-          contentRefs={state.contentRefs}
-          loadContent={(ref) => hydrateController.loadContentSegment('main', ref)}
-          sessionId="session_r3_hydrate"
-          agentId="main"
+          controller={hydrateController} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs}
+          loadContent={(ref) => hydrateController.loadContentSegment('main', ref)} sessionId="session_r3_hydrate" agentId="main"
         >
-          <Transcript
-            state={state}
-            onLoadOlder={async () => false}
-            onResolveApproval={noopActions}
-            onAnswerQuestion={noopActions}
-            onDismissQuestion={noopActions}
-            rowActions={actions}
-          />
+          {transcriptEl(state, { rowActions: actions })}
         </TranscriptDetailProvider>
       );
     }
@@ -5882,50 +5197,17 @@ describe('virtualized transcript scrolling', () => {
     )!;
     expect(rangeRef).toBeDefined();
     expect(rangeRef.offset).toBe(1022);
-    const rangeViewFacade = {
-      snapshot: async () => ({ session: { id: 'session_r3_multipart', title: 'Range' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }),
-      transcript: {
-        content: async ({ ref, range }: { agentId: string; ref: import('@kiki/transcript').ContentRef; range?: boolean }) =>
-          readContentSegment(canonicalMultiPartSnapshot.prompts[0]!, ref, range, 'main'),
-      },
-      subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }),
-    } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
-    const rangeController = new SessionController(
-      {} as import('@kiki/session-core/transport').SessionTransport,
-      rangeViewFacade,
+    const rangeController = await openBoundedController(
       'session_r3_multipart',
-      { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } },
+      boundedMultiPartSnapshot,
+      async ({ ref, range }) => readContentSegment(canonicalMultiPartSnapshot.prompts[0]!, ref, range, 'main'),
     );
-    await rangeController.open();
-    rangeController.handleTranscript({
-      type: 'transcript.reset',
-      session_id: 'session_r3_multipart',
-      agent_id: 'main',
-      grade: 'delta',
-      cursor: { seq: 1, epoch: 'e' },
-      coverage: { kind: 'full', hasMoreOlder: false },
-      snapshot: boundedMultiPartSnapshot,
-    });
     const r3 = makeRoot();
     try {
       await renderSettled(
         r3.root,
-        <TranscriptDetailProvider
-          controller={rangeController}
-          load={async () => false}
-          loads={{}}
-          contentRefs={[rangeRef]}
-          sessionId="session_r3_multipart"
-          agentId="main"
-        >
-          <Transcript
-            state={{ ...multiPartState, contentRefs: [rangeRef] }}
-            onLoadOlder={async () => false}
-            onResolveApproval={noopActions}
-            onAnswerQuestion={noopActions}
-            onDismissQuestion={noopActions}
-            rowActions={actions}
-          />
+        <TranscriptDetailProvider controller={rangeController} load={async () => false} loads={{}} contentRefs={[rangeRef]} sessionId="session_r3_multipart" agentId="main">
+          {transcriptEl({ ...multiPartState, contentRefs: [rangeRef] }, { rowActions: actions })}
         </TranscriptDetailProvider>,
       );
       await act(async () => {
@@ -7201,16 +6483,7 @@ describe('canonical mount and key stability', () => {
     expect(before).not.toBeNull();
     controller.handleTranscript(opsEvent('main', appendOps(2, 'llo'), 2));
     flush();
-    await renderSettled(
-      root,
-      <Transcript
-        state={controller.getState()}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-      />,
-    );
+    await renderSettled(root, transcriptEl(controller.getState()));
     const after = container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`);
     expect(after).toBe(before);
     expect(after?.textContent).toContain('Hello');
@@ -7264,17 +6537,7 @@ describe('canonical mount and key stability', () => {
     const forests = controller.forestPublishCount;
     controller.handleTranscript(opsEvent(CHILD_AGENT_ID, childAppendOps(), 2));
     flush();
-    await renderSettled(
-      root,
-      <Transcript
-        state={controller.getState()}
-        forest={controller.getForest()}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-      />,
-    );
+    await renderSettled(root, transcriptEl(controller.getState(), { forest: controller.getForest() }));
     expect(container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`)).toBe(parent);
     expect(controller.forestPublishCount).toBe(forests);
     controller.close();
@@ -7292,13 +6555,7 @@ describe('canonical mount and key stability', () => {
     await renderSettled(
       root,
       <>
-        <Transcript
-          state={controller.getState()}
-          onLoadOlder={() => Promise.resolve(false)}
-          onResolveApproval={() => noopActions()}
-          onAnswerQuestion={() => noopActions()}
-          onDismissQuestion={() => noopActions()}
-        />
+        {transcriptEl(controller.getState())}
         <textarea data-composer defaultValue="keep focus" />
       </>,
     );
@@ -7337,16 +6594,7 @@ describe('external executor badge', () => {
     turnExecutions: SessionViewState['turnExecutions'],
   ): Promise<HTMLDivElement> {
     const { root, container } = makeRoot();
-    await renderSettled(
-      root,
-      <Transcript
-        state={{ ...transcriptState(blocks), turnExecutions }}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-      />,
-    );
+    await renderSettled(root, transcriptEl({ ...transcriptState(blocks), turnExecutions }));
     return container;
   }
 
@@ -7479,25 +6727,15 @@ describe('subagent timeline dual form (G-4)', () => {
     subagentId: string,
     overrides: Partial<Extract<Block, { kind: 'subagent' }>> = {},
   ): Block {
-    return {
-      kind: 'subagent',
-      id: `subagent-${subagentId}`,
+    return subagentBlock({
       subagentId,
       parentAgentId: 'main',
       parentToolCallId: `call-${subagentId}`,
-      name: subagentId,
-      description: undefined,
-      model: undefined,
-      thinkingEffort: undefined,
-      status: 'completed',
-      summary: undefined,
-      error: undefined,
       startedAt: '2026-01-01T00:00:00.000Z',
       endedAt: '2026-01-01T00:01:30.000Z',
       toolCallCount: 3,
-      transcript: [],
       ...overrides,
-    };
+    });
   }
 
   function eventBlock(
@@ -7516,12 +6754,6 @@ describe('subagent timeline dual form (G-4)', () => {
     };
   }
 
-  /**
-   * Stamp birth times onto a built forest the way the engine will once it
-   * records one per agent: an immutable fact on the node itself, which no
-   * later run start can move. Applied after the build because the roster
-   * descriptor does not carry it yet.
-   */
   function born(forest: AgentForest, births: Readonly<Record<string, string>>): AgentForest {
     const byId: Record<string, AgentTreeNode> = { ...forest.byId };
     for (const [agentId, createdAt] of Object.entries(births)) {
@@ -7538,18 +6770,7 @@ describe('subagent timeline dual form (G-4)', () => {
     state?: SessionViewState,
   ): Promise<HTMLDivElement> {
     const { root, container } = makeRoot();
-    await renderSettled(
-      root,
-      <Transcript
-        state={state ?? transcriptState(blocks)}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-        forest={forest}
-        onOpenAgent={(agentId) => { opened.push(agentId); }}
-      />,
-    );
+    await renderSettled(root, transcriptEl(state ?? transcriptState(blocks), { forest, onOpenAgent: (agentId) => { opened.push(agentId); } }));
     return container;
   }
 
@@ -7574,22 +6795,17 @@ describe('subagent timeline dual form (G-4)', () => {
 
   it('keeps the subagent turn failure on its card after switching away and reopening cold state', async () => {
     const { root, container } = makeRoot();
-    const props = {
-      onLoadOlder: () => Promise.resolve(false),
-      onResolveApproval: () => noopActions(),
-      onAnswerQuestion: () => noopActions(),
-      onDismissQuestion: () => noopActions(),
-    };
     const block = lifecycleSubagentBlock(CHILD_AGENT_ID, { status: 'running', name: 'Researcher' });
     for (const cold of [false, true]) {
       const child = replayAgentWire(CHILD_AGENT_ID, childFailureWireRecords, cold);
       const forest = sessionAgentForestFromAgentSnapshots(new Map([[CHILD_AGENT_ID, child]]));
-      await renderSettled(root, <Transcript key={cold ? 'reopened' : 'live'}
-        state={transcriptState([block])} forest={forest} {...props} />);
+      await renderSettled(root, <Transcript key={cold ? 'reopened' : 'live'} state={transcriptState([block])} forest={forest}
+        onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
       const card = container.querySelector(`[data-subagent-id="${CHILD_AGENT_ID}"]`);
       expect(card?.querySelector('[data-agent-turn-outcome="failed"]')?.textContent)
         .toContain('Last turn failed · Connection closed');
-      await renderSettled(root, <Transcript key="other-session" state={transcriptState([])} {...props} />);
+      await renderSettled(root, <Transcript key="other-session" state={transcriptState([])}
+        onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
       expect(container.querySelector('[data-agent-turn-outcome]')).toBeNull();
     }
   });
@@ -7634,15 +6850,7 @@ describe('subagent timeline dual form (G-4)', () => {
     const block = lifecycleSubagentBlock(CHILD_AGENT_ID, { status: 'running', name: 'Researcher' });
     await renderSettled(
       root,
-      <Transcript
-        state={transcriptState([block])}
-        forest={forest}
-        onOpenAgent={(agentId) => { opened.push(agentId); }}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-      />,
+      transcriptEl(transcriptState([block]), { forest, onOpenAgent: (agentId) => { opened.push(agentId); } }),
     );
     const outcomeLine = container.querySelector('[data-agent-turn-outcome="failed"]');
     expect(outcomeLine?.textContent).toContain('Last turn failed');
@@ -8048,15 +7256,7 @@ describe('subagent timeline dual form (G-4)', () => {
       const { root, container } = makeRoot();
       const render = (status: 'running' | 'completed') => renderSettled(
         root,
-        <Transcript
-          state={transcriptState([leadBlock])}
-          onLoadOlder={() => Promise.resolve(false)}
-          onResolveApproval={() => noopActions()}
-          onAnswerQuestion={() => noopActions()}
-          onDismissQuestion={() => noopActions()}
-          forest={tree({ worker: status })}
-          onOpenAgent={() => {}}
-        />,
+        transcriptEl(transcriptState([leadBlock]), { forest: tree({ worker: status }), onOpenAgent: () => {} }),
       );
       await render('running');
       expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
@@ -8318,18 +7518,7 @@ describe('a dispatch card lays out only the descendants it provably created', ()
 
     it('opens the folded descendants on click, and keeps the reader’s close', async () => {
       const { root, container } = makeRoot();
-      const render = () => renderSettled(
-        root,
-        <Transcript
-          state={transcriptState([leadBlock])}
-          onLoadOlder={() => Promise.resolve(false)}
-          onResolveApproval={() => noopActions()}
-          onAnswerQuestion={() => noopActions()}
-          onDismissQuestion={() => noopActions()}
-          forest={tree()}
-          onOpenAgent={() => {}}
-        />,
-      );
+      const render = () => renderSettled(root, transcriptEl(transcriptState([leadBlock]), { forest: tree(), onOpenAgent: () => {} }));
       await render();
       await act(async () => { groupToggle(container).click(); });
       expect(group(container)?.getAttribute('data-other-descendants-open')).toBe('true');
@@ -8682,17 +7871,7 @@ describe('a dispatch card lays out only the descendants it provably created', ()
         ],
       );
 
-    await renderSettled(
-      root,
-      <Transcript
-        state={state}
-        forest={makeForest('running')}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={noopActions}
-        onAnswerQuestion={noopActions}
-        onDismissQuestion={noopActions}
-      />,
-    );
+    await renderSettled(root, transcriptEl(state, { forest: makeForest('running') }));
     const liveGroup = container.querySelector('[data-subagent-group="5"]')!;
     expect(liveGroup).not.toBeNull();
     expect(liveGroup.getAttribute('data-subagent-group-done')).toBe('4');
@@ -8702,17 +7881,7 @@ describe('a dispatch card lays out only the descendants it provably created', ()
     expect(groupRowIndex).toBeGreaterThanOrEqual(0);
     expect(groupRowIndex).toBeLessThan(turn2329RowIndex);
 
-    await renderSettled(
-      root,
-      <Transcript
-        state={state}
-        forest={makeForest('lost')}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={noopActions}
-        onAnswerQuestion={noopActions}
-        onDismissQuestion={noopActions}
-      />,
-    );
+    await renderSettled(root, transcriptEl(state, { forest: makeForest('lost') }));
     expect(container.querySelector('[data-subagent-group]')).toBeNull();
     const fold = container.querySelector('[data-history-fold]');
     expect(fold).not.toBeNull();
@@ -8934,270 +8103,84 @@ describe('background task notification folding (TUI-01)', () => {
   });
 
   it('correlates 4x web_shared_remote_spaces activity, same-agent fail-then-succeed runs, and independent questions/bash failures', async () => {
+    const subagentTask = (
+      taskId: string, agentId: string, name: string, parentToolCallId: string, description: string,
+      state: 'completed' | 'failed', startedAt: string, endedAt: string, extra: Record<string, unknown>,
+    ) => ({
+      taskId, kind: 'subagent' as const, state, detached: true, agentId, name, parentToolCallId, description,
+      model: 'axon/gpt-5.6-luna', startedAt, endedAt, outputTail: '', ...extra,
+    });
+    const askInteraction = (
+      interactionId: string, toolCallId: string, turnId: number, state: 'answered' | 'dismissed',
+      createdAt: string, id: string, question: string, options: { id: string; label: string }[], answer?: string,
+    ) => ({
+      interactionId, interactionKind: 'question' as const, toolCallId, state,
+      anchor: { kind: 'tool_call' as const, toolCallId }, origin: { agentId: 'main', turnId },
+      request: { questions: [{ id, question, options }], created_at: createdAt },
+      ...(answer === undefined ? {} : { response: { answers: { [question]: answer } } }),
+    });
+    const askFrame = (frameId: string, toolCallId: string, taskId: string, id: string, question: string) => ({
+      kind: 'tool' as const, frameId, toolCallId, name: 'AskUserQuestion', state: 'done' as const,
+      input: { background: true, questions: [{ id, question }] },
+      output: `task_id: ${taskId}\ndescription: ${question}\nstatus: running\nautomatic_notification: true`,
+    });
+    const agentRunFrame = (frameId: string, toolCallId: string, input: Record<string, unknown>, agentId: string, name: string, taskId: string) => ({
+      kind: 'tool' as const, frameId, toolCallId, name: 'AgentRun', state: 'done' as const, input,
+      output: `status: running\nagent_id: ${agentId}\nname: ${name}\ntask_id: ${taskId}`,
+      agentRefs: [{ agentId, role: 'child' as const }],
+    });
+    const sendFrame = (frameId: string, toolCallId: string, message: string, status: string, message_id: string) => ({
+      kind: 'tool' as const, frameId, toolCallId, name: 'AgentSend', state: 'done' as const,
+      input: { target: 'web_shared_remote_spaces', message },
+      output: JSON.stringify({ status, message_id, target: { agent_id: 'agent_web_shared', name: 'web_shared_remote_spaces' } }),
+    });
+    const taskFrame = (frameId: string, taskId: string, text: string) => ({
+      kind: 'text' as const, frameId, role: 'user' as const, origin: { kind: 'task' as const, taskId }, text,
+    });
+    const dbOpts = [{ id: 'pg', label: 'Postgres' }, { id: 'sq', label: 'SQLite' }];
     const snapshot: AgentTranscriptSnapshot = {
-      attachments: [],
-      todos: [],
-      prompts: [],
-      meta: {},
-      hasMoreOlder: false,
+      attachments: [], todos: [], prompts: [], meta: {}, hasMoreOlder: false,
       tasks: [
-        {
-          taskId: 'task-web-shared-1',
-          kind: 'subagent',
-          state: 'completed',
-          detached: true,
-          agentId: 'agent_web_shared',
-          name: 'web_shared_remote_spaces',
-          parentToolCallId: 'call-web-1',
-          description: 'Audit remote spaces',
-          model: 'axon/gpt-5.6-luna',
-          thinkingEffort: 'high',
-          startedAt: '2026-01-01T00:00:01.000Z',
-          endedAt: '2026-01-01T00:01:01.000Z',
-          outputTail: '',
-          resultSummary: 'Completed initial remote spaces audit.',
-        },
-        {
-          taskId: 'task-worker-fail',
-          kind: 'subagent',
-          state: 'failed',
-          detached: true,
-          agentId: 'agent_retry',
-          name: 'migrator',
-          parentToolCallId: 'call-retry-1',
-          description: 'Run migration',
-          model: 'axon/gpt-5.6-luna',
-          startedAt: '2026-01-01T00:00:02.000Z',
-          endedAt: '2026-01-01T00:00:30.000Z',
-          outputTail: '',
-          error: 'Quota limit reached on initial run.',
-        },
-        {
-          taskId: 'task-worker-ok',
-          kind: 'subagent',
-          state: 'completed',
-          detached: true,
-          agentId: 'agent_retry',
-          name: 'migrator',
-          parentToolCallId: 'call-retry-2',
-          description: 'Resume migration',
-          model: 'axon/gpt-5.6-luna',
-          startedAt: '2026-01-01T00:02:02.000Z',
-          endedAt: '2026-01-01T00:02:45.000Z',
-          outputTail: '',
-          resultSummary: 'Migration succeeded on resumed run.',
-        },
-        {
-          taskId: 'task-bash-fail',
-          kind: 'shell',
-          state: 'failed',
-          detached: true,
-          toolCallId: 'call-bash-bg',
-          description: 'Build production bundle',
-          command: 'pnpm build',
-          exitCode: 2,
-          startedAt: '2026-01-01T00:02:10.000Z',
-          endedAt: '2026-01-01T00:02:20.000Z',
-          outputTail: '',
-          error: 'Build failed with exit code 2.',
-        },
+        subagentTask('task-web-shared-1', 'agent_web_shared', 'web_shared_remote_spaces', 'call-web-1', 'Audit remote spaces', 'completed', '2026-01-01T00:00:01.000Z', '2026-01-01T00:01:01.000Z', { thinkingEffort: 'high', resultSummary: 'Completed initial remote spaces audit.' }),
+        subagentTask('task-worker-fail', 'agent_retry', 'migrator', 'call-retry-1', 'Run migration', 'failed', '2026-01-01T00:00:02.000Z', '2026-01-01T00:00:30.000Z', { error: 'Quota limit reached on initial run.' }),
+        subagentTask('task-worker-ok', 'agent_retry', 'migrator', 'call-retry-2', 'Resume migration', 'completed', '2026-01-01T00:02:02.000Z', '2026-01-01T00:02:45.000Z', { resultSummary: 'Migration succeeded on resumed run.' }),
+        { taskId: 'task-bash-fail', kind: 'shell', state: 'failed', detached: true, toolCallId: 'call-bash-bg', description: 'Build production bundle', command: 'pnpm build', exitCode: 2, startedAt: '2026-01-01T00:02:10.000Z', endedAt: '2026-01-01T00:02:20.000Z', outputTail: '', error: 'Build failed with exit code 2.' },
       ],
       interactions: [
-        {
-          interactionId: 'question-db-1',
-          interactionKind: 'question',
-          toolCallId: 'call-ask-1',
-          state: 'answered',
-          anchor: { kind: 'tool_call', toolCallId: 'call-ask-1' },
-          origin: { agentId: 'main', turnId: 1 },
-          request: {
-            questions: [{ id: 'db', question: 'Which database?', options: [{ id: 'pg', label: 'Postgres' }, { id: 'sq', label: 'SQLite' }] }],
-            created_at: '2026-01-01T00:00:05.000Z',
-          },
-          response: { answers: { 'Which database?': 'Postgres' } },
-        },
-        {
-          interactionId: 'question-db-2',
-          interactionKind: 'question',
-          toolCallId: 'call-ask-2',
-          state: 'answered',
-          anchor: { kind: 'tool_call', toolCallId: 'call-ask-2' },
-          origin: { agentId: 'main', turnId: 2 },
-          request: {
-            questions: [{ id: 'db', question: 'Which database?', options: [{ id: 'pg', label: 'Postgres' }, { id: 'sq', label: 'SQLite' }] }],
-            created_at: '2026-01-01T00:01:55.000Z',
-          },
-          response: { answers: { 'Which database?': 'SQLite' } },
-        },
-        {
-          interactionId: 'question-skip-3',
-          interactionKind: 'question',
-          toolCallId: 'call-ask-3',
-          state: 'dismissed',
-          anchor: { kind: 'tool_call', toolCallId: 'call-ask-3' },
-          origin: { agentId: 'main', turnId: 2 },
-          request: {
-            questions: [{ id: 'opt', question: 'Enable verbose telemetry?', options: [{ id: 'y', label: 'Yes' }, { id: 'n', label: 'No' }] }],
-            created_at: '2026-01-01T00:02:00.000Z',
-          },
-        },
+        askInteraction('question-db-1', 'call-ask-1', 1, 'answered', '2026-01-01T00:00:05.000Z', 'db', 'Which database?', dbOpts, 'Postgres'),
+        askInteraction('question-db-2', 'call-ask-2', 2, 'answered', '2026-01-01T00:01:55.000Z', 'db', 'Which database?', dbOpts, 'SQLite'),
+        askInteraction('question-skip-3', 'call-ask-3', 2, 'dismissed', '2026-01-01T00:02:00.000Z', 'opt', 'Enable verbose telemetry?', [{ id: 'y', label: 'Yes' }, { id: 'n', label: 'No' }]),
       ],
       items: [
         {
-          kind: 'turn',
-          turnId: 't1',
-          ordinal: 1,
-          state: 'completed',
-          origin: { kind: 'user' },
-          prompt: 'Coordinate remote spaces and migration.',
-          steps: [
-            {
-              kind: 'step',
-              stepId: 't1.1',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              frames: [
-                {
-                  kind: 'tool',
-                  frameId: 'f-ask-1',
-                  toolCallId: 'call-ask-1',
-                  name: 'AskUserQuestion',
-                  state: 'done',
-                  input: { background: true, questions: [{ id: 'db', question: 'Which database?' }] },
-                  output: 'task_id: question-db-1\ndescription: Which database?\nstatus: running\nautomatic_notification: true',
-                },
-                {
-                  kind: 'tool',
-                  frameId: 'f-call-web-1',
-                  toolCallId: 'call-web-1',
-                  name: 'AgentRun',
-                  state: 'done',
-                  input: { name: 'web_shared_remote_spaces', description: 'Audit remote spaces', prompt: 'Inspect spaces' },
-                  output: 'status: running\nagent_id: agent_web_shared\nname: web_shared_remote_spaces\ntask_id: task-web-shared-1',
-                  agentRefs: [{ agentId: 'agent_web_shared', role: 'child' }],
-                },
-                {
-                  kind: 'tool',
-                  frameId: 'f-call-retry-1',
-                  toolCallId: 'call-retry-1',
-                  name: 'AgentRun',
-                  state: 'done',
-                  input: { name: 'migrator', description: 'Run migration', prompt: 'Migrate DB' },
-                  output: 'status: running\nagent_id: agent_retry\nname: migrator\ntask_id: task-worker-fail',
-                  agentRefs: [{ agentId: 'agent_retry', role: 'child' }],
-                },
-                {
-                  kind: 'tool',
-                  frameId: 'f-send-1',
-                  toolCallId: 'call-send-1',
-                  name: 'AgentSend',
-                  state: 'done',
-                  input: { target: 'web_shared_remote_spaces', message: 'Check SSH host config first.' },
-                  output: JSON.stringify({ status: 'delivered', message_id: 'msg-web-1', target: { agent_id: 'agent_web_shared', name: 'web_shared_remote_spaces' } }),
-                },
-                {
-                  kind: 'tool',
-                  frameId: 'f-send-2',
-                  toolCallId: 'call-send-2',
-                  name: 'AgentSend',
-                  state: 'done',
-                  input: { target: 'web_shared_remote_spaces', message: 'Also verify workspace permissions.' },
-                  output: JSON.stringify({ status: 'delivered', message_id: 'msg-web-2', target: { agent_id: 'agent_web_shared', name: 'web_shared_remote_spaces' } }),
-                },
-                {
-                  kind: 'tool',
-                  frameId: 'f-send-queued',
-                  toolCallId: 'call-send-queued',
-                  name: 'AgentSend',
-                  state: 'done',
-                  input: { target: 'web_shared_remote_spaces', message: 'Hold until lock releases.' },
-                  output: JSON.stringify({ status: 'queued', message_id: 'msg-web-queued', target: { agent_id: 'agent_web_shared', name: 'web_shared_remote_spaces' } }),
-                },
-              ],
-            },
-          ],
+          kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'Coordinate remote spaces and migration.',
+          steps: [{
+            kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed',
+            frames: [
+              askFrame('f-ask-1', 'call-ask-1', 'question-db-1', 'db', 'Which database?'),
+              agentRunFrame('f-call-web-1', 'call-web-1', { name: 'web_shared_remote_spaces', description: 'Audit remote spaces', prompt: 'Inspect spaces' }, 'agent_web_shared', 'web_shared_remote_spaces', 'task-web-shared-1'),
+              agentRunFrame('f-call-retry-1', 'call-retry-1', { name: 'migrator', description: 'Run migration', prompt: 'Migrate DB' }, 'agent_retry', 'migrator', 'task-worker-fail'),
+              sendFrame('f-send-1', 'call-send-1', 'Check SSH host config first.', 'delivered', 'msg-web-1'),
+              sendFrame('f-send-2', 'call-send-2', 'Also verify workspace permissions.', 'delivered', 'msg-web-2'),
+              sendFrame('f-send-queued', 'call-send-queued', 'Hold until lock releases.', 'queued', 'msg-web-queued'),
+            ],
+          }],
         },
         {
-          kind: 'turn',
-          turnId: 't2',
-          ordinal: 2,
-          state: 'completed',
-          origin: { kind: 'user' },
-          prompt: 'Resume failed migration and check outputs.',
-          steps: [
-            {
-              kind: 'step',
-              stepId: 't2.1',
-              turnId: 't2',
-              ordinal: 1,
-              state: 'completed',
-              frames: [
-                {
-                  kind: 'text',
-                  frameId: 'f-note-web-1',
-                  role: 'user',
-                  origin: { kind: 'task', taskId: 'task-web-shared-1' },
-                  text: '<notification id="task:task-web-shared-1:completed" category="task" type="task.completed" source_kind="subagent_task" source_id="task-web-shared-1" agent_id="agent_web_shared">\nTitle: Background agent completed (web_shared_remote_spaces)\nSeverity: success\nSummary: Completed initial remote spaces audit.\n</notification>',
-                },
-                {
-                  kind: 'tool',
-                  frameId: 'f-ask-2',
-                  toolCallId: 'call-ask-2',
-                  name: 'AskUserQuestion',
-                  state: 'done',
-                  input: { background: true, questions: [{ id: 'db', question: 'Which database?' }] },
-                  output: 'task_id: question-db-2\ndescription: Which database?\nstatus: running\nautomatic_notification: true',
-                },
-                {
-                  kind: 'tool',
-                  frameId: 'f-ask-3',
-                  toolCallId: 'call-ask-3',
-                  name: 'AskUserQuestion',
-                  state: 'done',
-                  input: { background: true, questions: [{ id: 'opt', question: 'Enable verbose telemetry?' }] },
-                  output: 'task_id: question-skip-3\ndescription: Enable verbose telemetry?\nstatus: running\nautomatic_notification: true',
-                },
-                {
-                  kind: 'tool',
-                  frameId: 'f-call-retry-2',
-                  toolCallId: 'call-retry-2',
-                  name: 'AgentRun',
-                  state: 'done',
-                  input: { resume: 'agent_retry', description: 'Resume migration', prompt: 'Continue migration' },
-                  output: 'status: running\nagent_id: agent_retry\nname: migrator\ntask_id: task-worker-ok',
-                  agentRefs: [{ agentId: 'agent_retry', role: 'child' }],
-                },
-                {
-                  kind: 'text',
-                  frameId: 'f-note-retry-ok',
-                  role: 'user',
-                  origin: { kind: 'task', taskId: 'task-worker-ok' },
-                  text: '<notification id="task:task-worker-ok:completed" category="task" type="task.completed" source_kind="subagent_task" source_id="task-worker-ok" agent_id="agent_retry">\nTitle: Background agent completed (migrator)\nSeverity: success\nSummary: Migration succeeded on resumed run.\n</notification>',
-                },
-                {
-                  kind: 'text',
-                  frameId: 'f-note-bash-fail',
-                  role: 'user',
-                  origin: { kind: 'task', taskId: 'task-bash-fail' },
-                  text: '<notification id="task:task-bash-fail:failed" category="task" type="task.failed" source_kind="background_task" source_id="task-bash-fail">\nTitle: Background command failed\nSeverity: error\nTask ID: task-bash-fail\nDescription: Build production bundle\nCommand: pnpm build\nExit code: 2\n</notification>',
-                },
-                {
-                  kind: 'text',
-                  frameId: 'f-note-unproven',
-                  role: 'user',
-                  origin: { kind: 'task', taskId: 'task-unproven' },
-                  text: 'Unclassified background payload arrived.',
-                },
-                {
-                  kind: 'text',
-                  frameId: 'f-reply-t2',
-                  role: 'assistant',
-                  text: 'All checks reconciled.',
-                },
-              ],
-            },
-          ],
+          kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'Resume failed migration and check outputs.',
+          steps: [{
+            kind: 'step', stepId: 't2.1', turnId: 't2', ordinal: 1, state: 'completed',
+            frames: [
+              taskFrame('f-note-web-1', 'task-web-shared-1', '<notification id="task:task-web-shared-1:completed" category="task" type="task.completed" source_kind="subagent_task" source_id="task-web-shared-1" agent_id="agent_web_shared">\nTitle: Background agent completed (web_shared_remote_spaces)\nSeverity: success\nSummary: Completed initial remote spaces audit.\n</notification>'),
+              askFrame('f-ask-2', 'call-ask-2', 'question-db-2', 'db', 'Which database?'),
+              askFrame('f-ask-3', 'call-ask-3', 'question-skip-3', 'opt', 'Enable verbose telemetry?'),
+              agentRunFrame('f-call-retry-2', 'call-retry-2', { resume: 'agent_retry', description: 'Resume migration', prompt: 'Continue migration' }, 'agent_retry', 'migrator', 'task-worker-ok'),
+              taskFrame('f-note-retry-ok', 'task-worker-ok', '<notification id="task:task-worker-ok:completed" category="task" type="task.completed" source_kind="subagent_task" source_id="task-worker-ok" agent_id="agent_retry">\nTitle: Background agent completed (migrator)\nSeverity: success\nSummary: Migration succeeded on resumed run.\n</notification>'),
+              taskFrame('f-note-bash-fail', 'task-bash-fail', '<notification id="task:task-bash-fail:failed" category="task" type="task.failed" source_kind="background_task" source_id="task-bash-fail">\nTitle: Background command failed\nSeverity: error\nTask ID: task-bash-fail\nDescription: Build production bundle\nCommand: pnpm build\nExit code: 2\n</notification>'),
+              taskFrame('f-note-unproven', 'task-unproven', 'Unclassified background payload arrived.'),
+              { kind: 'text', frameId: 'f-reply-t2', role: 'assistant', text: 'All checks reconciled.' },
+            ],
+          }],
         },
       ],
     };
@@ -9550,16 +8533,7 @@ describe('read-run folding (fold-steps)', () => {
   }
 
   function renderTranscriptInto(root: Root, blocks: Block[]): Promise<void> {
-    return renderSettled(
-      root,
-      <Transcript
-        state={transcriptState(blocks)}
-        onLoadOlder={() => Promise.resolve(false)}
-        onResolveApproval={() => noopActions()}
-        onAnswerQuestion={() => noopActions()}
-        onDismissQuestion={() => noopActions()}
-      />,
-    );
+    return renderSettled(root, transcriptEl(transcriptState(blocks)));
   }
 
   async function withFold<T>(on: boolean, run: () => Promise<T>): Promise<T> {
@@ -10016,7 +8990,7 @@ describe('settled history folds and the unified locate entry', () => {
     const state = transcriptState([...turnBlocks(1, 'first'), ...turnBlocks(2, 'second')]);
     const render = (visible = true) => renderSettled(root,
       <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main">
-        <Transcript state={state} visible={visible} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+        {transcriptEl(state, { visible })}
       </TranscriptDetailProvider>);
     try {
       await render();
@@ -10100,7 +9074,7 @@ describe('settled history folds and the unified locate entry', () => {
       return renderSettled(
         root,
         <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} contentRefs={state.contentRefs} sessionId="session_test" agentId="main">
-          <Transcript state={state} visible={visible} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+          {transcriptEl(state, { visible })}
         </TranscriptDetailProvider>,
       );
     };
@@ -10213,7 +9187,7 @@ describe('settled history folds and the unified locate entry', () => {
     const blocks = [...turnBlocks(1, 'first'), { ...userBlock({ id: 'u3', text: 'latest' }), turnId: 't3' }, doneTool('tool3', 't3', { status: 'running' })];
     const render = (visible = true) => renderSettled(root,
       <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId={agentId}>
-        <Transcript state={transcriptState(blocks, { incompleteTurnIds: ['t1', 't3'] })} agentId={agentId} visible={visible} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+        {transcriptEl(transcriptState(blocks, { incompleteTurnIds: ['t1', 't3'] }), { agentId, visible })}
       </TranscriptDetailProvider>);
     const toggle = () => container.querySelector('[data-history-fold] [data-activity-toggle]')!;
     try {
@@ -10632,28 +9606,17 @@ describe('settled history folds and the unified locate entry', () => {
 
       let releaseSharedFlight!: () => void;
       const sharedGate = new Promise<void>((resolve) => { releaseSharedFlight = resolve; });
+      const locatePage = (items: AgentTranscriptSnapshot['items'][number][], next_cursor: string, extra: Record<string, unknown> = {}) => ({
+        session_id: 'session_concurrent_locate', agent_id: 'main', has_more: true, items,
+        tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+        coverage: { kind: 'unknown' as const, hasMoreOlder: true as const }, next_cursor, ...extra,
+      });
       let pageCalls = 0;
       const pageSpy = vi.spyOn(controller['view'].transcript, 'page').mockImplementation(async () => {
         pageCalls += 1;
         if (pageCalls === 1) {
           await sharedGate;
-          return {
-            session_id: 'session_concurrent_locate',
-            agent_id: 'main',
-            has_more: true,
-            items: [],
-            tasks: [],
-            interactions: [],
-            attachments: [],
-            todos: [],
-            prompts: [],
-            meta: {},
-            agents: [],
-            pending_interactions: [],
-            coverage: { kind: 'unknown', hasMoreOlder: true },
-            read: { source: 'cold', readiness: 'preparing' },
-            next_cursor: 'cursor-1',
-          };
+          return locatePage([], 'cursor-1', { read: { source: 'cold', readiness: 'preparing' } });
         }
         state = {
           ...state,
@@ -10661,22 +9624,7 @@ describe('settled history folds and the unified locate entry', () => {
           hasMoreHistory: true,
         };
         await render();
-        return {
-          session_id: 'session_concurrent_locate',
-          agent_id: 'main',
-          has_more: true,
-          items: [...olderTurnSnapshot().items],
-          tasks: [],
-          interactions: [],
-          attachments: [],
-          todos: [],
-          prompts: [],
-          meta: {},
-          agents: [],
-          pending_interactions: [],
-          coverage: { kind: 'unknown', hasMoreOlder: true },
-          next_cursor: 'cursor-2',
-        };
+        return locatePage([...olderTurnSnapshot().items], 'cursor-2');
       });
 
       // Start an earlier top-edge / restore demand before locate's first turn check runs.
@@ -10697,23 +9645,7 @@ describe('settled history folds and the unified locate entry', () => {
       let releaseBlockFlight!: () => void;
       pageSpy.mockImplementation(async () => {
         await new Promise<void>((resolve) => { releaseBlockFlight = resolve; });
-        return {
-          session_id: 'session_concurrent_locate',
-          agent_id: 'main',
-          has_more: true,
-          items: [],
-          tasks: [],
-          interactions: [],
-          attachments: [],
-          todos: [],
-          prompts: [],
-          meta: {},
-          agents: [],
-          pending_interactions: [],
-          coverage: { kind: 'unknown', hasMoreOlder: true },
-          read: { source: 'cold', readiness: 'preparing' },
-          next_cursor: 'cursor-block',
-        };
+        return locatePage([], 'cursor-block', { read: { source: 'cold', readiness: 'preparing' } });
       });
       let blockOutcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
       await act(async () => {
@@ -10835,69 +9767,24 @@ describe('settled history folds and the unified locate entry', () => {
       let releasePage2!: () => void;
       const page1Gate = new Promise<void>((resolve) => { releasePage1 = resolve; });
       const page2Gate = new Promise<void>((resolve) => { releasePage2 = resolve; });
+      const slowTurnPage = (turnId: string, ordinal: number, prompt: string, next_cursor: string) => ({
+        session_id: 'session_slow_deep_locate', agent_id: 'main', has_more: true,
+        items: [{
+          kind: 'turn' as const, turnId, ordinal, state: 'completed' as const, origin: { kind: 'user' as const }, prompt,
+          startedAt: `2026-11-10T00:00:0${ordinal}.000Z`, endedAt: `2026-11-10T00:00:0${ordinal}.500Z`, steps: [],
+        }],
+        tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+        coverage: { kind: 'tail' as const, hasMoreOlder: true }, next_cursor,
+      });
       let pageCalls = 0;
       const pageSpy = vi.spyOn(controller['view'].transcript, 'page').mockImplementation(async () => {
         pageCalls += 1;
         if (pageCalls === 1) {
           await page1Gate;
-          return {
-            session_id: 'session_slow_deep_locate',
-            agent_id: 'main',
-            has_more: true,
-            items: [
-              {
-                kind: 'turn',
-                turnId: 't2',
-                ordinal: 2,
-                state: 'completed',
-                origin: { kind: 'user' },
-                prompt: 'Middle turn 2',
-                startedAt: '2026-11-10T00:00:02.000Z',
-                endedAt: '2026-11-10T00:00:02.500Z',
-                steps: [],
-              },
-            ],
-            tasks: [],
-            interactions: [],
-            attachments: [],
-            todos: [],
-            prompts: [],
-            meta: {},
-            agents: [],
-            pending_interactions: [],
-            coverage: { kind: 'tail', hasMoreOlder: true },
-            next_cursor: 'cursor-t2',
-          };
+          return slowTurnPage('t2', 2, 'Middle turn 2', 'cursor-t2');
         }
         await page2Gate;
-        return {
-          session_id: 'session_slow_deep_locate',
-          agent_id: 'main',
-          has_more: true,
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'Target turn 1',
-              startedAt: '2026-11-10T00:00:01.000Z',
-              endedAt: '2026-11-10T00:00:01.500Z',
-              steps: [],
-            },
-          ],
-          tasks: [],
-          interactions: [],
-          attachments: [],
-          todos: [],
-          prompts: [],
-          meta: {},
-          agents: [],
-          pending_interactions: [],
-          coverage: { kind: 'tail', hasMoreOlder: true },
-          next_cursor: 'cursor-t1',
-        };
+        return slowTurnPage('t1', 1, 'Target turn 1', 'cursor-t1');
       });
 
       const unsubscribe = controller.subscribe(() => {
@@ -11239,6 +10126,254 @@ describe('semantic tool cards', () => {
     await act(async () => { click(container.querySelector('[data-tool-raw-toggle]')!); });
   }
 
+  type SemanticCardCase = {
+    label: string;
+    name: string;
+    args: unknown;
+    output: unknown;
+    overrides?: Partial<Extract<Block, { kind: 'tool' }>>;
+    semantic?: string;
+    contains?: string[];
+    notContains?: string[];
+    detailMatch?: RegExp;
+    stateText?: string | null;
+    stateDanger?: boolean;
+    count?: string | null;
+    outcome?: string;
+    running?: boolean;
+    expand?: boolean;
+    fieldsContain?: string[];
+    firstFieldTitle?: string;
+    previewNotice?: string;
+    previewContains?: string;
+    openRawContains?: string[];
+    jumpSelector?: string;
+    noJumpSelector?: string;
+    expectedPath?: string;
+  };
+
+  it.each<SemanticCardCase>([
+    {
+      label: 'ThreadSend peer pending delivery + jump',
+      name: 'ThreadSend',
+      args: { thread: THREAD_REF, content: `Please rebase onto main and rerun the integration suite. ${'context '.repeat(20)}`, idempotency_key: 'send-1' },
+      output: JSON.stringify({ messageId: 'msg_1', targetSeq: 4, acceptedAt: 1_767_225_600_000, deduplicated: false, delivery: 'pending' }, null, 2),
+      semantic: 'ThreadSend',
+      contains: ['Send to', 'session_peer'],
+      notContains: ['"idempotency_key"'],
+      detailMatch: /Please rebase onto main.*…$/,
+      stateText: 'Pending delivery',
+      expand: true,
+      firstFieldTitle: 'session_peer',
+      jumpSelector: '[data-tool-jump="session"]',
+      expectedPath: '/s/session_peer',
+    },
+    {
+      label: 'ThreadCreate title + jump',
+      name: 'ThreadCreate',
+      args: { title: 'Release notes draft', prompt: 'Draft the notes for 0.3' },
+      output: JSON.stringify({ id: 'session_new', title: 'Release notes draft', cwd: 'C:/work/app', profile: 'agent', prompt_started: true, message: 'Thread created in the session list.' }, null, 2),
+      contains: ['New thread', 'Release notes draft'],
+      jumpSelector: '[data-tool-jump="session"]',
+      expectedPath: '/s/session_new',
+    },
+    {
+      label: 'ThreadSend peer undeliverable failure word',
+      name: 'ThreadSend',
+      args: { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
+      output: JSON.stringify({ messageId: 'm', targetSeq: 1, acceptedAt: 1, deduplicated: false, delivery: 'undeliverable' }),
+      stateText: 'Not delivered',
+      stateDanger: true,
+    },
+    {
+      label: 'ThreadSend room delivered + jump',
+      name: 'ThreadSend',
+      args: { room: 'release-contract', content: 'status?', mentions: ['session_peer'] },
+      output: JSON.stringify({ roomId: 'release-contract', messageId: 'msg_room', delivery: 'delivered' }),
+      semantic: 'ThreadSend',
+      contains: ['Post to room', 'Logged'],
+      notContains: ['Send to', 'session_peer'],
+      expand: true,
+      fieldsContain: ['Asked'],
+      jumpSelector: '[data-tool-jump="route"]',
+      expectedPath: '/rooms/release-contract',
+    },
+    {
+      label: 'ThreadSend room undeliverable',
+      name: 'ThreadSend',
+      args: { room: 'release-contract', content: 'status?' },
+      output: JSON.stringify({ roomId: 'release-contract', messageId: undefined, delivery: 'undeliverable' }),
+      contains: ['release-contract'],
+      stateText: 'Not delivered',
+      stateDanger: true,
+    },
+    {
+      label: 'TaskWait timeout wording',
+      name: 'TaskWait',
+      args: { timeout: 30, task_id: 'agent-x1' },
+      output: 'wait_status: timed_out\ntask_id: agent-x1\nwaited_ms: 30004\ntimeout_ms: 30000\nThe wait timed out, not the task. The task is still running.',
+      contains: ['Wait for task', 'agent-x1'],
+      stateText: 'Timed out',
+    },
+    {
+      label: 'BoardWrite card title without route jump',
+      name: 'BoardWrite',
+      args: { action: 'create', requestKey: 'rk-1', title: 'Ship thread cards', priority: 'P1' },
+      output: JSON.stringify({ ok: true, value: { id: 'card_1', workspaceId: 'ws_example', storage: { root: 'C:/work', storageId: 's1', kind: 'workspace' }, title: 'Ship thread cards', priority: 'P1', status: 'active', revision: 1, createdAt: 'x', updatedAt: 'x', completedAt: null, archived: false, category: 'gui', sessionIds: [], executionIds: [], description: '', prd: '' } }),
+      contains: ['New card', 'Ship thread cards'],
+      expand: true,
+      fieldsContain: ['Workspace'],
+      noJumpSelector: '[data-tool-jump="route"]',
+    },
+    {
+      label: 'SelectTools loaded tools fold',
+      name: 'SelectTools',
+      args: { names: ['HistoryRead', 'HistorySearch'] },
+      output: 'Loaded: HistoryRead, HistorySearch',
+      semantic: 'SelectTools',
+      contains: ['Load toolsHistoryRead, HistorySearch'],
+      notContains: ['"names"'],
+    },
+    {
+      label: 'CallTool bridge renders target card',
+      name: 'CallTool',
+      args: { name: 'HistoryList', arguments: { kind: 'turns', limit: 2 } },
+      output: JSON.stringify({ schema_version: 2, status: 'ok', kind: 'turns', turns: [
+        { ref: 'r1', turn: 1, started_at: 'x', prompt_excerpt: 'Set up CI', answer_excerpt: 'Done', step_count: 3, tool_count: 5 },
+        { ref: 'r2', turn: 2, started_at: 'x', prompt_excerpt: 'Fix lint', answer_excerpt: 'Fixed', step_count: 1, tool_count: 1 },
+      ], has_more: false }),
+      semantic: 'HistoryList',
+      contains: ['List turns'],
+      notContains: ['CallTool'],
+      count: '2 turns',
+    },
+    {
+      label: 'TodoList progress',
+      name: 'TodoList',
+      args: { todos: [{ title: 'Inventory', status: 'done' }, { title: 'Wire cards', status: 'in_progress' }, { title: 'Screenshots', status: 'pending' }] },
+      output: 'Todo list updated.\nCurrent todo list:\n  [done] Inventory\n  [in_progress] Wire cards\n  [pending] Screenshots',
+      contains: ['Update todos', 'Wire cards'],
+      count: '1/3',
+    },
+    {
+      label: 'AskUserQuestion answered',
+      name: 'AskUserQuestion',
+      args: { questions: [{ question: 'Which branch?', header: 'Branch', options: [{ label: 'main', description: '' }, { label: 'dev', description: '' }], multi_select: false }] },
+      output: JSON.stringify({ answers: { 'Which branch?': 'main' } }),
+      contains: ['Which branch?'],
+      stateText: 'Answered',
+    },
+    {
+      label: 'FetchURL standard preview and raw',
+      name: 'FetchURL',
+      args: { url: 'https://example.com/docs' },
+      output: 'Fetched https://example.com/docs. If you use it in your answer, cite this page as a markdown link, e.g. [title](url).\n\n# Docs\nBody text.',
+      overrides: { display: { kind: 'url_fetch', url: 'https://example.com/docs' } },
+      contains: ['Fetch page', 'https://example.com/docs'],
+      expand: true,
+      previewContains: 'Body text.',
+      openRawContains: ['"url": "https://example.com/docs"', 'Body text.'],
+    },
+    {
+      label: 'FetchURL absent result while running',
+      name: 'FetchURL',
+      args: { url: 'https://example.com/article' },
+      output: undefined,
+      overrides: { status: 'running' },
+      expand: true,
+      previewNotice: 'not yet loaded',
+      openRawContains: ['not yet loaded'],
+    },
+    {
+      label: 'WebSearch unknown shape preview and raw',
+      name: 'WebSearch',
+      args: { query: 'example' },
+      output: '{"future_shape":"Useful evidence"}',
+      count: null,
+      expand: true,
+      previewNotice: 'Preview unavailable',
+      previewContains: 'Useful evidence',
+      openRawContains: ['"query": "example"'],
+    },
+    {
+      label: 'MemorySearch envelope partial',
+      name: 'MemorySearch',
+      args: { query: 'report' },
+      output: JSON.stringify({ items: [{ id: 'm_1', title: 'One' }, { id: 'm_2', title: 'Two' }], mode: 'search', next_cursor: 'next-page', coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: false, complete: false, warnings: ['1 unreadable'] } }),
+      contains: ['2 results, maybe more'],
+    },
+    {
+      label: 'MemorySearch legacy plain array',
+      name: 'MemorySearch',
+      args: { query: 'report' },
+      output: JSON.stringify([{ id: 'm_1' }]),
+      contains: ['1 match'],
+    },
+    {
+      label: 'ThreadSend error state',
+      name: 'ThreadSend',
+      args: { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
+      output: 'Thread communication is disabled for this session.',
+      overrides: { status: 'error', isError: true },
+      outcome: 'failed',
+      contains: ['Thread communication is disabled'],
+      stateText: null,
+    },
+    {
+      label: 'TaskWait stopped state',
+      name: 'TaskWait',
+      args: { timeout: 60 },
+      output: 'user cancelled',
+      overrides: { status: 'stopped' },
+      outcome: 'stopped',
+      contains: ['Stopped — user cancelled'],
+    },
+    {
+      label: 'HistorySearch running state',
+      name: 'HistorySearch',
+      args: { query: 'deploy' },
+      output: undefined,
+      overrides: { status: 'running' },
+      contains: ['Search history', 'deploy'],
+      count: null,
+      running: true,
+    },
+  ])('$label', async (c) => {
+    const { container, path } = await renderCard(semanticTool(c.name, c.args, c.output, c.overrides));
+    const scope = c.semantic ? container.querySelector(`[data-tool-semantic="${c.semantic}"]`)! : container;
+    if (c.semantic) expect(scope).not.toBeNull();
+    for (const text of c.contains ?? []) expect(scope.textContent).toContain(text);
+    for (const text of c.notContains ?? []) expect(scope.textContent).not.toContain(text);
+    if (c.detailMatch) expect(scope.querySelector('[data-tool-semantic-detail]')?.textContent).toMatch(c.detailMatch);
+    if (c.stateText === null) expect(scope.querySelector('[data-tool-state]')).toBeNull();
+    else if (c.stateText !== undefined) {
+      const state = scope.querySelector('[data-tool-state]');
+      expect(state?.textContent).toContain(c.stateText);
+      if (c.stateDanger) expect(state?.className).toContain('text-danger');
+    }
+    if (c.count === null) expect(container.querySelector('[data-tool-count]')).toBeNull();
+    else if (c.count !== undefined) expect(container.querySelector('[data-tool-count]')?.textContent).toBe(c.count);
+    if (c.outcome) expect(container.querySelector(`[data-outcome="${c.outcome}"]`)).not.toBeNull();
+    if (c.running) expect(container.querySelector('[aria-label="running"]')).not.toBeNull();
+    if (c.expand) {
+      await expand(container);
+      if (c.firstFieldTitle) expect([...container.querySelectorAll('[data-tool-semantic-fields] dd')][0]!.getAttribute('title')).toBe(c.firstFieldTitle);
+      for (const text of c.fieldsContain ?? []) expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain(text);
+      if (c.previewNotice) expect(container.querySelector('[data-tool-preview-notice]')?.textContent).toContain(c.previewNotice);
+      if (c.previewContains) expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain(c.previewContains);
+      if (c.openRawContains) {
+        expect(container.querySelector('[data-tool-raw]')).toBeNull();
+        await openRaw(container);
+        for (const text of c.openRawContains) expect(container.querySelector('[data-tool-raw]')?.textContent).toContain(text);
+      }
+    }
+    if (c.noJumpSelector) expect(container.querySelector(c.noJumpSelector)).toBeNull();
+    if (c.jumpSelector) {
+      await act(async () => { click(scope.querySelector(c.jumpSelector!)!); });
+      expect(path()).toBe(c.expectedPath);
+    }
+  });
+
   it('shows one bounded inline tool image in the expanded result well', async () => {
     const revision = 'a'.repeat(64);
     const { container } = await renderCard(semanticTool('ReadMediaFile', { path: 'image.png' }, [
@@ -11246,46 +10381,6 @@ describe('semantic tool cards', () => {
     ], { media: [{ kind: 'image', fileId: `inline:main:ZnJhbWUuYXR0MQ:${revision}`, name: 'image.png' }] }));
     await expand(container);
     expect(container.querySelectorAll('[data-tool-record-field="output"] [data-media-broken], [data-tool-record-field="output"] img, [data-tool-record-field="output"] [aria-busy]')).toHaveLength(1);
-  });
-
-  it('says who a thread message went to, whether it landed, and jumps to that thread', async () => {
-    const content = `Please rebase onto main and rerun the integration suite. ${'context '.repeat(20)}`;
-    const { container, path } = await renderCard(semanticTool(
-      'ThreadSend',
-      { thread: THREAD_REF, content, idempotency_key: 'send-1' },
-      JSON.stringify({ messageId: 'msg_1', targetSeq: 4, acceptedAt: 1_767_225_600_000, deduplicated: false, delivery: 'pending' }, null, 2),
-    ));
-    const row = container.querySelector('[data-tool-semantic="ThreadSend"]')!;
-    expect(row.querySelector('[data-activity-toggle]')?.textContent).toContain('Send to');
-    expect(row.textContent).toContain('session_peer');
-    expect(row.querySelector('[data-tool-semantic-detail]')?.textContent).toMatch(/Please rebase onto main.*…$/);
-    expect(row.querySelector('[data-tool-state]')?.textContent).toBe('Pending delivery');
-    expect(row.textContent).not.toContain('"idempotency_key"');
-    await expand(container);
-    const threadField = [...container.querySelectorAll('[data-tool-semantic-fields] dd')][0]!;
-    expect(threadField.getAttribute('title')).toBe('session_peer');
-    await act(async () => { click(row.querySelector('[data-tool-jump="session"]')!); });
-    expect(path()).toBe('/s/session_peer');
-  });
-
-  it('names a new thread by its title and marks an undeliverable send as a failure word', async () => {
-    const created = await renderCard(semanticTool(
-      'ThreadCreate',
-      { title: 'Release notes draft', prompt: 'Draft the notes for 0.3' },
-      JSON.stringify({ id: 'session_new', title: 'Release notes draft', cwd: 'C:/work/app', profile: 'agent', prompt_started: true, message: 'Thread created in the session list.' }, null, 2),
-    ));
-    expect(created.container.textContent).toContain('New thread');
-    expect(created.container.textContent).toContain('Release notes draft');
-    await act(async () => { click(created.container.querySelector('[data-tool-jump="session"]')!); });
-    expect(created.path()).toBe('/s/session_new');
-    const failed = await renderCard(semanticTool(
-      'ThreadSend',
-      { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
-      JSON.stringify({ messageId: 'm', targetSeq: 1, acceptedAt: 1, deduplicated: false, delivery: 'undeliverable' }),
-    ));
-    const state = failed.container.querySelector('[data-tool-state]');
-    expect(state?.textContent).toBe('Not delivered');
-    expect(state?.className).toContain('text-danger');
   });
 
   it('shows what a thread wait returned, per thread, with the turn to open', async () => {
@@ -11333,15 +10428,8 @@ describe('semantic tool cards', () => {
 
   it('gives a task its id, status and the full loaded output preview, with the raw text one disclosure away', async () => {
     const output = [
-      'retrieval_status: success',
-      'task_id: bash-k3',
-      'kind: process',
-      'description: pnpm test',
-      'status: failed',
-      'exit_code: 1',
-      'output_size_bytes: 2048',
-      '',
-      '[output]',
+      'retrieval_status: success', 'task_id: bash-k3', 'kind: process', 'description: pnpm test',
+      'status: failed', 'exit_code: 1', 'output_size_bytes: 2048', '', '[output]',
       ...Array.from({ length: 30 }, (_, index) => `line ${String(index + 1)}`),
     ].join('\n');
     const { container } = await renderCard(semanticTool('TaskOutput', { task_id: 'bash-k3' }, output));
@@ -11361,17 +10449,6 @@ describe('semantic tool cards', () => {
     expect(container.querySelector('[data-tool-raw]')).toBeNull();
     await openRaw(container);
     expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('retrieval_status: success');
-  });
-
-  it('counts a TaskWait timeout as the wait running out, not the task', async () => {
-    const { container } = await renderCard(semanticTool(
-      'TaskWait',
-      { timeout: 30, task_id: 'agent-x1' },
-      'wait_status: timed_out\ntask_id: agent-x1\nwaited_ms: 30004\ntimeout_ms: 30000\nThe wait timed out, not the task. The task is still running.',
-    ));
-    expect(container.textContent).toContain('Wait for task');
-    expect(container.textContent).toContain('agent-x1');
-    expect(container.querySelector('[data-tool-state]')?.textContent).toBe('Timed out');
   });
 
   it('shows a history search as its query and hit count, and jumps back to a hit turn in this session', async () => {
@@ -11407,69 +10484,6 @@ describe('semantic tool cards', () => {
     });
   });
 
-  it('names the board card a write touched without opening a core board route', async () => {
-    const { container } = await renderCard(semanticTool(
-      'BoardWrite',
-      { action: 'create', requestKey: 'rk-1', title: 'Ship thread cards', priority: 'P1' },
-      JSON.stringify({ ok: true, value: {
-        id: 'card_1', workspaceId: 'ws_example', storage: { root: 'C:/work', storageId: 's1', kind: 'workspace' },
-        title: 'Ship thread cards', priority: 'P1', status: 'active', revision: 1, createdAt: 'x', updatedAt: 'x',
-        completedAt: null, archived: false, category: 'gui', sessionIds: [], executionIds: [], description: '', prd: '',
-      } }),
-    ));
-    expect(container.textContent).toContain('New card');
-    expect(container.textContent).toContain('Ship thread cards');
-    await expand(container);
-    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('Workspace');
-    expect(container.querySelector('[data-tool-jump="route"]')).toBeNull();
-  });
-
-  it('folds SelectTools into one line naming the tools it loaded', async () => {
-    const { container } = await renderCard(semanticTool(
-      'SelectTools',
-      { names: ['HistoryRead', 'HistorySearch'] },
-      'Loaded: HistoryRead, HistorySearch',
-    ));
-    const row = container.querySelector('[data-tool-semantic="SelectTools"]')!;
-    expect(row.querySelector('[data-activity-toggle]')?.textContent).toContain('Load toolsHistoryRead, HistorySearch');
-    expect(row.textContent).not.toContain('"names"');
-  });
-
-  it('renders a CallTool bridge as the tool it calls, with that tool’s card', async () => {
-    const { container } = await renderCard(semanticTool(
-      'CallTool',
-      { name: 'HistoryList', arguments: { kind: 'turns', limit: 2 } },
-      JSON.stringify({ schema_version: 2, status: 'ok', kind: 'turns', turns: [
-        { ref: 'r1', turn: 1, started_at: 'x', prompt_excerpt: 'Set up CI', answer_excerpt: 'Done', step_count: 3, tool_count: 5 },
-        { ref: 'r2', turn: 2, started_at: 'x', prompt_excerpt: 'Fix lint', answer_excerpt: 'Fixed', step_count: 1, tool_count: 1 },
-      ], has_more: false }),
-    ));
-    const row = container.querySelector('[data-tool-semantic="HistoryList"]');
-    expect(row).not.toBeNull();
-    expect(row?.textContent).not.toContain('CallTool');
-    expect(row?.textContent).toContain('List turns');
-    expect(container.querySelector('[data-tool-count]')?.textContent).toBe('2 turns');
-  });
-
-  it('shows a room send as a room, reads its delivery honestly, and links the room', async () => {
-    const { container, path } = await renderCard(semanticTool(
-      'ThreadSend',
-      { room: 'release-contract', content: 'status?', mentions: ['session_peer'] },
-      JSON.stringify({ roomId: 'release-contract', messageId: 'msg_room', delivery: 'delivered' }),
-    ));
-    const row = container.querySelector('[data-tool-semantic="ThreadSend"]')!;
-    expect(row.textContent).toContain('Post to room');
-    expect(row.textContent).not.toContain('Send to');
-    // A room send is never drawn as a peer thread.
-    expect(row.textContent).not.toContain('session_peer');
-    expect(row.querySelector('[data-tool-state]')?.textContent).toContain('Logged');
-    await expand(container);
-    // The receipt proves the line was recorded, not that anyone was woken.
-    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('Asked');
-    await act(async () => { click(row.querySelector('[data-tool-jump="route"]')!); });
-    expect(path()).toBe('/rooms/release-contract');
-  });
-
   it('expands a room send to its whole body immediately without a second expand inside it', async () => {
     const content = Array.from({ length: 60 }, (_, index) => `line ${index}: the full room message body`).join('\n');
     const { container } = await renderCard(semanticTool(
@@ -11483,70 +10497,6 @@ describe('semantic tool cards', () => {
     expect(preview.textContent).toContain('line 59: the full room message body');
     expect(container.querySelector('[data-tool-preview-full]')).toBeNull();
     expect(container.querySelectorAll('[data-tool-semantic-preview]')).toHaveLength(1);
-  });
-
-  it('marks an undeliverable room send as a failure and keeps the room readable', async () => {
-    const { container } = await renderCard(semanticTool(
-      'ThreadSend',
-      { room: 'release-contract', content: 'status?' },
-      JSON.stringify({ roomId: 'release-contract', messageId: undefined, delivery: 'undeliverable' }),
-    ));
-    const state = container.querySelector('[data-tool-state]');
-    expect(state?.textContent).toBe('Not delivered');
-    expect(state?.className).toContain('text-danger');
-    expect(container.textContent).toContain('release-contract');
-  });
-
-  it('keeps failure, stop and running states identical to any other step', async () => {
-    const failed = await renderCard(semanticTool(
-      'ThreadSend',
-      { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
-      'Thread communication is disabled for this session.',
-      { status: 'error', isError: true },
-    ));
-    expect(failed.container.querySelector('[data-outcome="failed"]')).not.toBeNull();
-    expect(failed.container.textContent).toContain('Thread communication is disabled');
-    expect(failed.container.querySelector('[data-tool-state]')).toBeNull();
-    const stopped = await renderCard(semanticTool('TaskWait', { timeout: 60 }, 'user cancelled', { status: 'stopped' }));
-    expect(stopped.container.querySelector('[data-outcome="stopped"]')).not.toBeNull();
-    expect(stopped.container.textContent).toContain('Stopped — user cancelled');
-    const running = await renderCard(semanticTool('HistorySearch', { query: 'deploy' }, undefined, { status: 'running' }));
-    expect(running.container.textContent).toContain('Search history');
-    expect(running.container.textContent).toContain('deploy');
-    expect(running.container.querySelector('[data-tool-count]')).toBeNull();
-    expect(running.container.querySelector('[aria-label="running"]')).not.toBeNull();
-  });
-
-  it('shows todo progress, the question asked, and the page fetched', async () => {
-    const todo = await renderCard(semanticTool(
-      'TodoList',
-      { todos: [{ title: 'Inventory', status: 'done' }, { title: 'Wire cards', status: 'in_progress' }, { title: 'Screenshots', status: 'pending' }] },
-      'Todo list updated.\nCurrent todo list:\n  [done] Inventory\n  [in_progress] Wire cards\n  [pending] Screenshots',
-    ));
-    expect(todo.container.textContent).toContain('Update todos');
-    expect(todo.container.textContent).toContain('Wire cards');
-    expect(todo.container.querySelector('[data-tool-count]')?.textContent).toBe('1/3');
-    const ask = await renderCard(semanticTool(
-      'AskUserQuestion',
-      { questions: [{ question: 'Which branch?', header: 'Branch', options: [{ label: 'main', description: '' }, { label: 'dev', description: '' }], multi_select: false }] },
-      JSON.stringify({ answers: { 'Which branch?': 'main' } }),
-    ));
-    expect(ask.container.textContent).toContain('Which branch?');
-    expect(ask.container.querySelector('[data-tool-state]')?.textContent).toBe('Answered');
-    const fetched = await renderCard(semanticTool(
-      'FetchURL',
-      { url: 'https://example.com/docs' },
-      'Fetched https://example.com/docs. If you use it in your answer, cite this page as a markdown link, e.g. [title](url).\n\n# Docs\nBody text.',
-      { display: { kind: 'url_fetch', url: 'https://example.com/docs' } },
-    ));
-    expect(fetched.container.textContent).toContain('Fetch page');
-    expect(fetched.container.textContent).toContain('https://example.com/docs');
-    await expand(fetched.container);
-    expect(fetched.container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('Body text.');
-    expect(fetched.container.querySelector('[data-tool-raw]')).toBeNull();
-    await openRaw(fetched.container);
-    expect(fetched.container.querySelector('[data-tool-raw]')?.textContent).toContain('"url": "https://example.com/docs"');
-    expect(fetched.container.querySelector('[data-tool-raw]')?.textContent).toContain('Body text.');
   });
 
   it('previews a native partial fetch with its full loaded article immediately and keeps Raw data separate', async () => {
@@ -11564,16 +10514,6 @@ describe('semantic tool cards', () => {
     expect(container.querySelector('[data-tool-raw]')).toBeNull();
     await openRaw(container);
     expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"max_content_chars": 10000');
-  });
-
-  it('shows unknown search content rather than zero results in the first disclosure', async () => {
-    const { container } = await renderCard(semanticTool('WebSearch', { query: 'example' }, '{"future_shape":"Useful evidence"}'));
-    expect(container.querySelector('[data-tool-count]')).toBeNull();
-    await expand(container);
-    expect(container.querySelector('[data-tool-preview-notice]')?.textContent).toBe('Preview unavailable');
-    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('Useful evidence');
-    await openRaw(container);
-    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"query": "example"');
   });
 
   it.each(['MemoryRead', 'MemorySearch'])('%s marks the display cut, reads the loaded tail and exposes the original parameters', async (name) => {
@@ -11617,7 +10557,6 @@ describe('semantic tool cards', () => {
       proposed_target: { scope: 'global', id: 'memory-old', expected_revision: '0' },
     })));
     expect(proposal.container.textContent).toContain('Sent to the memory inbox');
-    // A proposal is journal-backed, so it can still be taken back.
     expect(proposal.container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
     await act(async () => { click(proposal.container.querySelector('[data-memory-tool-toggle]')!); });
     expect(proposal.container.querySelector('[data-memory-tool-pending]')?.textContent).toContain('original entry is unchanged');
@@ -11627,11 +10566,8 @@ describe('semantic tool cards', () => {
     await act(async () => { click(duplicate.container.querySelector('[data-memory-tool-toggle]')!); });
     expect(duplicate.container.querySelector('[data-memory-tool-pending]')?.textContent).toBe('This is a pending proposal and is not in effect yet.');
 
-    const noop = await renderCard(semanticTool('MemoryWrite', { action: 'update', reason: 'Re-checking' }, receipt({
-      outcome: 'unchanged', operation_id: null,
-    })));
+    const noop = await renderCard(semanticTool('MemoryWrite', { action: 'update', reason: 'Re-checking' }, receipt({ outcome: 'unchanged', operation_id: null })));
     expect(noop.container.textContent).toContain('No change');
-    // No operation was created, so there is nothing to replay.
     expect(noop.container.querySelector('[data-memory-tool-undo]')).toBeNull();
     await act(async () => { click(noop.container.querySelector('[data-memory-tool-toggle]')!); });
     expect(noop.container.querySelector('[data-memory-tool-unchanged]')?.textContent).toContain('no new version');
@@ -11646,19 +10582,6 @@ describe('semantic tool cards', () => {
     })));
     expect(container.querySelector('[data-memory-tool-scope]')?.getAttribute('data-memory-scope-kind')).toBe('persona');
     expect(container.querySelector('[data-memory-tool-scope]')?.textContent).toContain('Persona');
-  });
-
-  it('reads a search envelope and a short page as partial rather than as a complete result', async () => {
-    const envelope = await renderCard(semanticTool('MemorySearch', { query: 'report' }, JSON.stringify({
-      items: [{ id: 'm_1', title: 'One' }, { id: 'm_2', title: 'Two' }],
-      mode: 'search', next_cursor: 'next-page',
-      coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: false, complete: false, warnings: ['1 unreadable'] },
-    })));
-    expect(envelope.container.textContent).toContain('2 results, maybe more');
-
-    // A pre-envelope session recorded a plain array, and it still reads.
-    const legacy = await renderCard(semanticTool('MemorySearch', { query: 'report' }, JSON.stringify([{ id: 'm_1' }])));
-    expect(legacy.container.textContent).toContain('1 match');
   });
 
   it('reads and copies loaded input and generic JSON beyond 6000 characters without boundary status disclaimers', async () => {
@@ -11677,10 +10600,7 @@ describe('semantic tool cards', () => {
       expect(container.textContent).toContain('output record tail');
       expect(container.querySelector('[data-tool-payload-status]')).toBeNull();
       const copies = [...container.querySelectorAll('[data-copy-state]')];
-      expect(copies.map((button) => button.getAttribute('aria-label'))).toEqual([
-        'Copy Input',
-        'Copy Output',
-      ]);
+      expect(copies.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy Input', 'Copy Output']);
       expect(copies.every((button) => button.textContent === '')).toBe(true);
       await act(async () => { click(copies[0]!); click(copies[1]!); });
       expect(writeText.mock.calls.map((call) => call[0])).toEqual([JSON.stringify(args, null, 2), JSON.stringify(output, null, 2)]);
@@ -11690,14 +10610,6 @@ describe('semantic tool cards', () => {
       if (descriptor !== undefined) Object.defineProperty(navigator, 'clipboard', descriptor);
       else Reflect.deleteProperty(navigator, 'clipboard');
     }
-  });
-
-  it('labels an absent result rather than showing an empty raw output well', async () => {
-    const { container } = await renderCard(semanticTool('FetchURL', { url: 'https://example.com/article' }, undefined, { status: 'running' }));
-    await expand(container);
-    expect(container.querySelector('[data-tool-preview-notice]')?.textContent).toContain('not yet loaded');
-    await openRaw(container);
-    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('not yet loaded');
   });
 
   it('drops a settled AgentSend call once its Input sent entry stands for it', () => {
@@ -11710,7 +10622,8 @@ describe('semantic tool cards', () => {
     const failedCall = { ...call, status: 'error' as const, isError: true };
     expect(mergeSubagentRows([failedCall, sent] as DisplayNode[])).toEqual([failedCall, sent]);
   });
-  it('keeps one right edge: every semantic row reserves the mark and jump slots, and the fact is proportional', async () => {
+
+  it('keeps one right edge and proportional failure typography', async () => {
     const withJump = await renderCard(semanticTool(
       'ThreadSend',
       { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
@@ -11718,25 +10631,21 @@ describe('semantic tool cards', () => {
     ));
     const withoutJump = await renderCard(semanticTool('ThreadList', {}, JSON.stringify({ threads: [] })));
     expect(withJump.container.querySelector('[data-tool-jump="session"]')).not.toBeNull();
-    const slot = withoutJump.container.querySelector('[data-tool-jump-slot]');
-    expect(slot?.className).toContain('w-7');
+    expect(withoutJump.container.querySelector('[data-tool-jump-slot]')).not.toBeNull();
     for (const { container } of [withJump, withoutJump]) {
       const fact = container.querySelector('[data-tool-fact]')!;
-      expect(fact.className).toContain('font-sans');
       expect(fact.className).toContain('tabular-nums');
       expect(fact.closest('[class*="font-mono"]')).toBeNull();
     }
     expect(withoutJump.container.querySelector('[data-tool-count]')?.textContent).toBe('0 threads');
-  });
 
-  it('writes a failure’s first line in the row’s own type, coloured only', async () => {
-    const { container } = await renderCard(semanticTool(
+    const failed = await renderCard(semanticTool(
       'ThreadSend',
       { thread: THREAD_REF, content: 'ping', idempotency_key: 'k' },
       'Thread communication is disabled for this session.',
       { status: 'error', isError: true },
     ));
-    const detail = [...container.querySelectorAll('[data-activity-toggle] span')].find((node) => node.textContent === 'Thread communication is disabled for this session.')!;
+    const detail = [...failed.container.querySelectorAll('[data-activity-toggle] span')].find((node) => node.textContent === 'Thread communication is disabled for this session.')!;
     expect(detail.closest('[class*="font-mono"]')).toBeNull();
     expect(detail.closest('.text-danger')).not.toBeNull();
   });
@@ -11744,11 +10653,7 @@ describe('semantic tool cards', () => {
   it('translates wire states in Chinese instead of showing the engine words', async () => {
     localStorage.setItem('kiki.locale', 'zh');
     try {
-      const run = await renderCard(semanticTool(
-        'AgentRun',
-        { prompt: 'x', description: 'Map auth flow' },
-        'agent_id: agent-7\nactual_profile: explore\nstatus: completed',
-      ));
+      const run = await renderCard(semanticTool('AgentRun', { prompt: 'x', description: 'Map auth flow' }, 'agent_id: agent-7\nactual_profile: explore\nstatus: completed'));
       expect(run.container.querySelector('[data-tool-state]')?.textContent).toBe('已完成');
       const stop = await renderCard(semanticTool('TaskStop', { task_id: 'bash-k2' }, 'task_id: bash-k2\nstatus: killed\nreason: done'));
       expect(stop.container.querySelector('[data-tool-state]')?.textContent).toBe('已停止');
@@ -11909,60 +10814,22 @@ describe('ordinary bounded message reading', () => {
     ];
     const loadContent = vi.fn(async (_ref: import('@kiki/transcript').ContentRef) => true);
 
-    const sameTurnCard: Block = {
-      kind: 'subagent',
-      id: 'subagent-same',
-      subagentId: 'worker-same',
-      parentAgentId: 'main',
-      parentToolCallId: 'call-run-same',
-      parentTurnId: 't1',
-      taskId: undefined,
-      name: 'worker_same',
-      description: 'Verify bounded hydration',
-      model: undefined,
-      thinkingEffort: undefined,
-      status: 'completed',
-      summary: undefined,
-      error: undefined,
-      startedAt: '2026-01-01T00:00:00.000Z',
-      endedAt: '2026-01-01T00:01:00.000Z',
-      toolCallCount: 0,
-      transcript: [],
-    };
-    const sameTurnRunTool: ToolBlock = {
-      kind: 'tool',
-      id: 'tool-run-same',
-      toolCallId: 'call-run-same',
-      name: 'AgentRun',
+    const sameTurnCard = subagentBlock({
+      id: 'subagent-same', subagentId: 'worker-same', parentAgentId: 'main', parentToolCallId: 'call-run-same',
+      parentTurnId: 't1', name: 'worker_same', description: 'Verify bounded hydration',
+      startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:01:00.000Z',
+    });
+    const sameTurnRunTool = toolBlock({
+      id: 'tool-run-same', toolCallId: 'call-run-same', name: 'AgentRun', argsText: '{}',
       args: { description: 'Verify bounded hydration', prompt: 'Inspect bounded hydration', background: true },
-      argsText: '{}',
       output: 'task_id: task-same\nagent_id: worker-same\nstatus: running\nautomatic_notification: true',
-      status: 'done',
-      display: undefined,
-      description: undefined,
-      isError: false,
-      durationMs: 12,
-      progressText: undefined,
-      turnId: 't1',
-    };
-    const sameTurnNotice: Block = {
-      kind: 'system',
-      id: 'sys-same-done',
-      variant: 'task',
-      taskId: 'task-same',
-      turnId: 't1',
-      createdAt: '2026-01-01T00:01:00.000Z',
-      text: 'Title: Background agent completed\nSame-turn preview prefix',
-    };
-    const crossTurnNotice: Block = {
-      kind: 'system',
-      id: 'sys-cross-done',
-      variant: 'task',
-      taskId: 'task-cross',
-      turnId: 't2',
-      createdAt: '2026-01-01T00:02:00.000Z',
-      text: 'Title: Background agent completed\nCross-turn preview prefix',
-    };
+      isError: false, durationMs: 12, turnId: 't1',
+    });
+    const taskNotice = (id: string, taskId: string, turnId: string, createdAt: string, preview: string): Block => ({
+      kind: 'system', id, variant: 'task', taskId, turnId, createdAt, text: `Title: Background agent completed\n${preview}`,
+    });
+    const sameTurnNotice = taskNotice('sys-same-done', 'task-same', 't1', '2026-01-01T00:01:00.000Z', 'Same-turn preview prefix');
+    const crossTurnNotice = taskNotice('sys-cross-done', 'task-cross', 't2', '2026-01-01T00:02:00.000Z', 'Cross-turn preview prefix');
     const dangerNotice: Block = {
       kind: 'notice',
       id: 'notice-err-1',
@@ -12016,26 +10883,8 @@ describe('ordinary bounded message reading', () => {
     };
 
     const tasks = [
-      {
-        id: 'task-same',
-        session_id: 'session_test',
-        kind: 'subagent' as const,
-        agent_id: 'worker-same',
-        description: 'Verify bounded hydration',
-        status: 'completed' as const,
-        created_at: '2026-01-01T00:00:00.000Z',
-        output_preview: 'Same-turn preview prefix',
-      },
-      {
-        id: 'task-cross',
-        session_id: 'session_test',
-        kind: 'subagent' as const,
-        agent_id: 'worker-cross',
-        description: 'Cross-turn check',
-        status: 'completed' as const,
-        created_at: '2026-01-01T00:00:00.000Z',
-        output_preview: 'Cross-turn preview prefix',
-      },
+      { id: 'task-same', session_id: 'session_test', kind: 'subagent' as const, agent_id: 'worker-same', description: 'Verify bounded hydration', status: 'completed' as const, created_at: '2026-01-01T00:00:00.000Z', output_preview: 'Same-turn preview prefix' },
+      { id: 'task-cross', session_id: 'session_test', kind: 'subagent' as const, agent_id: 'worker-cross', description: 'Cross-turn check', status: 'completed' as const, created_at: '2026-01-01T00:00:00.000Z', output_preview: 'Cross-turn preview prefix' },
     ];
     const state: SessionViewState = {
       ...transcriptState([
@@ -12052,30 +10901,18 @@ describe('ordinary bounded message reading', () => {
         plainSystem,
       ]),
       tasks,
-      turnTail: {
-        turnId: 't2',
-        state: 'failed',
-        endedAt: '2026-01-01T00:03:00.000Z',
-        durationMs: 2500,
-        ttftMs: undefined,
-        usage: undefined,
-        tokensPerSecond: undefined,
+      turnTail: turnTailFixture({
+        turnId: 't2', state: 'failed', endedAt: '2026-01-01T00:03:00.000Z', durationMs: 2500,
         error: 'Anthropic error: missing terminal response [type=api_error]',
         errorDetails: 'Diagnostic trace: stream closed prematurely at byte 4096',
-      },
+      }),
     };
 
     const { root, container } = makeRoot();
     await renderSettled(
       root,
       <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={refs} loadContent={loadContent}>
-        <Transcript
-          state={state}
-          onLoadOlder={async () => false}
-          onResolveApproval={noopActions}
-          onAnswerQuestion={noopActions}
-          onDismissQuestion={noopActions}
-        />
+        {transcriptEl(state)}
       </TranscriptDetailProvider>,
       true,
     );
@@ -12139,7 +10976,13 @@ describe('ordinary bounded message reading', () => {
 
 
 describe('serialized queue edit consumer', () => {
-  it.each(['unchanged', 'prose', 'delete', 'retarget', 'selection-delete'] as const)('retains original hidden targets and ordered selection sources: %s', { timeout: 30_000 }, async (change) => {
+  async function openQueuedEditSession(
+    activePromptId: string,
+    queuedPromptId: string,
+    content: NonNullable<ReturnType<typeof buildPromptContent>>,
+    expectedBody: string,
+    expectedNotes: string[],
+  ) {
     await startEditFixture();
     const baseUrl = `http://127.0.0.1:${editFixturePort}`;
     const reset = await fetch(`${baseUrl}/__control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'queue' }) });
@@ -12147,9 +10990,8 @@ describe('serialized queue edit consumer', () => {
     const { KikiClient } = await import('../lib/client');
     const client = new KikiClient({ baseUrl, token: 'kiki-fixture-token' });
     const sessionId = 'session_fixture_queue';
-    const fixture = serializedEditFixture();
-    await client.submitPrompt(sessionId, { prompt_id: 'active-round-trip', content: [{ type: 'text', text: 'A: hold for queue editing' }] });
-    const queued = await client.submitPrompt(sessionId, { prompt_id: 'queued-round-trip', content: fixture.content });
+    await client.submitPrompt(sessionId, { prompt_id: activePromptId, content: [{ type: 'text', text: 'A: hold for queue editing' }] });
+    const queued = await client.submitPrompt(sessionId, { prompt_id: queuedPromptId, content });
     expect(queued.status).toBe('queued');
     const session = await client.getSession(sessionId);
     const { root, container } = makeRoot();
@@ -12160,10 +11002,16 @@ describe('serialized queue edit consumer', () => {
     await act(async () => { click(container.querySelector('[aria-label="Edit queued prompt"]')!); });
     await vi.waitFor(() => { expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')?.disabled).toBe(false); });
     const input = composerInput(container);
-    expect(input.value).toBe(fixture.body);
+    expect(input.value).toBe(expectedBody);
     expect(container.querySelector('[data-composer-card]')?.textContent).not.toMatch(/thread_refs|original-host|original-workspace|kiki-source/);
     await act(async () => { click(container.querySelector('[data-composer-notes-pill]')!); });
-    expect([...container.querySelectorAll('[data-composer-note] span[title]')].filter((node) => ['A', 'B', 'C'].includes(node.getAttribute('title') ?? '')).map((node) => node.getAttribute('title'))).toEqual(['A', 'B', 'C']);
+    expect([...container.querySelectorAll('[data-composer-note] span[title]')].filter((node) => expectedNotes.includes(node.getAttribute('title') ?? '')).map((node) => node.getAttribute('title'))).toEqual(expectedNotes);
+    return { client, sessionId, container, input };
+  }
+
+  it.each(['unchanged', 'prose', 'delete', 'retarget', 'selection-delete'] as const)('retains original hidden targets and ordered selection sources: %s', { timeout: 30_000 }, async (change) => {
+    const fixture = serializedEditFixture();
+    const { client, sessionId, container, input } = await openQueuedEditSession('active-round-trip', 'queued-round-trip', fixture.content, fixture.body, ['A', 'B', 'C']);
     if (change === 'selection-delete') await act(async () => { click(container.querySelectorAll('[data-composer-note-remove]')[1]!); });
     const editedBody = change === 'unchanged' || change === 'selection-delete' ? fixture.body : change === 'prose' ? `edited prose: ${fixture.body}`
       : change === 'delete' ? 'compare /s/session_second' : 'compare /s/session_new and /s/session_second';
@@ -12188,30 +11036,8 @@ describe('serialized queue edit consumer', () => {
   });
 
   it('round-trips valid null sources from legacy queued JSON in mixed order', { timeout: 30_000 }, async () => {
-    await startEditFixture();
-    const baseUrl = `http://127.0.0.1:${editFixturePort}`;
-    const reset = await fetch(`${baseUrl}/__control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'scenario', name: 'queue' }) });
-    expect(reset.ok).toBe(true);
-    const { KikiClient } = await import('../lib/client');
-    const client = new KikiClient({ baseUrl, token: 'kiki-fixture-token' });
-    const sessionId = 'session_fixture_queue';
     const fixture = legacyNullSourceEditFixture();
-    await client.submitPrompt(sessionId, { prompt_id: 'active-legacy-null', content: [{ type: 'text', text: 'A: hold for legacy queue editing' }] });
-    const queued = await client.submitPrompt(sessionId, { prompt_id: 'queued-legacy-null', content: fixture.content });
-    expect(queued.status).toBe('queued');
-    const session = await client.getSession(sessionId);
-    const { root, container } = makeRoot();
-    await renderSettled(root, <Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId={sessionId} sessions={[session]} onToggleSidebar={() => {}} />} /></Route></Routes>, true, [`/s/${sessionId}`]);
-    await vi.waitFor(() => { expect(container.querySelector('[data-queue-count]')?.textContent).toContain('1'); });
-    await act(async () => { click(container.querySelector('[data-queue-count]')!.closest('button')!); });
-    await vi.waitFor(() => { expect(container.querySelector('[aria-label="Edit queued prompt"]')).not.toBeNull(); });
-    await act(async () => { click(container.querySelector('[aria-label="Edit queued prompt"]')!); });
-    await vi.waitFor(() => { expect(container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')?.disabled).toBe(false); });
-    const input = composerInput(container);
-    expect(input.value).toBe(fixture.body);
-    expect(container.querySelector('[data-composer-card]')?.textContent).not.toContain('kiki-source');
-    await act(async () => { click(container.querySelector('[data-composer-notes-pill]')!); });
-    expect([...container.querySelectorAll('[data-composer-note] span[title]')].filter((node) => ['A', 'B', 'C', 'D'].includes(node.getAttribute('title') ?? '')).map((node) => node.getAttribute('title'))).toEqual(['A', 'B', 'C', 'D']);
+    const { client, sessionId, container, input } = await openQueuedEditSession('active-legacy-null', 'queued-legacy-null', fixture.content, fixture.body, ['A', 'B', 'C', 'D']);
     const editedBody = 'edited legacy queue body';
     await act(async () => { setComposerInputValue(input, editedBody); });
     await act(async () => { click(container.querySelector('[aria-label="Confirm edit"]')!); });

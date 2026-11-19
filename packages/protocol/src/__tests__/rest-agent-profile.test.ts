@@ -1,26 +1,26 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  agentCapabilityReasonCodeSchema,
   agentCapabilitiesProducerResponseSchema,
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
+  agentCapabilityReasonCodeSchema,
   agentModelMenuPreviewRequestSchema,
   agentModelMenuPreviewResponseSchema,
   agentPanelProfileSchema,
   agentProfileSourceDiagnosticCodeSchema,
+  createNamedAgentProfileRequestSchema,
+  executionSelectionSchema,
   executorCheckResponseSchema,
   executorDetailResponseSchema,
   executorPromptPreviewRequestSchema,
   executorPromptPreviewResponseSchema,
-  createNamedAgentProfileRequestSchema,
-  updateNamedAgentProfileRequestSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
   namedAgentProfileSchema,
   patchConfigRequestSchema,
   previewAgentProfileFileRequestSchema,
-  executionSelectionSchema,
+  updateNamedAgentProfileRequestSchema,
 } from '../index';
 
 describe('named agent profile REST protocol', () => {
@@ -29,6 +29,7 @@ describe('named agent profile REST protocol', () => {
       .toEqual({ executor: 'native', profile_file: '/profiles/helper.md' });
     expect(executionSelectionSchema.safeParse({ executor: 'native', profile: 'helper', profile_file: '/profiles/helper.md' }).success).toBe(false);
     expect(executionSelectionSchema.safeParse({ executor: 'native', profile_file: ' ' }).success).toBe(false);
+
     for (const path of ['/profiles/helper.md', 'C:\\profiles\\helper.md', '~/profiles/helper.md']) {
       expect(previewAgentProfileFileRequestSchema.parse({ path })).toEqual({ path });
     }
@@ -36,20 +37,23 @@ describe('named agent profile REST protocol', () => {
     expect(previewAgentProfileFileRequestSchema.safeParse({ path: 'helper.md' }).success).toBe(false);
     expect(previewAgentProfileFileRequestSchema.safeParse({ path: 'helper.md', cwd: '/project', workspace_id: 'workspace' }).success).toBe(false);
   });
-  it('retains separate declarations and effective domains on named, panel and draft preview responses', () => {
-    const menu = { restrict_models_to_menu: true,
+
+  it('retains separate declarations, effective domains, and top-level menu switches', () => {
+    const menu = {
+      restrict_models_to_menu: true,
       declared_model_menu: { aliases: ['fast'], default_alias: 'premium', identities: ['provider/fast', 'provider/premium'] },
-      effective_model_aliases: [] };
+      effective_model_aliases: [],
+    };
     expect(namedAgentProfileSchema.parse({ name: 'helper', source: 'user', main: false, disabled: false, routes: [], ...menu })).toMatchObject(menu);
     expect(agentPanelProfileSchema.parse({ name: 'helper', ...menu })).toMatchObject(menu);
     const result = { ...menu, added_model_identities: ['provider/premium'], removed_model_identities: [] };
     expect(agentModelMenuPreviewResponseSchema.parse(result)).toEqual(result);
+
     const request = { workspace_id: 'workspace', draft: { pinned_model_alias: null, model_profiles: [{ alias: 'fast', thinking_effort: null }], restrict_models_to_menu: false } };
     expect(agentModelMenuPreviewRequestSchema.parse(request)).toEqual(request);
     expect(agentModelMenuPreviewRequestSchema.safeParse({ ...request, draft: { model_profiles: [{ alias: 'fast' }, { alias: 'fast' }] } }).success).toBe(false);
     expect(agentModelMenuPreviewRequestSchema.safeParse({ ...request, draft: { effective_model_aliases: ['fast'] } }).success).toBe(false);
-  });
-  it('retains the top-level menu switch on profile, create and update while accepting only booleans', () => {
+
     for (const flag of [true, false]) {
       expect(namedAgentProfileSchema.parse({ name: 'helper', source: 'user', main: false, disabled: false, routes: [], restrict_models_to_menu: flag }).restrict_models_to_menu).toBe(flag);
       expect(createNamedAgentProfileRequestSchema.parse({ workspace_id: 'workspace', name: 'helper', scope: 'user', description: 'helper', prompt: 'body', restrict_models_to_menu: flag }).restrict_models_to_menu).toBe(flag);
@@ -60,42 +64,89 @@ describe('named agent profile REST protocol', () => {
     }
     expect(updateNamedAgentProfileRequestSchema.safeParse({ workspace_id: 'workspace', scope: 'user', raw_text: 'body', restrict_models_to_menu: false }).success).toBe(false);
   });
-  it('retains hard constraints and explicit soft recommendations in profile and nested projections', () => {
-    const rules = { allowed_models: ['fast', 'premium'], deny_models: ['blocked'], allowed_efforts: [],
-      preferred_models: ['fast'], discouraged_models: ['premium'], preferred_efforts: ['max'] };
-    const parsed = namedAgentProfileSchema.parse({ name: 'helper', source: 'user', main: false, disabled: false, routes: [],
-      ...rules, spawn_constraints: rules, allowed_subagents: [{ name: 'explore', ...rules }], model_profiles: [{ alias: 'fast', ...rules }] });
+
+  it('retains hard constraints, soft recommendations, underscore names, and rendered prompt blocks', () => {
+    const rules = {
+      allowed_models: ['fast', 'premium'],
+      deny_models: ['blocked'],
+      allowed_efforts: [],
+      preferred_models: ['fast'],
+      discouraged_models: ['premium'],
+      preferred_efforts: ['max'],
+    };
+    const parsed = namedAgentProfileSchema.parse({
+      name: 'helper',
+      source: 'user',
+      main: false,
+      disabled: false,
+      routes: [],
+      ...rules,
+      spawn_constraints: rules,
+      allowed_subagents: [{ name: 'explore', ...rules }],
+      model_profiles: [{ alias: 'fast', ...rules }],
+    });
     expect(parsed).toMatchObject(rules);
     expect(parsed.spawn_constraints).toEqual(rules);
     expect(parsed.allowed_subagents?.[0]).toMatchObject(rules);
     expect(parsed.model_profiles?.[0]).toMatchObject(rules);
-    expect(updateNamedAgentProfileRequestSchema.parse({ scope: 'user', workspace_id: 'workspace', preferred_models: ['fast'], preferred_efforts: ['max'], discouraged_models: null })).toMatchObject({ preferred_models: ['fast'], preferred_efforts: ['max'], discouraged_models: null });
-    expect(updateNamedAgentProfileRequestSchema.safeParse({ scope: 'user', workspace_id: 'workspace', preferred_models: ['fast'], raw_text: 'profile' }).success).toBe(false);
-  });
-  it('accepts underscore-separated profile names in create requests and duplicate templates', () => {
-    expect(createNamedAgentProfileRequestSchema.parse({
-      workspace_id: 'wd_a', name: 'code_reviewer', scope: 'user',
-      description: 'Review code', prompt: 'Review it.', template: 'duplicate:code_reviewer',
-    }).name).toBe('code_reviewer');
-  });
 
-  it('accepts rendered executor prompt blocks and rejects malformed preview input', () => {
+    expect(
+      updateNamedAgentProfileRequestSchema.parse({
+        scope: 'user',
+        workspace_id: 'workspace',
+        preferred_models: ['fast'],
+        preferred_efforts: ['max'],
+        discouraged_models: null,
+      }),
+    ).toMatchObject({ preferred_models: ['fast'], preferred_efforts: ['max'], discouraged_models: null });
+    expect(updateNamedAgentProfileRequestSchema.safeParse({ scope: 'user', workspace_id: 'workspace', preferred_models: ['fast'], raw_text: 'profile' }).success).toBe(false);
+
+    expect(
+      createNamedAgentProfileRequestSchema.parse({
+        workspace_id: 'wd_a',
+        name: 'code_reviewer',
+        scope: 'user',
+        description: 'Review code',
+        prompt: 'Review it.',
+        template: 'duplicate:code_reviewer',
+      }).name,
+    ).toBe('code_reviewer');
+
     expect(executorPromptPreviewRequestSchema.parse({ executor: 'codex-app-server', workspace: 'wd-a' }))
       .toEqual({ executor: 'codex-app-server', workspace: 'wd-a' });
     expect(executorPromptPreviewRequestSchema.safeParse({ workspace: '', extra: true }).success).toBe(false);
-    expect(executorPromptPreviewResponseSchema.parse({
-      executor: 'codex-app-server', delivery: { requested: 'append', actual: 'preamble', downgraded: true },
-      blocks: [{ id: 'body', text: 'Hello' }], text: 'Hello',
-    }).blocks).toEqual([{ id: 'body', text: 'Hello' }]);
+    expect(
+      executorPromptPreviewResponseSchema.parse({
+        executor: 'codex-app-server',
+        delivery: { requested: 'append', actual: 'preamble', downgraded: true },
+        blocks: [{ id: 'body', text: 'Hello' }],
+        text: 'Hello',
+      }).blocks,
+    ).toEqual([{ id: 'body', text: 'Hello' }]);
   });
+
   it('keeps unknown panel metrics nullable and strips dynamic prompt and credential fields', () => {
     const parsed = agentCapabilitiesResponseSchema.parse({
-      context: 'live', owner: { agent_id: 'child' }, available: false, targets: [],
+      context: 'live',
+      owner: { agent_id: 'child' },
+      available: false,
+      targets: [],
       profile: { name: 'researcher', source: 'workspace', systemPrompt: 'private dynamic context', executor_options: { api_key: 'PRIVATE' } },
       tools: [{ name: 'Read', source: 'builtin', category: 'read', state: 'approval-required' }],
       skills: [{ name: 'workspace-skill', description: 'Example', source: 'project', scope: 'workspace', path: 'skills/example', state: 'disabled' }],
-      metrics: { child: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null,
-        totalTokens: null, totalCostUsd: null, contextTokens: null, contextLimit: null, compactionCount: null } },
+      metrics: {
+        child: {
+          inputTokens: null,
+          outputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          totalTokens: null,
+          totalCostUsd: null,
+          contextTokens: null,
+          contextLimit: null,
+          compactionCount: null,
+        },
+      },
     });
     expect(parsed.profile).toEqual({ name: 'researcher', source: 'workspace' });
     expect(parsed.metrics?.['child']?.totalTokens).toBeNull();
@@ -103,104 +154,83 @@ describe('named agent profile REST protocol', () => {
     expect(JSON.stringify(parsed)).not.toContain('private dynamic context');
   });
 
-  it('accepts a workspace-free preview and rejects mixed preview scopes', () => {
+  it('validates list queries, workspace applicability, catalog completeness, and legacy rejections', () => {
     expect(listNamedAgentProfilesQuerySchema.parse({ unscoped: 'true' })).toEqual({ unscoped: true });
     for (const scope of [{ workspace_id: 'wd_a' }, { cwd: '/project' }, { expand: true }, { effective: true }]) {
       expect(listNamedAgentProfilesQuerySchema.safeParse({ unscoped: true, ...scope }).success).toBe(false);
     }
-  });
 
-  it('parses merged workspace applicability and the expanded-list query flag', () => {
-    expect(listNamedAgentProfilesQuerySchema.parse({
-      expand: '1',
-      workspace_id: 'wd_a',
-    })).toEqual({ expand: true, workspace_id: 'wd_a' });
+    expect(listNamedAgentProfilesQuerySchema.parse({ expand: '1', workspace_id: 'wd_a' })).toEqual({ expand: true, workspace_id: 'wd_a' });
     expect(listNamedAgentProfilesQuerySchema.parse({})).toEqual({});
-    expect(() => listNamedAgentProfilesQuerySchema.parse({ workspace_id: '' })).toThrow();
-    expect(namedAgentProfileSchema.parse({
-      name: 'reviewer',
-      source: 'user',
-      workspace_id: 'wd_a',
-      workspace_ids: ['wd_a', 'wd_b'],
-      main: true,
-      preferred_subagents: ['explore'],
-      model_profiles: [{
-        alias: 'fast',
-        when: 'Use for small tasks',
-        thinking_effort: 'low',
-      }],
-      spawn_constraints: {
-        allowed_models: ['fast'],
-        allowed_efforts: ['low'],
-      },
-      allowed_subagents: [
-        'explore',
-        {
-          name: 'reviewer',
-          model_alias: 'fast',
-          tools: null,
-          diagnostic: 'Source path is invalid',
-          diagnostic_code: 'agent_profile_source.invalid_path',
-          model_profiles: [{ alias: 'fast', when: 'Use for reviews' }],
-        },
-      ],
-      disabled: true,
-      routes: [],
-    })).toMatchObject({
-      workspace_ids: ['wd_a', 'wd_b'],
-      main: true,
-      preferred_subagents: ['explore'],
-      model_profiles: [{ alias: 'fast', when: 'Use for small tasks' }],
-      spawn_constraints: { allowed_models: ['fast'] },
-      allowed_subagents: ['explore', { name: 'reviewer', model_alias: 'fast' }],
-      disabled: true,
-    });
-    expect(agentProfileSourceDiagnosticCodeSchema.options).toHaveLength(8);
-    expect(namedAgentProfileSchema.safeParse({
-      name: 'reviewer',
-      source: 'user',
-      can_spawn_subagents: 'legacy',
-      disabled: false,
-      routes: [],
-    }).success).toBe(false);
-  });
+    expect(listNamedAgentProfilesQuerySchema.parse({ cwd: 'C:/workspace', effective: 'true' })).toEqual({ cwd: 'C:/workspace', effective: true });
+    for (const badQuery of [
+      { workspace_id: '' },
+      { cwd: 'relative' },
+      { cwd: '/workspace', workspace_id: 'wd_a' },
+      { effective: true },
+      { effective: true, expand: true, cwd: '/workspace' },
+    ]) {
+      expect(listNamedAgentProfilesQuerySchema.safeParse(badQuery).success).toBe(false);
+    }
 
-  it('requires catalog responses to declare whether their projection is complete', () => {
-    expect(listNamedAgentProfilesResponseSchema.parse({ items: [], complete: false }))
-      .toEqual({ items: [], complete: false });
+    expect(
+      namedAgentProfileSchema.parse({
+        name: 'reviewer',
+        source: 'user',
+        workspace_id: 'wd_a',
+        workspace_ids: ['wd_a', 'wd_b'],
+        main: true,
+        preferred_subagents: ['explore'],
+        model_profiles: [{ alias: 'fast', when: 'Use for small tasks', thinking_effort: 'low' }],
+        spawn_constraints: { allowed_models: ['fast'], allowed_efforts: ['low'] },
+        allowed_subagents: [
+          'explore',
+          {
+            name: 'reviewer',
+            model_alias: 'fast',
+            tools: null,
+            diagnostic: 'Source path is invalid',
+            diagnostic_code: 'agent_profile_source.invalid_path',
+            model_profiles: [{ alias: 'fast', when: 'Use for reviews' }],
+          },
+        ],
+        disabled: true,
+        routes: [],
+      }),
+    ).toMatchObject({ workspace_ids: ['wd_a', 'wd_b'], main: true, disabled: true });
+    expect(agentProfileSourceDiagnosticCodeSchema.options).toHaveLength(8);
+    expect(namedAgentProfileSchema.safeParse({ name: 'reviewer', source: 'user', can_spawn_subagents: 'legacy', disabled: false, routes: [] }).success).toBe(false);
+
+    expect(listNamedAgentProfilesResponseSchema.parse({ items: [], complete: false })).toEqual({ items: [], complete: false });
     expect(listNamedAgentProfilesResponseSchema.safeParse({ items: [] }).success).toBe(false);
   });
 
-  it('validates exclusive workspace and live capability addresses', () => {
-    expect(listNamedAgentProfilesQuerySchema.parse({ cwd: 'C:/workspace', effective: 'true' }))
-      .toEqual({ cwd: 'C:/workspace', effective: true });
-    for (const query of [
-      { cwd: 'relative' }, { cwd: '/workspace', workspace_id: 'wd_a' },
-      { effective: true }, { effective: true, expand: true, cwd: '/workspace' },
-    ]) expect(listNamedAgentProfilesQuerySchema.safeParse(query).success).toBe(false);
+  it('validates live/draft capability queries, advisories, launch admission, and reason codes', () => {
     for (const query of [
       { session_id: 'session', agent_id: 'main' },
-      { cwd: '/workspace', profile: 'lead' }, { workspace_id: 'wd_a', profile: 'lead' },
-    ]) expect(agentCapabilitiesQuerySchema.safeParse(query).success).toBe(true);
+      { cwd: '/workspace', profile: 'lead' },
+      { workspace_id: 'wd_a', profile: 'lead' },
+    ]) {
+      expect(agentCapabilitiesQuerySchema.safeParse(query).success).toBe(true);
+    }
     expect(agentCapabilitiesQuerySchema.parse({ session_id: 'session', agent_id: 'main', metrics_settle: 'true' }))
       .toEqual({ session_id: 'session', agent_id: 'main', metrics_settle: true });
-    expect(agentCapabilitiesQuerySchema.parse({
-      session_id: 'session', agent_id: 'main', metrics_settle: 'true', metrics_agent_ids: 'child,main',
-    })).toEqual({
-      session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['child', 'main'],
-    });
-    const listed = agentCapabilitiesQuerySchema.parse({
-      session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['child', 'main'],
-    });
+    expect(agentCapabilitiesQuerySchema.parse({ session_id: 'session', agent_id: 'main', metrics_settle: 'true', metrics_agent_ids: 'child,main' }))
+      .toEqual({ session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['child', 'main'] });
+    const listed = agentCapabilitiesQuerySchema.parse({ session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['child', 'main'] });
     expect('metrics_agent_ids' in listed ? listed.metrics_agent_ids : undefined).toEqual(['child', 'main']);
-    for (const query of [
-      {}, { session_id: 'session' }, { cwd: 'relative', profile: 'lead' },
+
+    for (const badQuery of [
+      {},
+      { session_id: 'session' },
+      { cwd: 'relative', profile: 'lead' },
       { session_id: 'session', agent_id: 'main', cwd: '/workspace' },
       { cwd: '/workspace', workspace_id: 'wd_a', profile: 'lead' },
-    ]) expect(agentCapabilitiesQuerySchema.safeParse(query).success).toBe(false);
-  });
+      { session_id: 'session', agent_id: 'main', planActive: false },
+    ]) {
+      expect(agentCapabilitiesQuerySchema.safeParse(badQuery).success).toBe(false);
+    }
 
-  it('keeps binding advisories optional and validates their structured values', () => {
     const advisory = {
       version: 1 as const,
       code: 'model_not_allowed' as const,
@@ -213,131 +243,112 @@ describe('named agent profile REST protocol', () => {
       model: 'provider/large-model',
       message: 'Model deviates from the role recommendation.',
     };
-    const parsed = agentCapabilitiesResponseSchema.parse({
-      context: 'live', owner: { agent_id: 'main' }, available: true,
-      targets: [{
-        profile: 'reviewer', executor: 'native', defaults_available: true,
-        binding_advisories: [advisory],
-      }],
+    const withAdvisory = agentCapabilitiesResponseSchema.parse({
+      context: 'live',
+      owner: { agent_id: 'main' },
+      available: true,
+      targets: [{ profile: 'reviewer', executor: 'native', defaults_available: true, binding_advisories: [advisory] }],
       profile: { name: 'reviewer', binding_advisories: [advisory] },
     });
-    expect(parsed.targets[0]?.binding_advisories).toEqual([advisory]);
-    expect(parsed.profile?.binding_advisories).toEqual([advisory]);
-    expect(agentCapabilitiesResponseSchema.safeParse({
-      context: 'live', owner: { agent_id: 'main' }, available: true,
-      targets: [{ profile: 'reviewer', executor: 'native', defaults_available: true }],
-      profile: { name: 'reviewer' },
-    }).success).toBe(true);
-  });
+    expect(withAdvisory.targets[0]?.binding_advisories).toEqual([advisory]);
+    expect(withAdvisory.profile?.binding_advisories).toEqual([advisory]);
 
-  it('separates live launch admission from defaults without inventing draft policy', () => {
-    const target = { profile: 'helper', executor: 'native', defaults_available: false,
-      dispatch_policy: 'fixed', recommendation_status: 'allowed_nonpreferred', advisory_deviation: true,
-      launch_allowed: true, execution_restriction: 'research-readonly' };
-    expect(agentCapabilitiesResponseSchema.parse({ context: 'live', owner: { profile: 'lead' }, available: true,
-      targets: [target] }).targets[0]).toEqual(target);
-    expect(agentCapabilitiesResponseSchema.parse({ context: 'draft', owner: { profile: 'lead' }, available: true,
-      targets: [{ profile: 'helper', executor: 'native', defaults_available: true }] }).targets[0])
+    const target = {
+      profile: 'helper',
+      executor: 'native',
+      defaults_available: false,
+      dispatch_policy: 'fixed',
+      recommendation_status: 'allowed_nonpreferred',
+      advisory_deviation: true,
+      launch_allowed: true,
+      execution_restriction: 'research-readonly',
+    };
+    expect(agentCapabilitiesResponseSchema.parse({ context: 'live', owner: { profile: 'lead' }, available: true, targets: [target] }).targets[0]).toEqual(target);
+    expect(agentCapabilitiesResponseSchema.parse({ context: 'draft', owner: { profile: 'lead' }, available: true, targets: [{ profile: 'helper', executor: 'native', defaults_available: true }] }).targets[0])
       .not.toHaveProperty('launch_allowed');
-    expect(agentCapabilitiesQuerySchema.safeParse({ session_id: 'session', agent_id: 'main', planActive: false }).success).toBe(false);
-  });
 
-  it('validates stable capability reason codes across capability projections', () => {
-    const parsed = agentCapabilitiesResponseSchema.parse({
-      context: 'live', owner: { agent_id: 'main' }, available: false,
-      unavailable_reason: 'Disabled by effective tool policy', unavailable_reason_code: 'tool_policy_disabled',
+    const reasonPayload = {
+      context: 'live' as const,
+      owner: { agent_id: 'main' },
+      available: false,
+      unavailable_reason: 'Disabled by effective tool policy',
+      unavailable_reason_code: 'tool_policy_disabled',
       targets: [{
-        profile: 'helper', executor: 'native', defaults_available: false,
-        unavailable_reason: 'No default model is bound; pass model_alias explicitly',
-        unavailable_reason_code: 'model_not_configured', launch_allowed: false,
+        profile: 'helper',
+        executor: 'native',
+        defaults_available: false,
+        unavailable_reason: 'No default model is bound',
+        unavailable_reason_code: 'model_not_configured',
+        launch_allowed: false,
         launch_unavailable_reason: 'Blocked by strict subagent policy',
         launch_unavailable_reason_code: 'strict_subagent_policy_blocked',
       }],
-      tools: [{ name: 'AgentRun', source: 'builtin', category: 'agent', state: 'disabled',
-        unavailable_reason: 'Disabled by effective tool policy', unavailable_reason_code: 'tool_policy_disabled' }],
-      skills: [{ name: 'workspace-skill', description: 'Example', source: 'project', scope: 'workspace',
-        path: 'skills/example', state: 'disabled', unavailable_reason: 'Skill tool is not active for this agent',
-        unavailable_reason_code: 'skill_tool_inactive' }],
-    });
-    expect(parsed.unavailable_reason_code).toBe('tool_policy_disabled');
-    expect(parsed.targets[0]?.unavailable_reason_code).toBe('model_not_configured');
-    expect(parsed.targets[0]?.launch_unavailable_reason_code).toBe('strict_subagent_policy_blocked');
-    expect(parsed.tools?.[0]?.unavailable_reason_code).toBe('tool_policy_disabled');
-    expect(parsed.skills?.[0]?.unavailable_reason_code).toBe('skill_tool_inactive');
+      tools: [{ name: 'AgentRun', source: 'builtin', category: 'agent', state: 'disabled' as const, unavailable_reason: 'Disabled', unavailable_reason_code: 'tool_policy_disabled' }],
+      skills: [{ name: 'workspace-skill', description: 'Example', source: 'project', scope: 'workspace' as const, path: 'skills/example', state: 'disabled' as const, unavailable_reason: 'Inactive', unavailable_reason_code: 'skill_tool_inactive' }],
+    };
+    expect(agentCapabilitiesResponseSchema.parse(reasonPayload).unavailable_reason_code).toBe('tool_policy_disabled');
     expect(agentCapabilityReasonCodeSchema.options).toHaveLength(29);
     expect(agentCapabilityReasonCodeSchema.options).toEqual(expect.arrayContaining([
       'tool_not_registered', 'plugin_catalog_failed', 'plugin_usage_disabled', 'plugin_usage_unavailable',
     ]));
 
     const futurePayload = {
-      context: 'live' as const,
-      owner: { agent_id: 'main' },
-      available: false,
-      unavailable_reason: 'Future top-level reason',
+      ...reasonPayload,
       unavailable_reason_code: 'future_top_level_reason',
-      targets: [{
-        profile: 'helper', executor: 'native', defaults_available: false,
-        unavailable_reason: 'Future binding reason', unavailable_reason_code: 'future_binding_reason',
-        launch_allowed: false, launch_unavailable_reason: 'Future launch reason',
-        launch_unavailable_reason_code: 'future_launch_reason',
-      }],
-      tools: [{ name: 'AgentRun', source: 'builtin', category: 'agent', state: 'disabled' as const,
-        unavailable_reason: 'Future tool reason', unavailable_reason_code: 'future_tool_reason' }],
-      skills: [{ name: 'workspace-skill', description: 'Example', source: 'project', scope: 'workspace' as const,
-        path: 'skills/example', state: 'disabled' as const,
-        unavailable_reason: 'Future skill reason', unavailable_reason_code: 'future_skill_reason' }],
+      targets: [{ ...reasonPayload.targets[0], unavailable_reason_code: 'future_binding_reason', launch_unavailable_reason_code: 'future_launch_reason' }],
+      tools: [{ ...reasonPayload.tools[0], unavailable_reason_code: 'future_tool_reason' }],
+      skills: [{ ...reasonPayload.skills[0], unavailable_reason_code: 'future_skill_reason' }],
     };
-    const futureParsed = agentCapabilitiesResponseSchema.parse(futurePayload);
-    expect(futureParsed.unavailable_reason_code).toBe('future_top_level_reason');
-    expect(futureParsed.targets[0]?.launch_unavailable_reason_code).toBe('future_launch_reason');
-    expect(futureParsed.tools?.[0]?.unavailable_reason_code).toBe('future_tool_reason');
-    expect(futureParsed.skills?.[0]?.unavailable_reason_code).toBe('future_skill_reason');
+    expect(agentCapabilitiesResponseSchema.parse(futurePayload).targets[0]?.launch_unavailable_reason_code).toBe('future_launch_reason');
     expect(agentCapabilitiesProducerResponseSchema.safeParse(futurePayload).success).toBe(false);
     expect(agentCapabilityReasonCodeSchema.safeParse('future_tool_reason').success).toBe(false);
   });
 
-  it('carries scoped runtime authentication observations without replacing executor preflight status', () => {
-    const auth = { status: 'unknown', source: 'codex.account.updated', scope: 'vendor_account', executor_id: 'codex-app-server',
-      descriptor_revision: 'r1', binding_fingerprint: 'a'.repeat(64), execution_generation: 1, cwd: '/fixture/work', observed_at: 1000 };
-    const payload = { context: 'live', live: false, owner: { agent_id: 'main' }, available: false, targets: [], executor_auth: auth };
-    expect(agentCapabilitiesResponseSchema.parse(payload).executor_auth).toEqual(auth);
-    expect(agentCapabilitiesProducerResponseSchema.parse(payload).executor_auth).toEqual(auth);
-    expect(agentCapabilitiesResponseSchema.safeParse({ ...payload, executor_auth: { ...auth, status: 'success' } }).success).toBe(false);
-  });
+  it('validates runtime auth observations, executor login state, executor prompt patches, and disable config', () => {
+    const auth = {
+      status: 'unknown',
+      source: 'codex.account.updated',
+      scope: 'vendor_account',
+      executor_id: 'codex-app-server',
+      descriptor_revision: 'r1',
+      binding_fingerprint: 'a'.repeat(64),
+      execution_generation: 1,
+      cwd: '/fixture/work',
+      observed_at: 1000,
+    };
+    const authPayload = { context: 'live', live: false, owner: { agent_id: 'main' }, available: false, targets: [], executor_auth: auth };
+    expect(agentCapabilitiesResponseSchema.parse(authPayload).executor_auth).toEqual(auth);
+    expect(agentCapabilitiesProducerResponseSchema.parse(authPayload).executor_auth).toEqual(auth);
+    expect(agentCapabilitiesResponseSchema.safeParse({ ...authPayload, executor_auth: { ...auth, status: 'success' } }).success).toBe(false);
 
-  it('accepts executor login state and explicitly configured prompt delivery', () => {
-    const check = executorCheckResponseSchema.parse({
-      id: 'codex', status: 'ready', command: 'codex', resolved_args: ['app-server'],
-      login_status: 'unknown', diagnostics: [],
-    });
+    const check = executorCheckResponseSchema.parse({ id: 'codex', status: 'ready', command: 'codex', resolved_args: ['app-server'], login_status: 'unknown', diagnostics: [] });
     expect(check.login_status).toBe('unknown');
     expect(executorCheckResponseSchema.safeParse({ ...check, login_status: 'expired' }).success).toBe(false);
 
     const detail = executorDetailResponseSchema.parse({
-      id: 'codex', label: 'Codex', protocol: 'codex-app-server', status: 'ready',
-      model_binding: 'mapped', thinking_binding: 'mapped',
+      id: 'codex',
+      label: 'Codex',
+      protocol: 'codex-app-server',
+      status: 'ready',
+      model_binding: 'mapped',
+      thinking_binding: 'mapped',
       connection: { login_status: 'logged_in', default_args: ['app-server'] },
     });
     expect(detail.connection?.login_status).toBe('logged_in');
 
     const patch = updateNamedAgentProfileRequestSchema.parse({
-      scope: 'user', workspace_id: 'wd_a', executor_prompt: {
-        delivery: 'append', include: ['agents_md', 'system.identity', 'delegation.*'],
+      scope: 'user',
+      workspace_id: 'wd_a',
+      executor_prompt: {
+        delivery: 'append',
+        include: ['agents_md', 'system.identity', 'delegation.*'],
         per_engine: { codex: { delivery: 'preamble', body: 'Codex-specific instructions', append: 'Additional context' } },
       },
     });
     expect(patch.executor_prompt?.per_engine?.['codex']?.delivery).toBe('preamble');
-    expect(updateNamedAgentProfileRequestSchema.parse({
-      scope: 'user', workspace_id: 'wd_a', executor_prompt: null,
-    }).executor_prompt).toBeNull();
-    expect(updateNamedAgentProfileRequestSchema.safeParse({
-      scope: 'user', workspace_id: 'wd_a', executor_prompt: { delivery: 'implicit', include: [] },
-    }).success).toBe(false);
-  });
+    expect(updateNamedAgentProfileRequestSchema.parse({ scope: 'user', workspace_id: 'wd_a', executor_prompt: null }).executor_prompt).toBeNull();
+    expect(updateNamedAgentProfileRequestSchema.safeParse({ scope: 'user', workspace_id: 'wd_a', executor_prompt: { delivery: 'implicit', include: [] } }).success).toBe(false);
 
-  it('accepts the named-profile disable config patch', () => {
-    expect(patchConfigRequestSchema.parse({
-      disabled_named_profiles: ['reviewer'],
-    })).toEqual({ disabled_named_profiles: ['reviewer'] });
+    expect(patchConfigRequestSchema.parse({ disabled_named_profiles: ['reviewer'] })).toEqual({ disabled_named_profiles: ['reviewer'] });
   });
 });

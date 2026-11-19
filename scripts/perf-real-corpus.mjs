@@ -24,7 +24,17 @@ for (const envKey of [
 ]) {
   delete process.env[envKey];
 }
-if (!fs.existsSync(path.join(REPO_ROOT, 'packages', 'agent-core-v2', 'dist', 'query-store-worker.mjs'))) {
+const hasSqliteWorkerAsset =
+  fs.existsSync(path.join(REPO_ROOT, 'packages', 'agent-core-v2', 'src', 'persistence', 'backends', 'sqlite', 'entry.ts')) ||
+  fs.existsSync(path.join(REPO_ROOT, 'packages', 'agent-core-v2', 'dist', 'query-store-worker.mjs'));
+if (isCliMain && process.argv.includes('--enforce')) {
+  if (!hasSqliteWorkerAsset || process.env.KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL === 'false') {
+    process.stderr.write(
+      '[perf:real-corpus] ENFORCE FAILED: SQLite query-store read-model must remain enabled with an available worker asset\n',
+    );
+    process.exit(1);
+  }
+} else if (!hasSqliteWorkerAsset) {
   process.env.KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL = 'false';
 }
 
@@ -138,6 +148,12 @@ function evaluateSlos(report) {
   }
   if (report.browser && report.browser.aggregates.totalLayoutViolations > ENFORCED_SLOS.browserLayoutViolations) {
     breaches.push(`browser.totalLayoutViolations=${report.browser.aggregates.totalLayoutViolations} > 0`);
+  }
+  if (report.samples.length === 0) {
+    breaches.push('samples.length=0 (empty benchmark sample set)');
+  }
+  if (report.immutability && report.immutability.mutations > 0) {
+    breaches.push(`immutability.mutations=${report.immutability.mutations} > 0`);
   }
   return { passed: breaches.length === 0, thresholds: ENFORCED_SLOS, breaches };
 }
@@ -296,6 +312,10 @@ if (isCliMain) {
   const cliOptions = parsePerfCliArgs(process.argv.slice(2));
   const outcome = await runRealCorpusBenchmark(cliOptions);
   if (outcome.skipped) {
+    if (cliOptions.enforce) {
+      process.stderr.write(`[perf:real-corpus] ENFORCE FAILED: ${outcome.reason}\n`);
+      process.exit(1);
+    }
     process.stdout.write(`[perf:real-corpus] SKIPPED: ${outcome.reason}\n`);
     process.exit(0);
   }

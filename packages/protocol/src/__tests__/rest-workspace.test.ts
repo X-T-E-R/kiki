@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   createWorkspaceRequestSchema,
   deleteWorkspaceResponseSchema,
-  listWorkspacesResponseSchema,
-  workspaceViewQuerySchema,
   listWorkspaceCatalogResponseSchema,
+  listWorkspacesResponseSchema,
   updateWorkspaceRequestSchema,
   workspaceIdParamSchema,
+  workspaceViewQuerySchema,
 } from '../rest/workspace';
 import { workspaceIdSchema, workspaceSchema, type Workspace } from '../workspace';
 
@@ -22,139 +22,61 @@ const sampleWorkspace: Workspace = {
   isGit: true,
 };
 
-describe('workspaceIdSchema', () => {
-  it('accepts a wd_<slug>_<hash12> string', () => {
-    expect(workspaceIdSchema.parse('wd_kimi_0123456789ab')).toBe('wd_kimi_0123456789ab');
+describe('workspace REST schemas', () => {
+  it.each([
+    ['standard id', 'wd_kimi_0123456789ab', true],
+    ['slug with dots/dashes/underscores', 'wd_kimi-code.v2_0123456789ab', true],
+    ['missing wd_ prefix', 'kimi_0123456789ab', false],
+    ['non-hex tail', 'wd_kimi_xyzxyzxyzxyz', false],
+    ['truncated hash', 'wd_kimi_0123456789', false],
+  ] as const)('validates workspaceIdSchema (%s)', (_label, value, valid) => {
+    expect(workspaceIdSchema.safeParse(value).success).toBe(valid);
   });
 
-  it('accepts dots, dashes, underscores in slug', () => {
-    expect(workspaceIdSchema.parse('wd_kimi-code.v2_0123456789ab')).toBe(
-      'wd_kimi-code.v2_0123456789ab',
-    );
-  });
-
-  it('rejects missing wd_ prefix', () => {
-    expect(workspaceIdSchema.safeParse('kimi_0123456789ab').success).toBe(false);
-  });
-
-  it('rejects non-hex tail', () => {
-    expect(workspaceIdSchema.safeParse('wd_kimi_xyzxyzxyzxyz').success).toBe(false);
-  });
-
-  it('rejects truncated hash', () => {
-    expect(workspaceIdSchema.safeParse('wd_kimi_0123456789').success).toBe(false);
-  });
-});
-
-describe('workspaceSchema', () => {
-  it('round-trips a fully populated Workspace', () => {
+  it('validates workspaceSchema and workspaceIdParamSchema', () => {
     expect(workspaceSchema.parse(sampleWorkspace)).toEqual(sampleWorkspace);
+    expect(workspaceSchema.safeParse({ ...sampleWorkspace, name: 'x'.repeat(101) }).success).toBe(false);
+    expect(workspaceIdParamSchema.parse({ workspace_id: 'wd_kimi_0123456789ab' }).workspace_id)
+      .toBe('wd_kimi_0123456789ab');
+    expect(workspaceIdParamSchema.safeParse({ workspace_id: 'sess_abc' }).success).toBe(false);
   });
 
-  it('rejects name longer than 100 chars', () => {
-    const tooLong = { ...sampleWorkspace, name: 'x'.repeat(101) };
-    expect(workspaceSchema.safeParse(tooLong).success).toBe(false);
-  });
-});
-
-describe('createWorkspaceRequestSchema (POST /api/workspaces)', () => {
-  it('accepts a root-only body', () => {
-    expect(createWorkspaceRequestSchema.parse({ root: '/Users/foo/code' })).toEqual({
-      root: '/Users/foo/code',
-    });
-  });
-
-  it('accepts root + name override', () => {
-    const parsed = createWorkspaceRequestSchema.parse({
-      root: '/Users/foo/code',
-      name: 'Frontend Project',
-    });
-    expect(parsed.name).toBe('Frontend Project');
+  it.each([
+    ['root-only', { root: '/Users/foo/code' }, true],
+    ['root + name', { root: '/Users/foo/code', name: 'Frontend Project' }, true],
+    ['empty root', { root: '' }, false],
+    ['missing root', {}, false],
+    ['empty name', { root: '/Users/foo/code', name: '' }, false],
+    ['name > 100 chars', { root: '/Users/foo/code', name: 'x'.repeat(101) }, false],
+  ] as const)('validates createWorkspaceRequestSchema (%s)', (_label, payload, valid) => {
+    const result = createWorkspaceRequestSchema.safeParse(payload);
+    expect(result.success).toBe(valid);
+    if (result.success) expect(result.data).toEqual(payload);
   });
 
-  it('rejects empty root', () => {
-    expect(createWorkspaceRequestSchema.safeParse({ root: '' }).success).toBe(false);
+  it.each([
+    ['name patch', { name: 'Renamed' }, true],
+    ['pinned true', { pinned: true }, true],
+    ['pinned false', { pinned: false }, true],
+    ['both fields', { name: 'Renamed', pinned: true }, true],
+    ['empty body', {}, false],
+    ['non-boolean pinned', { pinned: 'yes' }, false],
+  ] as const)('validates updateWorkspaceRequestSchema (%s)', (_label, payload, valid) => {
+    const result = updateWorkspaceRequestSchema.safeParse(payload);
+    expect(result.success).toBe(valid);
+    if (result.success) expect(result.data).toEqual(payload);
   });
 
-  it('rejects missing root', () => {
-    expect(createWorkspaceRequestSchema.safeParse({} as unknown).success).toBe(false);
-  });
-
-  it('rejects empty name', () => {
-    expect(
-      createWorkspaceRequestSchema.safeParse({ root: '/Users/foo/code', name: '' }).success,
-    ).toBe(false);
-  });
-
-  it('rejects name longer than 100 chars', () => {
-    expect(
-      createWorkspaceRequestSchema.safeParse({
-        root: '/Users/foo/code',
-        name: 'x'.repeat(101),
-      }).success,
-    ).toBe(false);
-  });
-});
-
-describe('updateWorkspaceRequestSchema (PATCH /api/workspaces/{id})', () => {
-  it('accepts a name patch', () => {
-    expect(updateWorkspaceRequestSchema.parse({ name: 'Renamed' })).toEqual({
-      name: 'Renamed',
-    });
-  });
-
-  it('accepts a pinned patch on its own', () => {
-    expect(updateWorkspaceRequestSchema.parse({ pinned: true })).toEqual({ pinned: true });
-    expect(updateWorkspaceRequestSchema.parse({ pinned: false })).toEqual({ pinned: false });
-  });
-
-  it('accepts both fields together', () => {
-    expect(updateWorkspaceRequestSchema.parse({ name: 'Renamed', pinned: true })).toEqual({
-      name: 'Renamed',
-      pinned: true,
-    });
-  });
-
-  it('rejects empty body (at least one field is required)', () => {
-    expect(updateWorkspaceRequestSchema.safeParse({} as unknown).success).toBe(false);
-  });
-
-  it('rejects a non-boolean pinned', () => {
-    expect(updateWorkspaceRequestSchema.safeParse({ pinned: 'yes' }).success).toBe(false);
-  });
-});
-
-describe('workspaceIdParamSchema', () => {
-  it('accepts a wd_-shaped workspace_id', () => {
-    expect(
-      workspaceIdParamSchema.parse({ workspace_id: 'wd_kimi_0123456789ab' }).workspace_id,
-    ).toBe('wd_kimi_0123456789ab');
-  });
-
-  it('rejects a non-wd-shaped id', () => {
-    expect(
-      workspaceIdParamSchema.safeParse({ workspace_id: 'sess_abc' }).success,
-    ).toBe(false);
-  });
-});
-
-describe('listWorkspacesResponseSchema', () => {
-  it('accepts an empty list', () => {
+  it('distinguishes full workspace lists from catalog metadata views', () => {
     expect(listWorkspacesResponseSchema.parse({ items: [] })).toEqual({ items: [] });
-  });
-
-  it('accepts a non-empty list', () => {
-    expect(
-      listWorkspacesResponseSchema.parse({ items: [sampleWorkspace] }).items[0]?.id,
-    ).toBe(sampleWorkspace.id);
-  });
-});
-
-describe('workspace catalog view', () => {
-  it('accepts persisted metadata without pretending details were measured', () => {
+    expect(listWorkspacesResponseSchema.parse({ items: [sampleWorkspace] }).items[0]?.id).toBe(sampleWorkspace.id);
     const catalog = {
-      id: sampleWorkspace.id, root: sampleWorkspace.root, name: sampleWorkspace.name,
-      created_at: sampleWorkspace.created_at, last_opened_at: sampleWorkspace.last_opened_at, pinned: false,
+      id: sampleWorkspace.id,
+      root: sampleWorkspace.root,
+      name: sampleWorkspace.name,
+      created_at: sampleWorkspace.created_at,
+      last_opened_at: sampleWorkspace.last_opened_at,
+      pinned: false,
     };
     expect(listWorkspaceCatalogResponseSchema.parse({ items: [catalog] })).toEqual({ items: [catalog] });
     expect(listWorkspacesResponseSchema.safeParse({ items: [catalog] }).success).toBe(false);
@@ -162,16 +84,9 @@ describe('workspace catalog view', () => {
     expect(workspaceViewQuerySchema.parse({})).toEqual({});
     expect(workspaceViewQuerySchema.safeParse({ view: 'unsupported' }).success).toBe(false);
   });
-});
 
-describe('deleteWorkspaceResponseSchema', () => {
-  it('accepts {deleted:true}', () => {
-    expect(deleteWorkspaceResponseSchema.parse({ deleted: true })).toEqual({
-      deleted: true,
-    });
-  });
-
-  it('rejects {deleted:false}', () => {
+  it('requires deleted: true and rejects false success receipts', () => {
+    expect(deleteWorkspaceResponseSchema.parse({ deleted: true })).toEqual({ deleted: true });
     expect(deleteWorkspaceResponseSchema.safeParse({ deleted: false }).success).toBe(false);
   });
 });

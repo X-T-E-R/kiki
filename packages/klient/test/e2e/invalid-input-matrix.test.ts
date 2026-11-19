@@ -31,19 +31,21 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Scope } from '@kiki/agent-core-v2';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import { bootstrap, IConfigService, ISessionIndex, logSeed, resolveLoggingConfig } from '@kiki/agent-core-v2';
-
-import { TEST_CLIENT_IDENTITY } from '../helpers/engine.js';
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
-import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
 
-import type { Klient } from '../../src/index.js';
-import type { AgentHandle } from '../../src/core/klient.js';
+import type { KlientChannel } from '../../src/core/channel.js';
+import { createKlientFromChannel, type AgentHandle, type Klient } from '../../src/core/klient.js';
 import type { KlientEvents } from '../../src/core/events/hub.js';
 import { KlientValidationError } from '../../src/core/validation.js';
-import { createKlient as createMemoryKlient } from '../../src/transports/memory/index.js';
+
+const TEST_CLIENT_IDENTITY = {
+  productName: 'klient-test',
+  version: '0.0.0-test',
+  platform: 'test',
+} as const;
 
 // The dual/http e2e suites (and their `helpers/dual.ts`) were dropped with the
 // http transport; the two wait primitives they exported are re-declared here.
@@ -287,23 +289,75 @@ function googleSse(text: string): string[] {
 // Engine + klient + mock server lifecycle.
 // ---------------------------------------------------------------------------
 
+function createZeroBootFailOnUseKlient(): { klient: Klient; transportCalls: () => number } {
+  let calls = 0;
+  const fail = (op: string): never => {
+    calls += 1;
+    throw new Error(`L1 validation must never invoke transport (${op})`);
+  };
+  const channel: KlientChannel = {
+    call: async (_scope, service, method) => fail(`${service}.${method}`),
+    stream: (_scope, service, method) => fail(`stream:${service}.${method}`),
+    listen: (_scope, source) => fail(`listen:${source.kind}`),
+    close: async () => {},
+  };
+  return { klient: createKlientFromChannel(channel), transportCalls: () => calls };
+}
+
+describe('l1: klient input validation (zero-boot fail-on-use transport)', () => {
+  it.each([
+    ['image_url missing url', [{ type: 'image_url', imageUrl: {} }]],
+    ['audio_url not in PromptPart union', [{ type: 'audio_url', audioUrl: { url: 'https://example.com/a.mp3' } }]],
+    ['video_url missing url', [{ type: 'video_url', videoUrl: {} }]],
+    ['text part with non-string text', [{ type: 'text', text: 42 }]],
+  ] as const)('rejects %s before any transport or engine work (l1)', async (_label, rawInput) => {
+    const { klient: zeroBootKlient, transportCalls } = createZeroBootFailOnUseKlient();
+    try {
+      const failure = await zeroBootKlient
+        .session('session-zero-boot')
+        .agent('main')
+        .prompt({ input: rawInput as unknown as readonly ContentPart[] })
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(KlientValidationError);
+      expect((failure as KlientValidationError).phase).toBe('input');
+      expect(transportCalls()).toBe(0);
+    } finally {
+      await zeroBootKlient.close();
+    }
+  });
+});
+
+describe('l2/l3: engine conversion and scripted HTTP/SSE provider errors', () => {
 let klient: Klient;
-let app: ReturnType<typeof bootstrap>['app'] | undefined;
+let sharedAgent: AgentHandle;
+let app: Scope | undefined;
 let server: Server;
 let baseUrl: string;
 let homeDir: string;
 let workRoot: string;
 const sockets = new Set<import('node:net').Socket>();
+const caseCleanup: Array<() => Promise<void> | void> = [];
 
 beforeAll(async () => {
+  process.env['KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL'] = 'false';
+  const [
+    { bootstrap, IConfigService, ISessionIndex, logSeed, resolveLoggingConfig },
+    { IModelService },
+    { createKlient: createMemoryKlient },
+  ] = await Promise.all([
+    import('@kiki/agent-core-v2'),
+    import('@kiki/agent-core-v2/kosong/model/model'),
+    import('../../src/transports/memory/index.js'),
+  ]);
   homeDir = await mkdtemp(join(tmpdir(), 'klient-matrix-home-'));
   workRoot = await mkdtemp(join(tmpdir(), 'klient-matrix-work-'));
-  ({ app } = bootstrap({ homeDir, clientIdentity: TEST_CLIENT_IDENTITY }, [
+  const booted = bootstrap({ homeDir, osHomeDir: homeDir, clientIdentity: TEST_CLIENT_IDENTITY }, [
     ...logSeed(resolveLoggingConfig({ homeDir, env: process.env })),
-  ]));
-  await app.accessor.get(IConfigService).ready;
-  await app.accessor.get(ISessionIndex).prepare();
-  klient = createMemoryKlient({ scope: app });
+  ]);
+  app = booted.app;
+  await booted.app.accessor.get(IConfigService).ready;
+  await booted.app.accessor.get(ISessionIndex).prepare();
+  klient = createMemoryKlient({ scope: booted.app });
 
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
@@ -335,7 +389,10 @@ beforeAll(async () => {
         res.end(JSON.stringify({ error: { message: `mock handler: ${String(error)}` } }));
         return;
       }
-      if (reply.kind === 'hang') return; // never answered; the client aborts it
+      if (reply.kind === 'hang') {
+        req.once('close', () => res.destroy());
+        return;
+      }
       if (reply.kind === 'json') {
         res.writeHead(reply.status, { 'content-type': 'application/json' });
         res.end(JSON.stringify(reply.body));
@@ -413,18 +470,50 @@ beforeAll(async () => {
     const model = modelService.get(id);
     if (model !== undefined) await modelService.set(id, { ...model, defaultEffort: 'off' });
   }
+  await mkdir(workRoot, { recursive: true });
+  const sharedSession = await klient.global.sessions.create({ workDir: workRoot });
+  sharedAgent = klient.session(sharedSession.id).agent('main');
+  await sharedAgent.setEffort('off');
 }, 60_000);
 
-afterAll(async () => {
-  await klient.close();
-  await app?.dispose();
-  for (const socket of sockets) socket.destroy();
-  await new Promise<void>((resolve) => {
-    server.close(() => resolve());
-  });
-  await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
-  await rm(workRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+afterEach(async () => {
+  while (caseCleanup.length > 0) {
+    await caseCleanup.pop()!();
+  }
 });
+
+afterAll(async () => {
+  const [
+    { IHomeRuntimeService, ISessionManager, IThreadCommunicationService },
+    { IThreadMailboxStore },
+    { drainQueryStoreDisposals },
+  ] = await Promise.all([
+    import('@kiki/agent-core-v2'),
+    import('@kiki/agent-core-v2/app/threadCommunication/threadMailboxStore'),
+    import('@kiki/agent-core-v2/persistence/queryStoreDisposals'),
+  ]);
+  server?.closeAllConnections();
+  for (const socket of sockets) socket.destroy();
+  if (server !== undefined) {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  }
+  await klient?.close();
+  if (app !== undefined) {
+    const manager = app.accessor.get(ISessionManager);
+    for (const session of manager.list()) {
+      await manager.close(session.id).catch(() => {});
+    }
+    await app.accessor.get(IThreadCommunicationService).shutdown();
+    await app.accessor.get(IThreadMailboxStore).close();
+    await app.accessor.get(IHomeRuntimeService).close();
+    await app.dispose();
+    await drainQueryStoreDisposals();
+  }
+  if (homeDir) await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  if (workRoot) await rm(workRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+}, 30_000);
 
 // ---------------------------------------------------------------------------
 // Case helpers.
@@ -444,11 +533,15 @@ interface CaseContext {
 }
 
 async function newCase(modelId: string, label: string): Promise<CaseContext> {
-  const workDir = join(workRoot, label);
-  await mkdir(workDir, { recursive: true });
-  const session = await klient.global.sessions.create({ workDir });
-  const agent = klient.session(session.id).agent('main');
-  await agent.setEffort('off');
+  const workDir = workRoot;
+  let agent = sharedAgent;
+  if (label === 'l2-empty-input') {
+    const freshSession = await klient.global.sessions.create({ workDir });
+    agent = klient.session(freshSession.id).agent('main');
+    await agent.setEffort('off');
+  } else {
+    await agent.clearContext();
+  }
   await agent.setModel(modelId);
 
   const events: CollectedEvent[] = [];
@@ -465,6 +558,10 @@ async function newCase(modelId: string, label: string): Promise<CaseContext> {
     agent.events.on('prompt.aborted', record('prompt.aborted')),
   ];
   await Promise.all(subscriptions.map((subscription) => subscription.ready));
+  const disposeSubs = (): void => {
+    for (const sub of subscriptions) sub.dispose();
+  };
+  caseCleanup.push(disposeSubs);
 
   return {
     agent,
@@ -543,43 +640,13 @@ function expectOpenAiUserContentPresent(callIndex: number): void {
 // l1 — klient contract validation (never reaches the engine).
 // ---------------------------------------------------------------------------
 
-describe('l1: klient input validation', () => {
-  it('rejects an image_url part missing `url` before any engine work (l1)', async () => {
-    const ctx = await newCase(M_OPENAI, 'l1-image-missing-url');
-    resetMock(queueScript(OK_OPENAI));
-
-    const badInput = [
-      { type: 'image_url', imageUrl: {} },
-    ] as unknown as readonly ContentPart[];
-    const failure = await ctx.agent.prompt({ input: badInput }).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(KlientValidationError);
-    expect((failure as KlientValidationError).phase).toBe('input');
-
-    expect(requests).toHaveLength(0); // nothing reached the wire
-    expect(ctx.events).toHaveLength(0); // no engine events at all
-  }, 30_000);
-
-  it('rejects an audio_url prompt part (not in the PromptPart union) (l1)', async () => {
-    const ctx = await newCase(M_OPENAI, 'l1-audio-part');
-    resetMock(queueScript(OK_OPENAI));
-
-    const badInput = [
-      { type: 'audio_url', audioUrl: { url: 'https://example.com/a.mp3' } },
-    ] as unknown as readonly ContentPart[];
-    const failure = await ctx.agent.prompt({ input: badInput }).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(KlientValidationError);
-    expect((failure as KlientValidationError).phase).toBe('input');
-    expect(requests).toHaveLength(0);
-  }, 30_000);
-
+describe('l2: empty input toleration', () => {
   it('accepts an empty input array; the empty user message is dropped by the engine (l2 toleration)', async () => {
     const ctx = await newCase(M_OPENAI, 'l2-empty-input');
     resetMock(queueScript(OK_OPENAI));
 
     await promptAndWait(ctx, []);
 
-    // Empty prompt content is not appended. The two user-role messages are
-    // the first full runtime snapshot and the default permission reminder.
     expect(requests).toHaveLength(1);
     const userMessages = openAiUserMessages(0);
     expect(userMessages).toHaveLength(2);
@@ -1106,4 +1173,5 @@ describe('provider HTTP errors', () => {
     expect(ctx.payloads('prompt.completed')[0]?.['reason']).toBe('completed');
     expect(ctx.payloads('error')).toHaveLength(0);
   }, 30_000);
+});
 });

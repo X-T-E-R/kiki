@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { MiniDb } from '../src/index.js';
 import { WAL } from '../src/wal.js';
 import { encodeFrame, FrameParser, CorruptFrameError, TYPE_SET, TYPE_DEL } from '../src/codec.js';
-import { barrier } from './helpers.js';
+import { barrier, waitFor } from './helpers.js';
 
 const B = (s) => Buffer.from(s);
 
@@ -29,15 +30,6 @@ function freshStats() {
     walGroupCommits: 0,
     walGroupCommitFrames: 0,
   };
-}
-
-/** Condition-driven barrier (not a fixed sleep): poll until `cond` holds. */
-async function waitFor(cond, what, timeoutMs = 5000) {
-  const t0 = Date.now();
-  while (!cond()) {
-    if (Date.now() - t0 > timeoutMs) throw new Error(`timeout waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 2));
-  }
 }
 
 async function tmpWalPath() {
@@ -450,6 +442,363 @@ test("an fsync failure with fsyncPolicy 'always' poisons the WAL and counts as w
     // A poisoned close() does not throw and skips the final flush/fsync.
     await wal.close();
     assert.equal((wal as unknown as { fh: unknown }).fh, null, 'the handle is still released');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+// ---- WAL.flush() barrier, short writes, and WAL poison / rollback ------------
+
+type WalFh = { writev: (...a: unknown[]) => Promise<unknown>; sync: () => Promise<void> };
+const walFh = (db: MiniDb<unknown>): WalFh => (db as unknown as { wal: { fh: WalFh } }).wal.fh;
+const MEM_OPTS = { valueCodec: 'string' as const, fsyncPolicy: 'no' as const, activeExpireIntervalMs: 0 };
+
+function failNextWritev(db: MiniDb<unknown>): void {
+  const fh = walFh(db);
+  const orig = fh.writev.bind(fh);
+  let fail = true;
+  fh.writev = async (...a: unknown[]) => {
+    if (fail) { fail = false; throw new Error('injected WAL failure'); }
+    return orig(...a);
+  };
+}
+
+function stubTextApplyThrow(db: MiniDb<{ t: string }>, onCall = 1): void {
+  const ti = (db as unknown as { text: Map<string, { addPrepared: (k: string, t: readonly string[]) => void }> }).text.get('ft')!;
+  const orig = ti.addPrepared.bind(ti);
+  let calls = 0;
+  ti.addPrepared = (k: string, t: readonly string[]) => {
+    if (++calls === onCall) throw new Error('injected apply failure');
+    orig(k, t);
+  };
+}
+
+test('WAL.flush() drains frames queued behind an in-flight batch', async () => {
+  const { dir, file } = await tmpWalPath();
+  try {
+    const wal = new WAL(file, { fsyncPolicy: 'always' });
+    await wal.open();
+    const fh = (wal as unknown as { fh: { writev: (...a: unknown[]) => Promise<unknown> } }).fh;
+    const gate = barrier(fh, 'writev', 1);
+    const pA = wal.append(Buffer.alloc(1024 * 1024, 0x61));
+    await gate.entered;
+    const pB = wal.append(B('B'));
+    const flushing = wal.flush();
+    gate.release();
+    await flushing;
+    const pending = (wal as unknown as { queue: unknown[] }).queue.length;
+    gate.restore();
+    await wal.close();
+    await pA;
+    await pB;
+    assert.equal(pending, 0, 'flush() must leave nothing queued');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL and snapshot tolerate short writes (fragmented writev)', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  const probe = await fs.open(path.join(dir, '_probe'), 'w');
+  const proto = Object.getPrototypeOf(probe) as { writev: (...a: unknown[]) => Promise<unknown> };
+  await probe.close();
+  await fs.rm(path.join(dir, '_probe'), { force: true });
+  const orig = proto.writev;
+  proto.writev = async function (buffers: ReadonlyArray<{ length: number; subarray: (a: number, b: number) => unknown }>, position?: number | null) {
+    const first = buffers[0];
+    if (!first) return orig.call(this, buffers, position);
+    return orig.call(this, [first.subarray(0, Math.min(first.length, 11))], position);
+  };
+  try {
+    const db = await MiniDb.open({ dir, valueCodec: 'string', compactThresholdBytes: 1, autoCompact: false });
+    for (let i = 0; i < 30; i++) await db.set(`k${i}`, `value-${i}-${'x'.repeat(40)}`);
+    await db.compact();
+    await db.set('after', 'tail');
+    await db.close();
+
+    const db2 = await MiniDb.open({ dir, valueCodec: 'string' });
+    for (let i = 0; i < 30; i++) assert.equal(db2.get(`k${i}`), `value-${i}-${'x'.repeat(40)}`);
+    assert.equal(db2.get('after'), 'tail');
+    await db2.close();
+  } finally {
+    proto.writev = orig;
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL poison: failed writev truncates tail and rolls back store, indexes, batch, and disk-mode offsets', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  try {
+    let db = await MiniDb.open<string>({ dir, ...MEM_OPTS, valueMode: 'disk' });
+    await db.set('keep', 'v0');
+    failNextWritev(db as MiniDb<unknown>);
+    const err = await db.set('failed', 'not-written').then(() => null, (e) => e as Error & { ambiguous?: boolean });
+    assert.ok(err && /injected WAL failure/.test(String(err)) && err.ambiguous === true);
+    assert.equal(db.get('failed'), undefined);
+    assert.equal(db.stats.walWriteErrors, 1);
+    assert.equal(db.stats.walFsyncErrors, 0);
+    await db.set('ok', 'persisted');
+    assert.equal(db.get('ok'), 'persisted');
+    failNextWritev(db as MiniDb<unknown>);
+    await assert.rejects(db.batch([{ op: 'set', key: 'keep', value: 'v99' }, { op: 'set', key: 'b2', value: 'v2' }]), /injected WAL failure/);
+    assert.equal(db.get('keep'), 'v0');
+    assert.equal(db.get('b2'), undefined);
+    await db.close();
+
+    db = await MiniDb.open<string>({ dir, ...MEM_OPTS, valueMode: 'disk' });
+    assert.equal(db.get('failed'), undefined);
+    assert.equal(db.get('b2'), undefined);
+    assert.equal(db.get('keep'), 'v0');
+    assert.equal(db.get('ok'), 'persisted');
+    await db.close();
+
+    // Secondary index rollback on WAL failure.
+    const jdir = path.join(dir, 'json');
+    const jdb = await MiniDb.open<{ city: string }>({ dir: jdir, valueCodec: 'json', fsyncPolicy: 'always' });
+    await jdb.createIndex('byCity', { field: 'city' });
+    failNextWritev(jdb as MiniDb<unknown>);
+    await assert.rejects(jdb.set('new', { city: 'London' }), /injected WAL failure/);
+    assert.equal(jdb.get('new'), undefined);
+    assert.deepEqual(jdb.findEq('byCity', 'London'), []);
+    await jdb.set('ok', { city: 'Berlin' });
+    assert.equal(jdb.get('ok')?.city, 'Berlin');
+    await jdb.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL poison: half-written group is revoked and fsync failure on always policy rolls back', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  try {
+    let db = await MiniDb.open<string>({ dir, ...MEM_OPTS });
+    const fh = walFh(db as MiniDb<unknown>);
+    const orig = fh.writev.bind(fh);
+    let calls = 0;
+    fh.writev = async (bufs: unknown[]) => (++calls === 1 ? orig([bufs[0]]) : Promise.reject(new Error('injected after first frame')));
+    const res = await Promise.allSettled([db.set('first', 'fail'), db.set('second', 'fail')]);
+    assert.deepEqual(res.map((r) => r.status), ['rejected', 'rejected']);
+    assert.equal(db.get('first'), undefined);
+    assert.equal(db.get('second'), undefined);
+    await db.close();
+    db = await MiniDb.open<string>({ dir, ...MEM_OPTS });
+    assert.equal(db.get('first'), undefined);
+    assert.equal(db.get('second'), undefined);
+    await db.close();
+
+    const fdir = path.join(dir, 'fsync');
+    let fdb = await MiniDb.open<string>({ dir: fdir, valueCodec: 'string', fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const ffh = walFh(fdb as MiniDb<unknown>);
+    const origSync = ffh.sync.bind(ffh);
+    let failSync = true;
+    ffh.sync = async () => { if (failSync) { failSync = false; throw new Error('injected fsync failure'); } return origSync(); };
+    const err = await fdb.set('rejected', 'reappears').then(() => null, (e) => e as Error & { ambiguous?: boolean });
+    assert.ok(err && /injected fsync failure/.test(String(err)) && err.ambiguous === true);
+    assert.equal(fdb.get('rejected'), undefined);
+    assert.equal(fdb.stats.walFsyncErrors, 1);
+    assert.equal(fdb.stats.walWriteErrors, 0);
+    await fdb.close();
+    fdb = await MiniDb.open<string>({ dir: fdir, valueCodec: 'string', fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    assert.equal(fdb.get('rejected'), undefined);
+    await fdb.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL poison: same-key failed group restores pre-group value; cross-group keeps committed value', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  try {
+    const d1 = path.join(dir, 'same');
+    let db = await MiniDb.open<string>({ dir: d1, ...MEM_OPTS });
+    await db.set('k', 'old');
+    failNextWritev(db as MiniDb<unknown>);
+    const res = await Promise.allSettled([db.set('k', 'A'), db.set('k', 'B')]);
+    assert.deepEqual(res.map((r) => r.status), ['rejected', 'rejected']);
+    assert.equal(db.get('k'), 'old');
+    await db.close();
+    db = await MiniDb.open<string>({ dir: d1, ...MEM_OPTS });
+    assert.equal(db.get('k'), 'old');
+    await db.close();
+
+    const d2 = path.join(dir, 'cross');
+    db = await MiniDb.open<string>({ dir: d2, ...MEM_OPTS });
+    await db.set('k', 'A');
+    failNextWritev(db as MiniDb<unknown>);
+    await assert.rejects(db.set('k', 'B'), /injected WAL failure/);
+    assert.equal(db.get('k'), 'A');
+    await db.close();
+    db = await MiniDb.open<string>({ dir: d2, ...MEM_OPTS });
+    assert.equal(db.get('k'), 'A');
+    await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL poison: applyOp contract violation (single set & mid-batch) poisons WAL and rolls back', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  try {
+    let db = await MiniDb.open<{ t: string }>({ dir, valueCodec: 'json', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+    await db.createTextIndex('ft', { fields: ['t'] });
+    stubTextApplyThrow(db, 1);
+    const e1 = await db.set('doc', { t: 'hello world' }).then(() => null, (e) => e as Error & { ambiguous?: boolean });
+    assert.ok(e1 && /injected apply failure/.test(String(e1)) && e1.ambiguous === true);
+    assert.equal(db.get('doc'), undefined);
+    assert.deepEqual(db.search('ft', 'hello'), []);
+
+    stubTextApplyThrow(db, 2);
+    const e2 = await db.batch([{ op: 'set', key: 'x1', value: { t: 'first' } }, { op: 'set', key: 'x2', value: { t: 'second' } }])
+      .then(() => null, (e) => e as Error & { ambiguous?: boolean });
+    assert.ok(e2 && /injected apply failure/.test(String(e2)) && e2.ambiguous === true);
+    assert.equal(db.get('x1'), undefined);
+    assert.equal(db.get('x2'), undefined);
+    assert.deepEqual(db.search('ft', 'first'), []);
+    assert.deepEqual(db.search('ft', 'second'), []);
+
+    await db.set('after', { t: 'fine' });
+    await db.close();
+    db = await MiniDb.open<{ t: string }>({ dir, valueCodec: 'json', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+    assert.equal(db.get('doc'), undefined);
+    assert.equal(db.get('x1'), undefined);
+    assert.equal(db.get('x2'), undefined);
+    assert.equal(db.get('after')?.t, 'fine');
+    await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL poison: failed recovery truncate enters writeDisabled while staying readable and closable', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  const db = await MiniDb.open<string>({ dir, ...MEM_OPTS });
+  await db.set('k', 'v');
+  failNextWritev(db as MiniDb<unknown>);
+  const origTruncate = fs.truncate;
+  (fs as unknown as { truncate: unknown }).truncate = async () => { throw new Error('injected truncate failure'); };
+  try {
+    await assert.rejects(db.set('bad', 'x'), /injected WAL failure/);
+    await waitFor(() => db.writeDisabled !== null, 'writeDisabled to be set');
+  } finally {
+    (fs as unknown as { truncate: unknown }).truncate = origTruncate;
+  }
+  assert.match(String(db.writeDisabled), /injected truncate failure/);
+  await assert.rejects(db.set('more', 'x'), /writes are disabled/);
+  await assert.rejects(db.batch([{ op: 'set', key: 'b2', value: 'x' }]), /writes are disabled/);
+  assert.equal(db.get('k'), 'v');
+  await db.close();
+  await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+});
+
+test('everysec background sync failure counts errors without poisoning WAL or rejecting writes', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  const db = await MiniDb.open<string>({ dir, valueCodec: 'string', fsyncPolicy: 'everysec', syncIntervalMs: 10, activeExpireIntervalMs: 0 });
+  const fh = walFh(db as MiniDb<unknown>);
+  const origSync = fh.sync.bind(fh);
+  const boom = new Error('injected background fsync failure');
+  fh.sync = () => Promise.reject(boom);
+  try {
+    await db.set('k', 'v');
+    await waitFor(() => db.stats.walFsyncErrors >= 1, 'walFsyncErrors to be counted');
+    assert.equal(db.stats.lastWalFsyncError, boom);
+    assert.equal(db.wal.poison, null);
+    await db.set('k2', 'v2');
+    assert.equal(db.get('k'), 'v');
+    assert.equal(db.get('k2'), 'v2');
+  } finally {
+    fh.sync = origSync;
+  }
+  await db.close();
+  await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+});
+
+test('WAL poison: queued applyOp violation behind in-flight batch lets that batch commit', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  try {
+    let db = await MiniDb.open<{ t: string }>({ dir, valueCodec: 'json', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+    await db.createTextIndex('ft', { fields: ['t'] });
+    const gate = barrier(walFh(db as MiniDb<unknown>), 'writev', 1);
+    const opA = db.set('a', { t: 'first' });
+    await gate.entered;
+    stubTextApplyThrow(db, 1);
+    await assert.rejects(db.set('b', { t: 'second' }), /injected apply failure/);
+    assert.ok(db.wal.poison);
+    gate.release();
+    gate.restore();
+    await opA;
+    await waitFor(() => db.wal.poison === null, 'in-place recovery to finish');
+    assert.equal(db.get('a')?.t, 'first');
+    assert.equal(db.get('b'), undefined);
+    await db.set('c', { t: 'third' });
+    await db.close();
+    db = await MiniDb.open<{ t: string }>({ dir, valueCodec: 'json', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+    assert.equal(db.get('a')?.t, 'first');
+    assert.equal(db.get('b'), undefined);
+    assert.equal(db.get('c')?.t, 'third');
+    await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('WAL poison: sealed WAL applyOp rollback, stale-coordinate truncate skip, and close() mid-failing write', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-wal-'));
+  try {
+    // 1) Sealed WAL does not poison on applyOp violation and rolls back per-op.
+    const d1 = path.join(dir, 'sealed');
+    let db1 = await MiniDb.open<{ t: string }>({ dir: d1, valueCodec: 'json', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+    await db1.createTextIndex('ft', { fields: ['t'] });
+    await db1.set('old', { t: 'keep' });
+    stubTextApplyThrow(db1, 1);
+    db1.wal.seal();
+    await assert.rejects(db1.set('bad', { t: 'x' }), /injected apply failure/);
+    assert.equal(db1.wal.poison, null);
+    assert.equal(db1.get('bad'), undefined);
+    assert.deepEqual(db1.search('ft', 'keep').map((h) => h.key), ['old']);
+    await db1.close();
+    db1 = await MiniDb.open<{ t: string }>({ dir: d1, valueCodec: 'json', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+    assert.equal(db1.get('bad'), undefined);
+    assert.equal(db1.get('old')?.t, 'keep');
+    await db1.close();
+
+    // 2) Stale-coordinate truncate is skipped when WAL file was replaced.
+    const d2 = path.join(dir, 'stale');
+    let db2 = await MiniDb.open<string>({ dir: d2, ...MEM_OPTS });
+    for (let i = 0; i < 10; i++) await db2.set(`k${i}`, `v${i}`);
+    await db2.wal.flush();
+    const staleOffset = (await fs.stat(path.join(d2, 'db.wal'))).size;
+    assert.ok(staleOffset > 0);
+    db2.wal.poisonPending(new Error('injected poison'));
+    assert.equal(db2.wal.poison!.failedAtOffset, staleOffset);
+    await fs.writeFile(path.join(d2, 'db.wal'), Buffer.alloc(0));
+    await (db2 as unknown as { recoverWalInPlace(w: unknown): Promise<void> }).recoverWalInPlace(db2.wal);
+    assert.equal((await fs.stat(path.join(d2, 'db.wal'))).size, 0);
+    assert.equal(db2.wal.poison, null);
+    await db2.set('post', 'ok');
+    await db2.close();
+    db2 = await MiniDb.open<string>({ dir: d2, ...MEM_OPTS });
+    assert.equal(db2.size, 1);
+    assert.equal(db2.get('post'), 'ok');
+    await db2.close();
+
+    // 3) close() in same tick as failing write resolves cleanly.
+    const d3 = path.join(dir, 'close-mid');
+    let db3 = await MiniDb.open<string>({ dir: d3, ...MEM_OPTS });
+    const fh = walFh(db3 as MiniDb<unknown>);
+    const orig = fh.writev.bind(fh);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    fh.writev = async (...a: unknown[]) => (++calls === 1 ? (await gate, Promise.reject(new Error('injected WAL failure'))) : orig(...a));
+    const op = db3.set('bad', 'x');
+    await waitFor(() => calls === 1, 'failing writev in flight');
+    const closing = db3.close();
+    release();
+    await assert.rejects(op, /injected WAL failure/);
+    await closing;
+    db3 = await MiniDb.open<string>({ dir: d3, ...MEM_OPTS });
+    assert.equal(db3.get('bad'), undefined);
+    await db3.close();
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }

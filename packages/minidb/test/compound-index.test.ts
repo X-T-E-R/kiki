@@ -229,3 +229,19 @@ test('dropCompoundIndex persist failure: the live index stays usable and the sid
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
+
+test('compound index: re-set with same group+order does not duplicate and becoming invalid removes entry', async () => {
+  const dir = await tmpDir();
+  const db = await MiniDb.open({ dir, valueCodec: 'json' });
+  await db.createCompoundIndex('byWs', { groupBy: 'workspaceId', orderBy: 'updatedAt' });
+  try {
+    await db.set('a', { workspaceId: 'W1' }, { dt: { updatedAt: 100 } });
+    await db.set('a', { workspaceId: 'W1' }, { dt: { updatedAt: 100 } });
+    assert.deepEqual(db.compoundRange('byWs', 'W1').map((r) => r.key), ['a']);
+    await db.set('a', { other: 1 });
+    assert.deepEqual(db.compoundRange('byWs', 'W1'), []);
+  } finally {
+    await db.close();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});

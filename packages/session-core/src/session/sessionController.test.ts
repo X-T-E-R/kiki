@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { MessageContent, PromptSubmitResult, Session, SessionSnapshotResponse } from '@kiki/protocol';
+import type { MessageContent, PromptSubmitResult, SessionSnapshotResponse } from '@kiki/protocol';
 import { sessionViewSignalSchema } from '@kiki/klient/contract/session/view';
 
 import type {
@@ -15,184 +15,35 @@ import { buildPromptContent } from '../composer/attachments';
 import { resolveSelectedEffort } from '../settings/agentSettings';
 import { resolveEffectiveModel } from '../settings/settings';
 import type { SessionEventFrame } from '../wire';
-import type { TranscriptEvent } from '@kiki/transcript';
+import type { TranscriptEvent, TranscriptTurn } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import { mergeSessionQueueRows, resolveModelSwitchQueueIndex } from './modelSwitchQueue';
 import { turnContentOps } from './transcript/content';
 import { buildFloorEntries, queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
-import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
+import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, FIXED_AT, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
+import {
+  TEST_SESSION as session,
+  asTranscriptEvent,
+  deferred,
+  deliverFrame,
+  deliverResync,
+  eventFrame as frame,
+  fakeView,
+  makeStep,
+  makeTurn,
+  manualScheduler,
+  snapshotResponse as snapshot,
+  subagentTask,
+  textFrame,
+  toolFrame,
+  transcriptPage,
+  waitFor,
+} from './__fixtures__/sessionTestBuilders';
 
 import type { SessionViewFacade, SessionViewSignal } from '@kiki/klient/session-view';
 import { createSessionViewFacade } from '@kiki/klient/core/facade/session-view';
 import type { SessionViewChannel } from '@kiki/klient/core/channel';
-
-function fakeView(client: object, socket: object, sessionId = 'session_test'): SessionViewFacade {
-  const reads = client as {
-    snapshot(sessionId: string, options: { transcript: boolean }): Promise<SessionSnapshotResponse>;
-    getAgentTranscript(sessionId: string, agentId: string, options: object): Promise<AgentTranscriptResponse>;
-    getTranscriptOps(sessionId: string, agentId: string, since: object, grade?: string): ReturnType<SessionViewFacade['transcript']['catchUp']>;
-  };
-  const controls = socket as Record<string, (...args: unknown[]) => void>;
-  return {
-    snapshot: () => reads.snapshot(sessionId, { transcript: true }),
-    transcript: {
-      page: ({ agentId, ...options }) => reads.getAgentTranscript(sessionId, agentId, options) as ReturnType<SessionViewFacade['transcript']['page']>,
-      catchUp: ({ agentId, since, grade }) => reads.getTranscriptOps(sessionId, agentId, since, grade) as ReturnType<SessionViewFacade['transcript']['catchUp']>,
-    },
-    subscribe: (input) => {
-      controls['subscribe']?.(sessionId, input.sessionCursor, input.transcriptGrades);
-      return {
-        updateSessionCursor: (cursor) => { controls['updateCursor']?.(sessionId, cursor); },
-        setTranscriptGrades: (grades) => { controls['setTranscriptGrades']?.(sessionId, grades); },
-        updateTranscriptCursor: (agentId, cursor) => { controls['updateTranscriptSince']?.(sessionId, agentId, cursor); },
-        restart: () => { controls['restartGeneration']?.(); },
-        nudge: () => {},
-        close: () => { controls['unsubscribe']?.(sessionId); },
-      };
-    },
-  };
-}
-
-function deliverFrame(controller: SessionController, frame: SessionEventFrame): void {
-  if (frame.session_id !== controller.sessionId) return;
-  const cursor = { seq: frame.seq, epoch: frame.epoch };
-  if (frame.payload.type === 'event.session.history_rewritten') {
-    controller.handleSignal({ type: 'historyRewritten', cursor, generation: 0, reason: 'regenerate', targetMessageId: 'message-test' });
-  } else if (frame.volatile !== true) {
-    controller.handleSignal({ type: 'sessionCursorAdvanced', cursor, generation: 0 });
-  }
-}
-
-function deliverResync(controller: SessionController, payload: { session_id: string; reason: 'history_rewritten' | 'epoch_changed' | 'session_recreated' | 'buffer_overflow'; current_seq: number; epoch?: string }): void {
-  if (payload.session_id !== controller.sessionId) return;
-  controller.handleSignal({ type: 'resyncRequired', generation: 0, reason: payload.reason, currentSessionCursor: { seq: payload.current_seq, epoch: payload.epoch } });
-}
-
-function asTranscriptEvent(event: Record<string, unknown>): TranscriptEvent {
-  const sessionId = typeof event['session_id'] === 'string' ? event['session_id'] : 'session_test';
-  const seq = typeof event['seq'] === 'number' ? event['seq'] : 0;
-  const cursor =
-    event['cursor'] !== undefined && typeof event['cursor'] === 'object'
-      ? (event['cursor'] as { seq: number; epoch?: string })
-      : { seq, epoch: 'epoch-1' };
-  if (event['type'] === 'transcript.reset') {
-    const hasMoreOlder = event['has_more_older'] === true;
-    return {
-      type: 'transcript.reset',
-      session_id: sessionId,
-      agent_id: event['agent_id'],
-      snapshot: event['snapshot'],
-      grade: 'delta',
-      coverage: hasMoreOlder
-        ? { kind: 'tail', hasMoreOlder: true }
-        : { kind: 'full', hasMoreOlder: false },
-      cursor,
-    } as TranscriptEvent;
-  }
-  return {
-    type: 'transcript.ops',
-    session_id: sessionId,
-    agent_id: event['agent_id'],
-    ops: event['ops'] ?? [],
-    cursor,
-    through_seq: event['through_seq'] ?? seq,
-  } as TranscriptEvent;
-}
-
-const session: Session = {
-  id: 'session_test',
-  workspace_id: 'wd_test_000000000000',
-  title: 'Test',
-  created_at: '2026-01-01T00:00:00.000Z',
-  updated_at: '2026-01-01T00:00:00.000Z',
-  busy: false,
-  metadata: { cwd: 'C:/tmp' },
-  agent_config: { model: '' },
-  usage: {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cache_creation_tokens: 0,
-    total_cost_usd: 0,
-    context_tokens: 0,
-    context_limit: 0,
-    turn_count: 0,
-  },
-  permission_rules: [],
-  message_count: 0,
-  last_seq: 0,
-};
-
-function snapshot(overrides: Partial<SessionSnapshotResponse> = {}): SessionSnapshotResponse {
-  return {
-    as_of_seq: 10,
-    epoch: 'epoch-1',
-    session,
-    messages: { items: [], has_more: false },
-    in_flight_turn: null,
-    pending_approvals: [],
-    pending_questions: [],
-    ...overrides,
-  };
-}
-
-function frame(
-  payload: SessionEventFrame['payload'],
-  options: { seq?: number; volatile?: boolean; offset?: number } = {},
-): SessionEventFrame {
-  return {
-    type: payload.type,
-    seq: options.seq ?? 11,
-    epoch: 'epoch-1',
-    volatile: options.volatile,
-    offset: options.offset,
-    session_id: 'session_test',
-    timestamp: '2026-01-01T00:00:01.000Z',
-    payload,
-  };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-async function waitFor(condition: () => boolean, timeoutMs = 4000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() > deadline) throw new Error('waitFor timed out');
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-/** Manual publication scheduler: callbacks queue up and run only when the
- * test flushes, standing in for rAF without depending on a real clock. */
-function manualScheduler() {
-  const pending: (() => void)[] = [];
-  return {
-    scheduler: {
-      schedule(callback: () => void) {
-        pending.push(callback);
-        return pending.length;
-      },
-      cancel: () => {
-        pending.length = 0;
-      },
-    },
-    flushOne() {
-      pending.shift()?.();
-    },
-    flushAll() {
-      while (pending.length > 0) pending.shift()?.();
-    },
-  };
-}
 
 function fakeAnimationFrames() {
   const pending = new Map<number, FrameRequestCallback>();
@@ -404,12 +255,14 @@ describe('assertSessionWritable', () => {
 
 
 describe('SessionController prompt runtime projection', () => {
+  const receipt = (promptId: string, text: string, overrides: Record<string, unknown> = {}) => ({
+    prompt_id: promptId, user_message_id: `${promptId}-message`, status: 'queued' as const,
+    content: [{ type: 'text' as const, text }], created_at: '2026-01-01T00:00:02.000Z', ...overrides,
+  });
+
   it.each([true, false, undefined])('preserves GUI plan selections: %s', async (enabled) => {
     const { controller, client } = await openController();
-    client.submitPrompt.mockResolvedValue({
-      prompt_id: 'runtime-projection', user_message_id: 'runtime-message', status: 'queued',
-      content: [{ type: 'text', text: 'follow-up' }], created_at: '2026-01-01T00:00:02.000Z',
-    });
+    client.submitPrompt.mockResolvedValue(receipt('runtime-projection', 'follow-up', { user_message_id: 'runtime-message' }));
     await controller.sendPrompt({ text: 'follow-up', permissionMode: 'manual',
       planMode: enabled, goalObjective: 'same objective' });
     expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({
@@ -419,12 +272,7 @@ describe('SessionController prompt runtime projection', () => {
   });
 
   it('defaults an unclassified controller to non-persistent legacy send', async () => {
-    const client = {
-      submitPrompt: vi.fn(async () => ({
-        prompt_id: 'unknown-default', user_message_id: 'unknown-default-message', status: 'running' as const,
-        content: [{ type: 'text' as const, text: 'unknown default' }], created_at: '2026-01-01T00:00:02.000Z',
-      })),
-    };
+    const client = { submitPrompt: vi.fn(async () => receipt('unknown-default', 'unknown default', { status: 'running' })) };
     const controller = new SessionController(client as unknown as KikiClient, fakeView(client, {}), 'session_default_unknown');
     await controller.sendPrompt({ text: 'unknown default' });
     expect(client.submitPrompt).toHaveBeenLastCalledWith('session_default_unknown', expect.objectContaining({ admission: undefined }));
@@ -436,10 +284,7 @@ describe('SessionController prompt runtime projection', () => {
     client.listDurableIngress = vi.fn();
     await controller.refreshDurableIngress();
     expect(client.listDurableIngress).not.toHaveBeenCalled();
-    client.submitPrompt.mockResolvedValue({
-      prompt_id: 'unknown-prompt', user_message_id: 'unknown-message', status: 'queued',
-      content: [{ type: 'text', text: 'unknown' }], created_at: '2026-01-01T00:00:02.000Z',
-    });
+    client.submitPrompt.mockResolvedValue(receipt('unknown-prompt', 'unknown'));
     await controller.sendPrompt({ text: 'unknown' });
     expect(client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: undefined }));
     controller.close();
@@ -448,19 +293,13 @@ describe('SessionController prompt runtime projection', () => {
   it('does not let an unknown hint downgrade confirmed saved or temporary modes', async () => {
     const saved = await openController({ persistenceHint: 'saved' });
     saved.controller.setPersistenceHint('unknown');
-    saved.client.submitPrompt.mockResolvedValue({
-      prompt_id: 'saved-mode', user_message_id: 'saved-mode-message', status: 'running',
-      content: [{ type: 'text', text: 'saved mode' }], created_at: '2026-01-01T00:00:02.000Z',
-    });
+    saved.client.submitPrompt.mockResolvedValue(receipt('saved-mode', 'saved mode', { status: 'running' }));
     await saved.controller.sendPrompt({ text: 'saved mode' });
     expect(saved.client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: 'durable' }));
     saved.controller.close();
     const temporary = await openController({ persistenceHint: 'temporary' });
     temporary.controller.setPersistenceHint('unknown');
-    temporary.client.submitPrompt.mockResolvedValue({
-      prompt_id: 'temp-mode', user_message_id: 'temp-mode-message', status: 'running',
-      content: [{ type: 'text', text: 'temp mode' }], created_at: '2026-01-01T00:00:02.000Z',
-    });
+    temporary.client.submitPrompt.mockResolvedValue(receipt('temp-mode', 'temp mode', { status: 'running' }));
     await temporary.controller.sendPrompt({ text: 'temp mode' });
     expect(temporary.client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: undefined }));
     temporary.controller.close();
@@ -471,16 +310,10 @@ describe('SessionController prompt runtime projection', () => {
     client.listDurableIngress = vi.fn();
     await controller.refreshDurableIngress();
     expect(client.listDurableIngress).not.toHaveBeenCalled();
-    client.submitPrompt.mockResolvedValue({
-      prompt_id: 'temporary-prompt', user_message_id: 'temporary-message', status: 'queued',
-      content: [{ type: 'text', text: 'temporary' }], created_at: '2026-01-01T00:00:02.000Z',
-    });
+    client.submitPrompt.mockResolvedValue(receipt('temporary-prompt', 'temporary'));
     await controller.sendPrompt({ text: 'temporary' });
     expect(client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: undefined }));
-    client.submitPrompt.mockResolvedValue({
-      prompt_id: 'temporary-now', user_message_id: 'temporary-now-message', status: 'running',
-      content: [{ type: 'text', text: 'temporary now' }], created_at: '2026-01-01T00:00:03.000Z',
-    });
+    client.submitPrompt.mockResolvedValue(receipt('temporary-now', 'temporary now', { status: 'running', created_at: '2026-01-01T00:00:03.000Z' }));
     await expect(controller.sendPromptNow({ text: 'temporary now' })).resolves.toMatchObject({ promptId: 'temporary-now', outcome: 'started' });
     expect(client.submitPrompt).toHaveBeenLastCalledWith('session_test', expect.objectContaining({ admission: undefined }));
     controller.close();
@@ -488,10 +321,7 @@ describe('SessionController prompt runtime projection', () => {
 
   it.each(['restoring', 'held'] as const)('does not steer a durable send-now receipt retained in %s ingress', async (admission) => {
     const { controller, client } = await openController({ persistenceHint: 'saved' });
-    client.submitPrompt.mockResolvedValue({
-      prompt_id: `retained-${admission}`, user_message_id: `retained-${admission}-message`, status: 'queued',
-      content: [{ type: 'text', text: admission }], created_at: '2026-01-01T00:00:02.000Z', admission,
-    });
+    client.submitPrompt.mockResolvedValue(receipt(`retained-${admission}`, admission, { admission }));
     const result = await controller.sendPromptNow({ text: admission });
     expect(result).toMatchObject({ promptId: `retained-${admission}`, outcome: admission });
     expect(client.steerPrompt).not.toHaveBeenCalled();
@@ -500,10 +330,7 @@ describe('SessionController prompt runtime projection', () => {
 
   it.each(['failed', 'cancelled'] as const)('does not ack or steer a durable send-now %s receipt', async (admission) => {
     const { controller, client } = await openController({ persistenceHint: 'saved' });
-    client.submitPrompt.mockResolvedValue({
-      prompt_id: `rejected-${admission}`, user_message_id: `rejected-${admission}-message`, status: 'queued',
-      content: [{ type: 'text', text: admission }], created_at: '2026-01-01T00:00:02.000Z', admission,
-    });
+    client.submitPrompt.mockResolvedValue(receipt(`rejected-${admission}`, admission, { admission }));
     const acknowledged = vi.fn();
     const result = await controller.sendPromptNow({ text: admission, onAcknowledged: acknowledged });
     expect(result).toMatchObject({ promptId: `rejected-${admission}`, outcome: admission });
@@ -4194,56 +4021,26 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user' },
-            prompt: 'hi',
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'running',
-                frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text: 'Hello' }],
-              },
-            ],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, {
+          state: 'running',
+          prompt: 'hi',
+          steps: [makeStep('t1.1', 't1', 1, [textFrame('f1', 'Hello')], { state: 'running' })],
+        })],
+      }),
     }));
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.ops',
       agent_id: 'main',
       seq: 2,
-      ops: [
-        {
-          op: 'frame.upsert',
-          turnId: 't1',
-          stepId: 't1.1',
-          frame: { kind: 'text', frameId: 'f1', role: 'assistant', text: 'Hello world' },
-        },
-      ],
+      ops: [{ op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: textFrame('f1', 'Hello world') }],
     }));
     flushAll();
     const assistants = controller.getState().blocks.filter((block) => block.kind === 'assistant');
     expect(assistants).toHaveLength(1);
     expect(assistants[0]).toMatchObject({ id: 'agent-frame-f1', text: 'Hello world' });
 
-    deliverFrame(controller,
-      frame({ type: 'assistant.delta', turnId: 1, delta: ' extra' } as never, { volatile: true, offset: 11 }),
-    );
+    deliverFrame(controller, frame({ type: 'assistant.delta', turnId: 1, delta: ' extra' } as never, { volatile: true, offset: 11 }));
     flushAll();
     expect(controller.getState().blocks.filter((block) => block.kind === 'assistant')).toHaveLength(1);
     expect(socket.restartGeneration).not.toHaveBeenCalled();
@@ -4257,77 +4054,25 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user' },
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'running',
-                frames: [
-                  {
-                    kind: 'tool',
-                    frameId: 'spawn',
-                    toolCallId: 'tc-agent',
-                    name: 'Agent',
-                    state: 'running',
-                    agentRefs: [{ agentId: 'child-1', role: 'child' }],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-        tasks: [
-          {
-            taskId: 'task-1',
-            kind: 'subagent',
-            state: 'running',
-            detached: false,
-            agentId: 'child-1',
-            outputTail: '',
-            description: 'child-1',
-          },
-        ],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, {
+          state: 'running',
+          steps: [makeStep('t1.1', 't1', 1, [
+            toolFrame('spawn', 'tc-agent', 'Agent', { state: 'running', agentRefs: [{ agentId: 'child-1', role: 'child' }] }),
+          ], { state: 'running' })],
+        })],
+        tasks: [subagentTask('task-1', 'child-1', { description: 'child-1', startedAt: undefined })],
+      }),
     }));
-    const forest = controller.getForest();
-    expect(forest?.byId['child-1']?.status).toBe('running');
-    expect(
-      controller.getState().blocks.find((block) => block.kind === 'tool' && block.toolCallId === 'tc-agent'),
-    ).toMatchObject({ agentRefs: [{ agentId: 'child-1', role: 'child' }] });
+    expect(controller.getForest()?.byId['child-1']?.status).toBe('running');
+    expect(controller.getState().blocks.find((block) => block.kind === 'tool' && block.toolCallId === 'tc-agent'))
+      .toMatchObject({ agentRefs: [{ agentId: 'child-1', role: 'child' }] });
 
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.ops',
       agent_id: 'main',
       seq: 2,
-      ops: [
-        {
-          op: 'task.upsert',
-          task: {
-            taskId: 'task-1',
-            kind: 'subagent',
-            state: 'completed',
-            detached: false,
-            agentId: 'child-1',
-            outputTail: '',
-            description: 'child-1',
-          },
-        },
-      ],
+      ops: [{ op: 'task.upsert', task: subagentTask('task-1', 'child-1', { state: 'completed', description: 'child-1', startedAt: undefined }) }],
     }));
     flushAll();
     expect(controller.getForest()?.byId['child-1']?.status).toBe('completed');
@@ -4341,22 +4086,14 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [
-          {
-            promptId: 'p-queued',
-            status: 'queued',
-            createdAt: '2026-01-01T00:00:00.000Z',
-            content: [{ type: 'text', text: 'later' }],
-          },
-        ],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        prompts: [{
+          promptId: 'p-queued',
+          status: 'queued',
+          createdAt: FIXED_AT,
+          content: [{ type: 'text', text: 'later' }],
+        }],
+      }),
     }));
     expect(controller.getState().queuedPromptIds).toEqual(['p-queued']);
     expect(controller.getState().blocks.some((block) => 'stopped' in block && block.stopped === true)).toBe(false);
@@ -4378,50 +4115,15 @@ describe('SessionController transcript authority', () => {
       agent_id: agentId,
       has_more_older: true,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't2',
-            ordinal: 2,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'new',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
+      snapshot: emptySnapshot({
+        items: [makeTurn('t2', 2, { prompt: 'new' })],
         hasMoreOlder: true,
-      },
+      }),
     }));
     const olderPage = {
       agent_id: agentId,
       has_more: true,
-      items: [
-        {
-          kind: 'turn' as const,
-          turnId: 't1',
-          ordinal: 1,
-          state: 'completed' as const,
-          origin: { kind: 'user' as const },
-          prompt: 'old',
-          steps: [],
-        },
-        {
-          kind: 'turn' as const,
-          turnId: 't2',
-          ordinal: 2,
-          state: 'completed' as const,
-          origin: { kind: 'user' as const },
-          prompt: 'new',
-          steps: [],
-        },
-      ],
+      items: [makeTurn('t1', 1, { prompt: 'old' }), makeTurn('t2', 2, { prompt: 'new' })],
       tasks: [],
       interactions: [],
       attachments: [],
@@ -4429,8 +4131,7 @@ describe('SessionController transcript authority', () => {
       prompts: [],
       meta: {},
     };
-    client.getAgentTranscript.mockResolvedValueOnce(olderPage);
-    client.getAgentTranscript.mockResolvedValueOnce(olderPage);
+    client.getAgentTranscript.mockResolvedValueOnce(olderPage).mockResolvedValueOnce(olderPage);
     await expect(controller.loadOlderMessages(agentId)).resolves.toBe(true);
     const firstIds = state().blocks.map((block) => block.id);
     await expect(controller.loadOlderMessages(agentId)).resolves.toBe(false);
@@ -4442,25 +4143,7 @@ describe('SessionController transcript authority', () => {
       agent_id: agentId,
       has_more_older: false,
       seq: 3,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't9',
-            ordinal: 9,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'fresh',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({ items: [makeTurn('t9', 9, { prompt: 'fresh' })] }),
     }));
     expect(state().blocks.some((block) => block.id.includes('t1'))).toBe(false);
     expect(state().blocks.some((block) => block.id.includes('t9'))).toBe(true);
@@ -4559,65 +4242,23 @@ describe('SessionController transcript authority', () => {
   it('coalesces high-frequency appends into one publication and skips forest rebuilds', async () => {
     const { controller, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: 'main',
-      has_more_older: false,
-      seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user' },
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'running',
-                frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text: '' }],
-              },
-            ],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      type: 'transcript.reset', agent_id: 'main', has_more_older: false, seq: 1,
+      snapshot: emptySnapshot({ items: [makeTurn('t1', 1, { state: 'running', steps: [makeStep('t1.1', 't1', 1, [textFrame('f1', '')], { state: 'running' })] })] }),
     }));
     const forests = controller.forestPublishCount;
     let publishes = 0;
-    controller.subscribe(() => {
-      publishes += 1;
-    });
+    controller.subscribe(() => { publishes += 1; });
     for (let i = 0; i < 8; i += 1) {
       controller.handleTranscript(asTranscriptEvent({
-        type: 'transcript.ops',
-        agent_id: 'main',
-        seq: 2 + i,
-        ops: [
-          {
-            op: 'append',
-            target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-            offset: i,
-            text: 'x',
-          },
-        ],
+        type: 'transcript.ops', agent_id: 'main', seq: 2 + i,
+        ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: i, text: 'x' }],
       }));
     }
     expect(publishes).toBe(0);
     expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toBeUndefined();
     flushAll();
     expect(publishes).toBe(1);
-    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
-      text: 'xxxxxxxx',
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: 'xxxxxxxx' });
     expect(controller.forestPublishCount).toBe(forests);
     controller.close();
   });
@@ -4625,24 +4266,15 @@ describe('SessionController transcript authority', () => {
   it('clears plan mode, queue, active, and pending state while preserving permission through sparse AgentState updates', async () => {
     const { controller, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: 'main',
-      has_more_older: false,
-      seq: 1,
-      snapshot: {
-        items: [],
-        tasks: [],
-        interactions: [
-          { interactionId: 'apr-1', interactionKind: 'approval', state: 'pending' },
-        ],
-        attachments: [],
-        todos: [],
+      type: 'transcript.reset', agent_id: 'main', has_more_older: false, seq: 1,
+      snapshot: emptySnapshot({
+        interactions: [{ interactionId: 'apr-1', interactionKind: 'approval', state: 'pending' }],
         prompts: [
-          { promptId: 'p-run', status: 'running', createdAt: '2026-01-01T00:00:00.000Z' },
+          { promptId: 'p-run', status: 'running', createdAt: FIXED_AT },
           { promptId: 'p-q', status: 'queued', createdAt: '2026-01-01T00:00:01.000Z' },
         ],
         meta: { modes: { plan: {} }, agent: { permission: 'yolo' } },
-      },
+      }),
     }));
     expect(controller.getState()).toMatchObject({
       planMode: true,
@@ -4656,17 +4288,10 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       seq: 2,
-      snapshot: {
-        items: [],
-        tasks: [],
-        interactions: [
-          { interactionId: 'apr-1', interactionKind: 'approval', state: 'approved' },
-        ],
-        attachments: [],
-        todos: [],
-        prompts: [],
+      snapshot: emptySnapshot({
+        interactions: [{ interactionId: 'apr-1', interactionKind: 'approval', state: 'approved' }],
         meta: { modes: {}, agent: {} },
-      },
+      }),
     }));
     expect(controller.getState()).toMatchObject({
       planMode: false,
@@ -4676,7 +4301,9 @@ describe('SessionController transcript authority', () => {
       permissionMode: 'yolo',
     });
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops', agent_id: 'main', seq: 3,
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 3,
       ops: [{ op: 'meta.merge', meta: { agent: { permission: 'manual' } } }],
     }));
     flushAll();
@@ -4689,76 +4316,17 @@ describe('SessionController transcript authority', () => {
     if (agentId !== 'main') controller.retainAgentView('timeline', agentId, 'delta');
     const state = () => controller.getAgentState(agentId);
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: agentId,
-      has_more_older: true,
-      seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't2',
-            ordinal: 2,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'new',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-        hasMoreOlder: true,
-      },
+      type: 'transcript.reset', agent_id: agentId, has_more_older: true, seq: 1,
+      snapshot: emptySnapshot({ items: [makeTurn('t2', 2, { prompt: 'new' })], hasMoreOlder: true }),
     }));
     let release!: (value: AgentTranscriptResponse) => void;
-    client.getAgentTranscript.mockReturnValueOnce(
-      new Promise<AgentTranscriptResponse>((resolve) => {
-        release = resolve;
-      }),
-    );
+    client.getAgentTranscript.mockReturnValueOnce(new Promise<AgentTranscriptResponse>((resolve) => { release = resolve; }));
     const pending = controller.loadOlderMessages(agentId);
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: agentId,
-      has_more_older: false,
-      seq: 2,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't9',
-            ordinal: 9,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'fresh',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      type: 'transcript.reset', agent_id: agentId, has_more_older: false, seq: 2,
+      snapshot: emptySnapshot({ items: [makeTurn('t9', 9, { prompt: 'fresh' })] }),
     }));
-    release({
-      agent_id: agentId,
-      has_more: false,
-      items: [
-        {
-          kind: 'turn',
-          turnId: 't1',
-          prompt: 'stale',
-          steps: [],
-        },
-      ],
-      attachments: [],
-    });
+    release({ agent_id: agentId, has_more: false, items: [{ kind: 'turn', turnId: 't1', prompt: 'stale', steps: [] }], attachments: [] });
     await expect(pending).resolves.toBe(false);
     expect(state().blocks.some((block) => block.id.includes('t1'))).toBe(false);
     expect(state().blocks.some((block) => block.id.includes('t9'))).toBe(true);
@@ -4768,92 +4336,30 @@ describe('SessionController transcript authority', () => {
   it('publishes tool completion, interaction resolve, and equal-length text replacement', async () => {
     const { controller, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: 'main',
-      has_more_older: false,
-      seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user' },
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'running',
-                frames: [
-                  { kind: 'text', frameId: 'f1', role: 'assistant', text: 'abcd' },
-                  {
-                    kind: 'tool',
-                    frameId: 'tool-1',
-                    toolCallId: 'tc-1',
-                    name: 'Read',
-                    state: 'running',
-                    input: { path: 'a.ts' },
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-        tasks: [],
+      type: 'transcript.reset', agent_id: 'main', has_more_older: false, seq: 1,
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, { state: 'running', steps: [makeStep('t1.1', 't1', 1, [
+          textFrame('f1', 'abcd'),
+          toolFrame('tool-1', 'tc-1', 'Read', { state: 'running', input: { path: 'a.ts' } }),
+        ], { state: 'running' })] })],
         interactions: [{ interactionId: 'apr-1', interactionKind: 'approval', state: 'pending' }],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      }),
     }));
-    expect(controller.getState().blocks.find((block) => block.kind === 'tool')).toMatchObject({
-      status: 'running',
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'tool')).toMatchObject({ status: 'running' });
     expect(controller.getState().pendingInteraction).toBe('approval');
 
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 2,
+      type: 'transcript.ops', agent_id: 'main', seq: 2,
       ops: [
-        {
-          op: 'frame.upsert',
-          turnId: 't1',
-          stepId: 't1.1',
-          frame: {
-            kind: 'tool',
-            frameId: 'tool-1',
-            toolCallId: 'tc-1',
-            name: 'Read',
-            state: 'done',
-            output: 'file contents',
-          },
-        },
-        {
-          op: 'interaction.upsert',
-          interaction: { interactionId: 'apr-1', interactionKind: 'approval', state: 'approved' },
-        },
-        {
-          op: 'frame.upsert',
-          turnId: 't1',
-          stepId: 't1.1',
-          frame: { kind: 'text', frameId: 'f1', role: 'assistant', text: 'wxyz' },
-        },
+        { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: toolFrame('tool-1', 'tc-1', 'Read', { state: 'done', output: 'file contents' }) },
+        { op: 'interaction.upsert', interaction: { interactionId: 'apr-1', interactionKind: 'approval', state: 'approved' } },
+        { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: textFrame('f1', 'wxyz') },
       ],
     }));
     flushAll();
-    expect(controller.getState().blocks.find((block) => block.kind === 'tool')).toMatchObject({
-      status: 'done',
-      output: 'file contents',
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'tool')).toMatchObject({ status: 'done', output: 'file contents' });
     expect(controller.getState().pendingInteraction).toBe('none');
-    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
-      text: 'wxyz',
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: 'wxyz' });
     controller.close();
   });
 
@@ -4862,108 +4368,27 @@ describe('SessionController transcript authority', () => {
     if (agentId !== 'main') controller.retainAgentView('timeline', agentId, 'delta');
     const state = () => controller.getAgentState(agentId);
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: agentId,
-      has_more_older: true,
-      seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't2',
-            ordinal: 2,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'new',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-        hasMoreOlder: true,
-      },
+      type: 'transcript.reset', agent_id: agentId, has_more_older: true, seq: 1,
+      snapshot: emptySnapshot({ items: [makeTurn('t2', 2, { prompt: 'new' })], hasMoreOlder: true }),
     }));
-    client.getAgentTranscript.mockResolvedValueOnce({
-      agent_id: agentId,
-      has_more: true,
-      items: [
-        {
-          kind: 'turn',
-          turnId: 't1',
-          prompt: 'old',
-          steps: [],
-        },
-      ],
-      attachments: [],
-    });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: agentId, has_more: true, items: [{ kind: 'turn', turnId: 't1', prompt: 'old', steps: [] }], attachments: [] });
     await expect(controller.loadOlderMessages(agentId)).resolves.toBe(true);
-    expect(state()).toMatchObject({
-      loadingOlder: false,
-      fetchedOlder: true,
-      olderError: undefined,
-      hasMoreHistory: true,
-    });
-    client.getAgentTranscript.mockResolvedValueOnce({
-      agent_id: agentId,
-      has_more: true,
-      items: [
-        {
-          kind: 'turn',
-          turnId: 't0',
-          prompt: 'oldest',
-          steps: [],
-        },
-      ],
-      attachments: [],
-    });
+    expect(state()).toMatchObject({ loadingOlder: false, fetchedOlder: true, olderError: undefined, hasMoreHistory: true });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: agentId, has_more: true, items: [{ kind: 'turn', turnId: 't0', prompt: 'oldest', steps: [] }], attachments: [] });
     await expect(controller.loadOlderMessages(agentId)).resolves.toBe(true);
     expect(state().loadingOlder).toBe(false);
     expect(state().blocks.some((block) => block.id.includes('t0'))).toBe(true);
 
     let release!: (value: AgentTranscriptResponse) => void;
-    client.getAgentTranscript.mockReturnValueOnce(
-      new Promise<AgentTranscriptResponse>((resolve) => {
-        release = resolve;
-      }),
-    );
+    client.getAgentTranscript.mockReturnValueOnce(new Promise<AgentTranscriptResponse>((resolve) => { release = resolve; }));
     const pending = controller.loadOlderMessages(agentId);
     expect(state().loadingOlder).toBe(true);
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: agentId,
-      has_more_older: false,
-      seq: 3,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't9',
-            ordinal: 9,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'fresh',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      type: 'transcript.reset', agent_id: agentId, has_more_older: false, seq: 3,
+      snapshot: emptySnapshot({ items: [makeTurn('t9', 9, { prompt: 'fresh' })] }),
     }));
     expect(state().loadingOlder).toBe(false);
-    release({
-      agent_id: agentId,
-      has_more: false,
-      items: [{ kind: 'turn', turnId: 't1', prompt: 'stale', steps: [] }],
-      attachments: [],
-    });
+    release({ agent_id: agentId, has_more: false, items: [{ kind: 'turn', turnId: 't1', prompt: 'stale', steps: [] }], attachments: [] });
     await expect(pending).resolves.toBe(false);
     expect(state().blocks.some((block) => block.id.includes('t1'))).toBe(false);
     controller.close();
@@ -4998,7 +4423,7 @@ describe('SessionController transcript authority', () => {
       user_message_id: 'um-local',
       status: 'queued',
       content: [{ type: 'text', text: 'echo' }],
-      created_at: '2026-01-01T00:00:00.000Z',
+      created_at: FIXED_AT,
     }));
     const presentation = { spans: [{ start: 0, end: 8, kind: 'selection' as const, quote: 'replaced' }] };
     client.replacePrompt = vi.fn(async () => ({
@@ -5006,7 +4431,7 @@ describe('SessionController transcript authority', () => {
       user_message_id: 'um-local',
       status: 'queued',
       content: [{ type: 'text', text: 'replaced', presentation }],
-      created_at: '2026-01-01T00:00:00.000Z',
+      created_at: FIXED_AT,
     }));
     await controller.sendPrompt({ text: 'echo', permissionMode: 'manual' });
     expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
@@ -5017,27 +4442,27 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.ops',
       agent_id: 'main',
       seq: 1,
-      ops: [
-        {
-          op: 'prompt.upsert',
-          prompt: {
-            promptId: 'p-local',
-            status: 'queued',
-            createdAt: '2026-01-01T00:00:00.000Z',
-            userMessageId: 'um-local',
-            content: [{ type: 'text', text: 'echo' }],
-          },
+      ops: [{
+        op: 'prompt.upsert',
+        prompt: {
+          promptId: 'p-local',
+          status: 'queued',
+          createdAt: FIXED_AT,
+          userMessageId: 'um-local',
+          content: [{ type: 'text', text: 'echo' }],
         },
-      ],
+      }],
     }));
     flushAll();
     expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
     await controller.replaceQueued('p-local', 'replaced', undefined, presentation);
     expect(client.replacePrompt).toHaveBeenCalledWith('session_test', 'p-local', {
-      content: [{ type: 'text', text: 'replaced', presentation }], replace_attachments: undefined,
+      content: [{ type: 'text', text: 'replaced', presentation }],
+      replace_attachments: undefined,
     });
     expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
-      text: 'replaced', presentation,
+      text: 'replaced',
+      presentation,
     });
     controller.close();
   });
@@ -5080,31 +4505,16 @@ describe('SessionController transcript authority', () => {
   it('moves a queued prompt through the transport and applies the returned order immediately', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 1,
+      type: 'transcript.ops', agent_id: 'main', seq: 1,
       ops: ['p1', 'p2', 'p3'].map((promptId, index) => ({
         op: 'prompt.upsert' as const,
-        prompt: {
-          promptId,
-          status: 'queued' as const,
-          userMessageId: `m${index + 1}`,
-          content: [{ type: 'text', text: promptId }],
-          createdAt: `2026-01-01T00:00:0${index}.000Z`,
-          queuePosition: index,
-        },
+        prompt: { promptId, status: 'queued' as const, userMessageId: `m${index + 1}`, content: [{ type: 'text', text: promptId }],
+          createdAt: `2026-01-01T00:00:0${index}.000Z`, queuePosition: index },
       })),
     }));
     flushAll();
-    client.movePrompt.mockResolvedValueOnce({
-      moved: true,
-      prompt_id: 'p3',
-      target_index: 0,
-      queued_prompt_ids: ['p3', 'p1', 'p2'],
-    });
-
+    client.movePrompt.mockResolvedValueOnce({ moved: true, prompt_id: 'p3', target_index: 0, queued_prompt_ids: ['p3', 'p1', 'p2'] });
     await controller.moveQueued('p3', 0);
-
     expect(client.movePrompt).toHaveBeenCalledWith('session_test', 'p3', { target_index: 0 });
     expect(controller.getState().queuedPromptIds).toEqual(['p3', 'p1', 'p2']);
     controller.close();
@@ -5187,227 +4597,79 @@ describe('SessionController transcript authority', () => {
   it('re-times a queued prompt with the known revision and applies the reply', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 1,
-      ops: [
-        {
-          op: 'prompt.upsert' as const,
-          prompt: {
-            promptId: 'p1',
-            status: 'queued' as const,
-            userMessageId: 'm1',
-            content: [{ type: 'text', text: 'parked' }],
-            createdAt: '2026-01-01T00:00:00.000Z',
-            queuePosition: 2,
-            appendTiming: 'agent_idle' as const,
-            revision: 3,
-          },
-        },
-      ],
+      type: 'transcript.ops', agent_id: 'main', seq: 1,
+      ops: [{ op: 'prompt.upsert' as const, prompt: { promptId: 'p1', status: 'queued' as const, userMessageId: 'm1',
+        content: [{ type: 'text', text: 'parked' }], createdAt: FIXED_AT, queuePosition: 2, appendTiming: 'agent_idle' as const, revision: 3 } }],
     }));
     flushAll();
     client.timingPrompt.mockResolvedValueOnce({
-      prompt_id: 'p1',
-      user_message_id: 'm1',
-      status: 'queued',
-      content: [{ type: 'text', text: 'parked' }],
-      created_at: '2026-01-01T00:00:00.000Z',
-      append_timing: 'tasks_done',
-      revision: 4,
+      prompt_id: 'p1', user_message_id: 'm1', status: 'queued', content: [{ type: 'text', text: 'parked' }],
+      created_at: FIXED_AT, append_timing: 'tasks_done', revision: 4,
     });
-
     await controller.setQueuedTiming('p1', 'tasks_done');
-
-    expect(client.timingPrompt).toHaveBeenCalledWith('session_test', 'p1', {
-      append_timing: 'tasks_done',
-      expected_revision: 3,
-    });
+    expect(client.timingPrompt).toHaveBeenCalledWith('session_test', 'p1', { append_timing: 'tasks_done', expected_revision: 3 });
     const updatedMeta = controller.getState().queuedPromptMeta['p1'];
-    expect(updatedMeta).toMatchObject({
-      appendTiming: 'tasks_done',
-      revision: 4,
-      queuePosition: 2,
-      userMessageId: 'm1',
-      content: [{ type: 'text', text: 'parked' }],
-    });
-    expect(mergeSessionQueueRows(
-      [{ promptId: 'p1', queuePosition: updatedMeta?.queuePosition }],
-      [{ operationId: 'switch-0', queueIndex: 0 }, { operationId: 'switch-1', queueIndex: 1 }],
-    )).toEqual([
-      { kind: 'modelSwitch', operationId: 'switch-0' },
-      { kind: 'modelSwitch', operationId: 'switch-1' },
-      { kind: 'message', promptId: 'p1' },
-    ]);
+    expect(updatedMeta).toMatchObject({ appendTiming: 'tasks_done', revision: 4, queuePosition: 2, userMessageId: 'm1', content: [{ type: 'text', text: 'parked' }] });
+    expect(mergeSessionQueueRows([{ promptId: 'p1', queuePosition: updatedMeta?.queuePosition }], [{ operationId: 'switch-0', queueIndex: 0 }, { operationId: 'switch-1', queueIndex: 1 }]))
+      .toEqual([{ kind: 'modelSwitch', operationId: 'switch-0' }, { kind: 'modelSwitch', operationId: 'switch-1' }, { kind: 'message', promptId: 'p1' }]);
     controller.close();
   });
 
   it('compacts and reorders model-switch queue slots synchronously on abortPrompt and moveQueued without a switch event', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: 'main',
-      has_more_older: false,
-      seq: 1,
-      snapshot: {
-        items: [],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
+      type: 'transcript.reset', agent_id: 'main', has_more_older: false, seq: 1,
+      snapshot: emptySnapshot({
         prompts: [
-          {
-            promptId: 'A',
-            userMessageId: 'mA',
-            status: 'queued',
-            content: [{ type: 'text', text: 'Prompt A' }],
-            createdAt: '2026-01-01T00:00:00.000Z',
-            queuePosition: 0,
-            appendTiming: 'agent_idle',
-            revision: 1,
-          },
-          {
-            promptId: 'B',
-            userMessageId: 'mB',
-            status: 'queued',
-            content: [{ type: 'text', text: 'Prompt B' }],
-            createdAt: '2026-01-01T00:00:01.000Z',
-            queuePosition: 2,
-            appendTiming: 'agent_idle',
-            revision: 1,
-          },
+          { promptId: 'A', userMessageId: 'mA', status: 'queued', content: [{ type: 'text', text: 'Prompt A' }], createdAt: FIXED_AT, queuePosition: 0, appendTiming: 'agent_idle', revision: 1 },
+          { promptId: 'B', userMessageId: 'mB', status: 'queued', content: [{ type: 'text', text: 'Prompt B' }], createdAt: '2026-01-01T00:00:01.000Z', queuePosition: 2, appendTiming: 'agent_idle', revision: 1 },
         ],
-        meta: {
-          modelSwitchQueuePositions: { M: 1 },
-        },
-      },
+        meta: { modelSwitchQueuePositions: { M: 1 } },
+      }),
     }));
     flushAll();
 
-    const staleSwitchIndex = 1;
     const rowsOf = () => {
       const current = controller.getState();
-      return mergeSessionQueueRows(queuedPromptPreviews(current), [
-        {
-          operationId: 'M',
-          queueIndex: resolveModelSwitchQueueIndex('M', staleSwitchIndex, current.queuedPromptMeta),
-        },
-      ]);
+      return mergeSessionQueueRows(queuedPromptPreviews(current), [{ operationId: 'M', queueIndex: resolveModelSwitchQueueIndex('M', 1, current.queuedPromptMeta) }]);
     };
 
-    expect(rowsOf()).toEqual([
-      { kind: 'message', promptId: 'A' },
-      { kind: 'modelSwitch', operationId: 'M' },
-      { kind: 'message', promptId: 'B' },
-    ]);
-
+    expect(rowsOf()).toEqual([{ kind: 'message', promptId: 'A' }, { kind: 'modelSwitch', operationId: 'M' }, { kind: 'message', promptId: 'B' }]);
     client.abortPrompt.mockResolvedValueOnce({ aborted: true, at_seq: 2 });
     await controller.abortPrompt('A');
-    expect(rowsOf()).toEqual([
-      { kind: 'modelSwitch', operationId: 'M' },
-      { kind: 'message', promptId: 'B' },
-    ]);
-
-    client.movePrompt.mockResolvedValueOnce({
-      queued_prompt_ids: ['B', '\u0000model-switch:M'],
-    });
+    expect(rowsOf()).toEqual([{ kind: 'modelSwitch', operationId: 'M' }, { kind: 'message', promptId: 'B' }]);
+    client.movePrompt.mockResolvedValueOnce({ queued_prompt_ids: ['B', '\u0000model-switch:M'] });
     await controller.moveQueued('B', 0);
-    expect(rowsOf()).toEqual([
-      { kind: 'message', promptId: 'B' },
-      { kind: 'modelSwitch', operationId: 'M' },
-    ]);
+    expect(rowsOf()).toEqual([{ kind: 'message', promptId: 'B' }, { kind: 'modelSwitch', operationId: 'M' }]);
     controller.close();
   });
 
   it('marks live assistant streaming during appends and clears it on a terminal step upsert', async () => {
     const { controller, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
-      agent_id: 'main',
-      has_more_older: false,
-      seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user' },
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'running',
-                frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text: 'He' }],
-              },
-            ],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {
-          agent: {
-            phase: {
-              kind: 'streaming',
-              turnId: 1,
-              step: 1,
-              stepId: 't1.1',
-              stream: 'assistant',
-              since: 0,
-            },
-          },
-        },
-      },
+      type: 'transcript.reset', agent_id: 'main', has_more_older: false, seq: 1,
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, { state: 'running', steps: [makeStep('t1.1', 't1', 1, [textFrame('f1', 'He')], { state: 'running' })] })],
+        meta: { agent: { phase: { kind: 'streaming', turnId: 1, step: 1, stepId: 't1.1', stream: 'assistant', since: 0 } } },
+      }),
     }));
-    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
-      streaming: true,
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ streaming: true });
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 2,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-          offset: 2,
-          text: 'llo',
-        },
-      ],
+      type: 'transcript.ops', agent_id: 'main', seq: 2,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 2, text: 'llo' }],
     }));
     flushAll();
-    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
-      streaming: true,
-      text: 'Hello',
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ streaming: true, text: 'Hello' });
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 3,
+      type: 'transcript.ops', agent_id: 'main', seq: 3,
       ops: [
-        {
-          op: 'step.upsert',
-          turnId: 't1',
-          step: { kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed' },
-        },
-        {
-          op: 'turn.upsert',
-          turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' } },
-        },
+        { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed' } },
+        { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' } } },
         { op: 'meta.merge', meta: { agent: { phase: { kind: 'idle' } } } },
       ],
     }));
     flushAll();
-    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
-      streaming: false,
-      text: 'Hello',
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ streaming: false, text: 'Hello' });
     controller.close();
   });
 
@@ -5419,44 +4681,32 @@ describe('SessionController transcript authority', () => {
       user_message_id: 'um-canonical-1',
       status: 'running',
       content: [{ type: 'text', text: 'canonical user prompt' }],
-      created_at: '2026-01-01T00:00:00.000Z',
+      created_at: FIXED_AT,
     }));
     await controller.sendPrompt({ text: 'canonical user prompt', permissionMode: 'manual' });
     const echo = controller.getState().blocks.find((block) => block.kind === 'user');
-    expect(echo).toMatchObject({ id: 'user-um-canonical-1', userMessageId: 'um-canonical-1', promptId: 'p-canonical-1' });
+    expect(echo).toMatchObject({
+      id: 'user-um-canonical-1',
+      userMessageId: 'um-canonical-1',
+      promptId: 'p-canonical-1',
+    });
 
+    const origin = { kind: 'user' as const, payload: { promptId: 'p-canonical-1', userMessageId: 'um-canonical-1' } };
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user', payload: { promptId: 'p-canonical-1', userMessageId: 'um-canonical-1' } },
-            prompt: 'canonical user prompt',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [
-          {
-            promptId: 'p-canonical-1',
-            status: 'running',
-            userMessageId: 'um-canonical-1',
-            content: [{ type: 'text', text: 'canonical user prompt' }],
-            createdAt: '2026-01-01T00:00:00.000Z',
-          },
-        ],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, { state: 'running', origin, prompt: 'canonical user prompt' })],
+        prompts: [{
+          promptId: 'p-canonical-1',
+          status: 'running',
+          userMessageId: 'um-canonical-1',
+          content: [{ type: 'text', text: 'canonical user prompt' }],
+          createdAt: FIXED_AT,
+        }],
+      }),
     }));
     expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
     expect(controller.getState().blocks.find((block) => block.kind === 'user')?.id).toBe(echo?.id);
@@ -5466,23 +4716,14 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       seq: 2,
       ops: [
-        {
-          op: 'turn.upsert',
-          turn: {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user', payload: { promptId: 'p-canonical-1', userMessageId: 'um-canonical-1' } },
-          },
-        },
+        { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin } },
         {
           op: 'prompt.upsert',
           prompt: {
             promptId: 'p-canonical-1',
             status: 'completed',
             userMessageId: 'um-canonical-1',
-            createdAt: '2026-01-01T00:00:00.000Z',
+            createdAt: FIXED_AT,
             finishedAt: '2026-01-01T00:00:02.000Z',
           },
         },
@@ -5498,56 +4739,31 @@ describe('SessionController transcript authority', () => {
 
   it('keeps edit/fork identity after a regenerate reset that only carries a running prompt', async () => {
     const { controller, flushAll } = await openTranscriptController();
+    const prompt = 'First fixture question — edited resend.';
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user', payload: { promptId: 'p-edit', userMessageId: 'um-anchor' } },
-            prompt: 'First fixture question — edited resend.',
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'completed',
-                frames: [
-                  {
-                    kind: 'text',
-                    frameId: 'asst-t1',
-                    role: 'assistant',
-                    text: 'EDITED-REPLY landed after the rewrite.',
-                    part: { partId: 'part-asst', messageId: 'am-edit', revision: 1, provenance: { source: 'engine' } },
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [
-          {
-            promptId: 'p-edit',
-            status: 'completed',
-            userMessageId: 'um-anchor',
-            content: [{ type: 'text', text: 'First fixture question — edited resend.' }],
-            createdAt: '2026-01-01T00:00:00.000Z',
-            finishedAt: '2026-01-01T00:00:02.000Z',
-          },
-        ],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, {
+          origin: { kind: 'user', payload: { promptId: 'p-edit', userMessageId: 'um-anchor' } },
+          prompt,
+          steps: [makeStep('t1.1', 't1', 1, [
+            textFrame('asst-t1', 'EDITED-REPLY landed after the rewrite.', 'assistant', {
+              part: { partId: 'part-asst', messageId: 'am-edit', revision: 1, provenance: { source: 'engine' } },
+            }),
+          ])],
+        })],
+        prompts: [{
+          promptId: 'p-edit',
+          status: 'completed',
+          userMessageId: 'um-anchor',
+          content: [{ type: 'text', text: prompt }],
+          createdAt: FIXED_AT,
+          finishedAt: '2026-01-01T00:00:02.000Z',
+        }],
+      }),
     }));
     const settled = controller.getState().blocks.find((block) => block.kind === 'user') as UserBlock | undefined;
     expect(settled).toMatchObject({ userMessageId: 'um-anchor', promptStatus: undefined });
@@ -5557,37 +4773,23 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       seq: 2,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user', payload: { promptId: 'p-regen', userMessageId: 'um-anchor' } },
-            prompt: 'First fixture question — edited resend.',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [
-          {
-            promptId: 'p-regen',
-            status: 'running',
-            userMessageId: 'um-anchor',
-            content: [{ type: 'text', text: 'First fixture question — edited resend.' }],
-            createdAt: '2026-01-01T00:00:03.000Z',
-          },
-        ],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, {
+          state: 'running',
+          origin: { kind: 'user', payload: { promptId: 'p-regen', userMessageId: 'um-anchor' } },
+          prompt,
+        })],
+        prompts: [{
+          promptId: 'p-regen',
+          status: 'running',
+          userMessageId: 'um-anchor',
+          content: [{ type: 'text', text: prompt }],
+          createdAt: '2026-01-01T00:00:03.000Z',
+        }],
+      }),
     }));
     flushAll();
-    const regenerating = controller.getState().blocks.find((block) => block.kind === 'user') as UserBlock | undefined;
-    expect(regenerating).toMatchObject({
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
       id: settled?.id,
       userMessageId: 'um-anchor',
       promptStatus: undefined,
@@ -5597,39 +4799,26 @@ describe('SessionController transcript authority', () => {
 
   it('holds items.remove during a rewrite resync so the regenerate reset can keep the user bubble', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
+    const prompt = 'First fixture question — edited resend.';
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user', payload: { promptId: 'p-edit', userMessageId: 'um-anchor' } },
-            prompt: 'First fixture question — edited resend.',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [
-          {
-            promptId: 'p-edit',
-            status: 'completed',
-            userMessageId: 'um-anchor',
-            content: [{ type: 'text', text: 'First fixture question — edited resend.' }],
-            createdAt: '2026-01-01T00:00:00.000Z',
-            finishedAt: '2026-01-01T00:00:02.000Z',
-          },
-        ],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, {
+          origin: { kind: 'user', payload: { promptId: 'p-edit', userMessageId: 'um-anchor' } },
+          prompt,
+        })],
+        prompts: [{
+          promptId: 'p-edit',
+          status: 'completed',
+          userMessageId: 'um-anchor',
+          content: [{ type: 'text', text: prompt }],
+          createdAt: FIXED_AT,
+          finishedAt: '2026-01-01T00:00:02.000Z',
+        }],
+      }),
     }));
     expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
       userMessageId: 'um-anchor',
@@ -5658,33 +4847,20 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       cursor: { seq: 3, epoch: 'epoch-2' },
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user', payload: { promptId: 'p-regen', userMessageId: 'um-anchor' } },
-            prompt: 'First fixture question — edited resend.',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [
-          {
-            promptId: 'p-regen',
-            status: 'running',
-            userMessageId: 'um-anchor',
-            content: [{ type: 'text', text: 'First fixture question — edited resend.' }],
-            createdAt: '2026-01-01T00:00:03.000Z',
-          },
-        ],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, {
+          state: 'running',
+          origin: { kind: 'user', payload: { promptId: 'p-regen', userMessageId: 'um-anchor' } },
+          prompt,
+        })],
+        prompts: [{
+          promptId: 'p-regen',
+          status: 'running',
+          userMessageId: 'um-anchor',
+          content: [{ type: 'text', text: prompt }],
+          createdAt: '2026-01-01T00:00:03.000Z',
+        }],
+      }),
     }));
     flushAll();
     expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
@@ -5696,7 +4872,9 @@ describe('SessionController transcript authority', () => {
     await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
     expect(controller.getState().transcriptReady).toBe(true);
     expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
-      id: 'user-um-anchor', userMessageId: 'um-anchor', text: 'First fixture question — edited resend.',
+      id: 'user-um-anchor',
+      userMessageId: 'um-anchor',
+      text: prompt,
     });
     controller.close();
   });
@@ -5707,25 +4885,9 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't-overlap',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'Keep me until the queued rewrite baseline arrives.',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t-overlap', 1, { prompt: 'Keep me until the queued rewrite baseline arrives.' })],
+      }),
     }));
 
     const ordinary = deferred<SessionSnapshotResponse>();
@@ -5756,15 +4918,7 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       cursor: { seq: 3, epoch: 'epoch-2' },
-      snapshot: {
-        items: [],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot(),
     }));
     expect(controller.getState().blocks).toEqual([]);
     controller.close();
@@ -5776,13 +4930,9 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       cursor: { seq: 1, epoch: 'epoch-before-rewrite' },
-      snapshot: {
-        items: [{
-          kind: 'turn', turnId: 't-suspend-rewrite', ordinal: 1, state: 'completed',
-          origin: { kind: 'user' }, prompt: 'Keep this until the rewrite baseline arrives.', steps: [],
-        }],
-        tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t-suspend-rewrite', 1, { prompt: 'Keep this until the rewrite baseline arrives.' })],
+      }),
     }));
     const ordinary = deferred<SessionSnapshotResponse>();
     const rewrite = deferred<SessionSnapshotResponse>();
@@ -5817,69 +4967,27 @@ describe('SessionController transcript authority', () => {
   });
 
   it('keeps hold through an unrelated same-generation reset until the rewrite epoch changes', async () => {
-    const { controller, client, socket, flushAll } = await openTranscriptController();
+    const { controller, client, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
       cursor: { seq: 1, epoch: 'epoch-before-rewrite' },
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't-generation',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'Generation-bound user body.',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t-generation', 1, { prompt: 'Generation-bound user body.' })],
+      }),
     }));
     controller.handleSignal({ type: 'status', status: 'open', generation: 7 });
     void controller.resync({ rewrite: true });
     await waitFor(() => client.snapshot.mock.calls.length === 2);
     await waitFor(() => !controller.getState().resyncing);
 
-    const unrelatedSnapshot = {
-      items: [
-        {
-          kind: 'turn' as const,
-          turnId: 't-generation',
-          ordinal: 1,
-          state: 'completed' as const,
-          origin: { kind: 'user' as const },
-          prompt: 'Unrelated baseline still has the user body.',
-          steps: [],
-        },
-      ],
-      tasks: [],
-      interactions: [],
-      attachments: [],
-      todos: [],
-      prompts: [],
-      meta: {},
-    };
-    const emptySnapshot = {
-      items: [],
-      tasks: [],
-      interactions: [],
-      attachments: [],
-      todos: [],
-      prompts: [],
-      meta: {},
-    };
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
       cursor: { seq: 2, epoch: 'epoch-before-rewrite' },
-      snapshot: unrelatedSnapshot,
+      snapshot: emptySnapshot({
+        items: [makeTurn('t-generation', 1, { prompt: 'Unrelated baseline still has the user body.' })],
+      }),
     }), 7);
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.ops',
@@ -5896,7 +5004,7 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       cursor: { seq: 1, epoch: 'epoch-after-rewrite' },
-      snapshot: emptySnapshot,
+      snapshot: emptySnapshot(),
     }), 7);
     expect(controller.getState().blocks).toEqual([]);
     controller.close();
@@ -5908,25 +5016,9 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       cursor: { seq: 1 },
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't-token',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'Token-bound user body.',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t-token', 1, { prompt: 'Token-bound user body.' })],
+      }),
     }));
     controller.handleSignal({ type: 'status', status: 'open', generation: 4 });
     void controller.resync({ rewrite: true });
@@ -5934,20 +5026,11 @@ describe('SessionController transcript authority', () => {
     await waitFor(() => !controller.getState().resyncing);
     expect(socket.restartGeneration).toHaveBeenCalledTimes(1);
 
-    const emptySnapshot = {
-      items: [],
-      tasks: [],
-      interactions: [],
-      attachments: [],
-      todos: [],
-      prompts: [],
-      meta: {},
-    };
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
       cursor: { seq: 2 },
-      snapshot: emptySnapshot,
+      snapshot: emptySnapshot(),
     }), 4);
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.ops',
@@ -5964,7 +5047,7 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       cursor: { seq: 1 },
-      snapshot: emptySnapshot,
+      snapshot: emptySnapshot(),
     }), 5);
     expect(controller.getState().blocks).toEqual([]);
     controller.close();
@@ -5978,27 +5061,10 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't-timeout',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'Release me through hard recovery.',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t-timeout', 1, { prompt: 'Release me through hard recovery.' })],
+      }),
     }));
-
     void controller.resync({ rewrite: true });
     await waitFor(() => client.snapshot.mock.calls.length >= 3);
     await waitFor(() => socket.restartGeneration.mock.calls.length === 1);
@@ -6035,25 +5101,9 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't-seed-failure',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'Seed failure body.',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t-seed-failure', 1, { prompt: 'Seed failure body.' })],
+      }),
     }));
     client.snapshot.mockRejectedValueOnce(new Error('snapshot seed failed'));
     void controller.resync({ rewrite: true });
@@ -6070,33 +5120,12 @@ describe('SessionController transcript authority', () => {
   });
 
   function textTurnSnapshot(frameId: string, text: string) {
-    return {
-      items: [
-        {
-          kind: 'turn',
-          turnId: 't1',
-          ordinal: 1,
-          state: 'running',
-          origin: { kind: 'user' },
-          steps: [
-            {
-              kind: 'step',
-              stepId: 't1.1',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'running',
-              frames: [{ kind: 'text', frameId, role: 'assistant', text }],
-            },
-          ],
-        },
-      ],
-      tasks: [],
-      interactions: [],
-      attachments: [],
-      todos: [],
-      prompts: [],
-      meta: {},
-    };
+    return emptySnapshot({
+      items: [makeTurn('t1', 1, {
+        state: 'running',
+        steps: [makeStep('t1.1', 't1', 1, [textFrame(frameId, text)], { state: 'running' })],
+      })],
+    });
   }
 
   function seedTextAgent(
@@ -6124,34 +5153,69 @@ describe('SessionController transcript authority', () => {
     const { controller, client, flushAll } = await openTranscriptController();
     const tool = { kind: 'tool', frameId: 'count-tool', toolCallId: 'count-call', name: 'Read', state: 'done' };
     const source = textTurnSnapshot('body', 'body');
+    const sourceTurns = source.items as TranscriptTurn[];
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset', agent_id: agentId, has_more_older: true, seq: 1,
+      type: 'transcript.reset',
+      agent_id: agentId,
+      has_more_older: true,
+      seq: 1,
       snapshot: {
-        ...source, toolCallCount: initialCount, hasMoreOlder: true,
-        items: initialCount === undefined ? source.items : source.items.map((turn) => ({
-          ...turn, steps: turn.steps.map((step) => ({ ...step, frames: [...step.frames, tool] })),
-        })),
+        ...source,
+        toolCallCount: initialCount,
+        hasMoreOlder: true,
+        items: initialCount === undefined
+          ? sourceTurns
+          : sourceTurns.map((turn) => ({
+            ...turn,
+            steps: turn.steps.map((step) => ({ ...step, frames: [...step.frames, tool] })),
+          })),
       },
     }));
-    const page = { agent_id: agentId, items: [{ kind: 'turn' as const, turnId: 't0', prompt: 'older', steps: [] }], has_more: false,
-      tool_call_count: initialCount ?? 7, cursor: { epoch: 'epoch-1', seq: 1 } };
+    const page = {
+      agent_id: agentId,
+      items: [{ kind: 'turn' as const, turnId: 't0', prompt: 'older', steps: [] }],
+      has_more: false,
+      tool_call_count: initialCount ?? 7,
+      cursor: { epoch: 'epoch-1', seq: 1 },
+    };
     client.getAgentTranscript.mockResolvedValueOnce(page);
     await controller.loadOlderMessages(agentId);
-    expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: initialCount ?? 7, toolCallCountKnown: true });
+    expect(controller.getForest()?.byId[agentId]).toMatchObject({
+      toolCallCount: initialCount ?? 7,
+      toolCallCountKnown: true,
+    });
     for (const seq of [2, 3]) {
-      controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: agentId, seq,
-        ops: [{ op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: tool }] }));
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.ops',
+        agent_id: agentId,
+        seq,
+        ops: [{ op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: tool }],
+      }));
       flushAll();
-      expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: initialCount === undefined ? 8 : 10, toolCallCountKnown: true });
+      expect(controller.getForest()?.byId[agentId]).toMatchObject({
+        toolCallCount: initialCount === undefined ? 8 : 10,
+        toolCallCountKnown: true,
+      });
     }
     for (const seq of [4, 5]) {
-      controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: agentId, seq,
-        ops: [{ op: 'items.remove', ids: ['t1'] }] }));
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.ops',
+        agent_id: agentId,
+        seq,
+        ops: [{ op: 'items.remove', ids: ['t1'] }],
+      }));
       flushAll();
-      expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: initialCount === undefined ? 7 : 9, toolCallCountKnown: true });
+      expect(controller.getForest()?.byId[agentId]).toMatchObject({
+        toolCallCount: initialCount === undefined ? 7 : 9,
+        toolCallCountKnown: true,
+      });
     }
-    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.reset', agent_id: agentId, seq: 6,
-      snapshot: { ...textTurnSnapshot('fresh', 'fresh'), toolCallCount: 0 } }));
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: agentId,
+      seq: 6,
+      snapshot: { ...textTurnSnapshot('fresh', 'fresh'), toolCallCount: 0 },
+    }));
     expect(controller.getForest()?.byId[agentId]).toMatchObject({ toolCallCount: 0, toolCallCountKnown: true });
     const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
     expect(state.blocks.some((block) => block.id.includes('t0'))).toBe(false);
@@ -6193,11 +5257,12 @@ describe('SessionController transcript authority', () => {
   ])('STAT-R3 keeps $label knowledge through full WS reset and forest', async ({ label, count, known }) => {
     const { controller } = await openTranscriptController();
     const source = textTurnSnapshot('body', 'body');
-    const items = label === 'failed partial backfill' ? source.items.map((turn) => ({
+    const sourceTurns = source.items as TranscriptTurn[];
+    const items = label === 'failed partial backfill' ? sourceTurns.map((turn) => ({
       ...turn, steps: turn.steps.map((step) => ({ ...step, frames: [...step.frames,
         { kind: 'tool', frameId: 'partial-tool', toolCallId: 'partial-call', name: 'Read', state: 'done' },
       ] })),
-    })) : source.items;
+    })) : sourceTurns;
     for (const agentId of ['main', 'child-1']) {
       controller.handleTranscript(asTranscriptEvent({ type: 'transcript.reset', agent_id: agentId, seq: 1,
         snapshot: { ...source, items, toolCallCount: count, toolCallCountKnown: known } }));
@@ -6327,244 +5392,92 @@ describe('SessionController transcript authority', () => {
     seedTextAgent(controller, 'main', 'f1', 'Hello');
     seedTextAgent(controller, 'child-1', 'c1', 'Child');
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 4,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-          offset: 5,
-          text: ' world',
-        },
-      ],
+      type: 'transcript.ops', agent_id: 'main', seq: 4,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 5, text: ' world' }],
     }));
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'child-1',
-      seq: 7,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' },
-          offset: 5,
-          text: ' more',
-        },
-      ],
+      type: 'transcript.ops', agent_id: 'child-1', seq: 7,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' }, offset: 5, text: ' more' }],
     }));
     flushAll();
     expect(client.getTranscriptOps).not.toHaveBeenCalled();
     expect(socket.restartGeneration).not.toHaveBeenCalled();
     expect(controller.getState().resyncing).toBe(false);
-    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
-      text: 'Hello world',
-    });
-    expect(controller.getAgentState('child-1').blocks.find((block) => block.kind === 'assistant')).toMatchObject({
-      text: 'Child more',
-    });
-    expect(socket.updateTranscriptSince).toHaveBeenCalledWith('session_test', 'main', {
-      seq: 4,
-      epoch: 'epoch-1',
-    });
-    expect(socket.updateTranscriptSince).toHaveBeenCalledWith('session_test', 'child-1', {
-      seq: 7,
-      epoch: 'epoch-1',
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: 'Hello world' });
+    expect(controller.getAgentState('child-1').blocks.find((block) => block.kind === 'assistant')).toMatchObject({ text: 'Child more' });
+    expect(socket.updateTranscriptSince).toHaveBeenCalledWith('session_test', 'main', { seq: 4, epoch: 'epoch-1' });
+    expect(socket.updateTranscriptSince).toHaveBeenCalledWith('session_test', 'child-1', { seq: 7, epoch: 'epoch-1' });
     controller.close();
   });
 
   it('resumes from through_seq when filtered-empty tail batches follow the last visible batch', async () => {
     const { controller, client, socket, flushAll } = await openTranscriptController();
     seedTextAgent(controller, 'main', 'f1', 'Hello');
-    // Last visible batch: one real op lands at seq 2.
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 2,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-          offset: 5,
-          text: ' world',
-        },
-      ],
+      type: 'transcript.ops', agent_id: 'main', seq: 2,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 5, text: ' world' }],
     }));
-    // The server then covered seq 3-5 with batches whose ops were all
-    // filtered out: cursor stays on the last visible op while through_seq
-    // moves on.
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      cursor: { seq: 2, epoch: 'epoch-1' },
-      through_seq: 5,
-      ops: [],
+      type: 'transcript.ops', agent_id: 'main', cursor: { seq: 2, epoch: 'epoch-1' }, through_seq: 5, ops: [],
     }));
     flushAll();
     expect(client.getTranscriptOps).not.toHaveBeenCalled();
-    expect(socket.updateTranscriptSince).toHaveBeenLastCalledWith('session_test', 'main', {
-      seq: 5,
-      epoch: 'epoch-1',
-    });
-    // A reconnect with live work in flight catch-ups per agent; it must
-    // resume at the watermark instead of re-pulling the filtered 3-5 range.
+    expect(socket.updateTranscriptSince).toHaveBeenLastCalledWith('session_test', 'main', { seq: 5, epoch: 'epoch-1' });
     client.submitPrompt.mockResolvedValue({
-      prompt_id: 'p1',
-      user_message_id: 'm1',
-      status: 'running',
-      content: [{ type: 'text', text: 'A' }],
-      created_at: '2026-01-01T00:00:02.000Z',
+      prompt_id: 'p1', user_message_id: 'm1', status: 'running', content: [{ type: 'text', text: 'A' }], created_at: '2026-01-01T00:00:02.000Z',
     });
     await controller.sendPrompt({ text: 'A', permissionMode: 'manual' });
     expect(controller.getState().busy).toBe(true);
     controller.handleWsDrop();
     controller.handleReconnectAck();
     await waitFor(() => client.getTranscriptOps.mock.calls.length > 0);
-    expect(client.getTranscriptOps).toHaveBeenCalledWith(
-      'session_test',
-      'main',
-      { seq: 5, epoch: 'epoch-1' },
-      'delta',
-    );
-    // No reset degradation: the only snapshot is the initial open.
+    expect(client.getTranscriptOps).toHaveBeenCalledWith('session_test', 'main', { seq: 5, epoch: 'epoch-1' }, 'delta');
     expect(client.snapshot).toHaveBeenCalledTimes(1);
     expect(controller.getState().resyncing).toBe(false);
     controller.close();
   });
 
+  type CatchupPage = {
+    session_id: string; agent_id: string; epoch: string;
+    batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
+    through_seq: number; complete: boolean;
+  };
+  const appendCatchup = (agentId: string, frameId: string): CatchupPage => ({
+    session_id: 'session_test', agent_id: agentId, epoch: 'epoch-1', through_seq: 3, complete: true,
+    batches: [
+      { seq: 2, ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId }, offset: 5, text: ' world' }] },
+      { seq: 3, ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId }, offset: 11, text: '!' }] },
+    ],
+  });
+
   it('catchup is per-agent, uses subscription grades, and still applies when the child has no later frame', async () => {
     const { controller, client, socket, flushAll } = await openTranscriptController();
-    const mainHeld = deferred<{
-      session_id: string;
-      agent_id: string;
-      epoch: string;
-      batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
-      through_seq: number;
-      complete: boolean;
-    }>();
-    const childHeld = deferred<{
-      session_id: string;
-      agent_id: string;
-      epoch: string;
-      batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
-      through_seq: number;
-      complete: boolean;
-    }>();
-    client.getTranscriptOps.mockImplementation((async (_sessionId: string, agentId: string) => {
-      if (agentId === 'child-1') return childHeld.promise;
-      return mainHeld.promise;
-    }) as never);
+    const mainHeld = deferred<CatchupPage>();
+    const childHeld = deferred<CatchupPage>();
+    client.getTranscriptOps.mockImplementation((async (_sessionId: string, agentId: string) =>
+      agentId === 'child-1' ? childHeld.promise : mainHeld.promise) as never);
     seedTextAgent(controller, 'main', 'f1', 'Hello');
     seedTextAgent(controller, 'child-1', 'c1', 'Hello');
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 3,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-          offset: 11,
-          text: '!',
-        },
-      ],
+      type: 'transcript.ops', agent_id: 'main', seq: 3,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 11, text: '!' }],
     }));
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'child-1',
-      seq: 3,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' },
-          offset: 11,
-          text: '!',
-        },
-      ],
+      type: 'transcript.ops', agent_id: 'child-1', seq: 3,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' }, offset: 11, text: '!' }],
     }));
     flushAll();
     await waitFor(() => client.getTranscriptOps.mock.calls.length === 2);
-    expect(client.getTranscriptOps).toHaveBeenCalledWith(
-      'session_test',
-      'main',
-      { seq: 1, epoch: 'epoch-1' },
-      'delta',
-    );
-    expect(client.getTranscriptOps).toHaveBeenCalledWith(
-      'session_test',
-      'child-1',
-      { seq: 1, epoch: 'epoch-1' },
-      'turn',
-    );
+    expect(client.getTranscriptOps).toHaveBeenCalledWith('session_test', 'main', { seq: 1, epoch: 'epoch-1' }, 'delta');
+    expect(client.getTranscriptOps).toHaveBeenCalledWith('session_test', 'child-1', { seq: 1, epoch: 'epoch-1' }, 'turn');
     expect(socket.restartGeneration).not.toHaveBeenCalled();
-    mainHeld.resolve({
-      session_id: 'session_test',
-      agent_id: 'main',
-      epoch: 'epoch-1',
-      batches: [
-        {
-          seq: 2,
-          ops: [
-            {
-              op: 'append',
-              target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-              offset: 5,
-              text: ' world',
-            },
-          ],
-        },
-        {
-          seq: 3,
-          ops: [
-            {
-              op: 'append',
-              target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-              offset: 11,
-              text: '!',
-            },
-          ],
-        },
-      ],
-      through_seq: 3,
-      complete: true,
-    });
-    childHeld.resolve({
-      session_id: 'session_test',
-      agent_id: 'child-1',
-      epoch: 'epoch-1',
-      batches: [
-        {
-          seq: 2,
-          ops: [
-            {
-              op: 'append',
-              target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' },
-              offset: 5,
-              text: ' world',
-            },
-          ],
-        },
-        {
-          seq: 3,
-          ops: [
-            {
-              op: 'append',
-              target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' },
-              offset: 11,
-              text: '!',
-            },
-          ],
-        },
-      ],
-      through_seq: 3,
-      complete: true,
-    });
+    mainHeld.resolve(appendCatchup('main', 'f1'));
+    childHeld.resolve(appendCatchup('child-1', 'c1'));
     await waitFor(() => {
       flushAll();
       const main = controller.getState().blocks.find((block) => block.kind === 'assistant');
       const child = controller.getAgentState('child-1').blocks.find((block) => block.kind === 'assistant');
-      return main?.kind === 'assistant' && main.text === 'Hello world!'
-        && child?.kind === 'assistant' && child.text === 'Hello world!';
+      return main?.kind === 'assistant' && main.text === 'Hello world!' && child?.kind === 'assistant' && child.text === 'Hello world!';
     });
     expect(controller.getState().resyncing).toBe(false);
     expect(socket.restartGeneration).not.toHaveBeenCalled();
@@ -6573,46 +5486,18 @@ describe('SessionController transcript authority', () => {
 
   it('requests the focused child subscription grade on catchup', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
-    const held = deferred<{
-      session_id: string;
-      agent_id: string;
-      epoch: string;
-      batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
-      through_seq: number;
-      complete: boolean;
-    }>();
+    const held = deferred<CatchupPage>();
     client.getTranscriptOps.mockImplementation((async () => held.promise) as never);
     controller.setFocusedAgent('child-1');
     seedTextAgent(controller, 'child-1', 'c1', 'Child');
     controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'child-1',
-      seq: 3,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' },
-          offset: 11,
-          text: '!',
-        },
-      ],
+      type: 'transcript.ops', agent_id: 'child-1', seq: 3,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' }, offset: 11, text: '!' }],
     }));
     flushAll();
     await waitFor(() => client.getTranscriptOps.mock.calls.length === 1);
-    expect(client.getTranscriptOps).toHaveBeenCalledWith(
-      'session_test',
-      'child-1',
-      { seq: 1, epoch: 'epoch-1' },
-      'delta',
-    );
-    held.resolve({
-      session_id: 'session_test',
-      agent_id: 'child-1',
-      epoch: 'epoch-1',
-      batches: [],
-      through_seq: 1,
-      complete: true,
-    });
+    expect(client.getTranscriptOps).toHaveBeenCalledWith('session_test', 'child-1', { seq: 1, epoch: 'epoch-1' }, 'delta');
+    held.resolve({ session_id: 'session_test', agent_id: 'child-1', epoch: 'epoch-1', batches: [], through_seq: 1, complete: true });
     controller.close();
   });
 
@@ -6711,11 +5596,35 @@ describe('SessionController transcript authority', () => {
     const { controller, client, socket, flushAll } = await openTranscriptController();
     seedTextAgent(controller, 'main', 'f1', 'Hello');
     const target = { type: 'frame' as const, turnId: 't1', stepId: 't1.1', frameId: 'f1' };
-    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 2, complete: true, has_more: true, batches: [{ seq: 2, ops: [{ op: 'append', target, offset: 5, text: ' world' }] }] });
-    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 3, complete: true, has_more: false, batches: [{ seq: 3, ops: [{ op: 'append', target, offset: 11, text: '!' }] }] });
-    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 3, ops: [{ op: 'append', target, offset: 11, text: '!' }] }));
+    client.getTranscriptOps.mockResolvedValueOnce({
+      session_id: 'session_test',
+      agent_id: 'main',
+      epoch: 'epoch-1',
+      through_seq: 2,
+      complete: true,
+      has_more: true,
+      batches: [{ seq: 2, ops: [{ op: 'append', target, offset: 5, text: ' world' }] }],
+    });
+    client.getTranscriptOps.mockResolvedValueOnce({
+      session_id: 'session_test',
+      agent_id: 'main',
+      epoch: 'epoch-1',
+      through_seq: 3,
+      complete: true,
+      has_more: false,
+      batches: [{ seq: 3, ops: [{ op: 'append', target, offset: 11, text: '!' }] }],
+    });
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 3,
+      ops: [{ op: 'append', target, offset: 11, text: '!' }],
+    }));
     flushAll();
-    await waitFor(() => { flushAll(); return controller.getState().blocks.some((block) => block.kind === 'assistant' && block.text === 'Hello world!'); });
+    await waitFor(() => {
+      flushAll();
+      return controller.getState().blocks.some((block) => block.kind === 'assistant' && block.text === 'Hello world!');
+    });
     expect(client.getTranscriptOps).toHaveBeenCalledTimes(2);
     expect(client.getTranscriptOps).toHaveBeenLastCalledWith('session_test', 'main', { seq: 2, epoch: 'epoch-1' }, 'delta');
     expect(socket.restartGeneration).not.toHaveBeenCalled();
@@ -6743,9 +5652,26 @@ describe('SessionController transcript authority', () => {
   it('resynchronizes a catchup cursor that stops advancing rather than looping forever', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     seedTextAgent(controller, 'main', 'f1', 'Hello');
-    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 1, complete: true, has_more: true, batches: [] });
-    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 9,
-      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 99, text: 'gap' }] }));
+    client.getTranscriptOps.mockResolvedValueOnce({
+      session_id: 'session_test',
+      agent_id: 'main',
+      epoch: 'epoch-1',
+      through_seq: 1,
+      complete: true,
+      has_more: true,
+      batches: [],
+    });
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 9,
+      ops: [{
+        op: 'append',
+        target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
+        offset: 99,
+        text: 'gap',
+      }],
+    }));
     flushAll();
     await waitFor(() => client.snapshot.mock.calls.length > 1);
     expect(client.getTranscriptOps).toHaveBeenCalledTimes(1);
@@ -6754,76 +5680,26 @@ describe('SessionController transcript authority', () => {
 
   it('coalesces concurrent gaps on the same agent into one catchup', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
-    const held = deferred<{
-      session_id: string;
-      agent_id: string;
-      epoch: string;
-      batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
-      through_seq: number;
-      complete: boolean;
-    }>();
+    const held = deferred<CatchupPage>();
     client.getTranscriptOps.mockImplementation((async () => held.promise) as never);
     seedTextAgent(controller, 'main', 'f1', 'Hello');
-    controller.handleTranscript(asTranscriptEvent({
+    const gap = asTranscriptEvent({
       type: 'transcript.ops',
       agent_id: 'main',
       seq: 3,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-          offset: 11,
-          text: '!',
-        },
-      ],
-    }));
-    controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.ops',
-      agent_id: 'main',
-      seq: 3,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-          offset: 11,
-          text: '!',
-        },
-      ],
-    }));
+      ops: [{
+        op: 'append',
+        target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
+        offset: 11,
+        text: '!',
+      }],
+    });
+    controller.handleTranscript(gap);
+    controller.handleTranscript(gap);
     flushAll();
     await waitFor(() => client.getTranscriptOps.mock.calls.length === 1);
     expect(client.getTranscriptOps).toHaveBeenCalledTimes(1);
-    held.resolve({
-      session_id: 'session_test',
-      agent_id: 'main',
-      epoch: 'epoch-1',
-      batches: [
-        {
-          seq: 2,
-          ops: [
-            {
-              op: 'append',
-              target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-              offset: 5,
-              text: ' world',
-            },
-          ],
-        },
-        {
-          seq: 3,
-          ops: [
-            {
-              op: 'append',
-              target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
-              offset: 11,
-              text: '!',
-            },
-          ],
-        },
-      ],
-      through_seq: 3,
-      complete: true,
-    });
+    held.resolve(appendCatchup('main', 'f1'));
     await waitFor(() => {
       flushAll();
       return controller.getState().blocks.some((block) => block.kind === 'assistant' && block.text === 'Hello world!');
@@ -6839,40 +5715,22 @@ describe('SessionController transcript authority', () => {
       user_message_id: 'um-pending',
       status: 'queued',
       content: [{ type: 'text', text: 'queued later' }],
-      created_at: '2026-01-01T00:00:00.000Z',
+      created_at: FIXED_AT,
     }));
     await controller.sendPrompt({ text: 'queued later', permissionMode: 'manual' });
+    const liveSnap = emptySnapshot({
+      items: [makeTurn('t1', 1, {
+        origin: { kind: 'user', payload: { promptId: 'p-live', userMessageId: 'um-live' } },
+        prompt: 'live prompt',
+      })],
+      prompts: [{ promptId: 'p-live', status: 'completed', userMessageId: 'um-live', createdAt: FIXED_AT }],
+    });
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user', payload: { promptId: 'p-live', userMessageId: 'um-live' } },
-            prompt: 'live prompt',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [
-          {
-            promptId: 'p-live',
-            status: 'completed',
-            userMessageId: 'um-live',
-            createdAt: '2026-01-01T00:00:00.000Z',
-          },
-        ],
-        meta: {},
-      },
+      snapshot: liveSnap,
     }));
     const ids = controller.getState().blocks.map((block) => block.id);
     controller.handleTranscript(asTranscriptEvent({
@@ -6880,32 +5738,7 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       seq: 2,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user', payload: { promptId: 'p-live', userMessageId: 'um-live' } },
-            prompt: 'live prompt',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [
-          {
-            promptId: 'p-live',
-            status: 'completed',
-            userMessageId: 'um-live',
-            createdAt: '2026-01-01T00:00:00.000Z',
-          },
-        ],
-        meta: {},
-      },
+      snapshot: liveSnap,
     }));
     flushAll();
     expect(controller.getState().blocks.map((block) => block.id)).toEqual(ids);
@@ -6921,17 +5754,7 @@ describe('SessionController transcript authority', () => {
         listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
         listTasks: vi.fn(async () => ({ items: [] })),
         getSessionGoal: vi.fn(async () => null),
-        getAgentTranscript: vi.fn(async () => ({
-          agent_id: 'main',
-          items: [],
-          has_more: false,
-          tasks: [],
-          interactions: [],
-          attachments: [],
-          todos: [],
-          prompts: [],
-          meta: {},
-        })),
+        getAgentTranscript: vi.fn(async () => transcriptPage('main', [], { session_id: 'session_other' })),
       } as unknown as KikiClient,
       fakeView({ snapshot: vi.fn(async () => snapshot({ session: { ...session, id: 'session_other' } })) }, {}, 'session_other'),
       'session_other',
@@ -6943,25 +5766,7 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'session A only',
-            steps: [],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({ items: [makeTurn('t1', 1, { prompt: 'session A only' })] }),
     }));
     flushAll();
     expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'session A only')).toBe(true);
@@ -6977,98 +5782,39 @@ describe('SessionController transcript authority', () => {
       agent_id: 'main',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user' },
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'running',
-                frames: [
-                  {
-                    kind: 'tool',
-                    frameId: 'spawn',
-                    toolCallId: 'tc-agent',
-                    name: 'Agent',
-                    state: 'running',
-                    agentRefs: [{ agentId: 'child-1', role: 'child' }],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-        tasks: [
-          {
-            taskId: 'task-1',
-            kind: 'subagent',
-            state: 'running',
-            detached: false,
-            agentId: 'child-1',
-            outputTail: '',
-          },
-        ],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, {
+          state: 'running',
+          steps: [makeStep('t1.1', 't1', 1, [
+            toolFrame('spawn', 'tc-agent', 'Agent', { state: 'running', agentRefs: [{ agentId: 'child-1', role: 'child' }] }),
+          ], { state: 'running' })],
+        })],
+        tasks: [subagentTask('task-1', 'child-1', { startedAt: undefined })],
+      }),
     }));
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'child-1',
       has_more_older: false,
       seq: 1,
-      snapshot: {
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'running',
-            origin: { kind: 'user' },
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'running',
-                frames: [{ kind: 'text', frameId: 'c1', role: 'assistant', text: 'child' }],
-              },
-            ],
-          },
-        ],
-        tasks: [],
-        interactions: [],
-        attachments: [],
-        todos: [],
-        prompts: [],
-        meta: {},
-      },
+      snapshot: emptySnapshot({
+        items: [makeTurn('t1', 1, {
+          state: 'running',
+          steps: [makeStep('t1.1', 't1', 1, [textFrame('c1', 'child')], { state: 'running' })],
+        })],
+      }),
     }));
     const forests = controller.forestPublishCount;
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.ops',
       agent_id: 'child-1',
       seq: 2,
-      ops: [
-        {
-          op: 'append',
-          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' },
-          offset: 5,
-          text: ' more',
-        },
-      ],
+      ops: [{
+        op: 'append',
+        target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'c1' },
+        offset: 5,
+        text: ' more',
+      }],
     }));
     flushAll();
     expect(controller.forestPublishCount).toBe(forests);

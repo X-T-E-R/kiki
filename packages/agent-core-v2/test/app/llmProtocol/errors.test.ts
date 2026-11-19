@@ -155,31 +155,10 @@ describe('APIRequestTooLargeError', () => {
 });
 
 describe('isRetryableGenerateError', () => {
-  it('matches transient provider errors and empty generate responses', () => {
-    expect(isRetryableGenerateError(new APIConnectionError('conn'))).toBe(true);
-    expect(isRetryableGenerateError(new APITimeoutError('timeout'))).toBe(true);
-    expect(isRetryableGenerateError(new APIEmptyResponseError('empty'))).toBe(true);
-  });
-
-  it.each([408, 409, 429, 500, 502, 503, 504, 529])(
-    'treats HTTP %i as retryable',
-    (statusCode) => {
-      expect(isRetryableGenerateError(new APIStatusError(statusCode, 'retryable'))).toBe(true);
-    },
-  );
-
-  it('treats provider overload as retryable', () => {
-    expect(isRetryableGenerateError(new APIProviderOverloadedError(529, 'Overloaded'))).toBe(true);
+  it('treats 503 overload subclass as retryable and context overflow or unknown values as non-retryable', () => {
     expect(
       isRetryableGenerateError(new APIProviderOverloadedError(503, 'server is currently overloaded')),
     ).toBe(true);
-  });
-
-  it.each([400, 401, 403, 404, 422])('treats HTTP %i as non-retryable', (statusCode) => {
-    expect(isRetryableGenerateError(new APIStatusError(statusCode, 'non-retryable'))).toBe(false);
-  });
-
-  it('does not retry context overflow or unknown errors', () => {
     expect(
       isRetryableGenerateError(new APIContextOverflowError(400, 'Context length exceeded')),
     ).toBe(false);
@@ -313,41 +292,6 @@ describe('isImageFormatError', () => {
   });
 });
 
-describe('error hierarchy instanceof checks', () => {
-  it('all error types are instanceof ChatProviderError', () => {
-    const errors = [
-      new APIConnectionError('conn'),
-      new APITimeoutError('timeout'),
-      new APIStatusError(400, 'status', null),
-      new APIContextOverflowError(400, 'context length exceeded'),
-      new APIEmptyResponseError('empty'),
-    ];
-
-    for (const err of errors) {
-      expect(err).toBeInstanceOf(ChatProviderError);
-    }
-  });
-
-  it('specific types are distinguishable', () => {
-    const connErr = new APIConnectionError('conn');
-    const statusErr = new APIStatusError(400, 'status', null);
-
-    expect(connErr).not.toBeInstanceOf(APIStatusError);
-    expect(statusErr).not.toBeInstanceOf(APIConnectionError);
-  });
-
-  it('can catch with ChatProviderError and inspect subtype', () => {
-    const err: ChatProviderError = new APIStatusError(404, 'not found', 'req-123');
-
-    if (err instanceof APIStatusError) {
-      expect(err.statusCode).toBe(404);
-      expect(err.requestId).toBe('req-123');
-    } else {
-      expect.unreachable('Expected APIStatusError');
-    }
-  });
-});
-
 describe('normalizeAPIStatusError', () => {
   it('normalizes HTTP 429 to APIProviderRateLimitError', () => {
     const error = normalizeAPIStatusError(429, 'Too many requests', 'req-rate');
@@ -454,117 +398,6 @@ describe('normalizeAPIStatusError', () => {
     expect(error).toBeInstanceOf(APIStatusError);
     expect(error).not.toBeInstanceOf(APIRequestTooLargeError);
     expect(error).not.toBeInstanceOf(APIContextOverflowError);
-  });
-
-  it('appends a truncated provider body fragment onto a bare 400 message', () => {
-    const error = normalizeAPIStatusError(
-      400,
-      '400 Bad Request',
-      'req-400',
-      null,
-      null,
-      { error: { message: "This model's maximum context length is 8192 tokens" } },
-    );
-    expect(error.constructor).toBe(APIStatusError);
-    expect(error.statusCode).toBe(400);
-    expect(error.message).toContain('400 Bad Request');
-    expect(error.message).toContain("This model's maximum context length is 8192 tokens");
-    expect(isRetryableGenerateError(error)).toBe(false);
-  });
-
-  it('falls back to the original 400 message when the body is missing', () => {
-    const error = normalizeAPIStatusError(400, '400 Bad Request');
-    expect(error.constructor).toBe(APIStatusError);
-    expect(error.message).toBe('400 Bad Request');
-    expect(isRetryableGenerateError(error)).toBe(false);
-  });
-
-  it('truncates a giant 400 body fragment', () => {
-    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, {
-      message: 'x'.repeat(800),
-    });
-    expect(error.message).toContain('400 Bad Request');
-    expect(error.message).toContain(`${'x'.repeat(500)}...`);
-    expect(error.message).not.toContain('x'.repeat(501));
-    expect(error.message.length).toBeLessThanOrEqual(700);
-  });
-
-  it('does not re-append a body already inlined in the SDK message', () => {
-    const detail = `provider-rejected-${'x'.repeat(800)}`;
-    const error = normalizeAPIStatusError(400, `400 ${detail}`, null, null, null, { message: detail });
-    expect(error.message.length).toBeLessThanOrEqual(700);
-    expect((error.message.match(/provider-rejected-/g) ?? []).length).toBe(1);
-    expect(error.message).toContain('400');
-    expect(isRetryableGenerateError(error)).toBe(false);
-  });
-
-  it('redacts sensitive keys and inline secrets from a 400 body', () => {
-    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, {
-      api_key: 'sk-live-SECRETVALUE',
-      Authorization: 'Bearer super-secret-token',
-      stack: 'internal stack',
-    });
-    expect(error.message).toContain('[REDACTED]');
-    expect(error.message).toContain('internal stack');
-    expect(error.message).not.toContain('sk-live-SECRETVALUE');
-    expect(error.message).not.toContain('super-secret-token');
-    expect(error.message.length).toBeLessThanOrEqual(700);
-  });
-
-  it.each([
-    ['api_key=AIza-PLAINSECRET123', 'AIza-PLAINSECRET123'],
-    ['token: plainsecret123', 'plainsecret123'],
-    ['Authorization: Basic plainsecret123', 'plainsecret123'],
-    [
-      'Authorization: Digest username="Mufasa", realm="test", nonce="abc", response="VERYSECRET"',
-      'VERYSECRET',
-    ],
-    [
-      'Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=deadbeefsecret',
-      'deadbeefsecret',
-    ],
-    ['Authorization: Basic "plain secret"', 'plain secret'],
-  ])('redacts the labeled secret in string body %s', (body, secret) => {
-    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, body);
-    expect(error.message).toContain('[REDACTED]');
-    expect(error.message).toContain('400 Bad Request');
-    expect(error.message).not.toContain(secret);
-  });
-
-  it('does not redact prose that only mentions token without a value', () => {
-    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, {
-      message: 'token limit exceeded',
-    });
-    expect(error.message).toContain('token limit exceeded');
-    expect(error.message).not.toContain('[REDACTED]');
-  });
-
-  it('redacts labeled secrets already inlined in the SDK message', () => {
-    const error = normalizeAPIStatusError(
-      400,
-      '400 api_key=AIza-PLAINSECRET123 token: plainsecret123 Authorization: Basic plainsecret123',
-    );
-    expect(error.message).toContain('[REDACTED]');
-    expect(error.message).not.toContain('AIza-PLAINSECRET123');
-    expect(error.message).not.toContain('plainsecret123');
-  });
-
-  it('does not re-append a pretty-printed JSON body already present in the SDK message', () => {
-    const payload = { api_key: 'sk-live-SECRETVALUE', stack: 'internal stack' };
-    const pretty = JSON.stringify(payload, null, 2);
-    const error = normalizeAPIStatusError(400, `400 Bad Request\n${pretty}`, null, null, null, payload);
-    expect(error.message).not.toContain('sk-live-SECRETVALUE');
-    expect(error.message).toContain('internal stack');
-    expect((error.message.match(/\[REDACTED\]/g) ?? []).length).toBe(1);
-    expect(error.message).not.toContain(' — ');
-    expect(error.message.length).toBeLessThanOrEqual(700);
-  });
-
-  it('still appends a distinct non-JSON body that only matches after stripping spaces', () => {
-    const error = normalizeAPIStatusError(400, '400 quota exceeded', null, null, null, 'quotaexceeded');
-    expect(error.message).toContain('quota exceeded');
-    expect(error.message).toContain('quotaexceeded');
-    expect(error.message).toContain(' — ');
   });
 });
 

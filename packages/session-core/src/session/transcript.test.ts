@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AgentTranscript, placeTranscriptItems, type AgentTranscriptSnapshot, type ContentRef, type TranscriptItem, type TranscriptOperation, type TranscriptPrompt, type TranscriptTurn } from '@kiki/transcript';
-import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
+import { AgentTranscript, placeTranscriptItems, type AgentTranscriptSnapshot, type ContentRef, type TranscriptFrame, type TranscriptItem, type TranscriptOperation, type TranscriptPrompt, type TranscriptTurn } from '@kiki/transcript';
+import type { Message, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
 
 import {
   CHILD_AGENT_ID,
@@ -20,6 +20,16 @@ import {
   spawnChildOps,
   userTurnSnapshot,
 } from './__fixtures__/canonicalTranscript';
+import {
+  TEST_SESSION as session,
+  compactSnapshotSubagent,
+  makeStep,
+  makeTurn,
+  subagentTask,
+  taskRefItem,
+  textFrame,
+  toolFrame,
+} from './__fixtures__/sessionTestBuilders';
 
 import type { AgentTranscriptResponse } from '../transport';
 import { translate } from '../i18n';
@@ -76,42 +86,9 @@ import {
   type UserBlock,
 } from './transcript';
 
-const session: Session = {
-  id: 'session_test',
-  workspace_id: 'wd_test_000000000000',
-  title: 'Test',
-  created_at: '2026-01-01T00:00:00.000Z',
-  updated_at: '2026-01-01T00:00:00.000Z',
-  busy: false,
-  metadata: { cwd: 'C:/tmp' },
-  agent_config: { model: '' },
-  usage: {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cache_creation_tokens: 0,
-    total_cost_usd: 0,
-    context_tokens: 0,
-    context_limit: 0,
-    turn_count: 0,
-  },
-  permission_rules: [],
-  message_count: 0,
-  last_seq: 0,
-};
-
-function compactSnapshotSubagent(
-  overrides: Partial<SnapshotSubagent> & Pick<SnapshotSubagent, 'id'>,
-): SnapshotSubagent {
-  return {
-    session_id: 'session_test',
-    kind: 'subagent',
-    description: 'Inspect the protocol',
-    status: 'completed',
-    created_at: FIXED_AT,
-    ...overrides,
-  };
-}
+const ts = (seconds: number) => `2026-01-01T00:00:${String(seconds).padStart(2, '0')}.000Z`;
+const projectMain = (snap: AgentTranscriptSnapshot, state = createViewState('session_test')) =>
+  projectAgentTranscriptView(state, 'main', snap);
 
 function unknownChildBlock(agentId = CHILD_AGENT_ID): SubagentBlock {
   return {
@@ -4149,37 +4126,86 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
   });
 
   describe('subagent lifecycle event blocks', () => {
+    const spawnTool = (
+      toolCallId: string,
+      agentId: string,
+      startedAt: string,
+      input: Record<string, unknown> = { profile: 'Researcher', prompt: 'map the surface' },
+      frameId = 'frame-spawn',
+    ) =>
+      toolFrame(frameId, toolCallId, 'AgentRun', {
+        state: 'done',
+        input,
+        agentRefs: [{ agentId, role: 'child' }],
+        startedAt,
+      });
+    const sendTool = (
+      toolCallId: string,
+      target: string,
+      message: string,
+      startedAt: string,
+      output?: string,
+      frameId = 'frame-send',
+    ) =>
+      toolFrame(frameId, toolCallId, 'AgentSend', {
+        state: 'done',
+        input: { target, message },
+        output,
+        startedAt,
+      });
+    const resumeTool = (
+      toolCallId: string,
+      input: Record<string, unknown>,
+      startedAt: string,
+      extra: Partial<Parameters<typeof toolFrame>[3]> = {},
+      frameId = 'frame-resume',
+    ) =>
+      toolFrame(frameId, toolCallId, 'AgentRun', {
+        state: 'done',
+        input,
+        startedAt,
+        ...extra,
+      });
+    const delegateTurn = (
+      turnId: string,
+      ordinal: number,
+      frames: readonly TranscriptFrame[],
+      startedAt: string,
+      prompt = 'delegate',
+      stepStartedAt = ts(1),
+      state: 'running' | 'completed' = 'completed',
+    ) =>
+      makeTurn(turnId, ordinal, {
+        state,
+        prompt,
+        startedAt,
+        steps: frames.length === 0 ? [] : [makeStep(`${turnId}.1`, turnId, 1, frames, { state, startedAt: stepStartedAt })],
+      });
+
     const lifecycleSnapshot = (assistantText?: string, endedAt?: string): AgentTranscriptSnapshot => emptySnapshot({
       items: [
-        { kind: 'taskref', refId: 'ref-agent-1', taskId: 'task-agent-1', at: FIXED_AT_1 },
-        {
-          kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' },
-          prompt: 'delegate', startedAt: FIXED_AT,
-          steps: [{
-            kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'running', startedAt: FIXED_AT_1,
-            frames: [
-              {
-                kind: 'tool', frameId: 'spawn-frame', toolCallId: 'spawn-call', name: 'AgentRun', state: 'done',
-                input: { profile: 'Researcher', prompt: 'map the surface' },
-                agentRefs: [{ agentId: 'agent-1', role: 'child' }], startedAt: FIXED_AT_1,
-              },
-              ...(assistantText === undefined ? [] : [{ kind: 'text' as const, frameId: 'assistant-current', role: 'assistant' as const, text: assistantText }]),
-            ],
-          }],
-        },
+        taskRefItem('ref-agent-1', 'task-agent-1', FIXED_AT_1),
+        delegateTurn('t1', 1, [
+          spawnTool('spawn-call', 'agent-1', FIXED_AT_1, { profile: 'Researcher', prompt: 'map the surface' }, 'spawn-frame'),
+          ...(assistantText === undefined ? [] : [textFrame('assistant-current', assistantText)]),
+        ], FIXED_AT, 'delegate', FIXED_AT_1, 'running'),
       ],
-      tasks: [{
-        taskId: 'task-agent-1', kind: 'subagent', state: 'completed', detached: false,
-        subagentName: 'Researcher', agentId: 'agent-1', description: 'map the surface', outputTail: '',
-        startedAt: FIXED_AT_1, endedAt,
-      }],
+      tasks: [subagentTask('task-agent-1', 'agent-1', {
+        state: 'completed',
+        subagentName: 'Researcher',
+        description: 'map the surface',
+        startedAt: FIXED_AT_1,
+        endedAt,
+      })],
     });
 
     it('places a timestamped terminal event before an undated latest assistant in its running turn', () => {
-      let projected = projectAgentTranscriptView(createViewState('session_test'), 'main', lifecycleSnapshot(undefined, FIXED_AT_2));
+      let projected = projectMain(lifecycleSnapshot(undefined, FIXED_AT_2));
       for (const text of ['first current answer', 'second current answer', 'latest current answer']) {
-        projected = projectAgentTranscriptView(projected, 'main', lifecycleSnapshot(text, FIXED_AT_2));
-        const terminalIndex = projected.blocks.findIndex((block) => block.id === 'subagent-event-agent-1-completed-task-agent-1');
+        projected = projectMain(lifecycleSnapshot(text, FIXED_AT_2), projected);
+        const terminalIndex = projected.blocks.findIndex(
+          (block) => block.id === 'subagent-event-agent-1-completed-task-agent-1',
+        );
         const latestAssistantIndex = projected.blocks.findLastIndex((block) => block.kind === 'assistant');
         expect(terminalIndex).toBeGreaterThanOrEqual(0);
         expect(latestAssistantIndex).toBeGreaterThanOrEqual(0);
@@ -4190,9 +4216,11 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     it('keeps a timestamp-less terminal event beside its card across appends', () => {
       let projected = createViewState('session_test');
       for (const text of ['first current answer', 'latest current answer']) {
-        projected = projectAgentTranscriptView(projected, 'main', lifecycleSnapshot(text));
+        projected = projectMain(lifecycleSnapshot(text), projected);
         const cardIndex = projected.blocks.findIndex((block) => block.id === 'subagent-agent-1');
-        const terminalIndex = projected.blocks.findIndex((block) => block.id === 'subagent-event-agent-1-completed-task-agent-1');
+        const terminalIndex = projected.blocks.findIndex(
+          (block) => block.id === 'subagent-event-agent-1-completed-task-agent-1',
+        );
         expect(cardIndex).toBeGreaterThanOrEqual(0);
         expect(terminalIndex).toBe(cardIndex + 1);
         expect(projected.blocks[terminalIndex]).toMatchObject({ kind: 'subagent-event', at: undefined });
@@ -4201,201 +4229,57 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
 
     it('emits in-place spawned and terminal compact entries for a taskref-backed subagent', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'delegate',
-              startedAt: '2026-01-01T00:00:00.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't1.1',
-                  turnId: 't1',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:01.000Z',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-spawn',
-                      toolCallId: 'call-spawn-1',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { profile: 'Researcher', prompt: 'map the surface' },
-                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
-                      startedAt: '2026-01-01T00:00:01.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-            {
-              kind: 'taskref',
-              refId: 'ref-agent-1',
-              taskId: 'task-agent-1',
-              at: '2026-01-01T00:00:01.000Z',
-            },
-            {
-              kind: 'turn',
-              turnId: 't2',
-              ordinal: 2,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'meanwhile',
-              startedAt: '2026-01-01T00:00:10.000Z',
-              steps: [],
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-agent-1',
-              kind: 'subagent',
-              state: 'completed',
-              detached: false,
-              subagentName: 'Researcher',
-              agentId: 'agent-1',
-              description: 'map the surface',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:01.000Z',
-              endedAt: '2026-01-01T00:00:20.000Z',
-              resultSummary: 'Surface mapped.',
-            },
-          ],
-        }),
-      );
-      const spawned = projected.blocks.find(
-        (block) => block.id === 'subagent-event-agent-1-spawned-task-agent-1',
-      );
-      const terminal = projected.blocks.find(
-        (block) => block.id === 'subagent-event-agent-1-completed-task-agent-1',
-      );
+      const projected = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+          taskRefItem('ref-agent-1', 'task-agent-1', ts(1)),
+          delegateTurn('t2', 2, [], ts(10), 'meanwhile'),
+        ],
+        tasks: [subagentTask('task-agent-1', 'agent-1', {
+          state: 'completed',
+          subagentName: 'Researcher',
+          description: 'map the surface',
+          startedAt: ts(1),
+          endedAt: ts(20),
+          resultSummary: 'Surface mapped.',
+        })],
+      }));
+      const spawned = projected.blocks.find((block) => block.id === 'subagent-event-agent-1-spawned-task-agent-1');
+      const terminal = projected.blocks.find((block) => block.id === 'subagent-event-agent-1-completed-task-agent-1');
       expect(spawned).toMatchObject({
-        kind: 'subagent-event',
-        subagentId: 'agent-1',
-        name: 'Researcher',
-        event: 'spawned',
-        status: 'completed',
-        at: '2026-01-01T00:00:01.000Z',
+        kind: 'subagent-event', subagentId: 'agent-1', name: 'Researcher', event: 'spawned', status: 'completed', at: ts(1),
       });
       expect(terminal).toMatchObject({
-        kind: 'subagent-event',
-        subagentId: 'agent-1',
-        event: 'completed',
-        at: '2026-01-01T00:00:20.000Z',
+        kind: 'subagent-event', subagentId: 'agent-1', event: 'completed', at: ts(20),
       });
-      // In-place accounting: spawned lands before the intervening turn, the
-      // terminal entry lands after it (its own end timestamp).
-      const t2Index = projected.blocks.findIndex(
-        (block) => block.kind === 'user' && block.turnId === 't2',
-      );
+      const t2Index = projected.blocks.findIndex((block) => block.kind === 'user' && block.turnId === 't2');
       expect(projected.blocks.indexOf(spawned!)).toBeLessThan(t2Index);
       expect(projected.blocks.indexOf(terminal!)).toBeGreaterThan(t2Index);
     });
 
     it('emits send-injection and resume entries from parent tool frames', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'delegate',
-              startedAt: '2026-01-01T00:00:00.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't1.1',
-                  turnId: 't1',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:01.000Z',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-spawn',
-                      toolCallId: 'call-spawn-1',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { profile: 'Researcher', prompt: 'map the surface' },
-                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
-                      startedAt: '2026-01-01T00:00:01.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-send',
-                      toolCallId: 'call-send-1',
-                      name: 'AgentSend',
-                      state: 'done',
-                      input: { target: 'agent-1', message: 'also check the wire envelope' },
-                      output: JSON.stringify({ status: 'queued' }),
-                      startedAt: '2026-01-01T00:00:03.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-resume',
-                      toolCallId: 'call-resume-1',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { resume_agent_ids: { 'agent-1': 'keep going' } },
-                      startedAt: '2026-01-01T00:00:05.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-stray-send',
-                      toolCallId: 'call-send-stray',
-                      name: 'AgentSend',
-                      state: 'done',
-                      input: { target: 'nobody-known', message: 'hi' },
-                      startedAt: '2026-01-01T00:00:06.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-agent-1',
-              kind: 'subagent',
-              state: 'running',
-              detached: false,
-              subagentName: 'Researcher',
-              agentId: 'agent-1',
-              description: 'map the surface',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:01.000Z',
-            },
-          ],
-        }),
-      );
-      const sent = projected.blocks.find(
-        (block) => block.kind === 'subagent-event' && block.event === 'sent',
-      );
-      const resumed = projected.blocks.find(
-        (block) => block.kind === 'subagent-event' && block.event === 'resumed',
-      );
+      const projected = projectMain(emptySnapshot({
+        items: [delegateTurn('t1', 1, [
+          spawnTool('call-spawn-1', 'agent-1', ts(1)),
+          sendTool('call-send-1', 'agent-1', 'also check the wire envelope', ts(3), JSON.stringify({ status: 'queued' })),
+          resumeTool('call-resume-1', { resume_agent_ids: { 'agent-1': 'keep going' } }, ts(5)),
+          sendTool('call-send-stray', 'nobody-known', 'hi', ts(6), undefined, 'frame-stray-send'),
+        ], ts(0))],
+        tasks: [subagentTask('task-agent-1', 'agent-1', {
+          subagentName: 'Researcher',
+          description: 'map the surface',
+          startedAt: ts(1),
+        })],
+      }));
+      const sent = projected.blocks.find((block) => block.kind === 'subagent-event' && block.event === 'sent');
+      const resumed = projected.blocks.find((block) => block.kind === 'subagent-event' && block.event === 'resumed');
       for (const id of ['tool-call-send-1', 'tool-call-resume-1']) {
-        expect(projected.blocks.find((block) => block.id === id)).toMatchObject({
-          agentRefs: [{ agentId: 'agent-1' }],
-        });
+        expect(projected.blocks.find((block) => block.id === id)).toMatchObject({ agentRefs: [{ agentId: 'agent-1' }] });
       }
       expect(sent).toMatchObject({
         id: 'subagent-event-agent-1-send-call-send-1',
         subagentId: 'agent-1',
-        at: '2026-01-01T00:00:03.000Z',
+        at: ts(3),
         turnId: 't1',
         message: 'also check the wire envelope',
         delivery: 'queued',
@@ -4403,322 +4287,79 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       expect(resumed).toMatchObject({
         id: 'subagent-event-agent-1-resume-call-resume-1',
         subagentId: 'agent-1',
-        at: '2026-01-01T00:00:05.000Z',
+        at: ts(5),
       });
-      // Unknown send targets produce no entry; a running agent has no terminal entry.
-      expect(
-        projected.blocks.some(
-          (block) => block.kind === 'subagent-event' && block.id.includes('call-send-stray'),
-        ),
-      ).toBe(false);
-      expect(
-        projected.blocks.some(
-          (block) => block.kind === 'subagent-event' && block.event === 'completed',
-        ),
-      ).toBe(false);
+      expect(projected.blocks.some((block) => block.kind === 'subagent-event' && block.id.includes('call-send-stray'))).toBe(false);
+      expect(projected.blocks.some((block) => block.kind === 'subagent-event' && block.event === 'completed')).toBe(false);
     });
 
     it('anchors sent/resumed entries after their triggering tool block without splitting the tool fold', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'delegate',
-              startedAt: '2026-01-01T00:00:00.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't1.1',
-                  turnId: 't1',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:01.000Z',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-read',
-                      toolCallId: 'call-read-1',
-                      name: 'Read',
-                      state: 'done',
-                      input: { file_path: 'a.ts' },
-                      startedAt: '2026-01-01T00:00:01.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-edit',
-                      toolCallId: 'call-edit-1',
-                      name: 'Edit',
-                      state: 'done',
-                      input: { file_path: 'a.ts' },
-                      startedAt: '2026-01-01T00:00:02.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-spawn-1',
-                      toolCallId: 'call-spawn-1',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { profile: 'Researcher', prompt: 'map the surface' },
-                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
-                      startedAt: '2026-01-01T00:00:03.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-spawn-2',
-                      toolCallId: 'call-spawn-2',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { profile: 'Scout', prompt: 'probe the edges' },
-                      agentRefs: [{ agentId: 'agent-2', role: 'child' }],
-                      startedAt: '2026-01-01T00:00:04.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-send',
-                      toolCallId: 'call-send-1',
-                      name: 'AgentSend',
-                      state: 'done',
-                      input: { target: 'agent-1', message: 'also check the wire envelope' },
-                      startedAt: '2026-01-01T00:00:05.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-resume',
-                      toolCallId: 'call-resume-1',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { resume_agent_ids: { 'agent-1': 'keep going', 'agent-2': 'you too' } },
-                      startedAt: '2026-01-01T00:00:06.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-          tasks: [],
-        }),
-      );
+      const projected = projectMain(emptySnapshot({
+        items: [delegateTurn('t1', 1, [
+          toolFrame('frame-read', 'call-read-1', 'Read', { state: 'done', input: { file_path: 'a.ts' }, startedAt: ts(1) }),
+          toolFrame('frame-edit', 'call-edit-1', 'Edit', { state: 'done', input: { file_path: 'a.ts' }, startedAt: ts(2) }),
+          spawnTool('call-spawn-1', 'agent-1', ts(3), { profile: 'Researcher', prompt: 'map the surface' }, 'frame-spawn-1'),
+          spawnTool('call-spawn-2', 'agent-2', ts(4), { profile: 'Scout', prompt: 'probe the edges' }, 'frame-spawn-2'),
+          sendTool('call-send-1', 'agent-1', 'also check the wire envelope', ts(5)),
+          resumeTool('call-resume-1', { resume_agent_ids: { 'agent-1': 'keep going', 'agent-2': 'you too' } }, ts(6)),
+        ], ts(0))],
+      }));
       const indexOf = (id: string) => projected.blocks.findIndex((block) => block.id === id);
-      // Causality: each lifecycle entry follows the tool call that caused it,
-      // never leads it (the timeline id tiebreak orders `subagent-event-…`
-      // before `tool-…` at equal timestamps).
-      const sendTool = indexOf('tool-call-send-1');
-      const resumeTool = indexOf('tool-call-resume-1');
-      expect(sendTool).toBeGreaterThanOrEqual(0);
-      expect(resumeTool).toBeGreaterThanOrEqual(0);
-      expect(indexOf('subagent-event-agent-1-send-call-send-1')).toBe(sendTool + 1);
-      // One tool deriving several entries keeps their derivation order.
-      expect(indexOf('subagent-event-agent-1-resume-call-resume-1')).toBe(resumeTool + 1);
-      expect(indexOf('subagent-event-agent-2-resume-call-resume-1')).toBe(resumeTool + 2);
-      // Folding is reserved for pure-read runs: an Edit or a dispatch is an
-      // action the reader must see, so this run stays unfolded and the
-      // anchored entries keep their place right after their own tools.
+      const sendToolIdx = indexOf('tool-call-send-1');
+      const resumeToolIdx = indexOf('tool-call-resume-1');
+      expect(sendToolIdx).toBeGreaterThanOrEqual(0);
+      expect(resumeToolIdx).toBeGreaterThanOrEqual(0);
+      expect(indexOf('subagent-event-agent-1-send-call-send-1')).toBe(sendToolIdx + 1);
+      expect(indexOf('subagent-event-agent-1-resume-call-resume-1')).toBe(resumeToolIdx + 1);
+      expect(indexOf('subagent-event-agent-2-resume-call-resume-1')).toBe(resumeToolIdx + 2);
       const nodes = groupBlocks(projected.blocks);
       expect(nodes.some((node) => node.kind === 'tool-group')).toBe(false);
       expect(nodes).toEqual(projected.blocks);
     });
 
     it('scopes compact entries to direct children when filtering a page', () => {
-      const state = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'taskref',
-              refId: 'ref-agent-1',
-              taskId: 'task-agent-1',
-              at: '2026-01-01T00:00:01.000Z',
-            },
-            {
-              kind: 'taskref',
-              refId: 'ref-agent-2',
-              taskId: 'task-agent-2',
-              at: '2026-01-01T00:00:02.000Z',
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-agent-1',
-              kind: 'subagent',
-              state: 'running',
-              detached: false,
-              agentId: 'agent-1',
-              outputTail: '',
-            },
-            {
-              taskId: 'task-agent-2',
-              kind: 'subagent',
-              state: 'running',
-              detached: false,
-              agentId: 'agent-2',
-              outputTail: '',
-            },
-          ],
-        }),
-      );
-      const forest = buildAgentForest(
-        [],
-        [
-          { agentId: 'main', name: 'main' },
-          { agentId: 'agent-1', parentAgentId: 'main', name: 'Child' },
-          { agentId: 'agent-2', parentAgentId: 'agent-1', name: 'Grandchild' },
-        ],
-      );
+      const state = projectMain(emptySnapshot({
+        items: [taskRefItem('ref-agent-1', 'task-agent-1', ts(1)), taskRefItem('ref-agent-2', 'task-agent-2', ts(2))],
+        tasks: [subagentTask('task-agent-1', 'agent-1', { startedAt: undefined }), subagentTask('task-agent-2', 'agent-2', { startedAt: undefined })],
+      }));
+      const forest = buildAgentForest([], [
+        { agentId: 'main', name: 'main' },
+        { agentId: 'agent-1', parentAgentId: 'main', name: 'Child' },
+        { agentId: 'agent-2', parentAgentId: 'agent-1', name: 'Grandchild' },
+      ]);
       const filtered = filterBlocksToDirectChildren(state.blocks, forest, 'main');
-      expect(
-        filtered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-1'),
-      ).toBe(true);
-      expect(
-        filtered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-2'),
-      ).toBe(false);
+      expect(filtered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-1')).toBe(true);
+      expect(filtered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-2')).toBe(false);
       const childFiltered = filterBlocksToDirectChildren(state.blocks, forest, 'agent-1');
-      expect(
-        childFiltered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-2'),
-      ).toBe(true);
+      expect(childFiltered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-2')).toBe(true);
     });
 
     it('keeps per-run history across an AgentRun(resume) re-prompt: spawn → completed → resumed → completed', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'delegate',
-              startedAt: '2026-01-01T00:00:00.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't1.1',
-                  turnId: 't1',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:01.000Z',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-spawn',
-                      toolCallId: 'call-spawn-1',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { profile: 'Researcher', prompt: 'map the surface' },
-                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
-                      startedAt: '2026-01-01T00:00:01.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-            {
-              kind: 'taskref',
-              refId: 'ref-run-1',
-              taskId: 'task-agent-1-run-1',
-              at: '2026-01-01T00:00:01.000Z',
-            },
-            {
-              kind: 'turn',
-              turnId: 't2',
-              ordinal: 2,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'resume it',
-              startedAt: '2026-01-01T00:00:29.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't2.1',
-                  turnId: 't2',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:30.000Z',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-resume',
-                      toolCallId: 'call-resume-1',
-                      name: 'AgentRun',
-                      state: 'done',
-                      // Plain AgentRun resume refs the agent by stable name and
-                      // must resolve to the canonical id.
-                      input: { resume: 'Researcher', prompt: 'one more pass' },
-                      startedAt: '2026-01-01T00:00:30.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-            {
-              kind: 'taskref',
-              refId: 'ref-run-2',
-              taskId: 'task-agent-1-run-2',
-              at: '2026-01-01T00:00:30.000Z',
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-agent-1-run-1',
-              kind: 'subagent',
-              state: 'completed',
-              detached: false,
-              name: 'Researcher',
-              subagentName: 'Researcher',
-              agentId: 'agent-1',
-              description: 'map the surface',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:01.000Z',
-              endedAt: '2026-01-01T00:00:20.000Z',
-              resultSummary: 'First pass done.',
-            },
-            {
-              taskId: 'task-agent-1-run-2',
-              kind: 'subagent',
-              state: 'completed',
-              detached: false,
-              name: 'Researcher',
-              subagentName: 'Researcher',
-              agentId: 'agent-1',
-              description: 'one more pass',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:30.000Z',
-              endedAt: '2026-01-01T00:00:45.000Z',
-              resultSummary: 'Second pass done.',
-            },
-          ],
-        }),
-      );
+      const projected = projectMain(emptySnapshot({
+        items: [
+          delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+          taskRefItem('ref-run-1', 'task-agent-1-run-1', ts(1)),
+          delegateTurn('t2', 2, [resumeTool('call-resume-1', { resume: 'Researcher', prompt: 'one more pass' }, ts(30))], ts(29), 'resume it', ts(30)),
+          taskRefItem('ref-run-2', 'task-agent-1-run-2', ts(30)),
+        ],
+        tasks: [
+          subagentTask('task-agent-1-run-1', 'agent-1', { state: 'completed', name: 'Researcher', subagentName: 'Researcher', description: 'map the surface', startedAt: ts(1), endedAt: ts(20), resultSummary: 'First pass done.' }),
+          subagentTask('task-agent-1-run-2', 'agent-1', { state: 'completed', name: 'Researcher', subagentName: 'Researcher', description: 'one more pass', startedAt: ts(30), endedAt: ts(45), resultSummary: 'Second pass done.' }),
+        ],
+      }));
       const events = projected.blocks.filter((block) => block.kind === 'subagent-event');
-      // Exactly four entries: the re-run's taskref must not re-emit a second
-      // "spawned", and each run keeps its own terminal entry.
-      expect(
-        events.map((block) => (block.kind === 'subagent-event' ? block.event : undefined)),
-      ).toEqual(['spawned', 'completed', 'resumed', 'completed']);
+      expect(events.map((block) => (block.kind === 'subagent-event' ? block.event : undefined))).toEqual(['spawned', 'completed', 'resumed', 'completed']);
       expect(events.map((block) => block.id)).toEqual([
         'subagent-event-agent-1-spawned-task-agent-1-run-1',
         'subagent-event-agent-1-completed-task-agent-1-run-1',
         'subagent-event-agent-1-resume-call-resume-1',
         'subagent-event-agent-1-completed-task-agent-1-run-2',
       ]);
-      // In-place timeline accounting: entries sit at their own event time.
-      expect(events[0]).toMatchObject({ at: '2026-01-01T00:00:01.000Z' });
-      expect(events[1]).toMatchObject({ at: '2026-01-01T00:00:20.000Z' });
-      expect(events[2]).toMatchObject({ at: '2026-01-01T00:00:30.000Z', turnId: 't2' });
-      expect(events[3]).toMatchObject({ at: '2026-01-01T00:00:45.000Z' });
-      const t2Index = projected.blocks.findIndex(
-        (block) => block.kind === 'user' && block.turnId === 't2',
-      );
+      expect(events[0]).toMatchObject({ at: ts(1) });
+      expect(events[1]).toMatchObject({ at: ts(20) });
+      expect(events[2]).toMatchObject({ at: ts(30), turnId: 't2' });
+      expect(events[3]).toMatchObject({ at: ts(45) });
+      const t2Index = projected.blocks.findIndex((block) => block.kind === 'user' && block.turnId === 't2');
       expect(projected.blocks.indexOf(events[1]!)).toBeLessThan(t2Index);
       expect(projected.blocks.indexOf(events[2]!)).toBeGreaterThan(t2Index);
       const subagentCards = projected.blocks.filter((block) => block.kind === 'subagent');
@@ -4738,115 +4379,34 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
 
     it('keeps failed and resumed runs of the same agent as distinct cards without swallowing the failure', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'dispatch explorer',
-              startedAt: '2026-01-01T00:00:00.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't1.1',
-                  turnId: 't1',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:01.000Z',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'f-spawn',
-                      toolCallId: 'call-spawn-fail',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { profile: 'explore', name: 'web_shared_remote_spaces', prompt: 'audit remote spaces' },
-                      agentRefs: [{ agentId: 'agent-ws-1', role: 'child' }],
-                      startedAt: '2026-01-01T00:00:01.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-            {
-              kind: 'taskref',
-              refId: 'ref-ws-fail',
-              taskId: 'task-ws-run-1',
-              at: '2026-01-01T00:00:01.000Z',
-            },
-            {
-              kind: 'turn',
-              turnId: 't2',
-              ordinal: 2,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'resume it',
-              startedAt: '2026-01-01T00:00:20.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't2.1',
-                  turnId: 't2',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:21.000Z',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'f-resume',
-                      toolCallId: 'call-resume-ok',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { resume: 'web_shared_remote_spaces', prompt: 'retry with token' },
-                      startedAt: '2026-01-01T00:00:21.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-            {
-              kind: 'taskref',
-              refId: 'ref-ws-ok',
-              taskId: 'task-ws-run-2',
-              at: '2026-01-01T00:00:21.000Z',
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-ws-run-1',
-              kind: 'subagent',
-              state: 'failed',
-              detached: true,
-              name: 'web_shared_remote_spaces',
-              agentId: 'agent-ws-1',
-              parentToolCallId: 'call-spawn-fail',
-              error: 'SSH handshake timed out after 10s',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:01.000Z',
-              endedAt: '2026-01-01T00:00:11.000Z',
-            },
-            {
-              taskId: 'task-ws-run-2',
-              kind: 'subagent',
-              state: 'completed',
-              detached: true,
-              name: 'web_shared_remote_spaces',
-              agentId: 'agent-ws-1',
-              parentToolCallId: 'call-resume-ok',
-              resultSummary: 'Verified 4 remote spaces and synced bindings.',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:21.000Z',
-              endedAt: '2026-01-01T00:00:35.000Z',
-            },
-          ],
-        }),
-      );
+      const projected = projectMain(emptySnapshot({
+        items: [
+          delegateTurn(
+            't1', 1,
+            [spawnTool('call-spawn-fail', 'agent-ws-1', ts(1), { profile: 'explore', name: 'web_shared_remote_spaces', prompt: 'audit remote spaces' }, 'f-spawn')],
+            ts(0), 'dispatch explorer',
+          ),
+          taskRefItem('ref-ws-fail', 'task-ws-run-1', ts(1)),
+          delegateTurn(
+            't2', 2,
+            [resumeTool('call-resume-ok', { resume: 'web_shared_remote_spaces', prompt: 'retry with token' }, ts(21), {}, 'f-resume')],
+            ts(20), 'resume it', ts(21),
+          ),
+          taskRefItem('ref-ws-ok', 'task-ws-run-2', ts(21)),
+        ],
+        tasks: [
+          subagentTask('task-ws-run-1', 'agent-ws-1', {
+            state: 'failed', detached: true, name: 'web_shared_remote_spaces',
+            parentToolCallId: 'call-spawn-fail', error: 'SSH handshake timed out after 10s',
+            startedAt: ts(1), endedAt: ts(11),
+          }),
+          subagentTask('task-ws-run-2', 'agent-ws-1', {
+            state: 'completed', detached: true, name: 'web_shared_remote_spaces',
+            parentToolCallId: 'call-resume-ok', resultSummary: 'Verified 4 remote spaces and synced bindings.',
+            startedAt: ts(21), endedAt: ts(35),
+          }),
+        ],
+      }));
       const cards = projected.blocks.filter((block) => block.kind === 'subagent');
       expect(cards).toHaveLength(2);
       expect(cards[0]).toMatchObject({
@@ -4865,441 +4425,96 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
 
     it('uses the latest task state when a foreground task-id run has no taskref', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'taskref',
-              refId: 'ref-background-run',
-              taskId: 'task-background-run',
-              at: '2026-01-01T00:00:01.000Z',
-            },
-            {
-              kind: 'turn',
-              turnId: 't2',
-              ordinal: 2,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'run it in the foreground',
-              startedAt: '2026-01-01T00:00:10.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't2.1',
-                  turnId: 't2',
-                  ordinal: 1,
-                  state: 'completed',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-foreground-run',
-                      toolCallId: 'call-foreground-run',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { resume: 'worker', prompt: 'finish' },
-                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
-                      startedAt: '2026-01-01T00:00:11.000Z',
-                      endedAt: '2026-01-01T00:00:12.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-background-run',
-              kind: 'subagent',
-              state: 'running',
-              detached: true,
-              name: 'worker',
-              agentId: 'agent-1',
-              description: 'first run',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:01.000Z',
-            },
-            {
-              taskId: 'task-foreground-run',
-              kind: 'subagent',
-              state: 'completed',
-              detached: false,
-              name: 'worker',
-              agentId: 'agent-1',
-              description: 'finish',
-              outputTail: 'done',
-              resultSummary: 'Foreground run completed.',
-              startedAt: '2026-01-01T00:00:11.000Z',
-              endedAt: '2026-01-01T00:00:20.000Z',
-            },
-          ],
-        }),
-      );
-
+      const projected = projectMain(emptySnapshot({
+        items: [
+          taskRefItem('ref-background-run', 'task-background-run', ts(1)),
+          delegateTurn(
+            't2', 2,
+            [resumeTool('call-foreground-run', { resume: 'worker', prompt: 'finish' }, ts(11), {
+              agentRefs: [{ agentId: 'agent-1', role: 'child' }], endedAt: ts(12),
+            }, 'frame-foreground-run')],
+            ts(10), 'run it in the foreground',
+          ),
+        ],
+        tasks: [
+          subagentTask('task-background-run', 'agent-1', { detached: true, name: 'worker', description: 'first run', startedAt: ts(1) }),
+          subagentTask('task-foreground-run', 'agent-1', {
+            state: 'completed', name: 'worker', description: 'finish', outputTail: 'done',
+            resultSummary: 'Foreground run completed.', startedAt: ts(11), endedAt: ts(20),
+          }),
+        ],
+      }));
       expect(projected.blocks.find((block) => block.id === 'subagent-agent-1')).toMatchObject({
-        kind: 'subagent',
-        status: 'completed',
-        summary: 'Foreground run completed.',
-        startedAt: '2026-01-01T00:00:11.000Z',
-        endedAt: '2026-01-01T00:00:20.000Z',
+        kind: 'subagent', status: 'completed', summary: 'Foreground run completed.', startedAt: ts(11), endedAt: ts(20),
       });
     });
 
     it('addresses resume/send refs by the projected stable name, never tool input labels', () => {
-      const spawnFrame = (
-        frameId: string,
-        toolCallId: string,
-        name: string,
-        agentId: string,
-        startedAt: string,
-      ) => ({
-        kind: 'tool' as const,
-        frameId,
-        toolCallId,
-        name: 'AgentRun',
-        state: 'done' as const,
-        input: { profile: 'coder', name, prompt: 'work' },
-        agentRefs: [{ agentId, role: 'child' as const }],
-        startedAt,
-      });
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'delegate',
-              startedAt: '2026-01-01T00:00:00.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't1.1',
-                  turnId: 't1',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:01.000Z',
-                  frames: [
-                    spawnFrame('frame-spawn-1', 'call-spawn-1', 'alpha', 'agent-1', '2026-01-01T00:00:01.000Z'),
-                    spawnFrame('frame-spawn-2', 'call-spawn-2', 'beta', 'agent-2', '2026-01-01T00:00:02.000Z'),
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-resume',
-                      toolCallId: 'call-resume-1',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { resume: 'beta', prompt: 'one more pass' },
-                      startedAt: '2026-01-01T00:00:05.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-send',
-                      toolCallId: 'call-send-1',
-                      name: 'AgentSend',
-                      state: 'done',
-                      input: { target: 'alpha', message: 'ping' },
-                      startedAt: '2026-01-01T00:00:06.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-alpha',
-              kind: 'subagent',
-              state: 'running',
-              detached: false,
-              name: 'alpha',
-              subagentName: 'coder',
-              agentId: 'agent-1',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:01.000Z',
-            },
-            {
-              taskId: 'task-beta',
-              kind: 'subagent',
-              state: 'running',
-              detached: false,
-              name: 'beta',
-              subagentName: 'coder',
-              agentId: 'agent-2',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:02.000Z',
-            },
-          ],
-        }),
-      );
-      const names = projected.blocks
-        .filter((block) => block.kind === 'subagent')
-        .map((block) => (block.kind === 'subagent' ? block.name : ''));
-      expect(names).toEqual(['alpha', 'beta']);
-      const resumed = projected.blocks.find(
-        (block) => block.kind === 'subagent-event' && block.event === 'resumed',
-      );
-      const sent = projected.blocks.find(
-        (block) => block.kind === 'subagent-event' && block.event === 'sent',
-      );
-      expect(resumed).toMatchObject({ subagentId: 'agent-2', at: '2026-01-01T00:00:05.000Z' });
-      expect(sent).toMatchObject({ subagentId: 'agent-1', at: '2026-01-01T00:00:06.000Z' });
+      const projected = projectMain(emptySnapshot({
+        items: [delegateTurn('t1', 1, [
+          spawnTool('call-spawn-1', 'agent-1', ts(1), { profile: 'coder', name: 'alpha', prompt: 'work' }, 'frame-spawn-1'),
+          spawnTool('call-spawn-2', 'agent-2', ts(2), { profile: 'coder', name: 'beta', prompt: 'work' }, 'frame-spawn-2'),
+          resumeTool('call-resume-1', { resume: 'beta', prompt: 'one more pass' }, ts(5)),
+          sendTool('call-send-1', 'alpha', 'ping', ts(6)),
+        ], ts(0))],
+        tasks: [
+          subagentTask('task-alpha', 'agent-1', { name: 'alpha', subagentName: 'coder', startedAt: ts(1) }),
+          subagentTask('task-beta', 'agent-2', { name: 'beta', subagentName: 'coder', startedAt: ts(2) }),
+        ],
+      }));
+      expect(projected.blocks.filter((block) => block.kind === 'subagent').map((block) => (block.kind === 'subagent' ? block.name : ''))).toEqual(['alpha', 'beta']);
+      expect(projected.blocks.find((block) => block.kind === 'subagent-event' && block.event === 'resumed')).toMatchObject({ subagentId: 'agent-2', at: ts(5) });
+      expect(projected.blocks.find((block) => block.kind === 'subagent-event' && block.event === 'sent')).toMatchObject({ subagentId: 'agent-1', at: ts(6) });
     });
 
     it('does not address an anonymous child through its profile fallback', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'taskref',
-              refId: 'ref-named',
-              taskId: 'task-named',
-              at: '2026-01-01T00:00:01.000Z',
-            },
-            {
-              kind: 'taskref',
-              refId: 'ref-anonymous',
-              taskId: 'task-anonymous',
-              at: '2026-01-01T00:00:02.000Z',
-            },
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              startedAt: '2026-01-01T00:00:03.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't1.1',
-                  turnId: 't1',
-                  ordinal: 1,
-                  state: 'completed',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-send-coder',
-                      toolCallId: 'call-send-coder',
-                      name: 'AgentSend',
-                      state: 'done',
-                      input: { target: 'coder', message: 'ping' },
-                      startedAt: '2026-01-01T00:00:04.000Z',
-                    },
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-resume-coder',
-                      toolCallId: 'call-resume-coder',
-                      name: 'AgentRun',
-                      state: 'done',
-                      input: { resume: 'coder', prompt: 'continue' },
-                      startedAt: '2026-01-01T00:00:05.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-named',
-              kind: 'subagent',
-              state: 'running',
-              detached: false,
-              name: 'coder',
-              subagentName: 'coder',
-              agentId: 'agent-named',
-              outputTail: '',
-            },
-            {
-              taskId: 'task-anonymous',
-              kind: 'subagent',
-              state: 'running',
-              detached: false,
-              subagentName: 'coder',
-              agentId: 'agent-anonymous',
-              outputTail: '',
-            },
-          ],
-        }),
-      );
-
-      const names = projected.blocks
-        .filter((block) => block.kind === 'subagent')
-        .map((block) => (block.kind === 'subagent' ? block.name : ''));
-      expect(names).toEqual(['coder', 'coder']);
-      expect(
-        projected.blocks.find(
-          (block) => block.kind === 'subagent-event' && block.id.includes('send-coder'),
-        ),
-      ).toMatchObject({ subagentId: 'agent-named', event: 'sent' });
-      expect(
-        projected.blocks.find(
-          (block) => block.kind === 'subagent-event' && block.id.includes('resume-coder'),
-        ),
-      ).toMatchObject({ subagentId: 'agent-named', event: 'resumed' });
+      const projected = projectMain(emptySnapshot({
+        items: [
+          taskRefItem('ref-named', 'task-named', ts(1)),
+          taskRefItem('ref-anonymous', 'task-anonymous', ts(2)),
+          delegateTurn('t1', 1, [
+            sendTool('call-send-coder', 'coder', 'ping', ts(4), undefined, 'frame-send-coder'),
+            resumeTool('call-resume-coder', { resume: 'coder', prompt: 'continue' }, ts(5), {}, 'frame-resume-coder'),
+          ], ts(3), undefined),
+        ],
+        tasks: [
+          subagentTask('task-named', 'agent-named', { name: 'coder', subagentName: 'coder', startedAt: undefined }),
+          subagentTask('task-anonymous', 'agent-anonymous', { subagentName: 'coder', startedAt: undefined }),
+        ],
+      }));
+      expect(projected.blocks.filter((block) => block.kind === 'subagent').map((block) => (block.kind === 'subagent' ? block.name : ''))).toEqual(['coder', 'coder']);
+      expect(projected.blocks.find((block) => block.kind === 'subagent-event' && block.id.includes('send-coder'))).toMatchObject({ subagentId: 'agent-named', event: 'sent' });
+      expect(projected.blocks.find((block) => block.kind === 'subagent-event' && block.id.includes('resume-coder'))).toMatchObject({ subagentId: 'agent-named', event: 'resumed' });
     });
 
     it('emits no card or lifecycle events for a roster task whose run never entered the page', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'just chatting',
-              startedAt: '2026-01-01T00:00:30.000Z',
-              steps: [],
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-off-page',
-              kind: 'subagent',
-              state: 'completed',
-              detached: false,
-              agentId: 'agent-1',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:01.000Z',
-              endedAt: '2026-01-01T00:00:20.000Z',
-              resultSummary: 'done long ago',
-            },
-          ],
-        }),
-      );
+      const projected = projectMain(emptySnapshot({
+        items: [delegateTurn('t1', 1, [], ts(30), 'just chatting')],
+        tasks: [subagentTask('task-off-page', 'agent-1', { state: 'completed', startedAt: ts(1), endedAt: ts(20), resultSummary: 'done long ago' })],
+      }));
       expect(projected.blocks.some((block) => block.kind === 'subagent')).toBe(false);
       expect(projected.blocks.some((block) => block.kind === 'subagent-event')).toBe(false);
     });
 
     it('renders a resume-only page without a fake spawned entry until the older page loads', () => {
-      const resumeTurn = {
-        kind: 'turn' as const,
-        turnId: 't2',
-        ordinal: 2,
-        state: 'completed' as const,
-        origin: { kind: 'user' as const },
-        prompt: 'resume it',
-        startedAt: '2026-01-01T00:00:29.000Z',
-        steps: [
-          {
-            kind: 'step' as const,
-            stepId: 't2.1',
-            turnId: 't2',
-            ordinal: 1,
-            state: 'completed' as const,
-            startedAt: '2026-01-01T00:00:30.000Z',
-            frames: [
-              {
-                kind: 'tool' as const,
-                frameId: 'frame-resume',
-                toolCallId: 'call-resume-1',
-                name: 'AgentRun',
-                state: 'done' as const,
-                input: { resume: 'agent-1', prompt: 'one more pass' },
-                startedAt: '2026-01-01T00:00:30.000Z',
-              },
-            ],
-          },
-        ],
-      };
-      const resumeTaskref = {
-        kind: 'taskref' as const,
-        refId: 'ref-run-2',
-        taskId: 'task-agent-1-run-2',
-        at: '2026-01-01T00:00:30.000Z',
-      };
+      const resumeTurn = delegateTurn('t2', 2, [resumeTool('call-resume-1', { resume: 'agent-1', prompt: 'one more pass' }, ts(30))], ts(29), 'resume it', ts(30));
+      const resumeTaskref = taskRefItem('ref-run-2', 'task-agent-1-run-2', ts(30));
       const tasks = [
-        {
-          taskId: 'task-agent-1-run-1',
-          kind: 'subagent' as const,
-          state: 'completed' as const,
-          detached: false,
-          agentId: 'agent-1',
-          outputTail: '',
-          startedAt: '2026-01-01T00:00:01.000Z',
-          endedAt: '2026-01-01T00:00:20.000Z',
-        },
-        {
-          taskId: 'task-agent-1-run-2',
-          kind: 'subagent' as const,
-          state: 'completed' as const,
-          detached: false,
-          agentId: 'agent-1',
-          outputTail: '',
-          startedAt: '2026-01-01T00:00:30.000Z',
-          endedAt: '2026-01-01T00:00:45.000Z',
-        },
+        subagentTask('task-agent-1-run-1', 'agent-1', { state: 'completed', startedAt: ts(1), endedAt: ts(20) }),
+        subagentTask('task-agent-1-run-2', 'agent-1', { state: 'completed', startedAt: ts(30), endedAt: ts(45) }),
       ];
-      // Fresh window: only the resume turn + its taskref are in `items`.
-      const pageTwo = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({ items: [resumeTurn, resumeTaskref], tasks }),
-      );
-      const pageTwoEvents = pageTwo.blocks.filter((block) => block.kind === 'subagent-event');
-      expect(pageTwoEvents.map((block) => block.id)).toEqual([
+      const pageTwo = projectMain(emptySnapshot({ items: [resumeTurn, resumeTaskref], tasks }));
+      expect(pageTwo.blocks.filter((block) => block.kind === 'subagent-event').map((block) => block.id)).toEqual([
         'subagent-event-agent-1-resume-call-resume-1',
         'subagent-event-agent-1-completed-task-agent-1-run-2',
       ]);
 
-      // After the older page loads, the original run's spawn + terminal appear.
       const olderItems = [
-        {
-          kind: 'turn' as const,
-          turnId: 't1',
-          ordinal: 1,
-          state: 'completed' as const,
-          origin: { kind: 'user' as const },
-          prompt: 'delegate',
-          startedAt: '2026-01-01T00:00:00.000Z',
-          steps: [
-            {
-              kind: 'step' as const,
-              stepId: 't1.1',
-              turnId: 't1',
-              ordinal: 1,
-              state: 'completed' as const,
-              startedAt: '2026-01-01T00:00:01.000Z',
-              frames: [
-                {
-                  kind: 'tool' as const,
-                  frameId: 'frame-spawn',
-                  toolCallId: 'call-spawn-1',
-                  name: 'AgentRun',
-                  state: 'done' as const,
-                  input: { profile: 'Researcher', prompt: 'map the surface' },
-                  agentRefs: [{ agentId: 'agent-1', role: 'child' as const }],
-                  startedAt: '2026-01-01T00:00:01.000Z',
-                },
-              ],
-            },
-          ],
-        },
-        {
-          kind: 'taskref' as const,
-          refId: 'ref-run-1',
-          taskId: 'task-agent-1-run-1',
-          at: '2026-01-01T00:00:01.000Z',
-        },
+        delegateTurn('t1', 1, [spawnTool('call-spawn-1', 'agent-1', ts(1))], ts(0)),
+        taskRefItem('ref-run-1', 'task-agent-1-run-1', ts(1)),
       ];
-      const full = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({ items: [...olderItems, resumeTurn, resumeTaskref], tasks }),
-      );
-      const fullEvents = full.blocks.filter((block) => block.kind === 'subagent-event');
-      expect(fullEvents.map((block) => block.id)).toEqual([
+      const full = projectMain(emptySnapshot({ items: [...olderItems, resumeTurn, resumeTaskref], tasks }));
+      expect(full.blocks.filter((block) => block.kind === 'subagent-event').map((block) => block.id)).toEqual([
         'subagent-event-agent-1-spawned-task-agent-1-run-1',
         'subagent-event-agent-1-completed-task-agent-1-run-1',
         'subagent-event-agent-1-resume-call-resume-1',
@@ -5308,122 +4523,26 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
 
     it('resolves a cold-page AgentSend target from the projected stable name', () => {
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't2',
-              ordinal: 2,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'nudge the child',
-              startedAt: '2026-01-01T00:00:30.000Z',
-              steps: [
-                {
-                  kind: 'step',
-                  stepId: 't2.1',
-                  turnId: 't2',
-                  ordinal: 1,
-                  state: 'completed',
-                  startedAt: '2026-01-01T00:00:31.000Z',
-                  frames: [
-                    {
-                      kind: 'tool',
-                      frameId: 'frame-send',
-                      toolCallId: 'call-send-1',
-                      name: 'AgentSend',
-                      state: 'done',
-                      input: { target: 'alpha', message: 'ping' },
-                      startedAt: '2026-01-01T00:00:31.000Z',
-                    },
-                  ],
-                },
-              ],
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-alpha',
-              kind: 'subagent',
-              state: 'running',
-              detached: false,
-              name: 'alpha',
-              subagentName: 'coder',
-              agentId: 'agent-1',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:01.000Z',
-            },
-          ],
-        }),
-      );
-      const sent = projected.blocks.find(
-        (block) => block.kind === 'subagent-event' && block.event === 'sent',
-      );
-      expect(sent).toMatchObject({
-        id: 'subagent-event-agent-1-send-call-send-1',
-        subagentId: 'agent-1',
-        at: '2026-01-01T00:00:31.000Z',
-        turnId: 't2',
+      const projected = projectMain(emptySnapshot({
+        items: [delegateTurn('t2', 2, [sendTool('call-send-1', 'alpha', 'ping', ts(31))], ts(30), 'nudge the child', ts(31))],
+        tasks: [subagentTask('task-alpha', 'agent-1', { name: 'alpha', subagentName: 'coder', startedAt: ts(1) })],
+      }));
+      expect(projected.blocks.find((block) => block.kind === 'subagent-event' && block.event === 'sent')).toMatchObject({
+        id: 'subagent-event-agent-1-send-call-send-1', subagentId: 'agent-1', at: ts(31), turnId: 't2',
       });
     });
 
     it('never crowns a timed resume run as the first spawn when the original run has no clock', () => {
-      // Roster order: run-1 first, without startedAt; run-2 timed. The page
-      // only carries run-2's taskref — an unknown clock must not demote run-1,
-      // so no spawned entry may appear for the resume run.
-      const projected = projectAgentTranscriptView(
-        createViewState('session_test'),
-        'main',
-        emptySnapshot({
-          items: [
-            {
-              kind: 'turn',
-              turnId: 't2',
-              ordinal: 2,
-              state: 'completed',
-              origin: { kind: 'user' },
-              prompt: 'resume it',
-              startedAt: '2026-01-01T00:00:29.000Z',
-              steps: [],
-            },
-            {
-              kind: 'taskref',
-              refId: 'ref-run-2',
-              taskId: 'task-agent-1-run-2',
-              at: '2026-01-01T00:00:30.000Z',
-            },
-          ],
-          tasks: [
-            {
-              taskId: 'task-agent-1-run-1',
-              kind: 'subagent',
-              state: 'completed',
-              detached: false,
-              agentId: 'agent-1',
-              outputTail: '',
-              endedAt: '2026-01-01T00:00:20.000Z',
-            },
-            {
-              taskId: 'task-agent-1-run-2',
-              kind: 'subagent',
-              state: 'completed',
-              detached: false,
-              agentId: 'agent-1',
-              outputTail: '',
-              startedAt: '2026-01-01T00:00:30.000Z',
-              endedAt: '2026-01-01T00:00:45.000Z',
-            },
-          ],
-        }),
-      );
+      const projected = projectMain(emptySnapshot({
+        items: [delegateTurn('t2', 2, [], ts(29), 'resume it'), taskRefItem('ref-run-2', 'task-agent-1-run-2', ts(30))],
+        tasks: [
+          subagentTask('task-agent-1-run-1', 'agent-1', { state: 'completed', startedAt: undefined, endedAt: ts(20) }),
+          subagentTask('task-agent-1-run-2', 'agent-1', { state: 'completed', startedAt: ts(30), endedAt: ts(45) }),
+        ],
+      }));
       const events = projected.blocks.filter((block) => block.kind === 'subagent-event');
       expect(events.some((block) => block.kind === 'subagent-event' && block.event === 'spawned')).toBe(false);
-      expect(events.map((block) => block.id)).toEqual([
-        'subagent-event-agent-1-completed-task-agent-1-run-2',
-      ]);
+      expect(events.map((block) => block.id)).toEqual(['subagent-event-agent-1-completed-task-agent-1-run-2']);
     });
   });
 
@@ -7101,37 +6220,26 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
 });
 
 describe('honest unknown timing', () => {
+  const unknownTimingSubagent = (agentId: string, status: SubagentBlock['status']): SubagentBlock => ({
+    kind: 'subagent', id: `subagent-${agentId}`, subagentId: agentId, parentAgentId: 'main',
+    parentToolCallId: undefined, name: agentId, description: undefined, model: undefined,
+    thinkingEffort: undefined, status, summary: undefined, error: undefined, endedAt: undefined,
+    toolCallCount: 0, transcript: [],
+  });
+
   it('leaves a taskref subagent card start time undefined instead of an empty-string sentinel', () => {
-    const projected = projectAgentTranscriptView(
-      createViewState('session_test'),
-      'main',
-      emptySnapshot({
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'go',
-            startedAt: FIXED_AT,
-            steps: [],
-          },
-          { kind: 'taskref', refId: 'ref-no-clock', taskId: 'task-no-clock' },
-        ],
-        tasks: [
-          {
-            taskId: 'task-no-clock',
-            kind: 'subagent',
-            state: 'completed',
-            detached: false,
-            agentId: 'agent-no-clock-ref',
-            description: 'no clocks anywhere',
-            outputTail: 'done',
-          },
-        ],
-      }),
-    );
+    const projected = projectMain(emptySnapshot({
+      items: [
+        makeTurn('t1', 1, { prompt: 'go', startedAt: FIXED_AT }),
+        { kind: 'taskref', refId: 'ref-no-clock', taskId: 'task-no-clock' },
+      ],
+      tasks: [subagentTask('task-no-clock', 'agent-no-clock-ref', {
+        state: 'completed',
+        description: 'no clocks anywhere',
+        outputTail: 'done',
+        startedAt: undefined,
+      })],
+    }));
     const card = projected.blocks.find(
       (block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'agent-no-clock-ref',
     );
@@ -7140,42 +6248,18 @@ describe('honest unknown timing', () => {
   });
 
   it('leaves inline subagent and tool timing undefined instead of fabricating empty-string / 0ms', () => {
-    const projected = projectAgentTranscriptView(
-      createViewState('session_test'),
-      'main',
-      emptySnapshot({
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'delegate',
-            durationMs: 1200,
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'completed',
-                frames: [
-                  {
-                    kind: 'tool',
-                    frameId: 'f-agent',
-                    toolCallId: 'call-agent',
-                    name: 'AgentRun',
-                    state: 'done',
-                    agentRefs: [{ agentId: 'agent-no-clock-inline' }],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      }),
-    );
+    const projected = projectMain(emptySnapshot({
+      items: [makeTurn('t1', 1, {
+        prompt: 'delegate',
+        durationMs: 1200,
+        steps: [makeStep('t1.1', 't1', 1, [
+          toolFrame('f-agent', 'call-agent', 'AgentRun', {
+            state: 'done',
+            agentRefs: [{ agentId: 'agent-no-clock-inline' }],
+          }),
+        ])],
+      })],
+    }));
     const tool = projected.blocks.find(
       (block): block is ToolBlock => block.kind === 'tool' && block.toolCallId === 'call-agent',
     );
@@ -7190,133 +6274,56 @@ describe('honest unknown timing', () => {
   });
 
   it('keeps tool duration sourced from the turn when only the frame start exists', () => {
-    const projected = projectAgentTranscriptView(
-      createViewState('session_test'),
-      'main',
-      emptySnapshot({
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'half-timed',
-            durationMs: 9000,
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'completed',
-                frames: [
-                  {
-                    kind: 'tool',
-                    frameId: 'f-half',
-                    toolCallId: 'call-half',
-                    name: 'Read',
-                    state: 'done',
-                    startedAt: '2026-01-01T00:00:01.000Z',
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      }),
-    );
+    const projected = projectMain(emptySnapshot({
+      items: [makeTurn('t1', 1, {
+        prompt: 'half-timed',
+        durationMs: 9000,
+        steps: [makeStep('t1.1', 't1', 1, [
+          toolFrame('f-half', 'call-half', 'Read', { state: 'done', startedAt: ts(1) }),
+        ])],
+      })],
+    }));
     const tool = projected.blocks.find(
       (block): block is ToolBlock => block.kind === 'tool' && block.toolCallId === 'call-half',
     );
-    expect(tool?.startedAt).toBe(Date.parse('2026-01-01T00:00:01.000Z'));
+    expect(tool?.startedAt).toBe(Date.parse(ts(1)));
     expect(tool?.durationMs).toBe(9000);
     expect(tool?.durationSource).toBe('turn');
   });
 
   it('prefers the spawning frame startedAt over step/turn boundaries for inline subagents', () => {
-    const projected = projectAgentTranscriptView(
-      createViewState('session_test'),
-      'main',
-      emptySnapshot({
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'delegate',
-            startedAt: '2026-01-01T00:00:00.000Z',
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'completed',
-                startedAt: '2026-01-01T00:00:10.000Z',
-                frames: [
-                  {
-                    kind: 'tool',
-                    frameId: 'f-agent',
-                    toolCallId: 'call-agent',
-                    name: 'AgentRun',
-                    state: 'done',
-                    startedAt: '2026-01-01T00:00:20.000Z',
-                    agentRefs: [{ agentId: 'agent-frame-clock' }],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      }),
-    );
+    const projected = projectMain(emptySnapshot({
+      items: [makeTurn('t1', 1, {
+        prompt: 'delegate',
+        startedAt: ts(0),
+        steps: [makeStep('t1.1', 't1', 1, [
+          toolFrame('f-agent', 'call-agent', 'AgentRun', {
+            state: 'done',
+            startedAt: ts(20),
+            agentRefs: [{ agentId: 'agent-frame-clock' }],
+          }),
+        ], { startedAt: ts(10) })],
+      })],
+    }));
     const card = projected.blocks.find(
       (block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'agent-frame-clock',
     );
-    expect(card?.startedAt).toBe('2026-01-01T00:00:20.000Z');
+    expect(card?.startedAt).toBe(ts(20));
   });
 
   it('leaves inline subagent timing undefined when only step/turn boundaries exist', () => {
-    const projected = projectAgentTranscriptView(
-      createViewState('session_test'),
-      'main',
-      emptySnapshot({
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'delegate',
-            startedAt: '2026-01-01T00:00:00.000Z',
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'completed',
-                startedAt: '2026-01-01T00:00:10.000Z',
-                frames: [
-                  {
-                    kind: 'tool',
-                    frameId: 'f-agent',
-                    toolCallId: 'call-agent',
-                    name: 'AgentRun',
-                    state: 'done',
-                    agentRefs: [{ agentId: 'agent-step-clock' }],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      }),
-    );
+    const projected = projectMain(emptySnapshot({
+      items: [makeTurn('t1', 1, {
+        prompt: 'delegate',
+        startedAt: ts(0),
+        steps: [makeStep('t1.1', 't1', 1, [
+          toolFrame('f-agent', 'call-agent', 'AgentRun', {
+            state: 'done',
+            agentRefs: [{ agentId: 'agent-step-clock' }],
+          }),
+        ], { startedAt: ts(10) })],
+      })],
+    }));
     const card = projected.blocks.find(
       (block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'agent-step-clock',
     );
@@ -7325,98 +6332,28 @@ describe('honest unknown timing', () => {
   });
 
   it('does not promote snapshot created_at to the execution start time', () => {
-    const live: SubagentBlock = {
-      kind: 'subagent',
-      id: 'subagent-agent-y',
-      subagentId: 'agent-y',
-      parentAgentId: 'main',
-      parentToolCallId: undefined,
-      name: 'agent-y',
-      description: undefined,
-      model: undefined,
-      thinkingEffort: undefined,
-      status: 'running',
-      summary: undefined,
-      error: undefined,
-      endedAt: undefined,
-      toolCallCount: 0,
-      transcript: [],
-    };
     const overlaid = overlaySnapshotSubagentFields(
-      [live],
-      [compactSnapshotSubagent({ id: 'agent-y', status: 'running', created_at: '2026-01-01T00:00:05.000Z' })],
+      [unknownTimingSubagent('agent-y', 'running')],
+      [compactSnapshotSubagent({ id: 'agent-y', status: 'running', created_at: ts(5) })],
     );
     const overlaidY = overlaid[0];
     expect(overlaidY?.kind === 'subagent' ? overlaidY.startedAt : 'not-subagent').toBeUndefined();
   });
 
   it('prefers real frame startedAt/endedAt over step and turn fallbacks', () => {
-    const projected = projectAgentTranscriptView(
-      createViewState('session_test'),
-      'main',
-      emptySnapshot({
-        items: [
-          {
-            kind: 'turn',
-            turnId: 't1',
-            ordinal: 1,
-            state: 'completed',
-            origin: { kind: 'user' },
-            prompt: 'timed',
-            startedAt: FIXED_AT,
-            durationMs: 9999,
-            steps: [
-              {
-                kind: 'step',
-                stepId: 't1.1',
-                turnId: 't1',
-                ordinal: 1,
-                state: 'completed',
-                startedAt: FIXED_AT,
-                frames: [
-                  {
-                    kind: 'tool',
-                    frameId: 'f-timed',
-                    toolCallId: 'call-timed',
-                    name: 'Read',
-                    state: 'done',
-                    startedAt: '2026-01-01T00:00:01.000Z',
-                    endedAt: '2026-01-01T00:00:03.500Z',
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      }),
-    );
-    const tool = projected.blocks.find(
-      (block): block is ToolBlock => block.kind === 'tool' && block.toolCallId === 'call-timed',
-    );
-    expect(tool?.startedAt).toBe(Date.parse('2026-01-01T00:00:01.000Z'));
+    const projected = projectMain(emptySnapshot({
+      items: [makeTurn('t1', 1, { prompt: 'timed', startedAt: FIXED_AT, durationMs: 9999, steps: [
+        makeStep('t1.1', 't1', 1, [toolFrame('f-timed', 'call-timed', 'Read', { state: 'done', startedAt: ts(1), endedAt: '2026-01-01T00:00:03.500Z' })], { startedAt: FIXED_AT }),
+      ] })],
+    }));
+    const tool = projected.blocks.find((block): block is ToolBlock => block.kind === 'tool' && block.toolCallId === 'call-timed');
+    expect(tool?.startedAt).toBe(Date.parse(ts(1)));
     expect(tool?.durationMs).toBe(2500);
   });
 
   it('keeps start/end unknown when the snapshot overlay has no real timestamps either', () => {
-    const live: SubagentBlock = {
-      kind: 'subagent',
-      id: 'subagent-agent-x',
-      subagentId: 'agent-x',
-      parentAgentId: 'main',
-      parentToolCallId: undefined,
-      name: 'agent-x',
-      description: undefined,
-      model: undefined,
-      thinkingEffort: undefined,
-      status: 'running',
-      summary: undefined,
-      error: undefined,
-      endedAt: undefined,
-      toolCallCount: 0,
-      transcript: [],
-    };
     const overlaid = overlaySnapshotSubagentFields(
-      [live],
+      [unknownTimingSubagent('agent-x', 'running')],
       [compactSnapshotSubagent({ id: 'agent-x', status: 'running', created_at: '' })],
     );
     expect(overlaid[0]).toMatchObject({ startedAt: undefined, endedAt: undefined });
@@ -8299,10 +7236,11 @@ describe('resumed agent forest bindings and retained graph reads', () => {
 
   it('invalidates the query when reordered evidence changes a shared child parent', () => {
     const query = new SessionAgentForestQuery();
-    const source = (name: string) => emptySnapshot({ tasks: [{
-      taskId: name, kind: 'subagent', agentId: 'shared-child', name, state: 'running',
-      detached: false, outputTail: '',
-    }] });
+    const source = (name: string) => emptySnapshot({
+      items: [makeTurn('t1', 1, { state: 'running', steps: [
+        makeStep('t1.1', 't1', 1, [toolFrame(`tool-${name}`, `tc-${name}`, 'Agent', { state: 'running', agentRefs: [{ agentId: 'shared-child', role: 'child' }] })], { state: 'running' }),
+      ] })],
+    });
     const a = source('first');
     const b = source('second');
     expect(query.read(new Map([['parent-a', a], ['parent-b', b]])).byId['shared-child']?.parentAgentId).toBe('parent-b');

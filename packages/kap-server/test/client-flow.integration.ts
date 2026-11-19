@@ -1,35 +1,36 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { createServer, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
-import { Readable } from 'node:stream';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IEventDispatcher, IFileService, IFileSystemStorageService,
-  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndex, ISessionIndexMirror, ISessionManager, IUsageReadModel,
-  IThreadCommunicationService, IThreadMailboxStore, IWorktreeService, getLiveSessionById,
-  IRetainedUsageService, ISessionContext, ISessionMetadata, ITelemetryService, IUsageFactStore, agentScopeOf,
-  type ServiceIdentifier,
+  agentScopeOf, getLiveSessionById, IAgentExecutionService, IAgentLifecycleService, IAgentTaskService,
+  IAppendLogStore, IEventDispatcher, IFileService, IFileSystemStorageService, IHomeRuntimeService,
+  IMcpOAuthService, IPluginHostService, IRetainedUsageService, ISessionContext, ISessionIndex,
+  ISessionIndexMirror, ISessionManager, ISessionMetadata, ITelemetryService, IThreadCommunicationService,
+  IThreadMailboxStore, IUsageFactStore, IUsageReadModel, IWorktreeService, type ServiceIdentifier,
 } from '@kiki/agent-core-v2';
 import { InstantiationService } from '@kiki/agent-core-v2/_base/di/instantiationService';
 import { CompactionCancelled, CompactionCompleted, CompactionStarted } from '@kiki/agent-core-v2/agent/fullCompaction/compactionOps';
 import { GoalCreate, GoalUpdate } from '@kiki/agent-core-v2/agent/goal/goalOps';
-import { IGlobalSearchService } from '../src/search/searchService';
-import { usageRuntime } from '../src/usage/usageRuntime';
-import { SqliteSearchHost } from '../src/search/sqlite/host';
-import { NotificationService } from '../src/services/notifications/notificationService';
-import { ImSessionBridge } from '../src/services/imSession/bridge';
-import { WebAccess } from '../src/services/webAccess';
-import { ExternalClientHost } from '../src/externalClients/host';
-import { NativeExternalClientListenerManager } from '../src/externalClients/listenerManager';
-import { SessionLifecycleService } from '@kiki/agent-core-v2/workspace/sessionLifecycle/sessionLifecycleService';
 import { AgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycleService';
+import { SessionLifecycleService } from '@kiki/agent-core-v2/workspace/sessionLifecycle/sessionLifecycleService';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { applyTranscriptShell, projectAgentTranscriptView } from '../../session-core/src/session/transcript/project';
-import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
-import { startServer, type RunningServer } from '../src/start';
+import { ExternalClientHost } from '../src/externalClients/host';
+import { NativeExternalClientListenerManager } from '../src/externalClients/listenerManager';
+import { IGlobalSearchService } from '../src/search/searchService';
+import { SqliteSearchHost } from '../src/search/sqlite/host';
+import { ImSessionBridge } from '../src/services/imSession/bridge';
+import { NotificationService } from '../src/services/notifications/notificationService';
+import { WebAccess } from '../src/services/webAccess';
+import { type RunningServer, startServer } from '../src/start';
+import { usageRuntime } from '../src/usage/usageRuntime';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { paddedPng } from './helpers/png';
 
@@ -49,12 +50,7 @@ interface ClosePhase {
 function closePhaseText(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string' || typeof error === 'number' || typeof error === 'boolean' || typeof error === 'bigint') return `${error}`;
-  try {
-    const text = JSON.stringify(error);
-    return typeof text === 'string' ? text : 'close failed';
-  } catch {
-    return 'close failed';
-  }
+  try { return JSON.stringify(error) ?? 'close failed'; } catch { return 'close failed'; }
 }
 
 class ClosePhaseWatch {
@@ -70,8 +66,7 @@ class ClosePhaseWatch {
   }
 
   track<T>(phase: string, run: () => T): T {
-    const started = Date.now();
-    const token = { phase };
+    const started = Date.now(), token = { phase };
     const entry: (typeof this.entries)[number] = { phase, state: 'pending', elapsedMs: 0, startedAfterMs: started - this.started, started };
     this.entries.push(entry);
     this.stack.push(token);
@@ -88,136 +83,92 @@ class ClosePhaseWatch {
     try {
       const result = run();
       const settled: unknown = result;
-      if (settled instanceof Promise || (settled !== null && typeof settled === 'object' &&
-        typeof (settled as { then?: unknown }).then === 'function')) {
-        const thenable = settled as Promise<unknown>;
-        return thenable.then(
-          (value: unknown) => { finish('done'); return value; },
-          (error: unknown) => { finish('failed', error); throw error; },
+      if (settled instanceof Promise || (settled !== null && typeof settled === 'object' && typeof (settled as { then?: unknown }).then === 'function')) {
+        return (settled as Promise<unknown>).then(
+          (v: unknown) => { finish('done'); return v; },
+          (e: unknown) => { finish('failed', e); throw e; },
         ) as T;
       }
       finish('done');
       return result;
-    } catch (error) {
-      finish('failed', error);
-      throw error;
-    }
+    } catch (error) { finish('failed', error); throw error; }
   }
 
   watch(target: object, method: string, phase: string): void {
-    const record = target as Record<string, unknown>;
-    const original = record[method];
+    const record = target as Record<string, unknown>, original = record[method];
     if (typeof original !== 'function') return;
     const own = Object.prototype.hasOwnProperty.call(target, method);
     const descriptor = own ? Object.getOwnPropertyDescriptor(target, method) : undefined;
     const track = (run: () => unknown) => this.track(phase, run);
-    const wrapped = function (this: unknown, ...args: unknown[]) {
-      return track(() => original.apply(this, args));
-    };
-    try { record[method] = wrapped; } catch { return; }
+    try { record[method] = function (this: unknown, ...args: unknown[]) { return track(() => original.apply(this, args)); }; } catch { return; }
     this.restores.push(() => {
       if (!own) { delete record[method]; return; }
-      if (descriptor) Object.defineProperty(target, method, descriptor);
-      else record[method] = original;
+      if (descriptor) Object.defineProperty(target, method, descriptor); else record[method] = original;
     });
   }
 
   snapshot(): { elapsedMs: number; pending: string | null; after: string | null; phases: ClosePhase[] } {
     const now = Date.now();
-    const phases = this.entries.map((entry) => {
-      const phase: ClosePhase = {
-        phase: entry.phase,
-        state: entry.state,
-        elapsedMs: (entry.ended ?? now) - entry.started,
-        startedAfterMs: entry.startedAfterMs,
-      };
-      if (entry.error !== undefined) phase.error = entry.error;
-      return phase;
-    });
+    const phases = this.entries.map((e) => ({
+      phase: e.phase, state: e.state, elapsedMs: (e.ended ?? now) - e.started, startedAfterMs: e.startedAfterMs,
+      ...(e.error !== undefined ? { error: e.error } : {}),
+    }));
     const pending = this.stack.at(-1)?.phase ?? null;
-    const after = pending === null ? phases.at(-1)?.phase ?? 'before:app.close' : null;
-    return { elapsedMs: now - this.started, pending, after, phases };
+    return { elapsedMs: now - this.started, pending, after: pending === null ? phases.at(-1)?.phase ?? 'before:app.close' : null, phases };
   }
 
-  undo(restore: () => void): void {
-    this.restores.push(restore);
-  }
-
-  restore(): void {
-    for (const restore of this.restores.splice(0).toReversed()) restore();
-  }
+  undo(restore: () => void): void { this.restores.push(restore); }
+  restore(): void { for (const restore of this.restores.splice(0).toReversed()) restore(); }
 }
 
 interface CloseWatchTarget {
   app: object;
-  core: {
-    dispose(): unknown;
-    accessor: { get<T>(id: ServiceIdentifier<T>): T };
-    instantiation: object;
-  };
-}
-
-function alreadyMaterialized<T>(host: CloseWatchTarget, id: ServiceIdentifier<T>): T | undefined {
-  const container = host.core.instantiation;
-  if (!(container instanceof InstantiationService)) return undefined;
-  return container.fiberHost.materializedInstance(id);
+  core: { dispose(): unknown; accessor: { get<T>(id: ServiceIdentifier<T>): T }; instantiation: object };
 }
 
 function watchHostClose(host: CloseWatchTarget): ClosePhaseWatch {
-  const watch = new ClosePhaseWatch();
-  const armed = new Set<object>();
+  const watch = new ClosePhaseWatch(), armed = new Set<object>();
   const arm = (instance: object, method: string, phase: string): void => {
-    if (armed.has(instance)) return;
-    const current = (instance as Record<string, unknown>)[method];
-    if (typeof current !== 'function') return;
+    if (armed.has(instance) || typeof (instance as Record<string, unknown>)[method] !== 'function') return;
     armed.add(instance);
     watch.watch(instance, method, phase);
   };
   const specs: Array<{ id: object; method: string; phase: string }> = [];
   const trackService = <T>(id: ServiceIdentifier<T>, method: string, phase: string): void => {
     specs.push({ id, method, phase });
-    const existing = alreadyMaterialized(host, id);
+    const container = host.core.instantiation;
+    const existing = container instanceof InstantiationService ? container.fiberHost.materializedInstance(id) : undefined;
     if (existing !== null && typeof existing === 'object') arm(existing, method, phase);
   };
   try {
-    trackService(IThreadCommunicationService, 'shutdown', 'threadComm.shutdown');
-    trackService(ISessionManager, 'close', 'session.close');
-    trackService(IWorktreeService, 'remove', 'worktree.remove');
-    trackService(IThreadMailboxStore, 'close', 'mailbox.close');
-    trackService(IHomeRuntimeService, 'close', 'homeRuntime.close');
-    trackService(ISessionIndexMirror, 'drain', 'sessionIndexMirror.drain');
-    trackService(IMcpOAuthService, 'shutdown', 'mcpOAuth.shutdown');
-    trackService(IPluginHostService, 'stopAll', 'pluginHost.stopAll');
-    trackService(IAppendLogStore, 'drainRetirements', 'appendLog.drainRetirements');
-    trackService(IGlobalSearchService, 'dispose', 'globalSearch.dispose');
-    const accessor = host.core.accessor;
-    const originalGet = accessor.get;
-    const wrappedGet = function <T>(id: ServiceIdentifier<T>): T {
+    for (const [id, method, phase] of [
+      [IThreadCommunicationService, 'shutdown', 'threadComm.shutdown'], [ISessionManager, 'close', 'session.close'],
+      [IWorktreeService, 'remove', 'worktree.remove'], [IThreadMailboxStore, 'close', 'mailbox.close'],
+      [IHomeRuntimeService, 'close', 'homeRuntime.close'], [ISessionIndexMirror, 'drain', 'sessionIndexMirror.drain'],
+      [IMcpOAuthService, 'shutdown', 'mcpOAuth.shutdown'], [IPluginHostService, 'stopAll', 'pluginHost.stopAll'],
+      [IAppendLogStore, 'drainRetirements', 'appendLog.drainRetirements'], [IGlobalSearchService, 'dispose', 'globalSearch.dispose'],
+    ] as const) trackService(id as ServiceIdentifier<unknown>, method, phase);
+    const accessor = host.core.accessor, originalGet = accessor.get;
+    accessor.get = function <T>(id: ServiceIdentifier<T>): T {
       const instance = originalGet(id);
       const spec = specs.find((item) => item.id === id);
       if (spec && instance !== null && typeof instance === 'object') arm(instance, spec.method, spec.phase);
       return instance;
     };
-    accessor.get = wrappedGet;
     watch.undo(() => { accessor.get = originalGet; });
-    watch.watch(host.app, 'close', 'app.close');
-    watch.watch(host.core, 'dispose', 'core.dispose');
-    watch.watch(SqliteSearchHost.prototype, 'close', 'sqliteHost.close');
-    watch.watch(NotificationService.prototype, 'close', 'notifications.close');
-    watch.watch(ImSessionBridge.prototype, 'close', 'imSession.close');
-    watch.watch(WebAccess.prototype, 'close', 'webAccess.close');
-    watch.watch(ExternalClientHost.prototype, 'close', 'externalClient.close');
-    watch.watch(NativeExternalClientListenerManager.prototype, 'close', 'externalListener.close');
-    watch.watch(SessionLifecycleService.prototype, 'close', 'sessionLifecycle.close');
-    watch.watch(SessionLifecycleService.prototype, 'saveReplayCheckpoints', 'session.checkpoints');
-    watch.watch(SessionLifecycleService.prototype, 'drainAgents', 'session.drainAgents');
-    watch.watch(SessionLifecycleService.prototype, 'persistUsage', 'session.persistUsage');
-    watch.watch(AgentLifecycleService.prototype, 'remove', 'agent.remove');
+    for (const [target, method, phase] of [
+      [host.app, 'close', 'app.close'], [host.core, 'dispose', 'core.dispose'],
+      [SqliteSearchHost.prototype, 'close', 'sqliteHost.close'], [NotificationService.prototype, 'close', 'notifications.close'],
+      [ImSessionBridge.prototype, 'close', 'imSession.close'], [WebAccess.prototype, 'close', 'webAccess.close'],
+      [ExternalClientHost.prototype, 'close', 'externalClient.close'], [NativeExternalClientListenerManager.prototype, 'close', 'externalListener.close'],
+      [SessionLifecycleService.prototype, 'close', 'sessionLifecycle.close'], [SessionLifecycleService.prototype, 'saveReplayCheckpoints', 'session.checkpoints'],
+      [SessionLifecycleService.prototype, 'drainAgents', 'session.drainAgents'], [SessionLifecycleService.prototype, 'persistUsage', 'session.persistUsage'],
+      [AgentLifecycleService.prototype, 'remove', 'agent.remove'],
+    ] as const) watch.watch(target, method, phase);
     return watch;
   } catch (error) {
     watch.restore();
-    if (error instanceof Error) throw error;
-    throw new Error(closePhaseText(error), { cause: error });
+    throw error instanceof Error ? error : new Error(closePhaseText(error), { cause: error });
   }
 }
 
@@ -243,14 +194,14 @@ async function awaitNaturalClose(input: {
     const closing = Promise.resolve().then(input.close).then(() => undefined);
     void closing.catch(() => undefined);
     const expired = new Promise<never>((_resolve, reject) => {
-      const fail = (reason: 'stalled' | 'deadline') => { reject(new NaturalCloseTimeout(closing, reason, input.detail(installed))); };
+      const fail = (reason: 'stalled' | 'deadline') => reject(new NaturalCloseTimeout(closing, reason, input.detail(installed)));
       const progress = () => {
         if (idleTimer !== undefined) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => { fail('stalled'); }, 2000);
+        idleTimer = setTimeout(() => fail('stalled'), 2000);
       };
       unsubscribe = installed.onProgress(progress);
       progress();
-      deadline = setTimeout(() => { fail('deadline'); }, 10_000);
+      deadline = setTimeout(() => fail('deadline'), 10_000);
     });
     await Promise.race([closing, expired]);
   } finally {
@@ -262,185 +213,41 @@ async function awaitNaturalClose(input: {
   }
 }
 
-describe('close phase watch', () => {
-  it('names the unfinished close phase and still runs the following cleanup', async () => {
-    const seen: string[] = [];
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    let entered!: () => void;
-    const enteredGate = new Promise<void>((resolve) => { entered = resolve; });
-    const steps = {
-      marker: 'host',
-      shutdown() { seen.push('shutdown'); return Promise.resolve(this.marker); },
-      close(arg: string) { seen.push(`close:${arg}`); entered(); return gate.then(() => 'close-result'); },
-      dispose() { seen.push('dispose'); return Promise.resolve('disposed'); },
-    };
-    const originalClose = steps.close;
-    const watch = new ClosePhaseWatch();
-    watch.watch(steps, 'shutdown', 'threadComm.shutdown');
-    watch.watch(steps, 'close', 'mailbox.close');
-    watch.watch(steps, 'dispose', 'core.dispose');
-    const values: unknown[] = [];
-    const running = (async () => {
-      values.push(await steps.shutdown());
-      values.push(await steps.close('keep'));
-      values.push(await steps.dispose());
-    })();
-    await enteredGate;
-    expect(watch.snapshot()).toMatchObject({
-      pending: 'mailbox.close',
-      after: null,
-      phases: [
-        { phase: 'threadComm.shutdown', state: 'done' },
-        { phase: 'mailbox.close', state: 'pending' },
-      ],
-    });
-    release();
-    await running;
-    expect(values).toEqual(['host', 'close-result', 'disposed']);
-    expect(seen).toEqual(['shutdown', 'close:keep', 'dispose']);
-    expect(watch.snapshot().pending).toBeNull();
-    expect(watch.snapshot().phases.map((phase) => `${phase.phase}:${phase.state}`)).toEqual([
-      'threadComm.shutdown:done', 'mailbox.close:done', 'core.dispose:done',
-    ]);
-    watch.restore();
-    expect(steps.close).toBe(originalClose);
+function buildClientFlowToml(port: number): string {
+  return [
+    'default_model = "unavailable"',
+    '[search]', 'enabled = false',
+    '[cron]', 'manualTick = true',
+    '[providers.local]', 'type = "openai"', `base_url = "http://127.0.0.1:${port}/v1"`, 'api_key = "test-only"',
+    '[providers."managed:kimi-code"]', 'type = "kimi"', '[providers."managed:kimi-code".oauth]', 'storage = "file"', 'key = "oauth/kimi-code"',
+    '[models.unavailable]', 'provider = "managed:kimi-code"', 'model = "unavailable"', 'max_context_size = 100000',
+    ...['first', 'second'].flatMap((m) => [
+      `[models.${m}]`, 'provider = "local"', `model = "${m}"`,
+      'max_context_size = 100000', 'capabilities = ["image_in", "thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
+    ]),
+    '',
+  ].join('\n');
+}
 
-    const broken = { close: () => Promise.reject(new Error('close failed')) };
-    const failure = new ClosePhaseWatch();
-    failure.watch(broken, 'close', 'mailbox.close');
-    await expect(broken.close()).rejects.toThrow('close failed');
-    expect(failure.snapshot().phases[0]).toMatchObject({ phase: 'mailbox.close', state: 'failed', error: 'close failed' });
-    failure.restore();
+async function bootClientFlowHost(home: string): Promise<RunningServer> {
+  return startServer({
+    hostIdentity: TEST_HOST_IDENTITY,
+    homeDir: home,
+    instancesDir: join(home, 'instances'),
+    userSkillDir: join(home, 'isolated-skills'),
+    userAgentProfileHomeDir: join(home, 'isolated-agents'),
+    host: '127.0.0.1',
+    port: 0,
+    logLevel: 'silent',
   });
+}
 
-  it('restores prototype wrappers when close rejects', async () => {
-    const originals = {
-      sqlite: SqliteSearchHost.prototype.close,
-    };
-    let gets = 0;
-    const get = <T,>(_id: ServiceIdentifier<T>): T => {
-      gets += 1;
-      throw new Error('accessor.get');
-    };
-    const server = { close() {}, closeAllConnections: vi.fn() };
-    const originalServerClose = server.close;
-    const spy = vi.spyOn(server, 'close');
-    let wrappedDuringClose = false;
-    const host: CloseWatchTarget = {
-      app: { close() { return undefined; }, server },
-      core: { dispose() { return undefined; }, accessor: { get }, instantiation: {} },
-    };
-    const reason = new Error('close failed');
-    try {
-      await expect(awaitNaturalClose({
-        close: () => {
-          wrappedDuringClose = SqliteSearchHost.prototype.close !== originals.sqlite;
-          return Promise.reject(reason);
-        },
-        install: () => watchHostClose(host),
-        restoreSpy: () => { spy.mockRestore(); },
-        detail: () => ({}),
-      })).rejects.toBe(reason);
-      expect(wrappedDuringClose).toBe(true);
-      expect(gets).toBe(0);
-      expect(SqliteSearchHost.prototype.close).toBe(originals.sqlite);
-      expect(server.close).toBe(originalServerClose);
-      expect(server.closeAllConnections).not.toHaveBeenCalled();
-    } finally {
-      if (SqliteSearchHost.prototype.close !== originals.sqlite) SqliteSearchHost.prototype.close = originals.sqlite;
-      if (server.close !== originalServerClose) spy.mockRestore();
-    }
-  });
-  it('allows continuing natural cleanup phases without spending one global timeout', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    const watch = new ClosePhaseWatch();
-    const steps = { web: () => new Promise<void>((resolve) => { setTimeout(resolve, 1200); }),
-      checkpoint: () => new Promise<void>((resolve) => { setTimeout(resolve, 1200); }) };
-    watch.watch(steps, 'web', 'webAccess.close');
-    watch.watch(steps, 'checkpoint', 'session.checkpoints');
-    const closing = awaitNaturalClose({
-      close: async () => { await steps.web(); await steps.checkpoint(); },
-      install: () => watch, restoreSpy: () => {}, detail: () => watch.snapshot(),
-    });
-    const outcome = closing.then(() => undefined, error => error as unknown);
-    try {
-      await vi.advanceTimersByTimeAsync(2400);
-      expect(await outcome).toBeUndefined();
-      expect(watch.snapshot()).toMatchObject({ pending: null, phases: [
-        { phase: 'webAccess.close', state: 'done', elapsedMs: 1200 },
-        { phase: 'session.checkpoints', state: 'done', elapsedMs: 1200 },
-      ] });
-    } finally { watch.restore(); vi.useRealTimers(); }
-  });
-  it.each(['resolve', 'reject'])('reports a stalled phase before unfinished cleanup settles with %s', async (settlement) => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const reason = new Error('late close failure');
-    const steps = { checkpoint: async () => { await gate; if (settlement === 'reject') throw reason; } };
-    const original = steps.checkpoint;
-    const watch = new ClosePhaseWatch();
-    watch.watch(steps, 'checkpoint', 'session.checkpoints');
-    const restored = vi.fn();
-    let cleaned = false;
-    const closing = awaitNaturalClose({ close: async () => { await steps.checkpoint(); cleaned = true; },
-      install: () => watch, restoreSpy: restored, detail: () => watch.snapshot() });
-    const outcome = closing.then(() => undefined, error => error as unknown);
-    try {
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(watch.snapshot().pending).toBe('session.checkpoints');
-      await vi.advanceTimersByTimeAsync(1000);
-      const error = await outcome;
-      expect(error).toBeInstanceOf(NaturalCloseTimeout);
-      expect((error as Error).message).toContain('(stalled)');
-      expect(watch.snapshot().elapsedMs).toBe(2000);
-      expect(cleaned).toBe(false);
-      expect(steps.checkpoint).toBe(original);
-      expect(restored).toHaveBeenCalledOnce();
-      release();
-      if (settlement === 'reject') await expect((error as NaturalCloseTimeout).cleanup).rejects.toBe(reason);
-      else await (error as NaturalCloseTimeout).cleanup;
-      expect(cleaned).toBe(settlement === 'resolve');
-    } finally { release(); await gate; watch.restore(); vi.useRealTimers(); }
-  });
-
-  it('reports the ten-second absolute deadline despite continuing real phase progress', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    const watch = new ClosePhaseWatch();
-    const restored = vi.fn();
-    let cleaned = false;
-    const closing = awaitNaturalClose({ close: async () => {
-      for (let index = 0; index < 12; index++) await watch.track(`checkpoint-${index}`, () => new Promise<void>((resolve) => { setTimeout(resolve, 1000); }));
-      cleaned = true;
-    }, install: () => watch, restoreSpy: restored, detail: () => watch.snapshot() });
-    const outcome = closing.then(() => undefined, error => error as unknown);
-    try {
-      await vi.advanceTimersByTimeAsync(10_000);
-      const error = await outcome;
-      expect(error).toBeInstanceOf(NaturalCloseTimeout);
-      expect((error as Error).message).toContain('(deadline)');
-      expect(watch.snapshot().elapsedMs).toBe(10_000);
-      expect(cleaned).toBe(false);
-      expect(restored).toHaveBeenCalledOnce();
-      await vi.advanceTimersByTimeAsync(2000);
-      await (error as NaturalCloseTimeout).cleanup;
-      expect(cleaned).toBe(true);
-    } finally { await vi.runAllTimersAsync(); watch.restore(); vi.useRealTimers(); }
-  });
-});
-
-describe('GUI shared client against an isolated KAP host', () => {
-  let host: RunningServer;
-  let client: KikiClient;
-  let home: string;
-  let endpoint: string;
+function createProviderHarness(getWorkspace: () => string) {
   let hold = false;
   let readTool = false;
   const held = new Set<ServerResponse>();
   const requests: ModelRequest[] = [];
-  const responseFacts: (() => unknown)[] = [];
-  const provider = createServer((request, response) => {
+  const server: Server = createServer((request, response) => {
     void (async () => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -452,424 +259,348 @@ describe('GUI shared client against an isolated KAP host', () => {
       }
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       const tool = readTool && requests.length === 1;
-      const delta = tool ? { tool_calls: [{ index: 0, id: 'private-read', type: 'function', function: {
-        name: 'Read', arguments: JSON.stringify({ path: join(home, 'workspace', 'example.txt') }),
-      } }] } : { content: 'local model completed' };
-      response.end(`data: ${JSON.stringify({
-        id: 'local-response',
-        choices: [{ index: 0, delta, finish_reason: tool ? 'tool_calls' : 'stop' }],
-        usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 },
-      })}\n\ndata: [DONE]\n\n`);
+      const delta = tool
+        ? { tool_calls: [{ index: 0, id: 'private-read', type: 'function', function: { name: 'Read', arguments: JSON.stringify({ path: join(getWorkspace(), 'example.txt') }) } }] }
+        : { content: 'local model completed' };
+      response.end(`data: ${JSON.stringify({ id: 'local-response', choices: [{ index: 0, delta, finish_reason: tool ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 } })}\n\ndata: [DONE]\n\n`);
     })();
   });
+  return {
+    server, held, requests,
+    get hold() { return hold; }, set hold(v: boolean) { hold = v; },
+    get readTool() { return readTool; }, set readTool(v: boolean) { readTool = v; },
+    reset() {
+      for (const r of held) r.destroy();
+      held.clear();
+      requests.length = 0;
+      hold = false;
+      readTool = false;
+    },
+  };
+}
 
-  beforeEach(async () => {
-    requests.length = 0;
-    hold = false;
-    readTool = false;
-    provider.listen(0, '127.0.0.1');
-    await once(provider, 'listening');
-    const address = provider.address();
-    if (address === null || typeof address === 'string') throw new Error('missing provider address');
-    home = await mkdtemp(join(tmpdir(), 'kiki-client-flow-'));
-    await mkdir(join(home, 'workspace'));
-    await writeFile(join(home, 'config.toml'), [
-      'default_model = "unavailable"',
-      '[providers.local]', 'type = "openai"',
-      `base_url = "http://127.0.0.1:${address.port}/v1"`, 'api_key = "test-only"',
-      '[providers."managed:kimi-code"]', 'type = "kimi"',
-      '[providers."managed:kimi-code".oauth]', 'storage = "file"', 'key = "oauth/kimi-code"',
-      '[models.unavailable]', 'provider = "managed:kimi-code"', 'model = "unavailable"', 'max_context_size = 100000',
-      ...['first', 'second'].flatMap((model) => [
-        `[models.${model}]`, 'provider = "local"', `model = "${model}"`,
-        'max_context_size = 100000', 'capabilities = ["image_in", "thinking"]',
-        'support_efforts = ["low", "high"]', 'default_effort = "high"',
-      ]),
-      '',
-    ].join('\n'));
-    host = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, instancesDir: join(home, 'instances'), host: '127.0.0.1', port: 0, logLevel: 'silent' });
-    responseFacts.length = 0;
-    host.app.server.on('request', (request, response) => {
-      const socket = request.socket;
-      responseFacts.push(() => ({
-        url: request.url, method: request.method, complete: request.complete,
-        ended: response.writableEnded, finished: response.writableFinished,
-        responseDestroyed: response.destroyed, socketDestroyed: socket.destroyed,
-        localPort: socket.localPort, remotePort: socket.remotePort,
-      }));
-    });
+describe('close phase watch', () => {
+  it('names the unfinished close phase, runs following cleanup, and records rejections', async () => {
+    const seen: string[] = [], values: unknown[] = [];
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((r) => { release = r; }), enteredGate = new Promise<void>((r) => { entered = r; });
+    const steps = {
+      marker: 'host',
+      shutdown() { seen.push('shutdown'); return Promise.resolve(this.marker); },
+      close(arg: string) { seen.push(`close:${arg}`); entered(); return gate.then(() => 'close-result'); },
+      dispose() { seen.push('dispose'); return Promise.resolve('disposed'); },
+    };
+    const originalClose = steps.close, watch = new ClosePhaseWatch();
+    watch.watch(steps, 'shutdown', 'threadComm.shutdown');
+    watch.watch(steps, 'close', 'mailbox.close');
+    watch.watch(steps, 'dispose', 'core.dispose');
+    const running = (async () => { values.push(await steps.shutdown(), await steps.close('keep'), await steps.dispose()); })();
+    await enteredGate;
+    expect(watch.snapshot()).toMatchObject({ pending: 'mailbox.close', after: null, phases: [{ phase: 'threadComm.shutdown', state: 'done' }, { phase: 'mailbox.close', state: 'pending' }] });
+    release();
+    await running;
+    expect(values).toEqual(['host', 'close-result', 'disposed']);
+    expect(seen).toEqual(['shutdown', 'close:keep', 'dispose']);
+    expect(watch.snapshot().phases.map((p) => `${p.phase}:${p.state}`)).toEqual(['threadComm.shutdown:done', 'mailbox.close:done', 'core.dispose:done']);
+    watch.restore();
+    expect(steps.close).toBe(originalClose);
+
+    const broken = { close: () => Promise.reject(new Error('close failed')) }, failure = new ClosePhaseWatch();
+    failure.watch(broken, 'close', 'mailbox.close');
+    await expect(broken.close()).rejects.toThrow('close failed');
+    expect(failure.snapshot().phases[0]).toMatchObject({ phase: 'mailbox.close', state: 'failed', error: 'close failed' });
+    failure.restore();
+  });
+
+  it('restores prototype wrappers when close rejects', async () => {
+    const origSqlite = SqliteSearchHost.prototype.close;
+    let gets = 0, wrappedDuringClose = false;
+    const srv = { close() {}, closeAllConnections: vi.fn() }, origSrvClose = srv.close, spy = vi.spyOn(srv, 'close');
+    const host: CloseWatchTarget = {
+      app: { close: () => undefined, server: srv },
+      core: { dispose: () => undefined, accessor: { get: () => { gets += 1; throw new Error('accessor.get'); } }, instantiation: {} },
+    };
+    const reason = new Error('close failed');
+    try {
+      await expect(awaitNaturalClose({
+        close: () => { wrappedDuringClose = SqliteSearchHost.prototype.close !== origSqlite; return Promise.reject(reason); },
+        install: () => watchHostClose(host), restoreSpy: () => spy.mockRestore(), detail: () => ({}),
+      })).rejects.toBe(reason);
+      expect(wrappedDuringClose).toBe(true);
+      expect(gets).toBe(0);
+      expect(SqliteSearchHost.prototype.close).toBe(origSqlite);
+      expect(srv.close).toBe(origSrvClose);
+      expect(srv.closeAllConnections).not.toHaveBeenCalled();
+    } finally {
+      SqliteSearchHost.prototype.close = origSqlite;
+      spy.mockRestore();
+    }
+  });
+
+  it('allows continuing natural cleanup phases and enforces stalled vs absolute deadlines', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const watch = new ClosePhaseWatch();
+      const steps = { web: () => new Promise<void>((r) => setTimeout(r, 1200)), checkpoint: () => new Promise<void>((r) => setTimeout(r, 1200)) };
+      watch.watch(steps, 'web', 'webAccess.close');
+      watch.watch(steps, 'checkpoint', 'session.checkpoints');
+      const okOutcome = awaitNaturalClose({ close: async () => { await steps.web(); await steps.checkpoint(); }, install: () => watch, restoreSpy: () => {}, detail: () => watch.snapshot() }).then(() => undefined, (e) => e as unknown);
+      await vi.advanceTimersByTimeAsync(2400);
+      expect(await okOutcome).toBeUndefined();
+      watch.restore();
+
+      for (const settlement of ['resolve', 'reject'] as const) {
+        let release!: () => void, cleaned = false;
+        const gate = new Promise<void>((r) => { release = r; }), reason = new Error('late close failure');
+        const s = { checkpoint: async () => { await gate; if (settlement === 'reject') throw reason; } }, w = new ClosePhaseWatch(), restored = vi.fn();
+        w.watch(s, 'checkpoint', 'session.checkpoints');
+        const out = awaitNaturalClose({ close: async () => { await s.checkpoint(); cleaned = true; }, install: () => w, restoreSpy: restored, detail: () => w.snapshot() }).then(() => undefined, (e) => e as unknown);
+        await vi.advanceTimersByTimeAsync(2000);
+        const err = await out;
+        expect(err).toBeInstanceOf(NaturalCloseTimeout);
+        expect((err as Error).message).toContain('(stalled)');
+        expect(cleaned).toBe(false);
+        expect(restored).toHaveBeenCalledOnce();
+        release();
+        if (settlement === 'reject') await expect((err as NaturalCloseTimeout).cleanup).rejects.toBe(reason);
+        else await (err as NaturalCloseTimeout).cleanup;
+        w.restore();
+      }
+
+      const dw = new ClosePhaseWatch(), dRestored = vi.fn();
+      const dOut = awaitNaturalClose({
+        close: async () => { for (let i = 0; i < 12; i++) await dw.track(`cp-${i}`, () => new Promise<void>((r) => setTimeout(r, 1000))); },
+        install: () => dw, restoreSpy: dRestored, detail: () => dw.snapshot(),
+      }).then(() => undefined, (e) => e as unknown);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const dErr = await dOut;
+      expect(dErr).toBeInstanceOf(NaturalCloseTimeout);
+      expect((dErr as Error).message).toContain('(deadline)');
+      await vi.advanceTimersByTimeAsync(2000);
+      await (dErr as NaturalCloseTimeout).cleanup;
+      dw.restore();
+    } finally {
+      await vi.runAllTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('GUI shared client against an isolated KAP host (shared server partition)', () => {
+  let host!: RunningServer;
+  let client!: KikiClient;
+  let home!: string;
+  let endpoint!: string;
+  let caseSeq = 0;
+  const prov = createProviderHarness(() => join(home, 'workspace'));
+
+  beforeAll(async () => {
+    prov.server.listen(0, '127.0.0.1');
+    await once(prov.server, 'listening');
+    const port = (prov.server.address() as { port: number }).port;
+    home = await mkdtemp(join(tmpdir(), 'kiki-client-flow-shared-'));
+    await mkdir(join(home, 'workspace'), { recursive: true });
+    await writeFile(join(home, 'config.toml'), buildClientFlowToml(port));
+    host = await bootClientFlowHost(home);
     endpoint = `http://127.0.0.1:${host.port}`;
     client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
+  }, 45_000);
+
+  beforeEach(() => {
+    prov.reset();
   });
 
-  const pendingCleanup = new Set<Promise<void>>();
-  const cleanupFailures: unknown[] = [];
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    prov.reset();
+    const manager = host.core.accessor.get(ISessionManager);
+    for (const live of manager.list()) {
+      await manager.close(live.id).catch(() => undefined);
+    }
+  });
+
   afterAll(async () => {
-    await vi.waitFor(() => { if (pendingCleanup.size > 0) throw new Error(`${pendingCleanup.size} natural host closes remain pending`); }, { timeout: 10_000 });
-    if (cleanupFailures.length > 0) throw new AggregateError(cleanupFailures, 'Natural host cleanup failed');
-  });
-
-  afterEach(async ({ task }) => {
     await client?.klient.close();
-    for (const response of held) response.destroy();
-    held.clear();
-    provider.closeAllConnections();
-    const initialResponses = responseFacts.map((read) => read());
+    prov.server.closeAllConnections();
     const serverClose = vi.spyOn(host.app.server, 'close');
-    let phases: ClosePhaseWatch | undefined;
-    let unfinished: Promise<void> | undefined;
     try {
       await awaitNaturalClose({
         close: () => host.close(),
-        install: () => { phases = watchHostClose(host); return phases; },
-        restoreSpy: () => { serverClose.mockRestore(); },
-        detail: (phases) => ({
-          initialResponses, serverCloseCalled: serverClose.mock.calls.length,
-          responses: responseFacts.map((read) => read()), ...phases.snapshot(),
-        }),
+        install: () => watchHostClose(host),
+        restoreSpy: () => serverClose.mockRestore(),
+        detail: (p) => p.snapshot(),
       });
-      process.stdout.write(`${JSON.stringify({ naturalCloseProof: { test: task.name, ...phases?.snapshot() } })}\n`);
-    } catch (error) {
-      if (error instanceof NaturalCloseTimeout) unfinished = error.cleanup;
-      throw error;
     } finally {
-      await new Promise<void>((resolve, reject) => provider.close((error) => {
-        if (error) reject(error);
-        else resolve();
-      }));
-      const retiredHome = home;
-      const remove = () => rm(retiredHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-      if (unfinished === undefined) await remove();
-      else {
-        const cleanup = (async () => { try { await unfinished; } finally { await remove(); } })().catch(error => { cleanupFailures.push(error); });
-        pendingCleanup.add(cleanup);
-        void cleanup.finally(() => { pendingCleanup.delete(cleanup); });
-      }
+      await new Promise<void>((r) => prov.server.close(() => r()));
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
-  });
+  }, 30_000);
+
+  async function nextWorkspace(): Promise<string> {
+    caseSeq += 1;
+    const ws = join(home, `ws-${caseSeq}`);
+    await mkdir(ws, { recursive: true });
+    return ws;
+  }
 
   async function session(): Promise<string> {
-    return (await client.createSession({
-      metadata: { cwd: join(home, 'workspace') },
-      agent_config: { permission_mode: 'manual' },
-    })).id;
+    return (await client.createSession({ metadata: { cwd: await nextWorkspace() }, agent_config: { permission_mode: 'manual' } })).id;
   }
 
   async function settled(id: string, count: number): Promise<void> {
-    await vi.waitFor(() => expect(requests).toHaveLength(count), { timeout: 10000 });
-    await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10000 });
+    await vi.waitFor(() => expect(prov.requests).toHaveLength(count), { timeout: 10_000 });
+    await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10_000 });
   }
 
-  it('keeps private turns out of telemetry, usage, export and retained ledgers', async () => {
-    const events: string[] = [];
-    const subscription = host.core.accessor.get(ITelemetryService).addAppender({ track: (name) => { events.push(name); } });
-    try {
-      readTool = true;
-      await writeFile(join(home, 'workspace', 'example.txt'), 'Private fixture text');
-      const id = (await client.createSession({ private: true, metadata: { cwd: join(home, 'workspace') }, agent_config: { permission_mode: 'auto' } })).id;
-      await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Private turn' }] });
-      await settled(id, 2);
-      expect(requests[1]?.messages.some((message) => message.role === 'tool')).toBe(true);
-      const handle = getLiveSessionById(host.core.accessor, id)!;
-      const context = handle.accessor.get(ISessionContext);
-      const main = handle.accessor.get(IAgentLifecycleService).get('main')!;
-      main.accessor.get(ITelemetryService).track('private_probe');
-      expect(events).not.toEqual(expect.arrayContaining(['private_probe']));
-      for (const event of ['session_started', 'llm_request', 'turn_completed', 'prompt_submitted', 'tool_call']) expect(events).not.toContain(event);
-      expect(handle.accessor.get(ISessionMetadata).snapshot().usage).toBeUndefined();
-      const facts = host.core.accessor.get(IUsageFactStore);
-      const scope = agentScopeOf(context.scope(), 'main');
-      expect(await facts.journalSize(scope)).toBe(0);
-      expect((await facts.read(scope)).records).toEqual([]);
-      const usage = usageRuntime(host.core).service;
-      expect((await usage.query({})).summary).toMatchObject({ session_count: 0, tokens: { input_other: 0, output: 0 } });
-      const exported: number[] = [];
-      await usage.readExportSources(async (source) => { exported.push(source.records.length); });
-      expect(exported.every((count) => count === 0)).toBe(true);
-      const manager = host.core.accessor.get(ISessionManager);
-      const fork = await manager.fork({ sourceSessionId: id });
-      const child = await manager.createChild({ sourceSessionId: id });
-      const publicFork = await manager.fork({ sourceSessionId: id, private: false });
-      expect(fork.accessor.get(ISessionMetadata).snapshot().private).toBe(true);
-      expect(child.accessor.get(ISessionMetadata).snapshot().private).toBe(true);
-      expect(publicFork.accessor.get(ISessionMetadata).snapshot().private).toBe(false);
-      await host.core.accessor.get(IUsageFactStore).setSessionPrivacy((await host.core.accessor.get(ISessionIndex).get(id))!);
-      await manager.close(id);
-      const indexed = await host.core.accessor.get(ISessionIndex).get(id);
-      expect(indexed?.private).toBe(true);
-      const staleIndex = vi.spyOn(host.core.accessor.get(ISessionIndex), 'get').mockResolvedValue({ ...indexed!, private: false });
-      const resumed = await manager.resume(id);
-      staleIndex.mockRestore();
-      expect(resumed?.accessor.get(ISessionContext).isPrivate?.()).toBe(true);
-      expect(resumed?.accessor.get(ISessionMetadata).snapshot().private).toBe(true);
-      expect(await host.core.accessor.get(IUsageReadModel).isPrivateSession(indexed!.workspaceId, id)).toBe(true);
-      expect((await usage.query({})).summary).toMatchObject({ session_count: 0, tokens: { input_other: 0, output: 0 } });
-      await manager.archive(id);
-      expect((await host.core.accessor.get(ISessionIndex).get(id))?.private).toBe(true);
-      await manager.delete(id);
-      const retained = host.core.accessor.get(IRetainedUsageService);
-      expect((await retained.listDeletedSessions({ deadlineAt: Date.now() + 5_000, recordLimit: 100 })).items).toEqual([]);
-      expect((await usage.query({})).summary.session_count).toBe(0);
-    } finally { subscription.dispose(); }
-  });
-
-  it.each(['auto-compact', 'context-strategy', 'ssh-hosts', 'model-switches', 'mcp-capabilities', 'goal', 'plan', 'context-rebuild'] as const)('keeps main absent after empty session %s reads', async (read) => {
-    if (read === 'mcp-capabilities') {
-      await client.klient.global.mcp.add({ server: { name: 'disabled-example', transport: 'stdio', command: 'must-not-start', enabled: false } });
-    }
-    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
-    const lifecycle = getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService);
-    const view = client.sessionView(id);
-    let ready = false;
-    const subscription = view.bootstrap!({ transcriptGrades: { main: 'delta' } }, signal => { if (signal.type === 'ready') ready = true; });
-    try {
-      await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10000 });
-      expect(lifecycle.get('main')).toBeUndefined();
-      const agent = client.klient.session(id).agent('main');
-      if (read === 'auto-compact') await expect(client.getAutoCompact(id, 'main')).rejects.toThrow('Model not set');
-      if (read === 'context-strategy') {
-        expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'auto', source: 'default', shadow: false });
-        await client.patchConfig({ loop_control: { context_strategy: 'fresh', relay_shadow: true } });
-        expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'fresh', source: 'global', shadow: true });
+  it.each(['auto-compact', 'context-strategy', 'ssh-hosts', 'model-switches', 'mcp-capabilities', 'goal', 'plan', 'context-rebuild'] as const)(
+    'keeps main absent after empty session %s reads',
+    async (read) => {
+      if (read === 'mcp-capabilities') {
+        await client.klient.global.mcp.add({ server: { name: 'disabled-example', transport: 'stdio', command: 'must-not-start', enabled: false } }).catch(() => undefined);
       }
-      if (read === 'ssh-hosts') {
-        const response = await fetch(`${endpoint}/api/sessions/${id}/ssh/hosts`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
-        expect(await response.json()).toMatchObject({ code: 0, data: { hosts: [] } });
-      }
-      if (read === 'model-switches') expect(await agent.listModelSwitches()).toEqual([]);
-      if (read === 'mcp-capabilities') expect(await agent.listMcpSessionCapabilities()).toContainEqual(expect.objectContaining({
-        runtimeName: 'disabled-example', locator: { source: 'global', name: 'disabled-example' }, connection: 'disabled', override: 'inherit',
-      }));
-      if (read === 'goal') {
-        const response = await fetch(`${endpoint}/api/sessions/${id}/goal`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
-        expect(response.status).toBe(200);
-        expect(await response.json()).toMatchObject({ code: 0, data: null });
-      }
-      if (read === 'plan') expect(await agent.getPlan()).toBeNull();
-      if (read === 'context-rebuild') await agent.contextRebuildControl();
-      expect(lifecycle.get('main')).toBeUndefined();
-    } finally { subscription.close(); }
-  });
+      const id = (await client.createSession({ metadata: { cwd: await nextWorkspace() } })).id;
+      const lifecycle = getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+      const view = client.sessionView(id);
+      let ready = false;
+      const subscription = view.bootstrap!({ transcriptGrades: { main: 'delta' } }, (s) => { if (s.type === 'ready') ready = true; });
+      try {
+        await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10_000 });
+        expect(lifecycle.get('main')).toBeUndefined();
+        const agent = client.klient.session(id).agent('main');
+        if (read === 'auto-compact') await expect(client.getAutoCompact(id, 'main')).rejects.toThrow('Model not set');
+        if (read === 'context-strategy') {
+          expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'auto', source: 'default', shadow: false });
+          await client.patchConfig({ loop_control: { context_strategy: 'fresh', relay_shadow: true } });
+          try {
+            expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'fresh', source: 'global', shadow: true });
+          } finally {
+            await client.patchConfig({ loop_control: { context_strategy: 'auto', relay_shadow: false }, replace_domains: ['loop_control'] }).catch(async () => {
+              await client.patchConfig({ replace_domains: ['loop_control'] });
+            });
+          }
+        }
+        if (read === 'ssh-hosts') {
+          const response = await fetch(`${endpoint}/api/sessions/${id}/ssh/hosts`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+          expect(await response.json()).toMatchObject({ code: 0, data: { hosts: [] } });
+        }
+        if (read === 'model-switches') expect(await agent.listModelSwitches()).toEqual([]);
+        if (read === 'mcp-capabilities') {
+          expect(await agent.listMcpSessionCapabilities()).toContainEqual(expect.objectContaining({
+            runtimeName: 'disabled-example', locator: { source: 'global', name: 'disabled-example' }, connection: 'disabled', override: 'inherit',
+          }));
+        }
+        if (read === 'goal') {
+          const response = await fetch(`${endpoint}/api/sessions/${id}/goal`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+          expect(response.status).toBe(200);
+          expect(await response.json()).toMatchObject({ code: 0, data: null });
+        }
+        if (read === 'plan') expect(await agent.getPlan()).toBeNull();
+        if (read === 'context-rebuild') await agent.contextRebuildControl();
+        expect(lifecycle.get('main')).toBeUndefined();
+      } finally { subscription.close(); }
+    },
+  );
 
   it('keeps saved cold read-only entry points off the restore path', async () => {
-    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    const id = (await client.createSession({ metadata: { cwd: await nextWorkspace() } })).id;
     const manager = host.core.accessor.get(ISessionManager);
-    if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
     await manager.close(id);
     expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-    expect(requests).toHaveLength(0);
-    const expectedRestoreError = new Error('cold restore attempted');
-    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(expectedRestoreError);
-    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(expectedRestoreError);
+    const err = new Error('cold restore attempted');
+    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(err);
+    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(err);
     const reads = [
-      { name: 'auto-compact', path: `/api/sessions/${id}/agents/main/auto-compact?observe=true` },
-      { name: 'context-strategy', path: `/api/sessions/${id}/agents/main/context-strategy?observe=true` },
-      { name: 'optional-capabilities', path: `/api/sessions/${id}/optional-capabilities` },
-      { name: 'ssh-hosts', path: `/api/sessions/${id}/ssh/hosts` },
-      { name: 'hooks', path: `/api/sessions/${id}/agents/main/hooks` },
-      { name: 'goal', path: `/api/sessions/${id}/goal` },
+      ['auto-compact', `/api/sessions/${id}/agents/main/auto-compact?observe=true`, 40001],
+      ['context-strategy', `/api/sessions/${id}/agents/main/context-strategy?observe=true`, 0],
+      ['optional-capabilities', `/api/sessions/${id}/optional-capabilities`, 0],
+      ['ssh-hosts', `/api/sessions/${id}/ssh/hosts`, 0],
+      ['hooks', `/api/sessions/${id}/agents/main/hooks`, 0],
+      ['goal', `/api/sessions/${id}/goal`, 0],
     ] as const;
-    const results: Array<{ name: string; status: number; body: Record<string, unknown> }> = [];
     try {
-      for (const read of reads) {
-        const response = await fetch(`${endpoint}${read.path}`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
-        const text = await response.text();
-        let body: Record<string, unknown>;
-        try { body = JSON.parse(text) as Record<string, unknown>; } catch { body = { raw: text }; }
-        results.push({ name: read.name, status: response.status, body });
+      for (const [name, path, expectedCode] of reads) {
+        const res = await fetch(`${endpoint}${path}`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+        expect(res.status, name).toBe(200);
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body['code'], name).toBe(expectedCode);
       }
-      try {
-        const data = await client.klient.session(id).agent('main').listModelSwitches();
-        results.push({ name: 'model-switches', status: 200, body: { code: 0, data } });
-      } catch (error) {
-        const code = error !== null && typeof error === 'object' && 'code' in error
-          ? (error as { code?: unknown }).code ?? 50001 : 50001;
-        results.push({ name: 'model-switches', status: 200, body: { code } });
-      }
-      try {
-        const data = await client.klient.session(id).agent('main').listMcpSessionCapabilities();
-        results.push({ name: 'mcp-capabilities', status: 200, body: { code: 0, data } });
-      } catch (error) {
-        const code = error !== null && typeof error === 'object' && 'code' in error
-          ? (error as { code?: unknown }).code ?? 50001 : 50001;
-        results.push({ name: 'mcp-capabilities', status: 200, body: { code } });
-      }
-      expect({
-        responses: results.map(({ name, status, body }) => ({ name, status, code: body['code'] })),
-        acquireCalls: acquire.mock.calls.length,
-        resumeCalls: resume.mock.calls.length,
-        live: getLiveSessionById(host.core.accessor, id) !== undefined,
-        modelRequests: requests.length,
-      }).toEqual({
-        responses: [
-          { name: 'auto-compact', status: 200, code: 40001 },
-          { name: 'context-strategy', status: 200, code: 0 },
-          { name: 'optional-capabilities', status: 200, code: 0 },
-          { name: 'ssh-hosts', status: 200, code: 0 },
-          { name: 'hooks', status: 200, code: 0 },
-          { name: 'goal', status: 200, code: 0 },
-          { name: 'model-switches', status: 200, code: 0 },
-          { name: 'mcp-capabilities', status: 200, code: 0 },
-        ],
-        acquireCalls: 0,
-        resumeCalls: 0,
-        live: false,
-        modelRequests: 0,
-      });
-      expect(results[0]?.body).toMatchObject({ msg: 'Model not set' });
-      expect(results[1]?.body).toMatchObject({ data: { strategy: 'auto', source: 'default', shadow: false } });
-      expect(results[2]?.body).toMatchObject({ data: { rows: expect.any(Array) } });
-      expect(results[3]?.body).toMatchObject({ data: { hosts: [] } });
-      expect(results[4]?.body).toMatchObject({ data: { binding: expect.any(Object), rules: expect.any(Array), sources: expect.any(Array) } });
-      expect(results[5]?.body).toMatchObject({ data: null });
-      expect(results[6]?.body).toMatchObject({ data: [] });
-      expect(results[7]?.body).toMatchObject({ data: expect.any(Array) });
-    } finally {
-      acquire.mockRestore();
-      resume.mockRestore();
-    }
+      expect(await client.klient.session(id).agent('main').listModelSwitches()).toEqual([]);
+      expect(Array.isArray(await client.klient.session(id).agent('main').listMcpSessionCapabilities())).toBe(true);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+      expect(prov.requests).toHaveLength(0);
+    } finally { acquire.mockRestore(); resume.mockRestore(); }
   });
 
   it('returns an active persisted goal from a cold session without restoring it', async () => {
     const id = await session();
     const manager = host.core.accessor.get(ISessionManager);
-    if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
-    const live = getLiveSessionById(host.core.accessor, id);
-    if (live === undefined) throw new Error('new session is not live');
+    const live = getLiveSessionById(host.core.accessor, id)!;
     const main = await live.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
     const dispatcher = main.accessor.get(IEventDispatcher);
     const goalId = 'goal-persisted-http';
-    const wallClockResumedAt = Date.now();
     await dispatcher.dispatch(new GoalCreate({
-      goalId,
-      objective: 'Read a goal after closing the session',
-      completionCriterion: 'The saved goal response preserves its controls and budget',
-      status: 'active',
-      followUpTiming: 'tasks_done',
-      controlRevision: 3,
-      wallClockResumedAt,
+      goalId, objective: 'Read a goal after closing the session', completionCriterion: 'The saved goal response preserves its controls and budget',
+      status: 'active', followUpTiming: 'tasks_done', controlRevision: 3, wallClockResumedAt: Date.now(),
     }));
     await dispatcher.dispatch(new GoalUpdate({
-      goalId,
-      controlRevision: 8,
-      tokensUsed: 125,
-      turnsUsed: 2,
-      wallClockMs: 3_000,
+      goalId, controlRevision: 8, tokensUsed: 125, turnsUsed: 2, wallClockMs: 3_000,
       budgetLimits: { tokenBudget: 1_000, turnBudget: 6, wallClockBudgetMs: 60_000 },
     }));
     await manager.close(id);
-    expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-    const restoreError = new Error('cold restore attempted');
-    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(restoreError);
-    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(restoreError);
+    const err = new Error('cold restore attempted');
+    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(err);
+    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(err);
     try {
-      const response = await fetch(`${endpoint}/api/sessions/${id}/goal`, {
-        headers: { authorization: `Bearer ${host.localOwnerToken}` },
-      });
-      expect(response.status).toBe(200);
-      const body = await response.json() as { code: number; data: Record<string, unknown> };
+      const res = await fetch(`${endpoint}/api/sessions/${id}/goal`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { code: number; data: { wallClockMs: number; budget: { remainingWallClockMs: number } } };
       expect(body).toMatchObject({
         code: 0,
         data: {
-          goalId,
-          objective: 'Read a goal after closing the session',
-          completionCriterion: 'The saved goal response preserves its controls and budget',
-          status: 'active',
-          followUpTiming: 'tasks_done',
-          controlRevision: 8,
-          tokensUsed: 125,
-          turnsUsed: 2,
-          budget: {
-            tokenBudget: 1_000,
-            turnBudget: 6,
-            wallClockBudgetMs: 60_000,
-            remainingTokens: 875,
-            remainingTurns: 4,
-            remainingWallClockMs: expect.any(Number),
-            tokenBudgetReached: false,
-            turnBudgetReached: false,
-            wallClockBudgetReached: false,
-            overBudget: false,
-          },
+          goalId, status: 'active', controlRevision: 8, tokensUsed: 125, turnsUsed: 2,
+          budget: { tokenBudget: 1_000, turnBudget: 6, wallClockBudgetMs: 60_000, remainingTokens: 875, remainingTurns: 4, overBudget: false },
         },
       });
-      const budget = body.data['budget'] as { remainingWallClockMs: number };
-      expect(budget.remainingWallClockMs).toBeGreaterThan(0);
-      expect(budget.remainingWallClockMs + (body.data['wallClockMs'] as number)).toBe(60_000);
+      expect(body.data.budget.remainingWallClockMs + body.data.wallClockMs).toBe(60_000);
       expect(acquire).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
       expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-      expect(requests).toHaveLength(0);
-    } finally {
-      acquire.mockRestore();
-      resume.mockRestore();
-    }
+    } finally { acquire.mockRestore(); resume.mockRestore(); }
   });
 
-  it('returns lock-free SESSION_BUSY for observed hooks of an idle-evicted child in a live session', async () => {
-    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') }, agent_config: { model: 'first' } })).id;
+  it('returns lock-free SESSION_BUSY for observed reads of >8MiB cold child and cold bound main without restoring', async () => {
+    const id = (await client.createSession({ metadata: { cwd: await nextWorkspace() }, agent_config: { model: 'first' } })).id;
     const manager = host.core.accessor.get(ISessionManager);
     const live = getLiveSessionById(host.core.accessor, id)!;
     const lifecycle = live.accessor.get(IAgentLifecycleService);
     const child = await lifecycle.create({ delegator: { kind: 'agent', agentId: 'main' }, binding: { profile: 'agent', model: 'first' } });
     await lifecycle.remove(child.id);
+
     const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(new Error('observe must not acquire'));
-    const restore = vi.spyOn(lifecycle, 'create');
+    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(new Error('observe must not resume'));
     const size = vi.spyOn(host.core.accessor.get(IFileSystemStorageService), 'size').mockResolvedValue(9 * 1024 * 1024);
     const read = vi.spyOn(host.core.accessor.get(IAppendLogStore), 'read');
     try {
-      const response = await fetch(`${endpoint}/api/sessions/${id}/agents/${child.id}/hooks?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ code: 40901 });
-      expect(acquire).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled(); expect(read).not.toHaveBeenCalled();
-      expect(manager.get(id)).toBe(live);
-    } finally { acquire.mockRestore(); restore.mockRestore(); size.mockRestore(); read.mockRestore(); }
-  });
-
-  it('returns fast SESSION_BUSY for observed reads of a cold bound main without restoring it', async () => {
-    const id = (await client.createSession({
-      metadata: { cwd: join(home, 'workspace') },
-      agent_config: { model: 'first' },
-    })).id;
-    const manager = host.core.accessor.get(ISessionManager);
-    if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
-    await manager.close(id);
-    expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-    const expectedRestoreError = new Error('cold restore attempted');
-    const acquire = vi.spyOn(manager, 'acquire').mockRejectedValue(expectedRestoreError);
-    const resume = vi.spyOn(manager, 'resume').mockRejectedValue(expectedRestoreError);
-    const wireSize = vi.spyOn(host.core.accessor.get(IFileSystemStorageService), 'size').mockResolvedValue(9 * 1024 * 1024);
-    const wireRead = vi.spyOn(host.core.accessor.get(IAppendLogStore), 'read');
-    const paths = [
-      `/api/sessions/${id}/agents/main/auto-compact?observe=true`,
-      `/api/sessions/${id}/agents/main/context-strategy?observe=true`,
-      `/api/sessions/${id}/agents/main/hooks?observe=true`,
-    ];
-    const started = performance.now();
-    const results: Array<{ status: number; body: Record<string, unknown> }> = [];
-    try {
-      for (const path of paths) {
-        const response = await fetch(`${endpoint}${path}`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
-        results.push({ status: response.status, body: await response.json() as Record<string, unknown> });
-      }
-      expect(results.map(({ status, body }) => ({ status, code: body['code'] }))).toEqual([
-        { status: 200, code: 40901 },
-        { status: 200, code: 40901 },
-        { status: 200, code: 40901 },
-      ]);
-      expect(performance.now() - started).toBeLessThan(1000);
+      const childRes = await fetch(`${endpoint}/api/sessions/${id}/agents/${child.id}/hooks?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+      expect(await childRes.json()).toMatchObject({ code: 40901 });
       expect(acquire).not.toHaveBeenCalled();
-      expect(resume).not.toHaveBeenCalled();
-      expect(wireSize).toHaveBeenCalled();
-      expect(wireRead).not.toHaveBeenCalled();
-      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-      expect(requests).toHaveLength(0);
-    } finally {
+      expect(read).not.toHaveBeenCalled();
+
       acquire.mockRestore();
-      resume.mockRestore();
-      wireSize.mockRestore();
-      wireRead.mockRestore();
-    }
+      await manager.close(id);
+      vi.spyOn(manager, 'acquire').mockRejectedValue(new Error('cold observe must not acquire'));
+      const started = performance.now();
+      for (const path of ['auto-compact', 'context-strategy', 'hooks']) {
+        const r = await fetch(`${endpoint}/api/sessions/${id}/agents/main/${path}?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+        expect(await r.json()).toMatchObject({ code: 40901 });
+      }
+      expect(performance.now() - started).toBeLessThan(1_000);
+      expect(resume).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+    } finally { vi.restoreAllMocks(); }
   });
 
   it('pages saved turns after an oversized last record leaves the cold first screen empty', async () => {
@@ -879,8 +610,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     const indexed = (await host.core.accessor.get(ISessionIndex).get(id))!;
     const logs = host.core.accessor.get(IAppendLogStore);
     const scope = `sessions/${indexed.workspaceId}/${id}/agents/main`;
-    logs.append(scope, 'wire.jsonl', { type: 'turn.prompt', turnId: 0, promptId: 'saved',
-      input: [{ type: 'text', text: 'Earlier saved prompt' }], origin: { kind: 'user' }, time: 1 });
+    logs.append(scope, 'wire.jsonl', { type: 'turn.prompt', turnId: 0, promptId: 'saved', input: [{ type: 'text', text: 'Earlier saved prompt' }], origin: { kind: 'user' }, time: 1 });
     logs.append(scope, 'wire.jsonl', { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2 });
     logs.append(scope, 'wire.jsonl', { type: 'unrelated', payload: 'x'.repeat(12 << 20) });
     await logs.flush(scope, 'wire.jsonl');
@@ -892,7 +622,7 @@ describe('GUI shared client against an isolated KAP host', () => {
       await vi.waitFor(() => {
         controller.flushFrames();
         expect(controller.getState()).toMatchObject({ loaded: true, transcriptReady: true, hasMoreHistory: true, blocks: [] });
-      }, { timeout: 5000 });
+      }, { timeout: 5_000 });
       expect(await controller.loadOlderHistory('main')).toMatchObject({ changed: true });
       expect(JSON.stringify(controller.getState().blocks)).toContain('Earlier saved prompt');
       expect(acquire).not.toHaveBeenCalled();
@@ -902,17 +632,21 @@ describe('GUI shared client against an isolated KAP host', () => {
   }, 15_000);
 
   it.each([false, true])('preserves complete model-switch reads and explicit observe=%s over GUI HTTP after >8MiB', async (observe) => {
-    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    const id = (await client.createSession({ metadata: { cwd: await nextWorkspace() } })).id;
     const manager = host.core.accessor.get(ISessionManager);
     await manager.close(id);
     const summary = await host.core.accessor.get(ISessionIndex).get(id);
     const logs = host.core.accessor.get(IAppendLogStore);
     const scope = `sessions/${summary!.workspaceId}/${id}/agents/main`;
     logs.append(scope, 'wire.jsonl', { type: 'unrelated', payload: 'x'.repeat(9 * 1024 * 1024) });
-    logs.append(scope, 'wire.jsonl', { type: 'prompt.model_switch_queued', time: 1, queueIndex: 0,
-      entry: { input: { operationId: 'cold-switch', model: 'first', mode: 'direct' }, revision: 0,
+    logs.append(scope, 'wire.jsonl', {
+      type: 'prompt.model_switch_queued', time: 1, queueIndex: 0,
+      entry: {
+        input: { operationId: 'cold-switch', model: 'first', mode: 'direct' }, revision: 0,
         originalBinding: { model: 'second', thinking: '' },
-        receipt: { operationId: 'cold-switch', agentId: 'main', state: 'pending', mode: 'direct', fromModel: 'second', toModel: 'first' } } });
+        receipt: { operationId: 'cold-switch', agentId: 'main', state: 'pending', mode: 'direct', fromModel: 'second', toModel: 'first' },
+      },
+    });
     await logs.flush(scope, 'wire.jsonl');
     const acquire = vi.spyOn(manager, 'acquire');
     const resume = vi.spyOn(manager, 'resume');
@@ -925,43 +659,44 @@ describe('GUI shared client against an isolated KAP host', () => {
           code: 40001, message: 'model_switch_queue_preparing (code 40001)', details: { reason: 'model_switch_queue_preparing' },
         });
       }
-      const queue = observe ? client.listAgentModelSwitches(id, 'main', undefined, true) : client.listAgentModelSwitches(id, 'main');
-      await expect(queue).resolves.toMatchObject([{ input: { operationId: 'cold-switch' }, queueIndex: 0 }]);
+      await expect(observe ? client.listAgentModelSwitches(id, 'main', undefined, true) : client.listAgentModelSwitches(id, 'main')).resolves.toMatchObject([
+        { input: { operationId: 'cold-switch' }, queueIndex: 0 },
+      ]);
       expect(acquire).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
       expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-      expect(requests).toHaveLength(0);
     } finally { acquire.mockRestore(); resume.mockRestore(); }
   });
 
-  it.each(['compaction.started', 'compaction.completed', 'compaction.cancelled'] as const)('watches absent main %s over WS without creating it and attaches on real creation', async (type) => {
-    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
-    const lifecycle = getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService);
-    const received = vi.fn();
-    const removed = vi.fn();
-    const events = client.klient.session(id).agent('main').events;
-    const active = events.on(type, received);
-    const disposed = events.on(type, removed);
-    try {
-      await Promise.all([active.ready, disposed.ready]);
-      expect(lifecycle.get('main')).toBeUndefined();
-      disposed.dispose();
-      const main = await lifecycle.create({ agentId: 'main' });
-      const event = type === 'compaction.started' ? new CompactionStarted({ trigger: 'manual', phase: 'running' })
-        : type === 'compaction.cancelled' ? new CompactionCancelled({ trigger: 'manual' })
-        : new CompactionCompleted({ trigger: 'manual', result: { summary: '', compactedCount: 0, tokensBefore: 0, tokensAfter: 0 } });
-      await main.accessor.get(IEventDispatcher).dispatch(event);
-      await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
-      expect(received.mock.calls[0]![0]).toMatchObject({ type, trigger: 'manual' });
-      expect(removed).not.toHaveBeenCalled();
-    } finally { active.dispose(); disposed.dispose(); }
-  });
+  it.each(['compaction.started', 'compaction.completed', 'compaction.cancelled'] as const)(
+    'watches absent main %s over WS without creating it and attaches on real creation',
+    async (type) => {
+      const id = (await client.createSession({ metadata: { cwd: await nextWorkspace() } })).id;
+      const lifecycle = getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+      const received = vi.fn(), removed = vi.fn();
+      const events = client.klient.session(id).agent('main').events;
+      const active = events.on(type, received), disposed = events.on(type, removed);
+      try {
+        await Promise.all([active.ready, disposed.ready]);
+        expect(lifecycle.get('main')).toBeUndefined();
+        disposed.dispose();
+        const main = await lifecycle.create({ agentId: 'main' });
+        const event = type === 'compaction.started' ? new CompactionStarted({ trigger: 'manual', phase: 'running' })
+          : type === 'compaction.cancelled' ? new CompactionCancelled({ trigger: 'manual' })
+          : new CompactionCompleted({ trigger: 'manual', result: { summary: '', compactedCount: 0, tokensBefore: 0, tokensAfter: 0 } });
+        await main.accessor.get(IEventDispatcher).dispatch(event);
+        await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
+        expect(received.mock.calls[0]![0]).toMatchObject({ type, trigger: 'manual' });
+        expect(removed).not.toHaveBeenCalled();
+      } finally { active.dispose(); disposed.dispose(); }
+    },
+  );
 
   it('bootstraps a new empty main with verified complete history', async () => {
-    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    const id = (await client.createSession({ metadata: { cwd: await nextWorkspace() } })).id;
     expect(getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
     await Promise.all([
-      client.getAutoCompact(id, 'main').catch(error => { expect(error.message).toContain('Model not set'); }),
+      client.getAutoCompact(id, 'main').catch((e: Error) => expect(e.message).toContain('Model not set')),
       client.getContextStrategy(id, 'main'),
       client.klient.session(id).agent('main').listMcpSessionCapabilities(),
       client.klient.session(id).agent('main').listModelSwitches(),
@@ -969,15 +704,17 @@ describe('GUI shared client against an isolated KAP host', () => {
     expect(getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
     const view = client.sessionView(id);
     const signals: Parameters<Parameters<typeof view.subscribe>[1]>[0][] = [];
-    const subscription = view.bootstrap!({ transcriptGrades: { main: 'delta' } }, signal => signals.push(signal));
+    const subscription = view.bootstrap!({ transcriptGrades: { main: 'delta' } }, (s) => signals.push(s));
     try {
-      await vi.waitFor(() => expect(signals.some(signal => signal.type === 'ready')).toBe(true), { timeout: 10000 });
-      const resets = signals.filter(signal => signal.type === 'transcript' && signal.event.type === 'transcript.reset');
+      await vi.waitFor(() => expect(signals.some((s) => s.type === 'ready')).toBe(true), { timeout: 10_000 });
+      const resets = signals.filter((s) => s.type === 'transcript' && s.event.type === 'transcript.reset');
       expect(resets).toHaveLength(1);
-      expect(resets[0]).toMatchObject({ event: {
-        coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' },
-        snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false },
-      } });
+      expect(resets[0]).toMatchObject({
+        event: {
+          coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' },
+          snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false },
+        },
+      });
       expect(await client.klient.session(id).view.snapshot()).toMatchObject({ session: { message_count: 0 }, messages: { items: [], has_more: false } });
       expect(getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
     } finally { subscription.close(); }
@@ -987,380 +724,390 @@ describe('GUI shared client against an isolated KAP host', () => {
     await client.patchConfig({ session_title: { model: 'second' }, replace_domains: ['session_title'] });
     const id = await session();
     const other = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
-    const controllers = [client, other].map((connection) => new SessionController(connection.sessions, connection.sessionView(id), id));
+    const controllers = [client, other].map((c) => new SessionController(c.sessions, c.sessionView(id), id));
     const updates = [vi.fn(), vi.fn()];
-    const subscriptions = [client, other].map((connection, index) => connection.klient.events.on('session.metaUpdated', updates[index]!));
+    const subs = [client, other].map((c, idx) => c.klient.events.on('session.metaUpdated', updates[idx]!));
     try {
-      await Promise.all(controllers.map((controller) => controller.open()));
-      await Promise.all(subscriptions.map((subscription) => subscription.ready));
+      await Promise.all(controllers.map((c) => c.open()));
+      await Promise.all(subs.map((s) => s.ready));
       await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Plan a small garden' }] });
       await vi.waitFor(() => {
-        for (const controller of controllers) {
-          controller.flushFrames();
-          expect(controller.getState().session?.title).toBe('local model completed');
-        }
-      }, { timeout: 10000 });
+        for (const c of controllers) { c.flushFrames(); expect(c.getState().session?.title).toBe('local model completed'); }
+      }, { timeout: 10_000 });
       expect((await client.klient.session(id).get()).title).toBe('local model completed');
-      expect(requests.map((request) => request.model)).toEqual(['first', 'second']);
-      expect(JSON.stringify(requests[1]!.messages)).toContain('assistant: local model completed');
-      for (const update of updates) expect(update.mock.calls.filter(([event]) => event.patch.title === 'local model completed')).toHaveLength(1);
+      expect(prov.requests.map((r) => r.model)).toEqual(['first', 'second']);
+      for (const u of updates) expect(u.mock.calls.filter(([e]) => e.patch.title === 'local model completed')).toHaveLength(1);
       await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Add a pond' }] });
       await settled(id, 3);
-      expect(requests.filter((request) => request.model === 'second')).toHaveLength(1);
+      expect(prov.requests.filter((r) => r.model === 'second')).toHaveLength(1);
     } finally {
-      for (const controller of controllers) controller.close();
-      for (const subscription of subscriptions) subscription.dispose();
+      for (const c of controllers) c.close();
+      for (const s of subs) s.dispose();
       await other.klient.close();
+      await client.patchConfig({ session_title: { model: null, triggers: [] }, replace_domains: ['session_title'] }).catch(() => undefined);
     }
   });
 
-  it('requires an explicit title model and keeps empty moments manual-only with actionable REST failures', async () => {
-    await client.patchConfig({ fast_model: 'second' });
-    const id = await session();
-    await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Keep my garden plan' }] });
-    await settled(id, 1);
-    async function generate(): Promise<{ code: number; msg: string; data: { title?: string } }> {
-      return (await fetch(`${endpoint}/api/sessions/${id}/title/generate`, {
-        method: 'POST', headers: { authorization: `Bearer ${host.localOwnerToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ force: true }),
-      })).json();
-    }
-    expect((await generate()).code).toBe(40923);
-    expect(requests).toHaveLength(1);
-    await client.patchConfig({ session_title: { model: 'second', triggers: [] }, replace_domains: ['session_title'] });
-    await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Include a pond' }] });
-    await settled(id, 2);
-    expect(await generate()).toMatchObject({ code: 0, data: { title: 'local model completed' } });
-    expect(requests.map((request) => request.model)).toEqual(['first', 'first', 'second']);
-    await client.patchConfig({ session_title: { model: 'missing-title-model', triggers: [] }, replace_domains: ['session_title'] });
-    const failed = await generate();
-    expect(failed.code).toBe(40923); expect(failed.msg).toContain('missing-title-model');
-    expect((await client.klient.session(id).get()).title).toBe('local model completed');
-    expect(requests).toHaveLength(3);
-  });
-
-  it.each(['EOF', 'remaining bytes'] as const)('waits for media %s then naturally releases its newly idle connection during close', async (waitFor) => {
-    const id = await session();
-    const bytes = new Uint8Array([65, 66, 67]);
-    const uploaded = await client.uploadFile(new File([bytes], 'delayed.bin'), id);
-    const files = host.core.accessor.get(IFileService);
-    const stored = await files.get(uploaded.id);
-    let releaseEof!: () => void;
-    const eof = new Promise<void>((resolve) => { releaseEof = resolve; });
-    let released = false;
-    let notifyStarted!: () => void;
-    const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
-    const read = vi.spyOn(files, 'get').mockResolvedValueOnce({
-      ...stored,
-      stream: () => Readable.from((async function* () {
-        try {
-          yield waitFor === 'EOF' ? bytes : bytes.slice(0, 1);
-          notifyStarted();
-          await eof;
-          if (waitFor === 'remaining bytes') yield bytes.slice(1);
-        } finally {
-          released = true;
-        }
-      })()),
-    });
-    let closing: Promise<void> | undefined;
-    let naturallyClosed = false;
-    let closeTimer: ReturnType<typeof setTimeout> | undefined;
-    const downloading = client.readSessionMediaBytes(id, uploaded.id);
-    try {
-      await started;
-      if (waitFor === 'EOF') expect((await downloading).bytes).toEqual(bytes);
-      expect(released).toBe(false);
-      closing = host.close().then(() => { naturallyClosed = true; });
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
-      expect(naturallyClosed).toBe(false);
-      releaseEof();
-      expect((await downloading).bytes).toEqual(bytes);
-      await Promise.race([
-        closing,
-        new Promise<void>((resolve) => { closeTimer = setTimeout(resolve, 2000); }),
-      ]);
-      expect(released).toBe(true);
-      expect(naturallyClosed).toBe(true);
-    } finally {
-      releaseEof();
-      if (closeTimer !== undefined) clearTimeout(closeTimer);
-      if (closing !== undefined && !naturallyClosed) host.app.server.closeAllConnections();
-      await closing;
-      read.mockRestore();
-    }
-  });
-
-  it('naturally closes immediately after three completed media downloads', async () => {
-    const id = await session();
-    const bytes = new Uint8Array(600 * 1024).fill(65);
-    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([bytes], `attachment-${index}.bin`), id)));
-    for (const file of uploaded) {
-      const downloaded = await client.readSessionMediaBytes(id, file.id);
-      expect(downloaded.bytes).toEqual(bytes);
-    }
-  });
-
-  it('keeps the composer binding after reopening and restarting a bound session with a credentialless server default', async () => {
-    const id = await session();
-    await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'persist this binding' }] });
-    await settled(id, 1);
-    await client.klient.close();
-    await host.close();
-    host = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, instancesDir: join(home, 'instances'), host: '127.0.0.1', port: 0, logLevel: 'silent' });
-    endpoint = `http://127.0.0.1:${host.port}`;
-    client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
-    for (const reopen of [0, 1]) {
-      const actual = client.klient.session(id).view;
-      const shell = await actual.snapshot();
-      expect(shell.session.agent_config.model).toBe('first');
-      let ready = false;
-      let projected = applyTranscriptShell(id, shell);
-      let resets = 0;
-      const subscription = actual.subscribe({ sessionCursor: { seq: shell.as_of_seq, epoch: shell.epoch }, transcriptGrades: { main: 'delta' } }, (signal) => {
-        if (signal.type === 'transcript' && signal.event.type === 'transcript.reset' && signal.event.agent_id === 'main') {
-          projected = projectAgentTranscriptView(projected, 'main', signal.event.snapshot);
-          resets += 1;
-        }
-        if (signal.type === 'ready') ready = true;
-      });
-      try {
-        await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10000 });
-        expect(resets).toBeGreaterThan(0);
-        expect(projected.model, `reopen ${reopen}`).toBe('first');
-        await client.submitPrompt(id, { content: [{ type: 'text', text: `GUI continuation ${reopen}` }], model: projected.model ?? 'unavailable' });
-        await settled(id, reopen + 2);
-        expect(requests[reopen + 1]?.model).toBe('first');
-      } finally {
-        subscription.close();
-      }
-    }
-  }, 40000);
-
-  it.each(['live', 'cold'] as const)('publishes child prompt restarts and terminal states through the %s GUI view', async (mode) => {
-    const id = await session();
-    await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'establish parent' }] });
-    await settled(id, 1);
-    const live = getLiveSessionById(host.core.accessor, id)!;
-    const child = await live.accessor.get(IAgentLifecycleService).create({
-      delegator: { kind: 'agent', agentId: 'main' },
-      binding: { profile: 'agent', model: 'first' },
-    });
-    await client.sendAgentMessage(id, child.id, 'initial child prompt', undefined, 'initial-child-prompt');
-    await child.accessor.get(IAgentExecutionService).settled();
-    if (mode === 'cold') {
-      await client.klient.close();
-      await host.close();
-      host = await startServer({ hostIdentity: TEST_HOST_IDENTITY, homeDir: home, instancesDir: join(home, 'instances'), host: '127.0.0.1', port: 0, logLevel: 'silent' });
-      endpoint = `http://127.0.0.1:${host.port}`;
-      client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
-      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-      const response = await fetch(`${endpoint}/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`, {
-        headers: { authorization: `Bearer ${host.localOwnerToken}` },
-      });
-      const cold = await response.json() as { code: number; data: { tasks: { agentId?: string; state: string }[] } };
-      expect(cold.code).toBe(0);
-      expect(cold.data.tasks.find((task) => task.agentId === child.id)?.state).toBe('completed');
-      expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-    }
-    const view = client.sessionView(id);
-    let ready = false;
-    let liveChildBaselineEpoch: string | undefined;
-    const subscribe = view.subscribe.bind(view);
-    const bootstrap = view.bootstrap!.bind(view);
-    const observe = (callback: Parameters<typeof view.subscribe>[1]) => (signal: Parameters<typeof callback>[0]) => {
-      if (signal.type === 'ready') ready = true;
-      if (signal.type === 'transcript' && signal.event.type === 'transcript.reset' &&
-        signal.event.agent_id === child.id && signal.event.cursor.epoch !== undefined &&
-        !signal.event.cursor.epoch.startsWith('cold:')) liveChildBaselineEpoch = signal.event.cursor.epoch;
-      callback(signal);
-    };
-    const subscriptionSpy = vi.spyOn(view, 'subscribe').mockImplementation((options, callback) => subscribe(options, observe(callback)));
-    const bootstrapSpy = vi.spyOn(view, 'bootstrap').mockImplementation((options, callback) => bootstrap(options, observe(callback)));
-    const controller = new SessionController(client.sessions, view, id);
-    const mainChanges = vi.fn();
-    const childChanges = vi.fn();
-    const offMain = controller.subscribe(mainChanges);
-    const offChild = controller.subscribeAgent(child.id, childChanges);
-    controller.retainAgentView('test-child', child.id, 'turn');
-    try {
-      await controller.open();
-      await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10000 });
-      controller.flushFrames();
-      await vi.waitFor(() => {
-        controller.flushFrames();
-        expect(controller.getForest()?.byId[child.id]?.status).toBe('completed');
-      });
-      if (mode === 'cold') {
-        expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
-        expect(controller.getAgentTranscriptCursor(child.id)?.epoch).toMatch(/^cold:/);
-        expect(controller.getAgentState(child.id).busy).toBe(false);
-      }
-      for (const ending of ['completed', 'failed', 'cancelled'] as const) {
-        hold = true;
-        mainChanges.mockClear();
-        childChanges.mockClear();
-        const beforeRequests = requests.length;
-        const beforeEpoch = controller.getAgentTranscriptCursor(child.id)?.epoch;
-        await client.sendAgentMessage(id, child.id, `follow-up ${ending}`, undefined, `follow-up-${ending}`);
-        await vi.waitFor(() => expect(requests).toHaveLength(beforeRequests + 1), { timeout: 10000 });
-        await vi.waitFor(() => {
-          controller.flushFrames();
-          expect(liveChildBaselineEpoch).toBeDefined();
-          expect(controller.getAgentTranscriptCursor(child.id)?.epoch).toBe(liveChildBaselineEpoch);
-          expect(controller.getAgentState(child.id).transcriptReady).toBe(true);
-          if (beforeEpoch?.startsWith('cold:')) expect(liveChildBaselineEpoch).not.toBe(beforeEpoch);
-        }, { timeout: 10000 });
-        await vi.waitFor(() => {
-          controller.flushFrames();
-          expect(controller.getForest()?.byId[child.id]?.status).toBe('background');
-          expect(controller.getState().tasks.some((task) => task.agent_id === child.id && task.status === 'running')).toBe(true);
-          expect(controller.getAgentState(child.id).busy).toBe(true);
-        });
-        expect(mainChanges).toHaveBeenCalled();
-        expect(childChanges).toHaveBeenCalled();
-        if (ending === 'cancelled') {
-          const current = getLiveSessionById(host.core.accessor, id)!;
-          const tasks = current.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentTaskService);
-          const task = tasks.list(true).find((task) => task.kind === 'agent' && task.agentId === child.id)!;
-          expect(task.taskId).not.toBe(child.id);
-          await client.klient.session(id).agent('main').stopTask({ taskId: task.taskId });
-        } else {
-          for (const response of held) {
-            if (ending === 'failed') {
-              response.writeHead(400, { 'content-type': 'application/json' });
-              response.end(JSON.stringify({ error: { message: 'Synthetic provider failure', type: 'invalid_request_error' } }));
-            } else {
-              response.writeHead(200, { 'content-type': 'text/event-stream' });
-              response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'follow-up complete' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
-            }
-          }
-          held.clear();
-        }
-        await vi.waitFor(() => {
-          controller.flushFrames();
-          expect(controller.getForest()?.byId[child.id]?.status).toBe(ending);
-          expect(controller.getAgentState(child.id).busy).toBe(false);
-        }, { timeout: 10000 });
-      }
-      const current = getLiveSessionById(host.core.accessor, id)!;
-      const tasks = current.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentTaskService);
-      await vi.waitFor(() => {
-        const childTasks = tasks.list(false).filter((task) => task.kind === 'agent' && task.agentId === child.id);
-        expect(childTasks).toHaveLength(4);
-        expect(childTasks.map((task) => task.status).toSorted()).toEqual(['completed', 'completed', 'failed', 'killed']);
-      });
-      expect(requests).toHaveLength(5);
-    } finally {
-      offMain();
-      offChild();
-      subscriptionSpy.mockRestore();
-      bootstrapSpy.mockRestore();
-      controller.close();
-    }
-  }, 40000);
-
-  it('sends, switches model, rejects an unauthenticated override without rebinding, and cancels', async () => {
+  it('sends, switches model, rejects unauthenticated override without rebinding, cancels, and rejects >12MiB drafts', async () => {
     const id = await session();
     await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'first turn' }] });
     await settled(id, 1);
-    expect(requests[0]?.model).toBe('first');
+    expect(prov.requests[0]?.model).toBe('first');
     await client.submitPrompt(id, { model: 'second', content: [{ type: 'text', text: 'switch model' }] });
     await settled(id, 2);
-    expect(requests[1]?.model).toBe('second');
+    expect(prov.requests[1]?.model).toBe('second');
     await expect(client.submitPrompt(id, { model: 'unavailable', content: [{ type: 'text', text: 'must reject' }] })).rejects.toMatchObject({ code: 40111 });
+
+    const hugeDraft = { model: 'first', content: [{ type: 'text' as const, text: 'x'.repeat(12 * 1024 * 1024) }] };
+    await expect(client.submitPrompt(id, hugeDraft)).rejects.toMatchObject({ code: 40001, message: expect.stringContaining('size limit') });
+
     await client.submitPrompt(id, { content: [{ type: 'text', text: 'keep the bound model' }] });
     await settled(id, 3);
-    expect(requests[2]?.model).toBe('second');
-    expect(JSON.stringify(requests[2])).not.toContain('must reject');
-    hold = true;
+    expect(prov.requests[2]?.model).toBe('second');
+    expect(JSON.stringify(prov.requests[2])).not.toContain('must reject');
+
+    prov.hold = true;
     const pending = await client.submitPrompt(id, { content: [{ type: 'text', text: 'cancel this turn' }] });
-    await vi.waitFor(() => expect(requests).toHaveLength(4), { timeout: 10000 });
+    await vi.waitFor(() => expect(prov.requests).toHaveLength(4), { timeout: 10_000 });
     await client.abortPrompt(id, pending.prompt_id);
-    await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10000 });
+    await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10_000 });
     for (const path of ['/api/v1/healthz', '/api/v2/sessions', '/api/v1/sessions']) {
       const response = await fetch(endpoint + path, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
       expect(response.status, path).toBe(404);
       await response.arrayBuffer();
     }
-  }, 40000);
+  }, 40_000);
 
   it('recovers ordered transcript delivery after the actual event socket is severed', async () => {
     const id = await session();
     await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'before disconnect' }] });
     await settled(id, 1);
+    const isolatedClient = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
     const sockets = new Set<import('node:stream').Duplex>();
-    host.app.server.on('upgrade', (_request, socket) => sockets.add(socket));
+    const onUpgrade = (_req: unknown, socket: import('node:stream').Duplex) => sockets.add(socket);
+    host.app.server.on('upgrade', onUpgrade);
     const signals: import('@kiki/klient').SessionViewSignal[] = [];
-    const view = client.klient.session(id).view.subscribe({ sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } }, (signal) => signals.push(signal));
+    const view = isolatedClient.klient.session(id).view.subscribe({ sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } }, (s) => signals.push(s));
     try {
-      await vi.waitFor(() => expect(signals.some((signal) => signal.type === 'ready')).toBe(true), { timeout: 10000 });
-      const initialGeneration = signals.find((signal) => signal.type === 'ready')!.generation;
+      await vi.waitFor(() => expect(signals.some((s) => s.type === 'ready')).toBe(true), { timeout: 10_000 });
+      const initialGen = signals.find((s) => s.type === 'ready')!.generation;
       expect(sockets.size).toBe(1);
-      for (const socket of sockets) socket.destroy();
-      await vi.waitFor(() => expect(signals.some((signal) => signal.type === 'status' && signal.status === 'closed')).toBe(true));
+      for (const s of sockets) s.destroy();
+      await vi.waitFor(() => expect(signals.some((s) => s.type === 'status' && s.status === 'closed')).toBe(true));
       await client.submitPrompt(id, { content: [{ type: 'text', text: 'sent while the view reconnects' }] });
       await settled(id, 2);
-      await vi.waitFor(() => expect(signals.some((signal) => signal.type === 'ready' && signal.reconnected && signal.generation > initialGeneration)).toBe(true), { timeout: 10000 });
-      await vi.waitFor(() => expect(JSON.stringify(signals.filter((signal) => signal.type === 'transcript' && signal.generation > initialGeneration))).toContain('sent while the view reconnects'), { timeout: 10000 });
-      expect(signals.filter((signal) => signal.type === 'protocolError')).toEqual([]);
+      await vi.waitFor(() => expect(signals.some((s) => s.type === 'ready' && s.reconnected && s.generation > initialGen)).toBe(true), { timeout: 10_000 });
+      await vi.waitFor(() => expect(JSON.stringify(signals.filter((s) => s.type === 'transcript' && s.generation > initialGen))).toContain('sent while the view reconnects'), { timeout: 10_000 });
+      expect(signals.filter((s) => s.type === 'protocolError')).toEqual([]);
       expect(sockets.size).toBe(2);
     } finally {
+      host.app.server.off('upgrade', onUpgrade);
       view.close();
-      for (const socket of sockets) socket.destroy();
+      await isolatedClient.klient.close();
+      for (const s of sockets) s.destroy();
     }
-  }, 40000);
+  }, 40_000);
 
   it('accepts three uploaded and three inline images through the GUI adapter and downloads session media', async () => {
     const id = await session();
     const image = paddedPng(600 * 1024, 1);
-    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([new Uint8Array(image)], `image-${index}.png`, { type: 'image/png' }))));
-    const submission = {
-      model: 'first',
-      content: uploaded.map((file) => ({ type: 'image' as const, source: { kind: 'file' as const, file_id: file.id } })),
-    };
+    const uploaded = await Promise.all([0, 1, 2].map((i) => client.uploadFile(new File([new Uint8Array(image)], `image-${i}.png`, { type: 'image/png' }))));
+    const submission = { model: 'first', content: uploaded.map((f) => ({ type: 'image' as const, source: { kind: 'file' as const, file_id: f.id } })) };
     expect(Buffer.byteLength(JSON.stringify(submission))).toBeLessThan(1024);
     await client.submitPrompt(id, submission);
     await settled(id, 1);
-    const user = requests[0]?.messages.findLast((message) => message.role === 'user' && JSON.stringify(message.content).includes('data:image/png;base64,'));
+    const user = prov.requests[0]?.messages.findLast((m) => m.role === 'user' && JSON.stringify(m.content).includes('data:image/png;base64,'));
     expect(JSON.stringify(user).match(/data:image\/png;base64,/g)).toHaveLength(3);
     for (const file of uploaded) {
       const downloaded = await client.readSessionMediaBytes(id, file.id);
-      expect(downloaded.mime, new TextDecoder().decode(downloaded.bytes.slice(0, 200))).toBe('image/png');
+      expect(downloaded.mime).toBe('image/png');
       expect(Buffer.from(downloaded.bytes)).toEqual(image);
     }
-    const inline = {
-      content: [0, 1, 2].map(() => ({
-        type: 'image' as const,
-        source: { kind: 'base64' as const, media_type: 'image/png', data: image.toString('base64') },
-      })),
-    };
+    const inline = { content: [0, 1, 2].map(() => ({ type: 'image' as const, source: { kind: 'base64' as const, media_type: 'image/png', data: image.toString('base64') } })) };
     expect(Buffer.byteLength(JSON.stringify(inline))).toBeGreaterThan(2 * 1024 * 1024);
     await client.submitPrompt(id, inline);
     await settled(id, 2);
-    const inlineUser = requests[1]?.messages.findLast((message) => message.role === 'user' && JSON.stringify(message.content).includes('data:image/png;base64,'));
-    expect(JSON.stringify(inlineUser).match(/data:image\/png;base64,/g)).toHaveLength(3);
-    expect(requests[1]?.model).toBe('first');
-    const failedStorage = vi.spyOn(host.core.accessor.get(IFileService), 'get')
-      .mockRejectedValueOnce(new Error('synthetic media storage failure'));
-    try {
-      await expect(client.readSessionMediaBytes(id, 'missing-file')).rejects.toMatchObject({ code: 50001 });
-    } finally {
-      failedStorage.mockRestore();
-    }
-  }, 40000);
+    expect(prov.requests[1]?.model).toBe('first');
+    vi.spyOn(host.core.accessor.get(IFileService), 'get').mockRejectedValueOnce(new Error('synthetic media storage failure'));
+    await expect(client.readSessionMediaBytes(id, 'missing-file')).rejects.toMatchObject({ code: 50001 });
+  }, 40_000);
+});
 
-  it('rejects a request above the HTTP budget without enqueueing it or changing the selected model', async () => {
-    const id = await session();
-    await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'establish model' }] });
-    await settled(id, 1);
-    const draft = { model: 'second', content: [{ type: 'text' as const, text: 'x'.repeat(12 * 1024 * 1024) }] };
-    await expect(client.submitPrompt(id, draft)).rejects.toMatchObject({ code: 40001, message: expect.stringContaining('size limit') });
-    expect(draft.content[0]?.text.length).toBe(12 * 1024 * 1024);
-    expect(draft.model).toBe('second');
-    await client.submitPrompt(id, { content: [{ type: 'text', text: 'retry with a small draft' }] });
-    await settled(id, 2);
-    expect(requests[1]?.model).toBe('first');
-    expect(JSON.stringify(requests[1]).length).toBeLessThan(1024 * 1024);
-  }, 40000);
+describe('GUI dedicated lifecycle, privacy, and restart proofs', () => {
+  async function withIsolatedHost<T>(fn: (ctx: {
+    home: string;
+    prov: ReturnType<typeof createProviderHarness>;
+    host: RunningServer;
+    client: KikiClient;
+    endpoint: string;
+    restart: () => Promise<{ host: RunningServer; client: KikiClient; endpoint: string }>;
+  }) => Promise<T>): Promise<T> {
+    let home = '';
+    const prov = createProviderHarness(() => join(home, 'workspace'));
+    prov.server.listen(0, '127.0.0.1');
+    await once(prov.server, 'listening');
+    const port = (prov.server.address() as { port: number }).port;
+    home = await mkdtemp(join(tmpdir(), 'kiki-client-flow-iso-'));
+    await mkdir(join(home, 'workspace'), { recursive: true });
+    await writeFile(join(home, 'config.toml'), buildClientFlowToml(port));
+    let host: RunningServer | undefined = await bootClientFlowHost(home);
+    let endpoint = `http://127.0.0.1:${host.port}`;
+    let client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
+    const ctx = {
+      home, prov,
+      get host() { return host!; },
+      get client() { return client; },
+      get endpoint() { return endpoint; },
+      restart: async () => {
+        await client.klient.close();
+        await host!.close();
+        host = await bootClientFlowHost(home);
+        endpoint = `http://127.0.0.1:${host.port}`;
+        client = new KikiClient({ baseUrl: endpoint, token: host.localOwnerToken });
+        return { host, client, endpoint };
+      },
+    };
+    try {
+      return await fn(ctx);
+    } finally {
+      await client.klient.close().catch(() => undefined);
+      prov.reset();
+      prov.server.closeAllConnections();
+      if (host !== undefined && host.app.server.listening) {
+        const serverClose = vi.spyOn(host.app.server, 'close');
+        await awaitNaturalClose({
+          close: () => host!.close(),
+          install: () => watchHostClose(host!),
+          restoreSpy: () => serverClose.mockRestore(),
+          detail: (p) => p.snapshot(),
+        });
+      }
+      await new Promise<void>((r) => prov.server.close(() => r()));
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  }
+
+  it('requires an explicit title model and keeps empty triggers manual-only with actionable REST failures', async () => {
+    await withIsolatedHost(async ({ home, prov, host, client, endpoint }) => {
+      await client.patchConfig({ fast_model: 'second' });
+      const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') }, agent_config: { permission_mode: 'manual' } })).id;
+      await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Keep my garden plan' }] });
+      await vi.waitFor(() => expect(prov.requests).toHaveLength(1), { timeout: 10_000 });
+      await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10_000 });
+      const generate = async () => (await fetch(`${endpoint}/api/sessions/${id}/title/generate`, {
+        method: 'POST', headers: { authorization: `Bearer ${host.localOwnerToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      })).json() as Promise<{ code: number; msg: string; data: { title?: string } }>;
+      expect((await generate()).code).toBe(40923);
+      await client.patchConfig({ session_title: { model: 'second', triggers: [] }, replace_domains: ['session_title'] });
+      await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Include a pond' }] });
+      await vi.waitFor(() => expect(prov.requests).toHaveLength(2), { timeout: 10_000 });
+      await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10_000 });
+      expect(await generate()).toMatchObject({ code: 0, data: { title: 'local model completed' } });
+      await client.patchConfig({ session_title: { model: 'missing-title-model', triggers: [] }, replace_domains: ['session_title'] });
+      const failed = await generate();
+      expect(failed.code).toBe(40923);
+      expect(failed.msg).toContain('missing-title-model');
+      expect((await client.klient.session(id).get()).title).toBe('local model completed');
+      expect(prov.requests).toHaveLength(3);
+    });
+  }, 30_000);
+
+  it('keeps private turns out of telemetry, usage, export and retained ledgers', async () => {
+    await withIsolatedHost(async ({ home, prov, host, client }) => {
+      const events: string[] = [];
+      const sub = host.core.accessor.get(ITelemetryService).addAppender({ track: (name) => { events.push(name); } });
+      try {
+        prov.readTool = true;
+        await writeFile(join(home, 'workspace', 'example.txt'), 'Private fixture text');
+        const id = (await client.createSession({ private: true, metadata: { cwd: join(home, 'workspace') }, agent_config: { permission_mode: 'auto' } })).id;
+        await client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'Private turn' }] });
+        await vi.waitFor(() => expect(prov.requests).toHaveLength(2), { timeout: 10_000 });
+        await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10_000 });
+        const handle = getLiveSessionById(host.core.accessor, id)!;
+        const context = handle.accessor.get(ISessionContext);
+        handle.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(ITelemetryService).track('private_probe');
+        for (const e of ['private_probe', 'session_started', 'llm_request', 'turn_completed', 'prompt_submitted', 'tool_call']) expect(events).not.toContain(e);
+        expect(handle.accessor.get(ISessionMetadata).snapshot().usage).toBeUndefined();
+        const facts = host.core.accessor.get(IUsageFactStore);
+        const scope = agentScopeOf(context.scope(), 'main');
+        expect(await facts.journalSize(scope)).toBe(0);
+        const usage = usageRuntime(host.core).service;
+        expect((await usage.query({})).summary).toMatchObject({ session_count: 0, tokens: { input_other: 0, output: 0 } });
+        const manager = host.core.accessor.get(ISessionManager);
+        expect((await manager.fork({ sourceSessionId: id })).accessor.get(ISessionMetadata).snapshot().private).toBe(true);
+        expect((await manager.createChild({ sourceSessionId: id })).accessor.get(ISessionMetadata).snapshot().private).toBe(true);
+        expect((await manager.fork({ sourceSessionId: id, private: false })).accessor.get(ISessionMetadata).snapshot().private).toBe(false);
+        await facts.setSessionPrivacy((await host.core.accessor.get(ISessionIndex).get(id))!);
+        await manager.close(id);
+        const indexed = (await host.core.accessor.get(ISessionIndex).get(id))!;
+        const stale = vi.spyOn(host.core.accessor.get(ISessionIndex), 'get').mockResolvedValue({ ...indexed, private: false });
+        const resumed = await manager.resume(id);
+        stale.mockRestore();
+        expect(resumed?.accessor.get(ISessionContext).isPrivate?.()).toBe(true);
+        expect(await host.core.accessor.get(IUsageReadModel).isPrivateSession(indexed.workspaceId, id)).toBe(true);
+        await manager.archive(id);
+        await manager.delete(id);
+        expect((await host.core.accessor.get(IRetainedUsageService).listDeletedSessions({ deadlineAt: Date.now() + 5_000, recordLimit: 100 })).items).toEqual([]);
+        expect((await usage.query({})).summary.session_count).toBe(0);
+      } finally { sub.dispose(); }
+    });
+  }, 40_000);
+
+  it.each(['EOF', 'remaining bytes'] as const)('waits for media %s then naturally releases its newly idle connection during close', async (waitFor) => {
+    await withIsolatedHost(async ({ home, host, client }) => {
+      const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') }, agent_config: { permission_mode: 'manual' } })).id;
+      const bytes = new Uint8Array([65, 66, 67]);
+      const uploaded = await client.uploadFile(new File([bytes], 'delayed.bin'), id);
+      const files = host.core.accessor.get(IFileService);
+      const stored = await files.get(uploaded.id);
+      let releaseEof!: () => void, notifyStarted!: () => void, released = false, naturallyClosed = false;
+      const eof = new Promise<void>((r) => { releaseEof = r; }), started = new Promise<void>((r) => { notifyStarted = r; });
+      const read = vi.spyOn(files, 'get').mockResolvedValueOnce({
+        ...stored,
+        stream: () => Readable.from((async function* () {
+          try {
+            yield waitFor === 'EOF' ? bytes : bytes.slice(0, 1);
+            notifyStarted();
+            await eof;
+            if (waitFor === 'remaining bytes') yield bytes.slice(1);
+          } finally { released = true; }
+        })()),
+      });
+      const downloading = client.readSessionMediaBytes(id, uploaded.id);
+      let closing: Promise<void> | undefined;
+      try {
+        await started;
+        if (waitFor === 'EOF') expect((await downloading).bytes).toEqual(bytes);
+        expect(released).toBe(false);
+        closing = host.close().then(() => { naturallyClosed = true; });
+        await new Promise<void>((r) => setTimeout(r, 50));
+        expect(naturallyClosed).toBe(false);
+        releaseEof();
+        expect((await downloading).bytes).toEqual(bytes);
+        await closing;
+        expect(released).toBe(true);
+        expect(naturallyClosed).toBe(true);
+      } finally {
+        releaseEof();
+        if (closing !== undefined && !naturallyClosed) host.app.server.closeAllConnections();
+        await closing;
+        read.mockRestore();
+      }
+    });
+  }, 30_000);
+
+  it('keeps the composer binding after reopening and restarting a bound session with a credentialless server default', async () => {
+    await withIsolatedHost(async (ctx) => {
+      const id = (await ctx.client.createSession({ metadata: { cwd: join(ctx.home, 'workspace') }, agent_config: { permission_mode: 'manual' } })).id;
+      await ctx.client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'persist this binding' }] });
+      await vi.waitFor(() => expect(ctx.prov.requests).toHaveLength(1), { timeout: 10_000 });
+      await vi.waitFor(async () => expect(await ctx.client.klient.session(id).status()).toBe('idle'), { timeout: 10_000 });
+      await ctx.restart();
+      for (const reopen of [0, 1]) {
+        const actual = ctx.client.klient.session(id).view;
+        const shell = await actual.snapshot();
+        expect(shell.session.agent_config.model).toBe('first');
+        let ready = false, projected = applyTranscriptShell(id, shell), resets = 0;
+        const sub = actual.subscribe({ sessionCursor: { seq: shell.as_of_seq, epoch: shell.epoch }, transcriptGrades: { main: 'delta' } }, (s) => {
+          if (s.type === 'transcript' && s.event.type === 'transcript.reset' && s.event.agent_id === 'main') {
+            projected = projectAgentTranscriptView(projected, 'main', s.event.snapshot);
+            resets += 1;
+          }
+          if (s.type === 'ready') ready = true;
+        });
+        try {
+          await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10_000 });
+          expect(resets).toBeGreaterThan(0);
+          expect(projected.model).toBe('first');
+          await ctx.client.submitPrompt(id, { content: [{ type: 'text', text: `GUI continuation ${reopen}` }], model: projected.model ?? 'unavailable' });
+          await vi.waitFor(() => expect(ctx.prov.requests).toHaveLength(reopen + 2), { timeout: 10_000 });
+          await vi.waitFor(async () => expect(await ctx.client.klient.session(id).status()).toBe('idle'), { timeout: 10_000 });
+          expect(ctx.prov.requests[reopen + 1]?.model).toBe('first');
+        } finally { sub.close(); }
+      }
+    });
+  }, 40_000);
+
+  it.each(['live', 'cold'] as const)('publishes child prompt restarts and terminal states through the %s GUI view', async (mode) => {
+    await withIsolatedHost(async (ctx) => {
+      const id = (await ctx.client.createSession({ metadata: { cwd: join(ctx.home, 'workspace') }, agent_config: { permission_mode: 'manual' } })).id;
+      await ctx.client.submitPrompt(id, { model: 'first', content: [{ type: 'text', text: 'establish parent' }] });
+      await vi.waitFor(() => expect(ctx.prov.requests).toHaveLength(1), { timeout: 10_000 });
+      await vi.waitFor(async () => expect(await ctx.client.klient.session(id).status()).toBe('idle'), { timeout: 10_000 });
+      const live = getLiveSessionById(ctx.host.core.accessor, id)!;
+      const child = await live.accessor.get(IAgentLifecycleService).create({ delegator: { kind: 'agent', agentId: 'main' }, binding: { profile: 'agent', model: 'first' } });
+      await ctx.client.sendAgentMessage(id, child.id, 'initial child prompt', undefined, 'initial-child-prompt');
+      await child.accessor.get(IAgentExecutionService).settled();
+      if (mode === 'cold') {
+        await ctx.restart();
+        expect(getLiveSessionById(ctx.host.core.accessor, id)).toBeUndefined();
+        const coldRes = await fetch(`${ctx.endpoint}/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`, { headers: { authorization: `Bearer ${ctx.host.localOwnerToken}` } });
+        const cold = (await coldRes.json()) as { code: number; data: { tasks: { agentId?: string; state: string }[] } };
+        expect(cold.data.tasks.find((t) => t.agentId === child.id)?.state).toBe('completed');
+        expect(getLiveSessionById(ctx.host.core.accessor, id)).toBeUndefined();
+      }
+      const view = ctx.client.sessionView(id);
+      let ready = false, liveChildBaselineEpoch: string | undefined;
+      const subscribe = view.subscribe.bind(view), bootstrap = view.bootstrap!.bind(view);
+      const observe = (cb: Parameters<typeof view.subscribe>[1]) => (s: Parameters<typeof cb>[0]) => {
+        if (s.type === 'ready') ready = true;
+        if (s.type === 'transcript' && s.event.type === 'transcript.reset' && s.event.agent_id === child.id && s.event.cursor.epoch && !s.event.cursor.epoch.startsWith('cold:')) {
+          liveChildBaselineEpoch = s.event.cursor.epoch;
+        }
+        cb(s);
+      };
+      const subSpy = vi.spyOn(view, 'subscribe').mockImplementation((o, cb) => subscribe(o, observe(cb)));
+      const bootSpy = vi.spyOn(view, 'bootstrap').mockImplementation((o, cb) => bootstrap(o, observe(cb)));
+      const controller = new SessionController(ctx.client.sessions, view, id);
+      const mainChanges = vi.fn(), childChanges = vi.fn();
+      const offMain = controller.subscribe(mainChanges), offChild = controller.subscribeAgent(child.id, childChanges);
+      controller.retainAgentView('test-child', child.id, 'turn');
+      try {
+        await controller.open();
+        await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10_000 });
+        await vi.waitFor(() => { controller.flushFrames(); expect(controller.getForest()?.byId[child.id]?.status).toBe('completed'); });
+        if (mode === 'cold') {
+          expect(getLiveSessionById(ctx.host.core.accessor, id)).toBeUndefined();
+          expect(controller.getAgentTranscriptCursor(child.id)?.epoch).toMatch(/^cold:/);
+        }
+        for (const ending of ['completed', 'failed', 'cancelled'] as const) {
+          ctx.prov.hold = true;
+          const beforeReq = ctx.prov.requests.length, beforeEpoch = controller.getAgentTranscriptCursor(child.id)?.epoch;
+          await ctx.client.sendAgentMessage(id, child.id, `follow-up ${ending}`, undefined, `follow-up-${ending}`);
+          await vi.waitFor(() => expect(ctx.prov.requests).toHaveLength(beforeReq + 1), { timeout: 10_000 });
+          await vi.waitFor(() => {
+            controller.flushFrames();
+            expect(liveChildBaselineEpoch).toBeDefined();
+            expect(controller.getAgentTranscriptCursor(child.id)?.epoch).toBe(liveChildBaselineEpoch);
+            if (beforeEpoch?.startsWith('cold:')) expect(liveChildBaselineEpoch).not.toBe(beforeEpoch);
+            expect(controller.getForest()?.byId[child.id]?.status).toBe('background');
+          }, { timeout: 10_000 });
+          if (ending === 'cancelled') {
+            const tasks = getLiveSessionById(ctx.host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentTaskService);
+            const task = tasks.list(true).find((t) => t.kind === 'agent' && t.agentId === child.id)!;
+            await ctx.client.klient.session(id).agent('main').stopTask({ taskId: task.taskId });
+          } else {
+            for (const response of ctx.prov.held) {
+              if (ending === 'failed') {
+                response.writeHead(400, { 'content-type': 'application/json' });
+                response.end(JSON.stringify({ error: { message: 'Synthetic provider failure', type: 'invalid_request_error' } }));
+              } else {
+                response.writeHead(200, { 'content-type': 'text/event-stream' });
+                response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'follow-up complete' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+              }
+            }
+            ctx.prov.held.clear();
+          }
+          await vi.waitFor(() => {
+            controller.flushFrames();
+            expect(controller.getForest()?.byId[child.id]?.status).toBe(ending);
+            expect(controller.getAgentState(child.id).busy).toBe(false);
+          }, { timeout: 10_000 });
+        }
+      } finally {
+        offMain(); offChild(); subSpy.mockRestore(); bootSpy.mockRestore(); controller.close();
+      }
+    });
+  }, 40_000);
 });

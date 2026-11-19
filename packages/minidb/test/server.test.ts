@@ -83,3 +83,32 @@ test('RESP server: unknown command returns an error', async () => {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
+
+test('RESP server: UTF-8 bulk GET and MSET atomicity', async () => {
+  const dir = await tmpDir();
+  const srv = await startServer({ dir, port: 0, fsyncPolicy: 'no' });
+  try {
+    const raw = await new Promise<Buffer>((resolve, reject) => {
+      const sock = net.connect(srv.port, '127.0.0.1');
+      const chunks: Buffer[] = [];
+      sock.on('data', (c) => chunks.push(c));
+      sock.on('connect', () => {
+        const v = Buffer.from('北京', 'utf8');
+        sock.write(Buffer.concat([Buffer.from(`*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$${v.length}\r\n`, 'binary'), v, Buffer.from('\r\n')]));
+        sock.write('MSET a 1 b 2 c 3\r\n');
+        setTimeout(() => sock.write('GET k\r\nGET a\r\nGET b\r\nGET c\r\n'), 50);
+        setTimeout(() => sock.end(), 150);
+      });
+      sock.on('end', () => resolve(Buffer.concat(chunks)));
+      sock.on('error', reject);
+    });
+    const expectedUtf8 = Buffer.concat([Buffer.from('$6\r\n', 'binary'), Buffer.from('北京', 'utf8'), Buffer.from('\r\n', 'binary')]);
+    assert.ok(raw.includes(expectedUtf8), `expected UTF-8 bulk reply, got ${JSON.stringify(raw.toString('binary'))}`);
+    const s = raw.toString('binary');
+    assert.ok(s.includes('+OK'));
+    assert.ok(s.includes('$1\r\n1\r\n') && s.includes('$1\r\n2\r\n') && s.includes('$1\r\n3\r\n'));
+  } finally {
+    await srv.close();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});

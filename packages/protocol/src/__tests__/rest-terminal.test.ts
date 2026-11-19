@@ -19,29 +19,26 @@ const sampleTerminal = {
 };
 
 describe('terminal REST schemas', () => {
-  it('parses a running terminal resource', () => {
-    const parsed = terminalSchema.parse(sampleTerminal);
-    expect(parsed.session_id).toBe('sess_01');
-    expect(parsed.cwd).toBe('/tmp/example');
-  });
-
-  it('accepts empty create requests and optional relative cwd', () => {
-    expect(createTerminalRequestSchema.parse({})).toEqual({});
-    expect(createTerminalRequestSchema.parse({ cwd: 'packages/server', cols: 100 })).toEqual({
-      cwd: 'packages/server',
-      cols: 100,
-    });
-  });
-
-  it('rejects absolute create cwd overrides', () => {
-    expect(createTerminalRequestSchema.safeParse({ cwd: '/tmp/outside' }).success).toBe(false);
-  });
-
-  it('wraps terminal lists under items', () => {
+  it('parses terminal resources and list responses', () => {
+    expect(terminalSchema.parse(sampleTerminal)).toEqual(sampleTerminal);
     expect(listTerminalsResponseSchema.parse({ items: [sampleTerminal] }).items).toHaveLength(1);
   });
 
-  it('requires closed:true for close responses', () => {
+  it.each([
+    ['empty request', {}, {}],
+    ['relative cwd override', { cwd: 'packages/server', cols: 100 }, { cwd: 'packages/server', cols: 100 }],
+  ] as const)('accepts createTerminalRequest (%s)', (_label, input, expected) => {
+    expect(createTerminalRequestSchema.parse(input)).toEqual(expected);
+  });
+
+  it.each(['/tmp/outside', 'C:\\outside', '\\outside', ''])(
+    'rejects invalid or absolute create cwd (%s)',
+    (cwd) => {
+      expect(createTerminalRequestSchema.safeParse({ cwd }).success).toBe(false);
+    },
+  );
+
+  it('requires closed: true and rejects false success receipts', () => {
     expect(closeTerminalResponseSchema.parse({ closed: true })).toEqual({ closed: true });
     expect(closeTerminalResponseSchema.safeParse({ closed: false }).success).toBe(false);
   });

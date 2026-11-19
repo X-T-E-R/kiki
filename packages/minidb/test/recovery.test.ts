@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { MiniDb } from '../src/index.js';
-import { HEADER_SIZE, CRC_SIZE, encodeFrame, TYPE_SET } from '../src/codec.js';
+import { HEADER_SIZE, CRC_SIZE, encodeBatchOps, encodeFrame, TYPE_BATCH, TYPE_SET } from '../src/codec.js';
 
 afterEach(() => {
   vi.doUnmock('node:fs');
@@ -885,6 +885,98 @@ test('a generation WAL delta of large batch frames replays every op through the 
     } finally {
       await db.close();
     }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('recovery drops expired records and expired overwrites never resurrect older WAL or snapshotted values', async () => {
+  const dir = await tmpDir();
+  try {
+    // 1) Expired records dropped on reopen (size consistent with scan).
+    const d1 = path.join(dir, 'drop');
+    let db = await MiniDb.open({ dir: d1, valueCodec: 'string', activeExpireIntervalMs: 0 });
+    await db.set('ephemeral', 'v', { ttl: 1 });
+    await db.set('stable', 'ok');
+    await new Promise((r) => setTimeout(r, 20));
+    await db.close();
+    db = await MiniDb.open({ dir: d1, valueCodec: 'string', activeExpireIntervalMs: 0 });
+    assert.equal(db.size, 1);
+    assert.equal(db.scan().length, 1);
+    assert.equal(db.get('ephemeral'), undefined);
+    assert.equal(db.get('stable'), 'ok');
+    await db.close();
+
+    // 2) Expired overwrite does not resurrect older value (WAL-only and compacted snapshot).
+    for (const compacted of [false, true]) {
+      const sub = path.join(dir, compacted ? 'snap' : 'wal');
+      let d = await MiniDb.open({ dir: sub, valueCodec: 'string', activeExpireIntervalMs: 0, compactThresholdBytes: 1, autoCompact: false });
+      await d.set('k', 'v1');
+      if (compacted) await d.compact();
+      await d.set('k', 'v2', { ttl: 1 });
+      await new Promise((r) => setTimeout(r, 20));
+      await d.close();
+      d = await MiniDb.open({ dir: sub, valueCodec: 'string', activeExpireIntervalMs: 0 });
+      assert.equal(d.get('k'), undefined, `expired overwrite must not resurrect (compacted=${compacted})`);
+      assert.equal(d.size, 0);
+      await d.close();
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('readOnly open does not truncate a torn WAL tail', async () => {
+  const dir = await tmpDir();
+  try {
+    let db = await MiniDb.open({ dir, valueCodec: 'string' });
+    await db.set('a', '1');
+    await db.close();
+    const walPath = path.join(dir, 'db.wal');
+    await fs.appendFile(walPath, Buffer.from([0x4d, 0x44, 0x01, 0x00, 0x01, 0x00]));
+    const sizeBefore = (await fs.stat(walPath)).size;
+    db = await MiniDb.open({ dir, valueCodec: 'string', readOnly: true });
+    assert.equal(db.get('a'), '1');
+    await db.close();
+    assert.equal((await fs.stat(walPath)).size, sizeBefore, 'readOnly open must not truncate the WAL');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+function rawBatchBody(ops: { type: number; key: string; value?: string }[]): Buffer {
+  const parts = ops.map((op) => ({ type: op.type, key: Buffer.from(op.key), value: op.value === undefined ? Buffer.alloc(0) : Buffer.from(op.value) }));
+  const body = Buffer.alloc(2 + parts.reduce((s, p) => s + 19 + p.key.length + p.value.length, 0));
+  let o = 0;
+  body.writeUInt16LE(parts.length, o); o += 2;
+  for (const op of parts) {
+    body.writeUInt8(op.type, o); o += 1;
+    body.writeUInt16LE(op.key.length, o); o += 2;
+    body.writeUInt32LE(op.value.length, o); o += 4;
+    body.writeUInt32LE(0, o); o += 4;
+    body.writeBigInt64LE(0n, o); o += 8;
+    op.key.copy(body, o); o += op.key.length;
+    op.value.copy(body, o); o += op.value.length;
+  }
+  return body;
+}
+
+test.each([
+  ['unknown sub-op type', rawBatchBody([{ type: TYPE_SET, key: 'accepted', value: 'yes' }, { type: 99, key: 'unknown', value: 'ignored' }])],
+  ['trailing bytes', Buffer.concat([encodeBatchOps([{ type: TYPE_SET, key: Buffer.from('accepted'), value: Buffer.from('yes'), meta: null, expireAt: 0 }]), Buffer.from([0xde, 0xad])])],
+])('recovery skips a corrupt TYPE_BATCH (%s) wholesale', async (_label, body) => {
+  const dir = await tmpDir();
+  try {
+    let db = await MiniDb.open<string>({ dir, valueCodec: 'string', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+    await db.close();
+    await fs.appendFile(path.join(dir, 'db.wal'), encodeFrame({ type: TYPE_BATCH, key: Buffer.alloc(0), value: body }));
+    db = await MiniDb.open<string>({ dir, valueCodec: 'string', fsyncPolicy: 'no', activeExpireIntervalMs: 0 });
+    assert.equal(db.get('accepted'), undefined);
+    assert.equal(db.get('unknown'), undefined);
+    assert.equal(db.recoveryInfo!.corruptBatches, 1);
+    await db.set('after', 'ok');
+    assert.equal(db.get('after'), 'ok');
+    await db.close();
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }

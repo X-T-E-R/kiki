@@ -308,3 +308,26 @@ test('disk-mode compaction with continuous writes stays consistent for sync and 
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
+
+test.each(['always', 'everysec', 'no'] as const)(
+  'compact + concurrent writes survive clean close+reopen (fsync=%s)',
+  async (policy) => {
+    const dir = await tmpDir();
+    try {
+      const db = await MiniDb.open({ dir, valueCodec: 'string', fsyncPolicy: policy, compactThresholdBytes: 1, autoCompact: false });
+      for (let i = 0; i < 50; i++) await db.set(`seed${i}`, 'x'.repeat(64));
+      const N = 500;
+      const big = 'y'.repeat(4096);
+      await Promise.all([db.compact(), ...Array.from({ length: N }, (_, i) => db.set(`live${i}`, big))]);
+      await db.close();
+
+      const db2 = await MiniDb.open({ dir, valueCodec: 'string' });
+      const lost: string[] = [];
+      for (let i = 0; i < N; i++) if (db2.get(`live${i}`) !== big) lost.push(`live${i}`);
+      await db2.close();
+      assert.deepEqual(lost, [], `lost ${lost.length}/${N} keys: ${lost.slice(0, 5).join(',')}`);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  },
+);

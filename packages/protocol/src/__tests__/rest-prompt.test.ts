@@ -1,20 +1,28 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  editMessageRequestSchema,
+  getMessageResponseSchema,
+  listMessagesQuerySchema,
+  listMessagesResponseSchema,
+  regenerateMessageRequestSchema,
+} from '../rest/message';
+import {
   promptAbortResponseSchema,
   promptListResponseSchema,
   promptMoveRequestSchema,
   promptMoveResultSchema,
   promptReplaceRequestSchema,
   promptReplaceResultSchema,
+  promptSteerRequestSchema,
+  promptSteerResultSchema,
+  promptSteerSubmissionRequestSchema,
   promptSubmissionSchema,
   promptSubmitResultSchema,
-  promptSteerRequestSchema,
-  promptSteerSubmissionRequestSchema,
-  promptSteerResultSchema,
   promptTimingRequestSchema,
   promptTimingResultSchema,
 } from '../rest/prompt';
+import { activateSkillRequestSchema } from '../rest/skill';
 
 describe('promptSubmissionSchema', () => {
   it('normalizes inline image_url data on submission and content steering', () => {
@@ -26,328 +34,127 @@ describe('promptSubmissionSchema', () => {
       expect(promptSubmissionSchema.safeParse({ content: [{ type: 'image_url', image_url: { url } }] }).success).toBe(false);
     }
   });
-  it.each(['engine-default', 'specialist', null])('carries native agent %s through the public executor selection without a role file', (nativeAgent) => {
-    const input = { content: [{ type: 'text', text: 'Neutral task' }], execution: { executor: 'neutral-harness', overrides: { native_agent: nativeAgent, inject_kiki_mcp: false } } };
-    expect(promptSubmissionSchema.parse(input)).toEqual(input);
-    expect(promptSubmissionSchema.safeParse({ ...input, execution: { executor: 'neutral-harness', overrides: { native_agent: ' ' } } }).success).toBe(false);
-  });
 
-  it('accepts a minimal text-only submission with no controls', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [{ type: 'text', text: 'hi' }],
-    });
-    expect(parsed.content[0]?.type).toBe('text');
-    expect(parsed.model).toBeUndefined();
-    expect(parsed.thinking).toBeUndefined();
-    expect(parsed.permission_mode).toBeUndefined();
-    expect(parsed.plan_gate).toBeUndefined();
-    expect(parsed.plan_mode).toBeUndefined();
-  });
+  it.each(['engine-default', 'specialist', null])(
+    'carries native agent %s through public executor selection',
+    (nativeAgent) => {
+      const input = {
+        content: [{ type: 'text', text: 'Neutral task' }],
+        execution: { executor: 'neutral-harness', overrides: { native_agent: nativeAgent, inject_kiki_mcp: false } },
+      };
+      expect(promptSubmissionSchema.parse(input)).toEqual(input);
+      expect(
+        promptSubmissionSchema.safeParse({ ...input, execution: { executor: 'neutral-harness', overrides: { native_agent: ' ' } } }).success,
+      ).toBe(false);
+    },
+  );
 
-  it('preserves immediate delivery intent and distinguishes admission from steering assignment', () => {
+  it('preserves immediate delivery intent and distinguishes admission from steering', () => {
     const body = { admission: 'durable', delivery_mode: 'steer', prompt_id: 'immediate-example', content: [{ type: 'text', text: 'Apply this note.' }] };
     expect(promptSubmissionSchema.parse(body)).toEqual(body);
     expect(promptSubmissionSchema.safeParse({ ...body, delivery_mode: 'unknown' }).success).toBe(false);
-    const receipt = { prompt_id: body.prompt_id, user_message_id: body.prompt_id, status: 'queued', admission: 'admitted',
-      delivery_state: 'steered', content: body.content, created_at: '2026-01-01T00:00:00.000Z' };
+    const receipt = {
+      prompt_id: body.prompt_id,
+      user_message_id: body.prompt_id,
+      status: 'queued',
+      admission: 'admitted',
+      delivery_state: 'steered',
+      content: body.content,
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
     expect(promptSubmitResultSchema.parse(receipt)).toEqual(receipt);
   });
 
-  it('preserves the prompt-bound model switch mode with model and effort', () => {
-    const body = { content: [{ type: 'text', text: 'Continue on this binding.' }], model: 'example/model', thinking: 'high', model_switch_mode: 'compact' };
-    expect(promptSubmissionSchema.parse(body)).toEqual(body);
-    expect(promptSubmissionSchema.safeParse({ ...body, model_switch_mode: 'unknown' }).success).toBe(false);
-  });
-
-  it('preserves bundled skill input with its selected model and effort', () => {
-    const body = { content: [{ type: 'text', text: '/kiki-ops Help me start.' }], model: 'example/model', thinking: 'high', skills: [{ name: 'kiki-ops', args: 'Help me start.' }] };
-    expect(promptSubmissionSchema.parse(body)).toEqual(body);
-    expect(promptSubmissionSchema.safeParse({ ...body, skills: [] }).success).toBe(false);
-    expect(promptSubmissionSchema.safeParse({ ...body, skills: [{ name: '' }] }).success).toBe(false);
-  });
-
-  it('preserves after_model_switch and rejects an empty dependency id', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [{ type: 'text', text: 'continue' }],
-      after_model_switch: 'switch-1',
-    });
-    expect(parsed.after_model_switch).toBe('switch-1');
-    expect(promptSubmissionSchema.safeParse({
-      content: [{ type: 'text', text: 'continue' }],
-      after_model_switch: '',
-    }).success).toBe(false);
-  });
-
-  it('accepts metadata', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [{ type: 'text', text: 'hi' }],
-      metadata: { source: 'cli' },
-    });
-    expect(parsed.metadata).toEqual({ source: 'cli' });
-  });
-
-  it('accepts deferred-append timing and goal scheduling controls', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [{ type: 'text', text: 'hi' }],
-      append_timing: 'tasks_done',
-      goal_follow_up_timing: 'subagents_done',
-      goal_initial_status: 'paused',
-    });
-    expect(parsed.append_timing).toBe('tasks_done');
-    expect(parsed.goal_follow_up_timing).toBe('subagents_done');
-    expect(parsed.goal_initial_status).toBe('paused');
-  });
-
-  it('rejects an unknown append_timing', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [{ type: 'text', text: 'hi' }],
-        append_timing: 'immediate' as unknown,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects agent_idle as a goal follow-up timing', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [{ type: 'text', text: 'hi' }],
-        goal_follow_up_timing: 'agent_idle' as unknown,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('accepts image + text mixed content', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [
-        { type: 'text', text: 'see attached' },
-        { type: 'image', source: { kind: 'url', url: 'https://a.png' } },
-      ],
-    });
-    expect(parsed.content).toHaveLength(2);
-  });
-
-  it('accepts video + text mixed content', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [
-        { type: 'text', text: 'describe this video' },
-        { type: 'video', source: { kind: 'url', url: 'https://example.com/a.mp4' } },
-      ],
-    });
-    expect(parsed.content).toHaveLength(2);
-    expect(parsed.content[1]?.type).toBe('video');
-  });
-
-  it('accepts a partial per-turn override (model only)', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [{ type: 'text', text: 'hi' }],
-      model: 'kimi-code/k2',
-    });
-    expect(parsed.model).toBe('kimi-code/k2');
-    expect(parsed.thinking).toBeUndefined();
-  });
-
-  it('accepts an agent profile selection', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [{ type: 'text', text: 'hi' }],
-      profile: 'reviewer',
-      model: 'kimi-code/k2',
-    });
-    expect(parsed.profile).toBe('reviewer');
-  });
-
-  it('rejects an empty profile string', () => {
-    expect(() =>
-      promptSubmissionSchema.parse({
-        content: [{ type: 'text', text: 'hi' }],
-        profile: '',
-      }),
-    ).toThrow();
-  });
-
-  it('accepts the full bundle of controls when supplied', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [{ type: 'text', text: 'hi' }],
-      model: 'kimi-code/k2',
-      thinking: 'off',
-      permission_mode: 'manual',
-      plan_gate: 'gated',
-      plan_mode: false,
-    });
-    expect(parsed.model).toBe('kimi-code/k2');
-    expect(parsed.thinking).toBe('off');
-    expect(parsed.permission_mode).toBe('manual');
-    expect(parsed.plan_gate).toBe('gated');
-    expect(parsed.plan_mode).toBe(false);
-  });
-
-  it('preserves a client-chosen prompt_id through parsing', () => {
-    const parsed = promptSubmissionSchema.parse({
-      content: [{ type: 'text', text: 'hi' }],
-      prompt_id: 'client-prompt-1',
-    });
-    expect(parsed.prompt_id).toBe('client-prompt-1');
-  });
-
-  it('rejects an empty prompt_id', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [{ type: 'text', text: 'hi' }],
-        prompt_id: '',
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects empty content array', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [],
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects missing content', () => {
-    expect(promptSubmissionSchema.safeParse({} as unknown).success).toBe(false);
-  });
-
-  it('accepts any non-empty thinking effort (provider normalizes)', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [{ type: 'text', text: 'hi' }],
-        thinking: 'mega' as unknown,
-      }).success,
-    ).toBe(true);
-  });
-
-  it('rejects empty thinking effort', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [{ type: 'text', text: 'hi' }],
-        thinking: '' as unknown,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('accepts null thinking as restore-default and leaves an omission undefined', () => {
-    const cleared = promptSubmissionSchema.safeParse({
-      content: [{ type: 'text', text: 'hi' }],
-      thinking: null,
-    });
-    expect(cleared.success).toBe(true);
-    if (cleared.success) expect(cleared.data.thinking).toBeNull();
+  it('distinguishes null thinking (restore default) from omitted thinking and invalid values', () => {
+    const cleared = promptSubmissionSchema.parse({ content: [{ type: 'text', text: 'hi' }], thinking: null });
+    expect(cleared.thinking).toBeNull();
     const kept = promptSubmissionSchema.parse({ content: [{ type: 'text', text: 'hi' }] });
     expect(kept.thinking).toBeUndefined();
+    expect(kept.model).toBeUndefined();
+    expect(kept.permission_mode).toBeUndefined();
+    expect(kept.plan_gate).toBeUndefined();
+    expect(kept.plan_mode).toBeUndefined();
+    expect(promptSubmissionSchema.safeParse({ content: [{ type: 'text', text: 'hi' }], thinking: 'mega' }).success).toBe(true);
+    expect(promptSubmissionSchema.safeParse({ content: [{ type: 'text', text: 'hi' }], thinking: '' }).success).toBe(false);
   });
 
-  it('rejects unknown permission_mode', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [{ type: 'text', text: 'hi' }],
-        permission_mode: 'unrestricted' as unknown,
-      }).success,
-    ).toBe(false);
+  it.each([
+    ['model switch mode', { content: [{ type: 'text', text: 'Continue.' }], model: 'example/model', thinking: 'high', model_switch_mode: 'compact' }],
+    ['bundled skill input', { content: [{ type: 'text', text: '/kiki-ops Help.' }], model: 'example/model', thinking: 'high', skills: [{ name: 'kiki-ops', args: 'Help.' }] }],
+    ['after_model_switch', { content: [{ type: 'text', text: 'continue' }], after_model_switch: 'switch-1' }],
+    ['metadata', { content: [{ type: 'text', text: 'hi' }], metadata: { source: 'cli' } }],
+    ['timing and goal controls', { content: [{ type: 'text', text: 'hi' }], append_timing: 'tasks_done', goal_follow_up_timing: 'subagents_done', goal_initial_status: 'paused' }],
+    ['image + text content', { content: [{ type: 'text', text: 'see attached' }, { type: 'image', source: { kind: 'url', url: 'https://a.png' } }] }],
+    ['video + text content', { content: [{ type: 'text', text: 'describe' }, { type: 'video', source: { kind: 'url', url: 'https://example.com/a.mp4' } }] }],
+    ['profile + partial model', { content: [{ type: 'text', text: 'hi' }], profile: 'reviewer', model: 'kimi-code/k2' }],
+    ['full control bundle', { content: [{ type: 'text', text: 'hi' }], model: 'kimi-code/k2', thinking: 'off', permission_mode: 'manual', plan_gate: 'gated', plan_mode: false, prompt_id: 'client-prompt-1' }],
+  ] as const)('accepts %s', (_label, payload) => {
+    expect(promptSubmissionSchema.parse(payload)).toEqual(payload);
   });
 
-  it('rejects unknown plan_gate', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [{ type: 'text', text: 'hi' }],
-        plan_gate: 'automatic' as unknown,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects empty model string', () => {
-    expect(
-      promptSubmissionSchema.safeParse({
-        content: [{ type: 'text', text: 'hi' }],
-        model: '',
-      }).success,
-    ).toBe(false);
-  });
-});
-
-describe('promptSubmitResultSchema', () => {
-  it('parses a running prompt result shape', () => {
-    const parsed = promptSubmitResultSchema.parse({
-      prompt_id: 'prompt_01HZ',
-      user_message_id: 'msg_sess_01_000000',
-      status: 'running',
-      content: [{ type: 'text', text: 'hi' }],
-      created_at: '2026-06-09T00:00:00.000Z',
-    });
-    expect(parsed.prompt_id).toBe('prompt_01HZ');
-    expect(parsed.status).toBe('running');
-  });
-
-  it('parses a blocked prompt result shape', () => {
-    const parsed = promptSubmitResultSchema.parse({
-      prompt_id: 'prompt_blocked',
-      user_message_id: 'msg_blocked',
-      status: 'blocked',
-      content: [{ type: 'text', text: 'blocked' }],
-      created_at: '2026-06-09T00:00:00.000Z',
-    });
-
-    expect(parsed.status).toBe('blocked');
-  });
-
-  it('rejects empty prompt_id', () => {
-    expect(
-      promptSubmitResultSchema.safeParse({ prompt_id: '', user_message_id: 'msg' })
-        .success,
-    ).toBe(false);
+  it.each([
+    ['unknown model_switch_mode', { content: [{ type: 'text', text: 'hi' }], model_switch_mode: 'unknown' }],
+    ['empty skills array', { content: [{ type: 'text', text: 'hi' }], skills: [] }],
+    ['empty skill name', { content: [{ type: 'text', text: 'hi' }], skills: [{ name: '' }] }],
+    ['empty after_model_switch', { content: [{ type: 'text', text: 'hi' }], after_model_switch: '' }],
+    ['unknown append_timing', { content: [{ type: 'text', text: 'hi' }], append_timing: 'immediate' }],
+    ['agent_idle goal_follow_up_timing', { content: [{ type: 'text', text: 'hi' }], goal_follow_up_timing: 'agent_idle' }],
+    ['empty profile', { content: [{ type: 'text', text: 'hi' }], profile: '' }],
+    ['empty prompt_id', { content: [{ type: 'text', text: 'hi' }], prompt_id: '' }],
+    ['empty content array', { content: [] }],
+    ['missing content', {}],
+    ['unknown permission_mode', { content: [{ type: 'text', text: 'hi' }], permission_mode: 'unrestricted' }],
+    ['unknown plan_gate', { content: [{ type: 'text', text: 'hi' }], plan_gate: 'automatic' }],
+    ['empty model', { content: [{ type: 'text', text: 'hi' }], model: '' }],
+  ] as const)('rejects %s', (_label, payload) => {
+    expect(promptSubmissionSchema.safeParse(payload).success).toBe(false);
   });
 });
 
-describe('promptListResponseSchema', () => {
-  it('preserves opaque source origins without widening submission authority', () => {
+describe('prompt lifecycle & list schemas', () => {
+  it.each(['running', 'blocked'] as const)('parses %s promptSubmitResult', (status) => {
+    const parsed = promptSubmitResultSchema.parse({
+      prompt_id: `prompt_${status}`,
+      user_message_id: `msg_${status}`,
+      status,
+      content: [{ type: 'text', text: status }],
+      created_at: '2026-06-09T00:00:00.000Z',
+    });
+    expect(parsed.status).toBe(status);
+  });
+
+  it('rejects empty prompt_id on promptSubmitResult', () => {
+    expect(promptSubmitResultSchema.safeParse({ prompt_id: '', user_message_id: 'msg' }).success).toBe(false);
+  });
+
+  it('preserves opaque origins on list while stripping origin from submission', () => {
     const origins = [
       { kind: 'merged', origins: [{ kind: 'user', skillActivations: [{ skillName: 'review' }] }, { kind: 'task_notification', taskId: 'example-task' }] },
-      { kind: 'unknown' }, { kind: 'external_thread', messageId: 'example-message' },
-      { kind: 'system_trigger', name: 'thread_create' }, { kind: 'future_source', opaque: true },
+      { kind: 'unknown' },
+      { kind: 'external_thread', messageId: 'example-message' },
+      { kind: 'system_trigger', name: 'thread_create' },
+      { kind: 'future_source', opaque: true },
     ];
     for (const origin of origins) {
       const item = { prompt_id: 'p-source', user_message_id: 'm-source', status: 'queued', origin, content: [{ type: 'text', text: 'payload' }], created_at: '2026-06-09T00:00:00.000Z' };
       expect(promptListResponseSchema.parse({ active: null, queued: [item] }).queued[0]?.origin).toEqual(origin);
       expect(promptSubmissionSchema.parse({ content: item.content, origin })).not.toHaveProperty('origin');
     }
-  });
 
-  it('parses active and queued prompts', () => {
-    const parsed = promptListResponseSchema.parse({
-      active: {
-        prompt_id: 'prompt_active',
-        user_message_id: 'msg_active',
-        status: 'running',
-        content: [{ type: 'text', text: 'active' }],
-        created_at: '2026-06-09T00:00:00.000Z',
-      },
-      queued: [
-        {
-          prompt_id: 'prompt_queued',
-          user_message_id: 'msg_queued',
-          status: 'queued',
-          content: [{ type: 'text', text: 'queued' }],
-          created_at: '2026-06-09T00:00:01.000Z',
-        },
-      ],
+    const list = promptListResponseSchema.parse({
+      active: { prompt_id: 'prompt_active', user_message_id: 'msg_active', status: 'running', content: [{ type: 'text', text: 'active' }], created_at: '2026-06-09T00:00:00.000Z' },
+      queued: [{ prompt_id: 'prompt_queued', user_message_id: 'msg_queued', status: 'queued', content: [{ type: 'text', text: 'queued' }], created_at: '2026-06-09T00:00:01.000Z' }],
       recovery_hold: { reason: 'recovery', count: 1 },
     });
-    expect(parsed.active?.status).toBe('running');
-    expect(parsed.queued[0]?.status).toBe('queued');
-    expect(parsed.recovery_hold).toEqual({ reason: 'recovery', count: 1 });
+    expect(list.active?.status).toBe('running');
+    expect(list.queued[0]?.status).toBe('queued');
+    expect(list.recovery_hold).toEqual({ reason: 'recovery', count: 1 });
   });
-});
 
-describe('promptReplaceSchema', () => {
-  it('requires non-empty replacement content and returns the same prompt item shape', () => {
-    expect(
-      promptReplaceRequestSchema.parse({ content: [{ type: 'text', text: 'replacement' }] }),
-    ).toEqual({ content: [{ type: 'text', text: 'replacement' }] });
+  it('validates prompt replace, move, steer, abort, and timing operations', () => {
+    expect(promptReplaceRequestSchema.parse({ content: [{ type: 'text', text: 'replacement' }], replace_attachments: true }))
+      .toEqual({ content: [{ type: 'text', text: 'replacement' }], replace_attachments: true });
     expect(promptReplaceRequestSchema.safeParse({ content: [] }).success).toBe(false);
-    expect(promptReplaceRequestSchema.parse({
-      content: [{ type: 'text', text: 'replacement' }], replace_attachments: true,
-    }).replace_attachments).toBe(true);
     expect(
       promptReplaceResultSchema.parse({
         prompt_id: 'prompt_queued',
@@ -357,92 +164,92 @@ describe('promptReplaceSchema', () => {
         created_at: '2026-06-09T00:00:01.000Z',
       }),
     ).toMatchObject({ prompt_id: 'prompt_queued', status: 'queued' });
-  });
-});
 
-describe('promptMoveSchema', () => {
-  it('requires a nonnegative target index and returns the resulting queue order', () => {
     expect(promptMoveRequestSchema.parse({ target_index: 1 })).toEqual({ target_index: 1 });
     expect(promptMoveRequestSchema.safeParse({ target_index: -1 }).success).toBe(false);
-    expect(
-      promptMoveResultSchema.parse({
-        moved: true,
-        prompt_id: 'prompt_b',
-        target_index: 0,
-        queued_prompt_ids: ['prompt_b', 'prompt_a'],
-      }),
-    ).toEqual({
-      moved: true,
-      prompt_id: 'prompt_b',
-      target_index: 0,
-      queued_prompt_ids: ['prompt_b', 'prompt_a'],
-    });
-  });
-});
+    expect(promptMoveResultSchema.parse({ moved: true, prompt_id: 'prompt_b', target_index: 0, queued_prompt_ids: ['prompt_b', 'prompt_a'] }))
+      .toEqual({ moved: true, prompt_id: 'prompt_b', target_index: 0, queued_prompt_ids: ['prompt_b', 'prompt_a'] });
 
-describe('promptSteerRequestSchema', () => {
-  it('requires at least one prompt id', () => {
-    expect(promptSteerRequestSchema.parse({ prompt_ids: ['prompt_a'] }).prompt_ids)
-      .toEqual(['prompt_a']);
+    expect(promptSteerRequestSchema.parse({ prompt_ids: ['prompt_a'] }).prompt_ids).toEqual(['prompt_a']);
     expect(promptSteerRequestSchema.safeParse({ prompt_ids: [] }).success).toBe(false);
-  });
-});
-
-describe('promptSteerResultSchema', () => {
-  it('parses steered prompt ids', () => {
-    const parsed = promptSteerResultSchema.parse({
-      steered: true,
-      prompt_ids: ['prompt_a', 'prompt_b'],
-      delivery_state: 'queued', delivery_reason: 'executor_deferred',
-    });
-    expect(parsed.delivery_reason).toBe('executor_deferred');
-    expect(parsed.steered).toBe(true);
-    expect(parsed.prompt_ids).toEqual(['prompt_a', 'prompt_b']);
-  });
-});
-
-describe('promptAbortResponseSchema', () => {
-  it('parses { aborted: true } success shape', () => {
-    const parsed = promptAbortResponseSchema.parse({ aborted: true, at_seq: 7 });
-    expect(parsed.aborted).toBe(true);
-    expect(parsed.at_seq).toBe(7);
-  });
-
-  it('parses { aborted: false } idempotent shape (used with envelope.code=40903)', () => {
-    const parsed = promptAbortResponseSchema.parse({ aborted: false });
-    expect(parsed.aborted).toBe(false);
-  });
-});
-
-describe('promptTimingSchema', () => {
-  it('requires an append_timing and allows an optional expected_revision', () => {
-    expect(promptTimingRequestSchema.parse({ append_timing: 'subagents_done' })).toEqual({
-      append_timing: 'subagents_done',
-    });
     expect(
-      promptTimingRequestSchema.parse({ append_timing: 'agent_idle', expected_revision: 2 }),
-    ).toEqual({ append_timing: 'agent_idle', expected_revision: 2 });
-    expect(promptTimingRequestSchema.safeParse({}).success).toBe(false);
+      promptSteerResultSchema.parse({ steered: true, prompt_ids: ['prompt_a', 'prompt_b'], delivery_state: 'queued', delivery_reason: 'executor_deferred' }),
+    ).toMatchObject({ steered: true, delivery_reason: 'executor_deferred' });
+
+    expect(promptAbortResponseSchema.parse({ aborted: true, at_seq: 7 })).toEqual({ aborted: true, at_seq: 7 });
+    expect(promptAbortResponseSchema.parse({ aborted: false })).toEqual({ aborted: false });
+
+    expect(promptTimingRequestSchema.parse({ append_timing: 'subagents_done' })).toEqual({ append_timing: 'subagents_done' });
+    expect(promptTimingRequestSchema.parse({ append_timing: 'agent_idle', expected_revision: 2 }))
+      .toEqual({ append_timing: 'agent_idle', expected_revision: 2 });
+    for (const bad of [{}, { append_timing: 'later' }, { append_timing: 'agent_idle', expected_revision: -1 }]) {
+      expect(promptTimingRequestSchema.safeParse(bad).success).toBe(false);
+    }
     expect(
-      promptTimingRequestSchema.safeParse({ append_timing: 'later' }).success,
+      promptTimingResultSchema.parse({
+        prompt_id: 'prompt_queued',
+        user_message_id: 'prompt_queued',
+        status: 'queued',
+        content: [{ type: 'text', text: 'queued' }],
+        created_at: '2026-06-09T00:00:01.000Z',
+        append_timing: 'tasks_done',
+        revision: 3,
+      }),
+    ).toMatchObject({ append_timing: 'tasks_done', revision: 3 });
+  });
+});
+
+describe('skill activation & message REST schemas', () => {
+  it('validates activateSkillRequestSchema targets and rejects empty ids', () => {
+    const input = {
+      agent_id: 'child-1',
+      prompt_id: 'skill-1',
+      after_model_switch: 'switch-1',
+      args: '--fix',
+      user_input: '/review --fix',
+      attachments: [{ type: 'file' as const, file_id: 'file-1', name: 'notes.txt', media_type: 'text/plain', size: 5 }],
+    };
+    expect(activateSkillRequestSchema.parse(input)).toEqual(input);
+    expect(activateSkillRequestSchema.parse({})).toEqual({});
+    expect(activateSkillRequestSchema.parse({ agent_id: 'main' })).toEqual({ agent_id: 'main' });
+    expect(activateSkillRequestSchema.safeParse({ agent_id: '' }).success).toBe(false);
+    expect(activateSkillRequestSchema.safeParse({ after_model_switch: '' }).success).toBe(false);
+  });
+
+  it('validates message list queries, rejects mutually exclusive cursors, and parses pages', () => {
+    expect(listMessagesQuerySchema.parse({})).toEqual({});
+    expect(listMessagesQuerySchema.parse({ before_id: 'msg_abc', page_size: 25, role: 'assistant' }))
+      .toEqual({ before_id: 'msg_abc', page_size: 25, role: 'assistant' });
+    for (const bad of [{ before_id: 'a', after_id: 'b' }, { page_size: 101 }, { role: 'critter' }]) {
+      expect(listMessagesQuerySchema.safeParse(bad).success).toBe(false);
+    }
+
+    expect(listMessagesResponseSchema.parse({ items: [], has_more: false })).toEqual({ items: [], has_more: false });
+    const msg = {
+      id: 'msg_01',
+      session_id: 'sess_1',
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: 'hi' }],
+      created_at: '2026-06-04T10:30:00.000Z',
+    };
+    expect(listMessagesResponseSchema.parse({ items: [msg], has_more: true }).has_more).toBe(true);
+    expect(getMessageResponseSchema.parse({ ...msg, role: 'assistant', prompt_id: 'prompt_01' }).prompt_id).toBe('prompt_01');
+  });
+
+  it('validates message edit/regenerate actions and rejects non-editable parts or missing cursors', () => {
+    const expected_cursor = { seq: 12, epoch: 'ep_test' };
+    expect(
+      editMessageRequestSchema.parse({
+        content: [{ type: 'text', text: 'replacement' }],
+        model: 'example-model',
+        plan_mode: true,
+        expected_cursor,
+      }),
+    ).toMatchObject({ model: 'example-model', plan_mode: true, expected_cursor });
+
+    expect(
+      editMessageRequestSchema.safeParse({ content: [{ type: 'thinking', thinking: 'hidden' }], expected_cursor }).success,
     ).toBe(false);
-    expect(
-      promptTimingRequestSchema.safeParse({ append_timing: 'agent_idle', expected_revision: -1 })
-        .success,
-    ).toBe(false);
-  });
-
-  it('mirrors PromptItem and carries the authoritative append_timing and revision', () => {
-    const parsed = promptTimingResultSchema.parse({
-      prompt_id: 'prompt_queued',
-      user_message_id: 'prompt_queued',
-      status: 'queued',
-      content: [{ type: 'text', text: 'queued' }],
-      created_at: '2026-06-09T00:00:01.000Z',
-      append_timing: 'tasks_done',
-      revision: 3,
-    });
-    expect(parsed.append_timing).toBe('tasks_done');
-    expect(parsed.revision).toBe(3);
+    expect(regenerateMessageRequestSchema.safeParse({}).success).toBe(false);
   });
 });

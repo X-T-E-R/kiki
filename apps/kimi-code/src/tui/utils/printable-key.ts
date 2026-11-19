@@ -16,7 +16,7 @@
  *   compare against the raw `data` — `decodeKittyPrintable` rejects them.
  *
  * The module's existence is itself the "don't forget to decode" constraint:
- * `test/tui/printable-key-guard.test.ts` scans every `handleInput` under
+ * `test/tui/source-policy-guard.test.ts` scans every `handleInput` under
  * `tui/components/**` and rejects bare-literal comparisons.
  */
 

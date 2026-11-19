@@ -216,11 +216,11 @@ describe('isRetryableGenerateError', () => {
     );
   });
 
-  it.each([500, 501, 503, 520, 529, 599])('retries HTTP %i server errors', (statusCode) => {
+  it.each([408, 409, 429, 500, 501, 502, 503, 504, 520, 529, 599])('retries HTTP %i transient/server errors', (statusCode) => {
     expect(isRetryableGenerateError(new APIStatusError(statusCode, 'Server error'))).toBe(true);
   });
 
-  it.each([400, 401, 404, 422, 499])(
+  it.each([400, 401, 403, 404, 422, 499])(
     'does not retry deterministic HTTP %i client errors',
     (statusCode) => {
       expect(isRetryableGenerateError(new APIStatusError(statusCode, 'Client error'))).toBe(false);

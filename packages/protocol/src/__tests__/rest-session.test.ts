@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  archiveSessionResponseSchema,
   compactSessionRequestSchema,
   compactSessionResponseSchema,
   createSessionChildRequestSchema,
   createSessionChildResponseSchema,
   createSessionRequestSchema,
-  archiveSessionResponseSchema,
   deleteSessionResponseSchema,
   exportSessionParamsSchema,
   exportSessionRequestSchema,
@@ -18,711 +18,220 @@ import {
   listSessionsQuerySchema,
   restoreSessionResponseSchema,
   sessionStatusResponseSchema,
-  updateSessionProfileRequestSchema,
-  updateSessionRequestSchema,
   undoSessionRequestSchema,
   undoSessionResponseSchema,
+  updateSessionProfileRequestSchema,
+  updateSessionRequestSchema,
 } from '../rest/session';
 
-describe('exportSessionRequestSchema', () => {
-  it('accepts an empty body and an optional Web log', () => {
-    expect(exportSessionRequestSchema.parse({})).toEqual({});
-    expect(exportSessionRequestSchema.parse({ web_log: '{"event":"connected"}\n' })).toEqual({
-      web_log: '{"event":"connected"}\n',
-    });
-  });
+function makeSessionFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'sess_abc',
+    workspace_id: 'wd_kimi_0123456789ab',
+    title: 'Profile',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    busy: true,
+    metadata: { cwd: '/tmp/foo' },
+    agent_config: { model: '' },
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      total_cost_usd: 0,
+      context_tokens: 0,
+      context_limit: 0,
+      turn_count: 0,
+    },
+    permission_rules: [],
+    message_count: 0,
+    last_seq: 0,
+    ...overrides,
+  };
+}
 
-  it('accepts the desktop log flag', () => {
-    expect(exportSessionRequestSchema.parse({ desktop: true })).toEqual({ desktop: true });
-  });
-
-  it('accepts a Web log at the 256 KiB UTF-8 boundary', () => {
-    expect(exportSessionRequestSchema.safeParse({ web_log: 'a'.repeat(256 * 1024) }).success).toBe(
-      true,
-    );
-  });
-
-  it('rejects a Web log over the 256 KiB UTF-8 boundary', () => {
-    expect(
-      exportSessionRequestSchema.safeParse({ web_log: `${'a'.repeat(256 * 1024)}b` }).success,
-    ).toBe(false);
-  });
-
-  it('measures the Web log limit in UTF-8 bytes instead of JavaScript characters', () => {
-    expect(exportSessionRequestSchema.safeParse({ web_log: '你'.repeat(87_382) }).success).toBe(
-      false,
-    );
-  });
-
-  it('rejects fields that the server owns', () => {
-    expect(
-      exportSessionRequestSchema.safeParse({ outputPath: '/tmp/export.zip' }).success,
-    ).toBe(false);
-  });
-});
-
-describe('exportSessionParamsSchema', () => {
-  it('requires a non-empty session_id', () => {
-    expect(exportSessionParamsSchema.parse({ session_id: 'sess_abc' })).toEqual({
-      session_id: 'sess_abc',
-    });
+describe('session export & creation schemas', () => {
+  it('validates export params, web_log UTF-8 byte limits, and desktop flag', () => {
+    expect(exportSessionParamsSchema.parse({ session_id: 'sess_abc' })).toEqual({ session_id: 'sess_abc' });
     expect(exportSessionParamsSchema.safeParse({ session_id: '' }).success).toBe(false);
+
+    expect(exportSessionRequestSchema.parse({})).toEqual({});
+    expect(exportSessionRequestSchema.parse({ web_log: '{"event":"connected"}\n' })).toEqual({ web_log: '{"event":"connected"}\n' });
+    expect(exportSessionRequestSchema.parse({ desktop: true })).toEqual({ desktop: true });
+    expect(exportSessionRequestSchema.safeParse({ web_log: 'a'.repeat(256 * 1024) }).success).toBe(true);
+    expect(exportSessionRequestSchema.safeParse({ web_log: `${'a'.repeat(256 * 1024)}b` }).success).toBe(false);
+    expect(exportSessionRequestSchema.safeParse({ web_log: '你'.repeat(87_382) }).success).toBe(false);
+    expect(exportSessionRequestSchema.safeParse({ outputPath: '/tmp/export.zip' }).success).toBe(false);
+  });
+
+  it('validates createSessionRequestSchema addresses, applied modes, and rejects legacy/unknown keys', () => {
+    expect(createSessionRequestSchema.parse({ metadata: { cwd: '/tmp/foo' } }).metadata?.cwd).toBe('/tmp/foo');
+    const byWorkspace = createSessionRequestSchema.parse({ workspace_id: 'wd_kimi_0123456789ab' });
+    expect(byWorkspace.workspace_id).toBe('wd_kimi_0123456789ab');
+    expect(byWorkspace.metadata).toBeUndefined();
+    expect(createSessionRequestSchema.safeParse({ metadata: {} }).success).toBe(false);
+
+    const unknownRes = createSessionRequestSchema.safeParse({
+      metadata: { cwd: '/tmp/foo' },
+      agent_config: { model: 'm', unknown_key: 'x' },
+    });
+    expect(unknownRes.success).toBe(false);
+    expect(unknownRes.error?.issues[0]).toMatchObject({ code: 'unrecognized_keys', path: ['agent_config'], keys: ['unknown_key'] });
+
+    for (const key of ['system_prompt', 'tools', 'mcp_servers', 'goal_objective', 'goal_control']) {
+      expect(
+        createSessionRequestSchema.safeParse({ metadata: { cwd: '/tmp/foo' }, agent_config: { model: 'm', [key]: 'x' } }).success,
+      ).toBe(false);
+    }
+
+    const agent_config = { model: 'm', profile: 'reviewer', thinking: 'high', permission_mode: 'yolo' as const, plan_mode: true };
+    expect(createSessionRequestSchema.parse({ metadata: { cwd: '/tmp/foo' }, agent_config }).agent_config).toEqual(agent_config);
   });
 });
 
-describe('createSessionRequestSchema', () => {
-  it('accepts a minimal POST body with metadata.cwd', () => {
-    const parsed = createSessionRequestSchema.parse({ metadata: { cwd: '/tmp/foo' } });
-    expect(parsed.metadata?.cwd).toBe('/tmp/foo');
+describe('session list & profile schemas', () => {
+  it.each([
+    ['empty query', {}, {}],
+    ['before_id + page_size', { before_id: 'sess_abc', page_size: 20 }, { before_id: 'sess_abc', page_size: 20 }],
+    ['busy boolean', { busy: true }, { busy: true }],
+    ['include_archive string true', { include_archive: 'true' }, { include_archive: true }],
+    ['include_archive string false', { include_archive: 'false' }, { include_archive: false }],
+    ['include_archive boolean/numeric', { include_archive: true, archived_only: 0 }, { include_archive: true, archived_only: false }],
+    ['archived_only string true', { archived_only: 'true' }, { archived_only: true }],
+    ['private filters', { include_private: 'true', private_only: '1' }, { include_private: true, private_only: true }],
+    ['private_only alone', { private_only: true }, { private_only: true }],
+    ['exclude_empty string true', { exclude_empty: 'true' }, { exclude_empty: true }],
+    ['exclude_empty string false', { exclude_empty: 'false' }, { exclude_empty: false }],
+  ] as const)('parses listSessionsQuery (%s)', (_label, input, expected) => {
+    expect(listSessionsQuerySchema.parse(input)).toEqual(expected);
   });
 
-  it('accepts a POST body with only workspace_id (route layer resolves cwd)', () => {
-    const parsed = createSessionRequestSchema.parse({
-      workspace_id: 'wd_kimi_0123456789ab',
-    });
-    expect(parsed.workspace_id).toBe('wd_kimi_0123456789ab');
-    expect(parsed.metadata).toBeUndefined();
-  });
-
-  it('rejects metadata without cwd', () => {
-    expect(
-      createSessionRequestSchema.safeParse({ metadata: {} } as unknown).success,
-    ).toBe(false);
-  });
-
-  it('rejects an unknown agent_config key instead of dropping it', () => {
-    const result = createSessionRequestSchema.safeParse({
-      metadata: { cwd: '/tmp/foo' },
-      agent_config: { model: 'm', unknown_key: 'x' } as unknown as { model: string },
-    });
-    expect(result.success).toBe(false);
-    expect(result.error?.issues[0]).toMatchObject({
-      code: 'unrecognized_keys',
-      path: ['agent_config'],
-      keys: ['unknown_key'],
-    });
-  });
-
-  it.each(['system_prompt', 'tools', 'mcp_servers'])(
-    'rejects %s, which the server never applied',
-    (key) => {
-      const result = createSessionRequestSchema.safeParse({
-        metadata: { cwd: '/tmp/foo' },
-        agent_config: { model: 'm', [key]: 'x' } as unknown as { model: string },
-      });
-      expect(result.success).toBe(false);
-    },
-  );
-
-  it.each(['goal_objective', 'goal_control'])(
-    'rejects %s at create, where there is no goal to act on',
-    (key) => {
-      const result = createSessionRequestSchema.safeParse({
-        metadata: { cwd: '/tmp/foo' },
-        agent_config: { [key]: 'pause' } as unknown as { model: string },
-      });
-      expect(result.success).toBe(false);
-    },
-  );
-
-  it('accepts the modes create does apply', () => {
-    const parsed = createSessionRequestSchema.parse({
-      metadata: { cwd: '/tmp/foo' },
-      agent_config: {
-        model: 'm',
-        profile: 'reviewer',
-        thinking: 'high',
-        permission_mode: 'yolo',
-        plan_mode: true,
-      },
-    });
-    expect(parsed.agent_config).toEqual({
-      model: 'm',
-      profile: 'reviewer',
-      thinking: 'high',
-      permission_mode: 'yolo',
-      plan_mode: true,
-    });
-  });
-});
-
-describe('listSessionsQuerySchema', () => {
-  it('accepts an empty query (defaults applied at handler layer)', () => {
-    expect(listSessionsQuerySchema.parse({})).toEqual({});
-  });
-
-  it('accepts before_id + page_size', () => {
-    const parsed = listSessionsQuerySchema.parse({ before_id: 'sess_abc', page_size: 20 });
-    expect(parsed.before_id).toBe('sess_abc');
-    expect(parsed.page_size).toBe(20);
-  });
-
-  it('rejects before_id + after_id together (REST §1.6 mutual exclusivity)', () => {
-    const result = listSessionsQuerySchema.safeParse({
-      before_id: 'a',
-      after_id: 'b',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects page_size > 100', () => {
+  it('rejects mutually exclusive cursors, conflicting privacy flags, and invalid query values', () => {
+    expect(listSessionsQuerySchema.safeParse({ before_id: 'a', after_id: 'b' }).success).toBe(false);
     expect(listSessionsQuerySchema.safeParse({ page_size: 101 }).success).toBe(false);
-  });
-
-  it('accepts a busy filter', () => {
-    expect(listSessionsQuerySchema.parse({ busy: true })).toEqual({ busy: true });
-  });
-
-  it('rejects a non-boolean busy value', () => {
     expect(listSessionsQuerySchema.safeParse({ busy: 'frozen' }).success).toBe(false);
+    const conflict = listSessionsQuerySchema.safeParse({ private_only: true, include_private: false });
+    expect(conflict.success).toBe(false);
+    expect(conflict.error?.issues[0]).toMatchObject({ path: ['private_only'], message: 'private_only and include_private are mutually exclusive' });
+    expect(listSessionChildrenQuerySchema.parse({ exclude_empty: true })).not.toHaveProperty('exclude_empty');
   });
 
-  it('parses include_archive string values to boolean', () => {
-    expect(listSessionsQuerySchema.parse({ include_archive: 'true' })).toEqual({
-      include_archive: true,
-    });
-    expect(listSessionsQuerySchema.parse({ include_archive: 'false' })).toEqual({
-      include_archive: false,
-    });
-  });
-
-  it('parses include_archive boolean and numeric values', () => {
-    expect(listSessionsQuerySchema.parse({ include_archive: true })).toEqual({
-      include_archive: true,
-    });
-    expect(listSessionsQuerySchema.parse({ include_archive: 0 })).toEqual({
-      include_archive: false,
-    });
-  });
-
-  it('parses archived_only to boolean', () => {
-    expect(listSessionsQuerySchema.parse({ archived_only: 'true' })).toEqual({
-      archived_only: true,
-    });
-    expect(listSessionsQuerySchema.parse({ archived_only: false })).toEqual({
-      archived_only: false,
-    });
-  });
-
-  it('parses private list filters to booleans', () => {
-    expect(listSessionsQuerySchema.parse({ include_private: 'true' })).toEqual({
-      include_private: true,
-    });
-    expect(listSessionsQuerySchema.parse({ private_only: '1' })).toEqual({
-      private_only: true,
-    });
-  });
-
-  it('rejects private_only=true with include_private=false', () => {
-    const result = listSessionsQuerySchema.safeParse({ private_only: true, include_private: false });
-    expect(result.success).toBe(false);
-    expect(result.error?.issues[0]).toMatchObject({
-      path: ['private_only'],
-      message: 'private_only and include_private are mutually exclusive',
-    });
-  });
-
-  it('allows private_only without an explicit include_private value', () => {
-    expect(listSessionsQuerySchema.parse({ private_only: true })).toEqual({ private_only: true });
-  });
-
-  it('parses exclude_empty to boolean', () => {
-    expect(listSessionsQuerySchema.parse({ exclude_empty: 'true' })).toEqual({
-      exclude_empty: true,
-    });
-    expect(listSessionsQuerySchema.parse({ exclude_empty: 'false' })).toEqual({
-      exclude_empty: false,
-    });
-  });
-});
-
-describe('listSessionChildrenQuerySchema', () => {
-  it('does not advertise exclude_empty (child lists do not filter by it)', () => {
-    const parsed = listSessionChildrenQuerySchema.parse({ exclude_empty: true });
-    expect(parsed).not.toHaveProperty('exclude_empty');
-  });
-});
-
-describe('getSessionProfileResponseSchema', () => {
-  it('accepts a Session payload', () => {
-    const parsed = getSessionProfileResponseSchema.parse({
-      id: 'sess_abc',
-      workspace_id: 'wd_kimi_0123456789ab',
-      title: 'Profile',
-      created_at: '2026-01-01T00:00:00.000Z',
-      updated_at: '2026-01-01T00:00:00.000Z',
-      busy: true,
-      metadata: { cwd: '/tmp/foo' },
-      agent_config: { model: '' },
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        total_cost_usd: 0,
-        context_tokens: 0,
-        context_limit: 0,
-        turn_count: 0,
-      },
-      permission_rules: [],
-      message_count: 0,
-      last_seq: 0,
-    });
-    expect(parsed.id).toBe('sess_abc');
-  });
-});
-
-describe('updateSessionProfileRequestSchema', () => {
-  it('accepts a metadata patch (without cwd)', () => {
-    expect(
-      updateSessionProfileRequestSchema.parse({ metadata: { custom_field: 'x' } }),
-    ).toEqual({ metadata: { custom_field: 'x' } });
-  });
-
-  it('accepts an empty POST body (no-op)', () => {
-    expect(updateSessionProfileRequestSchema.parse({})).toEqual({});
-  });
-
-  it('accepts the optional private flag', () => {
-    expect(updateSessionProfileRequestSchema.parse({ private: true })).toEqual({ private: true });
-  });
-
-  it('accepts agent_config.model', () => {
-    const parsed = updateSessionProfileRequestSchema.parse({
-      agent_config: { model: 'moonshot-v1-128k' },
-    });
-    expect(parsed.agent_config?.model).toBe('moonshot-v1-128k');
-  });
-
-  it('accepts agent_config runtime controls (thinking + permission_mode + plan_mode)', () => {
-    const parsed = updateSessionProfileRequestSchema.parse({
-      agent_config: {
-        thinking: 'medium',
-        permission_mode: 'auto',
-        plan_mode: false,
-      },
-    });
-    expect(parsed.agent_config).toEqual({
-      thinking: 'medium',
-      permission_mode: 'auto',
-      plan_mode: false,
-    });
-  });
-
-  it('accepts the goal controls, which only an existing session can act on', () => {
-    expect(
-      updateSessionProfileRequestSchema.parse({ agent_config: { goal_control: 'cancel' } }),
-    ).toEqual({ agent_config: { goal_control: 'cancel' } });
-  });
-
-  it.each(['system_prompt', 'tools', 'mcp_servers', 'unknown_key'])(
-    'rejects %s instead of dropping it',
-    (key) => {
-      const result = updateSessionProfileRequestSchema.safeParse({
-        agent_config: { [key]: 'x' },
-      });
-      expect(result.success).toBe(false);
-      expect(result.error?.issues[0]).toMatchObject({
-        code: 'unrecognized_keys',
-        keys: [key],
-      });
-    },
-  );
-});
-
-describe('updateSessionRequestSchema (legacy alias)', () => {
-  it('round-trips through the same schema as updateSessionProfileRequestSchema', () => {
-    expect(updateSessionRequestSchema.parse({ metadata: { custom_field: 'x' } })).toEqual(
-      updateSessionProfileRequestSchema.parse({ metadata: { custom_field: 'x' } }),
-    );
-  });
-});
-
-describe('forkSessionRequestSchema', () => {
-  it('accepts an empty POST body', () => {
+  it('parses session profile, fork, child, and restore payloads', () => {
+    expect(getSessionProfileResponseSchema.parse(makeSessionFixture()).id).toBe('sess_abc');
     expect(forkSessionRequestSchema.parse({})).toEqual({});
-  });
-
-  it('accepts title and arbitrary metadata without requiring cwd', () => {
-    const parsed = forkSessionRequestSchema.parse({
-      title: 'Fork: source',
-      metadata: { origin: 'web', depth: 1 },
-    });
-    expect(parsed).toEqual({
-      title: 'Fork: source',
-      metadata: { origin: 'web', depth: 1 },
-    });
-  });
-
-  it('rejects non-object metadata', () => {
+    expect(forkSessionRequestSchema.parse({ title: 'Fork: source', metadata: { origin: 'web', depth: 1 } }))
+      .toEqual({ title: 'Fork: source', metadata: { origin: 'web', depth: 1 } });
     expect(forkSessionRequestSchema.safeParse({ metadata: 'x' }).success).toBe(false);
-  });
-});
+    expect(forkSessionResponseSchema.parse(makeSessionFixture({ id: 'sess_fork', title: 'Fork: source', metadata: { cwd: '/tmp/foo', origin: 'web' } })).id)
+      .toBe('sess_fork');
 
-describe('forkSessionResponseSchema', () => {
-  it('accepts a Session payload', () => {
-    const parsed = forkSessionResponseSchema.parse({
-      id: 'sess_fork',
-      workspace_id: 'wd_kimi_0123456789ab',
-      title: 'Fork: source',
-      created_at: '2026-01-01T00:00:00.000Z',
-      updated_at: '2026-01-01T00:00:00.000Z',
-      busy: true,
-      metadata: { cwd: '/tmp/foo', origin: 'web' },
-      agent_config: { model: '' },
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        total_cost_usd: 0,
-        context_tokens: 0,
-        context_limit: 0,
-        turn_count: 0,
-      },
-      permission_rules: [],
-      message_count: 0,
-      last_seq: 0,
-    });
-    expect(parsed.id).toBe('sess_fork');
-  });
-});
-
-describe('createSessionChildRequestSchema', () => {
-  it('accepts title and arbitrary metadata without requiring cwd', () => {
-    const parsed = createSessionChildRequestSchema.parse({
-      title: 'Side question',
-      metadata: { origin: 'web', topic: 'btw' },
-    });
-    expect(parsed).toEqual({
-      title: 'Side question',
-      metadata: { origin: 'web', topic: 'btw' },
-    });
-  });
-
-  it('rejects non-object metadata', () => {
+    expect(createSessionChildRequestSchema.parse({ title: 'Side question', metadata: { origin: 'web', topic: 'btw' } }))
+      .toEqual({ title: 'Side question', metadata: { origin: 'web', topic: 'btw' } });
     expect(createSessionChildRequestSchema.safeParse({ metadata: 'x' }).success).toBe(false);
+    const child = makeSessionFixture({ id: 'sess_child', title: 'Child: source', metadata: { cwd: '/tmp/foo', parent_session_id: 'sess_parent' } });
+    expect(createSessionChildResponseSchema.parse(child).metadata['parent_session_id']).toBe('sess_parent');
+    expect(listSessionChildrenResponseSchema.parse({ items: [child], has_more: false }).items).toHaveLength(1);
+    expect(restoreSessionResponseSchema.parse(makeSessionFixture({ title: 'Restored', archived: false })).archived).toBe(false);
+  });
+
+  it('validates updateSessionProfileRequestSchema and legacy updateSessionRequestSchema', () => {
+    for (const payload of [
+      {},
+      { metadata: { custom_field: 'x' } },
+      { private: true },
+      { agent_config: { model: 'moonshot-v1-128k' } },
+      { agent_config: { thinking: 'medium', permission_mode: 'auto', plan_mode: false } },
+      { agent_config: { goal_control: 'cancel' } },
+    ]) {
+      expect(updateSessionProfileRequestSchema.parse(payload)).toEqual(payload);
+    }
+    expect(updateSessionRequestSchema.parse({ metadata: { custom_field: 'x' } }))
+      .toEqual(updateSessionProfileRequestSchema.parse({ metadata: { custom_field: 'x' } }));
+
+    for (const key of ['system_prompt', 'tools', 'mcp_servers', 'unknown_key']) {
+      const result = updateSessionProfileRequestSchema.safeParse({ agent_config: { [key]: 'x' } });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]).toMatchObject({ code: 'unrecognized_keys', keys: [key] });
+    }
   });
 });
 
-describe('createSessionChildResponseSchema', () => {
-  it('accepts a Session payload', () => {
-    const parsed = createSessionChildResponseSchema.parse({
-      id: 'sess_child',
-      workspace_id: 'wd_kimi_0123456789ab',
-      title: 'Child: source',
-      created_at: '2026-01-01T00:00:00.000Z',
-      updated_at: '2026-01-01T00:00:00.000Z',
-      busy: true,
-      metadata: { cwd: '/tmp/foo', parent_session_id: 'sess_parent' },
-      agent_config: { model: '' },
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        total_cost_usd: 0,
-        context_tokens: 0,
-        context_limit: 0,
-        turn_count: 0,
-      },
-      permission_rules: [],
-      message_count: 0,
-      last_seq: 0,
-    });
-    expect(parsed.metadata['parent_session_id']).toBe('sess_parent');
-  });
-});
+describe('session status, compact, undo, and archive schemas', () => {
+  const baseStatus = {
+    busy: false,
+    model_name: null,
+    thinking_level: 'off',
+    permission: 'auto',
+    plan_mode: false,
+    context_tokens: 0,
+    max_context_tokens: 0,
+    context_usage: 0,
+  };
 
-describe('listSessionChildrenResponseSchema', () => {
-  it('accepts a paged list of child sessions', () => {
-    const parsed = listSessionChildrenResponseSchema.parse({
-      items: [
-        {
-          id: 'sess_child',
-          workspace_id: 'wd_kimi_0123456789ab',
-          title: 'Child: source',
-          created_at: '2026-01-01T00:00:00.000Z',
-          updated_at: '2026-01-01T00:00:00.000Z',
-          busy: true,
-          metadata: { cwd: '/tmp/foo', parent_session_id: 'sess_parent' },
-          agent_config: { model: '' },
-          usage: {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
-            total_cost_usd: 0,
-            context_tokens: 0,
-            context_limit: 0,
-            turn_count: 0,
-          },
-          permission_rules: [],
-          message_count: 0,
-          last_seq: 0,
-        },
-      ],
-      has_more: false,
-    });
-    expect(parsed.items).toHaveLength(1);
-  });
-});
-
-describe('sessionStatusResponseSchema', () => {
-  it('accepts a full valid shape', () => {
-    const parsed = sessionStatusResponseSchema.parse({
-      busy: true,
-      model: 'example-model',
-      model_name: null,
-      thinking_level: 'on',
-      permission: 'ask',
-      plan_mode: true,
-      context_tokens: 1024,
-      max_context_tokens: 128000,
-      context_usage: 0.008,
-    });
-    expect(parsed.busy).toBe(true);
-    expect(parsed.model).toBe('example-model');
-    expect(parsed.model_name).toBeNull();
-    expect(parsed.plan_mode).toBe(true);
-    expect(parsed.context_usage).toBe(0.008);
+  it.each([
+    ['full with model', { ...baseStatus, busy: true, model: 'example-model', thinking_level: 'on', permission: 'ask', plan_mode: true, context_tokens: 1024, max_context_tokens: 128000, context_usage: 0.008 }],
+    ['configured model_name', { ...baseStatus, model: 'example-model', model_name: 'Example Model', thinking_level: '' }],
+    ['without model', baseStatus],
+    ['without max_context_tokens', (({ max_context_tokens: _, ...rest }) => rest)(baseStatus)],
+  ] as const)('accepts sessionStatusResponse (%s)', (_label, payload) => {
+    expect(sessionStatusResponseSchema.parse(payload)).toEqual(payload);
   });
 
-  it('preserves a configured model display name', () => {
-    const status = { busy: false, model: 'example-model', model_name: 'Example Model', thinking_level: '', permission: 'auto', plan_mode: false, context_tokens: 0, context_usage: 0 };
-    expect(sessionStatusResponseSchema.parse(status).model_name).toBe('Example Model');
-    expect(sessionStatusResponseSchema.safeParse({ ...status, model_name: 42 }).success).toBe(false);
+  it.each([
+    ['non-string model_name', { ...baseStatus, model_name: 42 }],
+    ['missing busy', (({ busy: _, ...rest }) => rest)(baseStatus)],
+    ['invalid busy', { ...baseStatus, busy: 'unknown' }],
+    ['negative context_tokens', { ...baseStatus, context_tokens: -1 }],
+    ['context_usage > 1', { ...baseStatus, context_tokens: 10, max_context_tokens: 5, context_usage: 2 }],
+  ] as const)('rejects sessionStatusResponse (%s)', (_label, payload) => {
+    expect(sessionStatusResponseSchema.safeParse(payload).success).toBe(false);
   });
 
-  it('accepts minimal shape without model', () => {
-    const parsed = sessionStatusResponseSchema.parse({
-      busy: false,
-      model_name: null,
-      thinking_level: 'off',
-      permission: 'auto',
-      plan_mode: false,
-      context_tokens: 0,
-      max_context_tokens: 0,
-      context_usage: 0,
-    });
-    expect(parsed.busy).toBe(false);
-    expect(parsed.model).toBeUndefined();
-  });
-
-  it('accepts an omitted max_context_tokens (unknown context limit)', () => {
-    const parsed = sessionStatusResponseSchema.parse({
-      busy: false,
-      model_name: null,
-      thinking_level: 'off',
-      permission: 'auto',
-      plan_mode: false,
-      context_tokens: 0,
-      context_usage: 0,
-    });
-    expect(parsed.max_context_tokens).toBeUndefined();
-  });
-
-  it('rejects missing busy', () => {
-    expect(
-      sessionStatusResponseSchema.safeParse({
-        model_name: null,
-        thinking_level: 'off',
-        permission: 'auto',
-        plan_mode: false,
-        context_tokens: 0,
-        max_context_tokens: 0,
-        context_usage: 0,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects invalid busy', () => {
-    expect(
-      sessionStatusResponseSchema.safeParse({
-        busy: 'unknown',
-        model_name: null,
-        thinking_level: 'off',
-        permission: 'auto',
-        plan_mode: false,
-        context_tokens: 0,
-        max_context_tokens: 0,
-        context_usage: 0,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects negative context_tokens', () => {
-    expect(
-      sessionStatusResponseSchema.safeParse({
-        busy: true,
-        model_name: null,
-        thinking_level: 'off',
-        permission: 'auto',
-        plan_mode: false,
-        context_tokens: -1,
-        max_context_tokens: 0,
-        context_usage: 0,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects context_usage > 1', () => {
-    expect(
-      sessionStatusResponseSchema.safeParse({
-        busy: true,
-        model_name: null,
-        thinking_level: 'off',
-        permission: 'auto',
-        plan_mode: false,
-        context_tokens: 10,
-        max_context_tokens: 5,
-        context_usage: 2,
-      }).success,
-    ).toBe(false);
-  });
-});
-
-describe('compactSessionRequestSchema', () => {
-  it('accepts an empty body', () => {
+  it('validates compact, undo, and archive/delete session contracts', () => {
     expect(compactSessionRequestSchema.parse({})).toEqual({});
-  });
-
-  it('treats a missing body as empty', () => {
     expect(compactSessionRequestSchema.parse(undefined)).toEqual({});
-  });
-
-  it('accepts an optional instruction string', () => {
-    expect(compactSessionRequestSchema.parse({ instruction: '  focus on decisions  ' })).toEqual({
-      instruction: '  focus on decisions  ',
-    });
-  });
-
-  it('rejects a non-string instruction', () => {
+    expect(compactSessionRequestSchema.parse({ instruction: '  focus on decisions  ' })).toEqual({ instruction: '  focus on decisions  ' });
     expect(compactSessionRequestSchema.safeParse({ instruction: 123 }).success).toBe(false);
-  });
-});
 
-describe('compactSessionResponseSchema', () => {
-  it('accepts the empty success payload from older hosts', () => {
     expect(compactSessionResponseSchema.parse({})).toEqual({});
-  });
-  it('preserves queued and running admission receipts and rejects invalid progress', () => {
     for (const status of ['queued', 'running'] as const) {
       const receipt = { accepted: true, status, source: 'manual' };
       expect(compactSessionResponseSchema.parse(receipt)).toEqual(receipt);
     }
     expect(compactSessionResponseSchema.safeParse({ status: 'completed' }).success).toBe(false);
     expect(compactSessionResponseSchema.safeParse({ source: 'auto' }).success).toBe(false);
-  });
-});
 
-describe('undoSessionRequestSchema', () => {
-  it('defaults a missing body to undoing one prompt', () => {
     expect(undoSessionRequestSchema.parse(undefined)).toEqual({ count: 1 });
-  });
-
-  it('accepts a positive count and bounded page size', () => {
-    expect(undoSessionRequestSchema.parse({ count: 2, page_size: 25 })).toEqual({
-      count: 2,
-      page_size: 25,
-    });
-  });
-
-  it('rejects zero count and oversized page size', () => {
+    expect(undoSessionRequestSchema.parse({ count: 2, page_size: 25 })).toEqual({ count: 2, page_size: 25 });
     expect(undoSessionRequestSchema.safeParse({ count: 0 }).success).toBe(false);
     expect(undoSessionRequestSchema.safeParse({ page_size: 101 }).success).toBe(false);
-  });
-});
 
-describe('undoSessionResponseSchema', () => {
-  it('accepts messages plus the refreshed session status', () => {
-    const parsed = undoSessionResponseSchema.parse({
+    const undoResp = undoSessionResponseSchema.parse({
       messages: {
-        items: [
-          {
-            id: 'msg_sess_abc_000000',
-            session_id: 'sess_abc',
-            role: 'user',
-            content: [{ type: 'text', text: 'kept' }],
-            created_at: '2026-01-01T00:00:00.000Z',
-          },
-        ],
+        items: [{ id: 'msg_sess_abc_000000', session_id: 'sess_abc', role: 'user', content: [{ type: 'text', text: 'kept' }], created_at: '2026-01-01T00:00:00.000Z' }],
         has_more: false,
       },
-      status: {
-        busy: true,
-        model: 'kimi-k2',
-        model_name: null,
-        thinking_level: 'auto',
-        permission: 'manual',
-        plan_mode: false,
-        context_tokens: 10,
-        max_context_tokens: 100,
-        context_usage: 0.1,
-      },
+      status: { ...baseStatus, busy: true, model: 'kimi-k2', thinking_level: 'auto', permission: 'manual', context_tokens: 10, max_context_tokens: 100, context_usage: 0.1 },
     });
-    expect(parsed.messages.items).toHaveLength(1);
-    expect(parsed.status.context_tokens).toBe(10);
-  });
-});
+    expect(undoResp.messages.items).toHaveLength(1);
+    expect(undoResp.status.context_tokens).toBe(10);
 
-describe('archiveSessionResponseSchema', () => {
-  it('accepts the canonical { archived: true } shape', () => {
     expect(archiveSessionResponseSchema.parse({ archived: true })).toEqual({ archived: true });
-  });
-
-  it('preserves failed family members without claiming the whole family was archived', () => {
-    const response = { archived: false, outcomes: [
-      { id: 'session-a', ok: true as const },
-      { id: 'session-b', ok: false as const, reason: 'error' as const, message: 'Archive failed' },
-    ] };
-    expect(archiveSessionResponseSchema.parse(response)).toEqual(response);
-    expect(archiveSessionResponseSchema.safeParse({ archived: 'false' }).success).toBe(false);
-  });
-});
-
-describe('restoreSessionResponseSchema', () => {
-  it('accepts a restored Session payload', () => {
-    const parsed = restoreSessionResponseSchema.parse({
-      id: 'sess_abc',
-      workspace_id: 'wd_kimi_0123456789ab',
-      title: 'Restored',
-      created_at: '2026-01-01T00:00:00.000Z',
-      updated_at: '2026-01-01T00:00:00.000Z',
-      busy: true,
+    const familyFailure = {
       archived: false,
-      metadata: { cwd: '/tmp/foo' },
-      agent_config: { model: '' },
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        total_cost_usd: 0,
-        context_tokens: 0,
-        context_limit: 0,
-        turn_count: 0,
-      },
-      permission_rules: [],
-      message_count: 0,
-      last_seq: 0,
-    });
-    expect(parsed.archived).toBe(false);
-  });
-});
+      outcomes: [
+        { id: 'session-a', ok: true as const },
+        { id: 'session-b', ok: false as const, reason: 'error' as const, message: 'Archive failed' },
+      ],
+    };
+    expect(archiveSessionResponseSchema.parse(familyFailure)).toEqual(familyFailure);
+    expect(archiveSessionResponseSchema.safeParse({ archived: 'false' }).success).toBe(false);
 
-describe('deleteSessionResponseSchema (deprecated alias)', () => {
-  it('accepts the canonical { archived: true } shape', () => {
-    expect(deleteSessionResponseSchema.parse({ archived: true })).toEqual({ archived: true });
-  });
-
-  it('uses the same family outcome contract as the canonical archive response', () => {
     expect(deleteSessionResponseSchema).toBe(archiveSessionResponseSchema);
-    expect(deleteSessionResponseSchema.parse({ archived: false, outcomes: [
-      { id: 'session-b', ok: false, reason: 'not_found', message: 'Session not found' },
-    ] })).toEqual({ archived: false, outcomes: [
-      { id: 'session-b', ok: false, reason: 'not_found', message: 'Session not found' },
-    ] });
+    expect(deleteSessionResponseSchema.parse({ archived: true })).toEqual({ archived: true });
+    expect(deleteSessionResponseSchema.parse({ archived: false, outcomes: [{ id: 'session-b', ok: false, reason: 'not_found', message: 'Session not found' }] }).outcomes)
+      .toHaveLength(1);
     expect(deleteSessionResponseSchema.safeParse({ archived: null }).success).toBe(false);
   });
 });

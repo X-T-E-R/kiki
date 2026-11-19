@@ -257,3 +257,31 @@ test('query uses value indexes for equality/range filters', async () => {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
+
+test('dtColumns drops emptied columns, text AND requires all terms, and stateful global $regex matches every doc', async () => {
+  const dir = await tmpDir();
+  try {
+    const db = await MiniDb.open({ dir, valueCodec: 'json' });
+    await db.createTextIndex('bio', { fields: ['bio'] });
+    await db.set('a', { bio: 'hello world', name: 'ab' }, { dt: { created: 100 } });
+    await db.set('b', { bio: 'hello there', name: 'ab' });
+    await db.set('c', { bio: 'other', name: 'ab' });
+
+    // Text AND with an absent term returns empty regardless of term order.
+    assert.deepEqual(db.search('bio', 'hello zzznope', { op: 'AND' }), []);
+    assert.deepEqual(db.search('bio', 'zzznope hello', { op: 'AND' }), []);
+    assert.deepEqual(db.search('bio', 'hello zzznope'), []);
+    assert.deepEqual(db.search('bio', 'hello world', { op: 'AND' }).map((r) => r.key), ['a']);
+
+    // Stateful global RegExp must not alternate match/miss across docs.
+    assert.equal(db.query({ filter: { name: { $regex: /a/g } } }).length, 3);
+    assert.equal(db.query({ filter: { name: /a/g } }).length, 3);
+
+    // Deleting the sole dt record drops the empty dt column.
+    await db.del('a');
+    assert.deepEqual(db.dtColumns(), []);
+    await db.close();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});

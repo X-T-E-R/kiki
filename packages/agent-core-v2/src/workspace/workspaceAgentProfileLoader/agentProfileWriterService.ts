@@ -4,7 +4,13 @@ import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 import { KikiContextSchema } from '@kiki/agent-profiles/agentProfile';
 import { modelProfilePatchToWire, subagentLeasePatchToWire } from '@kiki/agent-profiles/modelPromptProjection';
 import { PromptOverridesSchema } from '@kiki/agent-profiles/promptOverrides';
-import { recipeOptionValuesSchema, updateNamedAgentModelProfileEntrySchema, updateNamedAgentSubagentEntrySchema } from '@kiki/protocol';
+import {
+  executorInstanceChoiceSchema,
+  executorLaunchPatchSchema,
+  recipeOptionValuesSchema,
+  updateNamedAgentModelProfileEntrySchema,
+  updateNamedAgentSubagentEntrySchema,
+} from '@kiki/protocol';
 import { join } from 'pathe';
 
 import { atomicCreate, atomicWrite } from '#/_base/utils/fs';
@@ -73,6 +79,8 @@ const TOP_LEVEL_KEYS = new Set([
   'whenToUse',
   'main',
   'executor',
+  'executorInstance',
+  'executorLaunch',
   'executorPrompt',
   'allowKikiSubagents',
   'kikiContext',
@@ -561,6 +569,14 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     issues.push({ path: 'main', message: 'main must be boolean or null' });
   }
   validateOptionalString(request.executor, 'executor', issues);
+  if (request.executorInstance !== undefined && request.executorInstance !== null) {
+    const parsed = executorInstanceChoiceSchema.safeParse(request.executorInstance);
+    if (!parsed.success) issues.push({ path: 'executorInstance', message: parsed.error.message });
+  }
+  if (request.executorLaunch !== undefined && request.executorLaunch !== null) {
+    const parsed = executorLaunchPatchSchema.safeParse(request.executorLaunch);
+    if (!parsed.success) issues.push({ path: 'executorLaunch', message: parsed.error.message });
+  }
   if (request.allowKikiSubagents !== undefined && request.allowKikiSubagents !== null && typeof request.allowKikiSubagents !== 'boolean') {
     issues.push({ path: 'allowKikiSubagents', message: 'allowKikiSubagents must be boolean or null' });
   }
@@ -640,6 +656,8 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.whenToUse,
     request.main,
     request.executor,
+    request.executorInstance,
+    request.executorLaunch,
     request.executorPrompt,
     request.allowKikiSubagents,
     request.kikiContext,

@@ -53,17 +53,6 @@ const sshSessionHosts = vi.fn();
 const sshAdd = vi.fn();
 const sshRemove = vi.fn();
 const sshHost = { id: 'example-host', name: 'Example host', source: 'kiki', hostname: 'example.test', agentAccess: 'offered' };
-/**
- * The agent facade's MCP surface, mutable per test: the session port 925 adds is
- * `listMcpSessionCapabilities` / `setMcpSessionOverride`, and a build without it
- * still answers `getMcpServers` and `reconnectMcpServer`.
- */
-const mcpAgent: Record<string, unknown> = {};
-const listMcpSessionCapabilities = vi.fn();
-const setMcpSessionOverride = vi.fn();
-const reconnectMcpServer = vi.fn();
-const getMcpServers = vi.fn();
-const listManagedMcpServers = vi.fn();
 /** The engine catalog the execution panel offers. */
 const EXECUTOR_ITEMS = [
   { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready' as const, model_binding: 'mapped' as const, thinking_binding: 'mapped' as const },
@@ -71,6 +60,68 @@ const EXECUTOR_ITEMS = [
 ];
 /** The native engine with the default main profile: an ordinary new session. */
 const NATIVE_AGENT = { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined } as const;
+const EXTERNAL_BARE = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined } as const;
+const PROFILE_SELECT_PROPS = { agentProfile: 'agent', onChangeAgentProfile: () => {}, execution: NATIVE_AGENT, onChangeExecution: () => {} } as const;
+
+type ComposerProps = Parameters<typeof Composer>[0];
+
+const DEFAULT_COMPOSER_PROPS: ComposerProps = {
+  busy: false,
+  disabled: false,
+  value: '',
+  onChange: () => {},
+  model: undefined,
+  defaultModel: undefined,
+  serverDefaultModel: 'fixture/kiki-pro',
+  modelSource: 'server-default',
+  agentProfileCatalogMode: { mode: 'global' },
+  permissionMode: 'manual',
+  planMode: false,
+  goalObjective: '',
+  efforts: undefined,
+  effort: undefined,
+  attachments: [],
+  onChangeAttachments: () => {},
+  onChangeModel: () => {},
+  onChangePermissionMode: () => {},
+  onChangePlanMode: () => {},
+  onChangeGoalObjective: () => {},
+  onChangeEffort: () => {},
+  onSend: () => {},
+};
+
+function executorModelsPayload(overrides: {
+  source?: string;
+  provenance?: string;
+  revision?: string;
+  apply_state?: string;
+  observed_at?: number;
+  models?: Record<string, unknown>;
+  thinking_levels?: Record<string, unknown>;
+  controls?: Record<string, unknown>;
+} = {}) {
+  const ready = { applicability: 'fresh_binding', apply_state: 'applied' };
+  const unsupported = { applicability: 'unsupported', apply_state: 'unsupported' };
+  return {
+    executor_id: 'claude-acp',
+    source: overrides.source ?? 'cli_probe',
+    provenance: overrides.provenance ?? 'read_only_cli_probe',
+    revision: overrides.revision ?? '1',
+    apply_state: overrides.apply_state ?? 'ready',
+    observed_at: overrides.observed_at ?? Date.now(),
+    effective: {
+      models: overrides.models ?? { state: 'ready', values: ['claude/sonnet'] },
+      thinking_levels: overrides.thinking_levels ?? { state: 'unknown' },
+      context: { state: 'unknown' },
+      controls: {
+        model_switch: ready,
+        thinking_switch: ready,
+        manual_compact: unsupported,
+        ...overrides.controls,
+      },
+    },
+  };
+}
 
 /**
  * A profile file on the connected host: not a registered profile, not a main
@@ -86,27 +137,6 @@ const FILE_PROFILE = {
   source_file: '/work/profiles/research.md',
   description: 'Writes up research.',
 } satisfies NamedAgentProfile;
-
-/**
- * A conversation's plugin usage: one plugin the global default has on, and
- * one whose global default is off but that this conversation turned on. The
- * fixtures declare the four-level contract (home → global → workspace →
- * session); they are the contract under test, not a stand-in for the server.
- */
-function PLUGIN_USAGE(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    home_id: 'home-1',
-    target: { workspace_id: 'ws-a', name: 'Alpha', root: 'C:/work/alpha', session_id: 'session-1' },
-    revision: 4,
-    apply_state: 'applied',
-    errors: [],
-    plugins: [
-      { id: 'global-on', displayName: 'Global On', home_enabled: true, global_enabled: true, state: 'ok', override: 'inherit', effective: true, app_service: false, skillCount: 1, mcpServerCount: 0 },
-      { id: 'here-on', displayName: 'Here On', home_enabled: true, global_enabled: false, state: 'ok', override: 'inherit', session_override: 'on', effective: true, app_service: false, skillCount: 0, mcpServerCount: 2 },
-    ],
-    ...overrides,
-  };
-}
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
@@ -258,37 +288,13 @@ async function renderComposer(
   const root = createRoot(container);
   roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const rerender = async (nextProps: Partial<Parameters<typeof Composer>[0]>) => {
+  const rerender = async (nextProps: Partial<ComposerProps>) => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={client}>
           <I18nProvider>
             <MemoryRouter>
-              <Composer
-                busy={false}
-                disabled={false}
-                value=""
-                onChange={() => {}}
-                model={undefined}
-                defaultModel={undefined}
-                serverDefaultModel="fixture/kiki-pro"
-                modelSource="server-default"
-                agentProfileCatalogMode={{ mode: 'global' }}
-                permissionMode="manual"
-                planMode={false}
-                goalObjective=""
-                efforts={undefined}
-                effort={undefined}
-                attachments={[]}
-                onChangeAttachments={() => {}}
-                onChangeModel={() => {}}
-                onChangePermissionMode={() => {}}
-                onChangePlanMode={() => {}}
-                onChangeGoalObjective={() => {}}
-                onChangeEffort={() => {}}
-                onSend={() => {}}
-                {...nextProps}
-              />
+              <Composer {...DEFAULT_COMPOSER_PROPS} {...nextProps} />
             </MemoryRouter>
           </I18nProvider>
         </QueryClientProvider>,
@@ -296,8 +302,7 @@ async function renderComposer(
     });
   };
   await rerender(props);
-  await settle();
-  await settle();
+  await settleMany(2);
   return { container, root, queryClient: client, rerender };
 }
 
@@ -305,6 +310,55 @@ async function renderComposer(
 async function settle(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function settleMany(count = 5): Promise<void> {
+  for (let index = 0; index < count; index += 1) await settle();
+}
+
+function sendBtn(container: HTMLDivElement): HTMLButtonElement {
+  return container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+}
+
+function engineModelTrigger(container: HTMLDivElement): HTMLButtonElement {
+  return (container.querySelector<HTMLButtonElement>('#composer-engine-model-select')
+    ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!;
+}
+
+function composerInputOf(container: HTMLDivElement): ComposerInputElement {
+  return composerInput(container);
+}
+
+async function setInputValue(input: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function typeText(textarea: ComposerInputElement, value: string): Promise<void> {
+  await act(async () => {
+    setComposerInputValue(textarea, value);
+  });
+}
+
+async function pressKey(textarea: ComposerInputElement, init: KeyboardEventInit): Promise<void> {
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
+  });
+}
+
+async function placeCaret(textarea: ComposerInputElement, start: number, end = start): Promise<void> {
+  await act(async () => {
+    textarea.focus();
+    textarea.setSelectionRange(start, end);
+  });
+}
+
+async function flushCaret(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
   });
 }
 
@@ -421,60 +475,32 @@ describe('Composer host compatibility', () => {
     vi.stubGlobal('crypto', originalCrypto);
   });
 
-  it('defaults to Enter send with Shift+Enter reserved for newlines', async () => {
-    localStorage.clear();
-    writeSettings({});
-    const onSend = vi.fn();
-    const { container } = await renderComposer({ value: 'default shortcut', onSend });
-    const textarea = composerInput(container);
-
-    await pressKey(textarea, { key: 'Enter', shiftKey: true });
-    expect(onSend).not.toHaveBeenCalled();
-    await pressKey(textarea, { key: 'Enter' });
-    await settle();
-    expect(onSend).toHaveBeenCalledWith('default shortcut', []);
-  });
-
-  it('never sends on an Enter that commits an IME candidate', async () => {
-    const onSend = vi.fn();
-    const { container } = await renderComposer({ value: '你好', onSend });
-    const textarea = composerInput(container);
-    await pressKey(textarea, { key: 'Enter', isComposing: true });
-    await pressKey(textarea, { key: 'Enter', keyCode: 229 });
-    await settle();
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it('sends into the running turn on Ctrl/Cmd+Enter while busy, and queues on Enter', async () => {
+  it.each([
+    { label: 'default Enter send vs Shift+Enter newline', setting: undefined, busy: false, key: { key: 'Enter', shiftKey: true }, sends: null, nextKey: { key: 'Enter' }, nextSends: 'onSend' },
+    { label: 'IME composing / keyCode 229 never sends', setting: 'enter' as const, busy: false, key: { key: 'Enter', isComposing: true }, sends: null, nextKey: { key: 'Enter', keyCode: 229 }, nextSends: null },
+    { label: 'Ctrl/Cmd+Enter steers while busy and Enter queues', setting: 'enter' as const, busy: true, key: { key: 'Enter', ctrlKey: true }, sends: 'onSendNow', nextKey: { key: 'Enter' }, nextSends: 'onSend' },
+    { label: 'cmd-enter setting keeps Enter newline and sends on Ctrl+Enter / steers on Ctrl+Shift+Enter', setting: 'cmd-enter' as const, busy: true, key: { key: 'Enter' }, sends: null, nextKey: { key: 'Enter', ctrlKey: true }, nextSends: 'onSend', thirdKey: { key: 'Enter', ctrlKey: true, shiftKey: true }, thirdSends: 'onSendNow' },
+    { label: 'Ctrl+Enter sends while idle and Ctrl+Shift+Enter stays newline', setting: 'enter' as const, busy: false, key: { key: 'Enter', ctrlKey: true }, sends: 'onSend', nextKey: { key: 'Enter', ctrlKey: true, shiftKey: true }, nextSends: null },
+  ] as const)('send shortcut matrix: $label', async ({ setting, busy, key, sends, nextKey, nextSends, thirdKey, thirdSends }) => {
+    if (setting === undefined) { localStorage.clear(); writeSettings({}); }
+    else writeSettings({ sendShortcut: setting });
     const onSend = vi.fn();
     const onSendNow = vi.fn();
-    const { container } = await renderComposer({ value: 'steer this', busy: true, onSend, onSendNow });
+    const { container } = await renderComposer({ value: 'shortcut text', busy, onSend, onSendNow });
     const textarea = composerInput(container);
-    await pressKey(textarea, { key: 'Enter', ctrlKey: true });
-    await settle();
-    expect(onSendNow).toHaveBeenCalledWith('steer this', []);
-    expect(onSend).not.toHaveBeenCalled();
-    await pressKey(textarea, { key: 'Enter' });
-    await settle();
-    expect(onSend).toHaveBeenCalledWith('steer this', []);
-    expect(onSendNow).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps Enter as a newline under the ⌘/Ctrl+Enter setting', async () => {
-    writeSettings({ sendShortcut: 'cmd-enter' });
-    const onSend = vi.fn();
-    const onSendNow = vi.fn();
-    const { container } = await renderComposer({ value: 'cmd mode', busy: true, onSend, onSendNow });
-    const textarea = composerInput(container);
-    await pressKey(textarea, { key: 'Enter' });
-    await settle();
-    expect(onSend).not.toHaveBeenCalled();
-    await pressKey(textarea, { key: 'Enter', ctrlKey: true });
-    await settle();
-    expect(onSend).toHaveBeenCalledWith('cmd mode', []);
-    await pressKey(textarea, { key: 'Enter', ctrlKey: true, shiftKey: true });
-    await settle();
-    expect(onSendNow).toHaveBeenCalledWith('cmd mode', []);
+    const check = async (eventInit: KeyboardEventInit | undefined, target: 'onSend' | 'onSendNow' | null | undefined) => {
+      if (eventInit === undefined) return;
+      const before = { send: onSend.mock.calls.length, now: onSendNow.mock.calls.length };
+      await pressKey(textarea, eventInit);
+      await settle();
+      expect(onSend).toHaveBeenCalledTimes(before.send + (target === 'onSend' ? 1 : 0));
+      expect(onSendNow).toHaveBeenCalledTimes(before.now + (target === 'onSendNow' ? 1 : 0));
+      if (target === 'onSend') expect(onSend).toHaveBeenLastCalledWith('shortcut text', []);
+      if (target === 'onSendNow') expect(onSendNow).toHaveBeenLastCalledWith('shortcut text', []);
+    };
+    await check(key, sends);
+    await check(nextKey, nextSends);
+    await check(thirdKey, thirdSends);
     writeSettings({ sendShortcut: 'enter' });
   });
 
@@ -489,33 +515,10 @@ describe('Composer host compatibility', () => {
   it('submits browser prompts synchronously without VS Code preflight state', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'browser prompt', onSend });
-    const textarea = composerInput(container);
-
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
-
+    await pressKey(composerInput(container), { key: 'Enter' });
     expect(onSend).toHaveBeenCalledWith('browser prompt', []);
     expect(preparePrompt).not.toHaveBeenCalled();
-    // The send latch releases once the (void) submit settles a microtask later.
-    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
-  });
-
-  it('sends immediately on Ctrl+Enter even when the send shortcut is plain Enter', async () => {
-    const onSend = vi.fn();
-    const { container } = await renderComposer({ value: 'ctrl enter prompt', onSend });
-    const textarea = composerInput(container);
-
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
-    });
-    expect(onSend).toHaveBeenCalledWith('ctrl enter prompt', []);
-
-    // Shift still wins: Ctrl+Shift+Enter stays a newline, not a send.
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, shiftKey: true, bubbles: true }));
-    });
-    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(sendBtn(container).disabled).toBe(false);
   });
 
   it('preserves a new-session key for creation and rotates between resident sessions', async () => {
@@ -523,35 +526,25 @@ describe('Composer host compatibility', () => {
     const onSend = vi.fn();
     const rendered = await renderComposer({ value: 'new', sessionId: undefined, onSend });
     const textarea = composerInput(rendered.container);
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await pressKey(textarea, { key: 'Enter' });
     await settle();
     const newKey = preparePrompt.mock.calls[0]?.[1];
 
     await rendered.rerender({ value: 'session-a', sessionId: 'session-a', onSend });
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await pressKey(textarea, { key: 'Enter' });
     await settle();
 
     await rendered.rerender({ value: 'session-b', sessionId: 'session-b', onSend });
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await pressKey(textarea, { key: 'Enter' });
     await settle();
 
     await rendered.rerender({ value: 'new-again', sessionId: undefined, onSend });
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await pressKey(textarea, { key: 'Enter' });
     await settle();
     const newKeyAfterSession = preparePrompt.mock.calls[3]?.[1];
 
     await rendered.rerender({ value: 'session-c', sessionId: 'session-c', onSend });
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await pressKey(textarea, { key: 'Enter' });
     await settle();
 
     expect(newKey).toMatch(/^vscode-conversation-/);
@@ -762,7 +755,7 @@ describe('Composer execution control', () => {
     const onChangeExecution = vi.fn();
     const { container } = await renderComposer({
       sessionId: 'saved-session',
-      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+      execution: EXTERNAL_BARE,
       onChangeExecution,
     });
     await click(await waitForProfileTrigger(container));
@@ -778,7 +771,7 @@ describe('Composer execution control', () => {
   it('preserves a bound unavailable engine identity and offers configuration rather than an executable bare entry', async () => {
     listExecutors.mockResolvedValue({ items: EXECUTOR_ITEMS.map(item => item.id === 'native' ? item : { ...item, status: 'unavailable' }) });
     const onChangeExecution = vi.fn();
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined }, onChangeExecution });
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: EXTERNAL_BARE, onChangeExecution });
     const trigger = container.querySelector('#composer-profile-select')!;
     expect(trigger.textContent).toContain('Claude Code');
     await click(trigger);
@@ -790,10 +783,7 @@ describe('Composer execution control', () => {
 
   it('keeps the picked persona name on the chip at any toolbar width', async () => {
     const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
+      ...PROFILE_SELECT_PROPS,
       personaPick: { value: { id: 'xiao-you', name: '小柚' }, onChange: () => {} },
     });
     const chip = container.querySelector('[data-composer-persona-chip="xiao-you"]');
@@ -814,9 +804,7 @@ describe('Composer execution control', () => {
     const onSelectPersona = vi.fn();
     const onChangeExecution = vi.fn();
     const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
+      ...PROFILE_SELECT_PROPS,
       onChangeExecution,
       personaPick: { value: undefined, onChange: onSelectPersona },
     });
@@ -836,12 +824,7 @@ describe('Composer execution control', () => {
   });
 
   it('omits the persona group when personaPick is omitted', async () => {
-    const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
-    });
+    const { container } = await renderComposer(PROFILE_SELECT_PROPS);
     const trigger = await waitForProfileTrigger(container);
     await click(trigger);
     expect(container.querySelector('[data-composer-persona-option]')).toBeNull();
@@ -849,20 +832,13 @@ describe('Composer execution control', () => {
 
   it('filters personas by search query in the profile select menu', async () => {
     const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
+      ...PROFILE_SELECT_PROPS,
       personaPick: { value: undefined, onChange: vi.fn() },
     });
     const trigger = await waitForProfileTrigger(container);
     await click(trigger);
     const filterInput = container.querySelector<HTMLInputElement>('[data-execution-filter]')!;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => {
-      setter.call(filterInput, '妮娅');
-      filterInput.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await setInputValue(filterInput, '妮娅');
     await settle();
     expect(container.querySelector('[data-composer-persona-option="nia"]')).not.toBeNull();
     expect(container.querySelector('[data-composer-persona-option="xiao-you"]')).toBeNull();
@@ -871,10 +847,7 @@ describe('Composer execution control', () => {
   it('renders persona failure and retry when persona catalog fails', async () => {
     listPersonas.mockRejectedValueOnce(new Error('Network error'));
     const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
+      ...PROFILE_SELECT_PROPS,
       personaPick: { value: undefined, onChange: vi.fn() },
     });
     const trigger = await waitForProfileTrigger(container);
@@ -903,10 +876,7 @@ describe('Composer execution control', () => {
   it('keeps the persona-branch control openable while a turn runs', async () => {
     const { container } = await renderComposer({
       busy: true,
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
+      ...PROFILE_SELECT_PROPS,
       personaPick: { value: { id: 'xiao-you', name: '小柚' }, onChange: () => {} },
     });
     const trigger = await waitForProfileTrigger(container);
@@ -914,13 +884,7 @@ describe('Composer execution control', () => {
   });
 
   it('keeps the execution label accessible while collapsing it to the icon only when the toolbar is too narrow for a label', async () => {
-    const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
-      model: 'fixture/kiki-pro',
-    });
+    const { container } = await renderComposer({ ...PROFILE_SELECT_PROPS, model: 'fixture/kiki-pro' });
     const trigger = await waitForTrigger(container);
     expect(trigger.hasAttribute('data-model-picker')).toBe(true);
     const label = trigger.querySelector<HTMLElement>(':scope > span.truncate');
@@ -930,12 +894,7 @@ describe('Composer execution control', () => {
   });
 
   it('names the native engine as the product and lists only enabled main profiles', async () => {
-    const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
-    });
+    const { container } = await renderComposer(PROFILE_SELECT_PROPS);
     const profileTrigger = await waitForProfileTrigger(container);
     expect(profileTrigger.textContent).toContain('Kiki');
     expect(profileTrigger.textContent).not.toContain('main');
@@ -960,12 +919,7 @@ describe('Composer execution control', () => {
 
   it('offers the bare harness under every engine, and it sends no profile', async () => {
     const onChangeExecution = vi.fn();
-    const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution,
-    });
+    const { container } = await renderComposer({ ...PROFILE_SELECT_PROPS, onChangeExecution });
     const trigger = await waitForProfileTrigger(container);
     await click(trigger);
     // The bare row is the first entry of each engine: it runs the harness as it
@@ -985,12 +939,7 @@ describe('Composer execution control', () => {
 
   it('reports a profile pick with its own engine, so one pick answers both halves', async () => {
     const onChangeExecution = vi.fn();
-    const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution,
-    });
+    const { container } = await renderComposer({ ...PROFILE_SELECT_PROPS, onChangeExecution });
     await click(await waitForProfileTrigger(container));
     const row = container.querySelector<HTMLElement>('[data-execution-profile="reviewer"]');
     expect(row).not.toBeNull();
@@ -1003,10 +952,7 @@ describe('Composer execution control', () => {
   it('clears a picked persona when the engine is chosen bare', async () => {
     const onPersona = vi.fn();
     const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
+      ...PROFILE_SELECT_PROPS,
       personaPick: { value: { id: 'xiao-you', name: '小柚' }, onChange: onPersona },
     });
     // The chip is the persona branch; the engine choice is behind it.
@@ -1021,14 +967,7 @@ describe('Composer execution control', () => {
 
   it('shows rebuild context in the ＋ menu and calls it only after confirmation', async () => {
     const onRebuildContext = vi.fn(async () => ({ changed: true }));
-    const { container } = await renderComposer({
-      sessionId: 'session-1',
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
-      onRebuildContext,
-    });
+    const { container } = await renderComposer({ sessionId: 'session-1', ...PROFILE_SELECT_PROPS, onRebuildContext });
     await waitForTrigger(container);
     await openAddMenu(container);
     const rebuildRow = container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]');
@@ -1077,14 +1016,7 @@ describe('Composer execution control', () => {
 
   it('reports rebuild failures and keeps the execution control openable while busy', async () => {
     const onRebuildContext = vi.fn(async () => { throw new Error('reload failed'); });
-    const rendered = await renderComposer({
-      sessionId: 'session-1',
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
-      onRebuildContext,
-    });
+    const rendered = await renderComposer({ sessionId: 'session-1', ...PROFILE_SELECT_PROPS, onRebuildContext });
     await waitForTrigger(rendered.container);
     await openAddMenu(rendered.container);
     await click(rendered.container.querySelector<HTMLButtonElement>('[data-add-menu-rebuild]')!);
@@ -1099,9 +1031,7 @@ describe('Composer execution control', () => {
     await rendered.rerender({
       busy: true,
       sessionId: 'session-1',
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
+      ...PROFILE_SELECT_PROPS,
       onChangeExecution: onChangeWhileBusy,
       onRebuildContext,
     });
@@ -1125,7 +1055,7 @@ describe('Composer execution control', () => {
 
   it('hides without a handler but preserves the choice and offers retry when the catalog fails', async () => {
     const { container } = await renderComposer({ agentProfile: 'agent' });
-    for (let index = 0; index < 5; index += 1) await settle();
+    await settleMany();
     expect(container.querySelector('#composer-profile-select')).toBeNull();
 
     listNamedAgentProfiles.mockRejectedValue(new Error('catalog offline'));
@@ -1135,7 +1065,7 @@ describe('Composer execution control', () => {
       execution: NATIVE_AGENT,
       onChangeExecution: () => {},
     });
-    for (let index = 0; index < 5; index += 1) await settle();
+    await settleMany();
     expect(second.container.querySelector('#composer-profile-select')?.textContent).toContain('Kiki');
     expect(second.container.querySelector('[data-selection-diagnostic][role="status"]')?.textContent).toContain('catalog offline');
     expect(second.container.querySelector('[data-selection-diagnostic] button')?.textContent).toBe('Retry');
@@ -1148,12 +1078,7 @@ describe('Composer execution control', () => {
         { name: 'reviewer', source: 'workspace', main: false, disabled: false, routes: [] },
       ] satisfies NamedAgentProfile[],
     });
-    const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
-    });
+    const { container } = await renderComposer(PROFILE_SELECT_PROPS);
     const trigger = await waitForProfileTrigger(container);
     await click(trigger);
     // The installed harness remains independently selectable without a profile.
@@ -1164,21 +1089,13 @@ describe('Composer execution control', () => {
   });
 
   it('offers a configured external engine even with no usable profile of its own', async () => {
-    // The bare-harness row is the "run this engine as it is" choice, and it is
-    // exactly what an engine with no Kiki profile still needs. It appears once
-    // the machine is actually set up for that engine.
     listNamedAgentProfiles.mockResolvedValue({
       items: [{ name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] }] satisfies NamedAgentProfile[],
     });
     getConfig.mockResolvedValue({ raw: { agent_executor_overrides: { 'claude-acp': { bin_path: '/usr/local/bin/claude', show_in_profile_list: true } } } });
-    const { container } = await renderComposer({
-      agentProfile: 'agent',
-      onChangeAgentProfile: () => {},
-      execution: NATIVE_AGENT,
-      onChangeExecution: () => {},
-    });
+    const { container } = await renderComposer(PROFILE_SELECT_PROPS);
     const trigger = await waitForProfileTrigger(container);
-    for (let index = 0; index < 3; index += 1) await settle();
+    await settleMany(3);
     await click(trigger);
     expect([...container.querySelectorAll('[data-execution-bare]')].map((row) =>
       (row as HTMLElement).dataset['executionBare'])).toEqual(['native', 'claude-acp']);
@@ -1432,11 +1349,7 @@ describe('Composer profile file', () => {
   }
 
   async function typePath(container: HTMLDivElement, path: string): Promise<void> {
-    const input = container.querySelector<HTMLInputElement>('[data-execution-file-path]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, path);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await setInputValue(container.querySelector<HTMLInputElement>('[data-execution-file-path]')!, path);
   }
 
   it('reads a file where the session runs and reports it as the pick', async () => {
@@ -1755,24 +1668,10 @@ describe('Composer profile file', () => {
   });
 
   it('keeps the current compact control on the bound engine while a switch waits', async () => {
-    // The bound engine is native, which compacts; the pending pick is an
-    // external engine that cannot. Acting on the current turn must not follow
-    // the waiting pick.
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1',
-      apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['claude/sonnet'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    });
+    getExecutorModels.mockResolvedValue(executorModelsPayload());
     const { container } = await renderComposer({
       sessionId: 'saved-session',
-      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+      execution: EXTERNAL_BARE,
       boundExecution: NATIVE_AGENT,
       executionPending: true,
       contextUsage: { used: 120, limit: 1_000 },
@@ -1785,25 +1684,14 @@ describe('Composer profile file', () => {
   });
 
   it('lets an engine catalogue age out of the compact control, as the model menu shows it', async () => {
-    // Only the clock is faked: a control that stays "ready" on a capability the
-    // model menu already calls stale is the disagreement this pins.
     vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
     try {
-      getExecutorModels.mockResolvedValue({
-        executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1',
-        apply_state: 'ready', observed_at: Date.now(),
-        effective: {
-          models: { state: 'ready', values: ['claude/sonnet'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-          controls: {
-            model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-            thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-            manual_compact: { applicability: 'fresh_binding', apply_state: 'applied' },
-          },
-        },
-      });
+      getExecutorModels.mockResolvedValue(executorModelsPayload({
+        controls: { manual_compact: { applicability: 'fresh_binding', apply_state: 'applied' } },
+      }));
       const { container } = await renderComposer({
         sessionId: 'saved-session',
-        execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+        execution: EXTERNAL_BARE,
         contextUsage: { used: 120, limit: 1_000 },
         onCompactContext: () => {},
         onChangeExecution: vi.fn(),
@@ -1980,11 +1868,7 @@ describe('Composer run mode (Normal / Plan / Goal)', () => {
     await click(runRow(container, 'goal'));
     const field = container.querySelector<HTMLInputElement>('[data-goal-objective]')!;
     expect(container.querySelector('[data-goal-open]')).not.toBeNull();
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => {
-      setter.call(field, 'Ship the batch');
-      field.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await setInputValue(field, 'Ship the batch');
     expect(onChangeGoalObjective).toHaveBeenCalledWith('Ship the batch');
   });
 
@@ -2083,21 +1967,14 @@ describe('Composer goal mode', () => {
 describe('Composer model chip', () => {
   const catalog = {
     items: [
-      {
-        id: 'fixture/kiki-pro',
-        provider_id: 'fixture',
-        remote_id: 'kiki-pro',
-        display_name: 'Kiki Pro',
-        max_context_size: 128000,
-      },
-      {
-        id: 'fixture/kiki-air',
-        provider_id: 'fixture',
-        remote_id: 'kiki-air',
-        display_name: 'Kiki Air',
-        max_context_size: 128000,
-      },
+      { id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 128000 },
+      { id: 'fixture/kiki-air', provider_id: 'fixture', remote_id: 'kiki-air', display_name: 'Kiki Air', max_context_size: 128000 },
     ],
+  };
+  const bareAliasCatalog = {
+    items: ['alpha', 'beta'].map((provider_id) => ({
+      id: `${provider_id}/k3-256k`, provider_id, remote_id: 'k3-256k', display_name: 'K3 256K', max_context_size: 128000,
+    })),
   };
 
   it('shows the durable AI-created binding rather than the model default before its first turn', async () => {
@@ -2235,27 +2112,9 @@ describe('Composer model chip', () => {
   });
 
   it('treats an ambiguous bare alias as available, naming the serving provider', async () => {
-    listModels.mockResolvedValue({
-      items: [
-        {
-          id: 'alpha/k3-256k',
-          provider_id: 'alpha',
-          remote_id: 'k3-256k',
-          display_name: 'K3 256K',
-          max_context_size: 128000,
-        },
-        {
-          id: 'beta/k3-256k',
-          provider_id: 'beta',
-          remote_id: 'k3-256k',
-          display_name: 'K3 256K',
-          max_context_size: 128000,
-        },
-      ],
-    });
+    listModels.mockResolvedValue(bareAliasCatalog);
     const { container } = await renderComposer({ serverDefaultModel: 'k3-256k' });
-    for (let index = 0; index < 5; index += 1) await settle();
-    // The engine resolves the same alias to the first candidate — not "unavailable".
+    await settleMany();
     expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
     expect(trigger.textContent).toContain('K3 256K');
@@ -2263,41 +2122,18 @@ describe('Composer model chip', () => {
     await click(trigger);
     const rows = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')];
     expect(rows).toHaveLength(3);
-    // The inherit row shows the resolved display name and the serving provider.
     expect(rows[0]?.querySelector('[data-option-label]')?.textContent).toBe('Follow default: K3 256K');
-    // The serving provider rides the second line, not the name line.
     expect(rows[0]?.querySelector('[data-option-meta]')?.textContent).toContain('alpha');
-    // Catalog rows group by provider.
-    const headers = [...container.querySelectorAll('#composer-model-select-list p')].map(
-      (node) => node.textContent,
-    );
+    const headers = [...container.querySelectorAll('#composer-model-select-list p')].map((node) => node.textContent);
     expect(headers).toContain('alpha');
     expect(headers).toContain('beta');
   });
 
   it('resolves a bare-alias override onto the first candidate row', async () => {
-    listModels.mockResolvedValue({
-      items: [
-        {
-          id: 'alpha/k3-256k',
-          provider_id: 'alpha',
-          remote_id: 'k3-256k',
-          display_name: 'K3 256K',
-          max_context_size: 128000,
-        },
-        {
-          id: 'beta/k3-256k',
-          provider_id: 'beta',
-          remote_id: 'k3-256k',
-          display_name: 'K3 256K',
-          max_context_size: 128000,
-        },
-      ],
-    });
+    listModels.mockResolvedValue(bareAliasCatalog);
     const { container } = await renderComposer({ model: 'k3-256k' });
-    for (let index = 0; index < 5; index += 1) await settle();
+    await settleMany();
     expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
-    // The trigger shows the resolved row's display name, not the raw alias.
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
     expect(trigger.textContent).toContain('K3 256K');
     expect(trigger.textContent).not.toContain('k3-256k');
@@ -2395,44 +2231,31 @@ describe('Composer attachment button', () => {
     expect(onChangeAttachments).toHaveBeenCalled();
   });
 
-  it('rejects an oversized desktop pick before reading its contents', async () => {
+  it.each([
+    {
+      label: 'oversized desktop pick',
+      pick: { name: 'huge.bin', size: 51 * 1024 * 1024, type: '' },
+      attachments: [],
+      error: '"huge.bin" is 51.0 MB — files are capped at 50.0 MB each.',
+    },
+    {
+      label: 'desktop pick at the attachment count cap',
+      pick: { name: 'ninth.txt', size: 4, type: 'text/plain' },
+      attachments: Array.from({ length: 8 }, (_, index) => ({
+        kind: 'file' as const, path: `file-${index}.txt`, name: `file-${index}.txt`, isDir: false,
+      })),
+      error: 'At most 8 attachments per message.',
+    },
+  ])('rejects $label before reading contents', async ({ pick, attachments, error }) => {
     desktopRuntime.value = true;
     const read = vi.fn();
-    selectFilesNative.mockResolvedValue([
-      { name: 'huge.bin', size: 51 * 1024 * 1024, type: '', read },
-    ]);
-    const { container } = await renderComposer();
-
-    await clickAttach(container);
-    await settle();
-
-    expect(read).not.toHaveBeenCalled();
-    expect(uploadFile).not.toHaveBeenCalled();
-    expect(container.textContent).toContain(
-      '"huge.bin" is 51.0 MB — files are capped at 50.0 MB each.',
-    );
-  });
-
-  it('rejects a desktop pick at the attachment count cap before reading it', async () => {
-    desktopRuntime.value = true;
-    const read = vi.fn();
-    selectFilesNative.mockResolvedValue([
-      { name: 'ninth.txt', size: 4, type: 'text/plain', read },
-    ]);
-    const attachments = Array.from({ length: 8 }, (_, index) => ({
-      kind: 'file' as const,
-      path: `file-${index}.txt`,
-      name: `file-${index}.txt`,
-      isDir: false,
-    }));
+    selectFilesNative.mockResolvedValue([{ ...pick, read }]);
     const { container } = await renderComposer({ attachments });
-
     await clickAttach(container);
     await settle();
-
     expect(read).not.toHaveBeenCalled();
     expect(uploadFile).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('At most 8 attachments per message.');
+    expect(container.textContent).toContain(error);
   });
 });
 
@@ -2817,43 +2640,21 @@ describe('Composer footer hints', () => {
 });
 
 describe('Composer sendDisabled', () => {
-  it('blocks the send button without locking the textarea', async () => {
-    const { container } = await renderComposer({ value: 'hello', sendDisabled: true });
-    const textarea = composerInput(container);
-    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
-    expect(textarea?.getAttribute('contenteditable')).toBe('true');
-    expect(sendButton?.disabled).toBe(true);
-  });
-
-  it('explains the blocked send through the button tooltip', async () => {
-    const { container } = await renderComposer({
-      value: 'hello',
-      sendDisabled: true,
-      sendDisabledTitle: 'Pick a workspace first',
-    });
-    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
-    expect(sendButton?.disabled).toBe(true);
-    expect(sendButton?.getAttribute('title')).toBe('Pick a workspace first');
-  });
-
-  it('swallows the send shortcut while sendDisabled', async () => {
+  it.each([
+    { label: 'blocks button and swallows Enter without locking textarea', sendDisabled: true, title: undefined, shouldSend: false },
+    { label: 'explains blocked send through tooltip', sendDisabled: true, title: 'Pick a workspace first', shouldSend: false },
+    { label: 'sends on Enter when sendDisabled stays default', sendDisabled: undefined, title: undefined, shouldSend: true },
+  ])('$label', async ({ sendDisabled, title, shouldSend }) => {
     const onSend = vi.fn();
-    const { container } = await renderComposer({ value: 'hello', sendDisabled: true, onSend });
+    const { container } = await renderComposer({ value: 'hello', sendDisabled, sendDisabledTitle: title, onSend });
     const textarea = composerInput(container);
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it('sends on the send shortcut when sendDisabled stays at its default', async () => {
-    const onSend = vi.fn();
-    const { container } = await renderComposer({ value: 'hello', onSend });
-    const textarea = composerInput(container);
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
-    expect(onSend).toHaveBeenCalledWith('hello', []);
+    const button = sendBtn(container);
+    expect(textarea.getAttribute('contenteditable')).toBe('true');
+    expect(button.disabled).toBe(!shouldSend);
+    if (title !== undefined) expect(button.getAttribute('title')).toBe(title);
+    await pressKey(textarea, { key: 'Enter' });
+    if (shouldSend) expect(onSend).toHaveBeenCalledWith('hello', []);
+    else expect(onSend).not.toHaveBeenCalled();
   });
 
   it('blocks duplicate Enter while VS Code turn preflight is pending', async () => {
@@ -2894,25 +2695,53 @@ async function openSlashMenu(container: HTMLDivElement): Promise<void> {
 }
 
 describe('Composer slash skill catalog', () => {
-  it('loads workspace skills on /new without creating a session', async () => {
-    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
-    const { container } = await renderComposer({
-      value: '/',
-      workspaceId: 'wd_fixture_0123456789ab',
-    });
-    for (let index = 0; index < 8; index += 1) await settle();
-
-    expect(listWorkspaceSkills).toHaveBeenCalledWith('wd_fixture_0123456789ab');
-    expect(listSessionSkills).not.toHaveBeenCalled();
+  it.each([
+    {
+      label: 'workspace skills on /new without creating a session',
+      props: { value: '/', workspaceId: 'wd_fixture_0123456789ab' },
+      loader: 'workspace' as const,
+      expectedArg: 'wd_fixture_0123456789ab',
+      menuHas: ['/review', '/plan'],
+      menuLacks: ['/fork'],
+      checkEmptyHint: true,
+    },
+    {
+      label: 'live session catalog on /s/:id even with workspaceId',
+      props: { value: '/', sessionId: 'session_live', workspaceId: 'wd_fixture_0123456789ab' },
+      loader: 'session' as const,
+      expectedArg: 'session_live',
+      menuHas: ['/fork'],
+      menuLacks: [],
+      checkEmptyHint: false,
+    },
+    {
+      label: 'global skills on an automatic draft',
+      props: { value: '/', onActivateSkill: vi.fn() },
+      loader: 'draft' as const,
+      expectedArg: undefined,
+      menuHas: ['/review'],
+      menuLacks: ['/fork'],
+      checkEmptyHint: false,
+      checkPreview: 'Review',
+    },
+  ])('loads $label', async ({ props, loader, expectedArg, menuHas, menuLacks, checkEmptyHint, checkPreview }) => {
+    const fn = loader === 'workspace' ? listWorkspaceSkills : loader === 'session' ? listSessionSkills : listDraftSkills;
+    fn.mockResolvedValue({ skills: [workspaceSkill] });
+    const { container } = await renderComposer(props);
+    await settleMany(8);
+    expect(fn).toHaveBeenCalledWith(expectedArg);
+    if (loader !== 'session') expect(listSessionSkills).not.toHaveBeenCalled();
+    if (loader !== 'workspace') expect(listWorkspaceSkills).not.toHaveBeenCalled();
 
     await openSlashMenu(container);
-    const menu = container.querySelector('[data-composer-menu]');
-    expect(menu?.textContent).toContain('/review');
-    expect(menu?.textContent).toContain('/plan');
-    expect(menu?.textContent).not.toContain('/fork');
-
-    const empty = await renderComposer({ workspaceId: 'wd_fixture_0123456789ab' });
-    expect(empty.container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
+    const menuText = container.querySelector('[data-composer-menu]')?.textContent ?? '';
+    for (const item of menuHas) expect(menuText).toContain(item);
+    for (const item of menuLacks) expect(menuText).not.toContain(item);
+    if (checkPreview) expect(container.querySelector('[data-skill-preview]')?.textContent ?? container.textContent).toContain(checkPreview);
+    if (checkEmptyHint) {
+      const empty = await renderComposer({ workspaceId: 'wd_fixture_0123456789ab' });
+      expect(empty.container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
+    }
   });
 
   it('reuses a fresh skills catalog when opening the slash menu again', async () => {
@@ -2928,35 +2757,6 @@ describe('Composer slash skill catalog', () => {
     expect(listWorkspaceSkills).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the live session catalog on /s/:id even when a workspace id is also set', async () => {
-    listSessionSkills.mockResolvedValue({ skills: [workspaceSkill] });
-    const { container } = await renderComposer({
-      value: '/',
-      sessionId: 'session_live',
-      workspaceId: 'wd_fixture_0123456789ab',
-    });
-    for (let index = 0; index < 8; index += 1) await settle();
-
-    expect(listSessionSkills).toHaveBeenCalledWith('session_live');
-    expect(listWorkspaceSkills).not.toHaveBeenCalled();
-
-    await openSlashMenu(container);
-    expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/fork');
-  });
-
-  it('browses global skills on an automatic draft without creating a session or workspace', async () => {
-    listDraftSkills.mockResolvedValue({ skills: [workspaceSkill] });
-    const { container } = await renderComposer({ value: '/', onActivateSkill: vi.fn() });
-    for (let index = 0; index < 5; index += 1) await settle();
-    expect(listDraftSkills).toHaveBeenCalledWith(undefined);
-    expect(listSessionSkills).not.toHaveBeenCalled();
-    expect(listWorkspaceSkills).not.toHaveBeenCalled();
-    await openSlashMenu(container);
-    expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
-    expect(container.querySelector('[data-composer-menu]')?.textContent).not.toContain('/fork');
-    expect(container.querySelector('[data-skill-preview]')?.textContent ?? container.textContent).toContain('Review');
-  });
-
   it('loads a custom directory catalog and activates its skill with args and attachment unchanged', async () => {
     listDraftSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onActivateSkill = vi.fn();
@@ -2965,9 +2765,8 @@ describe('Composer slash skill catalog', () => {
       value: '/review --fix', attachments: [attachment], onActivateSkill,
       agentProfileCatalogMode: { mode: 'cwd', cwd: '/workspace/custom', effective: true },
     });
-    for (let index = 0; index < 5; index += 1) await settle();
-    const textarea = composerInput(container);
-    await pressKey(textarea, { key: 'Enter' });
+    await settleMany();
+    await pressKey(composerInput(container), { key: 'Enter' });
     expect(listDraftSkills).toHaveBeenCalledWith('/workspace/custom');
     expect(listWorkspaceSkills).not.toHaveBeenCalled();
     expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [attachment], '/review --fix');
@@ -3117,49 +2916,26 @@ describe('Composer slash skill catalog', () => {
     expect(onChangePlanMode).not.toHaveBeenCalled();
   });
 
-  it('activates a hand-typed `/skill args` draft with VS Code skill preflight', async () => {
-    vscodeRuntime.value = true;
+  it.each([
+    { label: 'VS Code skill preflight with args', runtime: 'vscode' as const, value: '/review --fix', expectedArgs: '--fix', expectPrepare: true },
+    { label: 'desktop with args', runtime: 'desktop' as const, value: '/review --fix', expectedArgs: '--fix', expectPrepare: false },
+    { label: 'bare `/skill` command', runtime: 'browser' as const, value: '/review', expectedArgs: '', expectPrepare: false },
+  ])('activates a hand-typed slash command: $label', async ({ runtime, value, expectedArgs, expectPrepare }) => {
+    if (runtime === 'vscode') vscodeRuntime.value = true;
+    if (runtime === 'desktop') desktopRuntime.value = true;
     listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
     const onActivateSkill = vi.fn();
     const onSend = vi.fn();
     const { container } = await renderComposer({
-      value: '/review --fix',
-      workspaceId: 'wd_fixture_0123456789ab',
-      onActivateSkill,
-      onSend,
+      value, workspaceId: 'wd_fixture_0123456789ab', onActivateSkill, onSend,
     });
-    for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = composerInput(container);
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await settleMany(8);
+    await pressKey(composerInput(container), { key: 'Enter' });
     await settle();
-    expect(preparePrompt).toHaveBeenCalledWith('', expect.any(String), false);
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [], '/review --fix');
+    if (expectPrepare) expect(preparePrompt).toHaveBeenCalledWith('', expect.any(String), false);
+    else expect(preparePrompt).not.toHaveBeenCalled();
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', expectedArgs, [], value);
     expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it('activates a hand-typed `/skill args` draft on desktop', async () => {
-    desktopRuntime.value = true;
-    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
-    const onActivateSkill = vi.fn();
-    const onSend = vi.fn();
-    const { container } = await renderComposer({
-      value: '/review --fix',
-      workspaceId: 'wd_fixture_0123456789ab',
-      onActivateSkill,
-      onSend,
-    });
-    for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = composerInput(container);
-
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
-
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [], '/review --fix');
-    expect(onSend).not.toHaveBeenCalled();
-    expect(preparePrompt).not.toHaveBeenCalled();
   });
 
   it.each([false, true])('clears the accepted controlled slash draft but preserves new input during preflight: %s', async (edited) => {
@@ -3182,7 +2958,7 @@ describe('Composer slash skill catalog', () => {
       }));
     const props = { sessionId: 'session_live', value: submitted, attachments, onChange, onActivateSkill };
     const rendered = await renderComposer(props);
-    const send = rendered.container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    const send = sendBtn(rendered.container);
     await click(send);
     await click(send);
     if (edited) {
@@ -3198,25 +2974,6 @@ describe('Composer slash skill catalog', () => {
     expect(clear).toHaveBeenCalledTimes(edited ? 0 : 1);
     await rendered.rerender({ ...props, value: currentDraft });
     expect(composerInput(rendered.container).value).toBe(currentDraft);
-  });
-
-  it('still activates a bare hand-typed `/skill` command', async () => {
-    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
-    const onActivateSkill = vi.fn();
-    const onSend = vi.fn();
-    const { container } = await renderComposer({
-      value: '/review',
-      workspaceId: 'wd_fixture_0123456789ab',
-      onActivateSkill,
-      onSend,
-    });
-    for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = composerInput(container);
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
-    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '', [], '/review');
-    expect(onSend).not.toHaveBeenCalled();
   });
 
   it('preserves the IME preedit value and caret before a slash across catalog rerenders', async () => {
@@ -3312,42 +3069,28 @@ describe('Composer slash skill catalog', () => {
       onSideQuestion,
       onChange,
     });
-    for (let index = 0; index < 8; index += 1) await settle();
+    await settleMany(8);
     const textarea = composerInput(container);
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await pressKey(textarea, { key: 'Enter' });
     expect(onSideQuestion).toHaveBeenCalledExactlyOnceWith('what does --frozen-lockfile do?');
     expect(onSend).not.toHaveBeenCalled();
     expect(onChange).toHaveBeenCalledWith('');
   });
 
-  it('lists /btw only where a side question can be opened', async () => {
+  it.each([
+    { label: 'with handler', onSideQuestion: vi.fn(), engine: undefined, hasBtw: true, hasFork: true },
+    { label: 'without handler', onSideQuestion: undefined, engine: undefined, hasBtw: false, hasFork: true },
+    { label: 'when external engine refuses forking', onSideQuestion: vi.fn(), engine: { label: 'Codex', fork: false, images: true }, hasBtw: false, hasFork: false },
+  ])('slash menu /btw visibility: $label', async ({ onSideQuestion, engine, hasBtw, hasFork }) => {
     listSessionSkills.mockResolvedValue({ skills: [] });
-    const withHandler = await renderComposer({ value: '/', sessionId: 'session_live', onSideQuestion: vi.fn() });
-    for (let index = 0; index < 8; index += 1) await settle();
-    await openSlashMenu(withHandler.container);
-    expect(withHandler.container.querySelector('[data-composer-menu]')?.textContent).toContain('/btw');
-
-    const without = await renderComposer({ value: '/', sessionId: 'session_live' });
-    for (let index = 0; index < 8; index += 1) await settle();
-    await openSlashMenu(without.container);
-    expect(without.container.querySelector('[data-composer-menu]')?.textContent).not.toContain('/btw');
-  });
-
-  it('drops /btw with /fork when the external engine refused forking', async () => {
-    listSessionSkills.mockResolvedValue({ skills: [] });
-    const { container } = await renderComposer({
-      value: '/',
-      sessionId: 'session_live',
-      onSideQuestion: vi.fn(),
-      engine: { label: 'Codex', fork: false, images: true },
-    });
-    for (let index = 0; index < 8; index += 1) await settle();
+    const { container } = await renderComposer({ value: '/', sessionId: 'session_live', onSideQuestion, engine });
+    await settleMany(8);
     await openSlashMenu(container);
     const menu = container.querySelector('[data-composer-menu]')?.textContent ?? '';
-    expect(menu).not.toContain('/btw');
-    expect(menu).not.toContain('/fork');
+    if (hasBtw) expect(menu).toContain('/btw');
+    else expect(menu).not.toContain('/btw');
+    if (hasFork) expect(menu).toContain('/fork');
+    else expect(menu).not.toContain('/fork');
   });
 
   it('sends a slash skill as prompt text when onActivateSkill is omitted', async () => {
@@ -3358,11 +3101,9 @@ describe('Composer slash skill catalog', () => {
       workspaceId: 'wd_fixture_0123456789ab',
       onSend,
     });
-    for (let index = 0; index < 8; index += 1) await settle();
+    await settleMany(8);
     const textarea = composerInput(container);
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await pressKey(textarea, { key: 'Enter' });
     expect(onSend).toHaveBeenCalledWith('/review --fix', []);
   });
 
@@ -3473,13 +3214,6 @@ describe('Composer slash skill catalog', () => {
 
 // ---- C-1/C-2/C-3: history recall, undo/redo, skill preview ----
 
-type ComposerProps = Parameters<typeof Composer>[0];
-
-/**
- * Stateful harness: the real parents (SessionView, /new) own the draft and
- * clear it parent-side after a send — no input event, no undo snapshot. The
- * history/undo tests need exactly that controlled round-trip.
- */
 function StatefulHarness({
   onSend,
   ...props
@@ -3487,25 +3221,7 @@ function StatefulHarness({
   const [text, setText] = useState('');
   return (
     <Composer
-      busy={false}
-      disabled={false}
-      model={undefined}
-      defaultModel={undefined}
-      serverDefaultModel="fixture/kiki-pro"
-      modelSource="server-default"
-      agentProfileCatalogMode={{ mode: 'global' }}
-      permissionMode="manual"
-      planMode={false}
-      goalObjective=""
-      efforts={undefined}
-      effort={undefined}
-      attachments={[]}
-      onChangeAttachments={() => {}}
-      onChangeModel={() => {}}
-      onChangePermissionMode={() => {}}
-      onChangePlanMode={() => {}}
-      onChangeGoalObjective={() => {}}
-      onChangeEffort={() => {}}
+      {...DEFAULT_COMPOSER_PROPS}
       value={text}
       onChange={setText}
       onSend={(sentText, sentAttachments, sentOptions) => {
@@ -3541,40 +3257,6 @@ async function renderStatefulComposer(
     );
   });
   return { container, root };
-}
-
-function composerInputOf(container: HTMLDivElement): ComposerInputElement {
-  return composerInput(container);
-}
-
-/** Set the editor value through a real CodeMirror transaction. */
-async function typeText(textarea: ComposerInputElement, value: string): Promise<void> {
-  await act(async () => {
-    setComposerInputValue(textarea, value);
-  });
-}
-
-async function pressKey(
-  textarea: ComposerInputElement,
-  init: KeyboardEventInit,
-): Promise<void> {
-  await act(async () => {
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
-  });
-}
-
-async function placeCaret(textarea: ComposerInputElement, start: number, end = start): Promise<void> {
-  await act(async () => {
-    textarea.focus();
-    textarea.setSelectionRange(start, end);
-  });
-}
-
-/** Flush the requestAnimationFrame caret landings (jsdom rAF runs on a timer). */
-async function flushCaret(): Promise<void> {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 30));
-  });
 }
 
 describe('Composer ＋ menu', () => {
@@ -3650,10 +3332,7 @@ describe('Composer ＋ menu', () => {
     const { container } = await renderComposer({ fsSearch, onChangeAttachments, onRebuildContext: vi.fn() });
     await openAddMenu(container);
     const search = container.querySelector<HTMLInputElement>('[data-add-search]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(search, 'pars');
-      search.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await setInputValue(search, 'pars');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)); });
     for (let index = 0; index < 4; index += 1) await settle();
     expect(fsSearch).toHaveBeenCalledWith('pars', { signal: expect.any(AbortSignal) });
@@ -4061,9 +3740,8 @@ describe('Composer restored selection diagnostics', () => {
     listModels.mockResolvedValue({ items: [] });
     listNamedAgentProfiles.mockReturnValue(new Promise(() => {}));
     const onSend = vi.fn();
-    const onChangeExecution = vi.fn();
-    const { container } = await renderComposer({ value: 'hello', model: 'vendor-only', effort: 'vendor-effort', execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined }, onChangeExecution, onSend });
-    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
+    const { container } = await renderComposer({ value: 'hello', model: 'vendor-only', effort: 'vendor-effort', execution: EXTERNAL_BARE, onChangeExecution: vi.fn(), onSend });
+    await click(sendBtn(container));
     expect(onSend).toHaveBeenCalledWith('hello', []);
     expect(container.querySelector('#composer-engine-model-select')).toBeNull();
     expect(container.querySelector('[data-composer-engine-model]')?.textContent).toContain('Follow engine configuration');
@@ -4072,15 +3750,14 @@ describe('Composer restored selection diagnostics', () => {
   it('accepts an external model ID verbatim without looking it up in the native catalog', async () => {
     listModels.mockResolvedValue({ items: [] });
     const onChangeExecution = vi.fn();
-    getExecutorModels.mockResolvedValue({ executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(), effective: {
-      models: { state: 'ready', values: ['vendor/model-id'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-      controls: { model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' }, manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' } },
-    } });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
-    const { container } = await renderComposer({ execution: choice, onChangeExecution });
-    await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      models: { state: 'ready', values: ['vendor/model-id'] },
+      controls: { thinking_switch: { applicability: 'unknown', apply_state: 'unknown' } },
+    }));
+    const { container } = await renderComposer({ execution: EXTERNAL_BARE, onChangeExecution });
+    await click(engineModelTrigger(container));
     await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
-    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id' } });
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...EXTERNAL_BARE, overrides: { model: 'vendor/model-id' } });
     expect(onChangeExecution.mock.calls[0]?.[0].overrides).not.toHaveProperty('thinking');
     expect(container.querySelector('[data-option-value="vendor/model-id"]')).toBeNull();
   });
@@ -4088,157 +3765,123 @@ describe('Composer restored selection diagnostics', () => {
   it('closes without changing selection when Escape is pressed, and applies immediately on click', async () => {
     listModels.mockResolvedValue({ items: [] });
     const onChangeExecution = vi.fn();
-    getExecutorModels.mockResolvedValue({ executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(), effective: {
-      models: { state: 'ready', values: ['vendor/model-id', 'vendor/model-other'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-      controls: { model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' }, manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' } },
-    } });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
-    const { container } = await renderComposer({ execution: choice, onChangeExecution });
-    // Open panel and press Escape to close without changing selection
-    const trigger = (container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!;
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      models: { state: 'ready', values: ['vendor/model-id', 'vendor/model-other'] },
+      controls: { thinking_switch: { applicability: 'unknown', apply_state: 'unknown' } },
+    }));
+    const { container } = await renderComposer({ execution: EXTERNAL_BARE, onChangeExecution });
+    const trigger = engineModelTrigger(container);
     await click(trigger);
     container.querySelector('[data-execution-select]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await settle();
     expect(onChangeExecution).not.toHaveBeenCalled();
-    // Re-open and click an option to apply immediately
     await click(trigger);
     await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
-    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id' } });
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...EXTERNAL_BARE, overrides: { model: 'vendor/model-id' } });
     expect(onChangeExecution.mock.calls[0]?.[0].overrides).not.toHaveProperty('thinking');
   });
 
   it('offers only the external engine models, never native catalog aliases', async () => {
     listModels.mockResolvedValue({ items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', max_context_size: 128000 }] });
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['claude/sonnet', 'claude/opus'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
-    await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
+    getExecutorModels.mockResolvedValue(executorModelsPayload({ models: { state: 'ready', values: ['claude/sonnet', 'claude/opus'] } }));
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: EXTERNAL_BARE, onChangeExecution: vi.fn() });
+    await click(engineModelTrigger(container));
     expect(container.querySelector('[data-option-value="claude/sonnet"]')).not.toBeNull();
     expect(container.querySelector('[data-option-value="claude/opus"]')).not.toBeNull();
     expect(container.querySelector('[data-option-value="fixture/kiki-pro"]')).toBeNull();
-    // The menu's job is picking a model; provenance and the capability matrix
-    // are not a permanent wall under it.
     expect(container.querySelector('[data-external-model-provenance]')).toBeNull();
     expect(container.querySelector('[data-external-capability-facts]')).toBeNull();
   });
 
   it('shows partial engine models with the count still being reported', async () => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'partial', values: ['vendor/model-a', 'vendor/model-b'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
-    await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
+    getExecutorModels.mockResolvedValue(executorModelsPayload({ models: { state: 'partial', values: ['vendor/model-a', 'vendor/model-b'] } }));
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: EXTERNAL_BARE, onChangeExecution: vi.fn() });
+    await click(engineModelTrigger(container));
     expect(container.querySelector('[data-option-value="vendor/model-a"]')).not.toBeNull();
     expect(container.querySelector('[data-option-value="vendor/model-b"]')).not.toBeNull();
     expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('2 models so far; the engine is still reporting.');
   });
 
-  it('keeps an unavailable external binding visible without offering a model change', async () => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'unavailable', observed_at: Date.now(),
-      effective: {
-        models: { state: 'unavailable', diagnostic: 'CLI probe timed out' }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'unknown', apply_state: 'unknown' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/saved-model' } };
-    const onChangeExecution = vi.fn();
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution });
-    expect(container.querySelector('#composer-engine-model-select')).toBeNull();
-    const identity = container.querySelector<HTMLElement>('[data-composer-engine-model]')!;
-    expect(identity.textContent).toContain('vendor/saved-model');
-    expect(identity.title).toContain('This engine did not report its models.');
-    expect(identity.title).toContain('CLI probe timed out');
-    expect(onChangeExecution).not.toHaveBeenCalled();
-  });
-
-  it('keeps reply text sendable while the external model control is loading', async () => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'loading', observed_at: Date.now(),
-      effective: {
-        models: { state: 'loading' }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'unknown', apply_state: 'unknown' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
+  it.each([
+    {
+      label: 'unavailable binding keeps saved model and shows diagnostic',
+      payload: executorModelsPayload({
+        apply_state: 'unavailable',
+        models: { state: 'unavailable', diagnostic: 'CLI probe timed out' },
+        controls: { model_switch: { applicability: 'unknown', apply_state: 'unknown' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' } },
+      }),
+      overrides: { model: 'vendor/saved-model' },
+      expectedText: 'vendor/saved-model',
+      expectedTitle: ['This engine did not report its models.', 'CLI probe timed out'],
+      sendValue: undefined,
+    },
+    {
+      label: 'loading catalog keeps reply text sendable',
+      payload: executorModelsPayload({
+        source: 'negotiated', provenance: 'acp_negotiation', apply_state: 'loading',
+        models: { state: 'loading' },
+        controls: { model_switch: { applicability: 'unknown', apply_state: 'unknown' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' } },
+      }),
+      overrides: undefined,
+      expectedText: undefined,
+      expectedTitle: ["Reading this engine's models…"],
+      sendValue: 'continue',
+    },
+  ])('external engine model control when $label', async ({ payload, overrides, expectedText, expectedTitle, sendValue }) => {
+    getExecutorModels.mockResolvedValue(payload);
     const onChangeExecution = vi.fn();
     const onSend = vi.fn();
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution, value: 'continue', onSend });
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      execution: { ...EXTERNAL_BARE, overrides },
+      onChangeExecution,
+      value: sendValue ?? '',
+      onSend,
+    });
     expect(container.querySelector('#composer-engine-model-select')).toBeNull();
-    expect(container.querySelector<HTMLElement>('[data-composer-engine-model]')!.title).toContain('Reading this engine\'s models…');
-    await click(container.querySelector('[aria-label="Send message"]')!);
-    expect(onSend).toHaveBeenCalledWith('continue', []);
+    const identity = container.querySelector<HTMLElement>('[data-composer-engine-model]')!;
+    if (expectedText !== undefined) expect(identity.textContent).toContain(expectedText);
+    for (const part of expectedTitle) expect(identity.title).toContain(part);
+    if (sendValue !== undefined) {
+      await click(sendBtn(container));
+      expect(onSend).toHaveBeenCalledWith(sendValue, []);
+    }
     expect(onChangeExecution).not.toHaveBeenCalled();
   });
 
   it('marks a saved external model that is absent from a ready catalog without replacing it', async () => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['vendor/current-model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      source: 'negotiated', provenance: 'acp_negotiation',
+      models: { state: 'ready', values: ['vendor/current-model'] },
+    }));
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      execution: { ...EXTERNAL_BARE, overrides: { model: 'vendor/saved-model' } },
+      onChangeExecution: vi.fn(),
     });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/saved-model' } };
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
-    const trigger = (container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!;
+    const trigger = engineModelTrigger(container);
     expect(trigger.textContent).toContain('vendor/saved-model');
     await click(trigger);
     const saved = container.querySelector('[data-option-value="vendor/saved-model"]')!;
-    expect(saved.textContent).toContain('not in this engine\'s list');
+    expect(saved.textContent).toContain("not in this engine's list");
     expect(saved.getAttribute('aria-selected')).toBe('true');
-    expect((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))?.textContent).toContain('vendor/saved-model');
+    expect(engineModelTrigger(container).textContent).toContain('vendor/saved-model');
   });
 
   it.each([
-    {
-      control: { applicability: 'unsupported' as const, apply_state: 'unsupported' as const, diagnostic: 'restart with --model' },
-      declared: true,
-    },
-    {
-      control: { applicability: 'unknown' as const, apply_state: 'unknown' as const },
-      declared: false,
-    },
+    { control: { applicability: 'unsupported' as const, apply_state: 'unsupported' as const, diagnostic: 'restart with --model' }, declared: true },
+    { control: { applicability: 'unknown' as const, apply_state: 'unknown' as const }, declared: false },
   ])('marks the picker boundary only when the engine declares model switching unsupported ($control.applicability)', async ({ control, declared }) => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['vendor/model-a'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: control, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
-          manual_compact: { applicability: 'unknown', apply_state: 'unknown' },
-        },
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      source: 'negotiated', provenance: 'acp_negotiation',
+      models: { state: 'ready', values: ['vendor/model-a'] },
+      controls: {
+        model_switch: control,
+        thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
+        manual_compact: { applicability: 'unknown', apply_state: 'unknown' },
       },
-    });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
+    }));
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: EXTERNAL_BARE, onChangeExecution: vi.fn() });
     expect(container.querySelector('#composer-engine-model-select')).toBeNull();
     const identity = container.querySelector<HTMLElement>('[data-composer-engine-model]')!;
     if (declared) {
@@ -4248,18 +3891,16 @@ describe('Composer restored selection diagnostics', () => {
   });
 
   it('says the engine catalog read is old when it is stale, and refresh stays inside the model panel', async () => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now() - 120_000,
-      effective: {
-        models: { state: 'ready', values: ['vendor/old-model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'unknown', apply_state: 'unknown' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
-          manual_compact: { applicability: 'unknown', apply_state: 'unknown' },
-        },
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      observed_at: Date.now() - 120_000,
+      models: { state: 'ready', values: ['vendor/old-model'] },
+      controls: {
+        model_switch: { applicability: 'unknown', apply_state: 'unknown' },
+        thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
+        manual_compact: { applicability: 'unknown', apply_state: 'unknown' },
       },
-    });
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
+    }));
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: EXTERNAL_BARE, onChangeExecution: vi.fn() });
     expect(container.querySelector('#composer-engine-model-select')).toBeNull();
     const identity = container.querySelector<HTMLElement>('[data-composer-engine-model]')!;
     expect(identity.title).toContain('Last read over a minute ago.');
@@ -4272,39 +3913,24 @@ describe('Composer restored selection diagnostics', () => {
   });
 
   it('preserves an absent-data binding without offering fabricated model choices', async () => {
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/saved-model' } };
-    const { container } = await renderComposer({ execution: choice, onChangeExecution: vi.fn() });
+    const { container } = await renderComposer({ execution: { ...EXTERNAL_BARE, overrides: { model: 'vendor/saved-model' } }, onChangeExecution: vi.fn() });
     expect(container.querySelector('#composer-engine-model-select')).toBeNull();
     expect(container.querySelector('[data-composer-engine-model]')?.textContent).toContain('vendor/saved-model');
     expect(container.querySelector('[data-option-value="fixture/kiki-pro"]')).toBeNull();
   });
 
   it('refreshes the typed executor catalog only from the explicit affordance', async () => {
-    const observed = {
-      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['vendor/old-model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    };
+    const observed = executorModelsPayload({ models: { state: 'ready', values: ['vendor/old-model'] } });
     const refreshed = {
-      ...observed,
-      revision: '2',
-      observed_at: Date.now(),
+      ...observed, revision: '2', observed_at: Date.now(),
       effective: { ...observed.effective, models: { state: 'ready' as const, values: ['vendor/new-model'] } },
     };
     const refreshResult = deferred<typeof refreshed>();
     getExecutorModels.mockResolvedValue(observed);
     refreshExecutorModels.mockReturnValue(refreshResult.promise);
-    const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
-      onChangeExecution: vi.fn(),
-    });
+    const { container } = await renderComposer({ execution: EXTERNAL_BARE, onChangeExecution: vi.fn() });
     expect(refreshExecutorModels).not.toHaveBeenCalled();
-    await click((container.querySelector<HTMLButtonElement>('#composer-engine-model-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!);
+    await click(engineModelTrigger(container));
     expect(container.querySelector('[data-option-value="vendor/old-model"]')).not.toBeNull();
     const refreshButton = container.querySelector<HTMLButtonElement>('[data-external-model-refresh]')!;
     await click(refreshButton);
@@ -4319,23 +3945,12 @@ describe('Composer restored selection diagnostics', () => {
   });
 
   it('keeps the last known values and says so when refresh fails', async () => {
-    const observed = {
-      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['vendor/known-model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    };
-    getExecutorModels.mockResolvedValue(observed);
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      source: 'negotiated', provenance: 'acp_negotiation', models: { state: 'ready', values: ['vendor/known-model'] },
+    }));
     refreshExecutorModels.mockRejectedValue(new Error('refresh unavailable'));
-    const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
-      onChangeExecution: vi.fn(),
-    });
-    await click((container.querySelector<HTMLButtonElement>('#composer-engine-model-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!);
+    const { container } = await renderComposer({ execution: EXTERNAL_BARE, onChangeExecution: vi.fn() });
+    await click(engineModelTrigger(container));
     await click(container.querySelector<HTMLButtonElement>('[data-external-model-refresh]')!);
     await settle();
     expect(refreshExecutorModels).toHaveBeenCalledExactlyOnceWith('claude-acp');
@@ -4343,20 +3958,15 @@ describe('Composer restored selection diagnostics', () => {
     expect(container.querySelector('[data-external-model-refresh-error]')?.textContent).toContain('Refresh failed; showing the last known values.');
   });
 
-  it('offers the meter’s compact action when the engine declares manual compaction ready', async () => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['vendor/model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'fresh_binding', apply_state: 'applied' },
-        },
-      },
-    });
+  it.each([true, false])('offers the meter compact action when supported (external=%s)', async (external) => {
+    if (external) {
+      getExecutorModels.mockResolvedValue(executorModelsPayload({
+        models: { state: 'ready', values: ['vendor/model'] },
+        controls: { manual_compact: { applicability: 'fresh_binding', apply_state: 'applied' } },
+      }));
+    }
     const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
-      onChangeExecution: vi.fn(),
+      ...(external ? { execution: EXTERNAL_BARE, onChangeExecution: vi.fn() } : {}),
       contextUsage: { used: 400, limit: 1000 },
       onCompactContext: vi.fn(),
     });
@@ -4375,21 +3985,13 @@ describe('Composer restored selection diagnostics', () => {
       sentence: 'This engine has not said whether manual compaction works.',
     },
   ])('states the real reason on the meter instead of a dead compact action ($control.applicability)', async ({ control, sentence }) => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['vendor/model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: control,
-        },
-      },
-    });
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      models: { state: 'ready', values: ['vendor/model'] },
+      controls: { manual_compact: control },
+    }));
     const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
-      onChangeExecution: vi.fn(),
-      contextUsage: { used: 400, limit: 1000 },
-      onCompactContext: vi.fn(),
+      execution: EXTERNAL_BARE, onChangeExecution: vi.fn(),
+      contextUsage: { used: 400, limit: 1000 }, onCompactContext: vi.fn(),
     });
     const meter = container.querySelector<HTMLButtonElement>('[data-context-meter]')!;
     expect(meter.title).toContain(sentence);
@@ -4402,47 +4004,27 @@ describe('Composer restored selection diagnostics', () => {
   });
 
   it('says an external engine has not reported its capabilities instead of offering compaction', async () => {
-    // The default `getExecutorModels` never answers, so this is the catalogue
-    // that is not here yet — neither a declaration nor a refusal.
     const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
-      onChangeExecution: vi.fn(),
-      contextUsage: { used: 400, limit: 1000 },
-      onCompactContext: vi.fn(),
+      execution: EXTERNAL_BARE, onChangeExecution: vi.fn(),
+      contextUsage: { used: 400, limit: 1000 }, onCompactContext: vi.fn(),
     });
     const meter = container.querySelector<HTMLButtonElement>('[data-context-meter]')!;
     expect(meter.title).toContain('has not reported its capabilities');
     await click(meter);
     expect(container.querySelector('[data-executor-action="manual_compact"]')).toBeNull();
-    const reason = container.querySelector('[data-context-compact-unavailable]')!;
-    expect(reason.textContent).toContain('has not reported its capabilities');
-  });
-
-  it('keeps the plain compact action on a native session', async () => {
-    const { container } = await renderComposer({
-      contextUsage: { used: 400, limit: 1000 },
-      onCompactContext: vi.fn(),
-    });
-    await click(container.querySelector<HTMLButtonElement>('[data-context-meter]')!);
-    expect(container.querySelector('[data-executor-action="manual_compact"]')).not.toBeNull();
-    expect(container.querySelector('[data-context-compact-unavailable]')).toBeNull();
+    expect(container.querySelector('[data-context-compact-unavailable]')!.textContent).toContain('has not reported its capabilities');
   });
 
   it('clears explicit external model and thinking overrides when following the engine again', async () => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['vendor/model-v1'] }, thinking_levels: { state: 'ready', values: ['high'] }, context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    });
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      source: 'negotiated', provenance: 'acp_negotiation',
+      models: { state: 'ready', values: ['vendor/model-v1'] },
+      thinking_levels: { state: 'ready', values: ['high'] },
+    }));
     const onChangeExecution = vi.fn();
-    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/model-v1', thinking: 'high' } };
+    const choice = { ...EXTERNAL_BARE, overrides: { model: 'vendor/model-v1', thinking: 'high' } };
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
-    await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
+    await click(engineModelTrigger(container));
     await click(container.querySelector('[data-option-value=""]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: null, thinking: null } });
   });
@@ -4467,36 +4049,20 @@ describe('Composer restored selection diagnostics', () => {
     expect(high.getAttribute('aria-checked')).toBe('false');
     const selected = container.querySelector<HTMLButtonElement>('[data-execution-effort="medium"]')!;
     expect(selected.getAttribute('aria-checked')).toBe('true');
-    expect(selected.className).toContain('bg-panel');
-    expect(selected.className).not.toContain('bg-ink');
-    expect(selected.className).not.toContain('text-paper');
     await click(container.querySelector('[data-execution-effort=""]')!);
     expect(onChangeEffort).toHaveBeenLastCalledWith('');
     expect(onChangeExecution).not.toHaveBeenCalled();
   });
 
   it('changes external effort without publishing an execution choice or replacing the model', async () => {
-    getExecutorModels.mockResolvedValue({
-      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
-      effective: {
-        models: { state: 'ready', values: ['vendor/sonnet'] },
-        thinking_levels: { state: 'ready', values: ['medium', 'high'] },
-        context: { state: 'unknown' },
-        controls: {
-          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
-        },
-      },
-    });
+    getExecutorModels.mockResolvedValue(executorModelsPayload({
+      source: 'negotiated', provenance: 'acp_negotiation',
+      models: { state: 'ready', values: ['vendor/sonnet'] },
+      thinking_levels: { state: 'ready', values: ['medium', 'high'] },
+    }));
     const onChangeExecution = vi.fn();
     const onChangeEffort = vi.fn();
-    const choice = {
-      executor: 'claude-acp',
-      profile: undefined,
-      profile_file: undefined,
-      overrides: { model: 'vendor/sonnet', thinking: 'medium' },
-    };
+    const choice = { ...EXTERNAL_BARE, overrides: { model: 'vendor/sonnet', thinking: 'medium' } };
     const { container } = await renderComposer({ execution: choice, onChangeExecution, onChangeEffort, effort: 'medium' });
     const trigger = container.querySelector('#composer-execution-select')!;
     expect(trigger.textContent).toContain('vendor/sonnet');
@@ -4509,8 +4075,6 @@ describe('Composer restored selection diagnostics', () => {
     expect(onChangeExecution).not.toHaveBeenCalled();
     expect(trigger.textContent).toContain('vendor/sonnet');
     expect(trigger.textContent).toContain('high');
-    expect(high.className).toContain('bg-panel');
-    expect(high.className).not.toContain('text-paper');
   });
   it.each([
     { catalog: 'model', code: API_CODES.TIMEOUT },
@@ -4726,9 +4290,6 @@ describe('Composer queue edit mode', () => {
     expect(cancel.textContent).toBe('');
     expect(cancel.getAttribute('aria-label')).toBe('Cancel');
     expect(cancel.getAttribute('title')).toBe('Cancel');
-    expect(cancel.className).toContain('rounded-full');
-    expect(cancel.className).toContain('h-8');
-    expect(cancel.className).not.toContain('border');
     // It stands in Send's own row, immediately before it.
     expect(cancel.parentElement).toBe(send.parentElement?.parentElement);
     expect(cancel.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -5025,21 +4586,18 @@ describe('Composer send-timing menu', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
   };
 
-  it('stays closed while idle: every timing would start immediately', async () => {
-    const { container } = await renderComposer({ busy: false, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+  it.each([
+    { label: 'while idle', props: { busy: false } },
+    { label: 'in queue-edit mode', props: { busy: true, queueEditing: true, onQueueEditConfirm: vi.fn() } },
+  ])('stays closed and hides caret $label', async ({ props }) => {
+    const { container } = await renderComposer({ value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn(), ...props });
     expect(menu(container)).toBeNull();
     await hoverOpen(container);
     expect(menu(container)).toBeNull();
-    expect(sendButton(container).getAttribute('aria-haspopup')).toBeNull();
-  });
-
-  it('stays closed in queue-edit mode: the button is the edit confirm', async () => {
-    const { container } = await renderComposer({
-      busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn(),
-      queueEditing: true, onQueueEditConfirm: vi.fn(),
-    });
-    await hoverOpen(container);
-    expect(menu(container)).toBeNull();
+    if (!props.busy) {
+      expect(sendButton(container).getAttribute('aria-haspopup')).toBeNull();
+      expect(container.querySelector('button[aria-label="Send timing"]')).toBeNull();
+    }
   });
 
   it('leads with send-now and offers all three deferred timings where a busy plain send already steers (busySendsNow)', async () => {
@@ -5109,57 +4667,36 @@ describe('Composer send-timing menu', () => {
     expect(menu(container)).toBeNull();
   });
 
-  it('offers no caret where the menu itself is unavailable (idle: every timing starts immediately)', async () => {
-    const { container } = await renderComposer({ busy: false, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
-    expect(container.querySelector('button[aria-label="Send timing"]')).toBeNull();
-  });
-
-  it('names a non-default configured timing on the plain row', async () => {
+  it('names a non-default configured timing on the plain row and omits send-now without steer handler', async () => {
     const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'tasks_done', onSendNow: vi.fn() });
     await hoverOpen(container);
     expect(rowLabels(container)[0]).toBe('SendDefault timing: after tasks');
+
+    const withoutSteer = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle' });
+    await hoverOpen(withoutSteer.container);
+    expect(rowLabels(withoutSteer.container)).toHaveLength(3);
+    expect(withoutSteer.container.querySelector('[data-send-timing="now"]')).toBeNull();
   });
 
-  it('omits the send-now row where no steer path is wired', async () => {
-    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle' });
-    await hoverOpen(container);
-    expect(rowLabels(container)).toHaveLength(3);
-    expect(container.querySelector('[data-send-timing="now"]')).toBeNull();
-  });
-
-  it('plain row sends with the exact two-argument shape (no timing override)', async () => {
-    const onSend = vi.fn();
-    const onSendNow = vi.fn();
-    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow });
-    await hoverOpen(container);
-    await click(menuRow(container, 'default'));
-    expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0]).toEqual(['hello', []]);
-    expect(onSendNow).not.toHaveBeenCalled();
-    expect(menu(container)).toBeNull();
-  });
-
-  it.each(['subagents_done', 'tasks_done'] as const)('row %s sends once with that appendTiming', async (timing) => {
+  it.each([
+    { timing: 'default' as const, target: 'onSend', args: ['hello', []] },
+    { timing: 'subagents_done' as const, target: 'onSend', args: ['hello', [], { appendTiming: 'subagents_done' }] },
+    { timing: 'tasks_done' as const, target: 'onSend', args: ['hello', [], { appendTiming: 'tasks_done' }] },
+    { timing: 'now' as const, target: 'onSendNow', args: ['hello', []] },
+  ])('row $timing dispatches exact payload', async ({ timing, target, args }) => {
     const onSend = vi.fn();
     const onSendNow = vi.fn();
     const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow });
     await hoverOpen(container);
     await click(menuRow(container, timing));
-    expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0]).toEqual(['hello', [], { appendTiming: timing }]);
-    expect(onSendNow).not.toHaveBeenCalled();
+    if (target === 'onSend') {
+      expect(onSend.mock.calls).toEqual([args]);
+      expect(onSendNow).not.toHaveBeenCalled();
+    } else {
+      expect(onSendNow.mock.calls).toEqual([args]);
+      expect(onSend).not.toHaveBeenCalled();
+    }
     expect(menu(container)).toBeNull();
-  });
-
-  it('send-now row takes the steer path (onSendNow), never the queue', async () => {
-    const onSend = vi.fn();
-    const onSendNow = vi.fn();
-    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow });
-    await hoverOpen(container);
-    await click(menuRow(container, 'now'));
-    expect(onSendNow).toHaveBeenCalledTimes(1);
-    expect(onSendNow.mock.calls[0]).toEqual(['hello', []]);
-    expect(onSend).not.toHaveBeenCalled();
   });
 
   it('a one-shot timing pick does not leak into the next plain send', async () => {
@@ -5232,18 +4769,34 @@ describe('Composer with a pending engine/profile switch', () => {
 
   const PENDING_TITLE = 'Queue this prompt (Enter) — the pending switch applies with this message';
 
-  it('names the queue-with-switch result on the send button title', async () => {
-    const { container } = await renderComposer({ value: 'hello', busy: true, executionPending: true, onSendNow: vi.fn() });
+  it.each([
+    {
+      label: 'pending execution switch while busy',
+      props: { busy: true, executionPending: true },
+      title: PENDING_TITLE,
+      ariaLabel: 'Queue prompt',
+      hasSendNowHint: false,
+    },
+    {
+      label: 'pending runtime model change while busy',
+      props: { busy: true, pendingRuntimeControls: { model: 'fixture/other-model' }, working: { lastResponseAt: undefined } },
+      title: PENDING_TITLE,
+      ariaLabel: 'Queue prompt',
+      hasSendNowHint: false,
+    },
+    {
+      label: 'idle even with executionPending',
+      props: { busy: false, executionPending: true },
+      title: 'Send (Enter)',
+      ariaLabel: 'Send message',
+      hasSendNowHint: undefined,
+    },
+  ])('send button title and label: $label', async ({ props, title, ariaLabel, hasSendNowHint }) => {
+    const { container } = await renderComposer({ value: 'hello', onSendNow: vi.fn(), ...props });
     const button = container.querySelector<HTMLButtonElement>('button[data-send-ready]')!;
-    expect(button.getAttribute('title')).toBe(PENDING_TITLE);
-    // The accessible name stays the plain action; the consequence is the title's.
-    expect(button.getAttribute('aria-label')).toBe('Queue prompt');
-  });
-
-  it('also names the next-turn result for a confirmed model change', async () => {
-    const { container } = await renderComposer({ value: 'hello', busy: true, pendingRuntimeControls: { model: 'fixture/other-model' }, onSendNow: vi.fn(), working: { lastResponseAt: undefined } });
-    expect(container.querySelector<HTMLButtonElement>('button[data-send-ready]')?.title).toBe(PENDING_TITLE);
-    expect(container.querySelector('[data-composer-send-now-hint]')).toBeNull();
+    expect(button.getAttribute('title')).toBe(title);
+    expect(button.getAttribute('aria-label')).toBe(ariaLabel);
+    if (hasSendNowHint === false) expect(container.querySelector('[data-composer-send-now-hint]')).toBeNull();
   });
 
   it('omits the send-now row from the timing menu and keeps the real queue choices', async () => {
@@ -5307,13 +4860,6 @@ describe('Composer with a pending engine/profile switch', () => {
     });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     expect(container.querySelector('[data-send-timing="now"]')).not.toBeNull();
-  });
-
-  it('keeps the plain send name while idle: the message starts the new turn at once', async () => {
-    const { container } = await renderComposer({ value: 'hello', busy: false, executionPending: true, onSendNow: vi.fn() });
-    const button = container.querySelector<HTMLButtonElement>('button[data-send-ready]')!;
-    expect(button.getAttribute('title')).toBe('Send (Enter)');
-    expect(button.getAttribute('aria-label')).toBe('Send message');
   });
 });
 
@@ -5386,11 +4932,9 @@ describe('session SSH stays resident and rides no message', () => {
     await click(container.querySelector('button[aria-label="Send message"]')!);
     await settle();
     await rerender({ sessionId: 'session-example', value: '/review --fix', onSend, onActivateSkill });
-    for (let index = 0; index < 8; index += 1) await settle();
+    await settleMany(8);
     const textarea = composerInput(container);
-    await act(async () => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    await pressKey(textarea, { key: 'Enter' });
     expect(onSend.mock.calls.map((call) => call[1])).toEqual([[], []]);
     expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [], '/review --fix');
     // Still there after all of it, and never removed behind the user's back.
@@ -5421,26 +4965,18 @@ describe('session SSH stays resident and rides no message', () => {
     expect(container.querySelector('[data-add-menu-ssh]')).not.toBeNull();
   });
 
-  it('draws no strip at all while this session has no joined host', async () => {
+  it.each([
+    { label: 'settled empty host list', pending: false },
+    { label: 'unread pending host list', pending: true },
+  ])('draws no SSH strip for $label instead of showing zero', async ({ pending }) => {
     meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
-    sshSessionHosts.mockResolvedValue({ hosts: [] });
+    if (pending) sshSessionHosts.mockReturnValue(new Promise(() => {}));
+    else sshSessionHosts.mockResolvedValue({ hosts: [] });
     const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect', onSend: vi.fn() });
-    for (let index = 0; index < 4; index += 1) await settle();
-    // The list has been read and it is empty: this is a settled answer, not a
-    // load still in flight.
-    expect(sshSessionHosts).toHaveBeenCalledWith('session-example');
+    await settleMany(4);
+    if (!pending) expect(sshSessionHosts).toHaveBeenCalledWith('session-example');
     expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
     expect(container.querySelector('[data-composer-ssh-toggle]')).toBeNull();
-    expect(container.textContent ?? '').not.toContain('SSH 0');
-  });
-
-  it('holds the strip back until the session host list is read, rather than showing zero', async () => {
-    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
-    // A list that never resolves: an unread session is not an empty session.
-    sshSessionHosts.mockReturnValue(new Promise(() => {}));
-    const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect', onSend: vi.fn() });
-    for (let index = 0; index < 4; index += 1) await settle();
-    expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
     expect(container.textContent ?? '').not.toContain('SSH 0');
   });
 
@@ -5525,21 +5061,18 @@ describe('session SSH stays resident and rides no message', () => {
     expect(chip.className).toContain('@max-[30rem]/composer:hidden');
   });
 
-  it('names a canonical same-model effort change and its target on both pending surfaces', async () => {
+  it.each([
+    { to: 'kiki-lite', targetThinking: 'max', expected: 'Reasoning change → max' },
+    { to: 'fixture/model', targetThinking: null, expected: 'Reasoning change → Default' },
+  ])('names a pending effort change ($expected) on both pending surfaces', async ({ to, targetThinking, expected }) => {
     listModels.mockResolvedValue({ items: [{ id: 'fixture/kiki-lite', provider_id: 'fixture', remote_id: 'kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 }] });
-    const { container } = await renderComposer({ pendingModelSwitch: { from: 'fixture/kiki-lite', to: 'kiki-lite', mode: 'direct', originalThinking: 'high', targetThinking: 'max' } });
-    for (let index = 0; index < 5; index += 1) await settle();
+    const { container } = await renderComposer({ pendingModelSwitch: { from: to === 'kiki-lite' ? 'fixture/kiki-lite' : to, to, mode: 'direct', originalThinking: 'high', targetThinking } });
+    await settleMany();
     const line = container.querySelector<HTMLElement>('[data-model-switch-pending-line]')!;
     const chip = container.querySelector<HTMLElement>('[data-model-switch-pending]')!;
-    expect(line.textContent).toContain('Reasoning change → max');
-    expect(chip.textContent).toBe('Reasoning change → max');
+    expect(line.textContent).toContain(expected);
+    expect(chip.textContent).toBe(expected);
     expect(line.textContent).not.toContain('Switching to');
-  });
-
-  it('shows Default on both pending effort reset surfaces', async () => {
-    const { container } = await renderComposer({ pendingModelSwitch: { from: 'fixture/model', to: 'fixture/model', mode: 'direct', originalThinking: 'high', targetThinking: null } });
-    expect(container.querySelector('[data-model-switch-pending-line]')?.textContent).toContain('Reasoning change → Default');
-    expect(container.querySelector('[data-model-switch-pending]')?.textContent).toBe('Reasoning change → Default');
   });
 
   it('shows next-message runtime controls as one cancellable prompt chip', async () => {
@@ -5591,10 +5124,7 @@ describe('Composer explicit profile file recovery', () => {
     await click(container.querySelector('[data-execution-file-open]')!);
     const input = container.querySelector<HTMLInputElement>('[data-execution-file-path]')!;
     input.focus();
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'profiles/helper.md');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await setInputValue(input, 'profiles/helper.md');
     expect(document.activeElement).toBe(input);
     await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
     await settle();

@@ -60,7 +60,7 @@ Only code reached through `src/tui/daemon/daemon-tui.ts` and its mounted compone
 - Do not over-encapsulate, especially for one- or two-line functions — do not introduce a two-layer wrapper, just inline.
 - Functions with no state / UI side effects do not belong as private methods on `DaemonTUI`; put them in external utils.
 - Constants must live in the corresponding `constant` directory; they must not be scattered through component or logic code.
-- Inside `handleInput(data)`, when comparing a printable character (letter, digit, space, punctuation), it is **forbidden** to write literal comparisons such as `data === 'q'`. With the Kitty keyboard protocol enabled in terminals like VSCode, these keys are sent as CSI-u sequences (e.g. `\x1b[113u`), and a bare comparison will never match. Decode with `printableChar(data)` from `src/tui/utils/printable-key.ts` first, then compare; function keys continue to use `matchesKey(data, Key.*)`; control characters (codepoint < 32) may still be compared against the raw `data`. `test/tui/printable-key-guard.test.ts` enforces this in CI.
+- Inside `handleInput(data)`, when comparing a printable character (letter, digit, space, punctuation), it is **forbidden** to write literal comparisons such as `data === 'q'`. With the Kitty keyboard protocol enabled in terminals like VSCode, these keys are sent as CSI-u sequences (e.g. `\x1b[113u`), and a bare comparison will never match. Decode with `printableChar(data)` from `src/tui/utils/printable-key.ts` first, then compare; function keys continue to use `matchesKey(data, Key.*)`; control characters (codepoint < 32) may still be compared against the raw `data`. `test/tui/source-policy-guard.test.ts` enforces this in CI.
 
 ## Color Rules (normative)
 
@@ -72,7 +72,7 @@ The theme apply/switch mechanics live in the `write-tui` skill. The following ru
 - When new visual semantics have no token, first add a semantic field to `ColorPalette`, and fill in both `darkColors` and `lightColors`.
 - In light themes, text tokens against a white background must be at least 4.5:1; borders and large chrome must be at least 3:1.
 - Do not cache styled chalk functions at module top level. Theme switching must take effect within a single render, so styles must be generated on the render path from the current palette.
-- Non-comment code must not contain chalk named colors such as `chalk.white`, `chalk.cyan`, `chalk.red`, `chalk.green`, `chalk.gray`, `chalk.yellow`, `chalk.blue`, `chalk.magenta`, `chalk.whiteBright`, or `chalk.blackBright`. `test/tui/chalk-named-color-guard.test.ts` enforces this in CI.
+- Non-comment code must not contain chalk named colors such as `chalk.white`, `chalk.cyan`, `chalk.red`, `chalk.green`, `chalk.gray`, `chalk.yellow`, `chalk.blue`, `chalk.magenta`, `chalk.whiteBright`, or `chalk.blackBright`. `test/tui/source-policy-guard.test.ts` enforces this in CI.
 
 ## General Coding Requirements
 
