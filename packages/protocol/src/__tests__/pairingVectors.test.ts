@@ -66,6 +66,9 @@ describe('pairing-handshake-v1 RFC test vectors', () => {
     const p80 = vectors.pairingUri.implicitPort80WithPinUpgrade;
     expect(upgradeEndpointForTlsPin(p80.endpoint, p80.fingerprint)).toBe(p80.expectedUpgradedOrigin);
 
+    const p443 = vectors.pairingUri.explicitPort443WithPinUpgrade;
+    expect(upgradeEndpointForTlsPin(p443.endpoint, p443.fingerprint)).toBe(p443.expectedUpgradedOrigin);
+
     const pub = vectors.pairingUri.publicHttpsWithPin;
     expect(formatPairingUri({ endpoint: pub.endpoint, code: pub.code, fingerprint: pub.fingerprint })).toBe(pub.uri);
     expect(upgradeEndpointForTlsPin(pub.endpoint, pub.fingerprint)).toBe(pub.expectedUpgradedOrigin);

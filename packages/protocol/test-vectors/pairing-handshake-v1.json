@@ -52,6 +52,13 @@
       "expectedUpgradedOrigin": "https://100.64.0.10:80",
       "expectedUpgradedEntry": "https://100.64.0.10:80/"
     },
+    "explicitPort443WithPinUpgrade": {
+      "endpoint": "http://100.64.0.10:443",
+      "code": "K9F2-7X4M",
+      "fingerprint": "06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9",
+      "expectedUpgradedOrigin": "https://100.64.0.10",
+      "expectedUpgradedEntry": "https://100.64.0.10/"
+    },
     "publicHttpsWithPin": {
       "endpoint": "https://studio.example.test",
       "code": "K9F2-7X4M",

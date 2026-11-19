@@ -71,6 +71,19 @@ function tokenVaultKey(serverId: string, origin?: string): string {
   return origin ? `${serverId}@${origin}` : serverId;
 }
 
+function legacyHttpOriginForHttps(origin?: string): string | undefined {
+  if (!origin) return undefined;
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== 'https:') return undefined;
+    const port = parsed.port || '443';
+    if (port === '80') return `http://${parsed.hostname}`;
+    return `http://${parsed.hostname}:${port}`;
+  } catch {
+    return undefined;
+  }
+}
+
 async function encryptAndStoreVaultEntry(
   db: IDBDatabase,
   key: CryptoKey,
@@ -146,8 +159,15 @@ export async function readWebPeerToken(
 ): Promise<string | undefined> {
   if (!serverId) return undefined;
   const scopedKey = origin ? tokenVaultKey(serverId, origin) : null;
+  const legacyOrigin = legacyHttpOriginForHttps(origin);
+  const legacyScopedKey = legacyOrigin ? tokenVaultKey(serverId, legacyOrigin) : null;
   if (scopedKey && ephemeralTokens.has(scopedKey)) {
     return ephemeralTokens.get(scopedKey);
+  }
+  if (legacyScopedKey && ephemeralTokens.has(legacyScopedKey)) {
+    const token = ephemeralTokens.get(legacyScopedKey);
+    if (token && scopedKey) ephemeralTokens.set(scopedKey, token);
+    return token;
   }
   if (ephemeralTokens.has(serverId)) {
     return ephemeralTokens.get(serverId);
@@ -168,6 +188,16 @@ export async function readWebPeerToken(
           return scopedDecoded;
         }
       }
+      if (legacyScopedKey) {
+        const legacyDecoded = await readAndDecryptVaultEntry(db, key, legacyScopedKey);
+        if (legacyDecoded) {
+          if (scopedKey) {
+            ephemeralTokens.set(scopedKey, legacyDecoded);
+            await encryptAndStoreVaultEntry(db, key, scopedKey, legacyDecoded).catch(() => {});
+          }
+          return legacyDecoded;
+        }
+      }
       const decoded = await readAndDecryptVaultEntry(db, key, serverId);
       if (decoded) {
         ephemeralTokens.set(serverId, decoded);
@@ -186,8 +216,15 @@ export async function deleteWebPeerToken(
   origins: readonly string[] = [],
 ): Promise<void> {
   if (!serverId) return;
-  ephemeralTokens.delete(serverId);
+  const allOrigins = new Set<string>();
   for (const origin of origins) {
+    if (!origin) continue;
+    allOrigins.add(origin);
+    const legacy = legacyHttpOriginForHttps(origin);
+    if (legacy) allOrigins.add(legacy);
+  }
+  ephemeralTokens.delete(serverId);
+  for (const origin of allOrigins) {
     ephemeralTokens.delete(tokenVaultKey(serverId, origin));
   }
   try {
@@ -195,7 +232,7 @@ export async function deleteWebPeerToken(
     if (!db) return;
     try {
       await idbDelete(db, serverId);
-      for (const origin of origins) {
+      for (const origin of allOrigins) {
         await idbDelete(db, tokenVaultKey(serverId, origin));
       }
     } finally {

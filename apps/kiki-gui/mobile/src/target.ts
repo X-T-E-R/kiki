@@ -369,12 +369,28 @@ function sanitizePinnedFingerprints(rawMap: unknown): Record<string, string> | u
     if (count >= 6) break;
     const parsed = readTarget(rawOrigin);
     if (!parsed.ok) continue;
-    const fp = typeof rawFp === 'string' ? rawFp.trim() : '';
+    const fp = typeof rawFp === 'string' ? rawFp.trim().toLowerCase() : '';
     if (!TLS_FINGERPRINT_PATTERN.test(fp)) continue;
-    clean[parsed.origin] = fp;
-    count += 1;
+    const normalizedOrigin = upgradeEndpointForTlsPin(parsed.origin, fp);
+    if (!(normalizedOrigin in clean)) {
+      count += 1;
+    }
+    clean[normalizedOrigin] = fp;
   }
   return count > 0 ? clean : undefined;
+}
+
+function resolveMigratedOriginForPinnedMap(
+  rawOrigin: string,
+  pinnedFingerprints: Record<string, string> | undefined,
+): string {
+  if (!pinnedFingerprints) return rawOrigin;
+  if (rawOrigin in pinnedFingerprints) return rawOrigin;
+  const candidate = upgradeEndpointForTlsPin(rawOrigin, '0'.repeat(64));
+  if (candidate !== rawOrigin && candidate in pinnedFingerprints) {
+    return candidate;
+  }
+  return rawOrigin;
 }
 
 export function getServerFingerprint(
@@ -386,7 +402,8 @@ export function getServerFingerprint(
   }
   const target = readTarget(rawOrOrigin ?? server.origin ?? '');
   if (!target.ok) return undefined;
-  const fp = server.pinnedFingerprints[target.origin];
+  const resolvedOrigin = resolveMigratedOriginForPinnedMap(target.origin, server.pinnedFingerprints);
+  const fp = server.pinnedFingerprints[resolvedOrigin];
   return typeof fp === 'string' && TLS_FINGERPRINT_PATTERN.test(fp) ? fp : undefined;
 }
 
@@ -395,7 +412,8 @@ function sanitizeServerRecord(raw: unknown): SavedServer | null {
   const obj = raw as Record<string, unknown>;
   const target = readTarget(typeof obj['origin'] === 'string' ? obj['origin'] : '');
   if (!target.ok) return null;
-  const origin = target.origin;
+  const pinnedFingerprints = sanitizePinnedFingerprints(obj['pinnedFingerprints']);
+  const origin = resolveMigratedOriginForPinnedMap(target.origin, pinnedFingerprints);
   const targetHomeId =
     typeof obj['targetHomeId'] === 'string' && obj['targetHomeId'].trim() !== ''
       ? obj['targetHomeId'].trim()
@@ -413,19 +431,22 @@ function sanitizeServerRecord(raw: unknown): SavedServer | null {
   const verifiedOrigins: string[] = [];
   for (const item of rawVerified) {
     const parsed = readTarget(String(item ?? ''));
-    if (parsed.ok && !verifiedOrigins.includes(parsed.origin) && verifiedOrigins.length < 6) {
-      verifiedOrigins.push(parsed.origin);
+    if (!parsed.ok) continue;
+    const migrated = resolveMigratedOriginForPinnedMap(parsed.origin, pinnedFingerprints);
+    if (!verifiedOrigins.includes(migrated) && verifiedOrigins.length < 6) {
+      verifiedOrigins.push(migrated);
     }
   }
   const rawOrigins = Array.isArray(obj['origins']) ? obj['origins'] : [];
   const origins: string[] = [origin];
   for (const item of [...rawOrigins, ...verifiedOrigins]) {
     const parsed = readTarget(String(item ?? ''));
-    if (parsed.ok && !origins.includes(parsed.origin) && origins.length < 6) {
-      origins.push(parsed.origin);
+    if (!parsed.ok) continue;
+    const migrated = resolveMigratedOriginForPinnedMap(parsed.origin, pinnedFingerprints);
+    if (!origins.includes(migrated) && origins.length < 6) {
+      origins.push(migrated);
     }
   }
-  const pinnedFingerprints = sanitizePinnedFingerprints(obj['pinnedFingerprints']);
   const id =
     typeof obj['id'] === 'string' && obj['id'].trim() !== ''
       ? obj['id'].trim()
@@ -504,11 +525,15 @@ export function readSavedServers(storage: StorageLike | undefined = globalThis.l
   }
 
   if (legacyOrigin !== null) {
-    const existingIndex = list.findIndex(
-      (item) =>
-        (!item.paired && (item.origin === legacyOrigin || item.origins.includes(legacyOrigin!))) ||
-        (item.paired && isServerOriginVerified(item, legacyOrigin!)),
-    );
+    const resolveLegacyForServer = (item: SavedServer): string =>
+      resolveMigratedOriginForPinnedMap(legacyOrigin!, item.pinnedFingerprints);
+    const existingIndex = list.findIndex((item) => {
+      const candidate = resolveLegacyForServer(item);
+      return (
+        (!item.paired && (item.origin === candidate || item.origins.includes(candidate))) ||
+        (item.paired && isServerOriginVerified(item, candidate))
+      );
+    });
     if (existingIndex === -1) {
       if (!list.some((item) => item.paired)) {
         const migrated = sanitizeServerRecord({
@@ -525,8 +550,9 @@ export function readSavedServers(storage: StorageLike | undefined = globalThis.l
     } else if (existingIndex > 0) {
       const [matched] = list.splice(existingIndex, 1);
       if (matched) {
-        matched.origin = legacyOrigin;
-        matched.origins = [legacyOrigin, ...matched.origins.filter((o) => o !== legacyOrigin)];
+        const candidate = resolveLegacyForServer(matched);
+        matched.origin = candidate;
+        matched.origins = [candidate, ...matched.origins.filter((o) => o !== candidate)];
         list.unshift(matched);
       }
     }

@@ -35,9 +35,7 @@ public class MainActivity extends BridgeActivity {
                     new BridgeWebChromeClient(getBridge()) {
                         @Override
                         public void onPermissionRequest(PermissionRequest request) {
-                            if (!shellPlugin.handleWebPermissionRequest(request)) {
-                                super.onPermissionRequest(request);
-                            }
+                            shellPlugin.handleWebPermissionRequest(request);
                         }
                     }
                 );

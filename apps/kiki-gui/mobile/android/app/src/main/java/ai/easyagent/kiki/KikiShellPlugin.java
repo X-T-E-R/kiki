@@ -294,28 +294,37 @@ public class KikiShellPlugin extends Plugin {
     }
 
     boolean handleWebPermissionRequest(PermissionRequest request) {
-        if (request == null || request.getOrigin() == null || request.getResources() == null) {
+        if (request == null) {
             return false;
         }
         String localUrl = getBridge() == null ? null : getBridge().getLocalUrl();
-        if (localUrl == null || localUrl.isEmpty()) {
-            return false;
+        if (localUrl == null || localUrl.isEmpty() || request.getOrigin() == null) {
+            request.deny();
+            return true;
         }
         String localOrigin = originOf(Uri.parse(localUrl));
         String requestOrigin = originOf(request.getOrigin());
         if (localOrigin == null || !localOrigin.equals(requestOrigin)) {
-            return false;
+            request.deny();
+            return true;
         }
         if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            return false;
+            request.deny();
+            return true;
         }
-        for (String resource : request.getResources()) {
-            if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
-                request.grant(new String[] { PermissionRequest.RESOURCE_VIDEO_CAPTURE });
+        String[] resources = request.getResources();
+        if (resources == null || resources.length == 0) {
+            request.deny();
+            return true;
+        }
+        for (String resource : resources) {
+            if (!PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+                request.deny();
                 return true;
             }
         }
-        return false;
+        request.grant(new String[] { PermissionRequest.RESOURCE_VIDEO_CAPTURE });
+        return true;
     }
 
     @PluginMethod
@@ -386,7 +395,9 @@ public class KikiShellPlugin extends Plugin {
             call.resolve(invalid);
             return;
         }
-        String normalizedOrigin = upgradeOriginForTlsPin(originOf(originUri), fingerprint);
+        String parsedOrigin = originOf(originUri);
+        String resolvedFp = fingerprint != null ? fingerprint : resolvePinnedFingerprint(serverId, parsedOrigin);
+        String normalizedOrigin = upgradeOriginForTlsPin(parsedOrigin, resolvedFp);
         boolean pairedProbe =
             serverId != null &&
             !serverId.isEmpty() &&
@@ -394,8 +405,8 @@ public class KikiShellPlugin extends Plugin {
             hasStoredToken(serverId, normalizedOrigin);
         new Thread(() -> {
             JSObject result = new JSObject();
-            HandshakeResult hs = (fingerprint != null && !fingerprint.isEmpty())
-                ? fetchHandshake(normalizedOrigin, serverId, grantId, fingerprint)
+            HandshakeResult hs = (resolvedFp != null && !resolvedFp.isEmpty())
+                ? fetchHandshake(normalizedOrigin, serverId, grantId, resolvedFp)
                 : fetchHandshake(normalizedOrigin, serverId, grantId);
             if (hs.redirected) {
                 result.put("ok", false);
@@ -681,8 +692,9 @@ public class KikiShellPlugin extends Plugin {
             call.reject("invalid_origin");
             return;
         }
-        String origin = upgradeOriginForTlsPin(rawOrigin, fingerprint);
-        String entry = upgradeEntryForTlsPin(rawOrigin, rawEntry, fingerprint);
+        String resolvedFp = fingerprint != null ? fingerprint : resolvePinnedFingerprint(serverId, rawOrigin);
+        String origin = upgradeOriginForTlsPin(rawOrigin, resolvedFp);
+        String entry = upgradeEntryForTlsPin(rawOrigin, rawEntry, resolvedFp);
         if (serverId == null || serverId.isEmpty()) {
             clearPendingAuth();
             clearActiveAuth();
@@ -705,8 +717,8 @@ public class KikiShellPlugin extends Plugin {
         }
         String grantId = call.getString("grantId");
         String opId = call.getString("opId");
-        if (fingerprint != null && !fingerprint.isEmpty()) {
-            savePinnedFingerprint(serverId, origin, fingerprint);
+        if (resolvedFp != null && !resolvedFp.isEmpty()) {
+            savePinnedFingerprint(serverId, origin, resolvedFp);
         }
         String cleanEntry = stripTokenFromEntry(origin, entry);
         final long callEpoch;
@@ -716,8 +728,8 @@ public class KikiShellPlugin extends Plugin {
             pendingOpenCommitted = false;
         }
         new Thread(() -> {
-            HandshakeResult hs = (fingerprint != null && !fingerprint.isEmpty())
-                ? fetchHandshake(origin, serverId, grantId, fingerprint)
+            HandshakeResult hs = (resolvedFp != null && !resolvedFp.isEmpty())
+                ? fetchHandshake(origin, serverId, grantId, resolvedFp)
                 : fetchHandshake(origin, serverId, grantId);
             String failureReason = classifyPairedHandshakeFailure(
                 hs,
@@ -1179,6 +1191,11 @@ public class KikiShellPlugin extends Plugin {
         if (normalizedOrigin != null && !normalizedOrigin.isEmpty()) {
             String scoped = sp.getString(GRANT_ID_PREFIX + scopedTokenId(serverId, normalizedOrigin), null);
             if (scoped != null && !scoped.isEmpty()) return scoped;
+            String legacyHttp = legacyHttpOriginForHttps(normalizedOrigin);
+            if (legacyHttp != null && resolvePinnedFingerprint(serverId, normalizedOrigin) != null) {
+                String legacyScoped = sp.getString(GRANT_ID_PREFIX + scopedTokenId(serverId, legacyHttp), null);
+                if (legacyScoped != null && !legacyScoped.isEmpty()) return legacyScoped;
+            }
         }
         return sp.getString(GRANT_ID_PREFIX + serverId, null);
     }
@@ -1193,12 +1210,16 @@ public class KikiShellPlugin extends Plugin {
         String explicitGrantId,
         String explicitFingerprint
     ) {
-        String normalizedOrigin = upgradeOriginForTlsPin(rawNormalizedOrigin, explicitFingerprint);
+        String effectiveFp = normalizeFingerprint(explicitFingerprint);
+        if (effectiveFp == null) {
+            effectiveFp = resolvePinnedFingerprint(serverId, rawNormalizedOrigin);
+        }
+        String normalizedOrigin = upgradeOriginForTlsPin(rawNormalizedOrigin, effectiveFp);
         HttpURLConnection conn = null;
         try {
             URL handshakeUrl = new URL(normalizedOrigin + "/api/remote-connections/handshake");
             conn = (HttpURLConnection) handshakeUrl.openConnection();
-            configurePinnedTls(conn, normalizedOrigin, serverId, explicitFingerprint);
+            configurePinnedTls(conn, normalizedOrigin, serverId, effectiveFp);
             conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(3500);
@@ -1293,11 +1314,12 @@ public class KikiShellPlugin extends Plugin {
         if (serverId == null || serverId.isEmpty()) return false;
         SharedPreferences sp = prefs();
         String scoped = scopedTokenId(serverId, origin);
-        return (
-            sp.contains(TOKEN_PREFIX + scoped) ||
-            sp.contains(TOKEN_PREFIX + serverId) ||
-            sp.contains(LEGACY_TOKEN_PREFIX + serverId)
-        );
+        if (sp.contains(TOKEN_PREFIX + scoped)) return true;
+        String legacyHttp = legacyHttpOriginForHttps(origin);
+        if (legacyHttp != null && resolvePinnedFingerprint(serverId, origin) != null) {
+            if (sp.contains(TOKEN_PREFIX + scopedTokenId(serverId, legacyHttp))) return true;
+        }
+        return sp.contains(TOKEN_PREFIX + serverId) || sp.contains(LEGACY_TOKEN_PREFIX + serverId);
     }
 
     private boolean matchesStoredHostId(String serverId, String candidateHostId) {
@@ -1308,8 +1330,19 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private boolean isOriginVerified(String serverId, String origin) {
-        Set<String> set = prefs().getStringSet(VERIFIED_ORIGINS_PREFIX + serverId, null);
-        return set != null && set.contains(origin);
+        SharedPreferences sp = prefs();
+        Set<String> set = sp.getStringSet(VERIFIED_ORIGINS_PREFIX + serverId, null);
+        if (set == null) return false;
+        if (set.contains(origin)) return true;
+        String legacyHttp = legacyHttpOriginForHttps(origin);
+        if (legacyHttp != null && set.contains(legacyHttp) && resolvePinnedFingerprint(serverId, origin) != null) {
+            Set<String> migrated = new HashSet<>(set);
+            migrated.remove(legacyHttp);
+            migrated.add(origin);
+            sp.edit().putStringSet(VERIFIED_ORIGINS_PREFIX + serverId, migrated).apply();
+            return true;
+        }
+        return false;
     }
 
     private void recordVerifiedOrigin(String serverId, String origin, String hostId) {
@@ -1357,6 +1390,16 @@ public class KikiShellPlugin extends Plugin {
                     editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, vOrigin));
                     editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, vOrigin));
                     editor.remove(ORIGIN_TLS_FP_PREFIX + vOrigin);
+                    String legacyV = legacyHttpOriginForHttps(vOrigin);
+                    if (legacyV != null) {
+                        editor.remove(TOKEN_PREFIX + scopedTokenId(serverId, legacyV));
+                        editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, legacyV));
+                        editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, legacyV));
+                        editor.remove(ORIGIN_TLS_FP_PREFIX + legacyV);
+                        if (legacyV.equals(trusted)) {
+                            editor.remove(TRUSTED_ORIGIN);
+                        }
+                    }
                 }
                 if (trusted != null && verified.contains(trusted)) {
                     editor.remove(TRUSTED_ORIGIN);
@@ -1367,6 +1410,16 @@ public class KikiShellPlugin extends Plugin {
                 editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, origin));
                 editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, origin));
                 editor.remove(ORIGIN_TLS_FP_PREFIX + origin);
+                String legacyO = legacyHttpOriginForHttps(origin);
+                if (legacyO != null) {
+                    editor.remove(TOKEN_PREFIX + scopedTokenId(serverId, legacyO));
+                    editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, legacyO));
+                    editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, legacyO));
+                    editor.remove(ORIGIN_TLS_FP_PREFIX + legacyO);
+                    if (legacyO.equals(trusted)) {
+                        editor.remove(TRUSTED_ORIGIN);
+                    }
+                }
             }
             editor
                 .remove(TOKEN_PREFIX + serverId)
@@ -1375,11 +1428,18 @@ public class KikiShellPlugin extends Plugin {
                 .remove(GRANT_ID_PREFIX + serverId)
                 .remove(VERIFIED_ORIGINS_PREFIX + serverId);
         }
-        if (origin != null && !origin.isEmpty() && origin.equals(trusted)) {
-            editor.remove(TRUSTED_ORIGIN);
+        if (origin != null && !origin.isEmpty()) {
+            String legacyO = legacyHttpOriginForHttps(origin);
+            if (origin.equals(trusted) || (legacyO != null && legacyO.equals(trusted))) {
+                editor.remove(TRUSTED_ORIGIN);
+            }
         }
         if ((serverId == null || serverId.isEmpty()) && origin != null && !origin.isEmpty()) {
             editor.remove(ORIGIN_TLS_FP_PREFIX + origin);
+            String legacyO = legacyHttpOriginForHttps(origin);
+            if (legacyO != null) {
+                editor.remove(ORIGIN_TLS_FP_PREFIX + legacyO);
+            }
         }
         editor.apply();
     }
@@ -1403,7 +1463,19 @@ public class KikiShellPlugin extends Plugin {
         String host = uri.getHost();
         if (host.contains(":")) host = "[" + host + "]";
         int port = uri.getPort() > 0 ? uri.getPort() : 80;
-        return "https://" + host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
+        String lowerHost = host.toLowerCase(java.util.Locale.ROOT);
+        return port == 443 ? ("https://" + lowerHost) : ("https://" + lowerHost + ":" + port);
+    }
+
+    static String legacyHttpOriginForHttps(String origin) {
+        if (origin == null || origin.isEmpty()) return null;
+        Uri uri = Uri.parse(origin);
+        if (!isWebOrigin(uri) || !"https".equalsIgnoreCase(uri.getScheme())) return null;
+        String host = uri.getHost();
+        if (host.contains(":")) host = "[" + host + "]";
+        String lowerHost = host.toLowerCase(java.util.Locale.ROOT);
+        int port = uri.getPort() > 0 ? uri.getPort() : 443;
+        return port == 80 ? ("http://" + lowerHost) : ("http://" + lowerHost + ":" + port);
     }
 
     static String upgradeEntryForTlsPin(String rawOrigin, String rawEntry, String rawFingerprint) {
@@ -1450,7 +1522,27 @@ public class KikiShellPlugin extends Plugin {
             String scoped = normalizeFingerprint(sp.getString(TLS_FP_PREFIX + scopedTokenId(serverId, origin), null));
             if (scoped != null) return scoped;
         }
-        return normalizeFingerprint(sp.getString(ORIGIN_TLS_FP_PREFIX + origin, null));
+        String direct = normalizeFingerprint(sp.getString(ORIGIN_TLS_FP_PREFIX + origin, null));
+        if (direct != null) return direct;
+        String legacyHttp = legacyHttpOriginForHttps(origin);
+        if (legacyHttp != null) {
+            String migrated = null;
+            if (serverId != null && !serverId.isEmpty()) {
+                migrated = normalizeFingerprint(sp.getString(TLS_FP_PREFIX + scopedTokenId(serverId, legacyHttp), null));
+            }
+            if (migrated == null) {
+                migrated = normalizeFingerprint(sp.getString(ORIGIN_TLS_FP_PREFIX + legacyHttp, null));
+            }
+            if (migrated != null) {
+                if (serverId != null && !serverId.isEmpty()) {
+                    savePinnedFingerprint(serverId, origin, migrated);
+                } else {
+                    sp.edit().putString(ORIGIN_TLS_FP_PREFIX + origin, migrated).apply();
+                }
+                return migrated;
+            }
+        }
+        return null;
     }
 
     private void configurePinnedTls(HttpURLConnection conn, String origin, String serverId, String explicitFingerprint) {
@@ -1620,6 +1712,16 @@ public class KikiShellPlugin extends Plugin {
                     key = getOrCreateSecretKey();
                     String plain = decryptTokenValue(key, scoped, storedScoped);
                     if (plain != null && !plain.isEmpty()) return plain;
+                }
+                String legacyHttp = legacyHttpOriginForHttps(origin);
+                if (legacyHttp != null && resolvePinnedFingerprint(serverId, origin) != null) {
+                    String legacyScoped = scopedTokenId(serverId, legacyHttp);
+                    String storedLegacyScoped = sp.getString(TOKEN_PREFIX + legacyScoped, null);
+                    if (storedLegacyScoped != null && !storedLegacyScoped.isEmpty()) {
+                        if (key == null) key = getOrCreateSecretKey();
+                        String plain = decryptTokenValue(key, legacyScoped, storedLegacyScoped);
+                        if (plain != null && !plain.isEmpty()) return plain;
+                    }
                 }
             }
             String stored = sp.getString(TOKEN_PREFIX + serverId, null);

@@ -200,7 +200,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["ok": false])
             return
         }
-        let normalized = Self.upgradeOriginForTlsPin(parsedOrigin, fingerprint: fingerprint)
+        let resolvedFp = fingerprint ?? KikiTlsPinning.storedFingerprint(forOrigin: parsedOrigin, serverId: serverId)
+        let normalized = Self.upgradeOriginForTlsPin(parsedOrigin, fingerprint: resolvedFp)
         let pairedProbe: Bool
         if let serverId, !serverId.isEmpty {
             pairedProbe = Self.isOriginVerified(origin: normalized, for: serverId) && Self.hasStoredToken(for: serverId, origin: normalized)
@@ -353,11 +354,11 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 let metaOk = (200..<300).contains(status) || status == 401 || status == 403
                 call.resolve(["ok": metaOk])
             }
-            Self.pinnedSessionDelegate.register(taskId: metaTask.taskIdentifier, fingerprint: fingerprint, serverId: serverId)
+            Self.pinnedSessionDelegate.register(taskId: metaTask.taskIdentifier, fingerprint: resolvedFp, serverId: serverId)
             metaTask.resume()
         }
-        if let fingerprint {
-            Self.fetchHandshake(origin: normalized, serverId: serverId, explicitGrantId: grantId, explicitFingerprint: fingerprint) {
+        if let resolvedFp {
+            Self.fetchHandshake(origin: normalized, serverId: serverId, explicitGrantId: grantId, explicitFingerprint: resolvedFp) {
                 handleResult($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             }
         } else {
@@ -460,13 +461,14 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("invalid_origin")
             return
         }
-        let origin = Self.upgradeOriginForTlsPin(rawOrigin, fingerprint: fingerprint)
-        let entry = Self.upgradeEntryForTlsPin(origin: rawOrigin, entry: rawEntry, fingerprint: fingerprint)
+        let serverId = call.getString("serverId")
+        let resolvedFp = fingerprint ?? KikiTlsPinning.storedFingerprint(forOrigin: rawOrigin, serverId: serverId)
+        let origin = Self.upgradeOriginForTlsPin(rawOrigin, fingerprint: resolvedFp)
+        let entry = Self.upgradeEntryForTlsPin(origin: rawOrigin, entry: rawEntry, fingerprint: resolvedFp)
         guard let resolvedEntryURL = URL(string: entry) else {
             call.reject("invalid_origin")
             return
         }
-        let serverId = call.getString("serverId")
         guard let serverId, !serverId.isEmpty else {
             UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
             DispatchQueue.main.async { [weak self] in
@@ -491,8 +493,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let grantId = call.getString("grantId")
         let opId = call.getString("opId")
-        if let fingerprint {
-            KikiTlsPinning.saveFingerprint(fingerprint, for: serverId, origin: origin)
+        if let resolvedFp {
+            KikiTlsPinning.saveFingerprint(resolvedFp, for: serverId, origin: origin)
         }
         let cleanString = Self.stripTokenFromEntry(origin: origin, entry: entry)
         guard let cleanURL = URL(string: cleanString) else {
@@ -549,8 +551,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     call.resolve(["ok": true, "origin": origin])
                 }
             }
-            if let fingerprint {
-                Self.fetchHandshake(origin: origin, serverId: serverId, explicitGrantId: grantId, explicitFingerprint: fingerprint) {
+            if let resolvedFp {
+                Self.fetchHandshake(origin: origin, serverId: serverId, explicitGrantId: grantId, explicitFingerprint: resolvedFp) {
                     handleOpenHandshake($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 }
             } else {
@@ -827,10 +829,17 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         guard let serverId, !serverId.isEmpty else { return nil }
         let defaults = UserDefaults.standard
-        if !origin.isEmpty,
-           let scoped = defaults.string(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: origin)),
-           !scoped.isEmpty {
-            return scoped
+        if !origin.isEmpty {
+            if let scoped = defaults.string(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: origin)),
+               !scoped.isEmpty {
+                return scoped
+            }
+            if let legacyHttp = KikiTlsPinning.legacyHttpOriginForHttps(origin),
+               KikiTlsPinning.storedFingerprint(forOrigin: origin, serverId: serverId) != nil,
+               let legacyScoped = defaults.string(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: legacyHttp)),
+               !legacyScoped.isEmpty {
+                return legacyScoped
+            }
         }
         if let stored = defaults.string(forKey: grantIdPrefix + serverId), !stored.isEmpty {
             return stored
@@ -924,7 +933,9 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         explicitFingerprint: String? = nil,
         completion: @escaping (_ ok: Bool, _ redirected: Bool, _ statusCode: Int, _ targetHomeId: String?, _ targetHostId: String?, _ targetLabel: String?, _ mutualProofVerified: Bool, _ mutualRevokedVerified: Bool, _ mutualDisabledVerified: Bool, _ mutualInvitedVerified: Bool, _ inboundEnabled: Bool) -> Void
     ) {
-        let origin = upgradeOriginForTlsPin(rawOrigin, fingerprint: explicitFingerprint)
+        let effectiveFp = KikiTlsPinning.normalizeFingerprint(explicitFingerprint)
+            ?? KikiTlsPinning.storedFingerprint(forOrigin: rawOrigin, serverId: serverId)
+        let origin = upgradeOriginForTlsPin(rawOrigin, fingerprint: effectiveFp)
         guard let handshakeURL = URL(string: "\(origin)/api/remote-connections/handshake") else {
             completion(false, false, 0, nil, nil, nil, false, false, false, false, true)
             return
@@ -1030,7 +1041,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 inboundEnabled
             )
         }
-        pinnedSessionDelegate.register(taskId: task.taskIdentifier, fingerprint: explicitFingerprint, serverId: serverId)
+        pinnedSessionDelegate.register(taskId: task.taskIdentifier, fingerprint: effectiveFp, serverId: serverId)
         task.resume()
     }
 
@@ -1114,6 +1125,13 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             if let scopedToken = readKeychainToken(account: scoped) {
                 return scopedToken
             }
+            if let legacyHttp = KikiTlsPinning.legacyHttpOriginForHttps(origin),
+               KikiTlsPinning.storedFingerprint(forOrigin: origin, serverId: serverId) != nil {
+                let legacyScoped = scopedTokenAccount(serverId: serverId, origin: legacyHttp)
+                if let legacyToken = readKeychainToken(account: legacyScoped) {
+                    return legacyToken
+                }
+            }
         }
         if let token = readKeychainToken(account: serverId) {
             return token
@@ -1141,8 +1159,19 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private static func isOriginVerified(origin: String, for serverId: String) -> Bool {
-        let list = UserDefaults.standard.stringArray(forKey: verifiedOriginsPrefix + serverId) ?? []
-        return list.contains(origin)
+        var list = UserDefaults.standard.stringArray(forKey: verifiedOriginsPrefix + serverId) ?? []
+        if list.contains(origin) {
+            return true
+        }
+        if let legacyHttp = KikiTlsPinning.legacyHttpOriginForHttps(origin),
+           let idx = list.firstIndex(of: legacyHttp),
+           KikiTlsPinning.storedFingerprint(forOrigin: origin, serverId: serverId) != nil {
+            list.remove(at: idx)
+            list.insert(origin, at: 0)
+            UserDefaults.standard.set(list, forKey: verifiedOriginsPrefix + serverId)
+            return true
+        }
+        return false
     }
 
     private static func recordVerifiedOrigin(origin: String, for serverId: String, hostId: String?, grantId: String? = nil, fingerprint: String? = nil) {
@@ -1182,10 +1211,24 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             for vOrigin in verified {
                 deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: vOrigin))
                 defaults.removeObject(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: vOrigin))
+                if let legacyV = KikiTlsPinning.legacyHttpOriginForHttps(vOrigin) {
+                    deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: legacyV))
+                    defaults.removeObject(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: legacyV))
+                    if let trusted, trusted == legacyV {
+                        defaults.removeObject(forKey: trustedOriginKey)
+                    }
+                }
             }
             if let origin, !origin.isEmpty {
                 deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: origin))
                 defaults.removeObject(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: origin))
+                if let legacyO = KikiTlsPinning.legacyHttpOriginForHttps(origin) {
+                    deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: legacyO))
+                    defaults.removeObject(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: legacyO))
+                    if let trusted, trusted == legacyO {
+                        defaults.removeObject(forKey: trustedOriginKey)
+                    }
+                }
             }
             deleteKeychainToken(account: serverId)
             if let trusted, verified.contains(trusted) {
@@ -1196,8 +1239,11 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             defaults.removeObject(forKey: grantIdPrefix + serverId)
             defaults.removeObject(forKey: verifiedOriginsPrefix + serverId)
         }
-        if let origin, !origin.isEmpty, origin == trusted {
-            defaults.removeObject(forKey: trustedOriginKey)
+        if let origin, !origin.isEmpty {
+            let legacyO = KikiTlsPinning.legacyHttpOriginForHttps(origin)
+            if origin == trusted || (legacyO != nil && legacyO == trusted) {
+                defaults.removeObject(forKey: trustedOriginKey)
+            }
         }
         if serverId == nil || serverId?.isEmpty == true {
             KikiTlsPinning.removeFingerprints(serverId: nil, origin: origin, verifiedOrigins: [])
@@ -1280,6 +1326,9 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let shownHost = host.contains(":") ? "[\(host)]" : host
         let port = url.port ?? 80
+        if port == 443 {
+            return "https://\(shownHost)"
+        }
         return "https://\(shownHost):\(port)"
     }
 

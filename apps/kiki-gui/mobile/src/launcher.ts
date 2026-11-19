@@ -46,6 +46,10 @@ interface BarcodeDetectorCtor {
 
 type LauncherExportApi = typeof TargetApi & {
   decodeQrFromImageData: typeof decodeQrFromImageData;
+  saveWebPeerToken: typeof saveWebPeerToken;
+  readWebPeerToken: typeof readWebPeerToken;
+  deleteWebPeerToken: typeof deleteWebPeerToken;
+  openServer?: (origin: string, entry: string, options?: OpenServerOptions) => Promise<void>;
 };
 
 interface LauncherGlobal {
@@ -61,6 +65,9 @@ const STARTED_KEY = 'kiki.shell.started';
 (globalThis as unknown as LauncherGlobal).__kikiLauncher = {
   ...TargetApi,
   decodeQrFromImageData,
+  saveWebPeerToken,
+  readWebPeerToken,
+  deleteWebPeerToken,
 };
 
 interface RecoveryBinding {
@@ -744,26 +751,27 @@ function bootstrapLauncherUi(): void {
       if (resolved.stale || resolved.reason === 'aborted') {
         return;
       }
+      const failedOrigin = resolved.server?.origin ?? origin;
       button.disabled = false;
       renderSavedServers();
       if (resolved.reason === 'identity_mismatch') {
         promptForPairing(
-          origin,
-          identityMismatchMessageFor(origin, resolved.server?.label ?? options.label),
+          failedOrigin,
+          identityMismatchMessageFor(failedOrigin, resolved.server?.label ?? options.label),
         );
       } else if (resolved.reason === 'pairing_revoked') {
         promptForPairing(
-          origin,
-          pairingRevokedMessageFor(origin, resolved.server?.label ?? options.label),
+          failedOrigin,
+          pairingRevokedMessageFor(failedOrigin, resolved.server?.label ?? options.label),
         );
       } else if (resolved.reason === 'pairing_required') {
         promptForPairing(
-          origin,
-          pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label),
+          failedOrigin,
+          pairingRequiredMessageFor(failedOrigin, resolved.server?.label ?? options.label),
         );
       } else {
-        input.value = editableOrigin(origin);
-        reportUnreachable(origin, {
+        input.value = editableOrigin(failedOrigin);
+        reportUnreachable(failedOrigin, {
           serverId: resolved.server?.id ?? targetServerId,
           label: resolved.server?.label ?? options.label,
           targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
@@ -775,6 +783,7 @@ function bootstrapLauncherUi(): void {
       return;
     }
 
+    const targetOrigin = resolved.origin;
     const serverId = resolved.serverId;
 
     if (isStaleOpen()) {
@@ -790,7 +799,7 @@ function bootstrapLauncherUi(): void {
       try {
         const openPayload: Record<string, unknown> = {
           opId: callOpId,
-          origin,
+          origin: targetOrigin,
           entry: resolved.finalEntry,
           serverId: isPairedTarget ? (serverId ?? undefined) : undefined,
           grantId: isPairedTarget
@@ -799,7 +808,10 @@ function bootstrapLauncherUi(): void {
           targetHomeId: options.targetHomeId ?? undefined,
           targetHostId: options.targetHostId ?? undefined,
         };
-        const resolvedFp = options.fingerprint ?? getServerFingerprint(resolved.server, origin);
+        const resolvedFp =
+          options.fingerprint ??
+          getServerFingerprint(resolved.server, targetOrigin) ??
+          getServerFingerprint(resolved.server, origin);
         if (resolvedFp) {
           openPayload['fingerprint'] = resolvedFp;
         }
@@ -812,28 +824,28 @@ function bootstrapLauncherUi(): void {
           button.disabled = false;
           renderSavedServers();
           if (res?.['reason'] === 'identity_mismatch' && targetServerId) {
-            const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, origin, {
+            const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, targetOrigin, {
               ok: true,
               targetHomeId:
                 typeof res['targetHomeId'] === 'string' ? res['targetHomeId'] : undefined,
             });
             renderSavedServers();
             promptForPairing(
-              origin,
-              identityMismatchMessageFor(origin, rollback.server?.label ?? options.label),
+              targetOrigin,
+              identityMismatchMessageFor(targetOrigin, rollback.server?.label ?? options.label),
             );
           } else if (res?.['reason'] === 'pairing_revoked') {
             promptForPairing(
-              origin,
-              pairingRevokedMessageFor(origin, resolved.server?.label ?? options.label),
+              targetOrigin,
+              pairingRevokedMessageFor(targetOrigin, resolved.server?.label ?? options.label),
             );
           } else if (res?.['reason'] === 'pairing_required') {
             promptForPairing(
-              origin,
-              pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label),
+              targetOrigin,
+              pairingRequiredMessageFor(targetOrigin, resolved.server?.label ?? options.label),
             );
           } else {
-            reportUnreachable(origin, {
+            reportUnreachable(targetOrigin, {
               serverId: resolved.server?.id ?? serverId ?? targetServerId,
               label: resolved.server?.label ?? options.label,
               targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
@@ -854,7 +866,7 @@ function bootstrapLauncherUi(): void {
         if (openFlightOpId === callOpId) openFlightOpId = null;
         button.disabled = false;
         renderSavedServers();
-        reportUnreachable(origin, {
+        reportUnreachable(targetOrigin, {
           serverId: resolved.server?.id ?? serverId ?? targetServerId,
           label: resolved.server?.label ?? options.label,
           targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
@@ -868,7 +880,7 @@ function bootstrapLauncherUi(): void {
     if (isPairedTarget || resolved.sessionToken) {
       button.disabled = false;
       renderSavedServers();
-      reportUnreachable(origin, {
+      reportUnreachable(targetOrigin, {
         serverId: resolved.server?.id ?? serverId ?? targetServerId,
         label: resolved.server?.label ?? options.label,
         targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
@@ -882,7 +894,7 @@ function bootstrapLauncherUi(): void {
       return;
     }
     stopAutoReconnect(true);
-    window.location.assign(stripTokenFromEntry(origin, resolved.finalEntry));
+    window.location.assign(stripTokenFromEntry(targetOrigin, resolved.finalEntry));
   }
 
   function openSavedServer(server: SavedServer): Promise<void> {
@@ -1914,6 +1926,10 @@ function bootstrapLauncherUi(): void {
       setTab(landingTab());
     }
   });
+
+  if (win.__kikiLauncher) {
+    win.__kikiLauncher.openServer = openServer;
+  }
 
   renderSavedServers();
   updateInputAffordances();

@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import vm from 'node:vm';
+import { chromium } from 'playwright';
 import { encode as encodeQr } from 'uqr';
 import { describe, expect, it } from 'vitest';
 
@@ -58,7 +59,22 @@ type LauncherGlobal = {
     mutualProofVerified?: boolean;
     mutualInvitedVerified?: boolean;
   }>;
+  readSavedServers: (storage?: {
+    getItem: (k: string) => string | null;
+    setItem: (k: string, v: string) => void;
+    removeItem: (k: string) => void;
+  }) => Array<{
+    id: string;
+    origin: string;
+    origins: string[];
+    verifiedOrigins: string[];
+    pinnedFingerprints?: Record<string, string>;
+  }>;
+  getServerFingerprint: (server: unknown, rawOrOrigin?: string) => string | undefined;
   decodeQrFromImageData: (data: Uint8ClampedArray, width: number, height: number) => string;
+  saveWebPeerToken: (serverId: string, token: string, origin?: string) => Promise<void>;
+  readWebPeerToken: (serverId: string, origin?: string) => Promise<string | undefined>;
+  deleteWebPeerToken: (serverId: string, origins?: readonly string[]) => Promise<void>;
 };
 
 function loadCompiledLauncherBundle(): LauncherGlobal {
@@ -193,6 +209,9 @@ describe('compiled mobile launcher RFC vectors and jsQR fallback', () => {
 
     const p80 = vectors.pairingUri.implicitPort80WithPinUpgrade;
     expect(bundle.upgradeEndpointForTlsPin(p80.endpoint, p80.fingerprint)).toBe(p80.expectedUpgradedOrigin);
+
+    const p443 = vectors.pairingUri.explicitPort443WithPinUpgrade;
+    expect(bundle.upgradeEndpointForTlsPin(p443.endpoint, p443.fingerprint)).toBe(p443.expectedUpgradedOrigin);
 
     const lan = vectors.pairingUri.lanWithoutPin;
     expect(bundle.readScanPayload(lan.uri)).toEqual({
@@ -354,6 +373,179 @@ describe('compiled mobile launcher RFC vectors and jsQR fallback', () => {
       server.close();
     }
   });
+
+  it('migrates legacy pre-W2-B pinned http:// pairings across SavedServer records and Web Vault while keeping unpinned http:// untouched (F3)', async () => {
+    const fp = vectors.spkiPin.spkiSha256Hex;
+    const store = new Map<string, string>([
+      [
+        'kiki.shell.servers',
+        JSON.stringify([
+          {
+            id: 'home-legacy-1',
+            label: 'Studio',
+            origin: 'http://100.64.0.10:58627',
+            origins: ['http://100.64.0.10:58627', 'http://192.168.10.40:58627'],
+            verifiedOrigins: ['http://100.64.0.10:58627', 'http://192.168.10.40:58627'],
+            paired: true,
+            targetHomeId: 'home-legacy-1',
+            targetHostId: 'studio-host',
+            pinnedFingerprints: {
+              'http://100.64.0.10:58627': fp,
+            },
+            updatedAt: 1,
+          },
+        ]),
+      ],
+      ['kiki.shell.origin', 'http://100.64.0.10:58627'],
+    ]);
+    const storage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    };
+
+    const servers = bundle.readSavedServers(storage);
+    expect(servers).toHaveLength(1);
+    const migrated = servers[0]!;
+    expect(migrated.origin).toBe('https://100.64.0.10:58627');
+    expect(migrated.origins).toEqual(['https://100.64.0.10:58627', 'http://192.168.10.40:58627']);
+    expect(migrated.verifiedOrigins).toEqual(['https://100.64.0.10:58627', 'http://192.168.10.40:58627']);
+    expect(migrated.pinnedFingerprints).toEqual({ 'https://100.64.0.10:58627': fp });
+    expect(bundle.getServerFingerprint(migrated, 'https://100.64.0.10:58627')).toBe(fp);
+    expect(bundle.getServerFingerprint(migrated, 'http://100.64.0.10:58627')).toBe(fp);
+    expect(bundle.getServerFingerprint(migrated, 'http://192.168.10.40:58627')).toBeUndefined();
+
+    // Web Vault legacy http:// scoped token lookup & cleanup
+    await bundle.saveWebPeerToken('home-legacy-1', 'legacy-scoped-token', 'http://100.64.0.10:58627');
+    expect(await bundle.readWebPeerToken('home-legacy-1', 'https://100.64.0.10:58627')).toBe(
+      'legacy-scoped-token',
+    );
+    await bundle.deleteWebPeerToken('home-legacy-1', ['https://100.64.0.10:58627']);
+    expect(await bundle.readWebPeerToken('home-legacy-1', 'https://100.64.0.10:58627')).toBeUndefined();
+    expect(await bundle.readWebPeerToken('home-legacy-1', 'http://100.64.0.10:58627')).toBeUndefined();
+  });
+
+  it('passes upgraded https:// origin and matching entry to native KikiShell.open when openServer receives raw http:// + fp (F2)', async () => {
+    const fp = vectors.spkiPin.spkiSha256Hex;
+    const launcherDir = join(mobileRoot, 'launcher');
+    const server = createServer((req, res) => {
+      const path = (req.url ?? '/').split('?')[0];
+      if (path === '/' || path === '/index.html') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(readFileSync(join(launcherDir, 'index.html'), 'utf8'));
+        return;
+      }
+      if (path === '/launcher.js') {
+        res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' });
+        res.end(readFileSync(join(launcherDir, 'launcher.js'), 'utf8'));
+        return;
+      }
+      if (path === '/launcher.css') {
+        res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' });
+        res.end(readFileSync(join(launcherDir, 'launcher.css'), 'utf8'));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const page = await browser.newPage();
+      await page.addInitScript(
+        ({ testFp }: { testFp: string }) => {
+          localStorage.setItem(
+            'kiki.shell.servers',
+            JSON.stringify([
+              {
+                id: 'home-f2',
+                label: 'Studio F2',
+                origin: 'https://100.64.0.10:58627',
+                origins: ['https://100.64.0.10:58627'],
+                verifiedOrigins: ['https://100.64.0.10:58627'],
+                paired: true,
+                targetHomeId: 'home-f2',
+                targetHostId: 'host-f2',
+                grantId: 'grant-f2',
+                pinnedFingerprints: { 'https://100.64.0.10:58627': testFp },
+                updatedAt: 1,
+              },
+            ]),
+          );
+          const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
+          (window as unknown as Record<string, unknown>)['__capturedShellCalls'] = calls;
+          (window as unknown as Record<string, unknown>)['Capacitor'] = {
+            isNativePlatform: () => true,
+            nativePromise: async (_plugin: string, method: string, payload?: Record<string, unknown>) => {
+              calls.push({ method, payload: payload ?? {} });
+              if (method === 'consumePendingPair') return {};
+              if (method === 'probe') {
+                return {
+                  ok: true,
+                  status: 200,
+                  inboundEnabled: true,
+                  targetHomeId: 'home-f2',
+                  targetHostId: 'host-f2',
+                  mutualProofVerified: true,
+                };
+              }
+              if (method === 'open') {
+                const openOrigin = String(payload?.['origin'] ?? '');
+                const openEntry = String(payload?.['entry'] ?? '');
+                if (!openEntry.startsWith(`${openOrigin}/`)) {
+                  throw new Error('invalid_origin');
+                }
+                return { ok: true, origin: openOrigin };
+              }
+              return { ok: true };
+            },
+          };
+        },
+        { testFp: fp },
+      );
+
+      await page.goto(`http://127.0.0.1:${port}/index.html#change`, { waitUntil: 'networkidle' });
+      const openPayload = await page.evaluate(
+        async ({ testFp }: { testFp: string }) => {
+          const w = window as unknown as {
+            __kikiLauncher: {
+              openServer: (
+                origin: string,
+                entry: string,
+                options?: Record<string, unknown>,
+              ) => Promise<void>;
+            };
+            __capturedShellCalls: Array<{ method: string; payload: Record<string, unknown> }>;
+          };
+          w.__capturedShellCalls.length = 0;
+          await w.__kikiLauncher.openServer('http://100.64.0.10:58627', 'http://100.64.0.10:58627/', {
+            serverId: 'home-f2',
+            paired: true,
+            targetHomeId: 'home-f2',
+            targetHostId: 'host-f2',
+            grantId: 'grant-f2',
+            fingerprint: testFp,
+          });
+          return w.__capturedShellCalls.find((c) => c.method === 'open')?.payload ?? null;
+        },
+        { testFp: fp },
+      );
+
+      expect(openPayload).not.toBeNull();
+      expect(openPayload?.['origin']).toBe('https://100.64.0.10:58627');
+      expect(openPayload?.['entry']).toBe('https://100.64.0.10:58627/');
+      expect(openPayload?.['fingerprint']).toBe(fp);
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  });
 });
 
 describe('Android Java and iOS Swift native pairing parity against RFC vectors', () => {
@@ -426,6 +618,15 @@ ${originHelpers}
             "upgrade implicit port 80 http+fp"
         );
         eq(
+            upgradeOriginForTlsPin(${JSON.stringify(vectors.pairingUri.explicitPort443WithPinUpgrade.endpoint)}, fp),
+            ${JSON.stringify(vectors.pairingUri.explicitPort443WithPinUpgrade.expectedUpgradedOrigin)},
+            "upgrade explicit port 443 omits :443"
+        );
+        eq(legacyHttpOriginForHttps("https://100.64.0.10:58627"), "http://100.64.0.10:58627", "legacy http non-default port");
+        eq(legacyHttpOriginForHttps("https://100.64.0.10:80"), "http://100.64.0.10", "legacy http port 80");
+        eq(legacyHttpOriginForHttps("https://100.64.0.10"), "http://100.64.0.10:443", "legacy http port 443");
+        eq(legacyHttpOriginForHttps("http://100.64.0.10:58627"), null, "legacy http rejects plain http");
+        eq(
             upgradeOriginForTlsPin(${JSON.stringify(vectors.pairingUri.lanWithoutPin.endpoint)}, null),
             ${JSON.stringify(vectors.pairingUri.lanWithoutPin.expectedUpgradedOrigin)},
             "preserve http without fp"
@@ -472,13 +673,14 @@ ${originHelpers}
     }
   });
 
-  it('verifies Android MainActivity WebChromeClient camera grant and iOS SceneDelegate.swift P0/P1 contracts', () => {
+  it('verifies Android MainActivity never falls back to super.onPermissionRequest and executes KikiShellPlugin handleWebPermissionRequest + legacy migration via JDK (F1, F3, F5)', () => {
     const mainActivity = readFileSync(
       join(mobileRoot, 'android/app/src/main/java/ai/easyagent/kiki/MainActivity.java'),
       'utf8',
     );
     expect(mainActivity).toContain('onPermissionRequest');
     expect(mainActivity).toContain('handleWebPermissionRequest');
+    expect(mainActivity).not.toContain('super.onPermissionRequest');
 
     const javaPlugin = readFileSync(
       join(mobileRoot, 'android/app/src/main/java/ai/easyagent/kiki/KikiShellPlugin.java'),
@@ -488,6 +690,170 @@ ${originHelpers}
     expect(javaPlugin).toContain('kiki-handshake-invited-v1:');
     expect(javaPlugin).toContain('upgradeOriginForTlsPin');
     expect(javaPlugin).toContain('upgradeEntryForTlsPin');
+    expect(javaPlugin).toContain('legacyHttpOriginForHttps');
+
+    function sliceBetween(start: string, end: string): string {
+      const from = javaPlugin.indexOf(start);
+      const to = javaPlugin.indexOf(end, from);
+      expect(from).toBeGreaterThanOrEqual(0);
+      expect(to).toBeGreaterThan(from);
+      return javaPlugin.slice(from, to);
+    }
+    const permMethod = sliceBetween('    boolean handleWebPermissionRequest', '    @PluginMethod\n    public void scanQr');
+    const verifiedAndForget = sliceBetween('    private static String scopedTokenId', '    static String normalizeFingerprint');
+    const pinMethods = sliceBetween('    static String normalizeFingerprint', '    static String certificateSpkiSha256Hex');
+    const pinStore = sliceBetween('    private void savePinnedFingerprint', '    private void configurePinnedTls');
+    const originHelpers = sliceBetween('    private static boolean isWebOrigin(Uri uri)', '\n}');
+
+    const tempDir = mkdtempSync(join(tmpdir(), 'kiki-java-f1-f3-'));
+    try {
+      const harness = `import java.net.URI;
+import java.util.*;
+
+public class JavaF1F3Check {
+    private static final String TRUSTED_ORIGIN = "trustedOrigin";
+    private static final String TOKEN_PREFIX = "token.";
+    private static final String LEGACY_TOKEN_PREFIX = "legacy.";
+    private static final String HOST_ID_PREFIX = "host.";
+    private static final String GRANT_ID_PREFIX = "grant.";
+    private static final String VERIFIED_ORIGINS_PREFIX = "verified.";
+    private static final String TLS_FP_PREFIX = "tlsFp.";
+    private static final String ORIGIN_TLS_FP_PREFIX = "originTlsFp.";
+
+    static final class Uri {
+        private final URI inner;
+        Uri(URI u) { this.inner = u; }
+        static Uri parse(String s) { return new Uri(URI.create(s)); }
+        String getScheme() { return inner.getScheme(); }
+        String getHost() { return inner.getHost(); }
+        int getPort() { return inner.getPort(); }
+        String getUserInfo() { return inner.getUserInfo(); }
+        @Override public String toString() { return inner.toString(); }
+    }
+    static final class Manifest {
+        static final class permission {
+            static final String CAMERA = "android.permission.CAMERA";
+        }
+    }
+    static final class PackageManager {
+        static final int PERMISSION_GRANTED = 0;
+        static final int PERMISSION_DENIED = -1;
+    }
+    static final class ContextCompat {
+        static int camPermission = PackageManager.PERMISSION_GRANTED;
+        static int checkSelfPermission(Object ctx, String perm) { return camPermission; }
+    }
+    static final class PermissionRequest {
+        static final String RESOURCE_VIDEO_CAPTURE = "android.webkit.resource.VIDEO_CAPTURE";
+        static final String RESOURCE_AUDIO_CAPTURE = "android.webkit.resource.AUDIO_CAPTURE";
+        final Uri origin;
+        final String[] resources;
+        boolean denied = false;
+        String[] granted = null;
+        PermissionRequest(Uri origin, String[] resources) { this.origin = origin; this.resources = resources; }
+        Uri getOrigin() { return origin; }
+        String[] getResources() { return resources; }
+        void deny() { denied = true; }
+        void grant(String[] res) { granted = res; }
+    }
+    static final class Bridge {
+        String getLocalUrl() { return "https://localhost"; }
+    }
+    static final class SharedPreferences {
+        final Map<String, Object> map = new HashMap<>();
+        boolean contains(String k) { return map.containsKey(k); }
+        String getString(String k, String def) {
+            Object v = map.get(k);
+            return v instanceof String ? (String) v : def;
+        }
+        @SuppressWarnings("unchecked")
+        Set<String> getStringSet(String k, Set<String> def) {
+            Object v = map.get(k);
+            return v instanceof Set ? (Set<String>) v : def;
+        }
+        Editor edit() { return new Editor(map); }
+        static final class Editor {
+            final Map<String, Object> map;
+            Editor(Map<String, Object> m) { this.map = m; }
+            Editor putString(String k, String v) { map.put(k, v); return this; }
+            Editor putStringSet(String k, Set<String> v) { map.put(k, new HashSet<>(v)); return this; }
+            Editor remove(String k) { map.remove(k); return this; }
+            void apply() {}
+        }
+    }
+
+    private final Bridge bridge = new Bridge();
+    private final SharedPreferences sp = new SharedPreferences();
+    private Bridge getBridge() { return bridge; }
+    private Object getContext() { return this; }
+    private SharedPreferences prefs() { return sp; }
+    private void clearPendingAuth() {}
+    private void clearActiveAuth() {}
+
+${permMethod}
+${verifiedAndForget}
+${pinMethods}
+${pinStore}
+${originHelpers}
+
+    private static void check(boolean cond, String msg) {
+        if (!cond) throw new AssertionError(msg);
+    }
+
+    public static void main(String[] args) {
+        JavaF1F3Check p = new JavaF1F3Check();
+        // F1: remote origin MUST be denied, never fall through
+        PermissionRequest remoteReq = new PermissionRequest(Uri.parse("https://evil.example.test"), new String[] { PermissionRequest.RESOURCE_VIDEO_CAPTURE });
+        check(p.handleWebPermissionRequest(remoteReq), "remote request handled");
+        check(remoteReq.denied && remoteReq.granted == null, "remote origin must be denied");
+
+        // F1: mixed VIDEO + AUDIO on local origin MUST be denied
+        PermissionRequest mixedReq = new PermissionRequest(Uri.parse("https://localhost"), new String[] { PermissionRequest.RESOURCE_VIDEO_CAPTURE, PermissionRequest.RESOURCE_AUDIO_CAPTURE });
+        check(p.handleWebPermissionRequest(mixedReq), "mixed request handled");
+        check(mixedReq.denied && mixedReq.granted == null, "audio resource must be denied");
+
+        // F1: local origin with OS CAMERA denied MUST be denied
+        ContextCompat.camPermission = PackageManager.PERMISSION_DENIED;
+        PermissionRequest noPermReq = new PermissionRequest(Uri.parse("https://localhost"), new String[] { PermissionRequest.RESOURCE_VIDEO_CAPTURE });
+        check(p.handleWebPermissionRequest(noPermReq), "denied-os request handled");
+        check(noPermReq.denied && noPermReq.granted == null, "camera denied when OS permission missing");
+
+        // F1: local origin + OS CAMERA granted + VIDEO only -> granted
+        ContextCompat.camPermission = PackageManager.PERMISSION_GRANTED;
+        PermissionRequest okReq = new PermissionRequest(Uri.parse("https://localhost"), new String[] { PermissionRequest.RESOURCE_VIDEO_CAPTURE });
+        check(p.handleWebPermissionRequest(okReq), "local video request handled");
+        check(!okReq.denied && okReq.granted != null && okReq.granted.length == 1 && PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(okReq.granted[0]), "local video must be granted");
+
+        // F3: legacy pinned http:// migrates to https://, while unpinned http:// does NOT migrate
+        String fp = ${JSON.stringify(vectors.spkiPin.spkiSha256Hex)};
+        p.sp.edit()
+            .putString(TLS_FP_PREFIX + "home-1@http://100.64.0.10:58627", fp)
+            .putString(ORIGIN_TLS_FP_PREFIX + "http://100.64.0.10:58627", fp)
+            .putString(TOKEN_PREFIX + "home-1@http://100.64.0.10:58627", "enc-token")
+            .putStringSet(VERIFIED_ORIGINS_PREFIX + "home-1", new HashSet<>(Arrays.asList("http://100.64.0.10:58627", "http://192.168.10.40:58627")))
+            .apply();
+
+        check(fp.equals(p.resolvePinnedFingerprint("home-1", "https://100.64.0.10:58627")), "legacy pin resolved and migrated");
+        check(p.isOriginVerified("home-1", "https://100.64.0.10:58627"), "legacy pinned http verifiedOrigin migrated to https");
+        check(p.hasStoredToken("home-1", "https://100.64.0.10:58627"), "legacy pinned http token matched for https");
+        check(!p.isOriginVerified("home-1", "https://192.168.10.40:58627"), "unpinned http origin must NOT migrate to https");
+        check(p.isOriginVerified("home-1", "http://192.168.10.40:58627"), "unpinned http origin remains verified as http");
+
+        p.forgetServerData("home-1", "https://100.64.0.10:58627");
+        check(!p.sp.contains(TOKEN_PREFIX + "home-1@http://100.64.0.10:58627"), "forgetServerData cleans legacy http token");
+        check(!p.sp.contains(ORIGIN_TLS_FP_PREFIX + "http://100.64.0.10:58627"), "forgetServerData cleans legacy http pin");
+    }
+}
+`;
+      const javaFile = join(tempDir, 'JavaF1F3Check.java');
+      writeFileSync(javaFile, harness);
+      const compiled = spawnSync(findJdkTool('javac'), ['-d', tempDir, javaFile], { encoding: 'utf8' });
+      expect(compiled.status, `javac stderr: ${compiled.stderr}`).toBe(0);
+      const ran = spawnSync(findJdkTool('java'), ['-cp', tempDir, 'JavaF1F3Check'], { encoding: 'utf8' });
+      expect(ran.status, `java stderr: ${ran.stderr || ran.stdout}`).toBe(0);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
 
     const swiftScene = readFileSync(
       join(mobileRoot, 'ios/App/App/SceneDelegate.swift'),
@@ -499,5 +865,11 @@ ${originHelpers}
     expect(swiftScene).toContain('upgradeEntryForTlsPin');
     expect(swiftScene).toContain('verifyHandshakeDomain');
     expect(swiftScene).toContain('expectedStatus');
+
+    const swiftPinning = readFileSync(
+      join(mobileRoot, 'ios/App/App/KikiTlsPinning.swift'),
+      'utf8',
+    );
+    expect(swiftPinning).toContain('legacyHttpOriginForHttps');
   });
 });

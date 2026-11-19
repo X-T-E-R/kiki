@@ -143,12 +143,29 @@ final class KikiQrScannerViewController: UIViewController, AVCaptureMetadataOutp
         fallbackBodyLabel.textAlignment = .center
         fallbackBodyLabel.numberOfLines = 0
 
-        fallbackPhotoButton.setTitle(isChinese ? "从相册选择二维码" : "Choose QR photo", for: .normal)
-        fallbackPhotoButton.setTitleColor(onAccentColor, for: .normal)
-        fallbackPhotoButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
-        fallbackPhotoButton.backgroundColor = accentColor
-        fallbackPhotoButton.layer.cornerRadius = 12
-        fallbackPhotoButton.contentEdgeInsets = UIEdgeInsets(top: 14, left: 24, bottom: 14, right: 24)
+        let photoTitle = isChinese ? "从相册选择二维码" : "Choose QR photo"
+        if #available(iOS 15.0, *) {
+            var config = UIButton.Configuration.filled()
+            config.title = photoTitle
+            config.baseBackgroundColor = accentColor
+            config.baseForegroundColor = onAccentColor
+            config.cornerStyle = .fixed
+            config.background.cornerRadius = 12
+            config.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 24, bottom: 14, trailing: 24)
+            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var outgoing = incoming
+                outgoing.font = .systemFont(ofSize: 16, weight: .semibold)
+                return outgoing
+            }
+            fallbackPhotoButton.configuration = config
+        } else {
+            fallbackPhotoButton.setTitle(photoTitle, for: .normal)
+            fallbackPhotoButton.setTitleColor(onAccentColor, for: .normal)
+            fallbackPhotoButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
+            fallbackPhotoButton.backgroundColor = accentColor
+            fallbackPhotoButton.layer.cornerRadius = 12
+            fallbackPhotoButton.contentEdgeInsets = UIEdgeInsets(top: 14, left: 24, bottom: 14, right: 24)
+        }
         fallbackPhotoButton.addTarget(self, action: #selector(pickPhotoTapped), for: .touchUpInside)
 
         fallbackContainer.addArrangedSubview(fallbackTitleLabel)

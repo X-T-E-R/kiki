@@ -57,27 +57,27 @@ describe('direct endpoints', () => {
       Meta: [{ address: '198.18.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '198.18.0.1/16' }],
       docker0: [{ address: '172.17.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '02:42:ac:11:00:01', internal: false, cidr: '172.17.0.1/16' }],
       'Ethernet 3': [{ address: '169.254.12.34', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:03', internal: false, cidr: '169.254.12.34/16' }],
-      Tailscale: [{ address: '100.71.207.100', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.71.207.100/32' }],
+      Tailscale: [{ address: '100.64.0.21', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.64.0.21/32' }],
       'Corp LAN': [{ address: '172.20.10.5', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:04', internal: false, cidr: '172.20.10.5/24' }],
-      '以太网 2': [{ address: '192.168.31.221', netmask: '255.255.255.0', family: 'IPv4' as const, mac: 'ec:d6:8a:fb:6a:18', internal: false, cidr: '192.168.31.221/24' }],
+      '以太网 2': [{ address: '192.168.10.22', netmask: '255.255.255.0', family: 'IPv4' as const, mac: 'ec:d6:8a:fb:6a:18', internal: false, cidr: '192.168.10.22/24' }],
     };
     expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, ['http://198.18.0.1:58627', 'http://169.254.1.2:58627', 'https://box.example.test'], windowsInterfaces)).toEqual([
-      'http://192.168.31.221:58627',
-      'http://100.71.207.100:58627',
+      'http://192.168.10.22:58627',
+      'http://100.64.0.21:58627',
       'http://172.20.10.5:58627',
       'https://box.example.test',
     ]);
 
     const macInterfaces = {
       utun3: [{ address: '198.18.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '198.18.0.1/16' }],
-      utun4: [{ address: '100.69.108.120', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.69.108.120/32' }],
+      utun4: [{ address: '100.64.0.22', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.64.0.22/32' }],
       utun5: [{ address: '172.19.0.1', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '172.19.0.1/24' }],
       bridge0: [{ address: '192.168.64.1', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:05', internal: false, cidr: '192.168.64.1/24' }],
-      en0: [{ address: '192.168.31.63', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:06', internal: false, cidr: '192.168.31.63/24' }],
+      en0: [{ address: '192.168.10.63', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:06', internal: false, cidr: '192.168.10.63/24' }],
     };
     expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, [], macInterfaces)).toEqual([
-      'http://192.168.31.63:58627',
-      'http://100.69.108.120:58627',
+      'http://192.168.10.63:58627',
+      'http://100.64.0.22:58627',
       'http://172.19.0.1:58627',
     ]);
 
@@ -88,6 +88,18 @@ describe('direct endpoints', () => {
       en0: [{ address: '192.168.10.40', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:07', internal: false, cidr: '192.168.10.40/24' }],
     };
     expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, [], tunnelRankInterfaces)).toEqual([
+      'http://192.168.10.40:58627',
+      'http://100.64.0.10:58627',
+      'http://10.8.0.2:58627',
+      'http://192.168.250.2:58627',
+    ]);
+    const loopbackExtras = [
+      'http://10.8.0.2:58627',
+      'http://192.168.250.2:58627',
+      'http://100.64.0.10:58627',
+      'http://192.168.10.40:58627',
+    ];
+    expect(directEndpoints({ host: '127.0.0.1', port: 58627 }, loopbackExtras, tunnelRankInterfaces)).toEqual([
       'http://192.168.10.40:58627',
       'http://100.64.0.10:58627',
       'http://10.8.0.2:58627',

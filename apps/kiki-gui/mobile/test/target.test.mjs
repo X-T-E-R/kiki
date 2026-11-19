@@ -1846,6 +1846,7 @@ ${origin}
     private boolean hasStoredToken(String id, String origin) { return isOriginVerified(id, origin); }
     private void recordVerifiedOrigin(String id, String origin, String hostId, String grantId) {}
     private void savePinnedFingerprint(String id, String origin, String fingerprint) {}
+    private String resolvePinnedFingerprint(String id, String origin) { return null; }
     private void configurePinnedTls(HttpURLConnection conn, String origin, String serverId, String fp) {}
     private boolean matchesStoredHostId(String id, String host) {
         return id.equals("home-a") && (host == null || host.isEmpty() || host.equals("host-a"));

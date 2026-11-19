@@ -11847,18 +11847,27 @@
 			if (count >= 6) break;
 			const parsed = readTarget(rawOrigin);
 			if (!parsed.ok) continue;
-			const fp = typeof rawFp === "string" ? rawFp.trim() : "";
+			const fp = typeof rawFp === "string" ? rawFp.trim().toLowerCase() : "";
 			if (!TLS_FINGERPRINT_PATTERN.test(fp)) continue;
-			clean[parsed.origin] = fp;
-			count += 1;
+			const normalizedOrigin = upgradeEndpointForTlsPin(parsed.origin, fp);
+			if (!(normalizedOrigin in clean)) count += 1;
+			clean[normalizedOrigin] = fp;
 		}
 		return count > 0 ? clean : void 0;
+	}
+	function resolveMigratedOriginForPinnedMap(rawOrigin, pinnedFingerprints) {
+		if (!pinnedFingerprints) return rawOrigin;
+		if (rawOrigin in pinnedFingerprints) return rawOrigin;
+		const candidate = upgradeEndpointForTlsPin(rawOrigin, "0".repeat(64));
+		if (candidate !== rawOrigin && candidate in pinnedFingerprints) return candidate;
+		return rawOrigin;
 	}
 	function getServerFingerprint(server, rawOrOrigin) {
 		if (!server || !server.pinnedFingerprints || typeof server.pinnedFingerprints !== "object") return;
 		const target = readTarget(rawOrOrigin ?? server.origin ?? "");
 		if (!target.ok) return void 0;
-		const fp = server.pinnedFingerprints[target.origin];
+		const resolvedOrigin = resolveMigratedOriginForPinnedMap(target.origin, server.pinnedFingerprints);
+		const fp = server.pinnedFingerprints[resolvedOrigin];
 		return typeof fp === "string" && TLS_FINGERPRINT_PATTERN.test(fp) ? fp : void 0;
 	}
 	function sanitizeServerRecord(raw) {
@@ -11866,7 +11875,8 @@
 		const obj = raw;
 		const target = readTarget(typeof obj["origin"] === "string" ? obj["origin"] : "");
 		if (!target.ok) return null;
-		const origin = target.origin;
+		const pinnedFingerprints = sanitizePinnedFingerprints(obj["pinnedFingerprints"]);
+		const origin = resolveMigratedOriginForPinnedMap(target.origin, pinnedFingerprints);
 		const targetHomeId = typeof obj["targetHomeId"] === "string" && obj["targetHomeId"].trim() !== "" ? obj["targetHomeId"].trim() : void 0;
 		const targetHostId = typeof obj["targetHostId"] === "string" && obj["targetHostId"].trim() !== "" ? obj["targetHostId"].trim() : void 0;
 		const grantId = typeof obj["grantId"] === "string" && obj["grantId"].trim() !== "" ? obj["grantId"].trim() : void 0;
@@ -11875,15 +11885,18 @@
 		const verifiedOrigins = [];
 		for (const item of rawVerified) {
 			const parsed = readTarget(String(item ?? ""));
-			if (parsed.ok && !verifiedOrigins.includes(parsed.origin) && verifiedOrigins.length < 6) verifiedOrigins.push(parsed.origin);
+			if (!parsed.ok) continue;
+			const migrated = resolveMigratedOriginForPinnedMap(parsed.origin, pinnedFingerprints);
+			if (!verifiedOrigins.includes(migrated) && verifiedOrigins.length < 6) verifiedOrigins.push(migrated);
 		}
 		const rawOrigins = Array.isArray(obj["origins"]) ? obj["origins"] : [];
 		const origins = [origin];
 		for (const item of [...rawOrigins, ...verifiedOrigins]) {
 			const parsed = readTarget(String(item ?? ""));
-			if (parsed.ok && !origins.includes(parsed.origin) && origins.length < 6) origins.push(parsed.origin);
+			if (!parsed.ok) continue;
+			const migrated = resolveMigratedOriginForPinnedMap(parsed.origin, pinnedFingerprints);
+			if (!origins.includes(migrated) && origins.length < 6) origins.push(migrated);
 		}
-		const pinnedFingerprints = sanitizePinnedFingerprints(obj["pinnedFingerprints"]);
 		const record = {
 			id: typeof obj["id"] === "string" && obj["id"].trim() !== "" ? obj["id"].trim() : targetHomeId ?? `origin:${origin}`,
 			label: typeof obj["label"] === "string" && obj["label"].trim() !== "" ? obj["label"].trim() : defaultLabelForOrigin(origin),
@@ -11937,7 +11950,11 @@
 			}
 		} catch {}
 		if (legacyOrigin !== null) {
-			const existingIndex = list.findIndex((item) => !item.paired && (item.origin === legacyOrigin || item.origins.includes(legacyOrigin)) || item.paired && isServerOriginVerified(item, legacyOrigin));
+			const resolveLegacyForServer = (item) => resolveMigratedOriginForPinnedMap(legacyOrigin, item.pinnedFingerprints);
+			const existingIndex = list.findIndex((item) => {
+				const candidate = resolveLegacyForServer(item);
+				return !item.paired && (item.origin === candidate || item.origins.includes(candidate)) || item.paired && isServerOriginVerified(item, candidate);
+			});
 			if (existingIndex === -1) {
 				if (!list.some((item) => item.paired)) {
 					const migrated = sanitizeServerRecord({
@@ -11954,8 +11971,9 @@
 			} else if (existingIndex > 0) {
 				const [matched] = list.splice(existingIndex, 1);
 				if (matched) {
-					matched.origin = legacyOrigin;
-					matched.origins = [legacyOrigin, ...matched.origins.filter((o) => o !== legacyOrigin)];
+					const candidate = resolveLegacyForServer(matched);
+					matched.origin = candidate;
+					matched.origins = [candidate, ...matched.origins.filter((o) => o !== candidate)];
 					list.unshift(matched);
 				}
 			}
@@ -13097,6 +13115,18 @@
 	function tokenVaultKey(serverId, origin) {
 		return origin ? `${serverId}@${origin}` : serverId;
 	}
+	function legacyHttpOriginForHttps(origin) {
+		if (!origin) return void 0;
+		try {
+			const parsed = new URL(origin);
+			if (parsed.protocol !== "https:") return void 0;
+			const port = parsed.port || "443";
+			if (port === "80") return `http://${parsed.hostname}`;
+			return `http://${parsed.hostname}:${port}`;
+		} catch {
+			return;
+		}
+	}
 	async function encryptAndStoreVaultEntry(db, key, vaultKey, token) {
 		const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
 		const aad = new TextEncoder().encode(vaultKey);
@@ -13147,7 +13177,14 @@
 	async function readWebPeerToken(serverId, origin) {
 		if (!serverId) return void 0;
 		const scopedKey = origin ? tokenVaultKey(serverId, origin) : null;
+		const legacyOrigin = legacyHttpOriginForHttps(origin);
+		const legacyScopedKey = legacyOrigin ? tokenVaultKey(serverId, legacyOrigin) : null;
 		if (scopedKey && ephemeralTokens.has(scopedKey)) return ephemeralTokens.get(scopedKey);
+		if (legacyScopedKey && ephemeralTokens.has(legacyScopedKey)) {
+			const token = ephemeralTokens.get(legacyScopedKey);
+			if (token && scopedKey) ephemeralTokens.set(scopedKey, token);
+			return token;
+		}
 		if (ephemeralTokens.has(serverId)) return ephemeralTokens.get(serverId);
 		if (!globalThis.crypto?.subtle) return;
 		try {
@@ -13163,6 +13200,16 @@
 						return scopedDecoded;
 					}
 				}
+				if (legacyScopedKey) {
+					const legacyDecoded = await readAndDecryptVaultEntry(db, key, legacyScopedKey);
+					if (legacyDecoded) {
+						if (scopedKey) {
+							ephemeralTokens.set(scopedKey, legacyDecoded);
+							await encryptAndStoreVaultEntry(db, key, scopedKey, legacyDecoded).catch(() => {});
+						}
+						return legacyDecoded;
+					}
+				}
 				const decoded = await readAndDecryptVaultEntry(db, key, serverId);
 				if (decoded) {
 					ephemeralTokens.set(serverId, decoded);
@@ -13175,14 +13222,21 @@
 	}
 	async function deleteWebPeerToken(serverId, origins = []) {
 		if (!serverId) return;
+		const allOrigins = /* @__PURE__ */ new Set();
+		for (const origin of origins) {
+			if (!origin) continue;
+			allOrigins.add(origin);
+			const legacy = legacyHttpOriginForHttps(origin);
+			if (legacy) allOrigins.add(legacy);
+		}
 		ephemeralTokens.delete(serverId);
-		for (const origin of origins) ephemeralTokens.delete(tokenVaultKey(serverId, origin));
+		for (const origin of allOrigins) ephemeralTokens.delete(tokenVaultKey(serverId, origin));
 		try {
 			const db = await openVaultDb();
 			if (!db) return;
 			try {
 				await idbDelete(db, serverId);
-				for (const origin of origins) await idbDelete(db, tokenVaultKey(serverId, origin));
+				for (const origin of allOrigins) await idbDelete(db, tokenVaultKey(serverId, origin));
 			} finally {
 				db.close();
 			}
@@ -13194,7 +13248,10 @@
 	const STARTED_KEY = "kiki.shell.started";
 	globalThis.__kikiLauncher = {
 		...target_exports,
-		decodeQrFromImageData
+		decodeQrFromImageData,
+		saveWebPeerToken,
+		readWebPeerToken,
+		deleteWebPeerToken
 	};
 	function bootstrapLauncherUi() {
 		if (typeof document === "undefined" || typeof window === "undefined") return;
@@ -13640,14 +13697,15 @@
 			if (isStaleOpen()) return;
 			if (!resolved.ok) {
 				if (resolved.stale || resolved.reason === "aborted") return;
+				const failedOrigin = resolved.server?.origin ?? origin;
 				button.disabled = false;
 				renderSavedServers();
-				if (resolved.reason === "identity_mismatch") promptForPairing(origin, identityMismatchMessageFor(origin, resolved.server?.label ?? options.label));
-				else if (resolved.reason === "pairing_revoked") promptForPairing(origin, pairingRevokedMessageFor(origin, resolved.server?.label ?? options.label));
-				else if (resolved.reason === "pairing_required") promptForPairing(origin, pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
+				if (resolved.reason === "identity_mismatch") promptForPairing(failedOrigin, identityMismatchMessageFor(failedOrigin, resolved.server?.label ?? options.label));
+				else if (resolved.reason === "pairing_revoked") promptForPairing(failedOrigin, pairingRevokedMessageFor(failedOrigin, resolved.server?.label ?? options.label));
+				else if (resolved.reason === "pairing_required") promptForPairing(failedOrigin, pairingRequiredMessageFor(failedOrigin, resolved.server?.label ?? options.label));
 				else {
-					input.value = editableOrigin(origin);
-					reportUnreachable(origin, {
+					input.value = editableOrigin(failedOrigin);
+					reportUnreachable(failedOrigin, {
 						serverId: resolved.server?.id ?? targetServerId,
 						label: resolved.server?.label ?? options.label,
 						targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
@@ -13658,6 +13716,7 @@
 				}
 				return;
 			}
+			const targetOrigin = resolved.origin;
 			const serverId = resolved.serverId;
 			if (isStaleOpen()) return;
 			try {
@@ -13666,14 +13725,14 @@
 			if (isNativeShell()) try {
 				const openPayload = {
 					opId: callOpId,
-					origin,
+					origin: targetOrigin,
 					entry: resolved.finalEntry,
 					serverId: isPairedTarget ? serverId ?? void 0 : void 0,
 					grantId: isPairedTarget ? resolved.server?.grantId ?? options.grantId ?? void 0 : void 0,
 					targetHomeId: options.targetHomeId ?? void 0,
 					targetHostId: options.targetHostId ?? void 0
 				};
-				const resolvedFp = options.fingerprint ?? getServerFingerprint(resolved.server, origin);
+				const resolvedFp = options.fingerprint ?? getServerFingerprint(resolved.server, targetOrigin) ?? getServerFingerprint(resolved.server, origin);
 				if (resolvedFp) openPayload["fingerprint"] = resolvedFp;
 				const res = await win.Capacitor.nativePromise("KikiShell", "open", openPayload);
 				if (isStaleOpen() || res?.["reason"] === "aborted") return;
@@ -13682,15 +13741,15 @@
 					button.disabled = false;
 					renderSavedServers();
 					if (res?.["reason"] === "identity_mismatch" && targetServerId) {
-						const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, origin, {
+						const rollback = verifySavedServerOrigin(window.localStorage, targetServerId, targetOrigin, {
 							ok: true,
 							targetHomeId: typeof res["targetHomeId"] === "string" ? res["targetHomeId"] : void 0
 						});
 						renderSavedServers();
-						promptForPairing(origin, identityMismatchMessageFor(origin, rollback.server?.label ?? options.label));
-					} else if (res?.["reason"] === "pairing_revoked") promptForPairing(origin, pairingRevokedMessageFor(origin, resolved.server?.label ?? options.label));
-					else if (res?.["reason"] === "pairing_required") promptForPairing(origin, pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
-					else reportUnreachable(origin, {
+						promptForPairing(targetOrigin, identityMismatchMessageFor(targetOrigin, rollback.server?.label ?? options.label));
+					} else if (res?.["reason"] === "pairing_revoked") promptForPairing(targetOrigin, pairingRevokedMessageFor(targetOrigin, resolved.server?.label ?? options.label));
+					else if (res?.["reason"] === "pairing_required") promptForPairing(targetOrigin, pairingRequiredMessageFor(targetOrigin, resolved.server?.label ?? options.label));
+					else reportUnreachable(targetOrigin, {
 						serverId: resolved.server?.id ?? serverId ?? targetServerId,
 						label: resolved.server?.label ?? options.label,
 						targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
@@ -13708,7 +13767,7 @@
 				if (openFlightOpId === callOpId) openFlightOpId = null;
 				button.disabled = false;
 				renderSavedServers();
-				reportUnreachable(origin, {
+				reportUnreachable(targetOrigin, {
 					serverId: resolved.server?.id ?? serverId ?? targetServerId,
 					label: resolved.server?.label ?? options.label,
 					targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
@@ -13720,7 +13779,7 @@
 			if (isPairedTarget || resolved.sessionToken) {
 				button.disabled = false;
 				renderSavedServers();
-				reportUnreachable(origin, {
+				reportUnreachable(targetOrigin, {
 					serverId: resolved.server?.id ?? serverId ?? targetServerId,
 					label: resolved.server?.label ?? options.label,
 					targetHomeId: resolved.server?.targetHomeId ?? options.targetHomeId,
@@ -13731,7 +13790,7 @@
 			}
 			if (isStaleOpen()) return;
 			stopAutoReconnect(true);
-			window.location.assign(stripTokenFromEntry(origin, resolved.finalEntry));
+			window.location.assign(stripTokenFromEntry(targetOrigin, resolved.finalEntry));
 		}
 		function openSavedServer(server) {
 			return openServer(server.origin, `${server.origin}/`, {
@@ -14536,6 +14595,7 @@
 			else if (window.location.hash === "#pair") consumePendingPairIfAny();
 			else if (window.location.hash === "#change") setTab(landingTab());
 		});
+		if (win.__kikiLauncher) win.__kikiLauncher.openServer = openServer;
 		renderSavedServers();
 		updateInputAffordances();
 		setTab(landingTab());
