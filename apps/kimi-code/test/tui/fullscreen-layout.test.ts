@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { Spacer, type Terminal, TuiAltScreen } from '@kiki/pi-tui';
-import { VirtualTerminal } from '../../../../packages/pi-tui/test/virtual-terminal';
+import { VirtualTerminal } from '@kiki/pi-tui/testing';
 
 import { ActivityLineComponent } from '#/tui/components/chrome/activity-line';
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';

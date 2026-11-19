@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { legacyHeapOptions, mainHeapEnvironment, mainHeapMb, needsLargeHeap } from '../../src/native/main-heap';
-import { removeInjectedHeapOption } from '../../../../packages/agent-core-v2/src/_base/node/workerHeapPolicy';
+import { removeInjectedHeapOption } from '@kiki/node-sdk/worker-heap-policy';
 
-const policy = new URL('../../../../packages/agent-core-v2/src/_base/node/workerHeapPolicy.ts', import.meta.url).href;
+const policy = import.meta.resolve('@kiki/node-sdk/worker-heap-policy');
 const launcher = new URL('../../src/native/main-heap.ts', import.meta.url).href;
 
 it('sizes the main heap and exempts short commands', () => {

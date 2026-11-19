@@ -2,7 +2,7 @@ import { cp, mkdir, rm, stat } from 'node:fs/promises';
 import { collectAuthNativePackage } from './native/assets.mjs';
 import { copyHistoryImportAssets } from './native/history-assets.mjs';
 import { copySourceOwnedAdapterAssets } from './native/external-harness-assets.mjs';
-import { mergeAuthNativeLanes } from '../../../packages/auth-native/scripts/lane-assets.mjs';
+import { mergeAuthNativeLanes } from '@kiki/auth-native/build/lane-assets';
 import { buildWindowsProcessHelper } from '../../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -2,12 +2,12 @@ import { spawnSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { collectAuthNativePackage } from '../../../apps/kimi-code/scripts/native/assets.mjs';
+import { collectAuthNativePackage } from './assets.mjs';
 
-const packageRoot = resolve(import.meta.dirname, '..');
-const repoRoot = resolve(packageRoot, '../..');
-const appRoot = resolve(repoRoot, 'apps/kimi-code');
+const appRoot = resolve(import.meta.dirname, '../..');
+const repoRoot = resolve(appRoot, '../..');
 const req = createRequire(join(appRoot, 'package.json'));
+const packageRoot = dirname(req.resolve('@kiki/auth-native/package.json'));
 const scratch = resolve(repoRoot, '.tmp/auth-native-cli-proof');
 await mkdir(scratch, { recursive: true });
 const root = await mkdtemp(join(scratch, 'install-proof-'));

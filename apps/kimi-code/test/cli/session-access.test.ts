@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 import { startServer, type RunningServer } from '@kiki/kap-server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TEST_HOST_IDENTITY } from '../../../../packages/kap-server/test/helpers/hostIdentity';
+import { TEST_HOST_IDENTITY } from '../helpers/host-identity';
 import { registerSessionAccessCommand } from '../../src/kiki/sessionAccess';
 
 const mocks = vi.hoisted(() => ({ ensureServer: vi.fn() }));

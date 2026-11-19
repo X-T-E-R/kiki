@@ -23,7 +23,6 @@ const mocks = vi.hoisted(() => ({
   harnessGetConfig: vi.fn(),
   harnessClose: vi.fn(),
   daemonConstructor: vi.fn(),
-  legacyConstructor: vi.fn(),
   tuiStart: vi.fn(),
   tuiClose: vi.fn(),
   tuiStop: vi.fn(),
@@ -99,26 +98,6 @@ vi.mock('../../src/tui/daemon/daemon-tui', () => ({
     close = mocks.tuiClose;
     stop = mocks.tuiStop;
     clearProgramStatus = mocks.tuiClearProgramStatus;
-    getCurrentSessionId = () => '';
-    hasSessionContent = () => false;
-  },
-}));
-
-vi.mock('../../src/tui/index', () => ({
-  KimiTUI: class KimiTUI {
-    onExit?: (exitCode?: number) => Promise<void>;
-
-    constructor(...args: unknown[]) {
-      mocks.order.push('legacy');
-      mocks.legacyConstructor(...args);
-    }
-
-    start = async () => {
-      mocks.order.push('start');
-      await mocks.tuiStart();
-    };
-
-    stop = mocks.tuiStop;
     getCurrentSessionId = () => '';
     hasSessionContent = () => false;
   },
@@ -232,7 +211,6 @@ describe('runShell daemon startup', () => {
     vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', '0');
     await runShell(options, '1.0.0');
     expect(mocks.order).toEqual(['trust', 'agent', 'discover', 'daemon', 'start']);
-    expect(mocks.legacyConstructor).not.toHaveBeenCalled();
     expect(mocks.harnessEnsureConfigFile).not.toHaveBeenCalled();
     expect(mocks.harnessGetConfig).not.toHaveBeenCalled();
   });

@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { inspectWorkspaceTrustSources } from '@kiki/node-sdk';
 import { Text, TuiMainScreen } from '@kiki/pi-tui';
-import { VirtualTerminal } from '../../../../../packages/pi-tui/test/virtual-terminal';
+import { VirtualTerminal } from '@kiki/pi-tui/testing';
 
 import {
   canonicalWorkspaceRoot,

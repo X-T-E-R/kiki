@@ -2,11 +2,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { startServer } from '../../../packages/kap-server/src/start';
-import { TEST_HOST_IDENTITY } from '../../../packages/kap-server/test/helpers/hostIdentity';
-import { VirtualTerminal } from '../../../packages/pi-tui/test/virtual-terminal';
+import { startServer } from '@kiki/kap-server';
+import { VirtualTerminal } from '@kiki/pi-tui/testing';
 import { DEFAULT_TUI_CONFIG } from '../src/tui/config';
 import { DaemonTUI } from '../src/tui/daemon/daemon-tui';
+
+const TEST_HOST_IDENTITY = {
+  productName: 'test-host',
+  version: '0.0.0-test',
+  platform: 'test_platform',
+};
 
 function stripAnsi(text) {
   // eslint-disable-next-line no-control-regex

@@ -2,10 +2,10 @@ import { createRequire } from 'node:module';
 import { mkdirSync, mkdtempSync, rmSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
-import { installNativeModuleHook } from '../../../apps/kimi-code/src/native/module-hook';
+import { installNativeModuleHook } from '../../src/native/module-hook';
 
 installNativeModuleHook();
-const auth = createRequire(import.meta.url)('@kiki/auth-native') as typeof import('../index');
+const auth = createRequire(import.meta.url)('@kiki/auth-native') as typeof import('@kiki/auth-native');
 const base = process.env['KIKI_CACHE_DIR'];
 if (!base) throw new Error('Distribution fixture requires isolated cache');
 mkdirSync(base, { recursive: true });

@@ -2,13 +2,13 @@ import { spawnSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { collectAuthNativePackage, nativeAssetManifestKey } from '../../../apps/kimi-code/scripts/native/assets.mjs';
-import { NATIVE_ASSET_MANIFEST_VERSION } from '../../../apps/kimi-code/scripts/native/manifest.mjs';
+import { collectAuthNativePackage, nativeAssetManifestKey } from './assets.mjs';
+import { NATIVE_ASSET_MANIFEST_VERSION } from './manifest.mjs';
 
-const packageRoot = resolve(import.meta.dirname, '..');
-const repoRoot = resolve(packageRoot, '../..');
-const appRoot = resolve(repoRoot, 'apps/kimi-code');
+const appRoot = resolve(import.meta.dirname, '../..');
+const repoRoot = resolve(appRoot, '../..');
 const req = createRequire(join(appRoot, 'package.json'));
+const packageRoot = dirname(req.resolve('@kiki/auth-native/package.json'));
 const scratch = resolve(repoRoot, '.tmp/auth-native-distribution');
 await mkdir(scratch, { recursive: true });
 const root = await mkdtemp(join(scratch, 'proof-'));
@@ -29,7 +29,7 @@ function run(command, args, cwd = root) {
   return result.stdout;
 }
 const tsdownCli = req.resolve('tsdown/run');
-const entry = resolve(packageRoot, 'tests/distribution-entry.ts');
+const entry = resolve(import.meta.dirname, 'auth-native-distribution-entry.ts');
 const config = join(root, 'fixture.config.mjs');
 const configSource = (format, outDir) => `export default { entry: [${JSON.stringify(entry)}], format: [${JSON.stringify(format)}], outDir: ${JSON.stringify(outDir)}, clean: false, dts: false, platform: 'node', target: 'node24', fixedExtension: true, deps: { neverBundle: ['@kiki/auth-native'], alwaysBundle: id => id === 'pathe', onlyBundle: false }, alias: {'#/cli/build-info': ${JSON.stringify(join(appRoot, 'src/cli/build-info.ts'))}}, outputOptions: {codeSplitting:false, entryFileNames:${JSON.stringify(format === 'cjs' ? 'main.cjs' : 'main.mjs')}}, banner: ${format === 'cjs' ? JSON.stringify({ js: 'var require = require("node:module").createRequire(process.execPath);' }) : '{}'} };\n`;
 

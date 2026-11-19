@@ -15,8 +15,7 @@ import { __resetRootLoggerForTest } from '../../../../packages/node-sdk/src/logg
 
 const SESSION_LOG = 'logs/kimi-code.log';
 const GLOBAL_LOG = 'logs/global/kimi-code.log';
-const MAIN_WIRE = 'agents/main/wire.jsonl';
-const ENABLED = process.env['KIKI_E2E'] === '1';
+const SESSION_STATE = 'state.json';
 
 let homeDir: string;
 let workDir: string;
@@ -49,7 +48,7 @@ afterEach(async () => {
   await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
-describe.skipIf(!ENABLED)('local logging export e2e', () => {
+describe('local logging export e2e', () => {
   it('exports session log and global log by default, and allows skipping global log', async () => {
     const harness = createKimiHarness({
       homeDir,
@@ -66,7 +65,7 @@ describe.skipIf(!ENABLED)('local logging export e2e', () => {
       const defaultZip = join(workDir, 'default.zip');
       await runKimiExport([session.id, '-o', defaultZip]);
       const defaultEntries = readZipEntries(await readFile(defaultZip));
-      expect(defaultEntries.has(MAIN_WIRE)).toBe(true);
+      expect(defaultEntries.has(SESSION_STATE)).toBe(true);
       expect(defaultEntries.has(SESSION_LOG)).toBe(true);
       expect(defaultEntries.has(GLOBAL_LOG)).toBe(true);
       expect(defaultEntries.get(SESSION_LOG)!.toString('utf-8')).toContain(

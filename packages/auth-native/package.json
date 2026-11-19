@@ -8,6 +8,7 @@
   "types": "index.d.ts",
   "exports": {
     ".": { "types": "./index.d.ts", "default": "./index.cjs" },
+    "./build/lane-assets": "./scripts/lane-assets.mjs",
     "./package.json": "./package.json"
   },
   "files": ["index.cjs", "index.d.ts", "prebuilds", "LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
@@ -16,8 +17,6 @@
     "test": "node --test tests/auth-native.test.cjs tests/packaging.test.mjs",
     "test:packaging": "node --test tests/packaging.test.mjs",
     "test:nix-env": "node --test tests/nix-build.test.mjs",
-    "test:distribution": "node scripts/verify-distribution.mjs",
-    "test:cli-distribution": "node scripts/verify-cli-distribution.mjs",
     "typecheck": "node --check index.cjs",
     "clean": "node scripts/clean.mjs"
   },
