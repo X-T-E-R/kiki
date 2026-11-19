@@ -115,6 +115,15 @@ async function staleLock(lock: string): Promise<boolean> {
   if (!Number.isSafeInteger(owner) || owner <= 0 || owner === process.pid) return false;
   try { process.kill(owner, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
 }
+async function reclaimStaleLock(lock: string): Promise<boolean> {
+  const guard = `${lock}.reclaim`;
+  try { await mkdir(guard); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false; throw error; }
+  try {
+    if (!await staleLock(lock)) return false;
+    await rm(lock, { recursive: true, force: true });
+    return true;
+  } finally { await rm(guard, { recursive: true, force: true }); }
+}
 async function fileHash(path: string): Promise<string> { return hash(await readFile(path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; })); }
 
 function secretMcp(value: unknown): boolean { return containsInlineMcpCredentials(value); }
@@ -580,7 +589,7 @@ export class SpacePreferencesStore {
     for (let attempt = 0; ; attempt += 1) {
       try { await mkdir(lock); break; } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        if (attempt > 0 || !await staleLock(lock)) throw new Error('Another space update is in progress; retry after it finishes', { cause: error });
+        if (attempt > 0 || !await reclaimStaleLock(lock)) throw new Error('Another space update is in progress; retry after it finishes', { cause: error });
         await rm(lock, { recursive: true, force: true });
       }
     }
