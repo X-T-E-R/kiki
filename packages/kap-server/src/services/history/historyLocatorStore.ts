@@ -33,6 +33,12 @@ const HISTORY_NAV_CHUNK_BYTES = 1 << 20;
 const HISTORY_NAV_MAX_LINE_BYTES = 32 << 20;
 const MAX_SCANNERS = 2;
 const MAX_QUEUED_SCANS = 8;
+const MAX_SLICE_CONFLICT_RETRIES = 2;
+
+function sameNavManifest(a: HistoryNavManifest | undefined, b: HistoryNavManifest | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.generation === b.generation && a.incarnation === b.incarnation && a.offset === b.offset && a.ordinal === b.ordinal;
+}
 
 export interface HistoryNavRow {
   readonly workspace: string;
@@ -510,6 +516,7 @@ export class HistoryLocatorEngine {
     const guard = tailWindow ? historyDirectoryWindowGuard() : undefined;
     const stateDb = 'ready' in this.store
       ? await (this.store as LazyHistoryNavigationDb).ready() : undefined;
+    for (let attempt = 0; ; attempt += 1) {
     let scanner = this.scanners.get(input.key);
     const saved = stateDb?.readManifest(input.key);
     const cursor = saved === undefined ? undefined : stateDb?.readAdapterCursor(input.key);
@@ -843,28 +850,40 @@ export class HistoryLocatorEngine {
       input.signal?.throwIfAborted();
       if (proof.identity !== input.incarnation) throw new Error('history_source_changed');
       stateDb.beginSlice();
-      if (rebuild) {
-        stateDb.clearProjection(input.key, input.workspace, input.session, input.agent);
-        scanner = undefined;
+      try {
+        const latest = stateDb.readManifest(input.key);
+        if (!sameNavManifest(saved, latest)) {
+          stateDb.rollbackSlice();
+          this.scanners.delete(input.key);
+          if (attempt < MAX_SLICE_CONFLICT_RETRIES && input.search?.cursor === undefined) continue;
+          throw new Error('history_navigation_conflict');
+        }
+        if (rebuild) {
+          stateDb.clearProjection(input.key, input.workspace, input.session, input.agent);
+          scanner = undefined;
+        }
+        if (scanner === undefined || scanner.incarnation !== input.incarnation) {
+          const adapter = new NavigationWireAdapter(input.agent, stateDb.scalarState(input.key));
+          if (!rebuild && cursor !== undefined) adapter.restore(cursor);
+          scanner = { adapter, incarnation: input.incarnation,
+            generation: !rebuild && saved !== undefined ? saved.generation : randomUUID(),
+            offset: startOffset, ordinal: startOrdinal };
+          this.scanners.delete(input.key);
+          if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
+          this.scanners.set(input.key, scanner);
+        }
+        for (const entry of buffered) {
+          const cont = await foldRecord(entry.record, entry.span, entry.digest);
+          if (!cont) break;
+        }
+        await flushPending();
+        stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,
+          incarnation: input.incarnation, offset: read.nextByteOffset, ordinal: nextOrdinal,
+          complete: read.complete, source: proof }, scanner.adapter.checkpoint());
+      } catch (error) {
+        stateDb.rollbackSlice();
+        throw error;
       }
-      if (scanner === undefined || scanner.incarnation !== input.incarnation) {
-        const adapter = new NavigationWireAdapter(input.agent, stateDb.scalarState(input.key));
-        if (!rebuild && cursor !== undefined) adapter.restore(cursor);
-        scanner = { adapter, incarnation: input.incarnation,
-          generation: !rebuild && saved !== undefined ? saved.generation : randomUUID(),
-          offset: startOffset, ordinal: startOrdinal };
-        this.scanners.delete(input.key);
-        if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
-        this.scanners.set(input.key, scanner);
-      }
-      for (const entry of buffered) {
-        const cont = await foldRecord(entry.record, entry.span, entry.digest);
-        if (!cont) break;
-      }
-      await flushPending();
-      stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,
-        incarnation: input.incarnation, offset: read.nextByteOffset, ordinal: nextOrdinal,
-        complete: read.complete, source: proof }, scanner.adapter.checkpoint());
     } else {
       await flushPending();
       await this.store.put(HISTORY_NAV_COLLECTION, `${input.key}\0checkpoint`, {
@@ -891,6 +910,7 @@ export class HistoryLocatorEngine {
     return { complete: read.complete || throughWatermark, nextByteOffset: read.nextByteOffset, ordinal: scanner!.ordinal,
       bytesRead: read.bytesRead, recordsRead: read.recordCount, incarnation: input.incarnation,
       incompleteReason: throughWatermark ? undefined : read.incompleteReason, hits: activeHits };
+    }
   }
 
   private prefixNavigation(anchor: Pick<HistorySourceAnchor, 'workspace' | 'session' | 'agent' | 'incarnation' | 'window'>): HistoryLocatorEngine | undefined {

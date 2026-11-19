@@ -30,6 +30,8 @@ export class HistoryNavigationWorker {
 
   constructor(private readonly database: string, private readonly transcript: TranscriptService) {}
 
+  get isRunning(): boolean { return this.worker !== undefined; }
+
   async request<T>(method: NavigationMethod, args: readonly unknown[], signal?: AbortSignal,
     target?: { session: string; agent: string }): Promise<T> {
     signal?.throwIfAborted();

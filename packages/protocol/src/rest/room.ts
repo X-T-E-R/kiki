@@ -80,7 +80,15 @@ export const postRoomMessageInputSchema = z.object({
   attachments: z.array(roomAttachmentSchema).max(10).optional(),
 }).strict();
 export type PostRoomMessageInput = z.infer<typeof postRoomMessageInputSchema>;
-export const roomLogOptionsSchema = z.object({ afterId: z.string().optional(), limit: z.coerce.number().int().min(1).max(500).optional() });
+const queryBool = z.union([
+  z.boolean(),
+  z.enum(['true', 'false', '1', '0']).transform((value) => value === 'true' || value === '1'),
+]);
+export const roomLogOptionsSchema = z.object({
+  afterId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  tail: queryBool.optional(),
+});
 export type RoomLogOptions = z.infer<typeof roomLogOptionsSchema>;
 export const roomLogResultSchema = z.object({ entries: z.array(roomLogEntrySchema), nextCursor: z.string().optional(), lastSeq: z.number().int().nonnegative().optional() });
 export type RoomLogResult = z.infer<typeof roomLogResultSchema>;

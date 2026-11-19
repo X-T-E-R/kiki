@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { open, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -561,6 +562,7 @@ export class LazyHistoryNavigationDb implements NavigationStore {
   async rollbackSlice(): Promise<void> { (await this.opened)?.rollbackSlice(); }
   async deleteSession(sessionId: string): Promise<number> {
     if (this.closed) return 0;
+    if (this.opened === undefined && typeof this.openDb === 'string' && !existsSync(this.openDb)) return 0;
     return (await this.ready()).deleteSession(sessionId);
   }
   async get<T>(collection: string, key: string): Promise<T | undefined> { return (await this.ready()).get<T>(collection, key); }

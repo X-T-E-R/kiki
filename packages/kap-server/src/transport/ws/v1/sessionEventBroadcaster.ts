@@ -157,6 +157,7 @@ export interface TargetSubscription {
   readonly transcriptGrades?: TranscriptGradeSpec;
   readonly transcriptGeneration?: number;
   readonly residencyLease?: SessionLease;
+  readonly prevTranscriptSeeded?: boolean;
 }
 
 export type TranscriptSince = Record<string, TranscriptCursor | number>;
@@ -561,6 +562,7 @@ export class SessionEventBroadcaster {
         transcriptGrades,
         transcriptGeneration: generation,
         residencyLease,
+        prevTranscriptSeeded: prevSeeded,
       });
       attached = { state, generation, prev, prevSeeded };
       if (transcriptGrades === undefined) {
@@ -687,6 +689,32 @@ export class SessionEventBroadcaster {
     const seed = state.pendingTranscriptSeeds.get(target);
     if (seed === undefined || !seed.deferred) return;
     await this.runTranscriptSeed(state, target, seed);
+  }
+
+  restoreSubscription(
+    sessionId: string,
+    target: BroadcastTarget,
+    prior: { readonly agentFilter?: AgentFilter; readonly transcriptGrades?: TranscriptGradeSpec } | undefined,
+  ): void {
+    if (prior === undefined) {
+      this.unsubscribe(sessionId, target);
+      return;
+    }
+    const state = this.sessions.get(sessionId);
+    const current = state?.targets.get(target);
+    if (state === undefined || current === undefined) return;
+    const restoredGeneration = this.nextTranscriptGeneration(state, target);
+    state.targets.set(target, {
+      agentFilter: prior.agentFilter,
+      transcriptGrades: prior.transcriptGrades,
+      transcriptGeneration: restoredGeneration,
+      residencyLease: current.residencyLease,
+    });
+    if (prior.transcriptGrades !== undefined && current.prevTranscriptSeeded === true) {
+      state.transcriptSeeded.add(target);
+    } else {
+      state.transcriptSeeded.delete(target);
+    }
   }
 
   unsubscribe(sessionId: string, target: BroadcastTarget): void {

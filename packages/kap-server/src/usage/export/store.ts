@@ -45,30 +45,33 @@ export class UsageExportStore {
     }
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
     if (writer) {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, invalid INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS destinations(id TEXT PRIMARY KEY, data TEXT NOT NULL, identity_key TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS versions(dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, hash TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY(dest,bucket));
-        CREATE TABLE IF NOT EXISTS outbox(dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, item TEXT NOT NULL, bytes INTEGER NOT NULL, state TEXT NOT NULL, batch TEXT, created INTEGER NOT NULL, PRIMARY KEY(dest,bucket,revision));
-        CREATE TABLE IF NOT EXISTS acknowledgements(dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, hash TEXT NOT NULL, confirmed INTEGER NOT NULL, PRIMARY KEY(dest,bucket));
-        CREATE TABLE IF NOT EXISTS batches(dest TEXT PRIMARY KEY, batch TEXT NOT NULL, data TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS bucket_origins(kind TEXT NOT NULL, dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, origin TEXT NOT NULL, PRIMARY KEY(kind,dest,bucket,revision,origin));
-        CREATE INDEX IF NOT EXISTS queue_by_destination ON outbox(dest,state,created);
-        CREATE INDEX IF NOT EXISTS bucket_origins_lookup ON bucket_origins(origin,kind,dest);
-      `);
-      for (const table of ['versions', 'outbox', 'acknowledgements']) {
-        const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[];
-        if (!columns.some((column) => column['name'] === 'origins')) this.db.exec(`ALTER TABLE ${table} ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'`);
-        if (table === 'acknowledgements' && !columns.some((column) => column['name'] === 'item')) this.db.exec('ALTER TABLE acknowledgements ADD COLUMN item TEXT');
-        if (table === 'acknowledgements' && !columns.some((column) => column['name'] === 'mapping_version')) this.db.exec('ALTER TABLE acknowledgements ADD COLUMN mapping_version TEXT');
-      }
+      this.ensureSchema();
       this.fence = randomUUID();
       this.stmt("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
       this.stmt("INSERT OR IGNORE INTO meta VALUES('capacity','52428800')").run();
       this.backfillBucketOrigins();
       this.prepareStage();
       this.retireExperimentalGate();
+    }
+  }
+  private ensureSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, invalid INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS destinations(id TEXT PRIMARY KEY, data TEXT NOT NULL, identity_key TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS versions(dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, hash TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY(dest,bucket));
+      CREATE TABLE IF NOT EXISTS outbox(dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, item TEXT NOT NULL, bytes INTEGER NOT NULL, state TEXT NOT NULL, batch TEXT, created INTEGER NOT NULL, PRIMARY KEY(dest,bucket,revision));
+      CREATE TABLE IF NOT EXISTS acknowledgements(dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, hash TEXT NOT NULL, confirmed INTEGER NOT NULL, PRIMARY KEY(dest,bucket));
+      CREATE TABLE IF NOT EXISTS batches(dest TEXT PRIMARY KEY, batch TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS bucket_origins(kind TEXT NOT NULL, dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, origin TEXT NOT NULL, PRIMARY KEY(kind,dest,bucket,revision,origin));
+      CREATE INDEX IF NOT EXISTS queue_by_destination ON outbox(dest,state,created);
+      CREATE INDEX IF NOT EXISTS bucket_origins_lookup ON bucket_origins(origin,kind,dest);
+    `);
+    for (const table of ['versions', 'outbox', 'acknowledgements']) {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[];
+      if (!columns.some((column) => column['name'] === 'origins')) this.db.exec(`ALTER TABLE ${table} ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'`);
+      if (table === 'acknowledgements' && !columns.some((column) => column['name'] === 'item')) this.db.exec('ALTER TABLE acknowledgements ADD COLUMN item TEXT');
+      if (table === 'acknowledgements' && !columns.some((column) => column['name'] === 'mapping_version')) this.db.exec('ALTER TABLE acknowledgements ADD COLUMN mapping_version TEXT');
     }
   }
   private backfillBucketOrigins(): void {
@@ -97,6 +100,7 @@ export class UsageExportStore {
   tryPromote(): boolean {
     if (this.closed) return false; if (this.writer) return true;
     try { this.election.exec('BEGIN IMMEDIATE'); } catch { return false; }
+    this.ensureSchema();
     this.fence = randomUUID(); this.elected = true;
     this.stmt("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
     this.backfillBucketOrigins();
@@ -454,7 +458,8 @@ export class UsageExportStore {
       this.stmt('DELETE FROM acknowledgements WHERE dest=?').run(id);
       this.stmt('DELETE FROM bucket_origins WHERE dest=?').run(id);
       const suffix = `:${id}`;
-      this.stmt('DELETE FROM meta WHERE length(key)>=? AND substr(key,-?)=?').run(suffix.length, suffix.length, suffix);
+      this.stmt("DELETE FROM meta WHERE length(key)>=? AND substr(key,-?)=? AND NOT (key=? AND value IN ('keyring','private-file'))")
+        .run(suffix.length, suffix.length, suffix, `credential-cleanup:${id}`);
       this.stmt('DELETE FROM destinations WHERE id=?').run(id);
     });
     try { this.db.exec('PRAGMA incremental_vacuum(64)'); } catch {}

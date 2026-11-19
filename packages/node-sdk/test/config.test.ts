@@ -26,9 +26,19 @@ import { TEST_IDENTITY } from './test-identity';
 const toPosix = (p: string): string => p.replaceAll('\\', '/');
 
 const tempDirs: string[] = [];
+const harnesses: Array<{ close(): Promise<void> }> = [];
+
+function createTrackedHarness(options: Parameters<typeof createKimiHarness>[0]): ReturnType<typeof createKimiHarness> {
+  const harness = createKimiHarness(options);
+  harnesses.push(harness);
+  return harness;
+}
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  for (const harness of harnesses.splice(0)) {
+    await harness.close().catch(() => {});
+  }
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
@@ -552,7 +562,7 @@ describe('KimiHarness config API', () => {
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
 
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await harness.setConfig({
       providers: {
@@ -587,7 +597,7 @@ describe('KimiHarness config API', () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     await harness.getConfig();
     const before = await readFile(configPath, 'utf-8');
 
@@ -611,7 +621,7 @@ describe('KimiHarness config API', () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     await harness.getConfig();
     const before = await readFile(configPath, 'utf-8');
 
@@ -631,7 +641,7 @@ describe('KimiHarness config API', () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     await harness.getConfig();
     const before = await readFile(configPath, 'utf-8');
 
@@ -667,7 +677,7 @@ describe('KimiHarness config API', () => {
 
   it('uses default config when the config file is absent', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     // With no file to read there is no `raw` document, and the effective view is
     // exactly the engine's registered section defaults — every domain present,
@@ -694,7 +704,7 @@ describe('KimiHarness config API', () => {
     vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', '1');
     vi.stubEnv('KIKI_EXPERIMENTAL_TASK_WAIT', '0');
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     const features = await harness.getExperimentalFeatures();
 
@@ -717,6 +727,7 @@ describe('KimiHarness config API', () => {
       'tool-select',
       'subagent_release_idle',
       'persistence_minidb_readmodel',
+      'degrade_stale_heavy_media',
       'image_format_conversion',
       'external_delegation_mcp',
     ]);
@@ -754,7 +765,7 @@ describe('KimiHarness config API', () => {
   it('can create the default config scaffold without selecting a model', async () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await harness.ensureConfigFile();
 
@@ -775,7 +786,7 @@ describe('KimiHarness config API', () => {
     await mkdir(workDir, { recursive: true });
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     const session = await harness.createSession({
       id: 'session-sdk-reload',
       workDir,
@@ -798,7 +809,7 @@ describe('KimiHarness config API', () => {
     await mkdir(workDir, { recursive: true });
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, LOCAL_RELOAD_TOML, 'utf-8');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     const session = await harness.createSession({
       id: 'session-sdk-reload-cold',
       workDir,
@@ -818,7 +829,7 @@ describe('KimiHarness config API', () => {
 
   it('returns session.not_found when reloading a missing session', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
 
     await expect(harness.reloadSession({ id: 'session-sdk-reload-missing' })).rejects.toMatchObject({
       name: 'KimiError',
@@ -865,7 +876,7 @@ describe('KimiHarness config API', () => {
             },
           }) as ReturnType<ProtocolAdapterRegistry['createChatProvider']>,
       );
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     let stopListening: (() => void) | undefined;
     let prompt: Promise<void> | undefined;
     let sessionDir: string | undefined;
@@ -922,7 +933,7 @@ describe('KimiHarness config API', () => {
     await mkdir(workDir, { recursive: true });
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const harness = createTrackedHarness({ homeDir, identity: TEST_IDENTITY });
     const session = await harness.createSession({
       id: 'session-sdk-reload-forward',
       workDir,

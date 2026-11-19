@@ -828,6 +828,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     if (cursor !== undefined) this.replayHolds.add(sid);
     let attached = false;
     let notFoundSession = false;
+    let subscribedInBroadcaster = false;
     try {
       const ok = await this.broadcaster.subscribe(sid, this, filter, transcriptGrades, {
         deferTranscriptReset: cursor !== undefined,
@@ -840,6 +841,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         else resyncRequired.push(sid);
         return;
       }
+      subscribedInBroadcaster = true;
       if (cursor !== undefined) {
         await this.replay(sid, cursor, filter, transcriptGrades, resyncRequired, serverCursors);
         await this.broadcaster.flushTranscriptSeed(sid, this);
@@ -865,7 +867,9 @@ export class WsConnectionV1 implements BroadcastTarget {
           this.broadcaster.unsubscribe(sid, this);
           this.subscriptions.delete(sid);
         } else {
-          if (prior.transcriptGrades === undefined && transcriptGrades !== undefined) {
+          if (subscribedInBroadcaster && typeof this.broadcaster.restoreSubscription === 'function') {
+            this.broadcaster.restoreSubscription(sid, this, prior);
+          } else if (prior.transcriptGrades === undefined && transcriptGrades !== undefined) {
             this.broadcaster.unsubscribeTranscript(sid, this);
           }
           this.subscriptions.set(sid, prior);

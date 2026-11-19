@@ -282,7 +282,8 @@ function requestPinnedHttps(
         const status = res.statusCode ?? 0;
         const headers = toWebHeaders(res.headers);
         if (status >= 300 && status < 400) {
-          res.resume();
+          res.destroy();
+          req.destroy();
           resolve({ status, headers, body: null, abort: () => { res.destroy(); req.destroy(); } });
           return;
         }
@@ -303,6 +304,7 @@ type HopOutcome = { media: { bytes: Buffer; mime: string; name: string }; redire
 
 async function readHopResponse(current: URL, response: RemoteHopResponse): Promise<HopOutcome> {
   if (response.status >= 300 && response.status < 400) {
+    response.abort();
     const location = response.headers.get('location');
     if (location === null) throw new PackError(ErrorCode.VALIDATION_FAILED, 'redirect without a location');
     return { redirect: new URL(location, current) };

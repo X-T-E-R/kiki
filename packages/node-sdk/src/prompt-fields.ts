@@ -8,9 +8,15 @@ import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   BUILTIN_PROMPT_FIELD_DEFINITIONS,
   ConfigRegistry,
+  configuredAgentRoots,
+  discoverAgentFiles,
   HostFileSystem,
+  loadSystemMdProfile,
+  projectAgentRoots,
   PromptFieldRegistryService,
   resolveModelId,
+  userAgentRoots,
+  type AgentFileDefinition,
   type AgentModelProfile,
   type AgentProfile,
   type CollectionView,
@@ -27,14 +33,6 @@ import { transformTomlData } from '@kiki/agent-core-v2/app/config/toml';
 import { ModelsSectionSchema } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { PromptConfigSchema, type PromptConfig } from '@kiki/agent-core-v2/app/prompt/configSection';
 import { ShippedAgentProfileSourceService } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfileSourceService';
-import { discoverAgentFiles } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentFileDiscovery';
-import {
-  configuredAgentRoots,
-  projectAgentRoots,
-  userAgentRoots,
-} from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots';
-import { loadSystemMdProfile } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/systemFile';
-import type { AgentFileDefinition } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/types';
 
 export interface PromptFieldInspectOptions {
   readonly homeDir: string;

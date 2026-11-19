@@ -484,7 +484,7 @@ export class SqliteSearchIndex {
           if (db.prepare('SELECT 1 FROM docs WHERE file_id=? LIMIT 1').get(file.id)) {
             db.exec('BEGIN');
             try { this.deleteDocs('file_id', file.id); this.bumpGeneration(); db.exec('COMMIT'); }
-            catch (error) { db.exec('ROLLBACK'); throw error; }
+            catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
           }
           continue;
         }
@@ -506,7 +506,7 @@ export class SqliteSearchIndex {
       db.prepare('DELETE FROM files WHERE id=?').run(fileId);
       this.bumpGeneration();
       db.exec('COMMIT');
-    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
   }
 
   private async syncFile(session: SqliteSessionInput, path: string, agentId: string, isBranch = false): Promise<void> {
@@ -519,7 +519,7 @@ export class SqliteSearchIndex {
         if (db.prepare('SELECT 1 FROM docs WHERE file_id=? LIMIT 1').get(file.id)) {
           db.exec('BEGIN');
           try { this.deleteDocs('file_id', file.id); this.bumpGeneration(); db.exec('COMMIT'); }
-          catch (error) { db.exec('ROLLBACK'); throw error; }
+          catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
         }
       } else if (file?.policy !== 'skip') {
         if (file) this.removeFile(file.id);
@@ -707,7 +707,7 @@ export class SqliteSearchIndex {
           db.exec('COMMIT');
         } catch (error) { db.exec('ROLLBACK'); throw error; }
       } catch (error) {
-        if (db.isTransaction) db.exec('ROLLBACK');
+        if (db.isTransaction) { db.exec('ROLLBACK'); this.countsDirty = true; }
         db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
         throw error;
       }

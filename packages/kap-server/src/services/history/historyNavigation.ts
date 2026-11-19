@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import type { HistoryDirectoryRequest } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
 import type { HistoryPreparation } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import type { ContentSource, TranscriptTurn } from '@kiki/transcript';
@@ -24,7 +25,7 @@ export class HistoryNavigation implements HistoryLocatorStore {
   private readonly residentFailures = new WeakMap<TranscriptTurn, ResidentFailureReceipt>();
   readonly supportsSortedSearch = true;
 
-  constructor(database: string, transcript: TranscriptService) {
+  constructor(private readonly database: string, transcript: TranscriptService) {
     this.worker = new HistoryNavigationWorker(database, transcript);
   }
 
@@ -116,6 +117,9 @@ export class HistoryNavigation implements HistoryLocatorStore {
   get retainedBodyChars(): number { return this.worker.retainedBodyChars; }
   canonicalReadReport(): NavigationReport { return this.worker.report ?? EMPTY_REPORT; }
   invalidateCanonical(): void { this.generation += 1; this.worker.invalidate(); }
-  deleteSession(sessionId: string): Promise<number> { return this.invoke('deleteSession', [sessionId]); }
+  deleteSession(sessionId: string): Promise<number> {
+    if (!this.worker.isRunning && !existsSync(this.database)) return Promise.resolve(0);
+    return this.invoke('deleteSession', [sessionId]);
+  }
   close(): Promise<void> { return this.worker.close(); }
 }

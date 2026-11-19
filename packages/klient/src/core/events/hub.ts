@@ -264,9 +264,14 @@ export class EventHub<TPayloadMap extends object = KlientEventPayloads>
       };
       this.subs.set(key, sub);
       try {
-        sub.disposable = this.subscribe(key, sub);
+        const disposable = this.subscribe(key, sub);
+        if (this.subs.get(key) !== sub) {
+          disposable.dispose();
+        } else {
+          sub.disposable = disposable;
+        }
       } catch (error) {
-        this.subs.delete(key);
+        if (this.subs.get(key) === sub) this.subs.delete(key);
         throw error;
       }
     } else if (sub.attached) {
