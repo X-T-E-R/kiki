@@ -327,7 +327,7 @@ export function UsageFilterBar({
       list.push({
         key: facet,
         facet,
-        label: facetLabel(facet),
+        label: t(`usage.filter.facet.${facet}`),
         valueText,
         title,
         clear,

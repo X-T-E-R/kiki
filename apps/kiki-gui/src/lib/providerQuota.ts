@@ -181,6 +181,36 @@ export function formatWindowPeriod(seconds: number | undefined): string | undefi
   return `${(seconds / 86400).toFixed(seconds % 86400 === 0 ? 0 : 1)}d`;
 }
 
+/**
+ * Formats a future ISO reset timestamp into a compact human duration ('4d 22h',
+ * '3h 48m', '4天 22小时') suitable for `usage.quota.stripReset` ('Resets in {time}'
+ * / '{time}后重置'). Past or invalid timestamps return `undefined`.
+ */
+export function formatQuotaResetDuration(
+  iso: string | undefined,
+  locale: string,
+  nowMs = Date.now(),
+): string | undefined {
+  if (iso === undefined) return undefined;
+  const resetMs = Date.parse(iso);
+  if (!Number.isFinite(resetMs) || resetMs <= nowMs) return undefined;
+  const totalMinutes = Math.max(1, Math.round((resetMs - nowMs) / 60_000));
+  const zh = locale === 'zh';
+  if (totalMinutes >= 24 * 60) {
+    const days = Math.floor(totalMinutes / (24 * 60));
+    const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+    if (zh) return hours > 0 ? `${days}天${hours}小时` : `${days}天`;
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
+  if (totalMinutes >= 60) {
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    if (zh) return mins > 0 ? `${hours}小时${mins}分` : `${hours}小时`;
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  }
+  return zh ? `${totalMinutes}分` : `${totalMinutes}m`;
+}
+
 export function meterToneClass(utilization: number): string {
   if (utilization >= 100) return 'bg-danger text-danger';
   if (utilization >= 80) return 'bg-amber-rule text-amber-ink';
@@ -221,6 +251,21 @@ export function isSourceRefreshable(source: ProviderQuotaSource, now = Date.now(
   return source.enabled && source.supported && !isSourceLocked(source, now);
 }
 
+export type QuotaFuelTier = 'healthy' | 'low' | 'critical';
+
+export function quotaFuelTier(remainingPercent: number): QuotaFuelTier {
+  if (remainingPercent < 10) return 'critical';
+  if (remainingPercent < 30) return 'low';
+  return 'healthy';
+}
+
+export function quotaFuelBarClass(remainingPercent: number): string {
+  const tier = quotaFuelTier(remainingPercent);
+  if (tier === 'critical') return 'bg-danger';
+  if (tier === 'low') return 'bg-amber-rule';
+  return 'bg-ink/60';
+}
+
 /** A missing total never becomes an inferred usage ratio. Percent meters already carry plan percentages. */
 export function meterUtilization(meter: ProviderQuotaMeter): number | undefined {
   if (meter.unit === 'percent') {
@@ -229,6 +274,28 @@ export function meterUtilization(meter: ProviderQuotaMeter): number | undefined 
   }
   if (meter.used !== null && meter.limit !== null && meter.limit > 0) {
     return Math.round((meter.used / meter.limit) * 100);
+  }
+  return undefined;
+}
+
+/**
+ * Normalized [0..100] remaining fuel percentage when the meter reports either a
+ * percentage allowance or a positive finite limit. Unbounded balances (e.g.
+ * prepaid money with `limit: null`) stay `undefined` so no bar ratio is invented.
+ */
+export function meterRemainingPercent(meter: ProviderQuotaMeter): number | undefined {
+  if (meter.unit === 'percent') {
+    if (meter.remaining !== null) return Math.min(100, Math.max(0, Math.round(meter.remaining)));
+    if (meter.used !== null) return Math.min(100, Math.max(0, 100 - Math.round(meter.used)));
+    return undefined;
+  }
+  if (meter.limit !== null && meter.limit > 0) {
+    if (meter.remaining !== null) {
+      return Math.min(100, Math.max(0, Math.round((meter.remaining / meter.limit) * 100)));
+    }
+    if (meter.used !== null) {
+      return Math.min(100, Math.max(0, 100 - Math.round((meter.used / meter.limit) * 100)));
+    }
   }
   return undefined;
 }

@@ -327,10 +327,10 @@ describe('ProviderQuotaPanel', () => {
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-ready-empty"]')).not.toBeNull();
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-managed"]')).not.toBeNull();
 
-    // Remaining percent (even with limit: 100) is explicitly labeled 'Remaining 52%' with no inferred used progress bar
+    // Remaining percent renders both 'Remaining 52%' and a consistent 52% remaining-fuel progress bar
     const managedRow = container.querySelector('[data-quota-item="src-managed"]')!;
     expect(managedRow.textContent).toContain('Remaining 52%');
-    expect(managedRow.querySelector('[data-quota-progress]')).toBeNull();
+    expect(managedRow.querySelector('[data-quota-progress]')?.getAttribute('data-remaining-percent')).toBe('52');
 
     // Never-queried source (status='unknown', no checked_at, empty meters) shows 'Not queried yet' + 'Query' button
     expect(container.querySelector('[data-quota-not-queried="src-unknown"]')?.textContent).toContain('Not queried yet');
@@ -853,5 +853,89 @@ describe('ProviderQuotaPanel', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('transitions an engine row cleanly when async harnessQuota catalog hydrates (no React #310 hook-order crash) and deduplicates multi-seat model chips', async () => {
+    let configState: Record<string, unknown> = {
+      agent_executor_overrides: {
+        'agy-cli': { show_in_profile_list: true },
+      },
+    };
+    client.getConfig.mockImplementation(async () => ({ raw: configState }));
+    patchConfig.mockImplementation(async (patch: { agent_executor_overrides?: Record<string, { quota_source?: string | null }> }) => {
+      configState = {
+        agent_executor_overrides: {
+          'agy-cli': {
+            show_in_profile_list: true,
+            quota_source: patch.agent_executor_overrides?.['agy-cli']?.quota_source ?? undefined,
+          },
+        },
+      };
+      return { raw: configState };
+    });
+
+    let resolveCached!: (value: { sources: unknown[] }) => void;
+    harnessQuotaCached.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveCached = resolve; }),
+    );
+    show([
+      source({
+        id: 'executor:agy-cli',
+        provider_id: 'agy-cli',
+        label: 'AGY CLI',
+        kind: 'executor',
+        supported: false,
+        status: 'unsupported',
+        meters: [],
+      }),
+    ]);
+
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+
+    // Initially !hasQuotaControls (supported=false, selectedSourceId='', matchingPluginSources=[])
+    const initialRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
+    expect(initialRow).not.toBeNull();
+    expect(initialRow.dataset['engineQuotaMode']).toBeUndefined();
+
+    // Now async plugin catalog resolves -> hasQuotaControls flips false -> true on the mounted EngineQuotaRow!
+    const sharedGeminiModels = ['gemini-3.1-pro-high', 'gemini-3-flash', 'gemini-2.5-pro'];
+    await act(async () => {
+      resolveCached({
+        sources: [
+          {
+            id: 'plugin:magpie/agy',
+            label: 'Magpie AGY Quota',
+            engineIds: ['agy-cli'],
+            minRefreshIntervalMs: 300_000,
+            readAt: new Date(Date.now() - 15_000).toISOString(),
+            readings: [
+              { accountId: 'seat-1@example.test', pool: 'Gemini', window: '5h', remaining: 88, unit: 'percent', modelIds: sharedGeminiModels },
+              { accountId: 'seat-1@example.test', pool: 'Gemini', window: '7d', remaining: 94, unit: 'percent', modelIds: sharedGeminiModels },
+              { accountId: 'seat-2@example.test', pool: 'Gemini', window: '5h', remaining: 18, unit: 'percent', modelIds: sharedGeminiModels },
+              { accountId: 'seat-2@example.test', pool: 'Gemini', window: '7d', remaining: 62, unit: 'percent', modelIds: sharedGeminiModels },
+              { accountId: 'seat-3@example.test', pool: 'Gemini', window: '5h', remaining: 0, unit: 'percent', modelIds: sharedGeminiModels },
+              { accountId: 'seat-3@example.test', pool: 'Gemini', window: '7d', remaining: 40, unit: 'percent', modelIds: sharedGeminiModels },
+            ],
+          },
+        ],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    });
+
+    const hydratedRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
+    expect(hydratedRow.dataset['engineQuotaMode']).toBe('native');
+
+    // Select the plugin source -> renders 3 seats x 2 windows with deduplicated model toggle and top summary strip
+    await selectOption(container, '[data-engine-quota-source="agy-cli"]', 'plugin:magpie/agy');
+    expect(hydratedRow.dataset['engineQuotaMode']).toBe('plugin');
+    expect(hydratedRow.querySelectorAll('[data-quota-account]')).toHaveLength(3);
+    expect(hydratedRow.querySelectorAll('[data-reading-models-toggle]')).toHaveLength(1);
+
+    const summaryStrip = container.querySelector('[data-quota-summary-strip]')!;
+    expect(summaryStrip).not.toBeNull();
+    expect(summaryStrip.textContent).toContain('1 healthy');
+    expect(summaryStrip.textContent).toContain('1 low');
+    expect(summaryStrip.textContent).toContain('1 exhausted');
   });
 });

@@ -2695,4 +2695,46 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     expect(container.querySelector('[data-usage-load-more]')).not.toBeNull();
     await act(async () => { root.unmount(); });
   });
+
+  it('renders 1-decimal cache hit %, instant floating trend tooltip on focus/hover, and compact-ID Costliest sessions rail with 0 extra queries', async () => {
+    const rawWsId = 'wd_orphan_workspace_9f8e7d6c5b4a';
+    const rawSessionId = 'session_afecd3f8-d450-434a-ae3a-d9e35f728b9d';
+    const base = usageResponse({
+      summaryTokens: { input_other: 58, output: 200, input_cache_read: 942, input_cache_creation: 0 },
+      sessions: [
+        { id: rawSessionId, title: undefined, cost: 2.75 },
+      ],
+    });
+    base.sessions.items[0]!.title = null;
+    base.sessions.items[0]!.workspace_id = rawWsId;
+    base.sessions.items[0]!.primary_model = 'k2-thinking';
+    getUsage.mockResolvedValue(base);
+
+    const { container, root } = await renderPage('/usage?panel=history');
+    expect(getUsage).toHaveBeenCalledTimes(1);
+
+    // 942 / (942 + 58) = 94.2%
+    expect(container.querySelector('[data-usage-summary-cache]')?.textContent).toBe('94.2%');
+
+    // Costliest sessions rail is rendered alongside Sources without mounting SessionsTab or leaking raw UUIDs
+    const topRail = container.querySelector('[data-usage-top-sessions]')!;
+    expect(topRail).not.toBeNull();
+    expect(container.querySelector('[data-usage-sessions]')).toBeNull();
+    expect(topRail.textContent).not.toContain(rawWsId);
+    expect(topRail.textContent).not.toContain(rawSessionId);
+    expect(topRail.textContent).toContain('$2.75');
+
+    // Hover/focus on a TrendChart bucket surfaces the floating readout card immediately
+    expect(container.querySelector('[data-usage-trend-tooltip]')).toBeNull();
+    const bucketBtn = container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!;
+    await act(async () => {
+      bucketBtn.focus();
+      bucketBtn.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    const tooltip = container.querySelector('[data-usage-trend-tooltip]');
+    expect(tooltip).not.toBeNull();
+    expect(tooltip?.textContent).toContain('k2-thinking');
+
+    await act(async () => { root.unmount(); });
+  });
 });

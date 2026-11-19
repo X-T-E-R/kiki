@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ExecutorCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
+import { compactIdentifier } from '../../lib/compactIdentifier';
 import { useConnection } from '../../state/connection';
 import { DisclosureChevron, Icon } from '../icons';
 import { FeedbackLine, Toggle, type Feedback } from '../controls';
@@ -15,17 +16,43 @@ import { engineHealth, engineQuotaSourceOf, type EngineHealth } from '../setting
 import { asConfigRecord, EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from '../settings/profileEditor/engines';
 import { SMALL_INPUT } from '../ui';
 import {
-  arrangeQuotaSources, effectiveQuotaStatus, formatHarnessQuotaReading, formatWindowPeriod,
-  groupHarnessQuotaReadings, HARNESS_QUOTA_UNAVAILABLE_MESSAGE, harnessQuotaQueryKey, isSourceLocked,
-  isSourceRefreshable, mergeHarnessQuotaSnapshots, meterUtilization, meterValue,
-  normalizeQuotaSources, pluginQuotaNextExpiryMs, pluginQuotaSnapshotStatus, quotaEngineScopeOf,
-  quotaLocalUsageHref, quotaSettingsHref, readCachedHarnessQuota, signedOutProviderIds, statusBadgeInfo,
+  arrangeQuotaSources,
+  effectiveQuotaStatus,
+  formatHarnessQuotaReading,
+  formatQuotaResetDuration,
+  formatWindowPeriod,
+  groupHarnessQuotaReadings,
+  HARNESS_QUOTA_UNAVAILABLE_MESSAGE,
+  harnessQuotaQueryKey,
+  isSourceLocked,
+  isSourceRefreshable,
+  mergeHarnessQuotaSnapshots,
+  meterRemainingPercent,
+  meterValue,
+  normalizeQuotaSources,
+  pluginQuotaNextExpiryMs,
+  pluginQuotaSnapshotStatus,
+  quotaEngineScopeOf,
+  quotaFuelBarClass,
+  quotaFuelTier,
+  quotaLocalUsageHref,
+  quotaSettingsHref,
+  readCachedHarnessQuota,
+  signedOutProviderIds,
+  statusBadgeInfo,
   useProviderQuotas,
-  type HarnessQuotaReading, type PluginHarnessQuotaSnapshot,
-  type ProviderQuotaMeter, type ProviderQuotaSnapshot, type ProviderQuotaSource, type ProviderQuotaStatus,
+  type HarnessQuotaAccountGroup,
+  type HarnessQuotaReading,
+  type PluginHarnessQuotaSnapshot,
+  type ProviderQuotaMeter,
+  type ProviderQuotaSnapshot,
+  type ProviderQuotaSource,
+  type ProviderQuotaStatus,
 } from '../../lib/providerQuota';
 
 import { isPeerConnectionSource } from '../../lib/peerAccess';
+
+const EMPTY_PLUGIN_QUOTA_SOURCES: readonly PluginHarnessQuotaSnapshot[] = [];
 
 const ENGINE_HEALTH: Record<EngineHealth, { readonly key: I18nKey; readonly dot: string }> = {
   ready: { key: 'st.engines.statusReady', dot: 'bg-success' },
@@ -38,12 +65,102 @@ const ROW_LINK = 'inline-flex h-7 shrink-0 items-center rounded px-1.5 text-[11.
 const SMALL_BUTTON = 'inline-flex h-7 items-center gap-1 rounded border border-hairline bg-paper px-2 text-[11px] font-medium text-ink transition-colors hover:bg-ink/[0.05] disabled:opacity-50';
 const ICON_BUTTON = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded border border-hairline bg-paper px-1.5 text-[11px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50';
 
+interface QuotaFleetSummary {
+  readonly healthy: number;
+  readonly low: number;
+  readonly exhausted: number;
+  readonly attention: number;
+}
+
+function summarizeQuotaFleet(
+  arranged: ReturnType<typeof arrangeQuotaSources>,
+  configRaw: Readonly<Record<string, unknown>> | undefined,
+  pluginQuotaSources: readonly PluginHarnessQuotaSnapshot[],
+  pluginErrors: Readonly<Record<string, string>>,
+  pluginCatalogError: string | undefined,
+  now: number,
+): QuotaFleetSummary {
+  let healthy = 0;
+  let low = 0;
+  let exhausted = 0;
+  let attention = arranged.attention.length;
+
+  const classifyMeters = (meters: readonly ProviderQuotaMeter[]) => {
+    if (meters.length === 0) return;
+    let hasKnown = false;
+    let anyExhausted = false;
+    let anyLow = false;
+    for (const meter of meters) {
+      const remPct = meterRemainingPercent(meter);
+      const reading = meterValue(meter);
+      if (reading.kind === 'unknown') continue;
+      hasKnown = true;
+      if ((remPct !== undefined && remPct <= 0) || (meter.remaining !== null && meter.remaining <= 0)) {
+        anyExhausted = true;
+      } else if (remPct !== undefined && remPct < 30) {
+        anyLow = true;
+      }
+    }
+    if (!hasKnown) return;
+    if (anyExhausted) exhausted += 1;
+    else if (anyLow) low += 1;
+    else healthy += 1;
+  };
+
+  for (const source of arranged.ledger) {
+    classifyMeters(source.meters);
+  }
+
+  for (const engine of arranged.engines) {
+    const engineId = engine.provider_id;
+    const selectedSourceId = engineQuotaSourceOf(configRaw, engineId);
+    if (selectedSourceId === '') {
+      if (engine.supported) {
+        if (engine.status === 'error' || engine.status === 'auth_required') attention += 1;
+        else classifyMeters(engine.meters);
+      }
+      continue;
+    }
+    const snap = pluginQuotaSources.find((entry) => entry.id === selectedSourceId);
+    const pStatus = pluginQuotaSnapshotStatus(
+      snap,
+      engineId,
+      pluginErrors[selectedSourceId],
+      now,
+      pluginCatalogError !== undefined,
+    );
+    if (pStatus === 'error' || pStatus === 'missing') {
+      attention += 1;
+      continue;
+    }
+    if (pStatus !== 'ready' || snap?.readings === undefined) continue;
+    const groups = groupHarnessQuotaReadings(snap.readings);
+    for (const group of groups) {
+      let hasKnown = false;
+      let seatExhausted = false;
+      let seatLow = false;
+      for (const reading of group.readings) {
+        const val = formatHarnessQuotaReading(reading);
+        if (val.kind === 'unknown') continue;
+        hasKnown = true;
+        if (val.exhausted) seatExhausted = true;
+        else if (val.remainingPercent !== undefined && val.remainingPercent < 30) seatLow = true;
+      }
+      if (!hasKnown) continue;
+      if (seatExhausted) exhausted += 1;
+      else if (seatLow) low += 1;
+      else healthy += 1;
+    }
+  }
+
+  return { healthy, low, exhausted, attention };
+}
+
 /**
- * Usage › Quota. The subject is what each vendor still allows: enabled sources
- * with an official quota API form a single ledger; sources needing sign-in or
- * recovery surface at the top. Connections without such an API or with checks
- * turned off are folded at the tail, and external engines appear only when
- * turned on in Settings.
+ * Usage › Quota. Enabled sources with an official quota API and plugin-backed
+ * multi-account OAuth engines share one remaining-fuel visual grammar: longer
+ * bar always means more remaining capacity, multi-seat harnesses align in a
+ * scannable matrix, and inactive connections fold quietly at the tail.
  */
 export function ProviderQuotaPanel() {
   const { t, time, locale } = useI18n();
@@ -61,14 +178,11 @@ export function ProviderQuotaPanel() {
     refetchOnWindowFocus: false,
     retry: false,
   });
-  const pluginQuotaSources = harnessQuotaQuery.data?.sources ?? [];
+  const pluginQuotaSources = harnessQuotaQuery.data?.sources ?? EMPTY_PLUGIN_QUOTA_SOURCES;
   const pluginCatalogError = harnessQuotaQuery.isError ? errorText(locale, harnessQuotaQuery.error) : undefined;
-  const [expiryTick, setExpiryTick] = useState(0);
+  const [, setExpiryTick] = useState(0);
   const now = Date.now();
-  const nextPluginExpiryMs = useMemo(
-    () => pluginQuotaNextExpiryMs(pluginQuotaSources, now),
-    [pluginQuotaSources, now, expiryTick],
-  );
+  const nextPluginExpiryMs = pluginQuotaNextExpiryMs(pluginQuotaSources, now);
   useEffect(() => {
     if (nextPluginExpiryMs === undefined) return;
     const delayMs = Math.max(0, nextPluginExpiryMs - Date.now());
@@ -77,6 +191,7 @@ export function ProviderQuotaPanel() {
     }, delayMs);
     return () => { clearTimeout(timer); };
   }, [nextPluginExpiryMs]);
+
   const configRaw = asConfigRecord(configQuery.data?.raw);
   const sources = normalizeQuotaSources(snapshot);
   const providers = providersQuery.data?.items;
@@ -91,6 +206,19 @@ export function ProviderQuotaPanel() {
   const [refreshingPluginIds, setRefreshingPluginIds] = useState<ReadonlySet<string>>(() => new Set());
   const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
   const [savingEngineSourceIds, setSavingEngineSourceIds] = useState<ReadonlySet<string>>(() => new Set());
+
+  const fleetSummary = summarizeQuotaFleet(
+    arranged,
+    configRaw,
+    pluginQuotaSources,
+    pluginErrors,
+    pluginCatalogError,
+    now,
+  );
+  const showFleetSummary =
+    !loading &&
+    !isError &&
+    (fleetSummary.healthy + fleetSummary.low + fleetSummary.exhausted + fleetSummary.attention > 0);
 
   const clearFeedback = (id: string) => {
     setSourceFeedbacks((prev) => {
@@ -220,37 +348,75 @@ export function ProviderQuotaPanel() {
 
   return (
     <div className="space-y-6" data-provider-quota-panel>
-      <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className="mr-auto font-display text-[18px] leading-6 text-ink">{t('usage.quota.title')}</h2>
-        <div className="flex items-center gap-3">
-          {stale ? (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h2 className="mr-auto font-display text-[18px] leading-6 text-ink">{t('usage.quota.title')}</h2>
+          <div className="flex items-center gap-3">
+            {stale ? (
+              <button
+                type="button"
+                data-quota-stale
+                aria-label={`${t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })} · ${t('usage.execution.retryRefresh')}`}
+                title={`${t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })} · ${t('usage.execution.retryRefresh')}`}
+                onClick={() => { void refetch(); }}
+                disabled={isRefetching}
+                className="inline-flex items-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-50"
+              >
+                <Icon name="refresh" size={12} className={`h-[13px] w-[13px] ${isRefetching ? 'animate-spin' : ''}`} />
+              </button>
+            ) : asOfTime ? (
+              <span className="text-[12px] text-ink-faint tabular-nums">{t('usage.quota.asOf', { time: time.relativeTime(asOfTime) })}</span>
+            ) : null}
             <button
               type="button"
-              data-quota-stale
-              aria-label={`${t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })} · ${t('usage.execution.retryRefresh')}`}
-              title={`${t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })} · ${t('usage.execution.retryRefresh')}`}
-              onClick={() => { void refetch(); }}
-              disabled={isRefetching}
-              className="inline-flex items-center text-amber-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-50"
+              data-quota-refresh-button
+              onClick={() => void handleHeaderRefresh()}
+              disabled={loading || isRefetching || refreshingAll}
+              className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2.5 py-1 text-[12px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11"
             >
-              <Icon name="refresh" size={12} className={`h-[13px] w-[13px] ${isRefetching ? 'animate-spin' : ''}`} />
+              <Icon name="refresh" size={14} className={isRefetching || refreshingAll ? 'animate-spin' : undefined} />
+              {t(isRefetching || refreshingAll ? 'usage.quota.refreshing' : 'usage.quota.refreshAll')}
             </button>
-          ) : asOfTime ? (
-            <span className="text-[12px] text-ink-faint">{t('usage.quota.asOf', { time: time.relativeTime(asOfTime) })}</span>
-          ) : null}
-          <button type="button" data-quota-refresh-button onClick={() => void handleHeaderRefresh()} disabled={loading || isRefetching || refreshingAll}
-            className="inline-flex min-h-8 items-center gap-1.5 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11">
-            <Icon name="refresh" size={14} className={isRefetching || refreshingAll ? 'animate-spin' : undefined} />
-            {t(isRefetching || refreshingAll ? 'usage.quota.refreshing' : 'usage.quota.refreshAll')}
-          </button>
+          </div>
         </div>
+
+        {showFleetSummary ? (
+          <div
+            data-quota-summary-strip
+            className="flex flex-wrap items-center gap-x-5 gap-y-1.5 border-y border-hairline py-2 text-[12px] tabular-nums"
+          >
+            <span className="inline-flex items-center gap-1.5 text-ink-soft">
+              <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success" />
+              <span className="font-medium text-ink">{t('usage.quota.summary.healthy', { count: fleetSummary.healthy })}</span>
+            </span>
+            {fleetSummary.low > 0 ? (
+              <span className="inline-flex items-center gap-1.5 text-amber-ink">
+                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-amber-rule" />
+                <span className="font-medium">{t('usage.quota.summary.low', { count: fleetSummary.low })}</span>
+              </span>
+            ) : null}
+            {fleetSummary.exhausted > 0 ? (
+              <span className="inline-flex items-center gap-1.5 text-danger">
+                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-danger" />
+                <span className="font-medium">{t('usage.quota.summary.exhausted', { count: fleetSummary.exhausted })}</span>
+              </span>
+            ) : null}
+            {fleetSummary.attention > 0 ? (
+              <span className="inline-flex items-center gap-1.5 text-danger">
+                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-danger/70" />
+                <span className="font-medium">{t('usage.quota.summary.attention', { count: fleetSummary.attention })}</span>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+
       {loading ? (
-        <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-hairline bg-panel px-4 py-8 text-[13px] text-ink-faint">
+        <div role="status" className="flex items-center gap-2 py-8 text-[13px] text-ink-faint">
           <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />{t('usage.loading')}
         </div>
       ) : isError ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-[12.5px] text-danger" data-quota-snapshot-error>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-danger/30 bg-danger/5 px-4 py-3 text-[12.5px] text-danger" data-quota-snapshot-error>
           <p className="font-medium">{t('usage.quota.status.error')}</p>
           <button type="button" data-quota-snapshot-retry className={SMALL_BUTTON} onClick={() => { void refetch(); }}>
             {t('st.im.retry')}
@@ -259,19 +425,19 @@ export function ProviderQuotaPanel() {
       ) : (
         <>
           {arranged.live.length === 0 ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-hairline bg-panel px-4 py-6 text-[13px] text-ink-faint" data-quota-empty>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-y border-hairline py-5 text-[13px] text-ink-faint" data-quota-empty>
               <div>
-                <p className="text-ink-soft">{t('usage.quota.emptyTitle')}</p>
-                <p className="mt-0.5 text-[11.5px] text-ink-faint">{t('usage.quota.emptyBody')}</p>
+                <p className="font-medium text-ink-soft">{t('usage.quota.emptyTitle')}</p>
+                <p className="mt-0.5 text-[12px] text-ink-faint">{t('usage.quota.emptyBody')}</p>
               </div>
               <Link to="/settings/ai?tab=providers" data-quota-manage-connections className={ROW_LINK}>
                 {t('usage.quota.action.manageConnections')}
               </Link>
             </div>
           ) : (
-            <div className="space-y-5" data-quota-items>
+            <div className="space-y-6" data-quota-items>
               {arranged.attention.length > 0 ? (
-                <section className="space-y-2" data-quota-attention>
+                <section className="space-y-2.5" data-quota-attention>
                   <SectionHeading title={t('usage.quota.attentionTitle')} />
                   <div className="space-y-2.5">
                     {arranged.attention.map((source) => {
@@ -299,7 +465,7 @@ export function ProviderQuotaPanel() {
               {arranged.ledger.length > 0 ? (
                 <section className="space-y-2" data-quota-ledger>
                   {arranged.attention.length > 0 ? <SectionHeading title={t('usage.quota.ledgerTitle')} /> : null}
-                  <div className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-panel">
+                  <div className="divide-y divide-hairline border-y border-hairline">
                     {arranged.ledger.map((source) => {
                       const provider = providerById(source.provider_id);
                       return (
@@ -323,6 +489,7 @@ export function ProviderQuotaPanel() {
               ) : null}
             </div>
           )}
+
           <EngineQuotaSection
             engines={arranged.engines}
             hidden={arranged.hiddenEngines}
@@ -346,7 +513,8 @@ export function ProviderQuotaPanel() {
             onRefreshPluginSource={refreshPluginSource}
             onRefreshNativeSource={refreshSource}
           />
-          <div className="space-y-2">
+
+          <div className="space-y-1.5 pt-1">
             <UnsupportedQuotaSection sources={arranged.unsupported} providerById={providerById} />
             <OffQuotaSection sources={arranged.off} providerById={providerById} onEnable={(id) => setSourceEnabled(id, true)} />
           </div>
@@ -364,7 +532,7 @@ function SectionHeading({ title, action, children }: { readonly title: string; r
   return (
     <div className="mb-2 space-y-0.5">
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-[13px] font-semibold text-ink">{title}</h3>
+        <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-ink">{title}</h3>
         {action}
       </div>
       {children}
@@ -383,10 +551,12 @@ function SourceIdentitySubtitle({ source, settingsHref }: {
   readonly settingsHref: string;
 }) {
   const { t } = useI18n();
-  const detailText = [source.account_label, source.source.label].filter(Boolean).join(' · ');
+  const accountDisplay = source.account_label ? compactIdentifier(source.account_label) : undefined;
+  const detailText = [accountDisplay, source.source.label].filter(Boolean).join(' · ');
+  const rawTitle = [source.account_label, source.source.label].filter(Boolean).join(' · ');
   return (
     <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11.5px] text-ink-faint">
-      <span className="min-w-0 truncate" title={detailText}>{detailText}</span>
+      <span className="min-w-0 truncate" title={rawTitle}>{detailText}</span>
       <span aria-hidden>·</span>
       <Link to={settingsHref} data-quota-settings-link={source.id} className="shrink-0 text-ink-soft hover:text-ink hover:underline">
         {t('usage.quota.action.settings')}
@@ -515,11 +685,11 @@ function AttentionQuotaRow({ source, status, signedOut, settingsHref, localUsage
   };
   const message = signedOut ? t(q('usage.quota.signedOut')) : source.message ?? source.reason;
   const cardTone = status === 'auth_required'
-    ? 'border-amber-rule/40 bg-amber-card'
+    ? 'border-amber-rule/40 bg-amber-card/70'
     : 'border-danger/30 bg-danger/5';
 
   return (
-    <section data-quota-item={source.id} className={`space-y-2.5 rounded-xl border p-3.5 ${cardTone}`}>
+    <section data-quota-item={source.id} className={`space-y-2.5 rounded-lg border p-3.5 ${cardTone}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
@@ -557,7 +727,7 @@ function AttentionQuotaRow({ source, status, signedOut, settingsHref, localUsage
       </div>
       {message ? <p className="truncate text-[12px] text-ink-soft" title={message}>{message}</p> : null}
       {source.meters.length > 0 ? (
-        <div className="space-y-2 border-t border-hairline/70 pt-2.5 opacity-75">
+        <div className="space-y-2 border-t border-hairline/70 pt-2.5 opacity-85">
           {source.meters.map((meter) => <QuotaMeterRow key={meter.id} meter={meter} sourceStatus={status} />)}
         </div>
       ) : null}
@@ -604,8 +774,8 @@ function LedgerQuotaRow({ source, status, signedOut, settingsHref, localUsageHre
   const emptyStatusMessage = source.message ?? source.reason;
 
   return (
-    <section data-quota-item={source.id} className="space-y-2 px-4 py-3">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 md:grid-cols-[minmax(160px,220px)_1fr_auto]">
+    <section data-quota-item={source.id} className="space-y-2 py-3.5">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-6 gap-y-2 md:grid-cols-[minmax(180px,220px)_minmax(0,1fr)_auto]">
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
             <h4 className="truncate font-display text-[14px] font-semibold text-ink">{source.label}</h4>
@@ -623,7 +793,7 @@ function LedgerQuotaRow({ source, status, signedOut, settingsHref, localUsageHre
 
         <div className="min-w-0 max-md:col-span-2 max-md:order-3">
           {source.meters.length > 0 ? (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {source.meters.map((meter) => <QuotaMeterRow key={meter.id} meter={meter} sourceStatus={status} />)}
             </div>
           ) : unqueried ? (
@@ -718,9 +888,11 @@ function EngineQuotaSection({
     return selected !== '' || pluginQuotaSources.some((entry) => entry.engineIds.includes(engineId));
   });
   return (
-    <section data-quota-engines>
-      <SectionHeading title={t(q('usage.quota.engines.title'))}
-        action={<Link to="/settings/ai#st-card-engines" data-quota-engines-manage className={ROW_LINK}>{t(q('usage.quota.engines.manage'))}</Link>} />
+    <section data-quota-engines className="space-y-2">
+      <SectionHeading
+        title={t(q('usage.quota.engines.title'))}
+        action={<Link to="/settings/ai#st-card-engines" data-quota-engines-manage className={ROW_LINK}>{t(q('usage.quota.engines.manage'))}</Link>}
+      />
       {configError ? (
         <div className="mb-2 flex flex-wrap items-center gap-2" data-quota-engine-config-error>
           <FeedbackLine feedback={{ tone: 'error', text: t('usage.quota.engines.configError') }} />
@@ -734,7 +906,7 @@ function EngineQuotaSection({
         </div>
       ) : null}
       {engines.length > 0 ? (
-        <ul className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-panel">
+        <ul className="divide-y divide-hairline border-y border-hairline">
           {engines.map((source) => {
             const engineId = source.provider_id;
             const item = catalog?.find((entry) => entry.id === engineId);
@@ -773,7 +945,7 @@ function EngineQuotaSection({
         </ul>
       ) : null}
       {hidden > 0 || anyQuotaSelectorShown ? (
-        <p className="mt-2 text-[11.5px] text-ink-faint">
+        <p className="pt-1 text-[11.5px] text-ink-faint">
           {hidden > 0 ? (
             <span data-quota-hidden-engines={hidden} className="mr-1.5">{t(q('usage.quota.engines.hidden'), { n: hidden })}</span>
           ) : null}
@@ -812,17 +984,32 @@ function EngineQuotaRow({
 }) {
   const { t, time, locale } = useI18n();
   const [localFeedback, setLocalFeedback] = useState<Feedback>(null);
-  const feedback = localFeedback ?? externalFeedback ?? null;
   const engineId = source.provider_id;
+  const isPluginMode = selectedSourceId !== '';
+  const pStatus = isPluginMode
+    ? pluginQuotaSnapshotStatus(selectedPluginSnapshot, engineId, pluginError, now, pluginCatalogError !== undefined)
+    : undefined;
+  const pluginReadings = selectedPluginSnapshot?.readings;
+  const accountGroups = useMemo<readonly HarnessQuotaAccountGroup[]>(
+    () => (isPluginMode && pStatus === 'ready' && pluginReadings !== undefined
+      ? groupHarnessQuotaReadings(pluginReadings)
+      : []),
+    [isPluginMode, pStatus, pluginReadings],
+  );
+
+  const feedback = localFeedback ?? externalFeedback ?? null;
   const view = ENGINE_HEALTH[health];
   const hasQuotaControls = matchingPluginSources.length > 0 || selectedSourceId !== '' || source.supported;
 
   if (!hasQuotaControls) {
     return (
-      <li data-quota-engine={engineId} data-engine-health={health}
-        className="flex min-h-10 items-center gap-3 px-3.5 py-2">
-        <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
-          {source.label}
+      <li
+        data-quota-engine={engineId}
+        data-engine-health={health}
+        className="flex min-h-10 items-center gap-3 py-2.5"
+      >
+        <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
+          <span className="font-medium">{source.label}</span>
           <span className="ml-2 hidden font-mono text-[11px] text-ink-faint sm:inline">{engineId}</span>
         </span>
         <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-soft">
@@ -836,11 +1023,7 @@ function EngineQuotaRow({
     );
   }
 
-  const isPluginMode = selectedSourceId !== '';
   const showSourceSelect = matchingPluginSources.length > 0 || selectedSourceId !== '';
-  const pStatus = isPluginMode
-    ? pluginQuotaSnapshotStatus(selectedPluginSnapshot, engineId, pluginError, now, pluginCatalogError !== undefined)
-    : undefined;
   const isNativeLocked = !isPluginMode && isSourceLocked(source);
   const nativeRefreshAfterMs = source.refresh_after ? new Date(source.refresh_after).getTime() : 0;
   const nativeSecondsLeft = isNativeLocked ? Math.ceil((nativeRefreshAfterMs - Date.now()) / 1000) : 0;
@@ -873,28 +1056,27 @@ function EngineQuotaRow({
 
   const nativeHasBeenQueried = source.status !== 'unknown' || source.checked_at !== undefined || source.data_as_of !== undefined;
   const nativeUnqueried = !isPluginMode && source.supported && !nativeHasBeenQueried && source.meters.length === 0;
-  const accountGroups = useMemo(
-    () => (isPluginMode && pStatus === 'ready' && selectedPluginSnapshot?.readings !== undefined
-      ? groupHarnessQuotaReadings(selectedPluginSnapshot.readings)
-      : []),
-    [isPluginMode, pStatus, selectedPluginSnapshot?.readings],
-  );
 
   return (
     <li
       data-quota-engine={engineId}
       data-engine-health={health}
       data-engine-quota-mode={isPluginMode ? 'plugin' : 'native'}
-      className="space-y-2.5 px-4 py-3"
+      className="space-y-3 py-3.5"
     >
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-          <span className="truncate font-display text-[13.5px] font-semibold text-ink">{source.label}</span>
+          <span className="truncate font-display text-[14px] font-semibold text-ink">{source.label}</span>
           <span className="hidden font-mono text-[11px] text-ink-faint sm:inline">{engineId}</span>
           <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-soft">
             <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${view.dot}`} />
             {t(view.key)}
           </span>
+          { isPluginMode && accountGroups.length > 1 ? (
+            <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] text-ink-soft tabular-nums">
+              {t('usage.quota.summary.seats', { count: accountGroups.length })}
+            </span>
+          ) : null }
           {health === 'warning' || health === 'missing' ? (
             <Link to={quotaSettingsHref(source)} data-quota-engine-settings={engineId} className={ROW_LINK}>
               {t('usage.quota.action.settings')}
@@ -968,7 +1150,7 @@ function EngineQuotaRow({
         source.supported ? (
           <div className="space-y-2" data-engine-native-quota={engineId} data-engine-quota-status={nativeUnqueried ? 'unqueried' : source.status}>
             {source.meters.length > 0 ? (
-              <div className="space-y-2" data-engine-native-meters={engineId}>
+              <div className="space-y-2.5" data-engine-native-meters={engineId}>
                 {source.meters.map((meter) => <QuotaMeterRow key={meter.id} meter={meter} sourceStatus={source.status} />)}
               </div>
             ) : nativeUnqueried ? (
@@ -1054,27 +1236,11 @@ function EngineQuotaRow({
               {t(q('usage.quota.engines.pluginEmpty'))}
             </p>
           ) : (
-            <div className="divide-y divide-hairline/60" data-engine-plugin-readings={engineId}>
-              {accountGroups.map((group) => (
-                <div key={group.accountId} data-quota-account={group.accountId} className="space-y-1.5 py-2 first:pt-0.5 last:pb-0.5">
-                  <div className="flex flex-wrap items-baseline gap-1.5 text-[11.5px]">
-                    <span className="font-medium text-ink">{group.accountLabel}</span>
-                    {group.showAccountId ? (
-                      <span className="font-mono text-[10.5px] text-ink-faint">{group.accountId}</span>
-                    ) : null}
-                  </div>
-                  <div className="space-y-2">
-                    {group.readings.map((reading, index) => (
-                      <PluginQuotaBucketRow
-                        key={`${reading.pool ?? 'default'}:${reading.window ?? ''}:${index}`}
-                        reading={reading}
-                        snapshotReadAt={selectedPluginSnapshot?.readAt}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <PluginAccountsMatrix
+              engineId={engineId}
+              accountGroups={accountGroups}
+              snapshotReadAt={selectedPluginSnapshot?.readAt}
+            />
           )}
           <FeedbackLine feedback={feedback} />
         </div>
@@ -1083,82 +1249,214 @@ function EngineQuotaRow({
   );
 }
 
-function PluginQuotaBucketRow({ reading, snapshotReadAt }: {
-  readonly reading: HarnessQuotaReading;
+function accountSeatDotClass(readings: readonly HarnessQuotaReading[]): string {
+  let hasKnown = false;
+  let anyExhausted = false;
+  let anyLow = false;
+  for (const reading of readings) {
+    const val = formatHarnessQuotaReading(reading);
+    if (val.kind === 'unknown') continue;
+    hasKnown = true;
+    if (val.exhausted) anyExhausted = true;
+    else if (val.remainingPercent !== undefined && val.remainingPercent < 30) anyLow = true;
+  }
+  if (!hasKnown) return 'bg-ink/25';
+  if (anyExhausted) return 'bg-danger';
+  if (anyLow) return 'bg-amber-rule';
+  return 'bg-success';
+}
+
+function PluginAccountsMatrix({
+  engineId,
+  accountGroups,
+  snapshotReadAt,
+}: {
+  readonly engineId: string;
+  readonly accountGroups: readonly HarnessQuotaAccountGroup[];
   readonly snapshotReadAt: string | undefined;
 }) {
-  const { t, time } = useI18n();
+  const maxCols = Math.max(1, ...accountGroups.map((group) => group.readings.length));
+  const multiColumn = maxCols > 1;
+  const cellsGridClass =
+    maxCols >= 4
+      ? 'grid gap-x-5 gap-y-2.5 sm:grid-cols-2 xl:grid-cols-4'
+      : maxCols === 3
+        ? 'grid gap-x-5 gap-y-2.5 sm:grid-cols-2 xl:grid-cols-3'
+        : maxCols === 2
+          ? 'grid gap-x-5 gap-y-2.5 sm:grid-cols-2'
+          : 'space-y-2';
+
+  // Deduplicate identical (pool, modelIds) disclosures across repeated windows/seats
+  // so 6 OAuth accounts x 2 windows don't repeat the same "13 models" chip 12 times.
+  const firstModelSigOccurrence = useMemo(() => {
+    const seen = new Set<string>();
+    const allowed = new Set<string>();
+    accountGroups.forEach((group, groupIndex) => {
+      group.readings.forEach((reading, readingIndex) => {
+        const models = reading.modelIds ?? [];
+        if (models.length === 0) return;
+        const sig = `${reading.pool ?? 'default'}::${models.join(',')}`;
+        if (!seen.has(sig)) {
+          seen.add(sig);
+          allowed.add(`${groupIndex}:${readingIndex}`);
+        }
+      });
+    });
+    return allowed;
+  }, [accountGroups]);
+
+  return (
+    <div className="divide-y divide-hairline/70 border-t border-hairline/70" data-engine-plugin-readings={engineId}>
+      {accountGroups.map((group, groupIndex) => {
+        const seatDot = accountSeatDotClass(group.readings);
+        const labelDisplay = compactIdentifier(group.accountLabel);
+        const idDisplay = group.showAccountId ? compactIdentifier(group.accountId) : undefined;
+        return (
+          <div
+            key={group.accountId}
+            data-quota-account={group.accountId}
+            className="grid grid-cols-1 gap-x-5 gap-y-2 py-2.5 last:pb-0.5 lg:grid-cols-[minmax(172px,212px)_minmax(0,1fr)] lg:items-start"
+          >
+            <div className="flex min-w-0 items-center gap-2 pt-0.5 text-[12px]">
+              <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${seatDot}`} />
+              <span className="min-w-0 truncate font-medium text-ink" title={group.accountLabel}>
+                {labelDisplay}
+              </span>
+              {idDisplay !== undefined ? (
+                <span className="shrink-0 font-mono text-[10.5px] text-ink-faint" title={group.accountId}>
+                  {idDisplay}
+                </span>
+              ) : null}
+            </div>
+
+            <div className={cellsGridClass}>
+              {group.readings.map((reading, readingIndex) => (
+                <PluginQuotaBucketCell
+                  key={`${reading.pool ?? 'default'}:${reading.window ?? ''}:${readingIndex}`}
+                  reading={reading}
+                  snapshotReadAt={snapshotReadAt}
+                  showModelDisclosure={firstModelSigOccurrence.has(`${groupIndex}:${readingIndex}`)}
+                  alignTrack={multiColumn}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PluginQuotaBucketCell({
+  reading,
+  snapshotReadAt,
+  showModelDisclosure,
+  alignTrack,
+}: {
+  readonly reading: HarnessQuotaReading;
+  readonly snapshotReadAt: string | undefined;
+  readonly showModelDisclosure: boolean;
+  readonly alignTrack: boolean;
+}) {
+  const { t, time, locale } = useI18n();
   const [modelsOpen, setModelsOpen] = useState(false);
   const val = formatHarnessQuotaReading(reading);
   const models = reading.modelIds ?? [];
   const singleModelAsLabel = reading.pool === undefined && models.length === 1;
   const poolLabel = reading.pool ?? (singleModelAsLabel ? models[0]! : t(q('usage.quota.engines.defaultPool')));
-  const inlineModels = !singleModelAsLabel && models.length > 0 && models.length <= 2;
-  const foldModels = models.length > 2;
+  const inlineModels = showModelDisclosure && !singleModelAsLabel && models.length > 0 && models.length <= 2;
+  const foldModels = showModelDisclosure && models.length > 2;
   const distinctReadAt = reading.readAt !== undefined && reading.readAt !== snapshotReadAt ? reading.readAt : undefined;
-  const barTone = val.kind === 'known' && val.remainingPercent !== undefined
-    ? quotaBarTone(val.remainingPercent)
-    : undefined;
-  const low = val.kind === 'known' && val.remainingPercent !== undefined && quotaIsLow(val.remainingPercent);
+  const remainingPct = val.kind === 'known' ? val.remainingPercent : undefined;
+  const tier = remainingPct !== undefined ? quotaFuelTier(remainingPct) : undefined;
+  const resetDuration = formatQuotaResetDuration(reading.resetAt, locale);
+  const hasMetaRow = resetDuration !== undefined || distinctReadAt !== undefined || inlineModels || foldModels;
+
+  const valueTone =
+    val.kind === 'known'
+      ? val.exhausted || tier === 'critical'
+        ? 'font-medium text-danger'
+        : tier === 'low'
+          ? 'font-medium text-amber-ink'
+          : 'text-ink'
+      : 'text-ink-faint';
 
   return (
     <div
-      className="space-y-1 text-[12px]"
+      className="min-w-0 space-y-1 text-[12px]"
       data-quota-bucket={reading.pool ?? 'default'}
       data-quota-window={reading.window ?? ''}
+      data-quota-low={tier === 'critical' ? 'true' : undefined}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <div className="flex min-w-0 flex-wrap items-baseline gap-1.5">
-          <span className="truncate text-ink-soft">{poolLabel}</span>
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="min-w-0 truncate text-ink-soft" title={poolLabel}>{poolLabel}</span>
           {reading.window ? (
-            <span className="shrink-0 rounded bg-ink/[0.06] px-1.5 py-px font-mono text-[10px] text-ink-soft" data-bucket-window>
+            <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-px font-mono text-[10px] text-ink-faint" data-bucket-window>
               {reading.window}
             </span>
           ) : null}
-          {inlineModels ? (
-            <span className="font-mono text-[10.5px] text-ink-faint" data-reading-models-inline>
-              {models.join(' · ')}
-            </span>
-          ) : null}
+        </div>
+
+        {val.kind === 'unknown' ? (
+          <span className="shrink-0 text-[11.5px] text-ink-faint tabular-nums" data-reading-state="unknown">
+            {t('usage.quota.status.unknown')}
+          </span>
+        ) : (
+          <span
+            className={`shrink-0 text-[11.5px] tabular-nums ${valueTone}`}
+            data-reading-state={val.exhausted ? 'exhausted' : 'available'}
+          >
+            {t('usage.quota.value.remaining', { value: val.value })}
+          </span>
+        )}
+      </div>
+
+      {remainingPct !== undefined ? (
+        <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-ink/[0.07]" data-bucket-progress>
+          <div
+            className={`h-full rounded-full transition-all duration-200 ${quotaFuelBarClass(remainingPct)}`}
+            style={{ width: `${remainingPct}%` }}
+          />
+        </div>
+      ) : alignTrack ? (
+        <div aria-hidden className="h-1.5 w-full rounded-full border border-dashed border-hairline/80" />
+      ) : null}
+
+      {hasMetaRow ? (
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pt-0.5 text-[10.5px] text-ink-faint">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            {resetDuration !== undefined && reading.resetAt ? (
+              <span className="tabular-nums" title={reading.resetAt}>
+                {t('usage.quota.stripReset', { time: resetDuration })}
+              </span>
+            ) : null}
+            {distinctReadAt ? (
+              <span className="tabular-nums" data-reading-read-at={distinctReadAt} title={distinctReadAt}>
+                {t(q('usage.quota.engines.readAt'), { time: time.relativeTime(distinctReadAt) })}
+              </span>
+            ) : null}
+            {inlineModels ? (
+              <span className="font-mono text-[10px]" data-reading-models-inline>
+                {models.join(' · ')}
+              </span>
+            ) : null}
+          </div>
+
           {foldModels ? (
             <button
               type="button"
               data-reading-models-toggle
               aria-expanded={modelsOpen}
               onClick={() => { setModelsOpen((prev) => !prev); }}
-              className="inline-flex items-center gap-1 rounded bg-ink/[0.05] px-1.5 py-px font-mono text-[10px] text-ink-soft transition-colors hover:bg-ink/[0.09] hover:text-ink"
+              className="inline-flex items-center gap-1 rounded bg-ink/[0.04] px-1.5 py-px font-mono text-[10px] text-ink-soft transition-colors hover:bg-ink/[0.08] hover:text-ink"
             >
               <DisclosureChevron open={modelsOpen} />
               <span>{t(q('usage.quota.engines.modelsCount'), { count: models.length })}</span>
             </button>
           ) : null}
         </div>
-
-        <div className="flex shrink-0 items-baseline gap-2">
-          {val.kind === 'unknown' ? (
-            <span className="text-[11.5px] text-ink-faint tabular-nums" data-reading-state="unknown">
-              {t('usage.quota.status.unknown')}
-            </span>
-          ) : (
-            <span
-              className={`text-[11.5px] tabular-nums ${val.exhausted ? 'font-medium text-danger' : 'text-ink'}`}
-              data-reading-state={val.exhausted ? 'exhausted' : 'available'}
-            >
-              {t('usage.quota.value.remaining', { value: val.value })}
-            </span>
-          )}
-          {reading.resetAt ? (
-            <span className="text-[10.5px] text-ink-faint" title={reading.resetAt}>
-              {t('usage.quota.resets', { time: time.timeUntil(reading.resetAt) })}
-            </span>
-          ) : null}
-          {distinctReadAt ? (
-            <span className="text-[10.5px] text-ink-faint tabular-nums" data-reading-read-at={distinctReadAt} title={distinctReadAt}>
-              {t(q('usage.quota.engines.readAt'), { time: time.relativeTime(distinctReadAt) })}
-            </span>
-          ) : null}
-        </div>
-      </div>
+      ) : null}
 
       {foldModels && modelsOpen ? (
         <div className="flex flex-wrap gap-1 pt-0.5" data-reading-models-list>
@@ -1169,16 +1467,6 @@ function PluginQuotaBucketRow({ reading, snapshotReadAt }: {
           ))}
         </div>
       ) : null}
-
-      {val.kind === 'known' && val.remainingPercent !== undefined && barTone !== undefined ? (
-        <div className="relative h-1 w-full overflow-hidden rounded-full bg-ink/[0.07]" data-bucket-progress>
-          <div
-            className={`h-full rounded-full transition-all duration-300 ${barTone}`}
-            style={{ width: `${val.remainingPercent}%` }}
-          />
-        </div>
-      ) : null}
-      {low ? <p data-quota-low className="text-[11px] font-medium text-attention">{t('usage.quota.low')}</p> : null}
     </div>
   );
 }
@@ -1192,20 +1480,24 @@ function UnsupportedQuotaSection({ sources, providerById }: {
   if (sources.length === 0) return null;
   const ordered = [...sources.filter((source) => source.kind === 'provider'), ...sources.filter((source) => source.kind !== 'provider')];
   return (
-    <details data-quota-unsupported={sources.length} open={open} onToggle={(event) => { setOpen(event.currentTarget.open); }}
-      className="rounded-lg border border-hairline">
+    <details
+      data-quota-unsupported={sources.length}
+      open={open}
+      onToggle={(event) => { setOpen(event.currentTarget.open); }}
+      className="border-t border-hairline pt-1"
+    >
       <summary
         title={t(q('usage.quota.unsupported.note'))}
-        className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-[12.5px] text-ink-soft hover:text-ink [&::-webkit-details-marker]:hidden"
+        className="flex cursor-pointer list-none items-center gap-2 py-2 text-[12px] text-ink-faint transition-colors hover:text-ink [&::-webkit-details-marker]:hidden"
       >
         <DisclosureChevron open={open} />
         <span>{t(q('usage.quota.unsupported.summary'), { n: sources.length })}</span>
       </summary>
-      <div className="border-t border-hairline px-3 py-2.5">
-        <ul className="grid gap-x-6 sm:grid-cols-2">
+      <div className="pb-2 pl-5">
+        <ul className="grid gap-x-6 gap-y-0.5 sm:grid-cols-2">
           {ordered.map((source) => (
             <li key={source.id} data-quota-unsupported-item={source.id} className="flex min-w-0 items-center gap-2 py-0.5">
-              <span className="min-w-0 truncate font-mono text-[12px] text-ink" title={source.label}>{source.label}</span>
+              <span className="min-w-0 truncate font-mono text-[12px] text-ink-soft" title={source.label}>{source.label}</span>
               <KindTag kind={source.kind} />
               <Link to={quotaSettingsHref(source, providerById(source.provider_id))} data-quota-settings-link={source.id}
                 className={`ml-auto ${ROW_LINK}`}>{t('usage.quota.action.settings')}</Link>
@@ -1226,13 +1518,17 @@ function OffQuotaSection({ sources, providerById, onEnable }: {
   const [open, setOpen] = useState(false);
   if (sources.length === 0) return null;
   return (
-    <details data-quota-off={sources.length} open={open} onToggle={(event) => { setOpen(event.currentTarget.open); }}
-      className="rounded-lg border border-hairline">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-[12.5px] text-ink-soft hover:text-ink [&::-webkit-details-marker]:hidden">
+    <details
+      data-quota-off={sources.length}
+      open={open}
+      onToggle={(event) => { setOpen(event.currentTarget.open); }}
+      className="border-t border-hairline pt-1"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-2 py-2 text-[12px] text-ink-faint transition-colors hover:text-ink [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={open} />
-        <span>{t(q('usage.quota.off.summary'), { n: sources.length })}</span>
+        <span>{t('usage.quota.off.summary', { n: sources.length })}</span>
       </summary>
-      <ul className="divide-y divide-hairline border-t border-hairline bg-panel">
+      <ul className="divide-y divide-hairline/70 pb-2 pl-5">
         {sources.map((source) => (
           <OffQuotaRow key={source.id} source={source} href={quotaSettingsHref(source, providerById(source.provider_id))} onEnable={() => onEnable(source.id)} />
         ))}
@@ -1263,7 +1559,7 @@ function OffQuotaRow({ source, href, onEnable }: {
     }
   };
   return (
-    <li data-quota-off-item={source.id} className="px-3 py-1.5">
+    <li data-quota-off-item={source.id} className="py-1.5">
       <div className="flex min-h-8 items-center gap-2">
         <span className="min-w-0 truncate font-mono text-[12px] text-ink-soft">{source.label}</span>
         <KindTag kind={source.kind} />
@@ -1276,26 +1572,13 @@ function OffQuotaRow({ source, href, onEnable }: {
   );
 }
 
-/**
- * Quota bars are read, not acted on, so they are ink. Under a tenth left the
- * bar takes the "needs you" colour and says so in words, since running out is
- * the one thing here that will stop work.
- */
-function quotaIsLow(remainingPercent: number): boolean {
-  return remainingPercent < 10;
-}
-
-function quotaBarTone(remainingPercent: number): string {
-  return quotaIsLow(remainingPercent) ? 'bg-attention' : 'bg-ink-soft';
-}
-
 function QuotaMeterRow({ meter, sourceStatus }: { readonly meter: ProviderQuotaMeter; readonly sourceStatus: ProviderQuotaStatus }) {
-  const { t, time } = useI18n();
+  const { t, locale } = useI18n();
   const periodLabel = meter.window?.label ?? formatWindowPeriod(meter.window?.duration_seconds);
   const status = meter.status ?? sourceStatus;
   const badge = statusBadgeInfo(status);
-  const util = meterUtilization(meter);
-  const remainingPercent = util === undefined ? undefined : 100 - Math.min(100, Math.max(0, util));
+  const remainingPercent = meterRemainingPercent(meter);
+  const tier = remainingPercent !== undefined ? quotaFuelTier(remainingPercent) : undefined;
   const reading = meterValue(meter);
   const valueText = reading.kind === 'unknown'
     ? t('usage.quota.status.unknown')
@@ -1306,9 +1589,31 @@ function QuotaMeterRow({ meter, sourceStatus }: { readonly meter: ProviderQuotaM
         : reading.kind === 'spent' || reading.kind === 'used'
           ? t('usage.quota.value.used', { value: reading.value })
           : reading.value;
+
+  const remainingPrimaryText =
+    remainingPercent !== undefined && reading.kind !== 'remaining' && reading.kind !== 'unknown'
+      ? t('usage.quota.value.remaining', { value: `${remainingPercent}%` })
+      : undefined;
+  const exhausted =
+    (remainingPercent !== undefined && remainingPercent <= 0) ||
+    (meter.remaining !== null && meter.remaining <= 0);
+  const primaryTone =
+    reading.kind === 'unknown'
+      ? 'text-ink-faint'
+      : exhausted || tier === 'critical'
+        ? 'font-medium text-danger'
+        : tier === 'low'
+          ? 'font-medium text-amber-ink'
+          : 'font-medium text-ink';
   const resetTime = meter.window?.reset_at;
+  const resetDuration = formatQuotaResetDuration(resetTime, locale);
+
   return (
-    <div className="space-y-1 text-[12px]" data-quota-meter={meter.id}>
+    <div
+      className="space-y-1 text-[12px]"
+      data-quota-meter={meter.id}
+      data-quota-low={tier === 'critical' ? 'true' : undefined}
+    >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="flex min-w-0 items-baseline gap-1.5">
           <span className="truncate text-ink-soft">{meter.label}</span>
@@ -1318,18 +1623,33 @@ function QuotaMeterRow({ meter, sourceStatus }: { readonly meter: ProviderQuotaM
             <span className={`shrink-0 rounded border px-1 py-px text-[9.5px] font-medium ${badge.toneClass}`} data-meter-status={status}>{t(badge.labelKey as I18nKey)}</span>
           ) : null}
         </span>
-        <span className=" flex shrink-0 items-baseline gap-2">
-          <span className="text-[11.5px] text-ink tabular-nums">{valueText}</span>
-          {resetTime ? <span className="text-[10.5px] text-ink-faint">{t('usage.quota.resets', { time: time.timeUntil(resetTime) })}</span> : null}
+        <span className="flex shrink-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 tabular-nums">
+          {remainingPrimaryText !== undefined ? (
+            <>
+              <span className={`text-[11.5px] ${primaryTone}`}>{remainingPrimaryText}</span>
+              <span className="text-[11px] text-ink-faint">{valueText}</span>
+            </>
+          ) : (
+            <span className={`text-[11.5px] ${primaryTone}`}>{valueText}</span>
+          )}
+          {resetDuration !== undefined && resetTime ? (
+            <span className="text-[10.5px] text-ink-faint" title={resetTime}>
+              {t('usage.quota.stripReset', { time: resetDuration })}
+            </span>
+          ) : null}
         </span>
       </div>
-      {util !== undefined && remainingPercent !== undefined ? (
-        <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-ink/[0.07]" data-quota-progress>
-          <div className={`h-full rounded-full transition-all duration-300 ${quotaBarTone(remainingPercent)}`} style={{ width: `${Math.min(100, Math.max(0, util))}%` }} />
+      {remainingPercent !== undefined ? (
+        <div
+          className="relative h-1.5 w-full overflow-hidden rounded-full bg-ink/[0.07]"
+          data-quota-progress
+          data-remaining-percent={remainingPercent}
+        >
+          <div
+            className={`h-full rounded-full transition-all duration-200 ${quotaFuelBarClass(remainingPercent)}`}
+            style={{ width: `${remainingPercent}%` }}
+          />
         </div>
-      ) : null}
-      {remainingPercent !== undefined && quotaIsLow(remainingPercent) ? (
-        <p data-quota-low className="text-[11px] font-medium text-attention">{t('usage.quota.low')}</p>
       ) : null}
       {meter.message ? <p className="text-[11px] text-danger">{meter.message}</p> : null}
     </div>

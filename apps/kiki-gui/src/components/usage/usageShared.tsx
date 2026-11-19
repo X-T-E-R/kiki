@@ -10,6 +10,7 @@ import type { ReactNode } from 'react';
 import { formatCostUsd } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
+import { compactIdentifier } from '../../lib/compactIdentifier';
 import { Icon } from '../icons';
 import {
   cacheHitRateOf,
@@ -145,6 +146,14 @@ export function formatPercent(ratio: number | null): string {
   return `${Math.round(ratio * 100)}%`;
 }
 
+/** 1-decimal precision for cache hit ratios in (0%, 100%) so shifts between 92.1% and 96.8% stay legible. */
+export function formatCachePercent(ratio: number | null): string {
+  if (ratio === null) return '—';
+  if (ratio > 0 && ratio < 0.001) return '<0.1%';
+  const tenths = Math.round(ratio * 1000);
+  return tenths % 10 === 0 ? `${tenths / 10}%` : `${(tenths / 10).toFixed(1)}%`;
+}
+
 export function formatCostOrDash(cost: number, unknown: boolean): string {
   return unknown ? '—' : formatCostUsd(cost);
 }
@@ -164,8 +173,8 @@ export function dimensionKeyLabel(
   },
 ): string {
   if (row.key === 'unknown') return lookups.unknownLabel;
-  if (dimension === 'agent') return row.profileName ?? row.agentId ?? row.key;
-  return lookups.sessionTitle(row.key) ?? row.key;
+  if (dimension === 'agent') return row.profileName ?? (row.agentId ? compactIdentifier(row.agentId) : null) ?? compactIdentifier(row.key);
+  return lookups.sessionTitle(row.key) ?? compactIdentifier(row.key);
 }
 
 /** Label for one source-table row; unknown attribution is never reconstructed. */
@@ -176,7 +185,7 @@ export function sourceKeyLabel(
   lookups: { readonly unknownLabel: string; readonly workspaceName: (id: string) => string | undefined },
 ): string {
   if (value === null) return lookups.unknownLabel;
-  if (groupBy === 'workspace') return lookups.workspaceName(value) ?? value;
+  if (groupBy === 'workspace') return lookups.workspaceName(value) ?? compactIdentifier(value);
   return value;
 }
 

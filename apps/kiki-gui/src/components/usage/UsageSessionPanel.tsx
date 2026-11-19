@@ -31,12 +31,14 @@ import {
 import { SidePanel } from '../SidePanel';
 import { ThreadTitle } from '../ThreadTitle';
 import { SECONDARY_BUTTON } from '../ui';
+import { compactIdentifier } from '../../lib/compactIdentifier';
 import { buildUsageMultiApiQuery, type UsageMultiFilters } from './usageFilterModel';
 import { KnownSubtotalMarker, formatPercent } from './usageShared';
 
 const PAGE_SIZE = 25;
 /** Turn locators shown at once; the remainder is counted, not dropped. */
 const TURN_PAGE = 24;
+const EMPTY_USAGE_PAGES: readonly UsageResponseWire[] = [];
 
 export interface UsageSessionTraceRequest {
   /** The exact period the reader is looking at. */
@@ -106,7 +108,7 @@ export function UsageSessionPanel({
       lastPage.sessions.has_more ? (lastPage.sessions.next_page_token ?? undefined) : undefined,
   });
 
-  const pages = query.data?.pages ?? [];
+  const pages = query.data?.pages ?? EMPTY_USAGE_PAGES;
   const items = useMemo(() => pages.flatMap((page) => page.sessions.items), [pages]);
   const first = pages[0];
   const summary = first?.summary;
@@ -272,7 +274,7 @@ function SessionTraceRow({
         </span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-ink-faint">
-        <span className="truncate">{workspaceName(item.workspace_id) ?? item.workspace_id}</span>
+        <span className="truncate" title={item.workspace_id}>{workspaceName(item.workspace_id) ?? compactIdentifier(item.workspace_id)}</span>
         <span className="tabular-nums">
           {unknownTotal ? '—' : time.formatTokens(totalTokensOf(item.usage))} {t('usage.col.tokens')}
         </span>

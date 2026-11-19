@@ -5,7 +5,7 @@
  * header's `⋯`.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -17,6 +17,7 @@ import { spaceStorageKey } from '@kiki/session-core/storage';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { ApiError } from '../lib/client';
+import { compactIdentifier } from '../lib/compactIdentifier';
 import { getCurrentVisit, getUiSnapshot, saveScrollPosition, saveUiSnapshot } from '../lib/navHistory';
 import { useThreadTitleResolver } from '../lib/threadTitles';
 import {
@@ -81,12 +82,14 @@ import { avgCostPerTurn, computeCacheSavingsUsd, summarizeActivityCounts } from 
 import {
   bucketCost,
   CompareCell,
+  formatCachePercent,
   formatPercent,
   KnownSubtotalMarker,
 } from './usage/usageShared';
 
 const SESSION_PAGE_SIZE = 25;
 const SESSION_LOCATOR_MAX_AUTO_PAGES = 4;
+const TOP_SESSIONS_OVERVIEW_LIMIT = 6;
 
 type DetailTab = 'sources' | 'sessions' | 'breakdown';
 
@@ -115,6 +118,15 @@ function localDateKey(nowMs: number): string {
 
 function importProgressOf(response: UsageResponseWire | undefined): UsageResponseWire['reliability']['import_progress'] {
   return response?.reliability.import_progress;
+}
+
+function isAdvanceableImport(reliability: UsageResponseWire['reliability']): boolean {
+  return (
+    !reliability.complete &&
+    (reliability.import_progress !== undefined ||
+      reliability.incomplete_reason === 'deadline' ||
+      reliability.incomplete_reason === 'record_budget')
+  );
 }
 
 /** How old a shared governance read may be and still be told as "now". */
@@ -159,7 +171,7 @@ function LiveBand({ onOpen }: { readonly onOpen: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// Planar 4-column KPI band
+// Editorial 4-column KPI band
 // ---------------------------------------------------------------------------
 
 function Kpi({ id, label, value, hint, dataValue, children }: {
@@ -172,9 +184,15 @@ function Kpi({ id, label, value, hint, dataValue, children }: {
 }) {
   const valueProps = dataValue === undefined ? {} : { [dataValue]: true };
   return (
-    <section data-usage-kpi={id} className="flex min-w-0 flex-col py-1.5">
-      <p className="text-[11.5px] text-ink-faint">{label}</p>
-      <div {...valueProps} className="mt-1.5 flex min-w-0 items-baseline gap-2 truncate text-[26px] leading-none tracking-tight text-ink tabular-nums">
+    <section
+      data-usage-kpi={id}
+      className="flex min-w-0 flex-col py-1 lg:px-5 first:lg:pl-0 last:lg:pr-0"
+    >
+      <p className="text-[11.5px] font-medium tracking-[-0.005em] text-ink-faint">{label}</p>
+      <div
+        {...valueProps}
+        className="mt-1.5 flex min-w-0 items-baseline gap-2 truncate font-display text-[27px] leading-none tracking-tight text-ink tabular-nums"
+      >
         {value}
       </div>
       {hint !== undefined ? <div className="mt-2 text-[12px] leading-snug">{hint}</div> : null}
@@ -278,9 +296,9 @@ function UsageKpiBand({
   const cacheHit = cacheHitRateOf(summary);
   const input = summary.tokens.input_other + summary.tokens.input_cache_read + summary.tokens.input_cache_creation;
   const composition = [
-    { key: 'read', label: t('usage.tokens.cacheRead'), value: summary.tokens.input_cache_read, fill: 'bg-success/70' },
+    { key: 'read', label: t('usage.tokens.cacheRead'), value: summary.tokens.input_cache_read, fill: 'bg-success/75' },
     { key: 'write', label: t('usage.tokens.cacheWrite'), value: summary.tokens.input_cache_creation, fill: 'bg-amber-rule' },
-    { key: 'fresh', label: t('usage.composition.fresh'), value: summary.tokens.input_other, fill: 'bg-hairline-strong' },
+    { key: 'fresh', label: t('usage.composition.fresh'), value: summary.tokens.input_other, fill: 'bg-ink/30' },
   ];
 
   const costOutcome = comparing && prior !== undefined
@@ -327,7 +345,7 @@ function UsageKpiBand({
       : tp('usage.sessionChip', summary.session_count);
 
   return (
-    <div className="grid grid-cols-1 gap-x-6 gap-y-4 border-b border-hairline pb-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid grid-cols-1 gap-x-6 gap-y-4 border-b border-hairline pb-4 sm:grid-cols-2 lg:grid-cols-4 lg:gap-x-0 lg:divide-x lg:divide-hairline">
       <Kpi
         id="cost"
         label={t('usage.kpi.estimatedCost')}
@@ -369,7 +387,7 @@ function UsageKpiBand({
       >
         {!tokensUnknown && input > 0 ? (
           <div className="mt-2" title={t('usage.cacheHitHint')}>
-            <div aria-hidden className="flex h-1.5 overflow-hidden rounded-full bg-hairline/70">
+            <div aria-hidden className="flex h-1 overflow-hidden rounded-full bg-hairline/70">
               {composition.map((part) => (
                 <span key={part.key} className={part.fill} style={{ width: `${(part.value / input) * 100}%` }} />
               ))}
@@ -390,7 +408,7 @@ function UsageKpiBand({
         id="cache"
         label={t('usage.kpi.cacheHit')}
         dataValue="data-usage-summary-cache"
-        value={tokensUnknown ? '—' : formatPercent(cacheHit)}
+        value={tokensUnknown ? '—' : formatCachePercent(cacheHit)}
         hint={(
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ink-faint">
             {cacheOutcome !== undefined ? <CompareCell outcome={cacheOutcome} points /> : null}
@@ -414,7 +432,7 @@ function UsageKpiBand({
         id="activity"
         label={t('usage.kpi.activity')}
         dataValue="data-usage-summary-activity"
-        value={<span className="truncate text-[21px] font-normal leading-tight tracking-normal">{activityHeadline}</span>}
+        value={<span className="truncate text-[23px] leading-none tracking-tight">{activityHeadline}</span>}
         hint={(
           <div data-usage-strip className="space-y-1 text-[11.5px] text-ink-faint">
             {perTurnCost !== undefined ? (
@@ -484,6 +502,105 @@ function UsageKpiBand({
         )}
       />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Overview Costliest Sessions Rail (zero extra HTTP requests; fed by page 1)
+// ---------------------------------------------------------------------------
+
+function TopSessionsRail({
+  items,
+  totalSessions,
+  summaryCost,
+  workspaceName,
+  onViewAll,
+}: {
+  readonly items: UsageResponseWire['sessions']['items'];
+  readonly totalSessions: number;
+  readonly summaryCost: number;
+  readonly workspaceName: (id: string) => string | undefined;
+  readonly onViewAll: () => void;
+}) {
+  const { t, time } = useI18n();
+  const navigate = useNavigate();
+  const topItems = items.slice(0, TOP_SESSIONS_OVERVIEW_LIMIT);
+
+  return (
+    <aside
+      data-usage-top-sessions
+      aria-label={t('usage.topSessions.title')}
+      className="min-w-0 xl:border-l xl:border-hairline xl:pl-7"
+    >
+      <div className="flex min-h-8 items-center justify-between gap-3">
+        <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-ink">
+          {t('usage.topSessions.title')}
+        </h3>
+        <button
+          type="button"
+          data-usage-open-sessions
+          onClick={onViewAll}
+          className="inline-flex min-h-7 items-center gap-1 rounded px-1.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+        >
+          <span>{t('usage.topSessions.viewAll', { count: formatGrouped(totalSessions) })}</span>
+          <Icon name="arrowRight" size={12} />
+        </button>
+      </div>
+
+      <ol className="mt-3 divide-y divide-hairline border-t border-hairline">
+        {topItems.map((item, idx) => {
+          const itemTokens = totalTokensOf(item.usage);
+          const unknownTotal = usageTokenTotalIsUnknown(item.usage);
+          const unpricedZero = item.usage.cost_unknown && item.usage.cost_usd_estimated === 0 && (itemTokens > 0 || unknownTotal);
+          const share = summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0;
+          const wsDisplay = workspaceName(item.workspace_id) ?? compactIdentifier(item.workspace_id);
+          const titleDisplay = item.title && item.title.trim() !== '' ? item.title : compactIdentifier(item.id);
+          const fillPct = share > 0 ? Math.max(2, Math.min(100, share * 100)) : 0;
+
+          return (
+            <li key={item.id} className="relative overflow-hidden">
+              {fillPct > 0 ? (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-y-[3px] left-0 rounded-r-sm bg-ink/[0.035]"
+                  style={{ width: `${fillPct}%` }}
+                />
+              ) : null}
+              <button
+                type="button"
+                data-usage-top-session={item.id}
+                onClick={() => void navigate(`/s/${item.id}`)}
+                className="relative grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] items-baseline gap-x-2.5 px-1.5 py-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+              >
+                <span className={`text-right text-[11.5px] tabular-nums ${idx < 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
+                  {idx + 1}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-[12.5px] font-medium text-ink" title={item.title ?? item.id}>
+                    <ThreadTitle text={titleDisplay} />
+                  </span>
+                  <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-ink-faint">
+                    <span className="max-w-32 truncate" title={item.workspace_id}>{wsDisplay}</span>
+                    {item.primary_model ? (
+                      <span className="max-w-36 truncate font-mono text-[10px] text-ink-soft">{item.primary_model}</span>
+                    ) : null}
+                    <span className="tabular-nums">
+                      {unknownTotal ? '—' : time.formatTokens(itemTokens)}
+                    </span>
+                  </span>
+                </span>
+                <span className="shrink-0 text-right text-[12.5px] font-semibold text-ink tabular-nums">
+                  {unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
+                  {item.usage.cost_unknown ? (
+                    <KnownSubtotalMarker label={unpricedZero ? t('usage.reliability.costUnknown') : undefined} />
+                  ) : null}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </aside>
   );
 }
 
@@ -586,6 +703,7 @@ function SessionsTab({
             const share = summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0;
             const profiles = item.profile_names ?? [];
             const updatedLabel = time.relativeTime(new Date(item.updated_at).toISOString());
+            const wsDisplay = workspaceName(item.workspace_id) ?? compactIdentifier(item.workspace_id);
             return (
               <li key={item.id}>
                 <button
@@ -630,7 +748,7 @@ function SessionsTab({
                     </span>
                   </span>
                   <span className="hidden truncate text-[12px] text-ink-soft sm:block" title={item.workspace_id}>
-                    {workspaceName(item.workspace_id) ?? item.workspace_id}
+                    {wsDisplay}
                   </span>
                   <span data-usage-session-tokens={item.id} className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
                     {unknownTotal ? '—' : time.formatTokens(itemTokens)}
@@ -672,8 +790,8 @@ function SessionsTab({
 function ShareBarSmall({ ratio }: { ratio: number }) {
   const width = ratio <= 0 ? 0 : Math.max(2, Math.min(100, ratio * 100));
   return (
-    <span aria-hidden className="block h-1.5 w-full overflow-hidden rounded-full bg-hairline/70">
-      <span className="block h-full rounded-full bg-accent/70" style={{ width: `${width}%` }} />
+    <span aria-hidden className="block h-1 w-full overflow-hidden rounded-full bg-hairline/70">
+      <span className="block h-full rounded-full bg-ink/50" style={{ width: `${width}%` }} />
     </span>
   );
 }
@@ -733,13 +851,15 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       return undefined;
     }
   }, [traceParam]);
-  const setTrace = (next: UsageSessionTraceRequest | undefined) => {
-    const params = new URLSearchParams(location.search);
-    if (panel === 'history') params.set('panel', 'history');
-    if (next === undefined) params.delete('trace');
-    else params.set('trace', JSON.stringify(next));
-    setSearchParams(params, { replace: true });
-  };
+  const setTrace = useCallback((next: UsageSessionTraceRequest | undefined) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (panel === 'history') params.set('panel', 'history');
+      if (next === undefined) params.delete('trace');
+      else params.set('trace', JSON.stringify(next));
+      return params;
+    }, { replace: true });
+  }, [panel, setSearchParams]);
   const rawSessionParam = searchParams.get('session') ?? searchParams.get('session_id');
   const sessionParam = rawSessionParam !== null && rawSessionParam !== '' ? rawSessionParam : undefined;
   const [dismissedLocator, setDismissedLocator] = useState<string | null>(null);
@@ -800,7 +920,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     setSelectedBucketKey(null);
     setTrace(undefined);
     if (visit) saveUiSnapshot(visit.visitId, { selectedBucketKey: null });
-  }, [filterKey, location.key]);
+  }, [filterKey, location.key, setTrace]);
 
   const applyFilters = (next: UsageMultiFilters) => {
     writeStoredUsageFilters(toSingleUsageFilters(next));
@@ -846,56 +966,70 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       return isTodayDefault ? 60_000 : false;
     },
   });
-  const isRefetchingScope = usageQuery.isPlaceholderData && usageQuery.isFetching;
+
+  const {
+    data: usageData,
+    error: usageError,
+    isError: isUsageError,
+    isPending: isUsagePending,
+    isFetching: isUsageFetching,
+    isFetchingNextPage,
+    isFetchNextPageError,
+    isPlaceholderData,
+    hasNextPage,
+    fetchNextPage,
+    refetch: refetchUsage,
+  } = usageQuery;
+
+  const isRefetchingScope = isPlaceholderData && isUsageFetching;
   const reuseTodaySummary =
     filters.range === 'today' &&
     filters.includeArchived &&
     !usageMultiFiltersHaveScope(filters) &&
-    !usageQuery.isPlaceholderData;
+    !isPlaceholderData;
   const recoveredPageError = useRef<unknown>(undefined);
   useEffect(() => {
-    const error = usageQuery.error;
-    if (!usageQuery.isFetchNextPageError || !(error instanceof ApiError) || error.code !== ErrorCode.PAGE_TOKEN_MISMATCH || recoveredPageError.current === error) return;
-    recoveredPageError.current = error;
+    if (!isFetchNextPageError || !(usageError instanceof ApiError) || usageError.code !== ErrorCode.PAGE_TOKEN_MISMATCH || recoveredPageError.current === usageError) return;
+    recoveredPageError.current = usageError;
     void queryClient.resetQueries({ queryKey: ['usage-v2', scopeId, filters, localUsageDate, timezoneOffsetMinutes], exact: true });
-  }, [usageQuery.error, usageQuery.isFetchNextPageError, queryClient, scopeId, filters, localUsageDate, timezoneOffsetMinutes]);
+  }, [usageError, isFetchNextPageError, queryClient, scopeId, filters, localUsageDate, timezoneOffsetMinutes]);
 
-  const loadedPageCount = usageQuery.data?.pages.length ?? 0;
+  const loadedPageCount = usageData?.pages.length ?? 0;
   const locatedSession =
     sessionLocator !== undefined &&
-    (usageQuery.data?.pages.some((page) => page.sessions.items.some((item) => item.id === sessionLocator)) ?? false);
-  const locatorCanAutoPage = usageQuery.hasNextPage && loadedPageCount <= SESSION_LOCATOR_MAX_AUTO_PAGES;
+    (usageData?.pages.some((page) => page.sessions.items.some((item) => item.id === sessionLocator)) ?? false);
+  const locatorCanAutoPage = hasNextPage && loadedPageCount <= SESSION_LOCATOR_MAX_AUTO_PAGES;
   const locatorSearching =
     sessionLocator !== undefined &&
     !locatedSession &&
-    !usageQuery.isFetchNextPageError &&
-    (locatorCanAutoPage || usageQuery.isFetchingNextPage);
+    !isFetchNextPageError &&
+    (locatorCanAutoPage || isFetchingNextPage);
   useEffect(() => {
-    if (sessionLocator === undefined || locatedSession || usageQuery.isFetchNextPageError || usageQuery.isPlaceholderData) return;
-    if (locatorCanAutoPage && !usageQuery.isFetchingNextPage) {
-      void usageQuery.fetchNextPage();
+    if (sessionLocator === undefined || locatedSession || isFetchNextPageError || isPlaceholderData) return;
+    if (locatorCanAutoPage && !isFetchingNextPage) {
+      void fetchNextPage();
     }
   }, [
     sessionLocator,
     locatedSession,
     locatorCanAutoPage,
-    usageQuery.data,
-    usageQuery.isFetchingNextPage,
-    usageQuery.isFetchNextPageError,
-    usageQuery.isPlaceholderData,
-    usageQuery.fetchNextPage,
+    usageData,
+    isFetchingNextPage,
+    isFetchNextPageError,
+    isPlaceholderData,
+    fetchNextPage,
   ]);
 
-  const firstPage = usageQuery.data?.pages[0];
+  const firstPage = usageData?.pages[0];
   const mainComplete = firstPage?.reliability.complete === true;
   const trend = useMemo(() => firstPage?.trend ?? [], [firstPage]);
   const selectedBucket = trend.find((bucket) => bucket.key === selectedBucketKey);
   useLayoutEffect(() => {
     if (pendingScrollRestore === null || !scrollRef.current) return;
-    if (pendingScrollRestore > 0 && panel === 'history' && firstPage === undefined && !usageQuery.isError) return;
+    if (pendingScrollRestore > 0 && panel === 'history' && firstPage === undefined && !isUsageError) return;
     scrollRef.current.scrollTop = pendingScrollRestore;
     setPendingScrollRestore(null);
-  }, [pendingScrollRestore, panel, firstPage, selectedBucketKey, usageQuery.isError]);
+  }, [pendingScrollRestore, panel, firstPage, selectedBucketKey, isUsageError]);
 
   const serverRange = firstPage?.query.range;
   const rangeWindow = useMemo(() => {
@@ -917,7 +1051,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   }, [comparing, rangeWindow, selectedBucket, timezoneOffsetMinutes, usageNowMs]);
   const compareQuery = useQuery({
     queryKey: ['usage-v2', scopeId, 'compare', filters, compareWindow, localUsageDate, timezoneOffsetMinutes],
-    enabled: panel === 'history' && compareWindow !== null && mainComplete && !usageQuery.isPlaceholderData && !usageQuery.isError,
+    enabled: panel === 'history' && compareWindow !== null && mainComplete && !isPlaceholderData && !isUsageError,
     retry: false,
     queryFn: ({ signal }) =>
       client.getUsage(
@@ -1006,10 +1140,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   );
 
   useEffect(() => {
-    if (mainIsModelDimension && mainComplete && !usageQuery.isPlaceholderData && !usageQuery.isError && firstPage !== undefined) {
+    if (mainIsModelDimension && mainComplete && !isPlaceholderData && !isUsageError && firstPage !== undefined) {
       queryClient.setQueryData(modelAttributionQueryKey, firstPage);
     }
-  }, [mainIsModelDimension, mainComplete, firstPage, usageQuery.isPlaceholderData, usageQuery.isError, queryClient, modelAttributionQueryKey]);
+  }, [mainIsModelDimension, mainComplete, firstPage, isPlaceholderData, isUsageError, queryClient, modelAttributionQueryKey]);
 
   const modelAttributionQuery = useQuery<UsageResponseWire>({
     queryKey: modelAttributionQueryKey,
@@ -1017,7 +1151,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       panel === 'history' &&
       !mainIsModelDimension &&
       mainComplete &&
-      !usageQuery.isError,
+      !isUsageError,
     placeholderData: (previousData, previousQuery) =>
       previousQuery?.queryKey[1] === scopeId ? previousData : undefined,
     staleTime: 30_000,
@@ -1034,10 +1168,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   const modelTrend = useMemo(
     () =>
-      mainIsModelDimension && !usageQuery.isPlaceholderData
+      mainIsModelDimension && !isPlaceholderData
         ? trend
         : (modelAttributionQuery.data?.trend ?? []),
-    [mainIsModelDimension, usageQuery.isPlaceholderData, trend, modelAttributionQuery.data],
+    [mainIsModelDimension, isPlaceholderData, trend, modelAttributionQuery.data],
   );
   const pricingTrendSource = modelTrend.length > 0 ? modelTrend : trend;
   const pricingTrendGroupBy: UsageGroupBy = modelTrend.length > 0 ? 'model' : filters.groupBy;
@@ -1082,11 +1216,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const workspaceNames = useMemo(() => new Map(workspaces.map((workspace) => [workspace.id, workspace.name])), [workspaces]);
   const sessionTitles = useMemo(() => {
     const map = new Map<string, string>();
-    for (const page of usageQuery.data?.pages ?? []) {
+    for (const page of usageData?.pages ?? []) {
       for (const item of page.sessions.items) if (item.title !== null) map.set(item.id, item.title);
     }
     return map;
-  }, [usageQuery.data]);
+  }, [usageData]);
   const resolveTitle = useThreadTitleResolver([...sessionTitles.values()]);
   const workspaceName = (id: string) => workspaceNames.get(id);
   const sessionTitle = (id: string) => {
@@ -1138,6 +1272,42 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       : []),
   ];
 
+  // Compact inline scan-pending status pill inside the filter utility slot (only while actively advancing)
+  const scanPendingPill =
+    !isUsageError && firstPage !== undefined && isAdvanceableImport(firstPage.reliability) ? (() => {
+      const progress = importProgressOf(firstPage);
+      const countingLabel = progress === undefined
+        ? t('usage.strip.counting')
+        : t('usage.strip.countingProgress', {
+            verified: formatGrouped(progress.verified_sources),
+            total: formatGrouped(progress.total_sources),
+          });
+      return (
+        <div
+          data-usage-scan-pending
+          role="status"
+          className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 rounded-full border border-amber-rule/35 bg-amber-card/55 px-2.5 py-0.5 text-[11.5px] text-amber-ink"
+        >
+          <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-amber-rule" />
+          <span data-usage-scan-counting className="tabular-nums">{countingLabel}</span>
+          {progress !== undefined ? (
+            <span data-usage-scan-bytes className="text-[11px] text-amber-ink/80 tabular-nums">
+              {formatBytes(progress.read_bytes)} / {formatBytes(progress.total_bytes)}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            data-usage-continue-scan
+            disabled={isUsageFetching}
+            onClick={() => void refetchUsage()}
+            className="font-medium underline underline-offset-2 hover:text-ink disabled:opacity-50"
+          >
+            {t(isUsageFetching ? 'usage.loading' : 'usage.continueScan')}
+          </button>
+        </div>
+      );
+    })() : null;
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} width="dashboard">
@@ -1156,8 +1326,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       {pricingOpen ? (
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
-      <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-6">
-        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-5`} data-usage-page>
+      <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
+        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-4`} data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} />
           {panel === 'export' ? (
             <UsageExportPanel />
@@ -1189,60 +1359,41 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   />
                 ) : undefined
               }
-              utilitySlot={<UsageRescanControl />}
+              utilitySlot={
+                <>
+                  {scanPendingPill}
+                  <UsageRescanControl />
+                </>
+              }
             />
-            {usageQuery.isPending && firstPage === undefined ? (
+            {isUsagePending && firstPage === undefined ? (
               <div role="status" className="flex items-center gap-2 py-6 text-[13px] text-ink-faint">
                 <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
                 {t('usage.loading')}
               </div>
             ) : null}
-            {usageQuery.isError && isUnsupportedUsageRead(usageQuery.error) ? (
+            {isUsageError && isUnsupportedUsageRead(usageError) ? (
               <p data-usage-unsupported role="status" className="py-6 text-[13px] text-ink-soft">{t('usage.unsupported')}</p>
-            ) : usageQuery.isError ? (
+            ) : isUsageError ? (
               <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[13px] text-danger">
                 <p className="font-medium">{t('usage.loadFailedKeep')}</p>
                 <button
                   type="button"
-                  onClick={() => void usageQuery.refetch()}
+                  onClick={() => void refetchUsage()}
                   className={SECONDARY_BUTTON}
                 >
                   {t('common.reload')}
                 </button>
               </div>
             ) : null}
-            {!usageQuery.isError && usageQuery.data !== undefined && firstPage !== undefined ? (
-              <div className={isRefetchingScope ? 'space-y-5 opacity-65 transition-opacity' : 'space-y-5'}>
+            {!isUsageError && usageData !== undefined && firstPage !== undefined ? (
+              <div className={isRefetchingScope ? 'space-y-4 opacity-65 transition-opacity' : 'space-y-4'}>
                 {isRefetchingScope ? (
                   <div data-usage-refetching role="status" className="flex items-center gap-2 text-[12px] text-ink-faint">
                     <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
                     <span>{t('usage.loading')}</span>
                   </div>
                 ) : null}
-                {!firstPage.reliability.complete ? (() => {
-                  const progress = importProgressOf(firstPage);
-                  const countingLabel = progress === undefined
-                    ? t('usage.strip.counting')
-                    : t('usage.strip.countingProgress', {
-                        verified: formatGrouped(progress.verified_sources),
-                        total: formatGrouped(progress.total_sources),
-                      });
-                  return (
-                    <div data-usage-scan-pending role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-rule/30 bg-amber-card/40 px-3 py-2 text-[12px] text-amber-ink">
-                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-                        <p data-usage-scan-counting>{countingLabel}</p>
-                        {progress !== undefined ? (
-                          <span data-usage-scan-bytes className="text-[11.5px] text-amber-ink/75 tabular-nums">
-                            {formatBytes(progress.read_bytes)} / {formatBytes(progress.total_bytes)}
-                          </span>
-                        ) : null}
-                      </div>
-                      <button type="button" data-usage-continue-scan disabled={usageQuery.isFetching} onClick={() => void usageQuery.refetch()} className="rounded-md border border-amber-rule/40 px-3 py-1.5 font-medium disabled:opacity-50">
-                        {t(usageQuery.isFetching ? 'usage.loading' : 'usage.continueScan')}
-                      </button>
-                    </div>
-                  );
-                })() : null}
 
                 {summary !== undefined ? (
                   <UsageKpiBand
@@ -1256,7 +1407,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     cacheSavingsUsd={cacheSavingsUsd}
                     todayResponse={reuseTodaySummary ? firstPage : undefined}
                     reuseTodaySummary={reuseTodaySummary}
-                    enabled={panel === 'history' && !usageQuery.isPending}
+                    enabled={panel === 'history' && !isUsagePending}
                   />
                 ) : null}
 
@@ -1360,46 +1511,72 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                       </p>
                     ) : null}
                     {tab === 'sources' ? (
-                      <div className="mt-3">
-                        <UsageSources
-                          trend={sourceTrend}
-                          groupBy={groupBy}
-                          metric={metric}
-                          prior={priorSource}
-                          lookups={sourceLookups}
-                          isFilterActive={(row) => isSourceRowFilterActive(filters, row.filter)}
-                          onFilterSource={(row) => {
-                            if (row.filter === null) return;
-                            applyFilters(toggleSourceRowFilter(filters, row.filter));
-                          }}
-                          onOpenSessions={openTrace}
-                          onSwitchGrouping={(next) => { applyFilters({ ...filters, groupBy: next, advancedDimension: undefined }); }}
-                        />
-                        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-                          <button
-                            type="button"
-                            data-usage-open-sessions
-                            onClick={() => {
-                              if (selectedBucket !== undefined) openTrace(undefined);
-                              else selectTab('sessions');
+                      selectedBucket === undefined && firstPage.sessions.items.length > 0 ? (
+                        <div className="mt-4 grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1.45fr)_minmax(290px,0.95fr)] xl:items-start">
+                          <UsageSources
+                            trend={sourceTrend}
+                            groupBy={groupBy}
+                            metric={metric}
+                            prior={priorSource}
+                            lookups={sourceLookups}
+                            isFilterActive={(row) => isSourceRowFilterActive(filters, row.filter)}
+                            onFilterSource={(row) => {
+                              if (row.filter === null) return;
+                              applyFilters(toggleSourceRowFilter(filters, row.filter));
                             }}
-                            className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-1 text-[13px] text-ink underline underline-offset-4 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-                          >
-                            {t('usage.sources.openSessions')}
-                          </button>
+                            onOpenSessions={openTrace}
+                            onSwitchGrouping={(next) => { applyFilters({ ...filters, groupBy: next, advancedDimension: undefined }); }}
+                          />
+                          <TopSessionsRail
+                            items={firstPage.sessions.items}
+                            totalSessions={firstPage.sessions.total}
+                            summaryCost={summary?.cost_usd_estimated ?? 0}
+                            workspaceName={workspaceName}
+                            onViewAll={() => { selectTab('sessions'); }}
+                          />
                         </div>
-                      </div>
+                      ) : (
+                        <div className="mt-4">
+                          <UsageSources
+                            trend={sourceTrend}
+                            groupBy={groupBy}
+                            metric={metric}
+                            prior={priorSource}
+                            lookups={sourceLookups}
+                            isFilterActive={(row) => isSourceRowFilterActive(filters, row.filter)}
+                            onFilterSource={(row) => {
+                              if (row.filter === null) return;
+                              applyFilters(toggleSourceRowFilter(filters, row.filter));
+                            }}
+                            onOpenSessions={openTrace}
+                            onSwitchGrouping={(next) => { applyFilters({ ...filters, groupBy: next, advancedDimension: undefined }); }}
+                          />
+                          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+                            <button
+                              type="button"
+                              data-usage-open-sessions
+                              onClick={() => {
+                                if (selectedBucket !== undefined) openTrace(undefined);
+                                else selectTab('sessions');
+                              }}
+                              className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-1 text-[13px] text-ink underline underline-offset-4 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                            >
+                              {t('usage.sources.openSessions')}
+                            </button>
+                          </div>
+                        </div>
+                      )
                     ) : tab === 'sessions' ? (
                       <div className="mt-3">
                         <SessionsTab
-                          data={{ pages: usageQuery.data.pages }}
-                          fetchNextPage={() => void usageQuery.fetchNextPage()}
-                          hasNextPage={usageQuery.hasNextPage}
-                          isFetchingNextPage={usageQuery.isFetchingNextPage}
-                          isFetchNextPageError={usageQuery.isFetchNextPageError}
+                          data={{ pages: usageData.pages }}
+                          fetchNextPage={() => void fetchNextPage()}
+                          hasNextPage={hasNextPage}
+                          isFetchingNextPage={isFetchingNextPage}
+                          isFetchNextPageError={isFetchNextPageError}
                           sessionLocator={sessionLocator}
                           locatorSearching={locatorSearching}
-                          workspaceName={(id) => workspaceName(id) ?? id}
+                          workspaceName={workspaceName}
                           summaryCost={summary?.cost_usd_estimated ?? 0}
                         />
                       </div>
@@ -1448,7 +1625,7 @@ function sourceRowLabel(
   lookups: { readonly unknownLabel: string; readonly workspaceName: (id: string) => string | undefined },
 ): string {
   if (row.key === USAGE_SOURCE_KEY_UNKNOWN || row.value === null) return lookups.unknownLabel;
-  return groupBy === 'workspace' ? (lookups.workspaceName(row.value) ?? row.value) : row.value;
+  return groupBy === 'workspace' ? (lookups.workspaceName(row.value) ?? compactIdentifier(row.value)) : row.value;
 }
 
 function sourceKeyToLabel(
@@ -1460,7 +1637,7 @@ function sourceKeyToLabel(
   if (key === USAGE_SOURCE_KEY_UNKNOWN) return lookups.unknownLabel;
   const group = trend.flatMap((bucket) => bucket.groups).find((entry) => usageSourceKey(entry, groupBy) === key);
   const value = group === undefined ? key : (usageSourceFilterValue(group, groupBy) ?? key);
-  return groupBy === 'workspace' ? (lookups.workspaceName(value) ?? value) : value;
+  return groupBy === 'workspace' ? (lookups.workspaceName(value) ?? compactIdentifier(value)) : value;
 }
 
 function dimensionKeyLabelLegacy(
@@ -1470,6 +1647,8 @@ function dimensionKeyLabelLegacy(
   sessionTitle: (id: string) => string | undefined,
 ): string {
   if (row.key === 'unknown') return lookups.unknownLabel;
-  if (dimension === 'agent') return row.profileName ?? row.agentId ?? row.key;
-  return sessionTitle(row.key) ?? row.key;
+  if (dimension === 'agent') {
+    return row.profileName ?? (row.agentId ? compactIdentifier(row.agentId) : null) ?? compactIdentifier(row.key);
+  }
+  return sessionTitle(row.key) ?? compactIdentifier(row.key);
 }
