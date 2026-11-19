@@ -10,6 +10,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { FileErrors, IFileService } from '#/app/file/fileService';
 import { FileServiceImpl } from '#/app/file/fileServiceImpl';
+import { ILogService } from '#/_base/log/log';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -34,14 +35,17 @@ describe('FileServiceImpl', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let backend: InMemoryStorageService;
+  let log: Partial<ILogService>;
 
   beforeEach(() => {
+    log = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() };
     disposables = new DisposableStore();
     backend = new InMemoryStorageService();
     ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.defineInstance(IFileSystemStorageService, backend);
         reg.define(IBlobStore, BlobStoreService);
+        reg.definePartialInstance(ILogService, log);
         reg.define(IFileService, FileServiceImpl);
       },
     });
@@ -77,6 +81,7 @@ describe('FileServiceImpl', () => {
       additionalServices: (reg) => {
         reg.defineInstance(IFileSystemStorageService, backend);
         reg.define(IBlobStore, BlobStoreService);
+        reg.definePartialInstance(ILogService, log);
         reg.define(IFileService, FileServiceImpl);
       },
     });
@@ -144,6 +149,7 @@ describe('FileServiceImpl', () => {
       additionalServices: (reg) => {
         reg.defineInstance(IFileSystemStorageService, backend);
         reg.define(IBlobStore, BlobStoreService);
+        reg.definePartialInstance(ILogService, log);
         reg.define(IFileService, FileServiceImpl);
       },
     });
@@ -181,6 +187,7 @@ describe('FileServiceImpl', () => {
       additionalServices: (reg) => {
         reg.defineInstance(IFileSystemStorageService, backend);
         reg.define(IBlobStore, BlobStoreService);
+        reg.definePartialInstance(ILogService, log);
         reg.define(IFileService, FileServiceImpl);
       },
     });
@@ -292,6 +299,7 @@ describe('FileServiceImpl', () => {
       additionalServices: (reg) => {
         reg.defineInstance(IFileSystemStorageService, backend);
         reg.define(IBlobStore, BlobStoreService);
+        reg.definePartialInstance(ILogService, log);
         reg.define(IFileService, FileServiceImpl);
       },
     });
@@ -312,6 +320,7 @@ describe('FileServiceImpl', () => {
       additionalServices: (reg) => {
         reg.defineInstance(IFileSystemStorageService, backend);
         reg.define(IBlobStore, BlobStoreService);
+        reg.definePartialInstance(ILogService, log);
         reg.define(IFileService, FileServiceImpl);
       },
     });
@@ -349,6 +358,7 @@ describe('FileServiceImpl', () => {
       additionalServices: (reg) => {
         reg.defineInstance(IFileSystemStorageService, backend);
         reg.define(IBlobStore, BlobStoreService);
+        reg.definePartialInstance(ILogService, log);
         reg.define(IFileService, FileServiceImpl);
       },
     });
@@ -375,6 +385,7 @@ describe('FileServiceImpl', () => {
         additionalServices: (reg) => {
           reg.defineInstance(IFileSystemStorageService, new FileStorageService(dir));
           reg.define(IBlobStore, BlobStoreService);
+          reg.definePartialInstance(ILogService, log);
           reg.define(IFileService, FileServiceImpl);
         },
       });
@@ -441,5 +452,45 @@ describe('FileServiceImpl', () => {
     await expect(store().get('f_../outside')).rejects.toMatchObject({
       code: FileErrors.codes.FILE_NOT_FOUND,
     });
+  });
+
+  it.each([
+    ['unparseable JSON', '{"version":1,"files":[{"id":"f_'],
+    ['a payload without a files list', '{"version":1}'],
+  ])('backs up a corrupt index with %s and rebuilds metadata from stored blobs', async (_label, corrupt) => {
+    await backend.write('files', 'f_kept', Buffer.from('kept bytes'));
+    await backend.write('file', 'index.json', textEncoder.encode(corrupt));
+
+    const { meta, stream } = await store().get('f_kept');
+    expect(meta).toMatchObject({ id: 'f_kept', size: Buffer.byteLength('kept bytes') });
+    expect(meta.session_id).toBeUndefined();
+    expect((await readAll(stream())).toString()).toBe('kept bytes');
+
+    const backups = (await backend.list('file')).filter((key) => key.startsWith('index.corrupt-'));
+    expect(backups).toHaveLength(1);
+    expect(Buffer.from((await backend.read('file', backups[0]!))!).toString()).toBe(corrupt);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('corrupt'),
+      expect.objectContaining({ backupKey: backups[0], recoveredCount: 1 }),
+    );
+
+    const added = await store().save(readable('new'), 'new.txt');
+    const persisted = JSON.parse(
+      Buffer.from((await backend.read('file', 'index.json'))!).toString(),
+    ) as { files: Array<{ id: string }> };
+    expect(persisted.files.map((f) => f.id).toSorted()).toEqual(['f_kept', added.id].toSorted());
+  });
+
+  it('leaves a corrupt index untouched when its backup cannot be written', async () => {
+    await backend.write('file', 'index.json', textEncoder.encode('not json'));
+    const blobs = ix.get(IBlobStore);
+    const put = blobs.put.bind(blobs);
+    vi.spyOn(blobs, 'put').mockImplementation(async (scope, key, data) => {
+      if (key.startsWith('index.corrupt-')) throw new Error('disk full');
+      return put(scope, key, data);
+    });
+
+    await expect(store().save(readable('x'), 'x.txt')).rejects.toThrow('disk full');
+    expect(Buffer.from((await backend.read('file', 'index.json'))!).toString()).toBe('not json');
   });
 });
