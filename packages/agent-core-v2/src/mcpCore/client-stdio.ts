@@ -19,6 +19,7 @@ import {
   isWindowsMcpServeReady,
   notifyComputerAdmission,
   type ComputerMcpStopResult,
+  type IComputerAdmissionService,
 } from './computer';
 
 import {
@@ -50,6 +51,7 @@ export interface StdioMcpClientOptions {
   readonly serverName?: string;
   readonly drainTimeoutMs?: number;
   readonly elicitation?: boolean;
+  readonly computerAdmission?: IComputerAdmissionService;
 }
 
 const STDERR_BUFFER_CAPACITY = 4 * 1024;
@@ -77,11 +79,19 @@ export function computerForeignProcessOccupied(except?: StdioMcpClient): boolean
   return false;
 }
 
-export function computerSpawnHeld(name: string, config: McpServerConfig, except?: StdioMcpClient): boolean {
+export function computerSpawnHeld(
+  name: string,
+  config: McpServerConfig,
+  except?: StdioMcpClient,
+  computerAdmission?: IComputerAdmissionService,
+): boolean {
   const kind = computerExecutorKind(config);
   if (kind === undefined) return false;
   if (kind === 'windows-mcp' && !isWindowsMcpServeReady(config)) return true;
-  if (!computerSelectionAdmits(name, config)) return true;
+  const admitted = computerAdmission === undefined
+    ? computerSelectionAdmits(name, config)
+    : computerSelectionAdmits(name, config, computerAdmission.selection());
+  if (!admitted) return true;
   return computerForeignProcessOccupied(except);
 }
 
@@ -153,7 +163,7 @@ export class StdioMcpClient implements MCPClient {
         } else if (computerOwner?.client !== this && !unconfirmedComputerClients.has(this)) {
           computerClients.delete(this);
         }
-        if (computerExecutorKind(config) !== undefined) notifyComputerAdmission();
+        if (computerExecutorKind(config) !== undefined) notifyComputerAdmission(options.computerAdmission);
       }, this);
     this.elicitationEnabled = options.elicitation === true;
     this.client = new Client({

@@ -1,5 +1,8 @@
 import { CUA_COMPUTER_CONNECTION, WINDOWS_MCP_COMPUTER_CONNECTION } from '@kiki/protocol';
 
+import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope } from '#/app/scopes';
 import type { McpServerConfig, McpServerStdioConfig } from './config-schema';
 
 export { CUA_COMPUTER_CONNECTION, WINDOWS_MCP_COMPUTER_CONNECTION };
@@ -99,40 +102,91 @@ export function windowsMcpStdioConfig(pythonExecutable: string, configPath: stri
   };
 }
 
-let selectedConnection: string | undefined;
-const admissionListeners = new Set<() => void>();
-
-export function computerConnectionSelection(): string | undefined {
-  return selectedConnection;
+export interface IComputerAdmissionService {
+  readonly _serviceBrand: undefined;
+  selection(): string | undefined;
+  setSelection(connection: string | undefined): void;
+  notify(): void;
+  onChange(listener: () => void): () => void;
 }
 
-export function setComputerConnectionSelection(connection: string | undefined): void {
-  const next = connection === undefined || connection.trim() === '' ? undefined : connection.trim();
-  if (next === selectedConnection) return;
-  selectedConnection = next;
-  notifyComputerAdmission();
+export const IComputerAdmissionService: ServiceIdentifier<IComputerAdmissionService> =
+  createDecorator<IComputerAdmissionService>('computerAdmissionService');
+
+export class ComputerAdmissionController implements IComputerAdmissionService {
+  declare readonly _serviceBrand: undefined;
+  private selectedConnection: string | undefined;
+  private readonly admissionListeners = new Set<() => void>();
+
+  selection(): string | undefined {
+    return this.selectedConnection;
+  }
+
+  setSelection(connection: string | undefined): void {
+    const next = connection === undefined || connection.trim() === '' ? undefined : connection.trim();
+    if (next === this.selectedConnection) return;
+    this.selectedConnection = next;
+    this.notify();
+  }
+
+  notify(): void {
+    for (const listener of this.admissionListeners) listener();
+  }
+
+  onChange(listener: () => void): () => void {
+    this.admissionListeners.add(listener);
+    return () => { this.admissionListeners.delete(listener); };
+  }
 }
 
-export function notifyComputerAdmission(): void {
-  for (const listener of admissionListeners) listener();
+const defaultComputerAdmission = new ComputerAdmissionController();
+
+export function computerConnectionSelection(
+  admission: IComputerAdmissionService = defaultComputerAdmission,
+): string | undefined {
+  return admission.selection();
 }
 
-export function onComputerAdmissionChange(listener: () => void): () => void {
-  admissionListeners.add(listener);
-  return () => { admissionListeners.delete(listener); };
+export function setComputerConnectionSelection(
+  connection: string | undefined,
+  admission: IComputerAdmissionService = defaultComputerAdmission,
+): void {
+  admission.setSelection(connection);
+}
+
+export function notifyComputerAdmission(
+  admission: IComputerAdmissionService = defaultComputerAdmission,
+): void {
+  admission.notify();
+}
+
+export function onComputerAdmissionChange(
+  listener: () => void,
+  admission: IComputerAdmissionService = defaultComputerAdmission,
+): () => void {
+  return admission.onChange(listener);
 }
 
 export function computerSelectionAdmits(
   name: string,
   config: McpServerConfig | undefined,
-  connection: string | undefined = selectedConnection,
+  ...rest: readonly [connection?: string]
 ): boolean {
+  const connection = rest.length > 0 ? rest[0] : defaultComputerAdmission.selection();
   const kind = computerExecutorKind(config);
   if (kind === undefined) return false;
   if (kind === 'windows-mcp' && !isWindowsMcpServeReady(config)) return false;
   if (connection === undefined) return kind === 'cua';
   return name === connection;
 }
+
+registerScopedService(
+  LifecycleScope.App,
+  IComputerAdmissionService,
+  ComputerAdmissionController,
+  ScopeActivation.OnDemand,
+  'mcpCore',
+);
 
 function isComputerInputTool(name: string): boolean {
   return CUA_INPUT_TOOLS.has(name) || WINDOWS_MCP_INPUT_TOOLS.has(name.toLowerCase());

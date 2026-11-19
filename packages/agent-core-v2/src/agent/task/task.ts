@@ -37,6 +37,13 @@ export interface AgentTaskOutputSnapshot {
   readonly preview: string;
 }
 
+export interface AgentTaskRetentionStats {
+  readonly activeTaskCount: number;
+  readonly cachedOutputCount: number;
+  readonly retainedOutputBytes: number;
+  readonly taskOutputSizes: readonly number[];
+}
+
 export interface AgentTaskOutputPage {
   readonly outputPath: string;
   readonly offset: number;
@@ -158,6 +165,7 @@ export interface IAgentTaskService {
   waitForForegroundRelease(
     taskId: string,
   ): Promise<ForegroundTaskReleaseReason | undefined>;
+  getRetentionStats?(): AgentTaskRetentionStats;
 }
 
 export const IAgentTaskService =

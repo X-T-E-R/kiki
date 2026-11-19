@@ -6,7 +6,7 @@ import { DEFAULT_IDENTITY_SLUG, IAgentIdentity } from '#/app/agentIdentity/agent
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import {
-  getModelsDevCatalog,
+  IModelsDevUpstreamService,
   resetModelsDevUpstreamForTest,
   setModelsDevUpstreamForTest,
 } from '#/app/kosongConfig/modelsDevUpstream';
@@ -139,6 +139,7 @@ function createHost(
 ): {
   config: StubConfigService;
   imports: IModelsDevImportService;
+  upstream: IModelsDevUpstreamService;
 } {
   const config = new StubConfigService(sections);
   const host = createScopedTestHost([
@@ -148,7 +149,11 @@ function createHost(
     [IBootstrapService, stubBootstrap('/home', {}, { requestHeaders: hostHeaders })],
     [IAgentIdentity, stubAgentIdentity({ slug: identitySlug, hostRequestHeaders: hostHeaders })],
   ]);
-  return { config, imports: host.app.accessor.get(IModelsDevImportService) };
+  return {
+    config,
+    imports: host.app.accessor.get(IModelsDevImportService),
+    upstream: host.app.accessor.get(IModelsDevUpstreamService),
+  };
 }
 
 async function expectError2(promise: Promise<unknown>, code: string): Promise<Error2> {
@@ -174,7 +179,7 @@ describe('IModelsDevImportService', () => {
       return new Response(JSON.stringify(CATALOG));
     }) as typeof fetch;
     setModelsDevUpstreamForTest({ fetchImpl: refresh, builtInCatalog: CATALOG });
-    const { imports } = createHost();
+    const { imports, upstream } = createHost();
     const started = performance.now();
     const items = await imports.listModelsDevProviders();
     const elapsedMs = performance.now() - started;
@@ -182,14 +187,14 @@ describe('IModelsDevImportService', () => {
     try {
       expect(items.find((item) => item.id === 'openai')?.models[0]?.id).toBe('gpt-4.1');
       expect(elapsedMs).toBeLessThan(1000);
-    } finally { await getModelsDevCatalog('fixture'); }
+    } finally { await upstream.getCatalog('fixture'); }
   });
 
   it('keeps stale directory reads available during one failed refresh and retries after its cooldown', async () => {
     let now = 0;
     const fetchImpl = vi.fn(fetchJson(CATALOG));
     setModelsDevUpstreamForTest({ fetchImpl, now: () => now });
-    const { imports } = createHost();
+    const { imports, upstream } = createHost();
     const first = await imports.listModelsDevProviders();
     now = 11 * 60_000;
     let reject!: (error: Error) => void;
@@ -197,14 +202,14 @@ describe('IModelsDevImportService', () => {
     const stale = await Promise.all(Array.from({ length: 8 }, () => imports.listModelsDevProviders()));
     expect(stale.every((items) => JSON.stringify(items) === JSON.stringify(first))).toBe(true);
     await vi.waitFor(() => { expect(fetchImpl).toHaveBeenCalledTimes(2); });
-    const update = getModelsDevCatalog('fixture');
+    const update = upstream.getCatalog('fixture');
     reject(new Error('fixture offline'));
     await update;
     for (let count = 0; count < 8; count += 1) await imports.listModelsDevProviders();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     now += 10 * 60_000;
     await imports.listModelsDevProviders();
-    await getModelsDevCatalog('fixture');
+    await upstream.getCatalog('fixture');
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
@@ -213,7 +218,7 @@ describe('IModelsDevImportService', () => {
     let resolve!: (response: Response) => void;
     const fetchImpl = vi.fn(() => new Promise<Response>((done) => { resolve = done; }));
     setModelsDevUpstreamForTest({ fetchImpl, now: () => now });
-    const { imports } = createHost();
+    const { imports, upstream } = createHost();
     const first = imports.listModelsDevProviders();
     await vi.waitFor(() => { expect(resolve).toBeTypeOf('function'); });
     now = 11 * 60_000;
@@ -224,7 +229,7 @@ describe('IModelsDevImportService', () => {
     now += 10 * 60_000;
     await imports.listModelsDevProviders();
     await vi.waitFor(() => { expect(fetchImpl).toHaveBeenCalledTimes(2); });
-    const updating = getModelsDevCatalog('fixture');
+    const updating = upstream.getCatalog('fixture');
     resolve(new Response(JSON.stringify(CATALOG)));
     await updating;
   });

@@ -13,7 +13,7 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
 import { toMcpServerConfigView } from '#/mcpCore/configView';
-import { isComputerMcpConfig, type ComputerMcpStopResult } from '#/mcpCore/computer';
+import { IComputerAdmissionService, isComputerMcpConfig, type ComputerMcpStopResult } from '#/mcpCore/computer';
 import { allowComputerMcp, captureComputerMcpStop } from '#/mcpCore/client-stdio';
 import {
   AlreadyAuthorizedError,
@@ -81,6 +81,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     @IHostProcessService private readonly hostProcess: IHostProcessService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @ILogService private readonly log: ILogService,
+    @IComputerAdmissionService private readonly computerAdmission?: IComputerAdmissionService,
   ) {
     super();
   }
@@ -264,6 +265,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
         startupTimeoutMs: section?.startupTimeoutMs,
         toolTimeoutMs: section?.toolTimeoutMs,
       }),
+      computerAdmission: this.computerAdmission,
     });
     try {
       await manager.connectAll({ [server.name]: mcpConfigWithoutName(server) });
@@ -516,6 +518,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
             startupTimeoutMs: section?.startupTimeoutMs,
             toolTimeoutMs: section?.toolTimeoutMs,
           }),
+          computerAdmission: this.computerAdmission,
         });
         await manager.connectAll(probeConfigs);
       }

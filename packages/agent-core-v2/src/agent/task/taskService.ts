@@ -70,6 +70,7 @@ import {
   type AgentTaskReceipt,
   type AgentTaskOutputSnapshot,
   type AgentTaskOutputPage,
+  type AgentTaskRetentionStats,
   type AgentTaskStatus,
   type AgentTaskTrackOptions,
   type AgentTaskWaitDelivery,
@@ -1030,6 +1031,21 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     }
     return (notificationsEnabled && (this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0)) ||
       this.pendingWaitDeliveries.size > 0;
+  }
+
+  getRetentionStats(): AgentTaskRetentionStats {
+    let retainedOutputBytes = 0;
+    const taskOutputSizes: number[] = [];
+    for (const entry of this.tasks.values()) {
+      retainedOutputBytes += entry.retainedOutputBytes;
+      taskOutputSizes.push(entry.outputSizeBytes);
+    }
+    return {
+      activeTaskCount: this.tasks.size,
+      cachedOutputCount: this.cachedOutputs.size,
+      retainedOutputBytes,
+      taskOutputSizes,
+    };
   }
 
   private async reconcileNotificationDeliveryAfterUndo(): Promise<void> {

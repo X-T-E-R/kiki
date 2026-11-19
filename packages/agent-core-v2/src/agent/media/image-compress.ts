@@ -22,29 +22,18 @@ import { hasRegisteredCpuPool, runCpuTask } from '#/app/cpuWorker/runtime';
 
 export const MAX_IMAGE_EDGE_PX = 2000;
 
-let configuredMaxImageEdgePx: number | undefined;
-
-export function setConfiguredMaxImageEdgePx(value: number | undefined): void {
-  configuredMaxImageEdgePx = value !== undefined && isPositiveInt(value) ? value : undefined;
-}
-
-export function resolveMaxImageEdgePx(): number {
-  return configuredMaxImageEdgePx ?? MAX_IMAGE_EDGE_PX;
+export function resolveMaxImageEdgePx(configured?: number): number {
+  return configured !== undefined && isPositiveInt(configured) ? configured : MAX_IMAGE_EDGE_PX;
 }
 
 export const IMAGE_BYTE_BUDGET = 3.75 * 1024 * 1024;
 
 export const READ_IMAGE_BYTE_BUDGET = 256 * 1024;
 
-let configuredReadImageByteBudget: number | undefined;
-
-export function setConfiguredReadImageByteBudget(value: number | undefined): void {
-  configuredReadImageByteBudget =
-    value !== undefined && isPositiveInt(value) ? value : undefined;
-}
-
-export function resolveReadImageByteBudget(): number {
-  return configuredReadImageByteBudget ?? READ_IMAGE_BYTE_BUDGET;
+export function resolveReadImageByteBudget(configured?: number): number {
+  return configured !== undefined && isPositiveInt(configured)
+    ? configured
+    : READ_IMAGE_BYTE_BUDGET;
 }
 
 function isPositiveInt(value: number): boolean {

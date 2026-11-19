@@ -51,6 +51,7 @@ import {
 } from './mediaRef';
 import { ISessionMediaStore } from './sessionMediaStore';
 import { IAgentMediaResolverService } from './mediaResolver';
+import { IImageConfigBridge } from './imageConfigBridge';
 import { createVideoUploader } from './registerMediaTools';
 import {
   inlineVideoPart,
@@ -100,6 +101,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     @IFlagService private readonly flags: IFlagService = FLAGS_ENABLED,
     @ref(IAgentScopeContext) private readonly agentScope?: LiveRef<IAgentScopeContext>,
     @ref(ICpuWorkerService) private readonly cpuWorkerRef?: LiveRef<ICpuWorkerService>,
+    @ref(IImageConfigBridge) private readonly imageConfigRef?: LiveRef<IImageConfigBridge>,
   ) {
     this.states.contributeState(mediaResolvedKey);
   }
@@ -291,6 +293,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       requester.model.providerType,
       signal,
       this.cpuWorkerRef?.current,
+      this.imageConfigRef?.current?.maxEdgePx,
     );
     if (resolved === undefined) return degradedImage(path);
     if (uploader !== undefined) {
@@ -387,6 +390,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       requester.model.providerType,
       signal,
       this.cpuWorkerRef?.current,
+      this.imageConfigRef?.current?.maxEdgePx,
     );
     if (resolved === undefined) {
       return {
@@ -647,6 +651,7 @@ async function prepareImageBytes(
   providerType: string | undefined,
   signal: AbortSignal | undefined,
   cpuWorker: ICpuWorkerService | undefined,
+  maxEdge?: number,
 ): Promise<{ readonly bytes: Buffer; readonly mimeType: string } | undefined> {
   if (isModelAcceptedImageMime(mimeType, providerType, policy.acceptedTypes)) {
     return { bytes, mimeType };
@@ -657,6 +662,7 @@ async function prepareImageBytes(
     acceptedMimes: policy.acceptedTypes,
     outputMimes: conversionOutputs(policy),
     byteBudget: IMAGE_BYTE_BUDGET,
+    maxEdge,
     cpuWorker,
     signal,
   });

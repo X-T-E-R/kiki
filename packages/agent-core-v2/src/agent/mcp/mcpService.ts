@@ -43,7 +43,7 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
-import { computerSelectionAdmits, isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
+import { IComputerAdmissionService, computerSelectionAdmits, isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
@@ -113,6 +113,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IConfigService private readonly configService: IConfigService,
     @IMcpRegistryService private readonly serverRegistry: IMcpRegistryService,
     @ref(IAgentToolPolicyService) private readonly toolPolicy: LiveRef<IAgentToolPolicyService>,
+    @IComputerAdmissionService private readonly computerAdmission?: IComputerAdmissionService,
   ) {
     super();
     this.sessionOverrides = mcpHandle.selection?.overrides ?? new Map();
@@ -130,7 +131,10 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     if (this.configService.onDidSectionChange !== undefined) {
       this._register(this.configService.onDidSectionChange((event) => {
         if (event.domain !== COMPUTER_CONFIG_SECTION) return;
-        setComputerConnectionSelection(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection);
+        setComputerConnectionSelection(
+          this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection,
+          this.computerAdmission,
+        );
         this.reopenComputerSessions();
       }));
     }

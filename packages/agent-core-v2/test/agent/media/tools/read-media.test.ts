@@ -27,7 +27,7 @@ import {
 import { ReadMediaFileTool } from '#/agent/tools/read-media-file/readMediaFileTool';
 import {
   MAX_IMAGE_DECODE_BYTES,
-  setConfiguredReadImageByteBudget,
+  MAX_IMAGE_EDGE_PX,
 } from '#/agent/media/image-compress';
 import {
   AV_INLINE_BYTE_BUDGET,
@@ -64,7 +64,6 @@ const PNG_WIDTH = 1920;
 const PNG_HEIGHT = 1080;
 
 afterEach(() => {
-  setConfiguredReadImageByteBudget(undefined);
   setConfiguredAvCompressRunner(undefined);
   setConfiguredAvInlineByteBudget(undefined);
 });
@@ -519,11 +518,21 @@ describe('ReadMediaFileTool', () => {
   });
 
   it('does not treat the decode allocation cap as a hard limit when the configured delivery budget accepts the file', async () => {
-    setConfiguredReadImageByteBudget(70 * 1024 * 1024);
     const fs = createTestFs({
       '/workspace/large.png': { data: pngBuffer(), size: MAX_IMAGE_DECODE_BYTES + 1 },
     });
-    const tool = new ReadMediaFileTool(runtimeFor(fs), WORKSPACE, capabilities());
+    const tool = new ReadMediaFileTool(
+      runtimeFor(fs),
+      WORKSPACE,
+      capabilities(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { maxEdgePx: MAX_IMAGE_EDGE_PX, readByteBudget: 70 * 1024 * 1024 },
+    );
 
     const result = await execute(tool, { path: '/workspace/large.png' });
 

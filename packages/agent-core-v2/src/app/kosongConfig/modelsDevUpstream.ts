@@ -1,5 +1,8 @@
+import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { CoreErrors } from '#/_base/errors/codes';
 import { BugIndicatingError, Error2 } from '#/_base/errors/errors';
+import { LifecycleScope } from '#/app/scopes';
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ModelRecord } from '#/kosong/model/model';
 
@@ -32,93 +35,171 @@ interface ModelsDevCacheEntry {
   readonly fetchedAt: number;
 }
 
-let cache: ModelsDevCacheEntry | undefined;
-let inFlight: Promise<ModelsDevCatalog> | undefined;
-let retryAt = 0;
-let builtInMemo: ModelsDevCatalog | undefined | null = null;
-let fetchImpl: typeof fetch = fetch;
-let nowImpl: () => number = Date.now;
+export interface ModelsDevUpstreamOptions {
+  readonly fetchImpl?: typeof fetch;
+  readonly now?: () => number;
+  readonly builtInCatalog?: ModelsDevCatalog;
+}
 
-export function setModelsDevUpstreamForTest(options: {
+export interface IModelsDevUpstreamService {
+  readonly _serviceBrand: undefined;
+  upstreamFetch(): typeof fetch;
+  getCatalog(
+    userAgent: string | (() => Promise<string>),
+    options?: { preferLocal?: boolean },
+  ): Promise<ModelsDevCatalog>;
+}
+
+export const IModelsDevUpstreamService: ServiceIdentifier<IModelsDevUpstreamService> =
+  createDecorator<IModelsDevUpstreamService>('modelsDevUpstreamService');
+
+interface TestUpstreamOverrides {
   fetchImpl?: typeof fetch;
   now?: () => number;
   builtInCatalog?: ModelsDevCatalog;
-}): void {
-  if (options.fetchImpl !== undefined) fetchImpl = options.fetchImpl;
-  if (options.now !== undefined) nowImpl = options.now;
-  if (options.builtInCatalog !== undefined) builtInMemo = options.builtInCatalog;
+}
+
+let testOverrides: TestUpstreamOverrides | undefined;
+const trackedClients = new Set<WeakRef<ModelsDevUpstreamClient>>();
+
+export class ModelsDevUpstreamClient implements IModelsDevUpstreamService {
+  declare readonly _serviceBrand: undefined;
+  private cache: ModelsDevCacheEntry | undefined;
+  private inFlight: Promise<ModelsDevCatalog> | undefined;
+  private retryAt = 0;
+  private builtInMemo: ModelsDevCatalog | undefined | null;
+  private readonly explicitFetch: typeof fetch | undefined;
+  private readonly explicitNow: (() => number) | undefined;
+  private readonly explicitBuiltIn: boolean;
+
+  constructor(options?: ModelsDevUpstreamOptions) {
+    this.explicitFetch = options?.fetchImpl;
+    this.explicitNow = options?.now;
+    this.explicitBuiltIn = options?.builtInCatalog !== undefined;
+    this.builtInMemo = options?.builtInCatalog ?? null;
+    if (options === undefined) {
+      trackedClients.add(new WeakRef(this));
+    }
+  }
+
+  reset(): void {
+    this.cache = undefined;
+    this.inFlight = undefined;
+    this.retryAt = 0;
+    if (!this.explicitBuiltIn) this.builtInMemo = null;
+  }
+
+  upstreamFetch(): typeof fetch {
+    return this.explicitFetch ?? testOverrides?.fetchImpl ?? fetch;
+  }
+
+  private now(): number {
+    return (this.explicitNow ?? testOverrides?.now ?? Date.now)();
+  }
+
+  private builtInCatalog(): ModelsDevCatalog | undefined {
+    if (!this.explicitBuiltIn && testOverrides?.builtInCatalog !== undefined) {
+      return testOverrides.builtInCatalog;
+    }
+    if (this.builtInMemo === null) {
+      this.builtInMemo = loadBuiltInModelsDevCatalog(BUILT_IN_MODELS_DEV_JSON);
+    }
+    return this.builtInMemo;
+  }
+
+  async getCatalog(
+    userAgent: string | (() => Promise<string>),
+    options: { preferLocal?: boolean } = {},
+  ): Promise<ModelsDevCatalog> {
+    const now = this.now();
+    if (this.cache !== undefined && now - this.cache.fetchedAt < CACHE_TTL_MS) {
+      return this.cache.catalog;
+    }
+    const local = this.cache?.catalog ?? this.builtInCatalog();
+    if (options.preferLocal === true && local !== undefined) {
+      if (now >= this.retryAt) void this.refreshCatalog(userAgent).catch(() => {});
+      return local;
+    }
+    return this.refreshCatalog(userAgent);
+  }
+
+  private refreshCatalog(userAgent: string | (() => Promise<string>)): Promise<ModelsDevCatalog> {
+    this.inFlight ??= Promise.resolve()
+      .then(() => typeof userAgent === 'string' ? userAgent : userAgent())
+      .then((ua) => this.fetchAndCache(ua))
+      .finally(() => {
+        this.retryAt = this.now() + CACHE_TTL_MS;
+        this.inFlight = undefined;
+      });
+    return this.inFlight;
+  }
+
+  private async fetchAndCache(userAgent: string): Promise<ModelsDevCatalog> {
+    try {
+      const res = await this.upstreamFetch()(MODELS_DEV_URL, {
+        headers: { Accept: 'application/json', 'User-Agent': userAgent },
+        signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        throw new Error2(CoreErrors.codes.INTERNAL, `HTTP ${res.status}`, {
+          details: { status: res.status },
+        });
+      }
+      const payload: unknown = await res.json();
+      if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+        throw new Error2(CoreErrors.codes.INTERNAL, 'unexpected catalog payload shape');
+      }
+      this.cache = { catalog: payload as ModelsDevCatalog, fetchedAt: this.now() };
+      return this.cache.catalog;
+    } catch (err) {
+      if (this.cache !== undefined) return this.cache.catalog;
+      const builtIn = this.builtInCatalog();
+      if (builtIn !== undefined) return builtIn;
+      throw new Error2(
+        ModelsDevImportErrors.codes.CATALOG_UNAVAILABLE,
+        `models.dev catalog unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+const defaultUpstreamClient = new ModelsDevUpstreamClient();
+
+export function setModelsDevUpstreamForTest(options: ModelsDevUpstreamOptions): void {
+  testOverrides = {
+    fetchImpl: options.fetchImpl ?? testOverrides?.fetchImpl,
+    now: options.now ?? testOverrides?.now,
+    builtInCatalog: options.builtInCatalog ?? testOverrides?.builtInCatalog,
+  };
 }
 
 export function resetModelsDevUpstreamForTest(): void {
-  cache = undefined;
-  inFlight = undefined;
-  retryAt = 0;
-  builtInMemo = null;
-  fetchImpl = fetch;
-  nowImpl = Date.now;
+  testOverrides = undefined;
+  for (const ref of trackedClients) {
+    const client = ref.deref();
+    if (client === undefined) trackedClients.delete(ref);
+    else client.reset();
+  }
 }
 
 export function upstreamFetch(): typeof fetch {
-  return fetchImpl;
+  return defaultUpstreamClient.upstreamFetch();
 }
 
 export async function getModelsDevCatalog(
   userAgent: string | (() => Promise<string>),
   options: { preferLocal?: boolean } = {},
 ): Promise<ModelsDevCatalog> {
-  const now = nowImpl();
-  if (cache !== undefined && now - cache.fetchedAt < CACHE_TTL_MS) return cache.catalog;
-  const local = cache?.catalog ?? builtInCatalog();
-  if (options.preferLocal === true && local !== undefined) {
-    if (now >= retryAt) void refreshCatalog(userAgent).catch(() => {});
-    return local;
-  }
-  return refreshCatalog(userAgent);
+  return defaultUpstreamClient.getCatalog(userAgent, options);
 }
 
-function refreshCatalog(userAgent: string | (() => Promise<string>)): Promise<ModelsDevCatalog> {
-  inFlight ??= Promise.resolve()
-    .then(() => typeof userAgent === 'string' ? userAgent : userAgent())
-    .then(fetchAndCache)
-    .finally(() => {
-      retryAt = nowImpl() + CACHE_TTL_MS;
-      inFlight = undefined;
-    });
-  return inFlight;
-}
-
-async function fetchAndCache(userAgent: string): Promise<ModelsDevCatalog> {
-  try {
-    const res = await fetchImpl(MODELS_DEV_URL, {
-      headers: { Accept: 'application/json', 'User-Agent': userAgent },
-      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      throw new Error2(CoreErrors.codes.INTERNAL, `HTTP ${res.status}`, {
-        details: { status: res.status },
-      });
-    }
-    const payload: unknown = await res.json();
-    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-      throw new Error2(CoreErrors.codes.INTERNAL, 'unexpected catalog payload shape');
-    }
-    cache = { catalog: payload as ModelsDevCatalog, fetchedAt: nowImpl() };
-    return cache.catalog;
-  } catch (err) {
-    if (cache !== undefined) return cache.catalog;
-    const builtIn = builtInCatalog();
-    if (builtIn !== undefined) return builtIn;
-    throw new Error2(
-      ModelsDevImportErrors.codes.CATALOG_UNAVAILABLE,
-      `models.dev catalog unavailable: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
-
-function builtInCatalog(): ModelsDevCatalog | undefined {
-  if (builtInMemo === null) builtInMemo = loadBuiltInModelsDevCatalog(BUILT_IN_MODELS_DEV_JSON);
-  return builtInMemo;
-}
+registerScopedService(
+  LifecycleScope.App,
+  IModelsDevUpstreamService,
+  ModelsDevUpstreamClient,
+  ScopeActivation.OnDemand,
+  'kosongConfig',
+);
 
 export function modelsDevEntry(
   catalog: ModelsDevCatalog,

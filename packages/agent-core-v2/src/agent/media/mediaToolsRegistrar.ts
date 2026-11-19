@@ -24,6 +24,7 @@ import { join } from 'pathe';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 
+import { IImageConfigBridge } from './imageConfigBridge';
 import { IAgentMediaToolsRegistrar } from './mediaTools';
 import { createVideoUploader, registerMediaTools } from './registerMediaTools';
 
@@ -50,6 +51,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     @IBootstrapService private readonly bootstrap?: IBootstrapService,
     @ISessionContext private readonly session?: ISessionContext,
     @ref(ICpuWorkerService) private readonly cpuWorkerRef?: LiveRef<ICpuWorkerService>,
+    @ref(IImageConfigBridge) private readonly imageConfigRef?: LiveRef<IImageConfigBridge>,
   ) {
     super();
     this.states.contributeState(mediaRegisteredKeyKey);
@@ -171,6 +173,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       imagePolicy,
       telemetry: this.telemetry,
       cpuWorker: this.cpuWorkerRef?.current,
+      imageLimits: this.imageConfigRef?.current,
     });
   }
 }

@@ -10,6 +10,7 @@ import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IComputerAdmissionService } from '#/mcpCore/computer';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import {
   McpConnectionManager,
@@ -75,6 +76,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IPluginService private readonly plugins?: IPluginService,
     @IPluginUsageService private readonly usage?: IPluginUsageService,
+    @IComputerAdmissionService private readonly computerAdmission?: IComputerAdmissionService,
   ) {
     super();
     this.sessionLifecycle = sessionLifecycle;
@@ -92,6 +94,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       allowsCall: (name) => this.mcpConfig.allowsCall?.(name) ?? Promise.resolve(true),
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
+      computerAdmission: this.computerAdmission,
     });
     this._register({ dispose: () => this.manager.shutdown() });
     this._register(
@@ -235,6 +238,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       },
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
+      computerAdmission: this.computerAdmission,
     });
     let overlayNames = new Set(Object.keys(servers));
     const initialOverlayNames = new Set(overlayNames);
