@@ -630,4 +630,39 @@ describe('canonical inline media original', () => {
       expect(file!.size).toBe(bytes.length);
     }
   });
+
+  it('persists rendered media previews to disk cache across memory-cache clears', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { clearMediaPreviewMemoryCacheForTest, createMediaPreview } = await import('../src/services/mediaPreview');
+    const tempHome = mkdtempSync(join(tmpdir(), 'kiki-preview-cache-'));
+    const rawBmp = new Uint8Array(bitmap());
+    const cacheKey = `${tempHome}\0"preview-v2-session-f_1-${rawBmp.byteLength}-image/bmp"`;
+    const compressSpy = vi.spyOn(imageValidation, 'compressImageForModel');
+    try {
+      clearMediaPreviewMemoryCacheForTest();
+      const first = await createMediaPreview(
+        { name: 'large.bmp', mediaType: 'image/bmp', size: rawBmp.byteLength, async *stream() { yield rawBmp; } },
+        undefined,
+        new AbortController().signal,
+        cacheKey,
+      );
+      expect(compressSpy).toHaveBeenCalledTimes(1);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      clearMediaPreviewMemoryCacheForTest();
+      const second = await createMediaPreview(
+        { name: 'large.bmp', mediaType: 'image/bmp', size: rawBmp.byteLength, async *stream() { yield rawBmp; } },
+        undefined,
+        new AbortController().signal,
+        cacheKey,
+      );
+      expect(compressSpy).toHaveBeenCalledTimes(1);
+      expect(second.mime).toBe(first.mime);
+      expect(Buffer.compare(Buffer.from(second.bytes), Buffer.from(first.bytes))).toBe(0);
+    } finally {
+      compressSpy.mockRestore();
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
 });

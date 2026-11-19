@@ -172,11 +172,9 @@ async function runBenchmark() {
     async function apiCall(method, urlPath, body, allowedCodes = [0]) {
       const t0 = performance.now();
       const headers = body === undefined ? authHeaders : { ...authHeaders, 'content-type': 'application/json' };
-      const res = await fetch(`${baseUrl}${urlPath}`, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
+      const init = { method, headers };
+      if (body !== undefined) init.body = JSON.stringify(body);
+      const res = await fetch(`${baseUrl}${urlPath}`, init);
       const json = await res.json();
       const elapsedMs = roundMs(performance.now() - t0);
       if (res.status !== 200 || !allowedCodes.includes(json.code)) {
@@ -583,7 +581,7 @@ async function runBenchmark() {
           httpReceiptMs: ckptRes.elapsedMs,
           firstDeltaMs: ckptFirstDeltaMs,
         };
-        progress(`cold checkpointed mega sync send finished: httpReceipt=${ckptRes.elapsedMs}ms firstDelta=${ckptFirstDeltaMs}ms`);
+        progress(`cold checkpointed mega sync send finished: httpReceipt=${ckptRes.elapsedMs}ms firstDelta=${String(ckptFirstDeltaMs)}ms`);
       }
     }
 
@@ -645,7 +643,7 @@ async function runBenchmark() {
         httpReceiptMs: syncRes.elapsedMs,
         firstDeltaMs,
       };
-      progress(`cold sync mega send finished: httpReceipt=${syncRes.elapsedMs}ms firstDelta=${firstDeltaMs}ms`);
+      progress(`cold sync mega send finished: httpReceipt=${syncRes.elapsedMs}ms firstDelta=${String(firstDeltaMs)}ms`);
     }
 
     for (const activeHandle of sessionManager.list()) {
@@ -812,3 +810,16 @@ function printSummary(report, forbiddenTokens) {
 }
 
 await runBenchmark();
+if (process.argv.includes('--with-detail')) {
+  const detailScript = path.join(__dirname, 'perf-home-detail-ux.mjs');
+  const detailArgs = process.argv.slice(2).filter((arg) => arg !== '--with-detail');
+  const detailRun = spawnSync(process.execPath, [detailScript, ...detailArgs], {
+    cwd: REPO_ROOT,
+    env: buildScrubbedEnv(),
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if ((detailRun.status ?? 1) !== 0) {
+    process.exit(detailRun.status ?? 1);
+  }
+}

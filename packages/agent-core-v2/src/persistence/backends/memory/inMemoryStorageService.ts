@@ -172,6 +172,12 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     return this.mtimes.get(this.watchKey(scope, key));
   }
 
+  async statMeta(scope: string, key: string): Promise<{ readonly size: number; readonly mtimeMs: number } | undefined> {
+    const size = this.scopes.get(scope)?.get(key)?.byteLength;
+    if (size === undefined) return undefined;
+    return { size, mtimeMs: this.mtimes.get(this.watchKey(scope, key)) ?? 0 };
+  }
+
   async stat(scope: string, key: string): Promise<StorageFileStat | undefined> {
     const size = this.scopes.get(scope)?.get(key)?.byteLength;
     if (size === undefined) return undefined;

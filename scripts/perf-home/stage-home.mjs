@@ -34,28 +34,32 @@ function linkOrCopyFile(src, dst) {
 
 function createTempGitRepos(reposRoot, count) {
   fs.mkdirSync(reposRoot, { recursive: true });
+  const templateDir = path.join(reposRoot, '_template');
+  fs.mkdirSync(templateDir, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: templateDir, windowsHide: true });
+  execFileSync('git', ['config', 'user.email', 'bench@example.test'], { cwd: templateDir, windowsHide: true });
+  execFileSync('git', ['config', 'user.name', 'Bench'], { cwd: templateDir, windowsHide: true });
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/example/bench-repo.git'], {
+    cwd: templateDir,
+    windowsHide: true,
+  });
+  fs.writeFileSync(path.join(templateDir, 'README.md'), '# Bench Repo\n', 'utf8');
+  execFileSync('git', ['add', 'README.md'], { cwd: templateDir, windowsHide: true });
+  execFileSync('git', ['commit', '-q', '-m', 'chore: seed bench repo'], {
+    cwd: templateDir,
+    windowsHide: true,
+  });
+
   const repoPaths = [];
   for (let i = 0; i < count; i += 1) {
     const repoDir = path.join(reposRoot, `repo-${String(i).padStart(2, '0')}`);
-    fs.mkdirSync(repoDir, { recursive: true });
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoDir, windowsHide: true });
-    execFileSync('git', ['config', 'user.email', 'bench@example.test'], { cwd: repoDir, windowsHide: true });
-    execFileSync('git', ['config', 'user.name', 'Bench'], { cwd: repoDir, windowsHide: true });
-    execFileSync('git', ['remote', 'add', 'origin', `https://github.com/example/bench-repo-${i}.git`], {
-      cwd: repoDir,
-      windowsHide: true,
-    });
-    fs.writeFileSync(path.join(repoDir, 'README.md'), `# Bench Repo ${i}\n`, 'utf8');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoDir, windowsHide: true });
-    execFileSync('git', ['commit', '-q', '-m', `chore: seed bench repo ${i}`], {
-      cwd: repoDir,
-      windowsHide: true,
-    });
+    fs.cpSync(templateDir, repoDir, { recursive: true });
     if (i % 2 === 1) {
       fs.writeFileSync(path.join(repoDir, 'dirty-note.txt'), `dirty-${i}\n`, 'utf8');
     }
     repoPaths.push(repoDir);
   }
+  fs.rmSync(templateDir, { recursive: true, force: true });
   return repoPaths;
 }
 
@@ -101,7 +105,7 @@ function stageSanitizedAgentsMd(sourceHome, stagedHome, fingerprints) {
   fs.writeFileSync(path.join(stagedHome, 'AGENTS.md'), body, 'utf8');
 }
 
-function buildConfigToml(mockBaseUrl, discoveredModels) {
+function buildConfigToml(mockBaseUrl, discoveredModels, enableSessionTitle = false, enableSearch = true) {
   const lines = [
     'default_model = "mock-fast"',
     '',
@@ -134,13 +138,72 @@ function buildConfigToml(mockBaseUrl, discoveredModels) {
   lines.push('manualTick = true');
   lines.push('');
   lines.push('[search]');
-  lines.push('enabled = true');
+  lines.push(`enabled = ${enableSearch ? 'true' : 'false'}`);
   lines.push('');
+  if (enableSessionTitle) {
+    lines.push('[session_title]');
+    lines.push('model = "mock-fast"');
+    lines.push('triggers = []');
+    lines.push('');
+  }
   return lines.join('\n');
 }
 
+function seedDenseBenchRepo(repoDir) {
+  for (let pkg = 0; pkg < 12; pkg += 1) {
+    const pkgName = `pkg-${String(pkg).padStart(2, '0')}`;
+    for (let mod = 0; mod < 160; mod += 1) {
+      const subDir = path.join(repoDir, 'packages', pkgName, mod % 2 === 0 ? 'src' : 'test');
+      fs.mkdirSync(subDir, { recursive: true });
+      const ext = mod % 3 === 0 ? 'tsx' : 'ts';
+      const fileName = `feature_${String(mod).padStart(3, '0')}.${ext}`;
+      fs.writeFileSync(
+        path.join(subDir, fileName),
+        `export const feature_${pkg}_${mod} = ${mod};\nexport function renderView${mod}(): string { return 'ok-${pkg}-${mod}'; }\n`,
+        'utf8',
+      );
+    }
+  }
+  const docsDir = path.join(repoDir, 'docs', 'guides');
+  fs.mkdirSync(docsDir, { recursive: true });
+  for (let d = 0; d < 80; d += 1) {
+    fs.writeFileSync(
+      path.join(docsDir, `guide-${String(d).padStart(2, '0')}.md`),
+      `# Guide ${d}\n\nDeterministic benchmark guide content ${d}.\n`,
+      'utf8',
+    );
+  }
+}
+
+function isPngHeader(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const head = Buffer.alloc(8);
+    const read = fs.readSync(fd, head, 0, 8, 0);
+    return (
+      read === 8 &&
+      head[0] === 0x89 &&
+      head[1] === 0x50 &&
+      head[2] === 0x4e &&
+      head[3] === 0x47 &&
+      head[4] === 0x0d &&
+      head[5] === 0x0a &&
+      head[6] === 0x1a &&
+      head[7] === 0x0a
+    );
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
 function isolateSessionForMutation(stagedSessionDir, junctionsSet, linkedFingerprintsBySession, sessionKey) {
-  const agentsDir = path.join(stagedSessionDir, 'agents');
   linkedFingerprintsBySession.delete(sessionKey);
   function walk(dir) {
     let entries;
@@ -178,12 +241,19 @@ function isolateSessionForMutation(stagedSessionDir, junctionsSet, linkedFingerp
       }
     }
   }
-  if (fs.existsSync(agentsDir)) {
-    walk(agentsDir);
+  if (fs.existsSync(stagedSessionDir)) {
+    walk(stagedSessionDir);
   }
 }
 
-export async function stageFullKikiHome({ mockBaseUrl }) {
+export async function stageFullKikiHome({
+  mockBaseUrl,
+  scratchRoot,
+  stageMedia = false,
+  seedLargeWorkspace = false,
+  enableSessionTitle = false,
+  enableSearch = true,
+}) {
   const sourceHome = process.env.KIKI_REAL_CORPUS_HOME ?? path.join(os.homedir(), '.kiki');
   if (!fs.existsSync(sourceHome)) {
     throw new Error('Real KIKI_HOME corpus directory does not exist');
@@ -199,12 +269,17 @@ export async function stageFullKikiHome({ mockBaseUrl }) {
   const linkedFingerprintsBySession = new Map();
   const junctions = new Set();
 
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-perf-home-'));
+  const effectiveScratchBase = scratchRoot ?? process.env.KIKI_PERF_SCRATCH_DIR ?? os.tmpdir();
+  fs.mkdirSync(effectiveScratchBase, { recursive: true });
+  const tempRoot = fs.mkdtempSync(path.join(effectiveScratchBase, 'kiki-perf-home-'));
   const stagedHome = path.join(tempRoot, 'home');
   const reposRoot = path.join(tempRoot, 'repos');
   fs.mkdirSync(stagedHome, { recursive: true });
 
   const repoPaths = createTempGitRepos(reposRoot, TEMP_GIT_REPO_COUNT);
+  if (seedLargeWorkspace && repoPaths[0]) {
+    seedDenseBenchRepo(repoPaths[0]);
+  }
   const workspaceToRepo = new Map();
   let wsSeq = 0;
   const assignRepo = (wsId) => {
@@ -252,6 +327,10 @@ export async function stageFullKikiHome({ mockBaseUrl }) {
 
   const discoveredModels = new Set();
   const stagedSessions = [];
+  const canonicalLargePngs = [];
+  const canonicalRichImageSessions = [];
+  const blobrefPngs = [];
+  const voiceOggs = [];
   let skippedSessions = 0;
   const now = Date.now();
 
@@ -474,6 +553,110 @@ export async function stageFullKikiHome({ mockBaseUrl }) {
             const dstJunction = path.join(dstAgentDir, d.rel);
             fs.symlinkSync(d.src, dstJunction, 'junction');
             junctions.add(dstJunction);
+            if (stageMedia && d.rel === 'blobs' && blobrefPngs.length < 24) {
+              try {
+                for (const bEntry of fs.readdirSync(d.src, { withFileTypes: true })) {
+                  if (!bEntry.isFile() || !/^[0-9a-f]{64}$/u.test(bEntry.name)) continue;
+                  const bPath = path.join(d.src, bEntry.name);
+                  const bst = fs.statSync(bPath);
+                  if (bst.size >= 512 * 1024 && bst.size <= 12 * 1048576 && isPngHeader(bPath)) {
+                    blobrefPngs.push({
+                      wsId,
+                      sessionId,
+                      agentId: plan.agentId,
+                      fileId: `blobref:${plan.agentId}:${bEntry.name}`,
+                      sizeBytes: bst.size,
+                      srcPath: bPath,
+                    });
+                    recordFingerprint(sessionLinkedMap, bPath);
+                    recordFingerprint(fingerprints, bPath);
+                    if (blobrefPngs.length >= 24) break;
+                  }
+                }
+              } catch {}
+            }
+          }
+        }
+
+        if (stageMedia) {
+          const srcMediaDir = path.join(srcSessionDir, 'media');
+          if (fs.existsSync(srcMediaDir)) {
+            try {
+              const mStat = fs.statSync(srcMediaDir);
+              if (now - mStat.mtimeMs >= QUIESCENT_WINDOW_MS) {
+                sessionLinkedMap.set(srcMediaDir, { size: mStat.size, mtimeMs: mStat.mtimeMs, isDir: true });
+                const dstMediaJunction = path.join(dstSessionDir, 'media');
+                fs.symlinkSync(srcMediaDir, dstMediaJunction, 'junction');
+                junctions.add(dstMediaJunction);
+                const metaDir = path.join(srcMediaDir, 'meta');
+                const needMediaSamples =
+                  canonicalLargePngs.length < 96 || voiceOggs.length < 24 || canonicalRichImageSessions.length < 3;
+                if (needMediaSamples && fs.existsSync(metaDir)) {
+                  const sessionImages = [];
+                  let sessionImageBytes = 0;
+                  for (const metaEntry of fs.readdirSync(metaDir, { withFileTypes: true })) {
+                    if (!metaEntry.isFile() || !metaEntry.name.endsWith('.json')) continue;
+                    const fileId = metaEntry.name.slice(0, -5);
+                    if (!fileId.startsWith('f_')) continue;
+                    const metaFile = path.join(metaDir, metaEntry.name);
+                    let metaObj;
+                    try {
+                      metaObj = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+                    } catch {
+                      continue;
+                    }
+                    if (!metaObj || typeof metaObj.key !== 'string') continue;
+                    const binPath = path.join(srcMediaDir, metaObj.key);
+                    let binStat;
+                    try {
+                      binStat = fs.statSync(binPath);
+                    } catch {
+                      continue;
+                    }
+                    const mediaType = String(metaObj.mediaType ?? '');
+                    if (mediaType === 'image/png' || mediaType === 'image/jpeg') {
+                      sessionImages.push({ fileId, sizeBytes: binStat.size, mediaType, srcPath: binPath });
+                      sessionImageBytes += binStat.size;
+                      if (binStat.size >= 512 * 1024) {
+                        canonicalLargePngs.push({
+                          wsId,
+                          sessionId,
+                          fileId,
+                          sizeBytes: binStat.size,
+                          mediaType,
+                          srcPath: binPath,
+                        });
+                        recordFingerprint(sessionLinkedMap, binPath);
+                        recordFingerprint(fingerprints, binPath);
+                      }
+                    } else if (mediaType.startsWith('audio/ogg') || binPath.toLowerCase().endsWith('.ogg')) {
+                      if (binStat.size >= 16 * 1024) {
+                        voiceOggs.push({
+                          wsId,
+                          sessionId,
+                          fileId,
+                          sizeBytes: binStat.size,
+                          mediaType: mediaType || 'audio/ogg',
+                          srcPath: binPath,
+                        });
+                        recordFingerprint(sessionLinkedMap, binPath);
+                        recordFingerprint(fingerprints, binPath);
+                      }
+                    }
+                  }
+                  if (sessionImages.length >= 8) {
+                    sessionImages.sort((a, b) => b.sizeBytes - a.sizeBytes);
+                    canonicalRichImageSessions.push({
+                      wsId,
+                      sessionId,
+                      imageCount: sessionImages.length,
+                      totalImageBytes: sessionImageBytes,
+                      images: sessionImages.slice(0, 16),
+                    });
+                  }
+                }
+              }
+            } catch {}
           }
         }
 
@@ -563,7 +746,11 @@ export async function stageFullKikiHome({ mockBaseUrl }) {
   const userProfileCount = sanitizeAgentProfiles(sourceHome, stagedHome, fingerprints);
   stageSanitizedAgentsMd(sourceHome, stagedHome, fingerprints);
 
-  fs.writeFileSync(path.join(stagedHome, 'config.toml'), buildConfigToml(mockBaseUrl, discoveredModels), 'utf8');
+  fs.writeFileSync(
+    path.join(stagedHome, 'config.toml'),
+    buildConfigToml(mockBaseUrl, discoveredModels, enableSessionTitle, enableSearch),
+    'utf8',
+  );
 
   const sortedByTotalWire = [...stagedSessions].sort((a, b) => b.totalWireBytes - a.totalWireBytes);
   const openFanoutSamples = sortedByTotalWire.slice(0, Math.min(5, sortedByTotalWire.length));
@@ -606,7 +793,9 @@ export async function stageFullKikiHome({ mockBaseUrl }) {
     ) ??
     coldDurableSample;
 
-  for (const target of new Set([warmSendSample, coldDurableSample, coldSyncSample].filter(Boolean))) {
+  const isolatedTargets = new Set([warmSendSample, coldDurableSample, coldSyncSample].filter(Boolean));
+  const isolatedSessionIds = new Set([...isolatedTargets].map((t) => t.sessionId));
+  for (const target of isolatedTargets) {
     isolateSessionForMutation(
       target.stagedSessionDir,
       junctions,
@@ -616,6 +805,77 @@ export async function stageFullKikiHome({ mockBaseUrl }) {
   }
 
   const sampleWorkspaceId = Object.keys(sanitizedWorkspaces)[0];
+
+  function cloneColdSession(sourceSession, cloneSessionId, overrides = {}) {
+    const wsId = overrides.wsId ?? sourceSession.wsId;
+    const dstDir = path.join(stagedHome, 'sessions', wsId, cloneSessionId);
+    fs.mkdirSync(dstDir, { recursive: true });
+    const rawState = JSON.parse(fs.readFileSync(path.join(sourceSession.stagedSessionDir, 'state.json'), 'utf8'));
+    const nextState = {
+      ...rawState,
+      id: cloneSessionId,
+      title: overrides.title ?? `Bench Session ${cloneSessionId}`,
+      archived: overrides.archived ?? false,
+      archivedAt: overrides.archived ? Date.now() : undefined,
+      custom: overrides.custom ? { ...rawState.custom, ...overrides.custom } : rawState.custom,
+    };
+    const stateJson = JSON.stringify(nextState);
+    fs.writeFileSync(path.join(dstDir, 'state.json'), stateJson, 'utf8');
+    const srcOutcomes = path.join(sourceSession.stagedSessionDir, 'agent-outcomes');
+    if (fs.existsSync(srcOutcomes)) {
+      const dstOutcomes = path.join(dstDir, 'agent-outcomes');
+      fs.mkdirSync(dstOutcomes, { recursive: true });
+      for (const entry of fs.readdirSync(srcOutcomes, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith('.json')) {
+          fs.copyFileSync(path.join(srcOutcomes, entry.name), path.join(dstOutcomes, entry.name));
+        }
+      }
+    }
+    const dstMainDir = path.join(dstDir, 'agents', 'main');
+    fs.mkdirSync(dstMainDir, { recursive: true });
+    if (overrides.copyMainArtifacts !== false) {
+      const srcMainDir = path.join(sourceSession.stagedSessionDir, 'agents', 'main');
+      for (const rel of ['wire.transcript-receipt.json', 'wire.jsonl.generation']) {
+        const p = path.join(srcMainDir, rel);
+        if (fs.existsSync(p)) fs.copyFileSync(p, path.join(dstMainDir, rel));
+      }
+      const srcWire = path.join(srcMainDir, 'wire.jsonl');
+      if (overrides.copyMainWire === true && fs.existsSync(srcWire)) {
+        fs.copyFileSync(srcWire, path.join(dstMainDir, 'wire.jsonl'));
+        const srcCkpt = path.join(srcMainDir, 'replay-checkpoints', 'engine-v1');
+        if (fs.existsSync(srcCkpt)) {
+          fs.mkdirSync(path.join(dstMainDir, 'replay-checkpoints'), { recursive: true });
+          fs.copyFileSync(srcCkpt, path.join(dstMainDir, 'replay-checkpoints', 'engine-v1'));
+        }
+      } else {
+        const initLine = `${JSON.stringify({
+          time: Date.now(),
+          type: 'metadata',
+          payload: { protocolVersion: '1.3' },
+        })}\n`;
+        fs.writeFileSync(path.join(dstMainDir, 'wire.jsonl'), initLine, 'utf8');
+      }
+    }
+    return {
+      wsId,
+      sessionId: cloneSessionId,
+      stagedSessionDir: dstDir,
+      stateBytes: Buffer.byteLength(stateJson, 'utf8'),
+      agentCount: sourceSession.agentCount,
+      cwd: nextState.cwd,
+    };
+  }
+
+  const keepNonIsolated = (arr) => arr.filter((item) => !isolatedSessionIds.has(item.sessionId));
+  const validLargePngs = keepNonIsolated(canonicalLargePngs).sort((a, b) => b.sizeBytes - a.sizeBytes);
+  const validRichSessions = keepNonIsolated(canonicalRichImageSessions).sort(
+    (a, b) => b.totalImageBytes - a.totalImageBytes,
+  );
+  const validBlobrefPngs = keepNonIsolated(blobrefPngs).sort((a, b) => b.sizeBytes - a.sizeBytes);
+  const validVoiceOggs = keepNonIsolated(voiceOggs).sort((a, b) => b.sizeBytes - a.sizeBytes);
+  const megaColdSessions = [...stagedSessions]
+    .filter((s) => !isolatedSessionIds.has(s.sessionId))
+    .sort((a, b) => b.stateBytes - a.stateBytes);
 
   function verifySourceMutations() {
     const liveLocksNow = new Set();
@@ -676,7 +936,13 @@ export async function stageFullKikiHome({ mockBaseUrl }) {
       warmSend: warmSendSample,
       coldDurableSend: coldDurableSample,
       coldSyncSend: coldSyncSample,
+      megaColdSessions: megaColdSessions.slice(0, 8),
+      canonicalLargePngs: validLargePngs.slice(0, 24),
+      canonicalRichImageSessions: validRichSessions.slice(0, 6),
+      blobrefPngs: validBlobrefPngs.slice(0, 16),
+      voiceOggs: validVoiceOggs.slice(0, 12),
     },
+    cloneColdSession,
     verifySourceMutations,
     teardown,
   };

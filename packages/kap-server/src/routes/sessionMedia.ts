@@ -38,6 +38,7 @@ import { openApiDocumentJsonSchema } from '../middleware/schema';
 import { ErrorCode } from '../protocol/error-codes';
 import { envelopeSchema, errEnvelope } from '../protocol/envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { peerAudience } from '../services/connections/audience';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
 import { publishedInlineMediaReader } from '../services/publishedMedia';
 import { openPersistedToolMedia } from '../services/persistedToolMedia';
@@ -188,9 +189,20 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
         const file = opened.file;
         if (file === undefined) return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
         const etag = `"preview-v2-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
+        const allowImmutableCache =
+          !file_id.startsWith('raw:') &&
+          !file_id.startsWith('inline') &&
+          peerAudience(req as never) === undefined &&
+          !(typeof req.headers['authorization'] === 'string' && req.headers['authorization'].includes('ksa_'));
         r.header('etag', etag).header('accept-ranges', 'bytes');
+        if (allowImmutableCache) r.header('cache-control', 'private, max-age=31536000, immutable');
         if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(undefined) as void;
-        const homeDir = core.accessor.get(IBootstrapService)?.homeDir ?? '';
+        let homeDir = '';
+        try {
+          homeDir = core.accessor?.get(IBootstrapService)?.homeDir ?? '';
+        } catch {
+          homeDir = '';
+        }
         const result = await createMediaPreview(file, req.query.media_type, signal, `${homeDir}\0${etag}`);
         if (r.raw.destroyed) return;
         r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));

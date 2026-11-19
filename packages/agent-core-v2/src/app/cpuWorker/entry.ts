@@ -19,7 +19,18 @@ async function execute(request: CpuRequest): Promise<void> {
       code: 'code' in value && typeof value.code === 'string' ? value.code : undefined,
       payload: isCodedError(error) ? toErrorPayload(error) : undefined } };
   }
-  port!.postMessage(response, 'result' in response && response.result instanceof ArrayBuffer ? [response.result] : []);
+  const transferList =
+    'result' in response
+      ? response.result instanceof ArrayBuffer
+        ? [response.result]
+        : response.result !== null &&
+            typeof response.result === 'object' &&
+            'data' in response.result &&
+            response.result.data instanceof ArrayBuffer
+          ? [response.result.data]
+          : []
+      : [];
+  port!.postMessage(response, transferList);
 }
 
 port.on('message', (request: CpuRequest) => { void execute(request); });

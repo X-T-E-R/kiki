@@ -265,10 +265,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/sessions/${encodeURIComponent(sessionId)}/persona-settings`, { method: 'POST', body: input },
       ),
       archive: (sessionId: string, options: import('@kiki/protocol').ArchiveSessionRequest = {}) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':archive', {
-        method: 'POST', body: options,
+        method: 'POST', body: options, timeoutMs: 0,
       }),
       restore: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':restore', {
-        method: 'POST', body: {},
+        method: 'POST', body: {}, timeoutMs: 0,
       }),
       deleteArchived: async (sessionId: string, options = {}) => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':delete-archived', {
         method: 'POST', body: deleteArchivedSessionRequestSchema.parse(options), timeoutMs: 0,

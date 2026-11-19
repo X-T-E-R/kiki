@@ -71,6 +71,7 @@ import {
   ProfileError,
   getLiveSessionById,
   programForSession,
+  restoreColdSession,
   setSessionArchivedBatch,
   updateColdSessionProfile,
   archiveSessionFamily,
@@ -1136,6 +1137,8 @@ export function registerSessionsRoutes(
             result.workspaceId,
             result.meta.usage,
             result.meta.agents?.[MAIN_AGENT_ID],
+            undefined,
+            { sessionMetadata: result.meta },
           );
           reply.send(okEnvelope(toWireSession({ ...result.meta, workspaceId: result.workspaceId }, cwd, facts, cursor?.seq), req.id));
           return;
@@ -1535,21 +1538,50 @@ export function registerSessionsRoutes(
         }
 
         if (parsed.action === 'restore') {
-          const restoreHandler = await programForSession(core.accessor, parsed.id);
-          const restored =
-            restoreHandler === undefined
-              ? undefined
-              : await core.accessor.get(ISessionManager).restore(parsed.id);
-          if (restored === undefined) {
+          const manager = core.accessor.get(ISessionManager);
+          const outcome = await manager.withLifecycleSerialization(parsed.id, async (unguarded) => {
+            if (manager.get(parsed.id) !== undefined) {
+              const restored = await unguarded.restore();
+              return restored === undefined ? { kind: 'not_found' as const } : { kind: 'live' as const, restored };
+            }
+            if (manager.isEphemeral(parsed.id)) return { kind: 'not_found' as const };
+            return restoreColdSession(core.accessor, parsed.id);
+          });
+          if (outcome.kind === 'not_found') {
             throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
           }
-          const meta = await restored.accessor.get(ISessionMetadata).read();
-          const ctx = restored.accessor.get(ISessionContext);
-          const cursor = await broadcaster?.getCursor(meta.id);
+          if (outcome.kind === 'live') {
+            const meta = await outcome.restored.accessor.get(ISessionMetadata).read();
+            const ctx = outcome.restored.accessor.get(ISessionContext);
+            const cursor = await broadcaster?.getCursor(meta.id);
+            const session = toWireSession(
+              { ...meta, workspaceId: ctx.workspaceId },
+              ctx.cwd,
+              resolveSessionFacts(core, meta.id),
+              cursor?.seq,
+            );
+            requestLog(req)?.info({ session_id: parsed.id, action: 'restore' }, 'session action completed');
+            reply.send(okEnvelope(session, req.id));
+            return;
+          }
+          const cwd = outcome.cwd ?? (await core.accessor.get(IWorkspaceService).get(outcome.workspaceId))?.root;
+          if (cwd === undefined) {
+            throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} has no recoverable cwd`);
+          }
+          const cursor = await broadcaster?.getCursor(parsed.id);
+          const facts = await resolveSessionBindingFacts(
+            core,
+            parsed.id,
+            outcome.workspaceId,
+            outcome.meta.usage,
+            outcome.meta.agents?.[MAIN_AGENT_ID],
+            undefined,
+            { sessionMetadata: outcome.meta },
+          );
           const session = toWireSession(
-            { ...meta, workspaceId: ctx.workspaceId },
-            ctx.cwd,
-            resolveSessionFacts(core, meta.id),
+            { ...outcome.meta, workspaceId: outcome.workspaceId },
+            cwd,
+            facts,
             cursor?.seq,
           );
           requestLog(req)?.info({ session_id: parsed.id, action: 'restore' }, 'session action completed');
@@ -2050,11 +2082,18 @@ interface ColdSessionBindingBase {
   readonly agentConfig: Session['agent_config'];
 }
 
+interface ColdSessionBindingCacheEntry {
+  revision?: string;
+  wireKey?: string;
+  expiresAt: number;
+  readonly base: ColdSessionBindingBase;
+}
+
 interface ColdSessionCacheState {
   configGen: number;
   readonly statusValues: Map<string, { readonly revision: string; readonly expiresAt: number; readonly status: Awaited<ReturnType<ISessionLegacyService['status']>> }>;
   readonly statusInflight: Map<string, Promise<Awaited<ReturnType<ISessionLegacyService['status']>>>>;
-  readonly bindingValues: Map<string, { readonly revision: string; readonly expiresAt: number; readonly base: ColdSessionBindingBase }>;
+  readonly bindingValues: Map<string, ColdSessionBindingCacheEntry>;
   readonly bindingInflight: Map<string, Promise<ColdSessionBindingBase>>;
 }
 
@@ -2099,8 +2138,14 @@ function getColdSessionCacheState(core: Scope): ColdSessionCacheState {
   } catch {}
   try {
     core.accessor.get(IEventService).onDidPublish((event) => {
-      const payload = (event as { readonly payload?: { readonly sessionId?: unknown } }).payload;
-      if (typeof payload?.sessionId === 'string') evict({ sessionId: payload.sessionId });
+      const typed = event as { readonly type?: unknown; readonly payload?: { readonly sessionId?: unknown } };
+      const sessionId = typed.payload?.sessionId;
+      if (typeof sessionId !== 'string') return;
+      if (typed.type === 'session.meta.updated') {
+        state!.statusValues.delete(sessionId);
+        return;
+      }
+      evict({ sessionId });
     });
   } catch {}
   return state;
@@ -2110,7 +2155,11 @@ function statToken(stat: { readonly size: number; readonly identity?: string; re
   return stat === undefined ? '-' : `${stat.size}:${stat.identity ?? ''}:${stat.revision ?? ''}`;
 }
 
-async function coldSessionArtifactsRevision(core: Scope, workspaceId: string, sessionId: string): Promise<string | undefined> {
+async function coldSessionArtifactStats(
+  core: Scope,
+  workspaceId: string,
+  sessionId: string,
+): Promise<{ readonly revision: string; readonly wireRevision: string } | undefined> {
   const state = getColdSessionCacheState(core);
   const storage = core.accessor.get(IFileSystemStorageService);
   const statFn = storage.stat?.bind(storage);
@@ -2123,7 +2172,30 @@ async function coldSessionArtifactsRevision(core: Scope, workspaceId: string, se
     statFn(mainScope, 'wire.jsonl').catch(() => undefined),
     statFn(`${mainScope}/replay-checkpoints`, 'engine-v1').catch(() => undefined),
   ]);
-  return `${state.configGen}#${statToken(stateStat)}#${statToken(wireStat)}#${statToken(ckptStat)}`;
+  const wireToken = `${statToken(wireStat)}#${statToken(ckptStat)}`;
+  return {
+    revision: `${state.configGen}#${statToken(stateStat)}#${wireToken}`,
+    wireRevision: `${state.configGen}#${wireToken}`,
+  };
+}
+
+function coldSessionBindingWireKey(
+  wireRevision: string,
+  sessionMeta: SessionMeta,
+  mainMeta?: AgentMeta,
+): string {
+  const main = mainMeta ?? sessionMeta.agents?.[MAIN_AGENT_ID];
+  return `${wireRevision}#${JSON.stringify({
+    main,
+    externalMain: isExternalClientMain(sessionMeta, MAIN_AGENT_ID),
+    botPersonaId: sessionMeta.custom?.['bot_persona_id'],
+    roomPersonaId: sessionMeta.custom?.['room_persona_id'],
+    personaId: sessionMeta.custom?.['persona_id'],
+  })}`;
+}
+
+async function coldSessionArtifactsRevision(core: Scope, workspaceId: string, sessionId: string): Promise<string | undefined> {
+  return (await coldSessionArtifactStats(core, workspaceId, sessionId))?.revision;
 }
 
 async function readCachedColdSessionStatus(
@@ -2332,6 +2404,35 @@ export async function resolveSessionBindingFacts(
           }
           state.bindingValues.set(sessionId, {
             revision,
+            expiresAt: Date.now() + COLD_SESSION_CACHE_TTL_MS,
+            base,
+          });
+        }
+      }
+    }
+  } else if (options.sessionMetadata !== undefined) {
+    const state = getColdSessionCacheState(core);
+    signal?.throwIfAborted();
+    const stats = await coldSessionArtifactStats(core, workspaceId, sessionId);
+    signal?.throwIfAborted();
+    const wireKey = stats === undefined ? undefined : coldSessionBindingWireKey(stats.wireRevision, options.sessionMetadata, metadata);
+    const cached = wireKey === undefined ? undefined : state.bindingValues.get(sessionId);
+    if (cached !== undefined && cached.wireKey === wireKey && Date.now() < cached.expiresAt) {
+      cached.revision = stats!.revision;
+      cached.expiresAt = Date.now() + COLD_SESSION_CACHE_TTL_MS;
+      base = cached.base;
+    } else {
+      base = await computeColdSessionBindingBase(core, sessionId, workspaceId, metadata, signal, options.sessionMetadata);
+      if (stats !== undefined && wireKey !== undefined && !signal?.aborted && getLiveSessionById(core.accessor, sessionId) === undefined) {
+        const postStats = await coldSessionArtifactStats(core, workspaceId, sessionId);
+        if (postStats?.wireRevision === stats.wireRevision) {
+          if (state.bindingValues.size >= MAX_COLD_SESSION_CACHE) {
+            const oldest = state.bindingValues.keys().next().value;
+            if (oldest !== undefined) state.bindingValues.delete(oldest);
+          }
+          state.bindingValues.set(sessionId, {
+            revision: postStats.revision,
+            wireKey,
             expiresAt: Date.now() + COLD_SESSION_CACHE_TTL_MS,
             base,
           });

@@ -1820,4 +1820,27 @@ describe('image-compress config resolver seam', () => {
     setConfiguredReadImageByteBudget(undefined);
     expect(resolveReadImageByteBudget()).toBe(READ_IMAGE_BYTE_BUDGET);
   });
+
+  it('offloads large image downscales with >2x pre-decimation to a registered CPU worker pool', { timeout: PARALLEL_WORKER_CONTENTION_TIMEOUT_MS }, async () => {
+    const pool = cpuRuntime.createCpuPool({ maxWorkers: 2 });
+    const registration = cpuRuntime.registerCpuPool(pool);
+    const requestSpy = vi.spyOn(pool, 'request');
+    try {
+      const large = await solidPng(1800, 1200, 0x2266aaee);
+      const result = await compressImageForModel(large, 'image/png', {
+        maxEdge: 384,
+        byteBudget: 128 * 1024,
+      });
+      expect(requestSpy).toHaveBeenCalledTimes(1);
+      expect(result.changed).toBe(true);
+      expect(result.originalWidth).toBe(1800);
+      expect(result.originalHeight).toBe(1200);
+      expect(result.width).toBe(384);
+      expect(result.height).toBe(256);
+      expect(result.finalByteLength).toBeLessThanOrEqual(128 * 1024);
+    } finally {
+      requestSpy.mockRestore();
+      await registration.dispose();
+    }
+  });
 });

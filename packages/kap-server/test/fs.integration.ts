@@ -125,7 +125,7 @@ describe('server-v2 /api fs routes', () => {
     expect(body.data.name).toBe('a.txt');
   });
 
-  it('pins fs actions through idle eviction and releases on failure', async () => {
+  it('pins live fs actions through idle eviction, releases on failure, and keeps cold sessions unmaterialized', async () => {
     await server!.close();
     server = undefined;
     await writeFile(join(home!, 'config.toml'), '[session_residency]\nidle_ttl_ms = 0\nmin_idle_ms = 0\nsweep_interval_ms = 300000\n');
@@ -143,7 +143,7 @@ describe('server-v2 /api fs routes', () => {
       if (calls === 1) {
         entered();
         await gate;
-      } else {
+      } else if (calls === 2) {
         throw new Error('forced stat failure');
       }
       return stat.call(this, input);
@@ -152,10 +152,14 @@ describe('server-v2 /api fs routes', () => {
     let readEntered!: () => void;
     const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
     const reading = new Promise<void>((resolve) => { readEntered = resolve; });
+    let holdNextDownload = false;
     const readBytes = HostFileSystem.prototype.readBytes;
     const streamSpy = vi.spyOn(HostFileSystem.prototype, 'readBytes').mockImplementation(async function (this: HostFileSystem, ...args) {
-      readEntered();
-      await readGate;
+      if (holdNextDownload) {
+        holdNextDownload = false;
+        readEntered();
+        await readGate;
+      }
       return readBytes.apply(this, args);
     });
     try {
@@ -169,12 +173,9 @@ describe('server-v2 /api fs routes', () => {
       expect(await manager.evictIfIdle!(id)).toBe(false);
       openGate();
       expect((await pending).code).toBe(0);
-      expect(await manager.evictIfIdle!(id)).toBe(true);
       const failed = await postFs<null>(id, 'stat', { path: 'pinned.txt' });
       expect(failed.code).toBe(ErrorCode.INTERNAL_ERROR);
-      const restoredAgents = manager.get(id)!.accessor.get(IAgentLifecycleService).list();
-      await Promise.all(restoredAgents.map(async (agent) => agent.accessor.get(IAgentTaskService).resumeRestoration?.()));
-      expect(await manager.evictIfIdle!(id)).toBe(true);
+      holdNextDownload = true;
       const download = fetch(`${base}/api/sessions/${id}/fs/pinned.txt:download`, {
         headers: authHeaders(server),
       } as never);
@@ -183,6 +184,16 @@ describe('server-v2 /api fs routes', () => {
       releaseRead();
       expect(await (await download).text()).toBe('held');
       await vi.waitFor(async () => expect(await manager.evictIfIdle!(id)).toBe(true));
+      expect(manager.get(id)).toBeUndefined();
+      const coldStat = await postFs<FsEntryWire>(id, 'stat', { path: 'pinned.txt' });
+      expect(coldStat.code).toBe(0);
+      expect(coldStat.data.size).toBe(4);
+      expect(manager.get(id)).toBeUndefined();
+      const coldDownload = await fetch(`${base}/api/sessions/${id}/fs/pinned.txt:download`, {
+        headers: authHeaders(server),
+      } as never);
+      expect(await coldDownload.text()).toBe('held');
+      expect(manager.get(id)).toBeUndefined();
     } finally {
       openGate();
       releaseRead();

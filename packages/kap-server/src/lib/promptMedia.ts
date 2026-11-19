@@ -254,229 +254,254 @@ export async function resolvePromptMediaFiles(
     );
   };
   let changed = false;
-  let originalsDir: string | undefined;
-  let originalsDirResolved = false;
-  const resolveOriginalsDir = async (): Promise<string | undefined> => {
-    if (!originalsDirResolved) {
-      originalsDirResolved = true;
-      originalsDir = await options.resolveOriginalsDir?.().catch(() => undefined);
-    }
-    return originalsDir;
+  let originalsDirPromise: Promise<string | undefined> | undefined;
+  const resolveOriginalsDir = (): Promise<string | undefined> => {
+    originalsDirPromise ??= Promise.resolve().then(() => options.resolveOriginalsDir?.()).catch(() => undefined);
+    return originalsDirPromise;
   };
-  let attachmentsDir: string | undefined;
-  let attachmentsDirResolved = false;
-  const resolveAttachmentsDir = async (): Promise<string> => {
-    if (!attachmentsDirResolved) {
-      attachmentsDirResolved = true;
-      attachmentsDir = await options.resolveAttachmentsDir?.().catch(() => undefined);
-    }
-    return attachmentsDir ?? cacheDir;
+  let attachmentsDirPromise: Promise<string> | undefined;
+  const resolveAttachmentsDir = (): Promise<string> => {
+    attachmentsDirPromise ??= Promise.resolve()
+      .then(() => options.resolveAttachmentsDir?.())
+      .catch(() => undefined)
+      .then((dir) => dir ?? cacheDir);
+    return attachmentsDirPromise;
   };
   const telemetryFor = (source: string): ImageCompressionTelemetry | undefined =>
     options.telemetry === undefined ? undefined : { client: options.telemetry, source };
+  type AttachmentNoteInput = {
+    readonly path: string;
+    readonly name: string;
+    readonly mediaType: string;
+    readonly size: number;
+    readonly kind: 'audio' | 'file' | 'image' | 'video';
+    readonly audioFormat?: string;
+  };
+  type PreparedSlot = {
+    readonly notes: AttachmentNoteInput[];
+    readonly items: WireContent[number][];
+    readonly changed: boolean;
+  };
   const content: WireContent = [];
-  const addAttachmentNote = (input: { readonly path: string; readonly name: string; readonly mediaType: string; readonly size: number; readonly kind: 'audio' | 'file' | 'image' | 'video'; readonly audioFormat?: string }): void => {
-    if (attachmentNotes.has(input.path)) return;
-    attachmentNotes.add(input.path);
-    const name = sanitizeAttachmentName(input.name);
-    const text = input.kind === 'audio'
-      ? buildAttachedAudioNotice(name, input.audioFormat ?? input.mediaType, input.size, input.path)
-      : input.kind === 'image'
-        ? buildAttachedImageNotice(name, input.mediaType, input.size, input.path)
-        : input.kind === 'video'
-          ? buildAttachedVideoNotice(name, input.mediaType, input.size, input.path)
-          : buildAttachedFileNotice(name, input.mediaType, input.size, input.path);
+  const addAttachmentNote = (noteInput: AttachmentNoteInput): void => {
+    if (attachmentNotes.has(noteInput.path)) return;
+    attachmentNotes.add(noteInput.path);
+    const name = sanitizeAttachmentName(noteInput.name);
+    const text = noteInput.kind === 'audio'
+      ? buildAttachedAudioNotice(name, noteInput.audioFormat ?? noteInput.mediaType, noteInput.size, noteInput.path)
+      : noteInput.kind === 'image'
+        ? buildAttachedImageNotice(name, noteInput.mediaType, noteInput.size, noteInput.path)
+        : noteInput.kind === 'video'
+          ? buildAttachedVideoNotice(name, noteInput.mediaType, noteInput.size, noteInput.path)
+          : buildAttachedFileNotice(name, noteInput.mediaType, noteInput.size, noteInput.path);
     content.push({
       type: 'text', text,
-      presentation: { spans: [{ start: 0, end: text.length, kind: 'attachment', attachment: { path: input.path, name, mime: input.mediaType, size: input.size } }] },
+      presentation: { spans: [{ start: 0, end: text.length, kind: 'attachment', attachment: { path: noteInput.path, name, mime: noteInput.mediaType, size: noteInput.size } }] },
     });
   };
-  const sourceStarts: number[] = [];
-  try {
-    for (const part of input) {
-      sourceStarts.push(content.length);
-      if (part.type === 'image' && part.source.kind === 'base64') {
-        const effectiveMime = resolveEffectiveImageMime(
-          part.source.media_type,
-          decodeBase64Prefix(part.source.data),
+  const preparePart = async (part: WireContent[number]): Promise<PreparedSlot> => {
+    const notes: AttachmentNoteInput[] = [];
+    const items: WireContent[number][] = [];
+    if (part.type === 'image' && part.source.kind === 'base64') {
+      const effectiveMime = resolveEffectiveImageMime(
+        part.source.media_type,
+        decodeBase64Prefix(part.source.data),
+      );
+      const canonicalMime = normalizeImageMime(effectiveMime);
+      if (!isModelAcceptedImageMime(canonicalMime, options.providerType)) {
+        const bytes = Buffer.from(part.source.data, 'base64');
+        const saved = await store.save(
+          Readable.from(bytes),
+          part.name ?? `image.${imageExtensionForMime(canonicalMime)}`,
+          { mimeType: canonicalMime },
         );
-        const canonicalMime = normalizeImageMime(effectiveMime);
-        if (!isModelAcceptedImageMime(canonicalMime, options.providerType)) {
-          const bytes = Buffer.from(part.source.data, 'base64');
-          const saved = await store.save(
-            Readable.from(bytes),
-            part.name ?? `image.${imageExtensionForMime(canonicalMime)}`,
-            { mimeType: canonicalMime },
-          );
-          ownedFileIds.add(saved.id);
-          await retainSessionMedia(options.sessionMedia, await store.get(saved.id));
-          content.push({
-            type: 'image',
-            source: { kind: 'url', url: buildDaemonFileUrl(saved.id) },
-            name: part.name,
-          });
-          changed = true;
-          continue;
-        }
-        const compressed = await compressBase64ForModel(part.source.data, canonicalMime, {
-          telemetry: telemetryFor('prompt_inline'),
+        ownedFileIds.add(saved.id);
+        await retainSessionMedia(options.sessionMedia, await store.get(saved.id));
+        items.push({
+          type: 'image',
+          source: { kind: 'url', url: buildDaemonFileUrl(saved.id) },
+          name: part.name,
         });
-        if (compressed.changed) {
-          const dir = await resolveOriginalsDir();
-          const originalPath = await persistOriginalImage(
-            Buffer.from(part.source.data, 'base64'),
-            part.source.media_type,
-            { dir },
-          );
-          const text = buildImageCompressionCaption({
-            original: {
-              width: compressed.originalWidth,
-              height: compressed.originalHeight,
-              byteLength: compressed.originalByteLength,
-              mimeType: part.source.media_type,
-            },
-            final: {
-              width: compressed.width,
-              height: compressed.height,
-              byteLength: compressed.finalByteLength,
-              mimeType: compressed.mimeType,
-            },
-            originalPath,
-          });
-          content.push({
-            type: 'text',
-            text,
-            presentation: { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] },
-          });
-          content.push({
-            type: 'image',
-            source: { kind: 'base64', media_type: compressed.mimeType, data: compressed.base64 },
-            name: part.name,
-          });
-          changed = true;
-        } else {
-          content.push(part);
-        }
-        continue;
+        return { notes, items, changed: true };
       }
-
-      if (part.type === 'image' && part.source.kind === 'url') {
-        content.push(part);
-        continue;
+      const compressed = await compressBase64ForModel(part.source.data, canonicalMime, {
+        telemetry: telemetryFor('prompt_inline'),
+      });
+      if (compressed.changed) {
+        const dir = await resolveOriginalsDir();
+        const originalPath = await persistOriginalImage(
+          Buffer.from(part.source.data, 'base64'),
+          part.source.media_type,
+          { dir },
+        );
+        const text = buildImageCompressionCaption({
+          original: {
+            width: compressed.originalWidth,
+            height: compressed.originalHeight,
+            byteLength: compressed.originalByteLength,
+            mimeType: part.source.media_type,
+          },
+          final: {
+            width: compressed.width,
+            height: compressed.height,
+            byteLength: compressed.finalByteLength,
+            mimeType: compressed.mimeType,
+          },
+          originalPath,
+        });
+        items.push({
+          type: 'text',
+          text,
+          presentation: { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] },
+        });
+        items.push({
+          type: 'image',
+          source: { kind: 'base64', media_type: compressed.mimeType, data: compressed.base64 },
+          name: part.name,
+        });
+        return { notes, items, changed: true };
       }
+      items.push(part);
+      return { notes, items, changed: false };
+    }
 
-      if ((part.type === 'image' || part.type === 'video') && part.source.kind === 'session_media') {
-        const file = await getFile(part.source.file_id);
-        assertMediaFile(file, part.type);
-        const attachedPath = await materialize(file, await resolveAttachmentsDir());
-        addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
-        content.push({ ...part, name: sanitizeAttachmentName(part.name ?? file.meta.name) });
-        changed = true;
-        continue;
-      }
+    if (part.type === 'image' && part.source.kind === 'url') {
+      items.push(part);
+      return { notes, items, changed: false };
+    }
 
-      if (part.type === 'audio' && (part.source.kind === 'file' || part.source.kind === 'session_media')) {
-        const fileId = part.source.file_id;
-        const file = await getFile(fileId);
-        if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
-        const dir = await resolveAttachmentsDir();
-        const wavPath = audioWavAttachmentPath(dir, file.meta.id);
-        const wavFormat = await inspectWav(wavPath);
-        const wav = wavFormat !== undefined;
-        if (part.source.kind === 'file') assertAudioFile(file, false);
-        else if (!wav) assertAudioFile(file, true);
-        const originalPath = await materialize(file, dir);
-        addAttachmentNote({ path: originalPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'audio' });
-        const wavName = `${file.meta.name.replace(/\.[^./\\]*$/u, '')}.wav`;
-        const name = sanitizeAttachmentName(wav ? wavName : file.meta.name);
-        const mediaType = wav ? 'audio/wav' : file.meta.media_type;
-        const attachedPath = wav ? wavPath : originalPath;
-        const size = wav ? (await stat(wavPath)).size : file.meta.size;
-        const audioFormat = wavFormat === undefined ? undefined : describeWavFormat(wavFormat);
-        if (wav) addAttachmentNote({ path: attachedPath, name, mediaType, size, kind: 'audio', audioFormat });
-        content.push({ ...part, name: sanitizeAttachmentName(part.name ?? file.meta.name),
-          source: part.source.kind === 'file' && options.sessionMedia !== undefined ? { kind: 'session_media', file_id: fileId } : part.source });
-        changed = true;
-        continue;
-      }
-
-      if (part.type === 'file') {
-        const file = await getFile(part.file_id);
-        const attachedPath = await materialize(file, await resolveAttachmentsDir());
-        addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
-        changed = true;
-        continue;
-      }
-
-      if ((part.type !== 'image' && part.type !== 'video') || (part.source.kind !== 'file' && part.source.kind !== 'session_media')) {
-        content.push(part);
-        continue;
-      }
-
+    if ((part.type === 'image' || part.type === 'video') && part.source.kind === 'session_media') {
       const file = await getFile(part.source.file_id);
       assertMediaFile(file, part.type);
-      if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
       const attachedPath = await materialize(file, await resolveAttachmentsDir());
-      addAttachmentNote({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
-      if (part.type === 'image') {
-        const data = await readFileOrStream(file);
-        let mediaType = file.meta.media_type;
-        mediaType = resolveEffectiveImageMime(mediaType, data);
-        mediaType = normalizeImageMime(mediaType);
-        const compressed = await compressImageForModel(data, mediaType, {
-          telemetry: telemetryFor('prompt_file'),
-        });
-        if (compressed.changed) {
-          const dir = await resolveOriginalsDir();
-          const originalPath = await persistOriginalImage(data, mediaType, { dir });
-          const text = buildImageCompressionCaption({
-            original: {
-              width: compressed.originalWidth,
-              height: compressed.originalHeight,
-              byteLength: compressed.originalByteLength,
-              mimeType: mediaType,
-            },
-            final: {
-              width: compressed.width,
-              height: compressed.height,
-              byteLength: compressed.finalByteLength,
-              mimeType: compressed.mimeType,
-            },
-            originalPath,
-          });
-          content.push({
-            type: 'text',
-            text,
-            presentation: { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] },
-          });
-        }
-        let finalFile = file;
-        if (compressed.changed) {
-          const saved = await store.save(
-            Readable.from(Buffer.from(compressed.data)),
-            compressedUploadName(file.meta.name, compressed.mimeType),
-            { mimeType: compressed.mimeType },
-          );
-          ownedFileIds.add(saved.id);
-          finalFile = await store.get(saved.id);
-        }
-        await retainSessionMedia(options.sessionMedia, finalFile);
-        content.push({
-          type: 'image',
-          source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id) },
-          name: sanitizeAttachmentName(part.name ?? file.meta.name),
-        });
-        changed = true;
-        continue;
-      }
+      notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
+      items.push({ ...part, name: sanitizeAttachmentName(part.name ?? file.meta.name) });
+      return { notes, items, changed: true };
+    }
 
-      await retainSessionMedia(options.sessionMedia, file);
-      content.push({
-        type: 'video',
-        source: { kind: 'url', url: buildDaemonFileUrl(file.meta.id) },
-        name: part.name ?? file.meta.name,
+    if (part.type === 'audio' && (part.source.kind === 'file' || part.source.kind === 'session_media')) {
+      const fileId = part.source.file_id;
+      const file = await getFile(fileId);
+      if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
+      const dir = await resolveAttachmentsDir();
+      const wavPath = audioWavAttachmentPath(dir, file.meta.id);
+      const wavFormat = await inspectWav(wavPath);
+      const wav = wavFormat !== undefined;
+      if (part.source.kind === 'file') assertAudioFile(file, false);
+      else if (!wav) assertAudioFile(file, true);
+      const originalPath = await materialize(file, dir);
+      notes.push({ path: originalPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'audio' });
+      const wavName = `${file.meta.name.replace(/\.[^./\\]*$/u, '')}.wav`;
+      const name = sanitizeAttachmentName(wav ? wavName : file.meta.name);
+      const mediaType = wav ? 'audio/wav' : file.meta.media_type;
+      const attachedPath = wav ? wavPath : originalPath;
+      const size = wav ? (await stat(wavPath)).size : file.meta.size;
+      const audioFormat = wavFormat === undefined ? undefined : describeWavFormat(wavFormat);
+      if (wav) notes.push({ path: attachedPath, name, mediaType, size, kind: 'audio', audioFormat });
+      items.push({
+        ...part,
+        name: sanitizeAttachmentName(part.name ?? file.meta.name),
+        source: part.source.kind === 'file' && options.sessionMedia !== undefined ? { kind: 'session_media', file_id: fileId } : part.source,
       });
-      changed = true;
+      return { notes, items, changed: true };
+    }
+
+    if (part.type === 'file') {
+      const file = await getFile(part.file_id);
+      const attachedPath = await materialize(file, await resolveAttachmentsDir());
+      notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: 'file' });
+      return { notes, items, changed: true };
+    }
+
+    if ((part.type !== 'image' && part.type !== 'video') || (part.source.kind !== 'file' && part.source.kind !== 'session_media')) {
+      items.push(part);
+      return { notes, items, changed: false };
+    }
+
+    const file = await getFile(part.source.file_id);
+    assertMediaFile(file, part.type);
+    if (part.source.kind === 'file' && options.sessionMedia !== undefined) await retainSessionMedia(options.sessionMedia, file);
+    const attachedPath = await materialize(file, await resolveAttachmentsDir());
+    notes.push({ path: attachedPath, name: file.meta.name, mediaType: file.meta.media_type, size: file.meta.size, kind: part.type });
+    if (part.type === 'image') {
+      const data = await readFileOrStream(file);
+      let mediaType = file.meta.media_type;
+      mediaType = resolveEffectiveImageMime(mediaType, data);
+      mediaType = normalizeImageMime(mediaType);
+      const compressed = await compressImageForModel(data, mediaType, {
+        telemetry: telemetryFor('prompt_file'),
+      });
+      if (compressed.changed) {
+        const dir = await resolveOriginalsDir();
+        const originalPath = await persistOriginalImage(data, mediaType, { dir });
+        const text = buildImageCompressionCaption({
+          original: {
+            width: compressed.originalWidth,
+            height: compressed.originalHeight,
+            byteLength: compressed.originalByteLength,
+            mimeType: mediaType,
+          },
+          final: {
+            width: compressed.width,
+            height: compressed.height,
+            byteLength: compressed.finalByteLength,
+            mimeType: compressed.mimeType,
+          },
+          originalPath,
+        });
+        items.push({
+          type: 'text',
+          text,
+          presentation: { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] },
+        });
+      }
+      let finalFile = file;
+      if (compressed.changed) {
+        const saved = await store.save(
+          Readable.from(Buffer.from(compressed.data)),
+          compressedUploadName(file.meta.name, compressed.mimeType),
+          { mimeType: compressed.mimeType },
+        );
+        ownedFileIds.add(saved.id);
+        finalFile = await store.get(saved.id);
+      }
+      await retainSessionMedia(options.sessionMedia, finalFile);
+      items.push({
+        type: 'image',
+        source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id) },
+        name: sanitizeAttachmentName(part.name ?? file.meta.name),
+      });
+      return { notes, items, changed: true };
+    }
+
+    await retainSessionMedia(options.sessionMedia, file);
+    items.push({
+      type: 'video',
+      source: { kind: 'url', url: buildDaemonFileUrl(file.meta.id) },
+      name: part.name ?? file.meta.name,
+    });
+    return { notes, items, changed: true };
+  };
+
+  const sourceStarts: number[] = [];
+  try {
+    const slots: (PreparedSlot | undefined)[] = Array.from({ length: input.length });
+    let nextIndex = 0;
+    const concurrency = Math.min(6, input.length);
+    await Promise.all(
+      Array.from({ length: concurrency }, async () => {
+        while (nextIndex < input.length) {
+          const index = nextIndex++;
+          slots[index] = await preparePart(input[index]!);
+        }
+      }),
+    );
+    for (let index = 0; index < slots.length; index += 1) {
+      sourceStarts.push(content.length);
+      const slot = slots[index]!;
+      if (slot.changed) changed = true;
+      for (const note of slot.notes) addAttachmentNote(note);
+      for (const item of slot.items) content.push(item);
     }
     const sourceRanges = input.flatMap((part, index) => part.type === 'text' ? [] : [{
       index, start: sourceStarts[index]!, end: sourceStarts[index + 1] ?? content.length,

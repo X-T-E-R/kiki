@@ -396,18 +396,21 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
         reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
         return;
       }
-      if (await core.accessor.get(IWorkspaceService).get(summary.workspaceId) === undefined) {
+      const ws = await core.accessor.get(IWorkspaceService).get(summary.workspaceId);
+      if (ws === undefined) {
         reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `workspace ${summary.workspaceId} for session ${session_id} does not exist`, req.id));
         return;
       }
-      const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: summary.workspaceId });
-      try {
-        await lease.instance.program.ready;
-        const skills = lease.instance.program.skills.catalog.listSkills().map(toProtocolSkill);
+      const effectiveRoot = summary.cwd ?? ws.root;
+      const resident = core.accessor.get(IWorkspaceInstanceManager).get(summary.workspaceId);
+      if (resident !== undefined && resident.root === effectiveRoot && resident.program.status !== 'degraded') {
+        await resident.program.skills.ready;
+        const skills = resident.program.skills.catalog.listSkills().map(toProtocolSkill);
         reply.send(okEnvelope({ skills }, req.id));
-      } finally {
-        lease.dispose();
+        return;
       }
+      const skills = await listCachedColdWorkspaceSkills(core, ws.id, effectiveRoot);
+      reply.send(okEnvelope({ skills }, req.id));
     },
   );
   app.get(
@@ -617,6 +620,58 @@ async function listGlobalSkills(core: Scope): Promise<readonly SkillDefinition[]
     for (const skill of contribution.skills) catalog.register(skill, { replace: true });
   }
   return catalog.listSkills();
+}
+
+const COLD_WORKSPACE_SKILLS_TTL_MS = 10_000;
+const COLD_WORKSPACE_SKILLS_MAX_ENTRIES = 128;
+
+interface ColdWorkspaceSkillsCacheState {
+  readonly entries: Map<string, { readonly expiresAt: number; readonly skills: SkillDescriptor[] }>;
+  readonly inflight: Map<string, Promise<SkillDescriptor[]>>;
+}
+
+const coldWorkspaceSkillsCaches = new WeakMap<Scope, ColdWorkspaceSkillsCacheState>();
+
+function getColdWorkspaceSkillsCache(core: Scope): ColdWorkspaceSkillsCacheState {
+  let state = coldWorkspaceSkillsCaches.get(core);
+  if (state !== undefined) return state;
+  state = { entries: new Map(), inflight: new Map() };
+  coldWorkspaceSkillsCaches.set(core, state);
+  const clear = () => state!.entries.clear();
+  try {
+    core.accessor.get(IConfigService).onDidChangeConfiguration(clear);
+  } catch {}
+  return state;
+}
+
+async function listCachedColdWorkspaceSkills(
+  core: Scope,
+  workspaceId: string,
+  workDir: string,
+): Promise<SkillDescriptor[]> {
+  const state = getColdWorkspaceSkillsCache(core);
+  const key = `${workspaceId}\0${workDir}`;
+  const cached = state.entries.get(key);
+  if (cached !== undefined && Date.now() < cached.expiresAt) return cached.skills;
+  let pending = state.inflight.get(key);
+  if (pending === undefined) {
+    pending = (async () => {
+      const skills = (await listWorkspaceSkillsForRoot(core, workspaceId, workDir)).map(toProtocolSkill);
+      if (state.entries.size >= COLD_WORKSPACE_SKILLS_MAX_ENTRIES) {
+        const oldest = state.entries.keys().next().value;
+        if (oldest !== undefined) state.entries.delete(oldest);
+      }
+      state.entries.set(key, {
+        expiresAt: Date.now() + COLD_WORKSPACE_SKILLS_TTL_MS,
+        skills,
+      });
+      return skills;
+    })().finally(() => {
+      if (state.inflight.get(key) === pending) state.inflight.delete(key);
+    });
+    state.inflight.set(key, pending);
+  }
+  return pending;
 }
 
 async function listWorkspaceSkillsForRoot(

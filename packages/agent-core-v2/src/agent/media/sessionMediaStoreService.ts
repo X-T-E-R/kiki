@@ -87,12 +87,17 @@ export class ScopedMediaStore implements ISessionMediaStore {
     if (!isFileId(fileId)) return undefined;
     const storedMetadata = await this.documents.get<unknown>(this.scope, this.metadataKey(fileId));
     const metadata = this.isMetadataFor(storedMetadata, fileId) ? storedMetadata : undefined;
-    const key =
-      metadata !== undefined && (await this.storage.size(this.scope, metadata.key)) !== undefined
-        ? metadata.key
-        : await this.findKey(fileId);
-    if (key === undefined) return undefined;
-    const size = await this.storage.size(this.scope, key);
+    let key: string | undefined;
+    let size: number | undefined;
+    if (metadata !== undefined) {
+      size = await this.storage.size(this.scope, metadata.key);
+      if (size !== undefined) key = metadata.key;
+    }
+    if (key === undefined) {
+      key = await this.findKey(fileId);
+      if (key === undefined) return undefined;
+      size = await this.storage.size(this.scope, key);
+    }
     if (size === undefined) return undefined;
     return {
       path: this.storage.pathFor(this.scope, key),

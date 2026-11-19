@@ -17,7 +17,7 @@ import {
 } from './image-format-policy';
 import { isAnimatedWebp } from './webp-decode';
 import { decodeToJimp } from './imageDecode';
-import { runCpuTask } from '#/app/cpuWorker/runtime';
+import { hasRegisteredCpuPool, runCpuTask } from '#/app/cpuWorker/runtime';
 
 export const MAX_IMAGE_EDGE_PX = 2000;
 
@@ -69,6 +69,7 @@ export interface CompressImageOptions {
   readonly providerType?: string;
   readonly acceptedMimes?: ReadonlySet<string>;
   readonly outputMimes?: ReadonlySet<string>;
+  readonly signal?: AbortSignal;
 }
 
 export interface ImageCompressionTelemetryClient {
@@ -164,39 +165,66 @@ export async function compressImageForModel(
   if (bytes.length > maxDecodeBytes) return finish('passthrough_guard', passthrough());
 
   try {
-    const image = await decodeToJimp(bytes, normalizedMime);
-    const preferLossless = normalizedMime !== 'image/jpeg';
-    const decodedWidth = image.width;
-    const decodedHeight = image.height;
+    const outputMimeList = [...outputMimes];
+    const useWorker =
+      hasRegisteredCpuPool() &&
+      (bytes.byteLength > 65_536 || (dims !== null && dims.width * dims.height > 262_144));
+    let encodedResult: ImageCompressWorkerOutput;
+    if (useWorker) {
+      const ownedBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      try {
+        encodedResult = await runCpuTask<ImageCompressWorkerOutput>(
+          {
+            type: 'image.compress',
+            bytes: ownedBytes,
+            normalizedMime,
+            maxEdge,
+            byteBudget,
+            outputMimes: outputMimeList,
+          },
+          { signal: options.signal, transferList: [ownedBytes], bytes: ownedBytes.byteLength },
+        );
+      } catch {
+        if (options.signal?.aborted) return finish('passthrough_error', passthrough());
+        encodedResult = await executeImageCompress({
+          bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+          normalizedMime,
+          maxEdge,
+          byteBudget,
+          outputMimes: outputMimeList,
+        });
+      }
+    } else {
+      encodedResult = await executeImageCompress({
+        bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+        normalizedMime,
+        maxEdge,
+        byteBudget,
+        outputMimes: outputMimeList,
+      });
+    }
+    if (encodedResult.kind === 'unsupported') return finish('passthrough_unsupported', passthrough());
+    if (encodedResult.kind === 'error') return finish('passthrough_error', passthrough());
 
-    fitWithinEdge(image, maxEdge);
-
-    const encoded = await encodeWithinBudget(image, {
-      preferLossless,
-      byteBudget,
-      fallbackEdges: FALLBACK_EDGES_PX,
-      outputMimes,
-    });
-    if (encoded === null) return finish('passthrough_unsupported', passthrough());
-
-    const originalPixels = decodedWidth * decodedHeight;
-    const finalPixels = encoded.width * encoded.height;
-    const shrankBytes = encoded.data.length < bytes.length;
+    const encodedBytes = new Uint8Array(encodedResult.data);
+    const originalPixels = encodedResult.originalWidth * encodedResult.originalHeight;
+    const finalPixels = encodedResult.width * encodedResult.height;
+    const shrankBytes = encodedBytes.length < bytes.length;
     const shrankPixels = finalPixels < originalPixels;
     if (!requiresFormatConversion && !shrankBytes && !shrankPixels) {
       return finish('passthrough_unhelpful', passthrough());
     }
 
     return finish('compressed', {
-      data: encoded.data,
-      mimeType: encoded.mimeType,
-      width: encoded.width,
-      height: encoded.height,
-      originalWidth: decodedWidth,
-      originalHeight: decodedHeight,
+      data: encodedBytes,
+      mimeType: encodedResult.mimeType,
+      width: encodedResult.width,
+      height: encodedResult.height,
+      originalWidth: encodedResult.originalWidth,
+      originalHeight: encodedResult.originalHeight,
       changed: true,
       originalByteLength: bytes.length,
-      finalByteLength: encoded.data.length,
+      finalByteLength: encodedBytes.length,
     });
   } catch {
     return finish('passthrough_error', passthrough());
@@ -722,7 +750,7 @@ async function encodeWithinBudget(
 
   const pngCandidate = async (): Promise<EncodedImage | null> => {
     if (!allowPng) return null;
-    const png = await image.getBuffer('image/png', { deflateLevel: 9 });
+    const png = await image.getBuffer('image/png', { deflateLevel: 6 });
     return consider(png, 'image/png');
   };
 
@@ -776,6 +804,97 @@ function fitWithinEdge(image: JimpImage, edge: number): boolean {
     h: Math.max(1, Math.round(image.height * factor)),
   });
   return true;
+}
+
+function predecimateForEdge(image: JimpImage, targetEdge: number): void {
+  let width = image.bitmap.width;
+  let height = image.bitmap.height;
+  let src: Buffer | Uint8Array = image.bitmap.data;
+  let decimated = false;
+  while (Math.max(width, height) > targetEdge * 2 && width >= 4 && height >= 4) {
+    const nextW = width >> 1;
+    const nextH = height >> 1;
+    const dst = Buffer.allocUnsafe(nextW * nextH * 4);
+    const srcStride = width * 4;
+    let dstIdx = 0;
+    for (let y = 0; y < nextH; y += 1) {
+      let row0 = y * 2 * srcStride;
+      let row1 = row0 + srcStride;
+      for (let x = 0; x < nextW; x += 1) {
+        dst[dstIdx] = (src[row0]! + src[row0 + 4]! + src[row1]! + src[row1 + 4]! + 2) >> 2;
+        dst[dstIdx + 1] = (src[row0 + 1]! + src[row0 + 5]! + src[row1 + 1]! + src[row1 + 5]! + 2) >> 2;
+        dst[dstIdx + 2] = (src[row0 + 2]! + src[row0 + 6]! + src[row1 + 2]! + src[row1 + 6]! + 2) >> 2;
+        dst[dstIdx + 3] = (src[row0 + 3]! + src[row0 + 7]! + src[row1 + 3]! + src[row1 + 7]! + 2) >> 2;
+        row0 += 8;
+        row1 += 8;
+        dstIdx += 4;
+      }
+    }
+    src = dst;
+    width = nextW;
+    height = nextH;
+    decimated = true;
+  }
+  if (decimated) {
+    image.bitmap.data = src as Buffer;
+    image.bitmap.width = width;
+    image.bitmap.height = height;
+  }
+}
+
+export interface ImageCompressWorkerInput {
+  readonly bytes: ArrayBuffer;
+  readonly normalizedMime: string;
+  readonly maxEdge: number;
+  readonly byteBudget: number;
+  readonly outputMimes: readonly string[];
+}
+
+export type ImageCompressWorkerOutput =
+  | {
+      readonly kind: 'encoded';
+      readonly data: ArrayBuffer;
+      readonly mimeType: string;
+      readonly width: number;
+      readonly height: number;
+      readonly originalWidth: number;
+      readonly originalHeight: number;
+    }
+  | { readonly kind: 'unsupported' }
+  | { readonly kind: 'error' };
+
+export async function executeImageCompress(
+  input: ImageCompressWorkerInput,
+): Promise<ImageCompressWorkerOutput> {
+  try {
+    const image = await decodeToJimp(new Uint8Array(input.bytes), input.normalizedMime);
+    const originalWidth = image.width;
+    const originalHeight = image.height;
+    predecimateForEdge(image, input.maxEdge);
+    fitWithinEdge(image, input.maxEdge);
+    const encoded = await encodeWithinBudget(image, {
+      preferLossless: input.normalizedMime !== 'image/jpeg',
+      byteBudget: input.byteBudget,
+      fallbackEdges: FALLBACK_EDGES_PX,
+      outputMimes: new Set(input.outputMimes),
+    });
+    if (encoded === null) return { kind: 'unsupported' };
+    const outBuffer = encoded.data.buffer.slice(
+      encoded.data.byteOffset,
+      encoded.data.byteOffset + encoded.data.byteLength,
+    ) as ArrayBuffer;
+    return {
+      kind: 'encoded',
+      data: outBuffer,
+      mimeType: encoded.mimeType,
+      width: encoded.width,
+      height: encoded.height,
+      originalWidth,
+      originalHeight,
+    };
+  } catch {
+    return { kind: 'error' };
+  }
 }
 
 type CropErrorKind =
