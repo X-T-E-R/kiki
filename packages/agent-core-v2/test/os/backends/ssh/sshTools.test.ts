@@ -32,7 +32,7 @@ import { WriteTool } from '#/agent/tools/os/write/writeTool';
 import { ReadMediaFileTool } from '#/agent/tools/read-media-file/readMediaFileTool';
 import { IStaleGuardService } from '#/features/staleGuard/staleGuard';
 import { StaleGuardService } from '#/features/staleGuard/staleGuardService';
-import { SshHostFileSystem } from '#/os/backends/ssh/sshHostServices';
+import { SshHostFileSystem, SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { spawnWindowsSearch } from '#/os/backends/ssh/windowsSearch';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -858,6 +858,46 @@ describe('SSH tools over a real ssh2 transport', () => {
     await f.remote.fs.remove('/home/tester/test.txt');
     expect(f.files.has('/home/tester/test.txt')).toBe(false);
     f.remote.dispose();
+  });
+
+  it('resolves Homebrew/standard POSIX rg path once per SSH connection when non-interactive PATH omits rg', async () => {
+    const calls: string[][] = [];
+    const makeProc = (stdoutText: string, exitCode = 0) => {
+      const stdout = (async function* () { yield Buffer.from(stdoutText); })();
+      const stderr = (async function* () {})();
+      return {
+        pid: 1,
+        exitCode,
+        stdin: null,
+        stdout,
+        stderr,
+        wait: async () => exitCode,
+        kill: async () => {},
+        dispose: () => {},
+      };
+    };
+    const fakeSsh = {
+      osEnv: { osKind: 'macOS', shellName: 'sh', shellPath: '/bin/sh' },
+      getcwd: () => '/Users/example',
+      withCwd: () => fakeSsh,
+      execWithEnv: async (argv: string[]) => {
+        calls.push(argv);
+        if (argv[0] === 'sh' && argv[1] === '-c' && argv[2]?.includes('KIKI_SSH_RG_PATH=')) {
+          return makeProc('KIKI_SSH_RG_PATH=/opt/homebrew/bin/rg\n', 0);
+        }
+        return makeProc('./found.txt\n', 0);
+      },
+    } as unknown as import('@kiki/kaos/ssh').SSHKaos;
+
+    const processService = new SshHostProcessService(async () => fakeSsh);
+    const first = await processService.spawn('rg', ['--files'], { cwd: '/Users/example/project' });
+    expect(await first.wait()).toBe(0);
+    const second = await processService.spawn('rg', ['-n', 'needle'], { cwd: '/Users/example/project' });
+    expect(await second.wait()).toBe(0);
+
+    const probes = calls.filter((argv) => argv[0] === 'sh' && argv[1] === '-c');
+    expect(probes).toHaveLength(1);
+    expect(calls.filter((argv) => argv[0] === '/opt/homebrew/bin/rg')).toHaveLength(2);
   });
 });
 
