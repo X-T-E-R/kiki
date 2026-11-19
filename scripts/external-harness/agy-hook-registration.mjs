@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, open, unlink, rename } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, unlink, rename, link, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -75,26 +75,76 @@ function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 }
 
+const STALE_CORRUPT_LOCK_MS = 5_000;
+
+function isHardLinkUnsupported(error) {
+  return error?.code === 'ENOTSUP' || error?.code === 'ENOSYS' || error?.code === 'EPERM';
+}
+
+async function createLockAtomically(lockPath, payload) {
+  const tempPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tempPath, payload, { flag: 'wx' });
+  try {
+    await link(tempPath, lockPath);
+    return undefined;
+  } catch (error) {
+    if (!isHardLinkUnsupported(error)) throw error;
+    const file = await open(lockPath, 'wx');
+    try {
+      await file.writeFile(payload);
+      return file;
+    } catch (writeError) {
+      await file.close().catch(() => {});
+      await unlink(lockPath).catch(() => {});
+      throw writeError;
+    }
+  } finally {
+    await unlink(tempPath).catch(() => {});
+  }
+}
+
 async function locked(lockPath, operation) {
-  let file;
+  let acquired = false;
+  let fallbackFile;
+  const payload = JSON.stringify({ pid: process.pid });
   for (let attempt = 0; attempt < 100; attempt++) {
-    try { file = await open(lockPath, 'wx'); await file.writeFile(JSON.stringify({ pid: process.pid })); break; }
-    catch (error) {
+    try {
+      fallbackFile = await createLockAtomically(lockPath, payload);
+      acquired = true;
+      break;
+    } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       const before = await optional(lockPath);
-      if (before?.length) {
-        const owner = JSON.parse(before.toString('utf8'));
-        if (!processAlive(owner.pid)) {
+      if (before !== undefined) {
+        let owner;
+        if (before.length > 0) {
+          try { owner = JSON.parse(before.toString('utf8')); } catch { owner = undefined; }
+        }
+        let reclaimable = false;
+        if (owner && typeof owner === 'object' && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
+          reclaimable = !processAlive(owner.pid);
+        } else {
+          const info = await stat(lockPath).catch(() => undefined);
+          if (info && Date.now() - info.mtimeMs >= STALE_CORRUPT_LOCK_MS) {
+            reclaimable = true;
+          }
+        }
+        if (reclaimable) {
           const current = await optional(lockPath);
-          if (current && sha(current) === sha(before)) await unlink(lockPath);
+          if (current !== undefined && sha(current) === sha(before)) {
+            await unlink(lockPath).catch(err => { if (err.code !== 'ENOENT') throw err; });
+          }
         }
       }
       await new Promise(done => setTimeout(done, 20));
     }
   }
-  if (!file) throw Error('AGY hook registry is busy; preserve the existing registration and retry recovery');
+  if (!acquired) throw Error('AGY hook registry is busy; preserve the existing registration and retry recovery');
   try { return await operation(); }
-  finally { await file.close(); await unlink(lockPath); }
+  finally {
+    if (fallbackFile) await fallbackFile.close().catch(() => {});
+    await unlink(lockPath).catch(err => { if (err.code !== 'ENOENT') throw err; });
+  }
 }
 
 /**

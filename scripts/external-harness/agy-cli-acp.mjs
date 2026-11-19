@@ -8,11 +8,156 @@ import { AGY_COMMAND_GUIDANCE_HOOK_KEY, AGY_STEERING_HOOK_KEY, recoverProjectHoo
 import { recoverDeadProjectMcpPlugins, recoverProjectMcpPlugin, registerProjectMcpPlugin } from "./agy-mcp-plugin.mjs";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, open, readFile, unlink } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, rename, stat, truncate, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { setTimeout as setTimeout$1 } from "node:timers/promises";
 import { openPermissionChannel, permissionChannelIdentity, requestHookPermission } from "./agy-permission-hook.mjs";
+import { createReadStream } from "node:fs";
 
+//#region src/auditLog.ts
+const AUDIT_DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
+const AUDIT_TAIL_FRAME_RECORDS = 200;
+const AUDIT_RETENTION_MS = 720 * 60 * 60 * 1e3;
+const HIGH_FREQ_FRAME_TYPES = new Set(["native_frame_received", "native_frame_delivered"]);
+async function readAuditFile(auditPath, options = {}) {
+	const maxBytes = options.maxBytes ?? 2097152;
+	const tailFrameLimit = options.tailFrameLimit ?? 200;
+	const warn = options.warn ?? ((message) => {
+		process.stderr.write(`[agy-cli-acp] ${message}\n`);
+	});
+	const info = await stat(auditPath);
+	const compactMode = info.size > maxBytes;
+	const keptState = [];
+	const keptFrames = [];
+	let order = 0;
+	let pendingMalformed;
+	let validByteOffset = 0;
+	let currentByteOffset = 0;
+	let carry = "";
+	let hadTruncatedTail = false;
+	let truncateToOffset = info.size;
+	const pushRecord = (record) => {
+		const entry = {
+			order: order++,
+			record
+		};
+		if (compactMode && HIGH_FREQ_FRAME_TYPES.has(record.type)) {
+			keptFrames.push(entry);
+			if (keptFrames.length > tailFrameLimit) keptFrames.shift();
+			return;
+		}
+		keptState.push(entry);
+	};
+	const processLine = (rawLine, lineBytes, terminatedByNewline) => {
+		const trimmed = rawLine.trim();
+		if (trimmed.length === 0) {
+			if (pendingMalformed === void 0 && terminatedByNewline) validByteOffset = currentByteOffset + lineBytes;
+			currentByteOffset += lineBytes;
+			return;
+		}
+		if (pendingMalformed !== void 0) throw pendingMalformed.error;
+		let parsed;
+		try {
+			parsed = JSON.parse(trimmed);
+		} catch (error) {
+			pendingMalformed = {
+				error,
+				validByteOffset
+			};
+			currentByteOffset += lineBytes;
+			return;
+		}
+		pushRecord(parsed);
+		currentByteOffset += lineBytes;
+		validByteOffset = currentByteOffset;
+	};
+	await new Promise((resolveStream, rejectStream) => {
+		const stream = createReadStream(auditPath, {
+			encoding: "utf8",
+			highWaterMark: 64 * 1024
+		});
+		stream.on("data", (chunk) => {
+			try {
+				const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+				const lines = (carry + text).split("\n");
+				carry = lines.pop() ?? "";
+				for (const line of lines) processLine(line, Buffer.byteLength(line, "utf8") + 1, true);
+			} catch (error) {
+				stream.destroy();
+				rejectStream(error);
+			}
+		});
+		stream.on("error", (error) => {
+			rejectStream(error);
+		});
+		stream.on("end", () => {
+			try {
+				if (carry.length > 0) {
+					const trimmed = carry.trim();
+					if (trimmed.length > 0) {
+						if (pendingMalformed !== void 0) throw pendingMalformed.error;
+						try {
+							pushRecord(JSON.parse(trimmed));
+							hadTruncatedTail = true;
+							truncateToOffset = info.size;
+						} catch {
+							hadTruncatedTail = true;
+							truncateToOffset = validByteOffset;
+							warn(`Ignoring incomplete trailing audit record in ${auditPath}`);
+						}
+					}
+				} else if (pendingMalformed !== void 0) {
+					hadTruncatedTail = true;
+					truncateToOffset = pendingMalformed.validByteOffset;
+					warn(`Ignoring malformed trailing audit record in ${auditPath}`);
+				}
+				resolveStream();
+			} catch (error) {
+				rejectStream(error);
+			}
+		});
+	});
+	if (hadTruncatedTail && options.repairTruncatedTail === true) {
+		if (truncateToOffset < info.size) await truncate(auditPath, truncateToOffset).catch(() => {});
+		else if (carry.length > 0) await writeFile(auditPath, "\n", { flag: "a" }).catch(() => {});
+	}
+	if (!compactMode) return keptState.map((item) => item.record);
+	return [...keptState, ...keptFrames].sort((a, b) => a.order - b.order).map((item) => item.record);
+}
+async function compactAuditFile(auditPath, options = {}) {
+	const records = await readAuditFile(auditPath, {
+		maxBytes: 0,
+		tailFrameLimit: options.tailFrameLimit ?? 200,
+		repairTruncatedTail: false
+	});
+	const payload = records.length === 0 ? "" : `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
+	const tempPath = `${auditPath}.${process.pid}.${randomUUID()}.tmp`;
+	await writeFile(tempPath, payload, "utf8");
+	try {
+		await rename(tempPath, auditPath);
+	} catch (error) {
+		await unlink(tempPath).catch(() => {});
+		throw error;
+	}
+	return Buffer.byteLength(payload, "utf8");
+}
+async function pruneExpiredAuditFiles(auditDir, maxAgeMs = AUDIT_RETENTION_MS) {
+	let entries;
+	try {
+		entries = await readdir(auditDir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	const cutoff = Date.now() - maxAgeMs;
+	for (const entry of entries) {
+		if (!entry.isFile() || !entry.name.endsWith(".ndjson")) continue;
+		const filePath = resolve(auditDir, entry.name);
+		const info = await stat(filePath).catch(() => void 0);
+		if (info && info.mtimeMs < cutoff) await unlink(filePath).catch(() => {});
+	}
+}
+
+//#endregion
 //#region src/types.ts
 const MAX_FRAME_BYTES = 1024 * 1024;
 const DEFAULT = "engine-default";
@@ -1890,9 +2035,13 @@ var AgyBridge = class {
 	cliPath;
 	cliPrefix;
 	auditDir;
+	auditMaxBytes = AUDIT_DEFAULT_MAX_BYTES;
 	nativeHome;
 	spawnProcess;
 	sessions;
+	auditBytes = /* @__PURE__ */ new Map();
+	auditChains = /* @__PURE__ */ new Map();
+	prunedAuditDir = false;
 	modelChoices;
 	modelDiagnostic;
 	closePromise;
@@ -1918,12 +2067,28 @@ var AgyBridge = class {
 	}
 	async audit(session, type, data) {
 		if (!this.auditDir) return;
-		await mkdir(this.auditDir, { recursive: true });
-		await appendFile(resolve(this.auditDir, `${session.id}.ndjson`), JSON.stringify({
+		const auditDir = this.auditDir;
+		const auditPath = resolve(auditDir, `${session.id}.ndjson`);
+		const line = JSON.stringify({
 			at: (/* @__PURE__ */ new Date()).toISOString(),
 			type,
 			...data
-		}) + "\n");
+		}) + "\n";
+		const next = (this.auditChains.get(session.id) ?? Promise.resolve()).catch(() => {}).then(async () => {
+			await mkdir(auditDir, { recursive: true });
+			if (!this.prunedAuditDir) {
+				this.prunedAuditDir = true;
+				pruneExpiredAuditFiles(auditDir).catch(() => {});
+			}
+			await appendFile(auditPath, line);
+			const written = (this.auditBytes.get(session.id) ?? 0) + Buffer.byteLength(line, "utf8");
+			if (this.auditMaxBytes > 0 && written >= this.auditMaxBytes) {
+				const compactedBytes = await compactAuditFile(auditPath, { maxBytes: this.auditMaxBytes });
+				this.auditBytes.set(session.id, compactedBytes);
+			} else this.auditBytes.set(session.id, written);
+		});
+		this.auditChains.set(session.id, next);
+		await next;
 	}
 	initialize(version) {
 		return {
@@ -2009,7 +2174,10 @@ var AgyBridge = class {
 		if (!/^[0-9a-f-]{36}$/i.test(params.sessionId)) throw new Error("Invalid AGY adapter session ID");
 		if (this.sessions.has(params.sessionId)) throw new Error("AGY session is already owned by this connection");
 		const auditPath = resolve(this.auditDir, `${params.sessionId}.ndjson`);
-		const readAudit = async () => (await readFile(auditPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+		const readAudit = async () => readAuditFile(auditPath, {
+			maxBytes: this.auditMaxBytes,
+			repairTruncatedTail: true
+		});
 		const records = await readAudit().catch((error) => {
 			if (error.code !== "ENOENT" || params._meta?.["kiki.agyLegacyRecovery"] === void 0) throw error;
 		});

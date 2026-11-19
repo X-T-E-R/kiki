@@ -3286,3 +3286,90 @@ void test('typed NDJSON stream framing handles split multi-byte UTF-8, CRLF, abo
   assert.deepEqual(errors, ['AGY stdout frame exceeds 1 MiB']);
 });
 
+void test('loadSession tolerates and repairs a truncated trailing audit line, rejects interior corruption, and compacts oversized audit files', async () => {
+  const { appendFile, mkdtemp, readFile, rm, stat } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-audit-resilience-'));
+  const auditDir = join(root, 'audit');
+  const first = bridge('fixture-alpha-high');
+  first.auditDir = auditDir;
+  const loaded = bridge('fixture-alpha-high');
+  loaded.auditDir = auditDir;
+  try {
+    const { sessionId } = await first.newSession({ cwd: root });
+    await turn(first, sessionId, 'hello', []);
+    await first.close();
+
+    const auditPath = join(auditDir, `${sessionId}.ndjson`);
+    await appendFile(auditPath, '{"at":"2026-01-01T00:00:00Z","type":"native_frame_recei');
+
+    await loaded.loadSession({ sessionId, cwd: root });
+    await loaded.close();
+
+    const repairedLines = (await readFile(auditPath, 'utf8')).trim().split('\n');
+    for (const line of repairedLines) JSON.parse(line);
+
+    const interiorCorrupt = bridge('fixture-alpha-high');
+    interiorCorrupt.auditDir = auditDir;
+    await appendFile(auditPath, '{broken-interior\n{"type":"close"}\n');
+    await assert.rejects(interiorCorrupt.loadSession({ sessionId, cwd: root }), SyntaxError);
+
+    const compactBridge = bridge('fixture-alpha-high');
+    compactBridge.auditDir = auditDir;
+    compactBridge.auditMaxBytes = 4096;
+    const { sessionId: compactId } = await compactBridge.newSession({ cwd: root });
+    for (let i = 0; i < 260; i++) {
+      await compactBridge.audit({ id: compactId }, 'native_frame_received', {
+        sequence: i,
+        event: 'step_update',
+        payload: 'x'.repeat(80),
+      });
+    }
+    const compactPath = join(auditDir, `${compactId}.ndjson`);
+    const compactedRecords = (await readFile(compactPath, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.ok(compactedRecords.some(r => r.type === 'session_new'));
+    const frameRecords = compactedRecords.filter(r => r.type === 'native_frame_received');
+    assert.ok(frameRecords.length <= 200, `expected <= 200 frame records, got ${frameRecords.length}`);
+    assert.equal(frameRecords.at(-1).sequence, 259);
+    await compactBridge.close();
+  } finally {
+    await first.close().catch(() => {});
+    await loaded.close().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('registerProjectHook reclaims stale empty or corrupt lock files safely', async () => {
+  const { mkdir, mkdtemp, rm, utimes, writeFile } = await import('node:fs/promises');
+  const { registerProjectHook } = await import('./agy-hook-registration.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'agy-hook-lock-'));
+  try {
+    const agentsDir = join(root, '.agents');
+    await mkdir(agentsDir, { recursive: true });
+    const lockPath = join(agentsDir, '.kiki-agy-hook-ownership.json.lock');
+    const oldTime = new Date(Date.now() - 10_000);
+
+    await writeFile(lockPath, '');
+    await utimes(lockPath, oldTime, oldTime);
+    const reg1 = await registerProjectHook({
+      cwd: root,
+      nodePath: process.execPath,
+      handlerPath: join(cwd, 'agy-permission-hook.mjs'),
+      sessionId: 'stale-empty-lock-test',
+    });
+    await reg1.close();
+
+    await writeFile(lockPath, '{"pid":');
+    await utimes(lockPath, oldTime, oldTime);
+    const reg2 = await registerProjectHook({
+      cwd: root,
+      nodePath: process.execPath,
+      handlerPath: join(cwd, 'agy-permission-hook.mjs'),
+      sessionId: 'stale-corrupt-lock-test',
+    });
+    await reg2.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+

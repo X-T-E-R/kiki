@@ -22,6 +22,12 @@ import {
   type PermissionResponse,
 } from '../agy-permission-hook.mjs';
 import {
+  AUDIT_DEFAULT_MAX_BYTES,
+  compactAuditFile,
+  pruneExpiredAuditFiles,
+  readAuditFile,
+} from './auditLog';
+import {
   accumulateStepUsage,
   catalogDiagnostic,
   configOptions,
@@ -86,9 +92,13 @@ export class AgyBridge {
   cliPath: string;
   cliPrefix: string[];
   auditDir?: string;
+  auditMaxBytes = AUDIT_DEFAULT_MAX_BYTES;
   nativeHome: string;
   spawnProcess: SpawnProcessFn;
   sessions: Map<string, AgySession>;
+  private readonly auditBytes = new Map<string, number>();
+  private readonly auditChains = new Map<string, Promise<void>>();
+  private prunedAuditDir = false;
   modelChoices?: string[];
   modelDiagnostic?: string;
   closePromise?: Promise<void[]>;
@@ -138,11 +148,31 @@ export class AgyBridge {
     data?: Record<string, unknown>,
   ): Promise<void> {
     if (!this.auditDir) return;
-    await mkdir(this.auditDir, { recursive: true });
-    await appendFile(
-      resolve(this.auditDir, `${session.id}.ndjson`),
-      JSON.stringify({ at: new Date().toISOString(), type, ...data }) + '\n',
-    );
+    const auditDir = this.auditDir;
+    const auditPath = resolve(auditDir, `${session.id}.ndjson`);
+    const line = JSON.stringify({ at: new Date().toISOString(), type, ...data }) + '\n';
+    const previous = this.auditChains.get(session.id) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(async () => {
+        await mkdir(auditDir, { recursive: true });
+        if (!this.prunedAuditDir) {
+          this.prunedAuditDir = true;
+          void pruneExpiredAuditFiles(auditDir).catch(() => {});
+        }
+        await appendFile(auditPath, line);
+        const written = (this.auditBytes.get(session.id) ?? 0) + Buffer.byteLength(line, 'utf8');
+        if (this.auditMaxBytes > 0 && written >= this.auditMaxBytes) {
+          const compactedBytes = await compactAuditFile(auditPath, {
+            maxBytes: this.auditMaxBytes,
+          });
+          this.auditBytes.set(session.id, compactedBytes);
+        } else {
+          this.auditBytes.set(session.id, written);
+        }
+      });
+    this.auditChains.set(session.id, next);
+    await next;
   }
 
   initialize(version: unknown): Record<string, unknown> {
@@ -256,10 +286,10 @@ export class AgyBridge {
     if (this.sessions.has(params.sessionId)) throw new Error('AGY session is already owned by this connection');
     const auditPath = resolve(this.auditDir, `${params.sessionId}.ndjson`);
     const readAudit = async (): Promise<AuditRecord[]> =>
-      (await readFile(auditPath, 'utf8'))
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line) as AuditRecord);
+      readAuditFile(auditPath, {
+        maxBytes: this.auditMaxBytes,
+        repairTruncatedTail: true,
+      });
     const records = await readAudit().catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT' || params._meta?.['kiki.agyLegacyRecovery'] === undefined) throw error;
       return undefined;
