@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { atomicWrite, syncDir } from '#/_base/utils/fs';
 import { Error2, ErrorCodes } from '#/errors';
 
 import type { PluginCapabilityState, PluginGithubMetadata, PluginRollback, PluginSource } from './types';
@@ -101,8 +102,6 @@ export async function readInheritedInstalled(kimiHomeDir: string): Promise<reado
 export async function writeInstalled(kimiHomeDir: string, data: InstalledFile): Promise<void> {
   const dir = path.join(kimiHomeDir, 'plugins');
   await mkdir(dir, { recursive: true });
-  const final = path.join(dir, 'installed.json');
-  const tmp = `${final}.tmp`;
-  await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
-  await rename(tmp, final);
+  await atomicWrite(path.join(dir, 'installed.json'), JSON.stringify(data, null, 2));
+  await syncDir(dir);
 }

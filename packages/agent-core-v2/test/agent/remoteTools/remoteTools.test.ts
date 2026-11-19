@@ -82,7 +82,7 @@ describe('RemoteSpaceToolBridgeService', () => {
     vi.useRealTimers();
   });
 
-  it('tracks connector attachment, caches per workspace with 15s TTL, coalesces concurrent reads, and falls back on rejection', async () => {
+  it('tracks connector attachment, caches per workspace session with 15s TTL, coalesces concurrent reads, and falls back on rejection', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-11-18T10:00:00Z'));
 
@@ -149,7 +149,7 @@ describe('RemoteSpaceToolBridgeService', () => {
 
     deferList = true;
     const p1 = bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-1' } });
-    const p2 = bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-2' } });
+    const p2 = bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-1' } });
     expect(listSpy).toHaveBeenCalledTimes(1);
     pendingResolve!(initialCatalogs);
     const [r1, r2] = await Promise.all([p1, p2]);
@@ -158,16 +158,22 @@ describe('RemoteSpaceToolBridgeService', () => {
 
     deferList = false;
     await expect(
-      bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-3' } }),
+      bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-1' } }),
     ).resolves.toEqual(initialCatalogs);
     expect(listSpy).toHaveBeenCalledTimes(1);
 
-    await bridge.listBorrowedTools({ caller: { workspaceId: 'ws-b', sessionId: 's-4' } });
+    await bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-2' } });
     expect(listSpy).toHaveBeenCalledTimes(2);
+    expect(listSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ caller: { workspaceId: 'ws-a', sessionId: 's-2' } }),
+    );
+
+    await bridge.listBorrowedTools({ caller: { workspaceId: 'ws-b', sessionId: 's-1' } });
+    expect(listSpy).toHaveBeenCalledTimes(3);
 
     vi.advanceTimersByTime(15_001);
-    await bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-5' } });
-    expect(listSpy).toHaveBeenCalledTimes(3);
+    await bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-1' } });
+    expect(listSpy).toHaveBeenCalledTimes(4);
 
     const updatedCatalogs: RemoteBorrowedSpaceCatalog[] = [
       {
@@ -190,14 +196,14 @@ describe('RemoteSpaceToolBridgeService', () => {
     capability.notifyChanged();
     expect(changeListener).toHaveBeenCalledTimes(2);
     await expect(
-      bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-6' } }),
+      bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-1' } }),
     ).resolves.toEqual(updatedCatalogs);
-    expect(listSpy).toHaveBeenCalledTimes(4);
+    expect(listSpy).toHaveBeenCalledTimes(5);
 
     capability.notifyChanged();
     listSpy.mockRejectedValueOnce(new Error('transient tunnel drop'));
     await expect(
-      bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-7' } }),
+      bridge.listBorrowedTools({ caller: { workspaceId: 'ws-a', sessionId: 's-1' } }),
     ).resolves.toEqual(updatedCatalogs);
 
     listSpy.mockRejectedValueOnce(new Error('no prior cache'));

@@ -761,6 +761,35 @@ describe('AgentTaskService', () => {
     expect(stubLoop().hasPendingRequests()).toBe(false);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('logs a failed live task metadata write and rewrites the record on the next write', async () => {
+    const docs = ix.get(IAtomicDocumentStore);
+    const error = new Error('disk full');
+    const setDoc = vi.spyOn(docs, 'set').mockRejectedValueOnce(error);
+    const logError = vi.spyOn(ix.get(ILogService), 'error');
+    const svc = ix.get(IAgentTaskService);
+    let release!: () => void;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => { await running; await sink.settle({ status: 'completed' }); },
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(logError).toHaveBeenCalledWith('task metadata persistence failed; retrying on next write', { taskId, error });
+      });
+
+      await svc.suppressTerminalNotification(taskId);
+      expect(setDoc).toHaveBeenCalledTimes(2);
+      expect(setDoc.mock.calls[1]![2]).toMatchObject({
+        taskId,
+        terminalNotificationSuppressed: true,
+      });
+    } finally {
+      release();
+      await svc.wait(taskId);
+    }
+  });
+
   it('retains all unpersisted output after an append failure rather than advertising a partial file as complete', async () => {
     const storage = new InMemoryStorageService();
     ix.set(IFileSystemStorageService, storage);
