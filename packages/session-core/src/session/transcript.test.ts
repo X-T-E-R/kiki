@@ -8445,4 +8445,114 @@ describe('terminal-facing transcript facts', () => {
     const next = setSessionRecord(state, { ...session, title: 'New title', agent_config: { model: 'large' } });
     expect(next).toMatchObject({ model: 'large', maxContextTokens: undefined, session: { title: 'New title' } });
   });
+
+  it('preserves contextTokens and maxContextTokens across a cold transcript reset when meta.agent omits them', () => {
+    const seeded = {
+      ...createViewState(session.id),
+      model: 'example/model',
+      contextTokens: 48_000,
+      maxContextTokens: 200_000,
+    };
+    const projected = projectAgentTranscriptView(seeded, 'main', emptySnapshot({
+      meta: { agent: { model: 'example/model' } },
+    }));
+    expect(projected.contextTokens).toBe(48_000);
+    expect(projected.maxContextTokens).toBe(200_000);
+  });
+
+  it('does not clobber positive wire-projected contextTokens when a cold snapshot shell reports fallback zero', () => {
+    const wireSeeded = {
+      ...createViewState(session.id),
+      transcriptReady: true,
+      model: 'example/model',
+      contextTokens: 64_000,
+      maxContextTokens: 200_000,
+    };
+    const next = applyTranscriptShell(session.id, {
+      session,
+      as_of_seq: 1,
+      epoch: 'cold',
+      messages: { items: [], has_more: false },
+      pending_approvals: [],
+      pending_questions: [],
+      in_flight_turn: null,
+      context_tokens: 0,
+      max_context_tokens: 200_000,
+    }, wireSeeded);
+    expect(next.contextTokens).toBe(64_000);
+    expect(next.maxContextTokens).toBe(200_000);
+  });
+
+  it('preserves rich session agent_config, executor_id, and non-zero usage across sparse list polls', () => {
+    const richSession = {
+      ...session,
+      executor_id: 'codex',
+      allow_kiki_subagents: true,
+      agent_config: {
+        model: 'gpt-5-codex',
+        profile: 'implementer',
+        persona: { id: 'p-1', name: 'Helper', avatarUrl: '/api/personas/p-1/avatar' },
+        permission_mode: 'yolo' as const,
+        plan_mode: true,
+        plan_gate: 'gated' as const,
+        execution: {
+          version: 1 as const,
+          selection: { executor: 'codex', profile: 'implementer' },
+          effective: {
+            model: 'gpt-5-codex',
+            thinking: 'high',
+            permission_mode: 'yolo' as const,
+            kiki_context: [],
+            allow_kiki_subagents: true,
+          },
+          sources: {},
+          generation: 1,
+        },
+      },
+      usage: { ...session.usage, context_tokens: 42_000, context_limit: 200_000, turn_count: 9 },
+    };
+    const hydrated = setSessionRecord(createViewState(session.id), richSession);
+    const sparseListPoll = {
+      ...session,
+      title: 'Updated title',
+      executor_id: undefined,
+      agent_config: { model: '' },
+      usage: { ...session.usage, context_tokens: 0, context_limit: 0, turn_count: 0 },
+    };
+    const merged = setSessionRecord(hydrated, sparseListPoll);
+    expect(merged.session?.title).toBe('Updated title');
+    expect(merged.session?.executor_id).toBe('codex');
+    expect(merged.session?.agent_config).toEqual(richSession.agent_config);
+    expect(merged.session?.usage).toMatchObject({ context_tokens: 42_000, context_limit: 200_000, turn_count: 9 });
+    expect(merged.model).toBe('gpt-5-codex');
+    expect(merged.profile).toBe('implementer');
+    expect(merged.permissionMode).toBe('yolo');
+    expect(merged.planMode).toBe(true);
+  });
+
+  it('preserves checkpoint-projected planMode across partial cold transcript resets while clearing on live exits', () => {
+    const coldShell = applyTranscriptShell(session.id, {
+      session: {
+        ...session,
+        agent_config: { ...session.agent_config, plan_mode: true, permission_mode: 'yolo', plan_gate: 'gated' },
+      },
+      as_of_seq: 1,
+      epoch: 'cold:session',
+      messages: { items: [], has_more: false },
+      pending_approvals: [],
+      pending_questions: [],
+      in_flight_turn: null,
+    });
+    expect(coldShell.planMode).toBe(true);
+    const partialCold = projectAgentTranscriptView(coldShell, 'main', emptySnapshot({
+      hasMoreOlder: true,
+      meta: {},
+    }), { cold: true });
+    expect(partialCold.planMode).toBe(true);
+    const liveCleared = projectAgentTranscriptView(partialCold, 'main', emptySnapshot({
+      hasMoreOlder: true,
+      meta: {},
+    }), { cold: false });
+    expect(liveCleared.planMode).toBe(false);
+  });
 });

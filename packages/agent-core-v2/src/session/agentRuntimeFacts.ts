@@ -16,8 +16,11 @@ import {
   readPersistedAgentCheckpoint,
   readPersistedCheckpointStatToken,
 } from './persistedAgentCheckpoint';
-import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
+import { permissionModeConfiguredKey, permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
+import { runtimeBindingKey } from '#/agent/runtimeBinding/runtimeBindingOps';
+import type { RuntimeBinding } from '#/runtime/runtime';
+import type { PlanGate } from '#/features/plan/configSection';
 import { planKey, type PlanState } from '#/features/plan/planOps';
 import { expandedStateFolds } from '#/state/state';
 import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
@@ -25,11 +28,21 @@ import { contextTokenCounts, type WireContextProjection } from '#/agent/contextM
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { TokenCountingState } from '#/agent/tokenCounting/tokenCountingOps';
 
+export interface PersistedAgentRuntimeControls {
+  readonly permissionMode: PermissionMode;
+  readonly permissionConfigured: boolean;
+  readonly planActive: boolean;
+  readonly planGate?: PlanGate;
+  readonly runtimeBinding?: RuntimeBinding;
+}
+
 export interface PersistedAgentRuntimeFacts {
   readonly contextTokens?: number;
+  readonly measuredTokens?: number;
   readonly turnCount?: number;
   readonly panelAccounting?: PanelAccountingState;
   readonly complete: boolean;
+  readonly controls?: PersistedAgentRuntimeControls;
   readonly status?: {
     readonly permissionMode: PermissionMode;
     readonly permissionConfigured: boolean;
@@ -39,8 +52,11 @@ export interface PersistedAgentRuntimeFacts {
 }
 
 const KEYS = [tokenCountingKey, turnKey, panelAccountingKey] as const;
-const STATUS_KEYS = [permissionModeKey, planKey, contextMemoryKey] as const;
-const FOLDS = [...KEYS, ...STATUS_KEYS].map(key => ({ key, folds: new Map([...expandedStateFolds(key)].map(([event, fold]) => [event.type, { event, fold }])) }));
+const CONTROL_KEYS = [permissionModeKey, permissionModeConfiguredKey, planKey, runtimeBindingKey] as const;
+const STATUS_KEYS = [permissionModeKey, permissionModeConfiguredKey, planKey, runtimeBindingKey, contextMemoryKey] as const;
+const ALL_KEYS = [...KEYS, ...STATUS_KEYS] as const;
+const CONTROL_KEY_NAMES = new Set<string>(CONTROL_KEYS.map(key => key.name));
+const FOLDS = ALL_KEYS.map(key => ({ key, folds: new Map([...expandedStateFolds(key)].map(([event, fold]) => [event.type, { event, fold }])) }));
 const BYTE_BUDGET = 8 << 20;
 const CONTEXT = { silent: true, emit: () => {}, checkpoint: () => {}, clearCheckpoints: () => {}, undoToCheckpoint: () => {} };
 interface RuntimeFactsCacheEntry {
@@ -60,7 +76,7 @@ export async function readPersistedAgentRuntimeFacts(
   agentId: string,
   metadata?: AgentMeta,
   signal?: AbortSignal,
-  options?: { readonly includeStatus?: boolean },
+  options?: { readonly includeStatus?: boolean; readonly includeControls?: boolean },
 ): Promise<PersistedAgentRuntimeFacts> {
   signal?.throwIfAborted();
   const storage = 'accessor' in host ? host.accessor.get(IFileSystemStorageService) : host.storage;
@@ -82,7 +98,9 @@ export async function readPersistedAgentRuntimeFacts(
   let cache = caches.get(host);
   if (cache === undefined) { cache = new Map(); caches.set(host, cache); }
   const wait = (promise: Promise<PersistedAgentRuntimeFacts>) => promise.then(facts => { signal?.throwIfAborted(); return facts; });
-  const cacheKey = options?.includeStatus === true ? `${scope}:status` : scope;
+  const includeStatus = options?.includeStatus === true;
+  const includeControls = includeStatus || options?.includeControls === true;
+  const cacheKey = includeStatus ? `${scope}:status` : includeControls ? `${scope}:controls` : scope;
   const cached = cache.get(cacheKey);
   if (
     cached?.size === size &&
@@ -91,14 +109,21 @@ export async function readPersistedAgentRuntimeFacts(
     cached.contextTokens === metadata?.contextTokens
   ) return wait(cached.promise);
   const read = async (): Promise<PersistedAgentRuntimeFacts> => {
-    const keys = options?.includeStatus === true ? [...KEYS, ...STATUS_KEYS] : KEYS;
+    const keys = includeStatus ? [...KEYS, ...STATUS_KEYS] : includeControls ? [...KEYS, ...CONTROL_KEYS] : KEYS;
     const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, new Set(keys.map(key => key.name)), workers);
     const usable = checkpoint !== undefined && KEYS.every(key => checkpoint.states.has(key.name));
     const start = usable ? checkpoint.offset : 0;
     if (size - start > BYTE_BUDGET) return fallback;
     const states = usable ? checkpoint.states : new Map<string, unknown>(keys.map(key => [key.name, key.initial()]));
-    let statusComplete = options?.includeStatus === true && (!usable || STATUS_KEYS.every(key => states.has(key.name)));
-    let permissionConfigured = usable && states.has(permissionModeKey.name);
+    let controlsComplete = includeControls && (!usable || (states.has(permissionModeKey.name) && states.has(planKey.name)));
+    let statusComplete = includeStatus && controlsComplete && (!usable || states.has(contextMemoryKey.name));
+    if (controlsComplete && !states.has(runtimeBindingKey.name)) {
+      states.set(runtimeBindingKey.name, runtimeBindingKey.initial());
+    }
+    if (controlsComplete && !states.has(permissionModeConfiguredKey.name)) {
+      states.set(permissionModeConfiguredKey.name, usable && states.has(permissionModeKey.name));
+    }
+    let permissionConfigured = controlsComplete && states.get(permissionModeConfiguredKey.name) === true;
     let valid = true;
     let tokensSeen = usable;
     const foldLine = (line: string) => {
@@ -108,7 +133,8 @@ export async function readPersistedAgentRuntimeFacts(
       if (!isWireRecord(record)) { valid = false; return; }
       if (record.type === 'permission.set_mode') permissionConfigured = true;
       for (const { key, folds } of FOLDS) {
-        if (STATUS_KEYS.some(statusKey => statusKey.name === key.name) && !statusComplete) continue;
+        if (key === contextMemoryKey && !statusComplete) continue;
+        if (CONTROL_KEY_NAMES.has(key.name) && !controlsComplete) continue;
         const entry = folds.get(record.type);
         if (entry === undefined) continue;
         const event = event2FromRecord(entry.event, record);
@@ -116,7 +142,10 @@ export async function readPersistedAgentRuntimeFacts(
         if (key === tokenCountingKey && (!(event instanceof AgentModelSwitch) || event.contextTokens !== undefined)) tokensSeen = true;
         states.set(key.name, produce(states.get(key.name), (draft: unknown) => entry.fold(draft as never, event as never, {
           ...CONTEXT,
-          undoToCheckpoint: () => { statusComplete = false; },
+          undoToCheckpoint: () => {
+            statusComplete = false;
+            if (key === planKey) controlsComplete = false;
+          },
         })));
       }
     };
@@ -142,16 +171,27 @@ export async function readPersistedAgentRuntimeFacts(
       readPersistedCheckpointStatToken(storage, scope),
     ]);
     if (!valid || afterSize !== size || afterMtime !== mtime || afterCkpt.token !== ckptStat.token) return fallback;
+    const tokenState = states.get(tokenCountingKey.name) as TokenCountingState;
+    const planState = controlsComplete ? states.get(planKey.name) as PlanState : undefined;
+    const permissionMode = controlsComplete ? states.get(permissionModeKey.name) as PermissionMode : undefined;
     return {
-      contextTokens: tokensSeen ? (states.get(tokenCountingKey.name) as ReturnType<typeof tokenCountingKey.initial>).tokens : metadata?.contextTokens,
+      contextTokens: tokensSeen ? tokenState.tokens : metadata?.contextTokens,
+      measuredTokens: tokensSeen ? tokenState.anchors.findLast(anchor => anchor.measured)?.tokens : undefined,
       turnCount: (states.get(turnKey.name) as ReturnType<typeof turnKey.initial>).nextTurnId,
       panelAccounting: states.get(panelAccountingKey.name) as PanelAccountingState,
       complete: true,
-      status: statusComplete ? {
-        permissionMode: states.get(permissionModeKey.name) as PermissionMode,
+      controls: controlsComplete && planState !== undefined && permissionMode !== undefined ? {
+        permissionMode,
         permissionConfigured,
-        planActive: (states.get(planKey.name) as PlanState).active,
-        contextTokens: contextTokenCounts(states.get(contextMemoryKey.name) as ContextMessage[], states.get(tokenCountingKey.name) as TokenCountingState),
+        planActive: planState.active,
+        planGate: planState.gate,
+        runtimeBinding: states.get(runtimeBindingKey.name) as RuntimeBinding | undefined,
+      } : undefined,
+      status: statusComplete && planState !== undefined && permissionMode !== undefined ? {
+        permissionMode,
+        permissionConfigured,
+        planActive: planState.active,
+        contextTokens: contextTokenCounts(states.get(contextMemoryKey.name) as ContextMessage[], tokenState),
       } : undefined,
     };
   };

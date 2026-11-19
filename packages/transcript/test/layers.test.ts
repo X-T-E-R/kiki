@@ -5601,3 +5601,32 @@ it('projects durable permission.set_mode wire records onto meta.agent.permission
   feed({ type: 'permission.set_mode', mode: 'review', source: 'user', time: 30 });
   expect(transcript.getMeta().agent?.permission).toBe('review');
 });
+
+it('projects durable token_counting and model_switch records onto meta.agent.contextTokens', () => {
+  const transcript = new AgentTranscript('main');
+  const adapter = new TranscriptWireAdapter('main', {
+    turn: (turnId) => transcript.getTurn(turnId),
+    tool: (toolCallId) => transcript.getToolCall(toolCallId),
+  });
+  const reducer = new TranscriptFactReducer(transcript);
+  const feed = (record: TranscriptWireRecord) => reducer.apply(adapter.add(record));
+  feed({ type: 'profile.bind', profileName: 'agent', modelAlias: 'fixture/pro', time: 10 });
+  feed({ type: 'token_counting.measured', tokens: 12_345, time: 20 });
+  expect(transcript.getMeta().agent?.contextTokens).toBe(12_345);
+  feed({ type: 'token_counting.truncated', tokens: 8_000, time: 30 });
+  expect(transcript.getMeta().agent?.contextTokens).toBe(8_000);
+  feed({ type: 'token_counting.rebased', tokens: 9_500, time: 40 });
+  expect(transcript.getMeta().agent?.contextTokens).toBe(9_500);
+  feed({
+    type: 'agent.model_switch',
+    operationId: 'op-switch-1',
+    fromModel: 'fixture/pro',
+    toModel: 'fixture/large',
+    mode: 'direct',
+    contextTokens: 4_200,
+    time: 50,
+  });
+  expect(transcript.getMeta().agent?.contextTokens).toBe(4_200);
+  feed({ type: 'token_counting.rebased', tokens: 0, time: 60 });
+  expect(transcript.getMeta().agent?.contextTokens).toBe(0);
+});

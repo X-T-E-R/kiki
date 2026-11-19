@@ -1,6 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { readPersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
+import { PersistedGoalReader } from '@kiki/agent-core-v2/agent/goal/goalRead';
+import { DEFAULT_PLAN_CONFIG, PLAN_SECTION, type PlanConfig } from '@kiki/agent-core-v2/features/plan/configSection';
+import { planKey } from '@kiki/agent-core-v2/features/plan/planOps';
+import { logicalByteSize } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
+import { TOKEN_COUNTING_SECTION, type TokenCountingConfig } from '@kiki/agent-core-v2/agent/tokenCounting/configSection';
+import { modelWithUsage } from '@kiki/agent-core-v2/kosong/model/parameters';
+import { mergeModelParameters, resolveModelProfileEntry } from '@kiki/agent-core-v2/app/agentProfileCatalog/modelProfileOverlay';
+import {
+  drivesThinkingThroughTraits,
+  requiresStrictThinkingValidation,
+  resolveForcedThinkingEffort,
+  resolveThinkingEffortForModel,
+  type ThinkingConfig,
+} from '@kiki/agent-core-v2/kosong/model/thinking';
+import { THINKING_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import type { ThinkingEffort } from '@kiki/agent-core-v2/kosong/contract/provider';
 import { persistedAgentContextLimit } from './persistedAgentContext';
 import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { isExternalClientMain } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
@@ -27,10 +43,18 @@ import {
   ErrorCodes,
   DEFAULT_AGENT_PROFILE_NAME,
   IAgentProfileRegistry,
+  IAgentPermissionModeService,
+  IAgentPlanService,
+  IAgentStateService,
+  IAppendLogStore,
+  IAtomicDocumentStore,
   IBootstrapService,
   IConfigService,
+  ICpuWorkerService,
   IFileSystemStorageService,
   IHostFileSystem,
+  IModelCatalog,
+  IProtocolAdapterRegistry,
   agentScopeOf,
   sessionScopeOf,
   workspacePersistenceScope,
@@ -1902,6 +1926,23 @@ export function registerSessionsRoutes(
     async (req, reply) => {
       try {
         const { session_id } = req.params;
+        const live = getLiveSessionById(core.accessor, session_id);
+        if (live === undefined) {
+          const summary = await core.accessor.get(ISessionIndex).get(session_id);
+          if (summary === undefined) {
+            throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+          }
+          const state = getColdSessionCacheState(core);
+          state.goalReader ??= new PersistedGoalReader(
+            core.accessor.get(IAppendLogStore),
+            core.accessor.get(IAtomicDocumentStore),
+            core.accessor.get(IFileSystemStorageService),
+            core.accessor.get(ICpuWorkerService),
+          );
+          const goal = await state.goalReader.readReady(`sessions/${summary.workspaceId}/${session_id}/agents/main`);
+          reply.send(okEnvelope(goal, req.id));
+          return;
+        }
         const goal = await core.accessor.get(ISessionLegacyService).goal(session_id);
         reply.send(okEnvelope(goal, req.id));
       } catch (error) {
@@ -2097,6 +2138,7 @@ interface ColdSessionBindingCacheEntry {
 
 interface ColdSessionCacheState {
   configGen: number;
+  goalReader?: PersistedGoalReader;
   readonly statusValues: Map<string, { readonly revision: string; readonly expiresAt: number; readonly status: Awaited<ReturnType<ISessionLegacyService['status']>> }>;
   readonly statusInflight: Map<string, Promise<Awaited<ReturnType<ISessionLegacyService['status']>>>>;
   readonly bindingValues: Map<string, ColdSessionBindingCacheEntry>;
@@ -2204,6 +2246,87 @@ async function coldSessionArtifactsRevision(core: Scope, workspaceId: string, se
   return (await coldSessionArtifactStats(core, workspaceId, sessionId))?.revision;
 }
 
+async function readBoundedGiantColdSessionStatus(
+  core: Scope,
+  workspaceId: string,
+  sessionId: string,
+  cwd: string | undefined,
+): Promise<Awaited<ReturnType<ISessionLegacyService['status']>> | undefined> {
+  const config = core.accessor.get(IConfigService);
+  const strategy = config.get<TokenCountingConfig>(TOKEN_COUNTING_SECTION)?.strategy ?? 'measured+estimated';
+  if (strategy === 'estimated') return undefined;
+  const storage = core.accessor.get(IFileSystemStorageService);
+  const mainScope = agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId), MAIN_AGENT_ID);
+  const wireSize = await logicalByteSize(storage, mainScope, 'wire.jsonl');
+  if (wireSize === undefined || wireSize <= PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET) return undefined;
+  const saved = await readColdSessionMeta(core, workspaceId, sessionId);
+  const mainMetadata = saved?.agents?.[MAIN_AGENT_ID];
+  const [profile, runtime] = await Promise.all([
+    readPersistedAgentProfileSnapshot(
+      core,
+      workspaceId,
+      sessionId,
+      MAIN_AGENT_ID,
+      mainMetadata,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    ),
+    readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, undefined, { includeControls: true }),
+  ]);
+  const needsDefault = !(profile?.modelAlias || profile?.profileName);
+  const preview = needsDefault
+    ? createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), saved?.cwd ?? cwd, workspaceId, false)
+    : undefined;
+  try {
+    await preview?.catalog.ready;
+    const models = core.accessor.get(IModelService);
+    await models.ready;
+    const binding = resolveEffectiveSessionModel(models, profile ?? {}, needsDefault ? preview?.catalog.getDefault() : undefined);
+    let thinkingLevel = profile?.modelAlias ? profile.thinkingLevel ?? '' : '';
+    let modelName: string | null = null;
+    let maxTokens = 0;
+    if (binding.executorId === 'native' && binding.model !== undefined) {
+      try {
+        const boundProfile = profile?.boundProfile;
+        const cognition = boundProfile?.promptBase?.inputs?.cognition;
+        const settings = cognition?.modelAlias === binding.model ? cognition.modelSettings ?? cognition.recipe?.resolved.model : undefined;
+        const model = modelWithUsage(core.accessor.get(IModelCatalog).get(binding.model, settings), cognition?.position ?? 'main');
+        modelName = model.displayName ?? null;
+        maxTokens = model.capabilities.max_input_tokens ?? model.capabilities.max_context_tokens;
+        if (profile?.modelAlias) {
+          const thinking = config.get<ThinkingConfig>(THINKING_SECTION);
+          const base = thinkingLevel === 'off' && model.alwaysThinking
+            ? resolveThinkingEffortForModel(thinkingLevel, thinking, model, requiresStrictThinkingValidation(
+              core.accessor.get(IProtocolAdapterRegistry), model.protocol, model.providerType,
+            ))
+            : thinkingLevel as ThinkingEffort;
+          thinkingLevel = resolveForcedThinkingEffort(thinking?.forcedEffort, base, drivesThinkingThroughTraits(model.providerType)) ?? base;
+        }
+        const entry = resolveModelProfileEntry(boundProfile?.modelProfiles, model.id, (id) => models.resolveId(id));
+        const budget = mergeModelParameters(model, mergeModelParameters(boundProfile ?? {}, entry)).contextBudget;
+        if (budget !== undefined) maxTokens = Math.min(maxTokens, budget);
+      } catch { modelName = null; }
+    }
+    const tokens = strategy === 'measured'
+      ? (runtime.measuredTokens ?? runtime.contextTokens ?? 0)
+      : (runtime.contextTokens ?? 0);
+    const controls = runtime.complete ? runtime.controls : undefined;
+    return {
+      busy: false,
+      model: binding.model,
+      model_name: modelName,
+      thinking_level: thinkingLevel,
+      permission: controls?.permissionConfigured ? controls.permissionMode : config.get<string>('defaultPermissionMode') ?? 'auto',
+      plan_mode: controls?.planActive ?? false,
+      context_tokens: tokens,
+      max_context_tokens: maxTokens > 0 ? maxTokens : undefined,
+      context_usage: maxTokens > 0 ? Math.min(1, tokens / maxTokens) : 0,
+    };
+  } finally {
+    await preview?.dispose();
+  }
+}
+
 async function readCachedColdSessionStatus(
   core: Scope,
   sessionId: string,
@@ -2225,7 +2348,10 @@ async function readCachedColdSessionStatus(
       const preRevision = summary === undefined
         ? undefined
         : await coldSessionArtifactsRevision(core, summary.workspaceId, sessionId);
-      const status = await core.accessor.get(ISessionLegacyService).status(sessionId);
+      const bounded = summary === undefined
+        ? undefined
+        : await readBoundedGiantColdSessionStatus(core, summary.workspaceId, sessionId, summary.cwd);
+      const status = bounded ?? await core.accessor.get(ISessionLegacyService).status(sessionId);
       if (summary !== undefined && preRevision !== undefined && getLiveSessionById(core.accessor, sessionId) === undefined) {
         const postRevision = await coldSessionArtifactsRevision(core, summary.workspaceId, sessionId);
         if (postRevision === preRevision) {
@@ -2271,7 +2397,7 @@ async function computeColdSessionBindingBase(
       signal,
       { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
     ),
-    readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal),
+    readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, signal, { includeControls: true }),
   ]);
   const externallyDriven = profile?.driver === 'external' || saved !== undefined && isExternalClientMain(saved, MAIN_AGENT_ID);
   const preview = !externallyDriven && profile?.endpoint === undefined && !profile?.modelAlias && (profile?.executorId ?? 'native') === 'native'
@@ -2314,6 +2440,8 @@ async function computeColdSessionBindingBase(
       };
     }
   }
+  const controls = runtime.complete ? runtime.controls : undefined;
+  const planConfig = core.accessor.get(IConfigService).get<PlanConfig | undefined>(PLAN_SECTION) ?? DEFAULT_PLAN_CONFIG;
   return {
     contextTokens: runtime.contextTokens ?? 0,
     contextLimit: contextLimit ?? 0,
@@ -2324,6 +2452,9 @@ async function computeColdSessionBindingBase(
       model: binding.model ?? '',
       profile: profile?.profileName,
       persona: wirePersona,
+      permission_mode: controls?.permissionConfigured ? controls.permissionMode : undefined,
+      plan_mode: controls?.planActive,
+      plan_gate: controls?.planGate ?? (controls !== undefined ? planConfig.gate : undefined),
     },
   };
 }
@@ -2507,6 +2638,16 @@ export function resolveSessionFacts(
         core.accessor.get(ILogService),
         sessionUsage,
       );
+  let livePermissionMode: Session['agent_config']['permission_mode'];
+  let livePlanMode: boolean | undefined;
+  let livePlanGate: Session['agent_config']['plan_gate'];
+  if (main !== undefined) {
+    try {
+      livePermissionMode = main.accessor.get(IAgentPermissionModeService).mode;
+      livePlanMode = main.accessor.get(IAgentStateService).get(planKey).active;
+      livePlanGate = main.accessor.get(IAgentPlanService).planGate;
+    } catch {}
+  }
   return {
     ...handle.accessor.get(ISessionActivityView).state(),
     delivery: handle.accessor.get(ISessionDeliveryService).mode(),
@@ -2521,6 +2662,9 @@ export function resolveSessionFacts(
           persona: persona === undefined
             ? undefined
             : { id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar` },
+          permission_mode: livePermissionMode,
+          plan_mode: livePlanMode,
+          plan_gate: livePlanGate,
         },
     usage: usage.usage === undefined ? undefined : {
       ...usage.usage,

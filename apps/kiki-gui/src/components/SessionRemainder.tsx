@@ -81,6 +81,8 @@ export function SessionRemainder({ className = '', handle }: {
   const sessionRefs = pending.filter((ref) => ref.source.kind === 'snapshot' && ref.path[0] !== 'subagents');
   const rosterRefs = pending.filter((ref) => ref.source.kind === 'roster' || (ref.source.kind === 'snapshot' && ref.path[0] === 'subagents'));
   if (sessionRefs.length === 0 && rosterRefs.length === 0) return null;
+  const hasError = [...sessionRefs, ...rosterRefs].some((ref) => statusOf(ref)?.status === 'error');
+  if (automatic && !hasError) return null;
   return (
     <section data-session-remainder className={`relative flex flex-col ${className}`.trimEnd()}>
       <button

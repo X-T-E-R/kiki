@@ -863,6 +863,25 @@ describe('real roster remainder', () => {
     expect(row?.textContent).toContain('Could not load the rest of this content');
     expect(row?.querySelector('[data-content-continuation-action]')).not.toBeNull();
   });
+
+  it('ignores nested subagent snapshot field cuts while still recognizing root subagents array cuts', async () => {
+    const nestedSummary = boundedRef({ kind: 'snapshot', id: '' }, ['subagents', 0, 'result_summary'], 'text', 1024, 4096);
+    const rootRoster = boundedRef({ kind: 'snapshot', id: '' }, ['subagents'], 'array', 64, 96);
+    const nestedContainer = await render(
+      <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={[nestedSummary]} loadContent={async () => true}>
+        <SessionRemainder />
+      </TranscriptDetailProvider>,
+    );
+    expect(nestedContainer.querySelector('[data-session-remainder]')).toBeNull();
+
+    const rootContainer = await render(
+      <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={[nestedSummary, rootRoster]} loadContent={async () => true}>
+        <SessionRemainder />
+      </TranscriptDetailProvider>,
+    );
+    await click(rootContainer.querySelector('[data-session-remainder-toggle]'));
+    expect(rootContainer.querySelector('[data-roster-reading]')).not.toBeNull();
+  });
 });
 
 it('automatically completes all visible snapshot fields after one real retry and leaves hidden metadata unread', async () => {

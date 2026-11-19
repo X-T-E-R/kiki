@@ -633,6 +633,45 @@ describe('server-v2 /api/sessions/{sid}/tasks', () => {
     expect((await getJson<null>(`/api/sessions/${id}/agent-tasks?page_size=101`)).body.code).toBe(40001);
   });
 
+  it('filters cold persisted tasks by status before pagination slicing', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    const scope = `sessions/${workspaceId}/${id}/agents/main/tasks`;
+    const docs = server!.core.accessor.get(IAtomicDocumentStore);
+    const now = Date.now();
+    await docs.set(scope, 'aaa-00000001.json', {
+      taskId: 'aaa-00000001', kind: 'process', ownerAgentId: 'main',
+      description: 'done 1', status: 'completed', startedAt: now, endedAt: now + 1, command: 'echo 1',
+    });
+    await docs.set(scope, 'aaa-00000002.json', {
+      taskId: 'aaa-00000002', kind: 'process', ownerAgentId: 'main',
+      description: 'done 2', status: 'completed', startedAt: now, endedAt: now + 1, command: 'echo 2',
+    });
+    await docs.set(scope, 'zzz-00000003.json', {
+      taskId: 'zzz-00000003', kind: 'process', ownerAgentId: 'main',
+      description: 'failed 1', status: 'failed', startedAt: now, endedAt: now + 1, command: 'false',
+    });
+    await docs.set(scope, 'zzz-00000004.json', {
+      taskId: 'zzz-00000004', kind: 'process', ownerAgentId: 'main',
+      description: 'failed 2', status: 'timed_out', startedAt: now, endedAt: now + 1, command: 'sleep 99',
+    });
+    await server!.core.accessor.get(ISessionManager).close(id);
+
+    const first = await getJson<ListWire>(`/api/sessions/${id}/tasks?status=failed&page_size=1&offset=0`);
+    expect(first.body.code).toBe(0);
+    expect(first.body.data.items.map((item) => item.id)).toEqual(['zzz-00000003']);
+    expect(first.body.data.has_more).toBe(true);
+    expect(first.body.data.next_offset).toBe(1);
+
+    const second = await getJson<ListWire>(`/api/sessions/${id}/tasks?status=failed&page_size=1&offset=1`);
+    expect(second.body.code).toBe(0);
+    expect(second.body.data.items.map((item) => item.id)).toEqual(['zzz-00000004']);
+    expect(second.body.data.has_more).toBe(false);
+    expect(second.body.data.next_offset).toBeUndefined();
+    expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+  });
+
   it('returns 40401 for an unknown session on all three endpoints', async () => {
     const list = await getJson<null>('/api/sessions/nope/tasks');
     expect(list.body.code).toBe(40401);

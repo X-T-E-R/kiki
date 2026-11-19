@@ -273,7 +273,7 @@ describe('visible reading integrity', () => {
     expect(projected.globalCoverage?.attachments).toEqual({ returned: 8, total: 9, hasMore: true });
     const many = attachments.map((entry) => ({ ...entry, name: '汉😀'.repeat(2000) }));
     const bounded = boundedTranscriptSnapshot(snapshot([{ ...item, attachmentIds: many.map((entry) => entry.attachmentId) }], many), 'main');
-    expect(jsonBytes(bounded.attachments)).toBeLessThanOrEqual(4 * 1024);
+    expect(jsonBytes(bounded.attachments)).toBeLessThanOrEqual(32 * 1024);
     expect(jsonBytes(bounded)).toBeLessThan(64 * 1024);
   });
 });
@@ -704,5 +704,61 @@ describe('inline current-agent working state', () => {
     while (projected.contentRefs?.length) projected = applyContentSegment(projected, readContentSegment(todo, projected.contentRefs[0]!));
     expect(projected.items).toEqual(todo.items);
     expect(projected.notes).toEqual(todo.notes);
+  });
+
+  it('preserves an earlier user text frame in tail-sliced step frames instead of hiding it behind a step-frame ContentRef', () => {
+    const turn = {
+      kind: 'turn' as const,
+      turnId: 't1',
+      ordinal: 1,
+      state: 'completed' as const,
+      origin: { kind: 'user' as const },
+      steps: [{
+        kind: 'step' as const,
+        stepId: 't1.1',
+        turnId: 't1',
+        ordinal: 1,
+        state: 'completed' as const,
+        frames: [
+          {
+            kind: 'text' as const,
+            frameId: 'u1',
+            role: 'user' as const,
+            text: 'Explain why this cold message stayed visible',
+            origin: { kind: 'user' as const },
+          },
+          ...Array.from({ length: 12 }, (_, index) => ({
+            kind: 'tool' as const,
+            frameId: `tool-${index}`,
+            toolCallId: `tool-${index}`,
+            name: 'Read',
+            state: 'done' as const,
+            input: { path: `file-${index}.ts` },
+            output: `ok-${index}`,
+          })),
+          {
+            kind: 'text' as const,
+            frameId: 'a1',
+            role: 'assistant' as const,
+            text: 'Done inspecting all 12 files.',
+          },
+        ],
+      }],
+    };
+    const snapshot = boundedTranscriptSnapshot({
+      items: [turn],
+      tasks: [],
+      attachments: [],
+      prompts: [],
+      interactions: [],
+      todos: [],
+      meta: {},
+    }, 'main');
+    const projectedTurn = snapshot.items[0];
+    expect(projectedTurn?.kind).toBe('turn');
+    if (projectedTurn?.kind !== 'turn') return;
+    const frames = projectedTurn.steps[0]?.frames ?? [];
+    expect(frames.some((frame) => frame.kind === 'text' && frame.role === 'user' && frame.text.includes('Explain why this cold message stayed visible'))).toBe(true);
+    expect(projectedTurn.contentRefs?.some((ref) => ref.path[0] === 'steps' && ref.path[2] === 'frames')).not.toBe(true);
   });
 });

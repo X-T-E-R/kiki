@@ -171,7 +171,9 @@ export async function assembleBrowseSnapshotSource(
     as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
     session: toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
       facts, cursor.seq),
-    context_tokens: facts.usage?.context_tokens,
+    context_tokens: facts.usage === undefined || (facts.usage.context_tokens === 0 && facts.usage.turn_count > 0)
+      ? undefined
+      : facts.usage.context_tokens,
     max_context_tokens: (facts.usage?.context_limit ?? 0) > 0 ? facts.usage?.context_limit : undefined,
     messages: { items: [], has_more: false }, in_flight_turn: null,
     subagents, agent_counts: counts,
@@ -301,15 +303,17 @@ async function assembleColdSnapshot(
   return {
     as_of_seq: cursor.seq,
     epoch: cursor.epoch,
-    context_tokens: facts.usage?.context_tokens,
+    context_tokens: facts.usage === undefined || (facts.usage.context_tokens === 0 && facts.usage.turn_count > 0)
+      ? undefined
+      : facts.usage.context_tokens,
     max_context_tokens: (facts.usage?.context_limit ?? 0) > 0 ? facts.usage?.context_limit : undefined,
     session: {
       ...session,
       message_count: aligned.messages.length,
       agent_config: {
         ...session.agent_config,
-        permission_mode: projection.permissionMode,
-        plan_mode: projection.planActive,
+        permission_mode: session.agent_config.permission_mode ?? (projection.permissionConfigured ? projection.permissionMode : undefined),
+        plan_mode: session.agent_config.plan_mode ?? projection.planActive,
       },
     },
     messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },

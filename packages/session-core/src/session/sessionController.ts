@@ -1713,6 +1713,7 @@ export class SessionController {
         this.advanceSessionCursor(signal.currentSessionCursor);
         if (signal.reconnected) {
           this.handleReconnectAck();
+          void this.refreshDurableIngress();
           if (this.shell.snapshotSubagents.length > 0) void this.refreshRoster(signal.currentSessionCursor);
         }
         return;
@@ -2211,12 +2212,12 @@ export class SessionController {
     const first = this.durableSteerReads.entries().next().value;
     if (first === undefined || this.closed || this.isSuspended) return;
     const [key, target] = first;
-    const promptFallbackText = target.agentId === MAIN_AGENT_ID ? this.durablePromptReads.get(target.promptId) : undefined;
+    const promptFallbackText = this.durablePromptReads.get(key);
     const promptOwned = promptFallbackText !== undefined && (
-      this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(target.promptId) !== undefined ||
-      this.viewOf(MAIN_AGENT_ID).blocks.some((block) => block.kind === 'user' && block.promptId === target.promptId)
+      this.timelines.get(target.agentId)?.store?.getPrompt(target.promptId) !== undefined ||
+      this.viewOf(target.agentId).blocks.some((block) => block.kind === 'user' && block.promptId === target.promptId)
     );
-    if (promptOwned) this.durablePromptReads.delete(target.promptId);
+    if (promptOwned) this.durablePromptReads.delete(key);
     if (this.findPendingSteer(target.agentId, target.promptId) === undefined && (promptFallbackText === undefined || promptOwned)) {
       this.durableSteerReads.delete(key);
       this.scheduleDurableSteerRead();
@@ -2228,12 +2229,36 @@ export class SessionController {
       const result = await this.client.getDurableIngress!(this.sessionId, target.promptId, target.agentId);
       if (this.closed || this.isSuspended || generation !== this.durableSteerReadGeneration) return;
       const stamped = stampIngressAgent(result, target.agentId);
-      this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== stamped.prompt_id), stamped], target.agentId);
+      this.setDurableIngress([
+        ...this.getDurableIngress().filter((item) => item.prompt_id !== stamped.prompt_id || (item.agent_id ?? MAIN_AGENT_ID) !== target.agentId),
+        stamped,
+      ], target.agentId);
       if (result.admission !== 'restoring' && result.admission !== 'waiting_switch') {
         this.durableSteerReads.delete(key);
-        this.durablePromptReads.delete(target.promptId);
+        this.durablePromptReads.delete(key);
         if (result.admission === 'admitted') {
-          if (promptFallbackText !== undefined) this.adoptAdmittedMainPrompt(result, promptFallbackText);
+          if (promptFallbackText !== undefined) {
+            if (target.agentId === MAIN_AGENT_ID) {
+              this.adoptAdmittedMainPrompt(result, promptFallbackText);
+            } else {
+              const targetView = this.viewOf(target.agentId);
+              if (this.timelines.get(target.agentId)?.store?.getPrompt(result.prompt_id) === undefined &&
+                  !targetView.blocks.some((block) => block.kind === 'user' && block.promptId === result.prompt_id)) {
+                const projection = projectMessageContent(result.content);
+                this.publishView(target.agentId, appendLocalUserMessage(targetView, {
+                  userMessageId: result.user_message_id,
+                  promptId: result.prompt_id,
+                  text: projection.text === '' ? promptFallbackText : projection.text,
+                  createdAt: result.created_at,
+                  status: result.status,
+                  origin: result.origin,
+                  media: projection.media,
+                  content: result.content,
+                  appendTiming: result.append_timing,
+                }));
+              }
+            }
+          }
           if (this.shell.cursor.epoch?.startsWith('cold:') === true) void this.resync();
         }
       }
@@ -2273,7 +2298,8 @@ export class SessionController {
         }
         if (!this.closed && !this.isSuspended) {
           const retainedOther = this.getDurableIngress().filter(
-            (item) => (item.agent_id ?? MAIN_AGENT_ID) !== MAIN_AGENT_ID && !records.some((next) => next.prompt_id === item.prompt_id),
+            (item) => (item.agent_id ?? MAIN_AGENT_ID) !== MAIN_AGENT_ID &&
+              !records.some((next) => next.prompt_id === item.prompt_id && (next.agent_id ?? MAIN_AGENT_ID) === (item.agent_id ?? MAIN_AGENT_ID)),
           );
           this.setDurableIngress(retainedOther.length === 0 ? records : [...retainedOther, ...records]);
         }
@@ -2296,7 +2322,10 @@ export class SessionController {
       : await read(this.sessionId, promptId, agentId);
     if (this.closed || this.isSuspended) return;
     const stamped = stampIngressAgent(result, agentId);
-    this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== promptId), stamped], agentId);
+    this.setDurableIngress([
+      ...this.getDurableIngress().filter((item) => item.prompt_id !== promptId || (item.agent_id ?? MAIN_AGENT_ID) !== agentId),
+      stamped,
+    ], agentId);
   }
 
   getDurableIngress(): readonly DurableIngressItem[] {
@@ -2318,7 +2347,7 @@ export class SessionController {
     const stamped = stampIngressAgent(result, targetAgent);
     if (result.admission !== undefined) {
       this.setDurableIngress([
-        ...this.getDurableIngress().filter((item) => item.prompt_id !== promptId),
+        ...this.getDurableIngress().filter((item) => item.prompt_id !== promptId || (item.agent_id ?? MAIN_AGENT_ID) !== targetAgent),
         stamped,
       ], targetAgent);
     }
@@ -2327,7 +2356,7 @@ export class SessionController {
       void this.resync();
     }
     if (result.admission === 'restoring' || result.admission === 'waiting_switch') {
-      this.durablePromptReads.set(result.prompt_id, projectMessageContent(result.content).text);
+      this.durablePromptReads.set(JSON.stringify([targetAgent, result.prompt_id]), projectMessageContent(result.content).text);
       this.observeDurableSteer(targetAgent, result.prompt_id);
     }
     if (admissionRejected || result.admission === 'restoring' || result.admission === 'waiting_switch' || result.admission === 'held') return stamped;
@@ -3415,7 +3444,11 @@ export class SessionController {
         signal?.throwIfAborted();
         const code = error instanceof RPCError || error instanceof ApiError ? error.code : undefined;
         const preparing = code === 40923;
-        const transient = code === -1 || error instanceof TypeError;
+        const transient =
+          code === -1 ||
+          code === API_CODES.SESSION_BUSY ||
+          code === API_CODES.SESSION_INDEX_BUILDING ||
+          error instanceof TypeError;
         if (!preparing && (!transient || failures >= RESYNC_BACKOFF_MS.length)) throw error;
         if (preparing) await backoff.wait(signal);
         else await waitUnlessAborted(RESYNC_BACKOFF_MS[failures++]!, signal);
@@ -4752,7 +4785,7 @@ export class SessionController {
     }
     if (result.admission !== undefined) {
       this.setDurableIngress([
-        ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id),
+        ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== result.prompt_id || (item.agent_id ?? MAIN_AGENT_ID) !== MAIN_AGENT_ID),
         result,
       ]);
     }
@@ -4761,7 +4794,7 @@ export class SessionController {
       void this.resync();
     }
     if (result.admission === 'restoring' || result.admission === 'waiting_switch') {
-      this.durablePromptReads.set(result.prompt_id, input.text);
+      this.durablePromptReads.set(JSON.stringify([MAIN_AGENT_ID, result.prompt_id]), input.text);
       this.observeDurableSteer(MAIN_AGENT_ID, result.prompt_id);
     }
     const canonical = this.timelines.get(MAIN_AGENT_ID)?.store?.getPrompt(result.prompt_id);
@@ -5333,7 +5366,7 @@ export class SessionController {
     if (admission !== undefined) {
       const stamped = stampIngressAgent(result, agentId);
       this.setDurableIngress([
-        ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== stamped.prompt_id),
+        ...(this.shell.durableIngress ?? []).filter((item) => item.prompt_id !== stamped.prompt_id || (item.agent_id ?? MAIN_AGENT_ID) !== agentId),
         stamped,
       ], agentId);
     }

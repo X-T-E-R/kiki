@@ -4,7 +4,13 @@ import { sessionAccessToken } from '../services/sessionAccess/access';
 
 import {
   DEFAULT_AGENT_PROFILE_NAME,
+  IAtomicDocumentStore,
   IBootstrapService,
+  IFileSystemStorageService,
+  IHostFileSystem,
+  agentScopeOf,
+  sessionScopeOf,
+  workspacePersistenceScope,
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentTaskService,
@@ -60,12 +66,15 @@ import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
 import { PromptAborted } from '@kiki/agent-core-v2/agent/prompt/promptService';
+import { PersistedModelSwitchReader } from '@kiki/agent-core-v2/agent/prompt/modelSwitchQueueRead';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
 import { projectPromptContentParts } from '../services/messages/messageProjection';
 import {
   promptAbortResponseSchema,
+  promptItemSchema,
   promptListResponseSchema,
   promptMoveRequestSchema,
   promptMoveResultSchema,
@@ -406,6 +415,16 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   });
   app.addHook?.('preClose', () => ingress.close());
   app.addHook?.('onListen', async () => { ingress.start(); });
+  const durableIngressItemSchema = promptItemSchema.extend({
+    agent_id: z.string().min(1).optional(),
+  });
+  const durableIngressReceiptSchema = promptSubmitReceiptSchema.extend({
+    agent_id: z.string().min(1).optional(),
+  });
+  const durablePromptListResponseSchema = promptListResponseSchema.extend({
+    ingress: z.array(durableIngressItemSchema).optional(),
+  });
+  let modelSwitchReader: PersistedModelSwitchReader | undefined;
   const switchParams = z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) });
   const operationParams = switchParams.extend({ operation_id: z.string().min(1) });
   const switchPath = '/sessions/{session_id}/agents/{agent_id}/model-switches';
@@ -413,10 +432,40 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
     success: { data: z.array(queuedModelSwitchSchema) }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
     description: 'Read model switch queue and operation states', tags: ['prompts'], operationId: 'listModelSwitches' }, async (req, reply) => {
     try {
-      await withSessionOperation(core, req.params.session_id, async (handle) => {
-        const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);
-        reply.send(okEnvelope(resolved.prompt.listModelSwitches(), req.id));
+      const { session_id, agent_id } = req.params;
+      const live = core.accessor.get(ISessionManager).get(session_id);
+      const resident = live?.accessor.get(IAgentLifecycleService).get(agent_id);
+      if (resident !== undefined) {
+        reply.send(okEnvelope(resident.accessor.get(IAgentPromptService).listModelSwitches(), req.id));
+        return;
+      }
+      const summary = live === undefined ? await core.accessor.get(ISessionIndex).get(session_id) : undefined;
+      if (live === undefined && summary === undefined) {
+        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
+      }
+      const workspaceId = live?.accessor.get(ISessionContext).workspaceId ?? summary!.workspaceId;
+      const metadata = live !== undefined
+        ? await live.accessor.get(ISessionMetadata).read()
+        : await readColdSessionMeta(core, workspaceId, session_id);
+      if (!/^[a-zA-Z0-9_-]+$/.test(agent_id) ||
+        (agent_id !== MAIN_AGENT_ID && !Object.hasOwn(metadata?.agents ?? {}, agent_id))) {
+        throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agent_id} does not exist`);
+      }
+      modelSwitchReader ??= new PersistedModelSwitchReader({
+        docs: core.accessor.get(IAtomicDocumentStore),
+        storage: core.accessor.get(IFileSystemStorageService),
+        files: core.accessor.get(IHostFileSystem),
       });
+      const sessionScope = sessionScopeOf(
+        workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),
+        session_id,
+      );
+      const items = await withReplyCloseSignal(
+        reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+        (signal) => modelSwitchReader!.readReady(agentScopeOf(sessionScope, agent_id), signal),
+        req as unknown as Parameters<typeof withReplyCloseSignal>[2],
+      );
+      reply.send(okEnvelope(items, req.id));
     } catch (error) { sendMappedError(reply, req, error); }
   });
   app.get(switchList.path, switchList.options, switchList.handler as Parameters<PromptRouteHost['get']>[2]);
@@ -470,7 +519,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       path: '/sessions/{session_id}/prompts',
       params: sessionIdParamSchema,
       querystring: z.object({ admission: z.literal('durable').optional(), agent_id: z.string().min(1).optional(), cursor: z.string().optional(), observe: z.literal('true').optional() }),
-      success: { data: promptListResponseSchema },
+      success: { data: durablePromptListResponseSchema },
       errors: { [ErrorCode.SESSION_NOT_FOUND]: {} },
       description: 'List the active prompt and queued prompts for a session',
       tags: ['prompts'],
@@ -480,7 +529,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       try {
         const { session_id } = req.params;
         if (req.query.admission === 'durable') {
-          const page = await ingress.list(session_id, req.query.agent_id ?? MAIN_AGENT_ID, req.query.cursor);
+          const page = await ingress.list(session_id, req.query.agent_id, req.query.cursor);
           reply.send(okEnvelope({ active: null, queued: [], ingress: page.items, ingress_next_cursor: page.nextCursor }, req.id));
           return;
         }
@@ -512,12 +561,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   const ingressRead = defineRoute({ method: 'GET', path: '/sessions/{session_id}/prompts/{prompt_id}',
     params: sessionIdParamSchema.extend({ prompt_id: z.string().min(1).max(256) }),
     querystring: z.object({ admission: z.literal('durable'), agent_id: z.string().min(1).optional() }),
-    success: { data: promptSubmitResultSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.PROMPT_NOT_FOUND]: {} },
+    success: { data: durableIngressItemSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.PROMPT_NOT_FOUND]: {} },
     description: 'Read a saved durable request without restoring its agent', tags: ['prompts'], operationId: 'getDurablePrompt' }, async (req, reply) => {
     try {
       const item = await ingress.lookup(req.params.session_id, req.query.agent_id ?? MAIN_AGENT_ID, req.params.prompt_id);
       if (item === undefined) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'Saved request not found.');
-      reply.send(okEnvelope(promptSubmitResultSchema.parse(item), req.id));
+      reply.send(okEnvelope(durableIngressItemSchema.parse(item), req.id));
     }
     catch (error) { sendMappedError(reply, req, error); }
   });
@@ -543,7 +592,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       body: promptSubmissionSchema,
       params: sessionIdParamSchema,
       querystring: z.object({ receipt: z.literal('true').optional() }),
-      success: { data: z.union([promptSubmitResultSchema, promptSubmitReceiptSchema]) },
+      success: { data: z.union([durableIngressItemSchema, durableIngressReceiptSchema]) },
       errors: promptSubmissionErrors,
       description: 'Submit a prompt; requests with a client prompt_id replay an accepted matching receipt',
       tags: ['prompts'],
@@ -614,9 +663,9 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           log.debug('prompt admission subphase', { ...logContext, subphase: name, elapsedMs: Number((performance.now() - started).toFixed(3)) });
         }
       };
-      const sendResult = (result: z.input<typeof promptSubmitResultSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
+      const sendResult = (result: z.input<typeof durableIngressItemSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
         const resolved_parts = result.resolved_parts ?? (retryContentRanges ?? preparedMedia?.sourceRanges)?.map(({ index, start, end }) => ({ index, content: result.content.slice(start, end) }));
-        const data = req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({ ...result, resolved_parts })
+        const data = req.query.receipt === 'true' ? durableIngressReceiptSchema.parse({ ...result, resolved_parts })
           : ingressExecution === undefined ? result : { ...result, resolved_parts };
         return reply.send(okEnvelope(data, req.id));
       };
@@ -878,7 +927,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       body: z.union([promptSubmissionSchema, promptSteerRequestSchema]),
       params: sessionIdParamSchema,
       querystring: z.object({ receipt: z.literal('true').optional() }),
-      success: { data: z.union([promptSteerResultSchema, promptSubmitResultSchema, promptSubmitReceiptSchema]) },
+      success: { data: z.union([promptSteerResultSchema, durableIngressItemSchema, durableIngressReceiptSchema]) },
       errors: { ...promptSubmissionErrors, [ErrorCode.PROMPT_NOT_FOUND]: {} },
       description: 'Submit new content or steer queued prompts into the active turn',
       tags: ['prompts'],
@@ -922,6 +971,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         data: z.union([
           promptAbortResponseSchema,
           promptMoveResultSchema,
+          durableIngressItemSchema,
           promptReplaceResultSchema,
           promptTimingResultSchema,
           promptHoldResultSchema,
@@ -962,7 +1012,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           reply.send(okEnvelope(item, req.id));
           return;
         }
-        if (parsed.action === 'abort') {
+        if (parsed.action === 'abort' || parsed.action === 'cancel') {
           const aborted = await ingress.abort(session_id, req.query.agent_id ?? MAIN_AGENT_ID, parsed.id);
           if (aborted !== undefined) { reply.send(okEnvelope({ aborted }, req.id)); return; }
         }
@@ -1054,9 +1104,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           if (parsed.action === 'cancel' || req.query.queued_only === 'true') {
             let aborted = await resolved.prompt.abortQueued(parsed.id);
             if (!aborted && resolved.prompt.lookup(parsed.id) === undefined && transcriptService !== undefined) {
-              const snapshot = await transcriptService.readColdSnapshot(session_id, agentId ?? MAIN_AGENT_ID);
-              const stale = snapshot?.prompts.find((item) => item.promptId === parsed.id && item.status === 'queued');
-              if (stale !== undefined && resolved.prompt.lookup(parsed.id) === undefined) {
+              const targetAgentId = agentId ?? MAIN_AGENT_ID;
+              const liveStore = await transcriptService.ensureAgentHistory(session_id, targetAgentId, { tailFirst: true });
+              const stale = liveStore !== undefined
+                ? liveStore.getPrompt(parsed.id)?.status === 'queued'
+                : (await transcriptService.readColdSnapshot(session_id, targetAgentId, undefined, undefined, undefined, true))
+                    ?.prompts.some((item) => item.promptId === parsed.id && item.status === 'queued') === true;
+              if (stale && resolved.prompt.lookup(parsed.id) === undefined) {
                 await resolved.accessor.get(IEventDispatcher).dispatch(new PromptAborted({ promptId: parsed.id, abortedAt: new Date().toISOString(), beforeStart: true }));
                 aborted = true;
               }

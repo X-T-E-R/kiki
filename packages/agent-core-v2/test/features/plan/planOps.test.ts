@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -15,7 +15,12 @@ import {
   PlanModeExit,
   planKey,
   PlanRevision,
+  PlanSetGate,
 } from '#/features/plan/planOps';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { REPLAY_ABI_VERSION } from '#/state/eventDispatcherService';
+import { encodeReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
+import { createHash } from 'node:crypto';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -374,5 +379,83 @@ describe('plan ops (wire-backed)', () => {
       revisionCount: { p1: 2 },
     });
     expect(emissions).toEqual([]);
+  });
+
+  it('persists plan.set_gate durably and restores gate on replay', async () => {
+    await dispatcher.dispatch(new PlanSetGate({ gate: 'gated' }));
+    expect(agentState.get(planKey).gate).toBe('gated');
+    const records = await readRecords();
+    const host = buildHost('plan-gate-replay');
+    await restoreTestEventDispatcher(
+      host.dispatcher,
+      host.log,
+      testWireScope(SCOPE, 'plan-gate-replay'),
+      records,
+    );
+    expect(host.agentState.get(planKey).gate).toBe('gated');
+  });
+
+  it('seeds readPersistedPlan from a verified checkpoint and bounds oversized tails', async () => {
+    const storage = new InMemoryStorageService();
+    const ix = disposables.add(new TestInstantiationService());
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const boundedLog = ix.get(IAppendLogStore);
+    const context = makeSessionContext({ sessionId: 's-ckpt', workspaceId: 'w', sessionDir: '/session', sessionScope: 'sessions/w/s-ckpt', cwd: '/workspace' });
+    const scope = context.scope('agents/main');
+    await boundedLog.rewrite(scope, AGENT_WIRE_RECORD_KEY, [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'plan_mode.enter', id: 'from-ckpt', time: 2 },
+    ]);
+    const rawWire = (await storage.read(scope, AGENT_WIRE_RECORD_KEY))!;
+    const generation = await boundedLog.generation(scope, AGENT_WIRE_RECORD_KEY);
+    const mtimeMs = await storage.mtime(scope, AGENT_WIRE_RECORD_KEY) ?? 0;
+    const prefixSha256 = createHash('sha256').update(rawWire).digest('hex');
+    const headHash = prefixSha256.slice(0, 32);
+    const graph = encodeReplayCheckpointGraph({
+      states: [{
+        name: planKey.name,
+        value: { active: true, id: 'from-ckpt', gate: 'gated' },
+        meta: { history: [], checkpoints: [], nextPatchId: 1 },
+      }],
+    });
+    const docs = {
+      get: async (docScope: string, docKey: string) =>
+        docScope === `${scope}/replay-checkpoints` && docKey === 'engine-v1'
+          ? {
+              format: 1,
+              replayAbi: REPLAY_ABI_VERSION,
+              wire: { size: rawWire.byteLength, mtimeMs, headHash, prefixSha256, storeGeneration: generation },
+              stateNames: [planKey.name],
+              graph,
+            }
+          : undefined,
+    } as unknown as IAtomicDocumentStore;
+    const hostFs = { readText: async (path: string) => `plan:${path}` } as IHostFileSystem;
+    const seededReadSpy = vi.spyOn(boundedLog, 'read');
+    const seeded = await readPersistedPlan(context, 'main', boundedLog, hostFs, undefined, { docs, storage });
+    expect(seededReadSpy).not.toHaveBeenCalled();
+    expect(seeded).toEqual({
+      id: 'from-ckpt',
+      content: 'plan:/session/agents/main/plans/from-ckpt.md',
+      path: '/session/agents/main/plans/from-ckpt.md',
+    });
+
+    await boundedLog.rewrite(scope, AGENT_WIRE_RECORD_KEY, [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+      { type: 'fixture.padding', text: 'x'.repeat(2048), time: 2 },
+      { type: 'plan_mode.enter', id: 'tail-plan', time: 3 },
+    ]);
+    seededReadSpy.mockClear();
+    const tailOnly = await readPersistedPlan(context, 'main', boundedLog, hostFs, undefined, {
+      storage,
+      maxTailBytes: 512,
+    });
+    expect(seededReadSpy).not.toHaveBeenCalled();
+    expect(tailOnly).toEqual({
+      id: 'tail-plan',
+      content: 'plan:/session/agents/main/plans/tail-plan.md',
+      path: '/session/agents/main/plans/tail-plan.md',
+    });
   });
 });

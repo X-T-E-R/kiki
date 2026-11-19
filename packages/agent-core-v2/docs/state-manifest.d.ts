@@ -9546,11 +9546,12 @@ export interface AgentStateSnapshot {
   // src/features/plan/injection/planModeInjection.ts
   'plan.wasActive': boolean;
   // src/features/plan/planOps.ts
-  // replayable · durable · undoable — folds: PlanModeEnter, PlanModeCancel, PlanModeExit, PlanRevision
+  // replayable · durable · undoable — folds: PlanModeEnter, PlanModeCancel, PlanModeExit, PlanRevision, PlanSetGate
   'plan': /* PlanState — packages/agent-core-v2/src/features/plan/planOps.ts */ {
     readonly active: boolean;
     readonly id?: string;
     readonly revisionCount?: Readonly<Record<string, number>>;
+    readonly gate?: 'free' | 'gated';
   };
   // src/features/staleGuard/staleGuardOps.ts
   // replayable · durable — folds: StaleGuardRecorded, StaleGuardCleared

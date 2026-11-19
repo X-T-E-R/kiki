@@ -668,7 +668,15 @@ describe('disposed agent capability snapshots', () => {
     }
     expect(importing).not.toHaveBeenCalled();
     const compact = await authedFetch(server!, base, `/api/sessions/${sessionId}/agents/main/auto-compact?observe=true`);
-    expect((await compact.json() as Envelope<unknown>).code).toBe(ErrorCode.SESSION_BUSY);
+    expect(await compact.json() as Envelope<unknown>).toMatchObject({
+      code: 0,
+      data: { effectiveMaxContextTokens: 1000, source: expect.any(String) },
+    });
+    const strategy = await authedFetch(server!, base, `/api/sessions/${sessionId}/agents/main/context-strategy?observe=true`);
+    expect(await strategy.json() as Envelope<unknown>).toMatchObject({
+      code: 0,
+      data: { strategy: expect.any(String), source: expect.any(String) },
+    });
     expect(resume).not.toHaveBeenCalled();
     expect(manager.get(sessionId)).toBeUndefined();
   });

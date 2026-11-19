@@ -1469,4 +1469,85 @@ describe('server-v2 /api prompts', () => {
       expect(result.body.code, result.body.msg).toBe(40001);
     }
   });
+
+  it('lists cold child durable ingress across all agents and cancels via :cancel without materializing', async () => {
+    const id = await createSession(fixture.home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
+    const child = await session.accessor.get(IAgentLifecycleService).fork('main', { agentId: 'branch-cold-1' });
+    await fixture.server!.core.accessor.get(ISessionManager).close(id);
+
+    const manager = fixture.server!.core.accessor.get(ISessionManager);
+    let releaseResume!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseResume = resolve; });
+    const originalResume = manager.resume.bind(manager);
+    const resumeSpy = vi.spyOn(manager, 'resume').mockImplementation(async (...args) => {
+      await gate;
+      return originalResume(...args);
+    });
+    try {
+      const submitMain = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        admission: 'durable',
+        prompt_id: 'main-durable-1',
+        content: [{ type: 'text', text: 'wake main' }],
+      });
+      expect(submitMain.body.code, submitMain.body.msg).toBe(0);
+
+      const submitChild = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        admission: 'durable',
+        agent_id: child.id,
+        prompt_id: 'child-durable-1',
+        content: [{ type: 'text', text: 'wake branch' }],
+      });
+      expect(submitChild.body.code, submitChild.body.msg).toBe(0);
+
+      const allListed = await call<{ ingress?: (PromptItemWire & { agent_id?: string })[] }>(
+        'GET',
+        `/api/sessions/${id}/prompts?admission=durable`,
+      );
+      expect(allListed.body.code).toBe(0);
+      expect(allListed.body.data.ingress).toEqual(expect.arrayContaining([
+        expect.objectContaining({ prompt_id: 'main-durable-1' }),
+        expect.objectContaining({ prompt_id: 'child-durable-1', agent_id: child.id }),
+      ]));
+
+      const mainOnly = await call<{ ingress?: (PromptItemWire & { agent_id?: string })[] }>(
+        'GET',
+        `/api/sessions/${id}/prompts?admission=durable&agent_id=main`,
+      );
+      expect(mainOnly.body.data.ingress?.map((item) => item.prompt_id)).toEqual(['main-durable-1']);
+
+      const starListed = await call<{ ingress?: (PromptItemWire & { agent_id?: string })[] }>(
+        'GET',
+        `/api/sessions/${id}/prompts?admission=durable&agent_id=*`,
+      );
+      expect(starListed.body.data.ingress?.map((item) => item.prompt_id)).toEqual(
+        expect.arrayContaining(['main-durable-1', 'child-durable-1']),
+      );
+
+      const cancelCallsBefore = resumeSpy.mock.calls.length;
+      const cancelled = await call<{ aborted: boolean }>(
+        'POST',
+        `/api/sessions/${id}/prompts/child-durable-1:cancel?admission=durable&agent_id=${encodeURIComponent(child.id)}`,
+      );
+      expect(cancelled.body.code, cancelled.body.msg).toBe(0);
+      expect(cancelled.body.data).toEqual({ aborted: true });
+      expect(resumeSpy.mock.calls.length).toBe(cancelCallsBefore);
+
+      const inspected = await call<PromptItemWire & { agent_id?: string }>(
+        'GET',
+        `/api/sessions/${id}/prompts/child-durable-1?admission=durable&agent_id=${encodeURIComponent(child.id)}`,
+      );
+      expect(inspected.body.data).toMatchObject({
+        prompt_id: 'child-durable-1',
+        agent_id: child.id,
+        admission: 'cancelled',
+      });
+
+      await call('POST', `/api/sessions/${id}/prompts/main-durable-1:cancel?admission=durable`);
+    } finally {
+      releaseResume();
+      resumeSpy.mockRestore();
+    }
+  });
 });

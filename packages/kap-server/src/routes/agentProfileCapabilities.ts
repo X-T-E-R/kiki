@@ -393,7 +393,7 @@ async function readAgentCapabilities(
       else skipAgentIds.push(handle.id);
     }
     const metricAgentIds = persistedPanelMetricAgentIds(query);
-    const persisted = workspaceId === undefined || isPrivate ? {} : await readPersistedAgentPanelMetrics(
+    const persistedPromise = workspaceId === undefined || isPrivate ? Promise.resolve<Readonly<Record<string, AgentPanelMetrics>>>({}) : readPersistedAgentPanelMetrics(
       core,
       workspaceId,
       query.session_id,
@@ -409,6 +409,7 @@ async function readAgentCapabilities(
       },
     );
     if (query.metrics_only === true) {
+      const persisted = await persistedPromise;
       const metrics = { ...persisted };
       for (const handle of lifecycle?.list() ?? []) {
         if (!metricAgentIds.includes(handle.id)) continue;
@@ -425,7 +426,7 @@ async function readAgentCapabilities(
           context: 'live', live: false, owner: { agent_id: query.agent_id }, available: false,
           unavailable_reason: 'Session or agent is not live; dispatch capabilities are unavailable',
           unavailable_reason_code: 'session_or_agent_not_live', targets: [],
-          metrics: persisted,
+          metrics: await persistedPromise,
         };
       }
       const meta = session === undefined
@@ -434,40 +435,48 @@ async function readAgentCapabilities(
       const metadata = meta?.agents?.[query.agent_id];
       const delegationPosition = resolveDelegationPosition(query.agent_id, metadata?.delegator, metadata?.labels);
       const toolsLocked = metadata?.labels?.['branch'] === 'true' && metadata.labels['toolsLocked'] === 'true';
-      let snapshot = await readPersistedAgentProfileSnapshot(
-        core,
-        workspaceId,
-        query.session_id,
-        query.agent_id,
-        metadata,
-        signal,
-        { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
-      );
-      if (snapshot === undefined) return {
-        context: 'live', live: false, owner: { agent_id: query.agent_id }, available: false,
-        unavailable_reason: 'Persisted agent capability metadata is unavailable',
-        unavailable_reason_code: 'persisted_metadata_unavailable', targets: [],
-        metrics: persisted,
-      };
-      const workspace = session === undefined ? await acquireSavedWorkspaceProfileCatalog(core, workspaceId, summary, meta) : undefined;
-      if (session === undefined && workspace === undefined) return 'workspace-not-found';
+      let [snapshot, workspace] = await Promise.all([
+        readPersistedAgentProfileSnapshot(
+          core,
+          workspaceId,
+          query.session_id,
+          query.agent_id,
+          metadata,
+          signal,
+          { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+        ),
+        session === undefined ? acquireSavedWorkspaceProfileCatalog(core, workspaceId, summary, meta) : Promise.resolve(undefined),
+      ]);
+      if (snapshot === undefined) {
+        await workspace?.dispose();
+        return {
+          context: 'live', live: false, owner: { agent_id: query.agent_id }, available: false,
+          unavailable_reason: 'Persisted agent capability metadata is unavailable',
+          unavailable_reason_code: 'persisted_metadata_unavailable', targets: [],
+          metrics: await persistedPromise,
+        };
+      }
+      if (session === undefined && workspace === undefined) {
+        await persistedPromise.catch(() => undefined);
+        return 'workspace-not-found';
+      }
       try {
         const catalog = session === undefined ? workspace!.catalog : session.accessor.get(ISessionAgentProfileCatalog);
         await catalog.ready;
-        const profileName = snapshot.profileName ?? snapshot.execution?.selection.profile ??
+        const profileName = snapshot.profileName ?? snapshot.boundProfile?.name ?? snapshot.execution?.selection.profile ??
           (delegationPosition === 'main' ? catalog.snapshot?.().defaultProfile?.name : undefined);
         const resolution = resolvePanelProfile(catalog, profileName, snapshot.profileDefinitionId, {
           bound: snapshot.boundProfile,
-          metadataMain: delegationPosition === 'main' && snapshot.source === 'metadata',
+          metadataMain: delegationPosition === 'main' && (snapshot.source === 'metadata' || (snapshot.profileName === undefined && snapshot.boundProfile === undefined)),
         });
         if (resolution.profile === undefined) return {
           context: 'live', live: false,
-          owner: { profile: snapshot.profileName, agent_id: query.agent_id },
+          owner: { profile: snapshot.profileName ?? profileName, agent_id: query.agent_id },
           available: false,
           unavailable_reason: 'Persisted agent profile is unavailable in the workspace catalog',
           unavailable_reason_code: 'persisted_profile_unavailable',
           targets: [],
-          metrics: persisted,
+          metrics: await persistedPromise,
         };
         if (snapshot.source === 'metadata') snapshot = { ...snapshot, profileName: resolution.profile.name };
         const skillCatalog = session?.accessor.get(ISessionSkillCatalog);
@@ -486,17 +495,21 @@ async function readAgentCapabilities(
                 core.accessor.get(IAtomicDocumentStore),
               )
             : await readUnstartedSessionMcpToolPredicate(session);
-        const panel = await snapshotPanelCapabilities(session ?? core, snapshot, {
-          profile: resolution.profile,
-          sourceId: resolution.sourceId,
-        }, subagentParentAgentId(metadata) !== undefined, {
-          skills: (skillCatalog?.catalog ?? workspace!.skills).listSkills(),
-          workspaceDisabledTools: session?.accessor.get(ISessionToolPolicyGate).disabledTools,
-          sessionDisabledTools: sessionPolicy?.disabledTools() ?? savedPolicy?.disabledTools,
-          mcpToolAllowed,
-          delegationPosition: delegationPosition === 'sub' ? 'sub' : 'main',
-          toolsLocked,
-        });
+        const [panel, persisted, prompt] = await Promise.all([
+          snapshotPanelCapabilities(session ?? core, snapshot, {
+            profile: resolution.profile,
+            sourceId: resolution.sourceId,
+          }, subagentParentAgentId(metadata) !== undefined, {
+            skills: (skillCatalog?.catalog ?? workspace!.skills).listSkills(),
+            workspaceDisabledTools: session?.accessor.get(ISessionToolPolicyGate).disabledTools,
+            sessionDisabledTools: sessionPolicy?.disabledTools() ?? savedPolicy?.disabledTools,
+            mcpToolAllowed,
+            delegationPosition: delegationPosition === 'sub' ? 'sub' : 'main',
+            toolsLocked,
+          }),
+          persistedPromise,
+          persistedPromptDiagnostics(core, snapshot, query.check_all_prompt_files),
+        ]);
         const persistedBinding = snapshot.source === 'wire';
         const input: SubagentCapabilityCatalog = {
           catalog,
@@ -536,12 +549,13 @@ async function readAgentCapabilities(
           })),
           ...panel,
           metrics: persisted,
-          prompt: await persistedPromptDiagnostics(core, snapshot, query.check_all_prompt_files),
+          prompt,
         };
       } finally {
         await workspace?.dispose();
       }
     }
+    const persisted = await persistedPromise;
     const owner = { profile: agent.accessor.get(IAgentProfileService).data().profileName, agent_id: agent.id };
     const liveMetadata = session!.accessor.get(ISessionMetadata).snapshot().agents?.[agent.id];
     const liveDelegationPosition = resolveDelegationPosition(agent.id, liveMetadata?.delegator, liveMetadata?.labels);

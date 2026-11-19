@@ -570,7 +570,7 @@ describe('GUI shared client against an isolated KAP host (shared server partitio
     } finally { acquire.mockRestore(); resume.mockRestore(); }
   });
 
-  it('returns lock-free SESSION_BUSY for observed reads of >8MiB cold child and cold bound main without restoring', async () => {
+  it('resolves cold auto-compact and context-strategy without restoring while returning lock-free SESSION_BUSY for >8MiB hooks', async () => {
     const id = (await client.createSession({ metadata: { cwd: await nextWorkspace() }, agent_config: { model: 'first' } })).id;
     const manager = host.core.accessor.get(ISessionManager);
     const live = getLiveSessionById(host.core.accessor, id)!;
@@ -585,6 +585,10 @@ describe('GUI shared client against an isolated KAP host (shared server partitio
     try {
       const childRes = await fetch(`${endpoint}/api/sessions/${id}/agents/${child.id}/hooks?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
       expect(await childRes.json()).toMatchObject({ code: 40901 });
+      const childCompact = await fetch(`${endpoint}/api/sessions/${id}/agents/${child.id}/auto-compact?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+      expect(await childCompact.json()).toMatchObject({ code: 0, data: { source: expect.any(String), effectiveMaxContextTokens: expect.any(Number) } });
+      const childStrategy = await fetch(`${endpoint}/api/sessions/${id}/agents/${child.id}/context-strategy?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+      expect(await childStrategy.json()).toMatchObject({ code: 0, data: { strategy: expect.any(String), source: expect.any(String) } });
       expect(acquire).not.toHaveBeenCalled();
       expect(read).not.toHaveBeenCalled();
 
@@ -592,10 +596,12 @@ describe('GUI shared client against an isolated KAP host (shared server partitio
       await manager.close(id);
       vi.spyOn(manager, 'acquire').mockRejectedValue(new Error('cold observe must not acquire'));
       const started = performance.now();
-      for (const path of ['auto-compact', 'context-strategy', 'hooks']) {
-        const r = await fetch(`${endpoint}/api/sessions/${id}/agents/main/${path}?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
-        expect(await r.json()).toMatchObject({ code: 40901 });
-      }
+      const compactRes = await fetch(`${endpoint}/api/sessions/${id}/agents/main/auto-compact?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+      expect(await compactRes.json()).toMatchObject({ code: 0, data: { source: expect.any(String), effectiveMaxContextTokens: expect.any(Number) } });
+      const strategyRes = await fetch(`${endpoint}/api/sessions/${id}/agents/main/context-strategy?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+      expect(await strategyRes.json()).toMatchObject({ code: 0, data: { strategy: expect.any(String), source: expect.any(String) } });
+      const hooksRes = await fetch(`${endpoint}/api/sessions/${id}/agents/main/hooks?observe=true`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+      expect(await hooksRes.json()).toMatchObject({ code: 40901 });
       expect(performance.now() - started).toBeLessThan(1_000);
       expect(resume).not.toHaveBeenCalled();
       expect(read).not.toHaveBeenCalled();

@@ -1283,4 +1283,58 @@ describe('manual compaction progress', () => {
     expect(container.querySelector('[data-compaction-progress]')?.getAttribute('title')).toBe('No safe prefix');
     await act(async () => { root.unmount(); });
   });
+
+  it('shows immediate nonzero session usage subtotals while background accounting is still pending or fails', async () => {
+    let rejectRead: ((error: Error) => void) | undefined;
+    canonicalMocks.connection = {
+      spaceKey: 'main',
+      scopeId: 'local',
+      client: {
+        klient: {
+          rest: {
+            sessionUsageAccounting: vi.fn(() => new Promise((_resolve, reject) => { rejectRead = reject; })),
+          },
+          events: { on: () => ({ dispose: () => {} }) },
+        },
+      },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <MemoryRouter>
+              <ContextMeter
+                used={40_000}
+                limit={200_000}
+                usageScope="session"
+                sessionId="session_cold"
+                usage={{
+                  input_tokens: 12_000,
+                  output_tokens: 3_000,
+                  cache_read_tokens: 4_000,
+                  cache_creation_tokens: 1_000,
+                  total_cost_usd: 0.05,
+                }}
+              />
+            </MemoryRouter>
+          </I18nProvider>,
+        );
+      });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+      expect(container.querySelector('[data-context-usage]')).not.toBeNull();
+      expect(container.querySelector('[data-context-usage-loading]')).toBeNull();
+      expect(container.querySelector('[data-context-usage-status="partial"]')).not.toBeNull();
+
+      await act(async () => { rejectRead?.(new Error('accounting temporarily unavailable')); await Promise.resolve(); });
+      expect(container.querySelector('[data-context-usage]')).not.toBeNull();
+      expect(container.querySelector('[data-context-usage-error]')).toBeNull();
+      expect(container.querySelector('[data-context-usage-status="partial"]')).not.toBeNull();
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
 });

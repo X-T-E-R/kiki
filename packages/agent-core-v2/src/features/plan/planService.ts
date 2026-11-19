@@ -48,6 +48,7 @@ import {
   PlanModeExit,
   planKey,
   PlanRevision,
+  PlanSetGate,
 } from './planOps';
 
 export class AgentPlanService extends Service implements IAgentPlanService {
@@ -55,7 +56,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
 
   private readonly enterReview: EnterPlanModeReview;
   private readonly exitReview: ExitPlanModeReview;
-  private _planGate: PlanGate;
+  private readonly defaultPlanGate: PlanGate;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -81,7 +82,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     this._register(dispatch.registerPlanStateReader(this.agentCtx.agentId, () => this.isActive));
 
     const planConfig = config.get<PlanConfig | undefined>(PLAN_SECTION) ?? DEFAULT_PLAN_CONFIG;
-    this._planGate = planConfig.gate;
+    this.defaultPlanGate = planConfig.gate;
     this.enterReview = new EnterPlanModeReview(
       this.toolApproval,
       approval,
@@ -119,7 +120,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     if (toolName === 'EnterPlanMode') {
       if (
         plan === null &&
-        this._planGate === 'gated' &&
+        this.planGate === 'gated' &&
         this.modeService.mode !== 'auto' && this.modeService.mode !== 'review'
       ) {
         event.waitUntil(() => this.enterReview.requestApproval(event));
@@ -130,7 +131,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     if (toolName === 'ExitPlanMode') {
       if (
         plan !== null &&
-        this._planGate === 'gated' &&
+        this.planGate === 'gated' &&
         this.modeService.mode !== 'auto' && this.modeService.mode !== 'review'
       ) {
         event.waitUntil(() => this.exitReview.requestApproval(event));
@@ -190,11 +191,12 @@ export class AgentPlanService extends Service implements IAgentPlanService {
   }
 
   get planGate(): PlanGate {
-    return this._planGate;
+    return this.agentState.get(planKey).gate ?? this.defaultPlanGate;
   }
 
   setGate(gate: PlanGate): void {
-    this._planGate = gate;
+    if (this.agentState.get(planKey).gate === gate) return;
+    void this.dispatcher.dispatch(new PlanSetGate({ gate }));
   }
 
   private get isActive(): boolean {

@@ -18,8 +18,8 @@ import {
   switchRuntimeRequestSchema,
   type RuntimeBindingResponse,
 } from '../protocol/rest-runtime';
+import { readPersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
 import { readSessionObserver } from '../lib/sessionObserver';
-import { readColdMainWireProjection } from '../services/snapshot/coldSnapshotSource';
 import { ensureMainAgent } from '../transport/mainAgent';
 
 interface RuntimeRouteHost {
@@ -59,7 +59,7 @@ export function registerRuntimeRoutes(app: RuntimeRouteHost, core: Scope): void 
       const main = observer.live?.accessor.get(IAgentLifecycleService).get('main');
       const workspaceId = observer.live?.accessor.get(ISessionContext).workspaceId ?? observer.summary!.workspaceId;
       const binding = main === undefined
-        ? (await readColdMainWireProjection(core, workspaceId, sessionId)).runtimeBinding ?? { workspaceId, runtimeId: 'local' }
+        ? (await readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, 'main', undefined, undefined, { includeControls: true })).controls?.runtimeBinding ?? { workspaceId, runtimeId: 'local' }
         : main.accessor.get(IAgentRuntimeBindingService).get();
       reply.send(okEnvelope(toResponse(binding), req.id));
     },

@@ -134,6 +134,16 @@ export function ContextBreakdownProvider({
   return <ContextBreakdownContext.Provider value={value}><CompactionProgressContext.Provider value={compaction}><CompactionSeedContext.Provider value={onCompactionReceipt}>{children}</CompactionSeedContext.Provider></CompactionProgressContext.Provider></ContextBreakdownContext.Provider>;
 }
 
+function hasMeasuredSessionUsage(usage: ContextMeterUsage | undefined): boolean {
+  if (usage === undefined) return false;
+  return usage.accounting !== undefined
+    || (usage.input_tokens ?? 0) > 0
+    || (usage.output_tokens ?? 0) > 0
+    || (usage.cache_read_tokens ?? 0) > 0
+    || (usage.cache_creation_tokens ?? 0) > 0
+    || (usage.total_cost_usd ?? 0) > 0;
+}
+
 /** One labeled token row inside the detail card. */
 function TokenRow({ label, value, title }: { label: string; value: number | null; title: string }) {
   const { t, time } = useI18n();
@@ -213,17 +223,24 @@ export function ContextMeter({
     cache_creation_tokens: sessionAccounting.tokens.input_cache_creation,
     total_cost_usd: sessionAccounting.cost_usd_estimated,
   };
+  const hasImmediateSessionUsage = hasMeasuredSessionUsage(sessionUsage);
   const detailUsageError: SessionUsageError | undefined = hasCanonicalIdentity
     ? canonicalUsage.state === 'error'
       ? 'read-failed'
       : canonicalUsage.partial
         ? 'agent-read-failed'
         : undefined
-    : canonicalSession.error ? 'read-failed' : sessionAccounting !== undefined
-      ? sessionAccounting.tokens_unknown || !sessionAccounting.complete ? 'agent-read-failed' : undefined
-      : usageError;
+    : canonicalSession.error
+      ? (hasImmediateSessionUsage ? 'agent-read-failed' : 'read-failed')
+      : sessionAccounting !== undefined
+        ? sessionAccounting.tokens_unknown || !sessionAccounting.complete ? 'agent-read-failed' : undefined
+        : canonicalSession.loading && hasImmediateSessionUsage
+          ? 'agent-read-failed'
+          : usageError;
   const costUnknown = hasCanonicalIdentity ? canonicalUsage.partial : sessionAccounting?.cost_unknown === true;
-  const canonicalUsageLoading = hasCanonicalIdentity && canonicalUsage.state === 'loading' && detailUsage === undefined || canonicalSession.loading && sessionAccounting === undefined;
+  const canonicalUsageLoading =
+    (hasCanonicalIdentity && canonicalUsage.state === 'loading' && detailUsage === undefined) ||
+    (canonicalSession.loading && sessionAccounting === undefined && !hasImmediateSessionUsage);
   const canonicalUsageUnknown = hasCanonicalIdentity && canonicalUsage.state === 'unavailable';
   const sessionAccountingStale = !hasCanonicalIdentity && sessionAccounting?.freshness !== undefined && sessionAccounting.freshness !== 'current';
   const usageStatus = detailUsageError === 'agent-read-failed'
@@ -421,7 +438,7 @@ export function ContextMeter({
             <ContextStrategySection handle={autoCompact.strategy} profileName={autoCompact.profile?.name} />
           ) : null}
 
-          {detailUsage !== undefined || hasCanonicalIdentity ? (
+          {detailUsage !== undefined || hasCanonicalIdentity || canonicalSession.active ? (
             <dl
               data-context-usage
               className="mt-3 space-y-1.5 border-t border-hairline pt-3 text-[12px]"
