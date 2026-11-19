@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { en } from './en';
-import { zh } from './zh';
+import { en, enDomains } from './en';
+import { zh, zhDomains } from './zh';
 import { sessionActionErrorText } from '../commands/sessionActions';
 import {
   detectLocale,
@@ -142,6 +142,40 @@ describe('dictionary parity', () => {
         placeholders(en[key]),
       );
     }
+  });
+
+  it('keeps domain modules symmetric, duplicate-free, and lexicographically sorted', () => {
+    const enDomainNames = Object.keys(enDomains).sort();
+    const zhDomainNames = Object.keys(zhDomains).sort();
+    expect(zhDomainNames).toEqual(enDomainNames);
+
+    const seenEn = new Set<string>();
+    const seenZh = new Set<string>();
+    for (const domainName of enDomainNames as (keyof typeof enDomains)[]) {
+      const enKeys = Object.keys(enDomains[domainName]);
+      const zhKeys = Object.keys(zhDomains[domainName]);
+
+      expect(zhKeys, `key set mismatch in domain "${domainName}"`).toEqual(enKeys);
+
+      for (let i = 1; i < enKeys.length; i++) {
+        expect(enKeys[i - 1]! < enKeys[i]!, `unsorted en key in "${domainName}": ${enKeys[i - 1]} >= ${enKeys[i]}`).toBe(true);
+      }
+      for (let i = 1; i < zhKeys.length; i++) {
+        expect(zhKeys[i - 1]! < zhKeys[i]!, `unsorted zh key in "${domainName}": ${zhKeys[i - 1]} >= ${zhKeys[i]}`).toBe(true);
+      }
+
+      for (const key of enKeys) {
+        expect(seenEn.has(key), `duplicate en key "${key}" in domain "${domainName}"`).toBe(false);
+        seenEn.add(key);
+      }
+      for (const key of zhKeys) {
+        expect(seenZh.has(key), `duplicate zh key "${key}" in domain "${domainName}"`).toBe(false);
+        seenZh.add(key);
+      }
+    }
+
+    expect(seenEn.size).toBe(Object.keys(en).length);
+    expect(seenZh.size).toBe(Object.keys(zh).length);
   });
 });
 
