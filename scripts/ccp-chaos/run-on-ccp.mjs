@@ -1,0 +1,752 @@
+#!/usr/bin/env node
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { performance } from 'node:perf_hooks';
+
+const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
+const MANIFEST_PATH = path.join(import.meta.dirname, 'corpus-manifest.json');
+const NODE_TARGET_VERSION = '24.22.1';
+const PNPM_TARGET_VERSION = '10.33.0';
+
+const ACCOUNT_SOURCES = {
+  acc_00000000000000000000000000000000: {
+    runnerSourceId: 'src_0000000000000000000000000000000000000000000000000000000000000000',
+    driveFolderId: 'DRIVE_FOLDER_ID_EXAMPLE_000000000',
+  },
+  acc_11111111111111111111111111111111: {
+    runnerSourceId: 'src_1111111111111111111111111111111111111111111111111111111111111111',
+    driveFolderId: 'DRIVE_FOLDER_ID_EXAMPLE_111111111',
+  },
+};
+
+function log(msg) {
+  process.stderr.write(`[ccp-orchestrator] ${msg}\n`);
+}
+
+let cachedCcpLauncher = null;
+function resolveCcpLauncher() {
+  if (cachedCcpLauncher) return cachedCcpLauncher;
+  if (process.platform === 'win32') {
+    const whereRes = spawnSync('where.exe', ['ccp'], { encoding: 'utf8' });
+    const candidates = String(whereRes.stdout ?? '')
+      .split(/\r?\n/u)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const cmdFile = candidates.find((p) => p.toLowerCase().endsWith('.cmd') || p.toLowerCase().endsWith('.bat'));
+    if (cmdFile && fs.existsSync(cmdFile)) {
+      const content = fs.readFileSync(cmdFile, 'utf8');
+      const m = /"([^"]+\.exe)"\s+-m\s+ccp\.cli/iu.exec(content);
+      if (m && fs.existsSync(m[1])) {
+        cachedCcpLauncher = { bin: m[1], prefixArgs: ['-m', 'ccp.cli'], shell: false };
+        return cachedCcpLauncher;
+      }
+    }
+    const exeFile = candidates.find((p) => p.toLowerCase().endsWith('.exe'));
+    if (exeFile && fs.existsSync(exeFile)) {
+      cachedCcpLauncher = { bin: exeFile, prefixArgs: [], shell: false };
+      return cachedCcpLauncher;
+    }
+  }
+  cachedCcpLauncher = { bin: 'ccp', prefixArgs: [], shell: false };
+  return cachedCcpLauncher;
+}
+
+function runCcp(args, { timeoutMs = 180_000, allowFail = false } = {}) {
+  const launcher = resolveCcpLauncher();
+  const res = spawnSync(launcher.bin, [...launcher.prefixArgs, ...args], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    maxBuffer: 32 * 1024 * 1024,
+    env: { ...process.env, MSYS_NO_PATHCONV: '1' },
+    shell: launcher.shell,
+  });
+  if (!allowFail && res.status !== 0) {
+    throw new Error(
+      `ccp ${args.join(' ')} failed (exit=${res.status}):\nSTDOUT: ${String(res.stdout ?? '').slice(0, 1000)}\nSTDERR: ${String(res.stderr ?? '').slice(0, 1000)}`,
+    );
+  }
+  return res;
+}
+
+function parseJsonFromOutput(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const first = trimmed.indexOf('{');
+    const last = trimmed.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      try {
+        return JSON.parse(trimmed.slice(first, last + 1));
+      } catch {}
+    }
+    return null;
+  }
+}
+
+function runSshCommandWithSentinel(sshSessionId, remoteCmd, { timeoutMs = 2_400_000, streamOutput = true } = {}) {
+  const token = randomUUID().slice(0, 8);
+  const sentinelPrefix = `__CCP_DONE_${token}__=`;
+  const remoteScript = `/tmp/ccp-cmd-${token}.sh`;
+  const scriptBody = [
+    'set +e',
+    'set -o pipefail',
+    '(',
+    remoteCmd,
+    ') </dev/null',
+    '__ccp_rc=$?',
+    `printf '\\n${sentinelPrefix}%d\\n' "$__ccp_rc"`,
+    'exit "$__ccp_rc"',
+  ].join('\n');
+  const b64 = Buffer.from(scriptBody, 'utf8').toString('base64');
+  const wrappedCmd = `echo ${b64} | base64 -d > ${remoteScript} && bash -l ${remoteScript} </dev/null; rc=$?; rm -f ${remoteScript}; exit $rc`;
+
+  return new Promise((resolve, reject) => {
+    const launcher = resolveCcpLauncher();
+    const child = spawn(launcher.bin, [...launcher.prefixArgs, 'ssh', 'connect', sshSessionId, '--command', wrappedCmd], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, MSYS_NO_PATHCONV: '1' },
+      shell: launcher.shell,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let sentinelExitCode = null;
+    let settled = false;
+    let lingerTimer = null;
+
+    const finish = (code, viaSentinel = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      if (lingerTimer) clearTimeout(lingerTimer);
+      if (viaSentinel) {
+        try {
+          child.kill('SIGTERM');
+        } catch {}
+      }
+      resolve({ exitCode: code, stdout, stderr, viaSentinel });
+    };
+
+    const hardTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill('SIGKILL');
+      } catch {}
+      reject(
+        new Error(
+          `SSH command timed out after ${timeoutMs}ms.\nLast stdout:\n${stdout.slice(-1500)}\nLast stderr:\n${stderr.slice(-1500)}`,
+        ),
+      );
+    }, timeoutMs);
+
+    const checkSentinel = () => {
+      if (sentinelExitCode !== null) return;
+      const combined = stdout + '\n' + stderr;
+      const idx = combined.indexOf(sentinelPrefix);
+      if (idx >= 0) {
+        const tail = combined.slice(idx + sentinelPrefix.length);
+        const m = /^(\d+)\b/u.exec(tail);
+        if (m) {
+          sentinelExitCode = Number.parseInt(m[1], 10);
+          lingerTimer = setTimeout(() => finish(sentinelExitCode, true), 2000);
+        }
+      }
+    };
+
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      stdout += text;
+      if (streamOutput) process.stderr.write(text);
+      checkSentinel();
+    });
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      stderr += text;
+      if (streamOutput) process.stderr.write(text);
+      checkSentinel();
+    });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      if (lingerTimer) clearTimeout(lingerTimer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      finish(sentinelExitCode !== null ? sentinelExitCode : (code ?? 1), false);
+    });
+  });
+}
+
+function runSftpBatch(sshSessionId, commands, scratchDir, { timeoutMs = 600_000, allowFail = false } = {}) {
+  const batchPath = path.join(scratchDir, `sftp-${randomUUID().slice(0, 8)}.batch`);
+  fs.writeFileSync(batchPath, `${commands.join('\n')}\n`, 'utf8');
+  try {
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const res = runCcp(['ssh', 'sftp', sshSessionId, '--batch', batchPath], {
+        timeoutMs,
+        allowFail: allowFail || attempt < 4,
+      });
+      if (res.status === 0 || allowFail) return res;
+      const errText = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+      if (attempt < 4 && (errText.includes('SSH_UPSTREAM_UNAVAILABLE') || errText.includes('HTTP 503'))) {
+        log(`SFTP upstream not ready yet (attempt ${attempt}/4); waiting ${attempt * 3}s before retry...`);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 3000);
+        continue;
+      }
+      throw new Error(
+        `ccp ssh sftp ${sshSessionId} failed (exit=${res.status}):\nSTDOUT: ${String(res.stdout ?? '').slice(0, 1000)}\nSTDERR: ${String(res.stderr ?? '').slice(0, 1000)}`,
+      );
+    }
+    return null;
+  } finally {
+    fs.rmSync(batchPath, { force: true });
+  }
+}
+
+function buildCleanRepoTarball(scratchDir, { baselineHeadCode = false } = {}) {
+  const baseTarPath = path.join(scratchDir, 'kiki-chaos-src.tar.gz');
+  const overlayTarPath = path.join(scratchDir, 'kiki-chaos-overlay.tar.gz');
+
+  const archiveRes = spawnSync('git', ['archive', '--format=tar.gz', '-o', baseTarPath, 'HEAD'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (archiveRes.status !== 0) throw new Error(`git archive failed: ${archiveRes.stderr}`);
+
+  const statusRes = spawnSync('git', ['status', '--porcelain=v1', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  const entries = (statusRes.stdout ?? '').split('\0').filter(Boolean);
+  const overlayFiles = [];
+  const deletedFiles = [];
+  for (const line of entries) {
+    const code = line.slice(0, 2);
+    const relPath = line.slice(3).trim().replaceAll('\\', '/');
+    if (
+      !relPath ||
+      relPath.startsWith('.tmp/') ||
+      relPath.includes('.env') ||
+      relPath.endsWith('.key') ||
+      relPath.endsWith('.pem') ||
+      (baselineHeadCode && !relPath.startsWith('scripts/ccp-chaos/') && relPath !== '.oxlintrc.json')
+    ) {
+      continue;
+    }
+    const srcAbs = path.join(REPO_ROOT, relPath);
+    if (code.includes('D')) {
+      deletedFiles.push(relPath);
+    } else if (fs.existsSync(srcAbs) && fs.statSync(srcAbs).isFile()) {
+      overlayFiles.push(relPath);
+    } else if (fs.existsSync(srcAbs) && fs.statSync(srcAbs).isDirectory()) {
+      const walk = (dirRel) => {
+        for (const ent of fs.readdirSync(path.join(REPO_ROOT, dirRel), { withFileTypes: true })) {
+          const childRel = `${dirRel}/${ent.name}`;
+          if (ent.name.startsWith('.env') || ent.name.endsWith('.key') || ent.name.endsWith('.pem')) continue;
+          if (ent.isDirectory()) walk(childRel);
+          else if (ent.isFile()) overlayFiles.push(childRel);
+        }
+      };
+      walk(relPath.replace(/\/+$/u, ''));
+    }
+  }
+
+  let hasOverlay = false;
+  if (overlayFiles.length > 0) {
+    const listName = 'overlay-files.txt';
+    fs.writeFileSync(path.join(scratchDir, listName), `${overlayFiles.join('\n')}\n`, 'utf8');
+    const packRes = spawnSync('tar', ['-czf', 'kiki-chaos-overlay.tar.gz', '-C', REPO_ROOT, '-T', listName], {
+      cwd: scratchDir,
+      encoding: 'utf8',
+    });
+    if (packRes.status !== 0) {
+      const altPack = spawnSync('tar', ['-czf', 'kiki-chaos-overlay.tar.gz', '-C', REPO_ROOT, ...overlayFiles], {
+        cwd: scratchDir,
+        encoding: 'utf8',
+      });
+      if (altPack.status !== 0) throw new Error(`overlay tar pack failed: ${altPack.stderr}`);
+    }
+    hasOverlay = true;
+  }
+
+  const stat = fs.statSync(baseTarPath);
+  return {
+    tarPath: baseTarPath,
+    overlayTarPath: hasOverlay ? overlayTarPath : null,
+    deletedFiles,
+    sizeBytes: stat.size,
+  };
+}
+
+function readExistingManifest() {
+  if (!fs.existsSync(MANIFEST_PATH)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+    if (parsed?.binding?.drive_file_id && parsed?.account_id && parsed?.runner_source_id) return parsed;
+  } catch {}
+  return null;
+}
+
+function buildRemotePrepareScript(deletedFiles = []) {
+  return [
+    'set -euo pipefail',
+    'echo "=== HOST HARDWARE ==="',
+    'uname -a',
+    'nproc',
+    'free -h',
+    'df -h /tmp /content',
+    'ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true',
+    'echo "ulimit -n: $(ulimit -n)"',
+    'which zstd >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq zstd ripgrep >/dev/null 2>&1) || true',
+    'which rg >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq ripgrep >/dev/null 2>&1) || true',
+    'mkdir -p /tmp/kiki-work /tmp/kiki-tools /tmp/kiki-chaos-nvme /content/corpus-seed',
+    'tar -xzf /tmp/kiki-chaos-src.tar.gz -C /tmp/kiki-work',
+    'rm -f /tmp/kiki-chaos-src.tar.gz',
+    'if [ -f /tmp/kiki-chaos-overlay.tar.gz ]; then tar -xzf /tmp/kiki-chaos-overlay.tar.gz -C /tmp/kiki-work && rm -f /tmp/kiki-chaos-overlay.tar.gz; fi',
+    ...deletedFiles.map((f) => `rm -f ${JSON.stringify(`/tmp/kiki-work/${f}`)}`),
+    `if [ ! -x "/tmp/kiki-tools/node-v${NODE_TARGET_VERSION}-linux-x64/bin/node" ]; then`,
+    `  curl -fsSL "https://nodejs.org/dist/v${NODE_TARGET_VERSION}/node-v${NODE_TARGET_VERSION}-linux-x64.tar.xz" -o /tmp/kiki-tools/node.tar.xz`,
+    '  tar -xJf /tmp/kiki-tools/node.tar.xz -C /tmp/kiki-tools',
+    '  rm -f /tmp/kiki-tools/node.tar.xz',
+    'fi',
+    `export PATH="/tmp/kiki-tools/node-v${NODE_TARGET_VERSION}-linux-x64/bin:$PATH"`,
+    'node -v',
+    `npm install -g "pnpm@${PNPM_TARGET_VERSION}" >/dev/null 2>&1`,
+    'pnpm -v',
+    'cd /tmp/kiki-work',
+    'echo "=== PNPM INSTALL ==="',
+    'pnpm install --frozen-lockfile --ignore-scripts',
+    'echo "=== BUILD TS WORKSPACE PACKAGES ==="',
+    'pnpm --filter @kiki/plugin-sdk --filter @kiki/lexical --filter @kiki/protocol --filter @kiki/transcript --filter @kiki/transcript-live --filter @kiki/kaos --filter @kiki/oauth --filter @kiki/cordis-runtime --filter @kiki/agent-profiles --filter @kiki/tree-sitter-bash --filter @kiki/klient --filter @kiki/session-core run build',
+    'echo "=== PLAYWRIGHT CHROMIUM CHECK ==="',
+    'pnpm --filter @kiki/kap-server exec playwright install chromium --with-deps >/tmp/playwright-install.log 2>&1 || pnpm --filter @kiki/kap-server exec playwright install chromium >/tmp/playwright-install.log 2>&1 || true',
+    'echo "PREPARE_OK"',
+  ].join('\n');
+}
+
+async function releaseAndVerifyRuntime(runtimeId, sshSessionId) {
+  if (sshSessionId) {
+    log(`Revoking SSH session ${sshSessionId}...`);
+    runCcp(['ssh', 'revoke', sshSessionId], { allowFail: true, timeoutMs: 30_000 });
+  }
+  if (!runtimeId) return null;
+  log(`Releasing CCP runtime ${runtimeId}...`);
+  runCcp(['runtimes', 'release', runtimeId], { allowFail: true, timeoutMs: 60_000 });
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    const inspectRes = runCcp(['runtimes', 'inspect', runtimeId], { allowFail: true, timeoutMs: 30_000 });
+    const parsed = parseJsonFromOutput(inspectRes.stdout);
+    const state = parsed?.state ?? null;
+    log(`Runtime ${runtimeId} inspect attempt ${attempt}: state=${state}`);
+    if (state === 'RELEASED') return parsed;
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  const finalInspect = runCcp(['runtimes', 'inspect', runtimeId], { allowFail: true, timeoutMs: 30_000 });
+  return parseJsonFromOutput(finalInspect.stdout);
+}
+
+export async function runChaosOnCcp(options = {}) {
+  const startedAt = performance.now();
+  const giantGiB = options.giantGiB ?? 3.1;
+  const concurrency = options.concurrency ?? 128;
+  const extremeConcurrency = options.extremeConcurrency ?? 1000;
+  const maxOldSpaceMb = options.maxOldSpaceMb ?? 2048;
+  const runVitest = options.runVitest !== false;
+  const runBrowser = options.runBrowser !== false;
+  const regenCorpus = Boolean(options.regenCorpus);
+  const outDir = path.resolve(options.outDir ?? path.join(REPO_ROOT, '.tmp', 'ccp-chaos-live'));
+  fs.mkdirSync(outDir, { recursive: true });
+  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kiki-ccp-orch-'));
+
+  const existingManifest = regenCorpus ? null : readExistingManifest();
+  let runtimeId = null;
+  let sshSessionId = null;
+  let releasedSnapshot = null;
+
+  const emergencyRelease = () => {
+    if (sshSessionId) {
+      try {
+        runCcp(['ssh', 'revoke', sshSessionId], { allowFail: true, timeoutMs: 15_000 });
+      } catch {}
+    }
+    if (runtimeId) {
+      try {
+        runCcp(['runtimes', 'release', runtimeId], { allowFail: true, timeoutMs: 30_000 });
+      } catch {}
+    }
+  };
+  process.once('SIGINT', () => {
+    emergencyRelease();
+    process.exit(130);
+  });
+  process.once('SIGTERM', () => {
+    emergencyRelease();
+    process.exit(143);
+  });
+
+  try {
+    if (!options.skipUploadAndPrep) {
+      log(`Packaging clean repo tarball (zero secrets, baselineHeadCode=${Boolean(options.baselineHeadCode)})...`);
+      const pkg = buildCleanRepoTarball(scratchDir, { baselineHeadCode: Boolean(options.baselineHeadCode) });
+      log(`Tarball ready: ${(pkg.sizeBytes / (1024 * 1024)).toFixed(2)} MiB`);
+      options._pkg = pkg;
+    }
+
+    const preferredAccounts = existingManifest
+      ? [existingManifest.account_id]
+      : Object.keys(ACCOUNT_SOURCES);
+
+    let rtInfo = null;
+    if (options.reuseRuntimeId) {
+      log(`Inspecting existing CCP runtime ${options.reuseRuntimeId} for reuse (will still release in finally)...`);
+      const inspRes = runCcp(['runtimes', 'inspect', options.reuseRuntimeId], { timeoutMs: 60_000 });
+      rtInfo = parseJsonFromOutput(inspRes.stdout);
+      runtimeId = rtInfo?.id ?? options.reuseRuntimeId;
+      if (!runtimeId || rtInfo?.state !== 'READY') {
+        throw new Error(`Reused CCP runtime ${options.reuseRuntimeId} is not READY: ${inspRes.stdout.slice(0, 600)}`);
+      }
+    } else {
+      const idemKey = `kiki-chaos-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const reqArgs = [
+        'runtimes',
+        'request',
+        '--accelerator',
+        'CPU',
+        '--shape',
+        'HIGHMEM',
+        '--no-mount-drive',
+        '--ttl',
+        '240',
+        '--idle-timeout',
+        '60',
+        '--label',
+        'kiki-chaos-scale-suite',
+        '--idempotency-key',
+        idemKey,
+        '--follow',
+      ];
+      for (const acc of preferredAccounts) {
+        reqArgs.push('--prefer-account-id', acc);
+      }
+
+      log(`Requesting CCP CPU HIGHMEM runtime (--no-mount-drive --ttl 240 --idle-timeout 60)...`);
+      const reqRes = runCcp(reqArgs, { timeoutMs: 180_000 });
+      rtInfo = parseJsonFromOutput(reqRes.stdout);
+      runtimeId =
+        rtInfo?.runtime_id ??
+        (typeof rtInfo?.id === 'string' && rtInfo.id.startsWith('rt_') ? rtInfo.id : null);
+      const rtState = rtInfo?.runtime_state ?? rtInfo?.state;
+      if (!runtimeId || rtState !== 'READY') {
+        throw new Error(`CCP runtime allocation did not reach READY: ${reqRes.stdout.slice(0, 800)}`);
+      }
+    }
+    const accountId = rtInfo.account_id;
+    log(`Active CCP runtime ${runtimeId} (account=${accountId}, shape=${rtInfo.shape})`);
+
+    const sshRes = runCcp(['ssh', 'prepare', runtimeId, '--ttl-seconds', '7200'], { timeoutMs: 60_000 });
+    const sshInfo = parseJsonFromOutput(sshRes.stdout);
+    sshSessionId = sshInfo?.id ?? sshInfo?.session_id;
+    if (!sshSessionId) throw new Error(`Failed to prepare CCP SSH session: ${sshRes.stdout.slice(0, 600)}`);
+    log(`Prepared SSH session ${sshSessionId}`);
+
+    if (!options.skipUploadAndPrep) {
+      const pkg = options._pkg;
+      const prepScriptLocal = path.join(scratchDir, 'prep-remote.sh');
+      fs.writeFileSync(prepScriptLocal, buildRemotePrepareScript(pkg.deletedFiles), 'utf8');
+      const sftpPuts = [
+        `put "${pkg.tarPath.replaceAll('\\', '/')}" /tmp/kiki-chaos-src.tar.gz`,
+        ...(pkg.overlayTarPath ? [`put "${pkg.overlayTarPath.replaceAll('\\', '/')}" /tmp/kiki-chaos-overlay.tar.gz`] : []),
+        `put "${prepScriptLocal.replaceAll('\\', '/')}" /tmp/prep-remote.sh`,
+      ];
+      runSftpBatch(sshSessionId, sftpPuts, scratchDir, { timeoutMs: 300_000 });
+
+      log('Bootstrapping Node 24.22.1 + pnpm + deps + Playwright Chromium on CCP Linux...');
+      const prepOut = await runSshCommandWithSentinel(sshSessionId, 'chmod +x /tmp/prep-remote.sh && /tmp/prep-remote.sh', {
+        timeoutMs: 900_000,
+      });
+      if (prepOut.exitCode !== 0) {
+        throw new Error(`Remote bootstrap failed (exit=${prepOut.exitCode})`);
+      }
+    } else {
+      log('Skipping tarball upload & bootstrap (reusing warm baseline /tmp/kiki-work)...');
+    }
+
+    const nodeBinPath = `/tmp/kiki-tools/node-v${NODE_TARGET_VERSION}-linux-x64/bin`;
+    const driveTransferMetrics = { mode: 'generated', restoreMs: null, extractMs: null, saveMs: null, archiveBytes: null, sha256: null };
+    let usedExistingCorpus = false;
+
+    if (existingManifest && existingManifest.account_id === accountId) {
+      log(`Restoring sanitized 3.1 GiB corpus from Google Drive via DIRECT_HTTPS (${existingManifest.binding.drive_file_id})...`);
+      const bindingsFile = path.join(scratchDir, 'corpus-bindings.json');
+      fs.writeFileSync(bindingsFile, JSON.stringify([existingManifest.binding], null, 2), 'utf8');
+      const restoreT0 = performance.now();
+      const restoreKey = `kiki-corpus-restore-${Date.now()}-${randomUUID().slice(0, 6)}`;
+      const restoreRes = runCcp(
+        [
+          'assets',
+          'restore',
+          runtimeId,
+          '/content/corpus-seed',
+          '--runner-source-id',
+          existingManifest.runner_source_id,
+          '--bindings',
+          bindingsFile,
+          '--idempotency-key',
+          restoreKey,
+          '--wait',
+        ],
+        { timeoutMs: 600_000 },
+      );
+      driveTransferMetrics.restoreMs = Number((performance.now() - restoreT0).toFixed(2));
+      log(`DIRECT_HTTPS restore completed in ${driveTransferMetrics.restoreMs}ms (${restoreRes.stdout.slice(0, 200)})`);
+
+      const extractT0 = performance.now();
+      const extractOut = await runSshCommandWithSentinel(
+        sshSessionId,
+        `rm -rf /tmp/kiki-chaos-nvme && mkdir -p /tmp/kiki-chaos-nvme && zstd -d -T0 -c /content/corpus-seed/${existingManifest.binding.relative_path} | tar -xf - -C /tmp/kiki-chaos-nvme && rm -rf /content/corpus-seed`,
+        { timeoutMs: 300_000 },
+      );
+      if (extractOut.exitCode !== 0) {
+        throw new Error(`Corpus zstd extract failed (exit=${extractOut.exitCode})`);
+      }
+      driveTransferMetrics.extractMs = Number((performance.now() - extractT0).toFixed(2));
+      driveTransferMetrics.mode = 'restored_direct_https';
+      driveTransferMetrics.archiveBytes = existingManifest.binding.size_bytes;
+      driveTransferMetrics.sha256 = existingManifest.sha256;
+      usedExistingCorpus = true;
+      log(`Extracted 3.1 GiB corpus from zstd archive onto NVMe in ${driveTransferMetrics.extractMs}ms`);
+    } else {
+      log(`Generating deterministic ${giantGiB} GiB synthetic corpus on CCP NVMe and compressing with zstd -T0...`);
+      const genCmd = [
+        `export PATH="${nodeBinPath}:$PATH"`,
+        'cd /tmp/kiki-work',
+        `if [ ! -f /content/kiki-chaos-corpus-v1.tar.zst ] || [ ! -d /tmp/kiki-chaos-nvme/home ]; then`,
+        `  node scripts/ccp-chaos/corpus-generator.mjs --dir /tmp/kiki-chaos-nvme --giant-gib ${giantGiB} --subagents 1520 > /tmp/corpus-gen.json`,
+        '  tar -cf - -C /tmp/kiki-chaos-nvme . | zstd -q -T0 -3 -f -o /content/kiki-chaos-corpus-v1.tar.zst',
+        'fi',
+        'SHA=$(sha256sum /content/kiki-chaos-corpus-v1.tar.zst | awk \'{print $1}\')',
+        'SZ=$(stat -c %s /content/kiki-chaos-corpus-v1.tar.zst)',
+        'echo "ARCHIVE_META sha256=$SHA size_bytes=$SZ"',
+      ].join('\n');
+      const genOut = await runSshCommandWithSentinel(sshSessionId, genCmd, { timeoutMs: 600_000 });
+      if (genOut.exitCode !== 0) throw new Error(`Remote corpus generation/zstd failed (exit=${genOut.exitCode})`);
+      const metaMatch = /ARCHIVE_META sha256=([0-9a-f]{64}) size_bytes=(\d+)/u.exec(genOut.stdout);
+      const archiveSha = metaMatch?.[1] ?? null;
+      const archiveBytes = metaMatch ? Number(metaMatch[2]) : null;
+      driveTransferMetrics.sha256 = archiveSha;
+      driveTransferMetrics.archiveBytes = archiveBytes;
+      usedExistingCorpus = true;
+
+      const sourceCfg = ACCOUNT_SOURCES[accountId];
+      if (sourceCfg && archiveSha && archiveBytes) {
+        log(`Persisting kiki-chaos-corpus-v1.tar.zst (${(archiveBytes / (1024 * 1024)).toFixed(2)} MiB) to Google Drive via ccp assets save (DIRECT_HTTPS Keep Forever)...`);
+        const saveT0 = performance.now();
+        const saveKey = `kiki-corpus-save-${Date.now()}-${randomUUID().slice(0, 6)}`;
+        const saveRes = runCcp(
+          [
+            'assets',
+            'save',
+            runtimeId,
+            '/content/kiki-chaos-corpus-v1.tar.zst',
+            '--runner-source-id',
+            sourceCfg.runnerSourceId,
+            '--drive-folder-id',
+            sourceCfg.driveFolderId,
+            '--idempotency-key',
+            saveKey,
+            '--wait',
+          ],
+          { timeoutMs: 600_000 },
+        );
+        driveTransferMetrics.saveMs = Number((performance.now() - saveT0).toFixed(2));
+        const saveJson = parseJsonFromOutput(saveRes.stdout);
+        const outEntry = saveJson?.outputs?.[0] ?? saveJson?.manifest?.[0];
+        if (saveJson?.state === 'COMPLETED' && outEntry?.drive_file_id) {
+          const newManifest = {
+            version: 1,
+            created_at: new Date().toISOString(),
+            description: 'Zero-PII deterministic 3.1 GiB Kiki chaos-scale NVMe corpus (zstd compressed, Keep Forever)',
+            account_id: accountId,
+            runner_source_id: sourceCfg.runnerSourceId,
+            drive_folder_id: sourceCfg.driveFolderId,
+            save_operation_id: saveJson.id,
+            sha256: archiveSha,
+            giant_wire_gib: giantGiB,
+            subagent_count: 1520,
+            binding: {
+              drive_source: 'ACCOUNT',
+              relative_path: outEntry.relative_path ?? 'kiki-chaos-corpus-v1.tar.zst',
+              drive_file_id: outEntry.drive_file_id,
+              drive_version: String(outEntry.drive_version),
+              drive_head_revision_id: outEntry.drive_head_revision_id,
+              size_bytes: outEntry.size_bytes ?? archiveBytes,
+            },
+          };
+          fs.writeFileSync(MANIFEST_PATH, `${JSON.stringify(newManifest, null, 2)}\n`, 'utf8');
+          log(`Saved corpus-manifest.json (drive_file_id=${outEntry.drive_file_id}, saveMs=${driveTransferMetrics.saveMs}ms)`);
+
+          log('Verifying DIRECT_HTTPS fast pull via ccp assets restore on the same runtime...');
+          const bindingsFile = path.join(scratchDir, 'verify-bindings.json');
+          fs.writeFileSync(bindingsFile, JSON.stringify([newManifest.binding], null, 2), 'utf8');
+          const verifyT0 = performance.now();
+          runCcp(
+            [
+              'assets',
+              'restore',
+              runtimeId,
+              '/content/corpus-restore-verify',
+              '--runner-source-id',
+              sourceCfg.runnerSourceId,
+              '--bindings',
+              bindingsFile,
+              '--idempotency-key',
+              `kiki-corpus-verify-${Date.now()}`,
+              '--wait',
+            ],
+            { timeoutMs: 300_000 },
+          );
+          driveTransferMetrics.restoreMs = Number((performance.now() - verifyT0).toFixed(2));
+          driveTransferMetrics.mode = 'generated_saved_and_restore_verified';
+          await runSshCommandWithSentinel(
+            sshSessionId,
+            `sha256sum /content/corpus-restore-verify/${newManifest.binding.relative_path} && rm -rf /content/corpus-restore-verify /content/kiki-chaos-corpus-v1.tar.zst`,
+            { timeoutMs: 120_000 },
+          );
+        }
+      }
+    }
+
+    log('Running test hygiene, node --test, full S1-S5 Chaos-Scale + 1000-way + Playwright UX suite on CCP Linux...');
+    const runScript = [
+      'set -o pipefail',
+      `export PATH="${nodeBinPath}:$PATH"`,
+      'ulimit -n 1048576 2>/dev/null || ulimit -n 65536 2>/dev/null || true',
+      'cd /tmp/kiki-work',
+      'node scripts/ccp-chaos/check-test-hygiene.mjs --json > /tmp/kiki-hygiene-results.json || true',
+      'node --test scripts/ccp-chaos/ccp-chaos.test.mjs',
+      `node scripts/ccp-chaos/chaos-scale-runner.mjs --dir /tmp/kiki-chaos-nvme --giant-gib ${giantGiB} --concurrency ${concurrency} --extreme-concurrency ${extremeConcurrency} --max-old-space-mb ${maxOldSpaceMb} ${usedExistingCorpus ? '--existing-corpus' : ''} ${runBrowser ? '' : '--no-browser'} --out /tmp/kiki-chaos-results.json`,
+      'CHAOS_RC=$?',
+      'echo "CHAOS_RUNNER_EXIT=$CHAOS_RC"',
+      ...(runVitest
+        ? [
+            'pnpm exec vitest run packages/protocol/test packages/transcript/test packages/kap-server/test/remotePairing.test.ts --reporter=json --outputFile=/tmp/kiki-vitest-results.json',
+            'VITEST_RC=$?',
+            'echo "VITEST_EXIT=$VITEST_RC"',
+          ]
+        : ['VITEST_RC=0', 'echo "{}" > /tmp/kiki-vitest-results.json']),
+      'rm -rf /tmp/kiki-chaos-nvme',
+      'exit 0',
+    ].join('\n');
+    const runScriptLocal = path.join(scratchDir, 'exec-chaos-remote.sh');
+    fs.writeFileSync(runScriptLocal, runScript, 'utf8');
+    runSftpBatch(sshSessionId, [`put "${runScriptLocal.replaceAll('\\', '/')}" /tmp/exec-chaos-remote.sh`], scratchDir, {
+      timeoutMs: 60_000,
+    });
+
+    const execOutcome = await runSshCommandWithSentinel(
+      sshSessionId,
+      'chmod +x /tmp/exec-chaos-remote.sh && /tmp/exec-chaos-remote.sh',
+      { timeoutMs: 2_400_000, streamOutput: true },
+    );
+    fs.writeFileSync(path.join(outDir, 'remote-run.log'), `${execOutcome.stdout}\n---STDERR---\n${execOutcome.stderr}\n`, 'utf8');
+
+    const localChaosJson = path.join(outDir, 'kiki-chaos-results.json');
+    const localVitestJson = path.join(outDir, 'kiki-vitest-results.json');
+    const localHygieneJson = path.join(outDir, 'kiki-hygiene-results.json');
+    log('Downloading structured JSON result artifacts via ccp ssh sftp...');
+    runSftpBatch(
+      sshSessionId,
+      [
+        `-get /tmp/kiki-chaos-results.json "${localChaosJson.replaceAll('\\', '/')}"`,
+        `-get /tmp/kiki-vitest-results.json "${localVitestJson.replaceAll('\\', '/')}"`,
+        `-get /tmp/kiki-hygiene-results.json "${localHygieneJson.replaceAll('\\', '/')}"`,
+      ],
+      scratchDir,
+      { timeoutMs: 120_000, allowFail: true },
+    );
+
+    const chaosResults = fs.existsSync(localChaosJson) ? JSON.parse(fs.readFileSync(localChaosJson, 'utf8')) : null;
+    const vitestResults = fs.existsSync(localVitestJson) ? JSON.parse(fs.readFileSync(localVitestJson, 'utf8')) : null;
+    const hygieneResults = fs.existsSync(localHygieneJson) ? JSON.parse(fs.readFileSync(localHygieneJson, 'utf8')) : null;
+
+    fs.writeFileSync(
+      path.join(outDir, 'drive-transfer-metrics.json'),
+      `${JSON.stringify(driveTransferMetrics, null, 2)}\n`,
+      'utf8',
+    );
+
+    return {
+      runtimeId,
+      accountId,
+      providerEndpoint: rtInfo.provider_endpoint,
+      sshSessionId,
+      remoteExitCode: execOutcome.exitCode,
+      driveTransferMetrics,
+      totalOrchestratorWallMs: Number((performance.now() - startedAt).toFixed(2)),
+      outDir,
+      chaosResults,
+      vitestResults,
+      hygieneResults,
+    };
+  } finally {
+    releasedSnapshot = await releaseAndVerifyRuntime(runtimeId, sshSessionId);
+    fs.rmSync(scratchDir, { recursive: true, force: true });
+    if (runtimeId) {
+      log(`Final runtime ${runtimeId} state: ${releasedSnapshot?.state ?? 'UNKNOWN'}`);
+      fs.writeFileSync(
+        path.join(outDir, 'ccp-release-receipt.json'),
+        `${JSON.stringify({ runtimeId, sshSessionId, releasedSnapshot }, null, 2)}\n`,
+        'utf8',
+      );
+    }
+  }
+}
+
+const isMain = Boolean(process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename);
+if (isMain) {
+  const args = process.argv.slice(2);
+  const opts = {
+    giantGiB: 3.1,
+    concurrency: 128,
+    extremeConcurrency: 1000,
+    maxOldSpaceMb: 2048,
+    runVitest: true,
+    runBrowser: true,
+    regenCorpus: false,
+  };
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--giant-gib' && args[i + 1]) opts.giantGiB = Number(args[++i]);
+    else if (args[i] === '--concurrency' && args[i + 1]) opts.concurrency = Number(args[++i]);
+    else if (args[i] === '--extreme-concurrency' && args[i + 1]) opts.extremeConcurrency = Number(args[++i]);
+    else if (args[i] === '--max-old-space-mb' && args[i + 1]) opts.maxOldSpaceMb = Number(args[++i]);
+    else if (args[i] === '--no-vitest') opts.runVitest = false;
+    else if (args[i] === '--no-browser') opts.runBrowser = false;
+    else if (args[i] === '--regen-corpus') opts.regenCorpus = true;
+    else if (args[i] === '--reuse-runtime' && args[i + 1]) opts.reuseRuntimeId = args[++i];
+    else if (args[i] === '--skip-upload-and-prep') opts.skipUploadAndPrep = true;
+    else if (args[i] === '--baseline-head-code') opts.baselineHeadCode = true;
+    else if (args[i] === '--out-dir' && args[i + 1]) opts.outDir = args[++i];
+  }
+  const outcome = await runChaosOnCcp(opts);
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        runtimeId: outcome.runtimeId,
+        providerEndpoint: outcome.providerEndpoint,
+        remoteExitCode: outcome.remoteExitCode,
+        driveTransferMetrics: outcome.driveTransferMetrics,
+        totalOrchestratorWallMs: outcome.totalOrchestratorWallMs,
+        outDir: outcome.outDir,
+        overallPassed: outcome.chaosResults?.overallPassed ?? false,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}

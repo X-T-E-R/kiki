@@ -110,7 +110,7 @@ export async function generate(
     throw createAbortError();
   }
 
-  const wireTools = tools.some((tool) => tool.deferred === true)
+  let wireTools: Tool[] | undefined = tools.some((tool) => tool.deferred === true)
     ? tools.filter((tool) => tool.deferred !== true)
     : tools;
 
@@ -125,6 +125,10 @@ export async function generate(
     }
     throw error;
   }
+  systemPrompt = '';
+  tools = [];
+  history = [];
+  wireTools = undefined;
   let cancellation: Promise<void> | undefined;
   const onAbort = (): void => {
     cancellation ??= cancelStream(stream).catch(() => undefined);

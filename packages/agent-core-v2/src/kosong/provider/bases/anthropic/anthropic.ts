@@ -84,12 +84,14 @@ import {
   MESSAGE_THREADS_BETA,
   bindThreadMessageDigestKey,
   classifyAnthropicThreadError,
+  extractAnthropicThreadSettlementContext,
   extractHeaderBetaTokens,
   hashThreadFixedFields,
-  hashThreadMessages,
+  hashThreadMessagePrefixDigests,
   isUnfinishedAnthropicStopReason,
   mergeBetaTokens,
   stripAnthropicBetaHeader,
+  type AnthropicThreadSettlementContext,
   type AnthropicThreadTrackerOptions,
   type PreparedAnthropicThreadRequest,
 } from './anthropic-threads';
@@ -1588,13 +1590,13 @@ export class AnthropicChatProvider implements ChatProvider {
     for (;;) {
       try {
         const response = await sendAttempt(currentAttempt.body, currentAttempt.betas);
-        const committedAttempt = currentAttempt;
+        const settlementContext = extractAnthropicThreadSettlementContext(currentAttempt);
         return guardRequestDelivery(
           new AnthropicStreamedMessage(
             response,
             this._stream,
             this._hooks?.convertError,
-            (settlement) => this._commitThreadSettlement(committedAttempt, settlement),
+            this._createThreadSettlementCallback(settlementContext),
           ),
           this._guardDelivery,
         );
@@ -1637,8 +1639,14 @@ export class AnthropicChatProvider implements ChatProvider {
     }
   }
 
+  private _createThreadSettlementCallback(
+    attempt: AnthropicThreadSettlementContext,
+  ): (settlement: AnthropicThreadSettlement | null) => void {
+    return (settlement) => this._commitThreadSettlement(attempt, settlement);
+  }
+
   private _commitThreadSettlement(
-    attempt: PreparedAnthropicThreadRequest,
+    attempt: AnthropicThreadSettlementContext,
     settlement: AnthropicThreadSettlement | null,
   ): void {
     if (settlement === null) {
@@ -1657,11 +1665,10 @@ export class AnthropicChatProvider implements ChatProvider {
         this._threadTracker.delete(attempt.scopeKey);
         return;
       }
-      const prefix = [...attempt.fullMessages, converted];
       this._threadTracker.commit(attempt.scopeKey, {
         responseId: settlement.responseId,
-        prefixCount: prefix.length,
-        prefixHash: hashThreadMessages(prefix),
+        prefixCount: attempt.prefixDigests.length + 1,
+        prefixHash: hashThreadMessagePrefixDigests(attempt.prefixDigests, converted),
         fixedHash: attempt.fixedHash,
         createBetas: attempt.betas,
         replacesLostThread: attempt.kind === 'create' && attempt.replacesLostThread,

@@ -2,169 +2,177 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 describe('server-v2 exposure hardening hooks', () => {
-  let server: RunningServer | undefined;
-  let home: string | undefined;
+  describe('loopback bind', () => {
+    let server: RunningServer;
+    let home: string;
 
-  beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-exposure-'));
-  });
-
-  afterEach(async () => {
-    if (server !== undefined) {
-      await server.close();
-      server = undefined;
-    }
-    if (home !== undefined) {
-      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
-      home = undefined;
-    }
-  });
-
-  it('rejects a disallowed Host header with 40301', async () => {
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    const res = await server.app.inject({
-      method: 'GET',
-      url: '/api/healthz',
-      headers: { host: 'evil.com' },
+    beforeAll(async () => {
+      home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-exposure-loopback-'));
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     });
-    expect(res.statusCode).toBe(403);
-    const body = res.json() as Record<string, unknown>;
-    expect(body['code']).toBe(40301);
-  });
 
-  it('allows the default loopback Host header', async () => {
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it('echoes CORS headers for a same-origin request', async () => {
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    const res = await server.app.inject({
-      method: 'GET',
-      url: '/api/healthz',
-      headers: { origin: 'http://localhost:80', host: 'localhost:80' },
+    afterAll(async () => {
+      await server?.close();
+      if (home !== undefined) {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:80');
+
+    it('rejects a disallowed Host header with 40301', async () => {
+      const res = await server.app.inject({
+        method: 'GET',
+        url: '/api/healthz',
+        headers: { host: 'evil.com' },
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json() as Record<string, unknown>;
+      expect(body['code']).toBe(40301);
+    });
+
+    it('allows the default loopback Host header', async () => {
+      const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('echoes CORS headers for a same-origin request', async () => {
+      const res = await server.app.inject({
+        method: 'GET',
+        url: '/api/healthz',
+        headers: { origin: 'http://localhost:80', host: 'localhost:80' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['access-control-allow-origin']).toBe('http://localhost:80');
+    });
+
+    it('sets nosniff without public exposure headers on a loopback bind', async () => {
+      const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['referrer-policy']).toBeUndefined();
+      expect(res.headers['content-security-policy']).toBeUndefined();
+      expect(res.headers['strict-transport-security']).toBeUndefined();
+    });
   });
 
   it('refuses to bind non-loopback hosts without TLS opt-out', async () => {
-    await expect(
-      startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '0.0.0.0', port: 0, homeDir: home, logLevel: 'silent' }),
-    ).rejects.toThrow(/Refusing to bind 0\.0\.0\.0/);
+    const home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-exposure-refuse-'));
+    try {
+      await expect(
+        startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '0.0.0.0', port: 0, homeDir: home, logLevel: 'silent' }),
+      ).rejects.toThrow(/Refusing to bind 0\.0\.0\.0/);
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 
-  it('sets security headers on a non-loopback bind without HSTS', async () => {
-    server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '0.0.0.0',
-      port: 0,
-      homeDir: home,
-      logLevel: 'silent',
-      insecureNoTls: true,
-    });
-    const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
-    expect(res.headers['referrer-policy']).toBe('no-referrer');
-    expect(res.headers['content-security-policy']).toBe(
-      "default-src 'self'; connect-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: data: https: http:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*",
-    );
-    expect(res.headers['strict-transport-security']).toBeUndefined();
-  });
+  describe('non-loopback bind without TLS', () => {
+    let server: RunningServer;
+    let home: string;
 
-  it('sets nosniff without public exposure headers on a loopback bind', async () => {
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
-    const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
-    expect(res.headers['referrer-policy']).toBeUndefined();
-    expect(res.headers['content-security-policy']).toBeUndefined();
-    expect(res.headers['strict-transport-security']).toBeUndefined();
-  });
-
-  it('does not register shutdown or terminal routes on non-loopback by default', async () => {
-    server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '0.0.0.0',
-      port: 0,
-      homeDir: home,
-      logLevel: 'silent',
-      insecureNoTls: true,
-    });
-    const token = server.localOwnerToken;
-    const shutdown = await server.app.inject({
-      method: 'POST',
-      url: '/api/shutdown',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(shutdown.statusCode).toBe(404);
-
-    const terminals = await server.app.inject({
-      method: 'GET',
-      url: '/api/sessions/missing/terminals',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(terminals.statusCode).toBe(404);
-
-    const meta = await server.app.inject({
-      method: 'GET',
-      url: '/api/meta',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const capabilities = (meta.json() as { data: { capabilities: Record<string, unknown> } }).data
-      .capabilities;
-    expect(capabilities['terminal']).toBeUndefined();
-
-    const asyncApi = await server.app.inject({
-      method: 'GET',
-      url: '/asyncapi.json',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const disabledDocument = asyncApi.json() as {
-      components: { messages: Record<string, unknown> };
-    };
-    const disabledMessages = disabledDocument.components.messages;
-    expect(disabledMessages['client_hello']).toBeDefined();
-    expect(Object.keys(disabledMessages).some((id) => id.startsWith('terminal_'))).toBe(false);
-    expect(JSON.stringify(disabledDocument)).not.toContain('terminal_');
-
-    const ws = new WebSocket(
-      `ws://127.0.0.1:${server.port}/api/ws`,
-      [`kimi-code.bearer.${token}`],
-    );
-    const ack = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      ws.once('error', reject);
-      ws.on('message', (data) => {
-        const frame = JSON.parse((data as Buffer).toString()) as Record<string, unknown>;
-        if (frame['type'] === 'server_hello') {
-          ws.send(
-            JSON.stringify({
-              type: 'terminal_attach',
-              id: 'terminal-disabled',
-              payload: { session_id: 'sess_missing', terminal_id: 'term_missing' },
-            }),
-          );
-        } else if (frame['id'] === 'terminal-disabled') {
-          resolve(frame);
-        }
+    beforeAll(async () => {
+      home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-exposure-public-'));
+      server = await startServer({
+        hostIdentity: TEST_HOST_IDENTITY,
+        host: '0.0.0.0',
+        port: 0,
+        homeDir: home,
+        logLevel: 'silent',
+        insecureNoTls: true,
       });
     });
-    expect(ack).toMatchObject({
-      type: 'ack',
-      id: 'terminal-disabled',
-      code: 40414,
-      msg: 'terminal unavailable',
+
+    afterAll(async () => {
+      await server?.close();
+      if (home !== undefined) {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
     });
-    ws.close();
-    await new Promise<void>((resolve) => ws.once('close', resolve));
+
+    it('sets security headers on a non-loopback bind without HSTS', async () => {
+      const res = await server.app.inject({ method: 'GET', url: '/api/healthz' });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['referrer-policy']).toBe('no-referrer');
+      expect(res.headers['content-security-policy']).toBe(
+        "default-src 'self'; connect-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: data: https: http:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*",
+      );
+      expect(res.headers['strict-transport-security']).toBeUndefined();
+    });
+
+    it('does not register shutdown or terminal routes on non-loopback by default', async () => {
+      const token = server.localOwnerToken;
+      const shutdown = await server.app.inject({
+        method: 'POST',
+        url: '/api/shutdown',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(shutdown.statusCode).toBe(404);
+
+      const terminals = await server.app.inject({
+        method: 'GET',
+        url: '/api/sessions/missing/terminals',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(terminals.statusCode).toBe(404);
+
+      const meta = await server.app.inject({
+        method: 'GET',
+        url: '/api/meta',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const capabilities = (meta.json() as { data: { capabilities: Record<string, unknown> } }).data
+        .capabilities;
+      expect(capabilities['terminal']).toBeUndefined();
+
+      const asyncApi = await server.app.inject({
+        method: 'GET',
+        url: '/asyncapi.json',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const disabledDocument = asyncApi.json() as {
+        components: { messages: Record<string, unknown> };
+      };
+      const disabledMessages = disabledDocument.components.messages;
+      expect(disabledMessages['client_hello']).toBeDefined();
+      expect(Object.keys(disabledMessages).some((id) => id.startsWith('terminal_'))).toBe(false);
+      expect(JSON.stringify(disabledDocument)).not.toContain('terminal_');
+
+      const ws = new WebSocket(
+        `ws://127.0.0.1:${server.port}/api/ws`,
+        [`kimi-code.bearer.${token}`],
+      );
+      const ack = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        ws.once('error', reject);
+        ws.on('message', (data) => {
+          const frame = JSON.parse((data as Buffer).toString()) as Record<string, unknown>;
+          if (frame['type'] === 'server_hello') {
+            ws.send(
+              JSON.stringify({
+                type: 'terminal_attach',
+                id: 'terminal-disabled',
+                payload: { session_id: 'sess_missing', terminal_id: 'term_missing' },
+              }),
+            );
+          } else if (frame['id'] === 'terminal-disabled') {
+            resolve(frame);
+          }
+        });
+      });
+      expect(ack).toMatchObject({
+        type: 'ack',
+        id: 'terminal-disabled',
+        code: 40414,
+        msg: 'terminal unavailable',
+      });
+      ws.close();
+      await new Promise<void>((resolve) => ws.once('close', resolve));
+    });
   });
 });

@@ -1,9 +1,34 @@
+import { createHash } from 'node:crypto';
 import type { Message } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
 
+const MAX_SHARED_TOOLSETS = 64;
+const sharedCanonicalToolsets = new Map<string, readonly Tool[]>();
+
+function hashJson(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function internCanonicalToolset(tools: readonly Tool[]): readonly Tool[] {
+  const key = hashJson(tools.map((tool) => [tool.name, tool.description, tool.parameters, tool.deferred]));
+  const existing = sharedCanonicalToolsets.get(key);
+  if (existing !== undefined) {
+    sharedCanonicalToolsets.delete(key);
+    sharedCanonicalToolsets.set(key, existing);
+    return existing;
+  }
+  const cloned = Object.freeze(structuredClone(tools).map((tool) => Object.freeze(tool)));
+  if (sharedCanonicalToolsets.size >= MAX_SHARED_TOOLSETS) {
+    const oldestKey = sharedCanonicalToolsets.keys().next().value;
+    if (oldestKey !== undefined) sharedCanonicalToolsets.delete(oldestKey);
+  }
+  sharedCanonicalToolsets.set(key, cloned);
+  return cloned;
+}
+
 export class PromptCacheWindow {
   private readonly turnTools = new Map<number, readonly Tool[]>();
-  private toolset: { signature: string; tools: readonly Tool[] } | undefined;
+  private toolset: { signatureHash: string; tools: readonly Tool[] } | undefined;
   private extension: { baseline: string; current: string } | undefined;
   private readonly extensionUpdates: { index: number; message: Message }[] = [];
 
@@ -15,12 +40,12 @@ export class PromptCacheWindow {
     for (const id of this.turnTools.keys()) {
       if (id < turnId) this.turnTools.delete(id);
     }
-    const signature = JSON.stringify([
+    const signatureHash = hashJson([
       promptOverrides,
       tools.map((tool) => [tool.name, tool.parameters, tool.deferred]),
     ]);
-    if (this.toolset?.signature !== signature) {
-      this.toolset = { signature, tools: structuredClone(tools) };
+    if (this.toolset?.signatureHash !== signatureHash) {
+      this.toolset = { signatureHash, tools: internCanonicalToolset(tools) };
     }
     this.turnTools.set(turnId, this.toolset.tools);
     return this.toolset.tools;

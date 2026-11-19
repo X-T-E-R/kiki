@@ -58,6 +58,15 @@ export interface PreparedAnthropicThreadRequest {
   readonly fullMessages: readonly MessageParam[];
 }
 
+export interface AnthropicThreadSettlementContext {
+  readonly kind: 'create' | 'continue';
+  readonly scopeKey: string;
+  readonly betas: readonly string[];
+  readonly replacesLostThread: boolean;
+  readonly fixedHash: string;
+  readonly prefixDigests: readonly string[];
+}
+
 export interface PreparedUnthreadedAnthropicRequest {
   readonly kind: 'unthreaded';
   readonly body: Record<string, unknown>;
@@ -225,6 +234,43 @@ export function hashThreadMessages(messages: readonly unknown[]): string {
     hash.update(hashSingleThreadMessage(message));
     hash.update('\0');
   }
+  return hash.digest('hex');
+}
+
+/**
+ * Extracts a compact settlement context holding per-message SHA-256 digests so
+ * in-flight SSE streams can release outbound request bodies and converted
+ * message arrays immediately after receiving response headers.
+ */
+export function extractAnthropicThreadSettlementContext(
+  attempt: PreparedAnthropicThreadRequest,
+): AnthropicThreadSettlementContext {
+  return {
+    kind: attempt.kind,
+    scopeKey: attempt.scopeKey,
+    betas: attempt.betas,
+    replacesLostThread: attempt.replacesLostThread,
+    fixedHash: attempt.fixedHash,
+    prefixDigests: attempt.fullMessages.map((message) => hashSingleThreadMessage(message)),
+  };
+}
+
+/**
+ * Computes the same prefix hash as `hashThreadMessages([...prefix, nextMessage])`
+ * from precomputed per-message SHA-256 digests without retaining full messages.
+ */
+export function hashThreadMessagePrefixDigests(
+  prefixDigests: readonly string[],
+  nextMessage: unknown,
+): string {
+  const hash = createHash('sha256');
+  hash.update(`m:${prefixDigests.length + 1}:`);
+  for (const digest of prefixDigests) {
+    hash.update(digest);
+    hash.update('\0');
+  }
+  hash.update(hashSingleThreadMessage(nextMessage));
+  hash.update('\0');
   return hash.digest('hex');
 }
 

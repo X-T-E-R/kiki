@@ -443,12 +443,31 @@ function invalidatePersistedMetrics(state: PersistedMetricsState, sourceKey?: st
   }
 }
 
+const PERSISTED_METRICS_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const PERSISTED_METRICS_CACHE_MAX_ENTRY_BYTES = 256 * 1024;
+
+function estimatePersistedMetricsEntryBytes(entry: PersistedMetricsCacheEntry): number {
+  let bytes = 256;
+  for (const model of Object.keys(entry.usage.byModel)) {
+    bytes += model.length * 2 + 128;
+  }
+  if (entry.usage.byModelMask !== undefined) {
+    for (const [model, masks] of Object.entries(entry.usage.byModelMask)) {
+      bytes += model.length * 2 + 64 + Object.keys(masks).length * 96;
+    }
+  }
+  return bytes;
+}
+
 function persistedMetricsState(core: Scope): PersistedMetricsState {
   let state = persistedMetricsStates.get(core);
   if (state === undefined) {
     state = {
       cache: new LRUCache<string, PersistedMetricsCacheEntry>({
         max: PERSISTED_METRICS_CACHE_MAX_ENTRIES,
+        maxSize: PERSISTED_METRICS_CACHE_MAX_BYTES,
+        maxEntrySize: PERSISTED_METRICS_CACHE_MAX_ENTRY_BYTES,
+        sizeCalculation: (entry) => estimatePersistedMetricsEntryBytes(entry),
         ttl: PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS,
         ttlResolution: 0,
         perf: { now: () => Date.now() + 1 },

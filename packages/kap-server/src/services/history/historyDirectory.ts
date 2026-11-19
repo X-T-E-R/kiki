@@ -16,6 +16,7 @@ import type {
   AgentTranscriptSnapshot,
 } from '@kiki/transcript';
 
+import { detachSlicedString } from '../../lib/detachString';
 import type {
   BoundedTranscriptSnapshot,
   TranscriptColdReadLimits,
@@ -410,8 +411,8 @@ function compareOptionalTime(left: string | undefined, right: string | undefined
 function excerpt(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const normalized = value.replaceAll(/\s+/g, ' ').trim();
-  if (normalized.length <= 120) return normalized;
-  return `${normalized.slice(0, 119)}…`;
+  if (normalized.length <= 120) return detachSlicedString(normalized);
+  return detachSlicedString(`${normalized.slice(0, 119)}…`);
 }
 
 function sameSelection(left: HistoryDirectoryCursorRequest, right: HistoryDirectoryCursorRequest): boolean {

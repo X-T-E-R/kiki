@@ -1,6 +1,7 @@
 import type { AgentActivityState, SessionMeta } from '@kiki/agent-core-v2';
 import type { SnapshotSubagent } from '@kiki/protocol';
 import { resolveSubagentDisplayName, subagentParentAgentId, subagentUserLabel } from '@kiki/transcript-live';
+import { detachSlicedString } from '../lib/detachString';
 
 function terminalStatus(status: string | undefined): SnapshotSubagent['status'] | undefined {
   if (status === 'completed' || status === 'failed' || status === 'cancelled') return status;
@@ -109,8 +110,8 @@ export function sessionAgentRoster(
       thinking_effort_explicit: registration?.thinkingEffort !== undefined ? registration.thinkingEffortExplicit : row?.thinking_effort_explicit,
       executor_id: registration?.executor ?? row?.executor_id,
       executor_protocol: registration?.executor !== undefined ? registration.executorProtocol : row?.executor_protocol,
-      output_preview: row?.output_preview ?? registration?.resultSummary?.slice(0, 2048),
-      stop_reason: persistenceFailure?.message ?? row?.stop_reason ?? registration?.error?.slice(0, 2048),
+      output_preview: row?.output_preview ?? (registration?.resultSummary !== undefined ? detachSlicedString(registration.resultSummary.slice(0, 2048)) : undefined),
+      stop_reason: persistenceFailure?.message ?? row?.stop_reason ?? (registration?.error !== undefined ? detachSlicedString(registration.error.slice(0, 2048)) : undefined),
       tool_call_count: row?.tool_call_count ?? registration?.toolCallCount,
     };
   });

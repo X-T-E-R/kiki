@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { Writable } from 'node:stream';
 
 import { pino, type Logger } from 'pino';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -52,13 +52,6 @@ afterEach(async () => {
 });
 
 describe('public-bind gate', () => {
-  it('refuses to bind 0.0.0.0 without --insecure-no-tls', async () => {
-    const home = await tmpHome();
-    await expect(
-      startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '0.0.0.0', port: 0, homeDir: home, logLevel: 'silent' }),
-    ).rejects.toThrow(/without TLS/);
-  });
-
   it('boots 0.0.0.0 token-only and logs the token-only warning', async () => {
     delete process.env['KIKI_PASSWORD'];
     const home = await tmpHome();
@@ -83,10 +76,15 @@ describe('public-bind gate', () => {
 });
 
 describe('real password path (verifyPassword)', () => {
-  async function bootPublic(): Promise<RunningServer> {
+  let server: RunningServer;
+  let home: string;
+  let savedPassword: string | undefined;
+
+  beforeAll(async () => {
+    savedPassword = process.env['KIKI_PASSWORD'];
     process.env['KIKI_PASSWORD'] = 'test-pw';
-    const home = await tmpHome();
-    const server = await startServer({
+    home = await mkdtemp(join(tmpdir(), 'kimi-v2-host-exposure-pw-'));
+    server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '0.0.0.0',
       port: 0,
@@ -94,12 +92,21 @@ describe('real password path (verifyPassword)', () => {
       logLevel: 'silent',
       insecureNoTls: true,
     });
-    running.push(server);
-    return server;
-  }
+  });
+
+  afterAll(async () => {
+    await server?.close();
+    if (home !== undefined) {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+    if (savedPassword === undefined) {
+      delete process.env['KIKI_PASSWORD'];
+    } else {
+      process.env['KIKI_PASSWORD'] = savedPassword;
+    }
+  });
 
   it('validates the password for limited handshake and sets security headers', async () => {
-    const server = await bootPublic();
     const res = await fetch(`http://127.0.0.1:${server.port}/api/remote-connections/handshake`, {
       headers: { authorization: 'Bearer test-pw' },
     });
@@ -112,7 +119,6 @@ describe('real password path (verifyPassword)', () => {
   });
 
   it('requires directed admission even for a valid persistent token on a public bind', async () => {
-    const server = await bootPublic();
     const token = server.authTokenService.getToken();
     const res = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       headers: { authorization: `Bearer ${token}` },
@@ -121,7 +127,6 @@ describe('real password path (verifyPassword)', () => {
   });
 
   it('rejects wrong and missing credentials with 401', async () => {
-    const server = await bootPublic();
     const wrong = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       headers: { authorization: 'Bearer wrong-password' },
     });
