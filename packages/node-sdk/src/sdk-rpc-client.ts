@@ -127,7 +127,7 @@ import {
   validateConfigPatch,
 } from '#/config';
 import { ErrorCodes, isKimiErrorCode, KimiError, type KimiErrorCode } from '#/errors';
-import { getRootLogger, type DiagnosticLogHost } from '#/logging';
+import { getRootLogger, log, type DiagnosticLogHost } from '#/logging';
 import type { BeginGlobalMcpServerAuthResult } from '#/protocol';
 import { noopTelemetryClient } from '#/protocol/telemetry';
 import { limitAgentReplayByTurns } from '#/wire/replay-turns';
@@ -922,9 +922,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * cannot deadlock.
    */
   private runSessionAccessAll<T>(sessionIds: readonly string[], work: () => Promise<T>): Promise<T> {
-    const keys = [...new Set(sessionIds)].sort();
+    const keys = [...new Set(sessionIds)].toSorted();
     let chained: () => Promise<T> = work;
-    for (const key of [...keys].reverse()) {
+    for (const key of [...keys].toReversed()) {
       const inner = chained;
       chained = () => this.runSessionAccess(key, inner);
     }
@@ -1051,7 +1051,8 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * facade for context / plan / usage / background tasks), while `replay` and
    * `toolStore` are folded from the agent's `wire.jsonl` by
    * {@link foldAgentWireReplay} (v2 has no replay builder of its own).
-   * `warning` stays undefined — v2's resume has no migration-warning channel.
+   * `warning` reports agents whose journal had corrupt lines skipped by the
+   * fold, and is undefined when every journal folded cleanly.
    */
   private async resumedSessionSummary(
     handle: ISessionScopeHandle,
@@ -1059,6 +1060,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
   ): Promise<ResumedSessionSummary> {
     const meta = await handle.accessor.get(ISessionMetadata).read();
     const agents: Record<string, ResumedAgentState> = {};
+    const warnings: string[] = [];
     // v1 resumes the main agent eagerly; materializing here cold-restores its
     // wire into the scope (create-or-get) and applies the default binding.
     const main = await this.materializeMainAgent(handle);
@@ -1066,6 +1068,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
       handle,
       main,
       'main',
+      warnings,
       replay?.replayTurnLimit,
     );
     if (replay?.includeSubagents === true) {
@@ -1086,6 +1089,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
             handle,
             agent,
             'sub',
+            warnings,
             replay.replayTurnLimit,
           );
         } catch {
@@ -1098,30 +1102,47 @@ export class SDKRpcClient extends SDKRpcClientBase {
       ...(await this.liveSessionSummary(handle)),
       sessionMetadata: meta,
       agents,
-      warning: undefined,
+      warning: warnings.length === 0 ? undefined : warnings.join('\n'),
     };
   }
 
   /**
    * One agent's `ResumedAgentState`: the live slices read straight off the
    * restored agent scope, with `replay` and `toolStore` folded from the
-   * agent's `wire.jsonl` by {@link foldAgentWireReplay}.
+   * agent's `wire.jsonl` by {@link foldAgentWireReplay}. Corrupt journal
+   * lines the fold skipped are logged with their byte offsets and appended to
+   * `warnings`.
    */
   private async resumedAgentState(
     session: ISessionScopeHandle,
     agent: IAgentScopeHandle,
     type: 'main' | 'sub',
+    warnings: string[],
     replayTurnLimit?: number,
   ): Promise<ResumedAgentState> {
     const facade = this.klient.session(session.id).agent(agent.id);
     const ctx = session.accessor.get(ISessionContext);
+    const wirePath = join(ctx.sessionDir, 'agents', agent.id, 'wire.jsonl');
     const [context, plan, usage, background, folded] = await Promise.all([
       facade.getContext(),
       facade.getPlan(),
       facade.getUsage(),
       facade.getTasks({ activeOnly: false }),
-      foldAgentWireReplay(join(ctx.sessionDir, 'agents', agent.id, 'wire.jsonl')),
+      foldAgentWireReplay(wirePath),
     ]);
+    const skipped = folded.skippedRecords;
+    if (skipped !== undefined) {
+      log.warn('resume replay skipped corrupt wire records', {
+        sessionId: session.id,
+        agentId: agent.id,
+        wirePath,
+        skippedRecords: skipped,
+      });
+      const offsets = skipped.map((record) => record.offset).join(', ');
+      warnings.push(
+        `Agent ${agent.id}: skipped ${skipped.length} corrupt wire record(s) in ${wirePath} at byte offset(s) ${offsets}; replay may be incomplete.`,
+      );
+    }
     const profile = agent.accessor.get(IAgentProfileService).data();
     const toolPolicy = agent.accessor.get(IAgentToolPolicyService);
     const tools = agent.accessor.get(IAgentToolRegistryService).list().map((tool) => ({

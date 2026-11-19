@@ -1466,7 +1466,7 @@ describe('foldAgentWireReplay', () => {
     expect(legacy.replay.at(-1)?.type).toBe('compaction');
   });
 
-  it('degrades to an empty fold on a missing or corrupt journal', async () => {
+  it('degrades to an empty fold on a missing journal and skips corrupt middle lines', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-fold-'));
     tempDirs.push(dir);
     const empty = { replay: [], toolStore: {} };
@@ -1480,7 +1480,19 @@ describe('foldAgentWireReplay', () => {
       '{"type":"metadata","protocol_version":"1.5","created_at":1}\n{not json\n{"type":"permission.set_mode","mode":"auto"}\n',
       'utf-8',
     );
-    await expect(foldAgentWireReplay(corrupt)).resolves.toEqual(empty);
+    await expect(foldAgentWireReplay(corrupt)).resolves.toEqual({
+      replay: [{ type: 'permission_updated', mode: 'auto', time: expect.any(Number) }],
+      toolStore: {},
+      skippedRecords: [{ offset: 60, reason: 'invalid JSON wire record' }],
+    });
+    const headless = join(dir, 'headless.jsonl');
+    await writeFile(headless, '{"type":"permission.set_mode","mode":"auto"}\n', 'utf-8');
+    await expect(foldAgentWireReplay(headless)).resolves.toEqual({
+      ...empty,
+      skippedRecords: [
+        { offset: 0, reason: 'wire replay expected metadata as the first record' },
+      ],
+    });
     // A truncated TAIL line is tolerated: everything before it still folds.
     const truncatedTail = join(dir, 'truncated.jsonl');
     await writeFile(

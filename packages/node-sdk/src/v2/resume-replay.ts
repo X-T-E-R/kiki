@@ -44,30 +44,54 @@ import {
 import type { AgentReplayRecord, AgentReplayRecordPayload } from '#/protocol';
 import type { AgentRecord } from '#/wire/records';
 
+/** A complete `wire.jsonl` line the fold could not use, located by its byte offset. */
+export interface SkippedWireRecord {
+  readonly offset: number;
+  readonly reason: string;
+}
+
 export interface FoldedAgentReplay {
   readonly replay: readonly AgentReplayRecord[];
   readonly toolStore: Readonly<Record<string, unknown>>;
+  /** Corrupt complete lines that were skipped (or that stopped the fold); absent when none. */
+  readonly skippedRecords?: readonly SkippedWireRecord[];
 }
 
 const EMPTY_FOLD: FoldedAgentReplay = { replay: [], toolStore: {} };
 const STREAM_CHUNK_BYTES = 256 * 1024;
 
 class MalformedWireRecordError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly offset: number,
+  ) {
     super(message);
     this.name = 'MalformedWireRecordError';
   }
 }
 
+function withSkipped(
+  folded: FoldedAgentReplay,
+  skipped: readonly SkippedWireRecord[],
+): FoldedAgentReplay {
+  return skipped.length === 0 ? folded : { ...folded, skippedRecords: skipped };
+}
+
 /**
  * Fold one agent's `wire.jsonl` into replay records and a tool-store snapshot
  * by streaming bounded UTF-8 chunks without materializing a single whole-file
- * string. Missing, empty, or record-malformed journals yield an empty fold
- * (with a truncated trailing line tolerated), while storage/segment corruption
- * and I/O errors propagate.
+ * string. Missing or empty journals yield an empty fold and a truncated
+ * trailing line is tolerated silently. A corrupt complete line (invalid JSON or
+ * a non-object record) is skipped and reported in `skippedRecords` with its
+ * byte offset while the rest of the journal still folds; a journal whose first
+ * record is not `metadata` cannot be migrated and yields an empty fold that
+ * reports the offending line. Storage/segment corruption and I/O errors
+ * propagate.
  */
 export async function foldAgentWireReplay(wirePath: string): Promise<FoldedAgentReplay> {
   let journal: Awaited<ReturnType<typeof openPersistedJournal>>;
+  const skipped: SkippedWireRecord[] = [];
+  let lineOffset = 0;
   try {
     journal = await openPersistedJournal(wirePath);
     if (journal === undefined || journal.size === 0) return EMPTY_FOLD;
@@ -87,7 +111,9 @@ export async function foldAgentWireReplay(wirePath: string): Promise<FoldedAgent
         if (nl === -1) break;
         const rawLine = carry.slice(lineStart, nl);
         lineStart = nl + 1;
-        consumeCompleteWireLine(fold, rawLine);
+        const reason = consumeCompleteWireLine(fold, rawLine, lineOffset);
+        if (reason !== undefined) skipped.push({ offset: lineOffset, reason });
+        lineOffset += Buffer.byteLength(rawLine, 'utf8') + 1;
       }
       if (lineStart > 0) {
         carry = carry.slice(lineStart);
@@ -95,39 +121,55 @@ export async function foldAgentWireReplay(wirePath: string): Promise<FoldedAgent
     }
     carry += decoder.decode();
     if (carry.length > 0) {
-      consumeTrailingWireLine(fold, carry);
+      consumeTrailingWireLine(fold, carry, lineOffset);
     }
-    return fold.finish();
+    return withSkipped(fold.finish(), skipped);
   } catch (error) {
-    if (error instanceof MalformedWireRecordError) return EMPTY_FOLD;
+    if (error instanceof MalformedWireRecordError) {
+      return withSkipped(EMPTY_FOLD, [
+        ...skipped,
+        { offset: error.offset, reason: error.message },
+      ]);
+    }
     throw error;
   } finally {
     await journal?.close().catch(() => undefined);
   }
 }
 
-function consumeCompleteWireLine(fold: ReplayFold, rawLine: string): void {
+/** Folds one complete line, returning the reason it was skipped when it is corrupt. */
+function consumeCompleteWireLine(
+  fold: ReplayFold,
+  rawLine: string,
+  offset: number,
+): string | undefined {
   const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-  if (line.length === 0) return;
-  let parsed: AgentRecord;
+  if (line.length === 0) return undefined;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(line) as AgentRecord;
+    parsed = JSON.parse(line);
   } catch {
-    throw new MalformedWireRecordError('invalid JSON wire record');
+    return 'invalid JSON wire record';
   }
-  fold.add(parsed);
+  if (!isRecordObject(parsed)) return 'wire record is not an object';
+  fold.add(parsed, offset);
+  return undefined;
 }
 
-function consumeTrailingWireLine(fold: ReplayFold, rawLine: string): void {
+function consumeTrailingWireLine(fold: ReplayFold, rawLine: string, offset: number): void {
   const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
   if (line.length === 0) return;
-  let parsed: AgentRecord;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(line) as AgentRecord;
+    parsed = JSON.parse(line);
   } catch {
     return;
   }
-  fold.add(parsed);
+  if (isRecordObject(parsed)) fold.add(parsed, offset);
+}
+
+function isRecordObject(value: unknown): value is AgentRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** The mirrored goal state a `goal_updated` snapshot is derived from. */
@@ -200,14 +242,14 @@ class ReplayFold {
 
   private fold = createLoopEventFold(this.sink);
 
-  add(record: AgentRecord): void {
-    if (record === null || typeof record !== 'object' || Array.isArray(record)) {
-      throw new MalformedWireRecordError('wire record is not an object');
-    }
+  add(record: AgentRecord, offset: number): void {
     if (!this.sawFirstRecord) {
       this.sawFirstRecord = true;
       if (record.type !== 'metadata') {
-        throw new MalformedWireRecordError('wire replay expected metadata as the first record');
+        throw new MalformedWireRecordError(
+          'wire replay expected metadata as the first record',
+          offset,
+        );
       }
       this.migrations = isNewerWireVersion(record.protocol_version)
         ? []
