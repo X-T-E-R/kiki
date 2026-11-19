@@ -6,11 +6,13 @@ import { Event2 } from '#/app/event/event2';
 import { defineState } from '#/state/state';
 
 import '#/agent/contextMemory/conversationTime';
+import { PlanGateSchema, type PlanGate } from './configSection';
 
 export interface PlanState {
   readonly active: boolean;
   readonly id?: string;
   readonly revisionCount?: Readonly<Record<string, number>>;
+  readonly gate?: PlanGate;
 }
 
 const planModeEnterSchema = z.object({ id: z.string() });
@@ -64,6 +66,15 @@ export class PlanRevision extends Event2<PlanRevisionRecordedEvent> {
 }
 export interface PlanRevision extends PlanRevisionRecordedEvent {}
 
+const planSetGateSchema = z.object({ gate: PlanGateSchema });
+
+export class PlanSetGate extends Event2<z.infer<typeof planSetGateSchema>> {
+  static override readonly type = 'plan.set_gate';
+  static override readonly durable = true;
+  static override readonly schema = planSetGateSchema;
+}
+export interface PlanSetGate extends z.infer<typeof planSetGateSchema> {}
+
 export const planKey = defineState('plan', (): PlanState => ({ active: false }))
   .replayable({ schema: z.custom<PlanState>() })
   .undoable()
@@ -90,4 +101,7 @@ export const planKey = defineState('plan', (): PlanState => ({ active: false }))
   })
   .on(PlanRevision, (s, e) => {
     s.revisionCount = { ...s.revisionCount, [e.id]: e.version };
+  })
+  .on(PlanSetGate, (s, e) => {
+    s.gate = e.gate;
   });

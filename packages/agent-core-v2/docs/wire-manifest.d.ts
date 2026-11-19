@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (100 record types)
+// Index (101 record types)
 //   agent_message.delivered                agentCollaboration.messageReceipts                                                                                                                                                                                                               src/session/agentCollaboration/messageEvents.ts
 //   agent.branch_sealed                    branch.sealed                                                                                                                                                                                                                                    src/features/btw/branchOps.ts
 //   agent.model_switch                     contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.completions, profile, tokenCounting                                                                                                                                       src/agent/modelSwitch/modelSwitchEvent.ts
@@ -73,6 +73,7 @@
 //   plan_mode.enter                        plan                                                                                                                                                                                                                                             src/features/plan/planOps.ts
 //   plan_mode.exit                         plan                                                                                                                                                                                                                                             src/features/plan/planOps.ts
 //   plan.revision                          plan                                                                                                                                                                                                                                             src/features/plan/planOps.ts
+//   plan.set_gate                          plan                                                                                                                                                                                                                                             src/features/plan/planOps.ts
 //   plugin.fact_recorded                   plugin.states.conversation, plugin.states.world                                                                                                                                                                                                  src/agent/pluginState/pluginStateKeys.ts
 //   plugin.session_start                   pluginSessionStartSnapshot                                                                                                                                                                                                                       src/agent/plugin/agentPluginOps.ts
 //   profile.bind                           profile, profile.activeTools                                                                                                                                                                                                                     src/agent/profile/profileOps.ts
@@ -877,6 +878,15 @@ interface PlanRevisionPayload {
   path: string;
   sha256: string;
   bytes: number;
+}
+
+/**
+ * states: plan
+ * owner: src/features/plan/planOps.ts
+ */
+interface PlanSetGatePayload {
+  _name: 'plan.set_gate';
+  gate: 'free' | 'gated';
 }
 
 /**
@@ -1881,6 +1891,7 @@ interface WirePayloadMap {
   "plan_mode.enter": PlanModeEnterPayload;
   "plan_mode.exit": PlanModeExitPayload;
   "plan.revision": PlanRevisionPayload;
+  "plan.set_gate": PlanSetGatePayload;
   "plugin.fact_recorded": PluginFactRecordedPayload;
   "plugin.session_start": PluginSessionStartPayload;
   "profile.bind": ProfileBindPayload;

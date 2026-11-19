@@ -231,13 +231,14 @@ export class SessionViewHttpConnection {
         ? { ...signal, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }
         : signal });
     });
-    target.begin(data.generation, input.bootstrap === true);
     const cold = this.browse !== undefined && this.browse.core.accessor.get(ISessionManager).get(frame.sessionId) === undefined
       ? new AbortController() : undefined;
     const diagnostics = new AbortController();
     const timing: SessionViewTimingContext = { logger: this.browse?.logger, signal: diagnostics.signal,
       generation: data.generation, viewId: id };
     const upgrading = (replacedCold || previous?.cold !== undefined) && cold === undefined;
+    const bootstrap = input.bootstrap === true && !upgrading;
+    target.begin(data.generation, bootstrap);
     const view: AttachedView = { frame, sessionId: frame.sessionId, target, coverage, cold, diagnostics };
     this.views.set(id, view);
     const readShell = async () => {
@@ -320,7 +321,7 @@ export class SessionViewHttpConnection {
       this.detach(id);
       return;
     }
-    if (input.bootstrap === true) {
+    if (bootstrap) {
       const [snapshot] = await Promise.all([
         readShell(),
         timeSessionViewPhase('attach_seed', fields, async () => {

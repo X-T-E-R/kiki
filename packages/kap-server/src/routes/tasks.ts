@@ -117,9 +117,9 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
       const pageSize = query.page_size ?? 100;
       const offset = query.offset ?? 0;
       if (resolved.persisted !== undefined) {
-        const page = await resolved.persisted.list(pageSize, offset);
+        const page = await resolved.persisted.list(pageSize, offset, query.status);
         reply.send(okEnvelope({
-          items: page.items.map((info) => toWireTask(session_id, info)).filter((task) => query.status === undefined || task.status === query.status),
+          items: page.items.map((info) => toWireTask(session_id, info)),
           has_more: page.hasMore,
           next_offset: page.hasMore ? page.nextOffset : undefined,
         }, req.id));
@@ -360,7 +360,11 @@ class PersistedTasksReader {
     return task;
   }
 
-  async list(limit: number, offset: number): Promise<{ readonly items: readonly AgentTaskInfo[]; readonly hasMore: boolean; readonly nextOffset: number }> {
+  async list(
+    limit: number,
+    offset: number,
+    status?: TaskStatus,
+  ): Promise<{ readonly items: readonly AgentTaskInfo[]; readonly hasMore: boolean; readonly nextOffset: number }> {
     const ids = new Set<string>();
     const lists = await Promise.all(this.scopes.map((scope) => this.docs.list(`${scope}/tasks`)));
     for (const keys of lists) {
@@ -369,24 +373,43 @@ class PersistedTasksReader {
       }
     }
     const ordered = [...ids].toSorted();
-    const end = Math.min(ordered.length, offset + limit);
-    const pageIds = ordered.slice(offset, end);
-    const resolved = new Array<AgentTaskInfo | undefined>(pageIds.length);
-    let cursor = 0;
-    const workers = Array.from(
-      { length: Math.min(PERSISTED_TASK_READ_CONCURRENCY, pageIds.length) },
-      async () => {
-        while (cursor < pageIds.length) {
-          const index = cursor++;
-          try {
-            resolved[index] = await this.read(pageIds[index]!);
-          } catch {}
+    if (status === undefined) {
+      const end = Math.min(ordered.length, offset + limit);
+      const pageIds = ordered.slice(offset, end);
+      const resolved = new Array<AgentTaskInfo | undefined>(pageIds.length);
+      let cursor = 0;
+      const workers = Array.from(
+        { length: Math.min(PERSISTED_TASK_READ_CONCURRENCY, pageIds.length) },
+        async () => {
+          while (cursor < pageIds.length) {
+            const index = cursor++;
+            try {
+              resolved[index] = await this.read(pageIds[index]!);
+            } catch {}
+          }
+        },
+      );
+      await Promise.all(workers);
+      const items = resolved.filter((task): task is AgentTaskInfo => task !== undefined);
+      return { items, hasMore: end < ordered.length, nextOffset: end };
+    }
+    const needed = offset + limit + 1;
+    const matched: AgentTaskInfo[] = [];
+    for (let batchStart = 0; batchStart < ordered.length && matched.length < needed; batchStart += PERSISTED_TASK_READ_CONCURRENCY) {
+      const batch = ordered.slice(batchStart, batchStart + PERSISTED_TASK_READ_CONCURRENCY);
+      const resolved = await Promise.all(batch.map(async (id) => {
+        try { return await this.read(id); } catch { return undefined; }
+      }));
+      for (const task of resolved) {
+        if (task !== undefined && mapStatus(task.status) === status) {
+          matched.push(task);
+          if (matched.length >= needed) break;
         }
-      },
-    );
-    await Promise.all(workers);
-    const items = resolved.filter((task): task is AgentTaskInfo => task !== undefined);
-    return { items, hasMore: end < ordered.length, nextOffset: end };
+      }
+    }
+    const items = matched.slice(offset, offset + limit);
+    const hasMore = matched.length > offset + limit;
+    return { items, hasMore, nextOffset: offset + limit };
   }
 }
 

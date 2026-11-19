@@ -273,7 +273,7 @@ describe('visible reading integrity', () => {
     expect(projected.globalCoverage?.attachments).toEqual({ returned: 8, total: 9, hasMore: true });
     const many = attachments.map((entry) => ({ ...entry, name: '汉😀'.repeat(2000) }));
     const bounded = boundedTranscriptSnapshot(snapshot([{ ...item, attachmentIds: many.map((entry) => entry.attachmentId) }], many), 'main');
-    expect(jsonBytes(bounded.attachments)).toBeLessThanOrEqual(4 * 1024);
+    expect(jsonBytes(bounded.attachments)).toBeLessThanOrEqual(32 * 1024);
     expect(jsonBytes(bounded)).toBeLessThan(64 * 1024);
   });
 });

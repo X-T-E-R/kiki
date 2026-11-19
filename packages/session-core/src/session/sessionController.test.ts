@@ -435,6 +435,71 @@ describe('SessionController prompt runtime projection', () => {
     ]);
     controller.close();
   });
+
+  it('polls child durable ingress to admission after resumeDurableIngress returns restoring', async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, client } = await openController({ persistenceHint: 'saved' });
+      const restoring = {
+        prompt_id: 'child-retry-1',
+        user_message_id: 'child-retry-1',
+        status: 'queued' as const,
+        content: [{ type: 'text' as const, text: 'retry cold branch' }],
+        created_at: '2026-01-01T00:00:00.000Z',
+        admission: 'restoring' as const,
+      };
+      const admitted = {
+        ...restoring,
+        admission: 'admitted' as const,
+        status: 'running' as const,
+      };
+      const clientWithResume = client as typeof client & { resumeDurableIngress?: ReturnType<typeof vi.fn> };
+      clientWithResume.resumeDurableIngress = vi.fn().mockResolvedValueOnce(restoring);
+      client.getDurableIngress = vi.fn().mockResolvedValueOnce(admitted);
+
+      await controller.resumeDurableIngress(
+        'child-retry-1',
+        { content: [{ type: 'text', text: 'retry cold branch' }], agent_id: 'branch-1' },
+        'branch-1',
+      );
+      expect(controller.getDurableIngress()).toEqual([
+        expect.objectContaining({ prompt_id: 'child-retry-1', agent_id: 'branch-1', admission: 'restoring' }),
+      ]);
+
+      await vi.advanceTimersByTimeAsync(550);
+      expect(client.getDurableIngress).toHaveBeenCalledWith('session_test', 'child-retry-1', 'branch-1');
+      expect(controller.getDurableIngress()).toEqual([
+        expect.objectContaining({ prompt_id: 'child-retry-1', agent_id: 'branch-1', admission: 'admitted' }),
+      ]);
+      controller.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes durable ingress on idle websocket reconnect without active dropped agents', async () => {
+    const { controller, client } = await openController({ persistenceHint: 'saved' });
+    client.listDurableIngress = vi.fn().mockResolvedValue({
+      active: null,
+      queued: [],
+      ingress: [{
+        prompt_id: 'post-drop-1',
+        user_message_id: 'post-drop-1',
+        status: 'queued',
+        content: [{ type: 'text', text: 'held during disconnect' }],
+        created_at: '2026-01-01T00:00:05.000Z',
+        admission: 'held',
+      }],
+    });
+    const cursor = controller.getState().cursor;
+    controller.handleSignal({ type: 'status', status: 'connecting', generation: 1 });
+    controller.handleSignal({ type: 'ready', currentSessionCursor: cursor, reconnected: true, generation: 1 });
+    await vi.waitFor(() => expect(client.listDurableIngress).toHaveBeenCalledTimes(1));
+    expect(controller.getDurableIngress()).toEqual([
+      expect.objectContaining({ prompt_id: 'post-drop-1', admission: 'held' }),
+    ]);
+    controller.close();
+  });
 });
 
 describe('SessionController pipeline', () => {

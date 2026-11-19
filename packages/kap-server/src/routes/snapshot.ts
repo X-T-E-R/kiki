@@ -312,8 +312,8 @@ async function assembleColdSnapshot(
       message_count: aligned.messages.length,
       agent_config: {
         ...session.agent_config,
-        permission_mode: projection.permissionMode,
-        plan_mode: projection.planActive,
+        permission_mode: session.agent_config.permission_mode ?? (projection.permissionConfigured ? projection.permissionMode : undefined),
+        plan_mode: session.agent_config.plan_mode ?? projection.planActive,
       },
     },
     messages: { items: messageTail?.items ?? [], has_more: messageTail?.has_more ?? false },

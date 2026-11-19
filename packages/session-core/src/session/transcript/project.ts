@@ -5203,7 +5203,11 @@ export function projectAgentTranscriptView(
       ?? (meta?.model !== undefined && previous.model !== undefined && meta.model !== previous.model ? undefined : previous.maxContextTokens),
     usage: keepEqual(previous.usage, projectUsageStatus(meta?.usage)),
     permissionMode: mapTranscriptPermission(meta?.permission) ?? previous.permissionMode,
-    planMode: snapshot.meta.modes?.plan !== undefined,
+    planMode: snapshot.meta.modes?.plan !== undefined
+      ? true
+      : options.cold === true && snapshot.hasMoreOlder === true
+        ? previous.session?.agent_config.plan_mode ?? previous.planMode
+        : false,
     queuedPromptIds: keepEqual(previous.queuedPromptIds, queuedPromptIds),
     promptQueueHold: snapshot.meta.promptQueueHold,
     queuedPromptMeta,

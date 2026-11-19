@@ -214,16 +214,50 @@ export function setLoadError<T extends Pick<SessionViewState, 'version' | 'loade
 }
 
 export function setSessionRecord(state: SessionViewState, session: Session): SessionViewState {
-  const lastSeq = Math.max(session.last_seq, state.session?.last_seq ?? 0, state.cursor.seq);
-  const nextSession = lastSeq > session.last_seq ? { ...session, last_seq: lastSeq } : session;
-  const config = nextSession.agent_config;
-  const model = config.model || state.model;
+  const previous = state.session?.id === session.id ? state.session : undefined;
+  const lastSeq = Math.max(session.last_seq, previous?.last_seq ?? 0, state.cursor.seq);
+  const prevConfig = previous?.agent_config;
+  const incomingConfig = session.agent_config;
+  const agentConfig: Session['agent_config'] = prevConfig === undefined
+    ? incomingConfig
+    : {
+        ...prevConfig,
+        ...incomingConfig,
+        model: incomingConfig.model || prevConfig.model,
+        execution: incomingConfig.execution ?? prevConfig.execution,
+        profile: incomingConfig.profile ?? prevConfig.profile,
+        persona: incomingConfig.persona ?? prevConfig.persona,
+        permission_mode: incomingConfig.permission_mode ?? prevConfig.permission_mode,
+        plan_mode: incomingConfig.plan_mode ?? prevConfig.plan_mode,
+        plan_gate: incomingConfig.plan_gate ?? prevConfig.plan_gate,
+      };
+  const prevUsage = previous?.usage;
+  const incomingUsage = session.usage;
+  const usage: Session['usage'] = prevUsage === undefined
+    ? incomingUsage
+    : {
+        ...incomingUsage,
+        context_tokens: incomingUsage.context_tokens > 0 ? incomingUsage.context_tokens : prevUsage.context_tokens,
+        context_limit: incomingUsage.context_limit > 0 ? incomingUsage.context_limit : prevUsage.context_limit,
+        turn_count: incomingUsage.turn_count > 0 ? incomingUsage.turn_count : prevUsage.turn_count,
+      };
+  const nextSession: Session = {
+    ...session,
+    last_seq: lastSeq,
+    executor_id: session.executor_id ?? previous?.executor_id,
+    allow_kiki_subagents: session.allow_kiki_subagents ?? previous?.allow_kiki_subagents,
+    agent_config: agentConfig,
+    usage,
+  };
+  const model = agentConfig.model || state.model;
   return bump(state, {
     session: nextSession,
     model,
-    thinkingEffort: config.execution?.effective.thinking ?? state.thinkingEffort,
+    thinkingEffort: agentConfig.execution?.effective.thinking ?? state.thinkingEffort,
     maxContextTokens: model === state.model ? state.maxContextTokens : undefined,
-    profile: config.profile ?? state.profile,
+    profile: agentConfig.profile ?? state.profile,
+    permissionMode: agentConfig.permission_mode ?? state.permissionMode,
+    planMode: agentConfig.plan_mode ?? state.planMode,
   });
 }
 

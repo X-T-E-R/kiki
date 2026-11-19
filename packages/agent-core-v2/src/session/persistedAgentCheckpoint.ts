@@ -2,9 +2,11 @@ import { createHash } from 'node:crypto';
 import { autoCompactOverrideKey } from '#/agent/fullCompaction/autoCompactOps';
 import { contextStrategyOverrideKey } from '#/agent/fullCompaction/contextStrategyOps';
 import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
+import { goalKey } from '#/agent/goal/goalOps';
 import { turnKey } from '#/agent/loop/turnOps';
-import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
+import { permissionModeConfiguredKey, permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import { profileActiveToolsKey, profileKey } from '#/agent/profile/profileOps';
+import { runtimeBindingKey } from '#/agent/runtimeBinding/runtimeBindingOps';
 import { tokenCountingKey } from '#/agent/tokenCounting/tokenCountingOps';
 import { panelAccountingKey } from '#/agent/usage/panelAccounting';
 import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
@@ -36,7 +38,10 @@ const LIGHTWEIGHT_STATE_NAMES = new Set([
   profileKey.name,
   profileActiveToolsKey.name,
   permissionModeKey.name,
+  permissionModeConfiguredKey.name,
   planKey.name,
+  runtimeBindingKey.name,
+  goalKey.name,
   autoCompactOverrideKey.name,
   contextStrategyOverrideKey.name,
 ]);

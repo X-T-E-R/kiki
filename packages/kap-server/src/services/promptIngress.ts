@@ -14,6 +14,7 @@ import type { RestoreProgress } from '@kiki/agent-core-v2/session/agentLifecycle
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
 export type PromptIngressResult = PromptSubmitResult & Pick<PromptSubmitReceipt, 'resolved_parts'>;
+export type PromptIngressItem = PromptItem & { readonly agent_id?: string };
 
 const PAGE_SIZE = 64;
 const INDEX_KEY = 'index.json';
@@ -283,25 +284,27 @@ export class PromptIngress {
     return progress === undefined ? undefined : { ...progress, elapsed_ms: Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) };
   }
 
-  private async item(target: Target, entry: Entry, full = true, knownBody?: PromptSubmission): Promise<PromptItem> {
+  private async item(target: Target, entry: Entry, full = true, knownBody?: PromptSubmission): Promise<PromptIngressItem> {
     const result = entry.result === undefined ? undefined : full
       ? await this.documents().get<PromptSubmitResult>(`${target.scope}/prompt-ingress/results`, `${entry.key}.json`) : entry.result;
     const body = full && result === undefined ? (knownBody ?? await this.payload(target, entry.key)) : entry.body;
     const progress = entry.admission === 'restoring' ? this.progress.get(`${target.scope}/${entry.key}`) ?? entry.restoreProgress : entry.restoreProgress;
-    const item: PromptItem = { ...result, restore_progress: progress === undefined ? undefined : { ...progress, elapsed_ms: entry.admission === 'restoring' ? Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) : progress.elapsed_ms },
+    const item: PromptIngressItem = { ...result, restore_progress: progress === undefined ? undefined : { ...progress, elapsed_ms: entry.admission === 'restoring' ? Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) : progress.elapsed_ms },
       admission_duplicate_of: entry.duplicateOf, prompt_id: entry.body.prompt_id!, user_message_id: result?.user_message_id ?? entry.body.prompt_id!,
       status: result?.status ?? 'queued', content: result?.content ?? body.content,
       created_at: result?.created_at ?? entry.createdAt, append_timing: result?.append_timing ?? entry.body.append_timing ?? 'agent_idle',
       revision: result?.revision ?? 0, admission: entry.admission, admission_error: entry.error,
-      admission_content_truncated: full ? undefined : true };
-    return entry.admission === 'admitted' ? this.consumer.projectDelivery?.(target.sessionId, entry.agentId, item) ?? item : item;
+      admission_content_truncated: full ? undefined : true,
+      agent_id: entry.agentId === 'main' ? undefined : entry.agentId };
+    const projected = entry.admission === 'admitted' ? this.consumer.projectDelivery?.(target.sessionId, entry.agentId, item) ?? item : item;
+    return entry.agentId === 'main' ? projected : { ...projected, agent_id: entry.agentId };
   }
 
-  submit(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget']): Promise<PromptItem> {
+  submit(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget']): Promise<PromptIngressItem> {
     return this.core.accessor.get(IWorkAdmissionService).run('durable-prompt', () => this.submitAdmitted(sessionId, body, fingerprint, steerTarget));
   }
 
-  private async submitAdmitted(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget'], waitingSwitch = false): Promise<PromptItem> {
+  private async submitAdmitted(sessionId: string, body: PromptSubmission, fingerprint: string, steerTarget?: PromptIngressExecution['steerTarget'], waitingSwitch = false): Promise<PromptIngressItem> {
     if (this.closed) throw new Error2(ErrorCodes.REQUEST_INVALID, 'The server is stopping. Retry this request after reconnecting.');
     if (body.prompt_id === undefined || body.prompt_id.length > 256) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Durable admission requires a prompt_id of 1–256 characters.');
     if (body.content.every(part => part.type === 'text' && part.text.trim() === '')) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A prompt must contain text or an attachment.');
@@ -361,34 +364,37 @@ export class PromptIngress {
     return this.item(target, entry, true, entry.owner === this.owner && entry.result === undefined ? savedPayload : undefined);
   }
 
-  async lookup(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
+  async lookup(sessionId: string, agentId: string, promptId: string): Promise<PromptIngressItem | undefined> {
     const target = await this.target(sessionId, agentId);
     const entry = await this.read(target, this.key(agentId, promptId));
     return entry === undefined ? undefined : this.item(target, await this.recover(target, entry));
   }
 
-  async list(sessionId: string, agentId: string, cursor?: string): Promise<{ items: PromptItem[]; nextCursor?: string }> {
-    const target = await this.target(sessionId, agentId);
+  async list(sessionId: string, agentId?: string, cursor?: string): Promise<{ items: PromptIngressItem[]; nextCursor?: string }> {
+    const allAgents = agentId === undefined || agentId === '*';
+    const target = await this.target(sessionId, allAgents ? 'main' : agentId);
     const pageNumber = cursor === undefined ? 0 : Number(cursor);
     if (!Number.isSafeInteger(pageNumber) || pageNumber < 0 || (cursor !== undefined && String(pageNumber) !== cursor)) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Invalid durable prompt cursor.');
     }
     const index = await this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY);
     const page = await this.documents().get<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${pageNumber}.json`);
-    const items: PromptItem[] = [];
+    const items: PromptIngressItem[] = [];
     for (const key of page?.keys ?? []) {
       if (key === null || key === undefined) continue;
       const entry = await this.read(target, key);
-      if (entry?.agentId === agentId) items.push(await this.item(target, await this.recover(target, entry), false));
+      if (entry !== undefined && (allAgents || entry.agentId === agentId)) {
+        items.push(await this.item(target, await this.recover(target, entry), false));
+      }
     }
     return { items, nextCursor: (pageNumber + 1) * PAGE_SIZE < (index?.next ?? 0) ? String(pageNumber + 1) : undefined };
   }
 
-  resume(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
+  resume(sessionId: string, agentId: string, promptId: string): Promise<PromptIngressItem | undefined> {
     return this.core.accessor.get(IWorkAdmissionService).run('durable-prompt-resume', () => this.resumeAdmitted(sessionId, agentId, promptId));
   }
 
-  private async resumeAdmitted(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
+  private async resumeAdmitted(sessionId: string, agentId: string, promptId: string): Promise<PromptIngressItem | undefined> {
     const target = await this.target(sessionId, agentId);
     const key = this.key(agentId, promptId);
     const progressKey = `${target.scope}/${key}`;

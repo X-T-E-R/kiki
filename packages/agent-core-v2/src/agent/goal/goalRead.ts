@@ -1,27 +1,18 @@
-import { createHash } from 'node:crypto';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { produce } from 'immer';
 
+import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { event2FromRecord } from '#/app/event/event2';
 import { Error2, ErrorCodes } from '#/errors';
-import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
+import { logicalByteSize } from '#/persistence/coldSegmentLog';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { REPLAY_ABI_VERSION, verifyReplayCheckpointWire, type ReplayCheckpointWire } from '#/state/eventDispatcherService';
-import { decodeReplayCheckpointStates, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
+import { readPersistedAgentCheckpoint } from '#/session/persistedAgentCheckpoint';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
-import { JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES } from '#/wire/wire';
 import { goalKey, type GoalModelState } from './goalOps';
 import { goalSnapshot } from './goalSnapshot';
 import type { GoalSnapshot } from './types';
-
-interface Checkpoint {
-  readonly format: number;
-  readonly replayAbi: number;
-  readonly wire: ReplayCheckpointWire;
-  readonly graph: ReplayCheckpointGraph;
-}
 
 interface GoalReadState {
   readonly source: string;
@@ -43,6 +34,7 @@ export class PersistedGoalReader {
     private readonly logs: IAppendLogStore,
     private readonly docs: IAtomicDocumentStore,
     private readonly storage: IFileSystemStorageService,
+    private readonly workers?: ICpuWorkerService,
   ) {}
 
   async readReady(scope: string): Promise<GoalSnapshot | null> {
@@ -73,32 +65,17 @@ export class PersistedGoalReader {
 
   private async checkpoint(scope: string, source: Awaited<ReturnType<PersistedGoalReader['source']>>) {
     try {
-      const checkpoint = await this.docs.get<Checkpoint>(`${scope}/replay-checkpoints`, 'engine-v1');
-      if (checkpoint?.format !== 1 || checkpoint.replayAbi !== REPLAY_ABI_VERSION) return undefined;
-      const digest = async (start: number, end: number): Promise<string | undefined> => {
-        if (end < start || end > source.size) return undefined;
-        const hash = createHash('sha256');
-        let bytes = 0;
-        if (end > start) {
-          for await (const chunk of readLogicalBytes(this.storage, scope, AGENT_WIRE_RECORD_KEY, { start, end: end - 1 })) {
-            bytes += chunk.byteLength;
-            hash.update(chunk);
-          }
-        }
-        return bytes === end - start ? hash.digest('hex') : undefined;
-      };
-      const verified = await verifyReplayCheckpointWire(checkpoint.wire, {
-        size: source.size,
-        mtimeMs: source.mtimeMs,
-        headHash: async () => (await digest(0, Math.min(source.size, JOURNAL_HEAD_HASH_BYTES)))?.slice(0, 32),
-        storeGeneration: () => Promise.resolve(source.generation),
-        boundarySha256: (end) => digest(Math.max(0, end - JOURNAL_BOUNDARY_HASH_BYTES), end),
-        prefixSha256: (end) => digest(0, end),
-      });
-      if (verified === undefined) return undefined;
-      const states = decodeReplayCheckpointStates(checkpoint.graph, new Set([goalKey.name]));
-      if (!states.has(goalKey.name)) return undefined;
-      return { offset: verified.offset, goal: goalKey.replayable.schema.parse(states.get(goalKey.name)) };
+      const checkpoint = await readPersistedAgentCheckpoint(
+        this.docs,
+        this.storage,
+        scope,
+        source.size,
+        source.mtimeMs,
+        new Set([goalKey.name]),
+        this.workers,
+      );
+      if (checkpoint === undefined || !checkpoint.states.has(goalKey.name)) return undefined;
+      return { offset: checkpoint.offset, goal: goalKey.replayable.schema.parse(checkpoint.states.get(goalKey.name)) };
     } catch {
       return undefined;
     }

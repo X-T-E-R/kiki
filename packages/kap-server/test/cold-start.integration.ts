@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import {
   IAgentContextMemoryService,
   IAgentLifecycleService,
+  IAgentPermissionModeService,
+  IAgentPlanService,
+  IEventDispatcher,
   ISessionIndex,
+  ISessionManager,
   IWorkspaceService,
   IWireService,
   getLiveSessionById,
@@ -32,6 +36,12 @@ interface SessionContract {
   main_turn_active: boolean;
   pending_interaction: 'none' | 'approval' | 'question';
   metadata: { cwd: string };
+  agent_config?: {
+    model: string;
+    permission_mode?: string;
+    plan_mode?: boolean;
+    plan_gate?: string;
+  };
 }
 
 interface TranscriptFrameContract {
@@ -343,5 +353,62 @@ describe('kap-server cold start', () => {
     expect(recoveredTranscript.body.data.prompts.some((prompt) => prompt.status === 'running')).toBe(
       false,
     );
+  });
+
+  it('preserves permission_mode, plan_mode, plan_gate, runtime, and model-switches cold without materializing', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kap-server-cold-controls-'));
+    const initialServer = await boot();
+    const createdResponse = await authedFetch(initialServer, base, '/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        metadata: { cwd: home },
+        agent_config: { permission_mode: 'yolo', plan_gate: 'gated' },
+      }),
+    });
+    const created = {
+      status: createdResponse.status,
+      body: (await createdResponse.json()) as Envelope<{ id: string }>,
+    };
+    expect(created.status).toBe(200);
+    expect(created.body.code).toBe(0);
+    const sessionId = created.body.data.id;
+
+    const liveSession = getLiveSessionById(initialServer.core.accessor, sessionId)!;
+    const mainAgent = liveSession.accessor.get(IAgentLifecycleService).get('main')!;
+    mainAgent.accessor.get(IAgentPermissionModeService).setMode('yolo');
+    const plan = mainAgent.accessor.get(IAgentPlanService);
+    plan.setGate('gated');
+    await plan.enter('cold-plan-1');
+    await mainAgent.accessor.get(IEventDispatcher).flush();
+    await mainAgent.accessor.get(IEventDispatcher).saveReplayCheckpoint!();
+
+    await initialServer.close();
+    server = undefined;
+    const recoveredServer = await boot();
+    const manager = recoveredServer.core.accessor.get(ISessionManager);
+
+    const coldSession = await getJson<SessionContract>(recoveredServer, `/api/sessions/${sessionId}`);
+    expect(coldSession.body.code).toBe(0);
+    expect(coldSession.body.data.agent_config).toMatchObject({
+      permission_mode: 'yolo',
+      plan_mode: true,
+      plan_gate: 'gated',
+    });
+
+    const coldRuntime = await getJson<{ workspace_id: string; runtime_id: string }>(
+      recoveredServer,
+      `/api/sessions/${sessionId}/runtime`,
+    );
+    expect(coldRuntime.body.code).toBe(0);
+    expect(coldRuntime.body.data.runtime_id).toBe('local');
+
+    const coldSwitches = await getJson<unknown[]>(
+      recoveredServer,
+      `/api/sessions/${sessionId}/agents/main/model-switches`,
+    );
+    expect(coldSwitches.body.code).toBe(0);
+    expect(coldSwitches.body.data).toEqual([]);
+    expect(manager.get(sessionId)).toBeUndefined();
   });
 });
