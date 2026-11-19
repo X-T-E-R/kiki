@@ -238,7 +238,7 @@ describe('WireService seal', () => {
     }
     expect(journalSize).toBeGreaterThan(64 * 4096);
     const tail = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!);
-    tail[tail.byteLength - 10] = '0'.codePointAt(0) === tail[tail.byteLength - 10] ? '1'.codePointAt(0) : '0'.codePointAt(0);
+    tail[tail.byteLength - 10] = tail[tail.byteLength - 10] === 0x30 ? 0x31 : 0x30;
     await storage.write(scope, AGENT_WIRE_RECORD_KEY, tail);
     wire.appendRecord({ type: 'turn.prompt', turnId: 73 });
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);

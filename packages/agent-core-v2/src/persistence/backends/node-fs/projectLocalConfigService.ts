@@ -3,7 +3,9 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { z } from 'zod';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { isPlainObject } from '#/_base/utils/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { findGitWorkTree } from '#/app/git/workTree';
 import {
   IProjectLocalConfigService,
   type ProjectAdditionalDirsLoadResult,
@@ -146,16 +148,7 @@ export async function readProjectAdditionalDirs(
 
 async function findProjectRoot(fs: IHostFileSystem, workDir: string): Promise<string> {
   const initial = normalize(workDir);
-  let current = initial;
-  while (true) {
-    try {
-      await fs.lstat(join(current, '.git'));
-      return current;
-    } catch {}
-    const parent = dirname(current);
-    if (parent === current) return initial;
-    current = parent;
-  }
+  return (await findGitWorkTree(fs, initial))?.root ?? initial;
 }
 
 async function readProjectLocalToml(fs: IHostFileSystem, configPath: string): Promise<ProjectLocalTomlFile | undefined> {
@@ -253,10 +246,6 @@ function describeProjectLocalValidationError(error: z.ZodError): string {
 function cloneRecord(value: unknown): Record<string, unknown> {
   if (!isPlainObject(value)) return {};
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isPathMissing(error: unknown): boolean {

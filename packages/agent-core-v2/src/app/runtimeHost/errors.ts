@@ -71,3 +71,8 @@ export function fromErrorPayloadCode(code: string): HomeRuntimeErrorCode {
     ? code as HomeRuntimeErrorCode
     : 'runtime.connection_failed';
 }
+
+export function runtimeAbortReason(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error && !(signal.reason instanceof DOMException)) return signal.reason;
+  return new HomeRuntimeError('runtime.aborted', 'runtime call aborted');
+}

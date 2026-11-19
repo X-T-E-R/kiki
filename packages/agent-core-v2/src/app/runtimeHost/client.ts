@@ -3,7 +3,7 @@ import type { Socket } from 'node:net';
 import { createConnection } from 'node:net';
 
 import { createFrameDecoder, encodeCall, encodeCancel, encodeHello, encodeTokens } from './codec';
-import { HomeRuntimeError, fromErrorPayloadCode } from './errors';
+import { HomeRuntimeError, fromErrorPayloadCode, runtimeAbortReason } from './errors';
 import {
   RUNTIME_CONNECT_TIMEOUT_MS,
   RUNTIME_HANDSHAKE_TIMEOUT_MS,
@@ -255,13 +255,13 @@ export function createRuntimeClient(
       if (pending.has(requestId)) {
         return Promise.reject(new HomeRuntimeError('runtime.duplicate_request', `request id is already pending: ${requestId}`));
       }
-      if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+      if (options.signal?.aborted) return Promise.reject(runtimeAbortReason(options.signal));
       const timeoutMs = callTimeoutMs(options.timeoutMs, limits.callTimeoutMs);
       return new Promise<unknown>((resolve, reject) => {
         let settled = false;
         const abortFromCaller = (): void => {
           sendCancel(requestId);
-          finish(abortReason(options.signal!));
+          finish(runtimeAbortReason(options.signal!));
         };
         const cleanup = (): void => {
           if (call.timer !== undefined) clearTimeout(call.timer);
@@ -298,9 +298,4 @@ export function createRuntimeClient(
       });
     },
   };
-}
-
-function abortReason(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error && !(signal.reason instanceof DOMException)) return signal.reason;
-  return new HomeRuntimeError('runtime.aborted', 'runtime call aborted');
 }

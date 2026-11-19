@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream';
 
+import { toErrorDisplayMessage } from '#/_base/errors/errorMessage';
 import type {
   AgentTask,
   AgentTaskInfoBase,
@@ -94,7 +95,7 @@ export class ProcessTask implements AgentTask {
       this.exitCode = this.proc.exitCode;
       settlement = {
         status: sink.signal.aborted ? 'killed' : 'failed',
-        stopReason: sink.signal.aborted ? undefined : errorMessage(error),
+        stopReason: sink.signal.aborted ? undefined : toErrorDisplayMessage(error),
       };
     }
     sink.signal.removeEventListener('abort', requestStop);
@@ -362,8 +363,4 @@ function createPrematureCloseError(): Error {
   const error = new Error('Premature close') as NodeJS.ErrnoException;
   error.code = 'ERR_STREAM_PREMATURE_CLOSE';
   return error;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

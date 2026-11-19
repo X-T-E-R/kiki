@@ -1,4 +1,5 @@
 import { Error2, attachErrorDetails, readAttachedErrorDetails, type Error2Options } from '#/_base/errors/errors';
+import { isAbortError } from '#/_base/utils/abort';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import type { FinishReason } from './provider';
 
@@ -234,15 +235,7 @@ export function createAbortError(): DOMException {
   return new DOMException('The operation was aborted.', 'AbortError');
 }
 
-export function isAbortError(error: unknown): boolean {
-  if (error instanceof DOMException && error.name === 'AbortError') return true;
-  if (error instanceof Error && error.name === 'AbortError') return true;
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as object).constructor?.name === 'APIUserAbortError'
-  );
-}
+export { isAbortError };
 
 export function throwIfAbortError(error: unknown): void {
   if (isAbortError(error)) {

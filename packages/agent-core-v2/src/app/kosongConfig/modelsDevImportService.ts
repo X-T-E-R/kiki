@@ -10,6 +10,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
 import { sliceUtf16 } from '#/_base/text/utf16';
+import { isPlainObject } from '#/_base/utils/types';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
@@ -229,11 +230,11 @@ export class ModelsDevImportService implements IModelsDevImportService {
     const surviving = new Set(Object.values(entries).map((entry) => entry.id));
     for (const [providerId, provider] of Object.entries(removed.providers)) {
       if (surviving.has(providerId)) continue;
-      if (!isRecord(provider)) continue;
+      if (!isPlainObject(provider)) continue;
       if (provider['oauth'] !== undefined) continue;
       const existingSource = provider['source'];
       if (
-        isRecord(existingSource) &&
+        isPlainObject(existingSource) &&
         existingSource['kind'] === 'apiJson' &&
         existingSource['url'] === url
       ) {
@@ -293,18 +294,14 @@ function registryKeyFromExisting(
   url: string,
 ): string | undefined {
   for (const provider of Object.values(providers)) {
-    if (!isRecord(provider)) continue;
+    if (!isPlainObject(provider)) continue;
     const source = provider['source'];
-    if (isRecord(source) && source['kind'] === 'apiJson' && source['url'] === url) {
+    if (isPlainObject(source) && source['kind'] === 'apiJson' && source['url'] === url) {
       const key = source['apiKey'];
       if (typeof key === 'string' && key.length > 0) return key;
     }
   }
   return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function truncateUpstreamMessage(err: unknown, limit = 300): string {

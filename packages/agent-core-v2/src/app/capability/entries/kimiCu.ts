@@ -4,6 +4,7 @@ import { access, lstat, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { downloadToFile, runCommand } from '../host';
 import { cuMacArtifact, CU_WINDOWS_EXECUTABLE_SHA256, CU_WINDOWS_RUNTIME_METADATA,
   CU_WINDOWS_RUNTIME_VERSION } from '../verifiedArtifacts';
@@ -103,10 +104,6 @@ export async function readAppBundleVersion(infoPlistPath: string): Promise<strin
   } catch {
     return undefined;
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 async function detectPluginLayer(
@@ -261,7 +258,7 @@ function createMacKimiCuEntry(ctx: CapabilityEntryContext): CapabilityEntry {
     try {
       steps.push({ id: 'service', state: (await serviceRunning()) ? 'ok' : 'missing' });
     } catch (error) {
-      steps.push({ id: 'service', state: 'failed', detail: errorMessage(error) });
+      steps.push({ id: 'service', state: 'failed', detail: toErrorMessage(error) });
     }
 
     let permissions: PermissionStatus | undefined;
@@ -269,7 +266,7 @@ function createMacKimiCuEntry(ctx: CapabilityEntryContext): CapabilityEntry {
     try {
       permissions = await permissionStatus();
     } catch (error) {
-      permissionsProbeError = errorMessage(error);
+      permissionsProbeError = toErrorMessage(error);
     }
     if (permissionsProbeError !== undefined) {
       steps.push({ id: 'permissions', state: 'failed', detail: permissionsProbeError });

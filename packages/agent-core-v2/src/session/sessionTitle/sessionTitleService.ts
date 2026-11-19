@@ -3,6 +3,7 @@ import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
+import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { ILogService } from '#/_base/log/log';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -119,7 +120,7 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
       const text = await composeTitleInput(main.accessor.get(IAgentTitlePromptSource), source);
       if (text !== undefined) await this.generateAndApply(text, false, source);
     }).catch((error) => {
-      this.log.warn(`automatic session title generation failed: ${errorMessage(error)}`);
+      this.log.warn(`automatic session title generation failed: ${toErrorMessage(error)}`);
     });
   }
 
@@ -192,7 +193,7 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
       }
     } catch (error) {
       throw new Error2(SessionErrors.codes.SESSION_TITLE_GENERATION_FAILED,
-        `Title model request failed: ${errorMessage(error)}`, { cause: error, details: { model: alias } });
+        `Title model request failed: ${toErrorMessage(error)}`, { cause: error, details: { model: alias } });
     }
     const title = normalizeGeneratedTitle(collected.join(''));
     if (title.length === 0) {
@@ -201,10 +202,6 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
     }
     return title;
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function normalizeGeneratedTitle(raw: string): string {
