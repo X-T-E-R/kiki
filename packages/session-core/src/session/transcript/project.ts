@@ -5198,8 +5198,9 @@ export function projectAgentTranscriptView(
     turnStartedAt: options.cold === true || Number.isNaN(parsedTurnStartedAt) ? undefined : parsedTurnStartedAt,
     model: meta?.model ?? previous.model,
     thinkingEffort: meta?.thinkingEffort,
-    contextTokens: meta?.contextTokens,
-    maxContextTokens: meta?.maxContextTokens,
+    contextTokens: meta?.contextTokens ?? previous.contextTokens,
+    maxContextTokens: meta?.maxContextTokens
+      ?? (meta?.model !== undefined && previous.model !== undefined && meta.model !== previous.model ? undefined : previous.maxContextTokens),
     usage: keepEqual(previous.usage, projectUsageStatus(meta?.usage)),
     permissionMode: mapTranscriptPermission(meta?.permission) ?? previous.permissionMode,
     planMode: snapshot.meta.modes?.plan !== undefined,
@@ -5274,7 +5275,9 @@ export function applyTranscriptShell(
     profile: snapshot.session.agent_config.profile ?? base.profile,
     permissionMode: snapshot.session.agent_config.permission_mode ?? base.permissionMode,
     planMode: snapshot.session.agent_config.plan_mode ?? base.planMode,
-    contextTokens: snapshot.context_tokens ?? base.contextTokens,
+    contextTokens: snapshot.context_tokens !== undefined && (snapshot.context_tokens > 0 || base.contextTokens === undefined || !base.transcriptReady)
+      ? snapshot.context_tokens
+      : base.contextTokens,
     maxContextTokens: snapshot.max_context_tokens ?? base.maxContextTokens,
     snapshotSubagents: snapshot.subagents ?? base.snapshotSubagents,
     agentCounts: snapshot.agent_counts,

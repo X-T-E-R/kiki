@@ -3415,7 +3415,11 @@ export class SessionController {
         signal?.throwIfAborted();
         const code = error instanceof RPCError || error instanceof ApiError ? error.code : undefined;
         const preparing = code === 40923;
-        const transient = code === -1 || error instanceof TypeError;
+        const transient =
+          code === -1 ||
+          code === API_CODES.SESSION_BUSY ||
+          code === API_CODES.SESSION_INDEX_BUILDING ||
+          error instanceof TypeError;
         if (!preparing && (!transient || failures >= RESYNC_BACKOFF_MS.length)) throw error;
         if (preparing) await backoff.wait(signal);
         else await waitUnlessAborted(RESYNC_BACKOFF_MS[failures++]!, signal);

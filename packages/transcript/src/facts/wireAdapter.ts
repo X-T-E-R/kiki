@@ -497,7 +497,7 @@ export class TranscriptWireAdapter {
       this.#modelSwitchChanges.set(operationId, change);
       const operations: TranscriptOperation[] = [];
       if (committed || state === 'completed') {
-        const agent: { model?: string; thinkingEffort?: string } = {};
+        const agent: { model?: string; thinkingEffort?: string; contextTokens?: number } = {};
         if (to !== undefined) {
           this.#modelAlias = to;
           agent.model = to;
@@ -505,6 +505,10 @@ export class TranscriptWireAdapter {
         if (thinking !== undefined) {
           this.#thinkingEffort = thinking;
           agent.thinkingEffort = thinking;
+        }
+        const contextTokens = committed ? numberOf(record['contextTokens']) : undefined;
+        if (contextTokens !== undefined && contextTokens >= 0) {
+          agent.contextTokens = Math.floor(contextTokens);
         }
         if (Object.keys(agent).length > 0) operations.push({ op: 'meta.merge', meta: { agent } });
       }
@@ -519,6 +523,16 @@ export class TranscriptWireAdapter {
       const mode = stringOf(record['mode']);
       return mode === 'manual' || mode === 'auto' || mode === 'review' || mode === 'yolo'
         ? [{ op: 'meta.merge', meta: { agent: { permission: mode } } }]
+        : [];
+    }
+    if (
+      record.type === 'token_counting.measured' ||
+      record.type === 'token_counting.truncated' ||
+      record.type === 'token_counting.rebased'
+    ) {
+      const tokens = numberOf(record['tokens']);
+      return tokens !== undefined && tokens >= 0
+        ? [{ op: 'meta.merge', meta: { agent: { contextTokens: Math.floor(tokens) } } }]
         : [];
     }
     if (record.type === 'profile.bind' || record.type === 'config.update') {
@@ -568,7 +582,9 @@ export class TranscriptWireAdapter {
       }
       return operations;
     }
-    if (record.type === 'context.clear') return this.removeTurns(this.#turns.length);
+    if (record.type === 'context.clear') {
+      return this.removeTurns(this.#turns.length);
+    }
     if (record.type === 'branch.base') {
       const operations = this.removeTurns(this.#turns.length);
       this.#undoAnchors.clear();
@@ -2968,6 +2984,9 @@ function durableRecord(type: string): boolean {
     type === 'prompt.model_switch_status' ||
     type === 'config.update' ||
     type === 'permission.set_mode' ||
+    type === 'token_counting.measured' ||
+    type === 'token_counting.truncated' ||
+    type === 'token_counting.rebased' ||
     type === 'profile.bind' ||
     type === 'turn.prompt' ||
     type === 'turn.ended' ||

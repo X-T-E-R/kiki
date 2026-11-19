@@ -9173,6 +9173,48 @@ describe('settled history folds and the unified locate entry', () => {
     }
   });
 
+  it('auto-hydrates step frames for a visible cold turn missing its user block without clicking Worked', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
+    const { root, container } = makeRoot();
+    const begin = vi.spyOn(controller, 'beginContentRead').mockImplementation(() => ({ release: vi.fn(), retry: () => {} }));
+    const stepFramesRef = {
+      source: { kind: 'turn' as const, id: 't1' },
+      path: ['steps', 0, 'frames'],
+      kind: 'array' as const,
+      revision: 'rev-frames',
+      offset: 4,
+      total: 40,
+      direction: 'backward' as const,
+    };
+    const refs = vi.spyOn(controller, 'contentRefsFor').mockImplementation((_agent, source) =>
+      source.kind === 'turn' && source.id === 't1' ? [stepFramesRef] : [],
+    );
+    const coldBlocksWithoutUser: Block[] = [
+      doneTool('tool-1', 't1'),
+      doneTool('tool-2', 't1'),
+      { ...assistantBlock('a1', 'Finished processing the request.'), turnId: 't1' },
+    ];
+    const state = {
+      ...transcriptState(coldBlocksWithoutUser),
+      contentRefs: [stepFramesRef],
+    };
+    try {
+      await renderSettled(
+        root,
+        <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} contentRefs={state.contentRefs} sessionId="session_test" agentId="main">
+          {transcriptEl(state, { visible: true })}
+        </TranscriptDetailProvider>,
+      );
+      expect(container.querySelectorAll('[data-history-fold-open]')).toHaveLength(0);
+      expect(begin).toHaveBeenCalledWith('main', { kind: 'turn', id: 't1' }, ['steps'], true);
+    } finally {
+      refs.mockRestore();
+      begin.mockRestore();
+      controller.close();
+    }
+  });
+
   it.each(['main', 'child'])('reads an incomplete turn’s structure while any of its rows is in view, whatever its folds, and says what is missing (%s)', async (agentId) => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const { controller } = await openLiveTranscript();

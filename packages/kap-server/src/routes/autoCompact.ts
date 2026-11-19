@@ -26,6 +26,7 @@ import { readAgentObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensureSessionAgent } from '../lib/sessionAgent';
+import { readPersistedAutoCompact } from './persistedCompactionSettings';
 
 interface RouteHost {
   get(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: { id: string; params: unknown }, reply: { send(payload: unknown): unknown }) => Promise<void>): unknown;
@@ -57,9 +58,24 @@ export function registerAutoCompactRoutes(app: RouteHost, core: Scope): void {
       const observed = await readAgentObserver(core, req.params.session_id, req.params.agent_id);
       if (observed === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
       if (observed.agent === undefined) {
-        const bound = observed.metadata?.model !== undefined;
-        reply.send(errEnvelope(bound ? ErrorCode.SESSION_BUSY : ErrorCode.VALIDATION_FAILED,
-          bound ? 'Agent settings are unavailable while the agent is not active' : req.params.agent_id === MAIN_AGENT_ID ? 'Model not set' : 'Agent is not active in this session', req.id));
+        const bound = observed.metadata?.model !== undefined
+          || observed.metadata?.endpoint !== undefined
+          || (observed.metadata?.contextTokens ?? 0) > 0;
+        if (bound) {
+          const persisted = await readPersistedAutoCompact(
+            core,
+            observed.workspaceId,
+            req.params.session_id,
+            req.params.agent_id,
+            observed.metadata,
+          );
+          if (persisted !== undefined) {
+            reply.send(okEnvelope(persisted, req.id));
+            return;
+          }
+        }
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED,
+          req.params.agent_id === MAIN_AGENT_ID ? 'Model not set' : 'Agent is not active in this session', req.id));
         return;
       }
       try { reply.send(okEnvelope(observed.agent.accessor.get(IAgentFullCompactionService).getAutoCompact(), req.id)); }

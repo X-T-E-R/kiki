@@ -8,6 +8,7 @@ import { readAgentObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensureMainAgent } from '../transport/mainAgent';
+import { readPersistedContextStrategy } from './persistedCompactionSettings';
 
 interface RouteHost {
   get(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: { id: string; params: unknown }, reply: { send(payload: unknown): unknown }) => Promise<void>): unknown;
@@ -26,7 +27,19 @@ export function registerContextStrategyRoutes(app: RouteHost, core: Scope): void
       const observed = await readAgentObserver(core, req.params.session_id, req.params.agent_id);
       if (observed === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
       if (observed.agent !== undefined) { reply.send(okEnvelope(observed.agent.accessor.get(IAgentFullCompactionService).getContextStrategy(), req.id)); return; }
-      if (observed.metadata?.model !== undefined) { reply.send(errEnvelope(ErrorCode.SESSION_BUSY, 'Agent settings are unavailable while the agent is not active', req.id)); return; }
+      const bound = observed.metadata?.model !== undefined
+        || observed.metadata?.endpoint !== undefined
+        || (observed.metadata?.contextTokens ?? 0) > 0;
+      if (bound) {
+        reply.send(okEnvelope(await readPersistedContextStrategy(
+          core,
+          observed.workspaceId,
+          req.params.session_id,
+          req.params.agent_id,
+          observed.metadata,
+        ), req.id));
+        return;
+      }
       if (req.params.agent_id !== MAIN_AGENT_ID) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id)); return; }
       const config = core.accessor.get(IConfigService).get<LoopControl>('loopControl');
       reply.send(okEnvelope({ strategy: config.contextStrategy ?? 'auto', source: config.contextStrategy === undefined ? 'default' : 'global', shadow: config.relayShadow === true }, req.id));

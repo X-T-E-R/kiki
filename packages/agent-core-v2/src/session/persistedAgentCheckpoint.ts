@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { autoCompactOverrideKey } from '#/agent/fullCompaction/autoCompactOps';
+import { contextStrategyOverrideKey } from '#/agent/fullCompaction/contextStrategyOps';
 import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
 import { turnKey } from '#/agent/loop/turnOps';
 import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
@@ -35,6 +37,8 @@ const LIGHTWEIGHT_STATE_NAMES = new Set([
   profileActiveToolsKey.name,
   permissionModeKey.name,
   planKey.name,
+  autoCompactOverrideKey.name,
+  contextStrategyOverrideKey.name,
 ]);
 
 const CHECKPOINT_SUBSCOPE = 'replay-checkpoints';

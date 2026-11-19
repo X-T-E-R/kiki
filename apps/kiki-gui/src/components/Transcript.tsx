@@ -3475,6 +3475,29 @@ function displayNodeTurnId(node: TimelineNode): string | undefined {
   return 'turnId' in node ? node.turnId : undefined;
 }
 
+/** Every turn ID represented by a display node, including members inside folds and grouped rows. */
+function collectDisplayNodeTurnIds(node: TimelineNode, out: string[]): void {
+  const direct = displayNodeTurnId(node);
+  if (direct !== undefined) out.push(direct);
+  switch (node.kind) {
+    case 'tool-group':
+      for (const tool of node.tools) {
+        if (tool.turnId !== undefined) out.push(tool.turnId);
+      }
+      return;
+    case 'media-run':
+    case 'subagent-group':
+    case 'history-fold':
+    case 'activity-summary':
+      for (const member of node.members) {
+        collectDisplayNodeTurnIds(member, out);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
 /**
  * Which lane a display node belongs to — the element taxonomy in one place.
  *
@@ -5794,8 +5817,10 @@ export const Transcript = memo(function Transcript({
   const windowRawTurnIds = new Map<string, string>();
   for (const item of virtualItems) {
     const node = virtualNodes[item.index];
-    const turnId = node === undefined ? undefined : displayNodeTurnId(node);
-    if (turnId !== undefined) {
+    if (node === undefined) continue;
+    const nodeTurnIds: string[] = [];
+    collectDisplayNodeTurnIds(node, nodeTurnIds);
+    for (const turnId of nodeTurnIds) {
       const normalized = normalizeTurnId(turnId);
       windowTurnIds.add(normalized);
       if (!windowRawTurnIds.has(normalized)) windowRawTurnIds.set(normalized, turnId);
@@ -5845,31 +5870,58 @@ export const Transcript = memo(function Transcript({
       reads.set(turnId, controller.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps']));
   }, [controller, agentId, state.sessionId, visible, incompleteTurnKey]);
   // Bounded turns with >8 steps arrive with a turn-level `['steps']` ContentRef
-  // (without `stepsPartial: true`). Those omitted steps include steered user
-  // messages, intermediate assistant prose, and subagent cards that sit outside
-  // the closed tool fold, so hydrate turn-level `['steps']` whenever any row of
-  // the turn is in the virtual window while leaving per-step frame cuts gated
-  // behind fold expansion.
-  const cutStepsTurnCandidates: string[] = [];
-  {
-    const seen = new Set<string>();
-    for (const ref of state.contentRefs ?? []) {
-      if (ref.source.kind !== 'turn' || ref.path.length !== 1 || ref.path[0] !== 'steps') continue;
-      const key = normalizeTurnId(ref.source.id);
-      if (windowTurnIds.has(key) && !incompleteTurns.has(key) && !seen.has(key)) {
-        seen.add(key);
-        cutStepsTurnCandidates.push(ref.source.id);
+  // (without `stepsPartial: true`), and steps whose tail frame slice excluded an
+  // earlier user frame arrive with a `['steps', i, 'frames']` ContentRef.
+  // Hydrate turn-level `['steps']` for visible turns while leaving per-step
+  // frame cuts gated behind fold expansion UNLESS the visible turn currently
+  // has no rendered user block yet — so user messages never stay hidden behind
+  // a closed `Worked` fold on cold open.
+  const turnsWithUserBlock = useMemo(() => {
+    const ids = new Set<string>();
+    for (const block of blocks) {
+      if (block.kind === 'user' && block.turnId !== undefined) {
+        ids.add(normalizeTurnId(block.turnId));
       }
+    }
+    return ids;
+  }, [blocks]);
+  const isTurnStepsCut = (ref: ContentRef): boolean =>
+    ref.path.length === 1 && ref.path[0] === 'steps';
+  const isStepFramesCut = (ref: ContentRef): boolean =>
+    ref.path.length === 3 && ref.path[0] === 'steps' && ref.path[2] === 'frames';
+  const cutStepsTurnCandidates: { turnId: string; includeFrames: boolean }[] = [];
+  {
+    const candidatesByKey = new Map<string, { turnId: string; includeFrames: boolean }>();
+    const considerRef = (ref: ContentRef, rawTurnId: string) => {
+      const key = normalizeTurnId(rawTurnId);
+      if (!windowTurnIds.has(key) || incompleteTurns.has(key)) return;
+      const missingUser = !turnsWithUserBlock.has(key);
+      const matchFull = missingUser && isStepFramesCut(ref);
+      const matchSteps = isTurnStepsCut(ref);
+      if (!matchFull && !matchSteps) return;
+      const existing = candidatesByKey.get(key);
+      if (existing === undefined) {
+        const entry = { turnId: rawTurnId, includeFrames: matchFull };
+        candidatesByKey.set(key, entry);
+        cutStepsTurnCandidates.push(entry);
+      } else if (matchFull && !existing.includeFrames) {
+        existing.includeFrames = true;
+      }
+    };
+    for (const ref of state.contentRefs ?? []) {
+      if (ref.source.kind !== 'turn') continue;
+      considerRef(ref, ref.source.id);
     }
     if (controller !== undefined) {
       for (const [key, rawTurnId] of windowRawTurnIds) {
-        if (seen.has(key) || incompleteTurns.has(key)) continue;
-        const hasTurnStepsRef =
-          controller.contentRefsFor(agentId, { kind: 'turn', id: rawTurnId }).some((ref) => ref.path.length === 1 && ref.path[0] === 'steps') ||
-          (rawTurnId !== key && controller.contentRefsFor(agentId, { kind: 'turn', id: key }).some((ref) => ref.path.length === 1 && ref.path[0] === 'steps'));
-        if (hasTurnStepsRef) {
-          seen.add(key);
-          cutStepsTurnCandidates.push(rawTurnId);
+        if (incompleteTurns.has(key)) continue;
+        for (const ref of controller.contentRefsFor(agentId, { kind: 'turn', id: rawTurnId })) {
+          considerRef(ref, rawTurnId);
+        }
+        if (rawTurnId !== key) {
+          for (const ref of controller.contentRefsFor(agentId, { kind: 'turn', id: key })) {
+            considerRef(ref, rawTurnId);
+          }
         }
       }
     }
@@ -5882,10 +5934,25 @@ export const Transcript = memo(function Transcript({
   }, [controller, agentId, state.sessionId]);
   useEffect(() => {
     const reads = cutStepsReads.current;
-    const wanted = new Set<string>(visible && controller !== undefined ? JSON.parse(cutStepsTurnKey) as string[] : []);
-    for (const [turnId, lease] of reads) if (!wanted.has(turnId)) { lease.release(); reads.delete(turnId); }
-    if (controller !== undefined) for (const turnId of wanted) if (!reads.has(turnId))
-      reads.set(turnId, controller.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps'], true, TURN_STEP_ARRAY_PATHS));
+    const entries = visible && controller !== undefined
+      ? JSON.parse(cutStepsTurnKey) as { turnId: string; includeFrames: boolean }[]
+      : [];
+    const wanted = new Map<string, { turnId: string; includeFrames: boolean }>(
+      entries.map((entry) => [`${entry.turnId}:${entry.includeFrames ? 'full' : 'steps'}`, entry]),
+    );
+    for (const [key, lease] of reads) if (!wanted.has(key)) { lease.release(); reads.delete(key); }
+    if (controller !== undefined) {
+      for (const [key, entry] of wanted) {
+        if (!reads.has(key)) {
+          reads.set(
+            key,
+            entry.includeFrames
+              ? controller.beginContentRead(agentId, { kind: 'turn', id: entry.turnId }, ['steps'], true)
+              : controller.beginContentRead(agentId, { kind: 'turn', id: entry.turnId }, ['steps'], true, TURN_STEP_ARRAY_PATHS),
+          );
+        }
+      }
+    }
   }, [controller, agentId, state.sessionId, visible, cutStepsTurnKey]);
   const rekeyedFoldAnchorRef =useRef<{ blockId: string; offset: number; intent: number; controller: AbortController; started: boolean } | null>(null);
   const captureRekeyedFold = useCallback((row: HTMLDivElement) => {

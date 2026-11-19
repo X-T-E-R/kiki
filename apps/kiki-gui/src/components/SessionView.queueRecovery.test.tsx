@@ -9,6 +9,7 @@ import { composerInput, setComposerInputValue } from './composerInputTestUtils';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
+import { contentSegmentKey } from './transcriptDetail';
 import { AdmissionLine, AdmissionScope, RESTORE_NOTICE_MS, RESTORE_POLL_MS, useAdmissionScope, useAdmissionView, withAdmissionUserBlocks, withOptimisticUserBlock } from './timeline/AdmissionLine';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, resetComposerMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
 import { createViewState, projectAgentTranscriptView, type DurableIngressItem, type UserBlock } from '@kiki/session-core/session';
@@ -19,7 +20,7 @@ const contentRead = {
   beginContentRead() { return { release() {}, retry() {} }; },
   isContentRange() { return false; },
 };
-const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly DurableIngressItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), beginRead: vi.fn(), releaseRead: vi.fn(), retryRead: vi.fn(), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn(), updateSessionProfile: vi.fn(), live: false }));
+const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, structureError: false, durableIngress: undefined as readonly DurableIngressItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), beginRead: vi.fn(), releaseRead: vi.fn(), retryRead: vi.fn(), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn(), updateSessionProfile: vi.fn(), live: false }));
 vi.mock('../lib/toasts', () => ({ pushToast: fixture.pushToast }));
 /** A snapshot field the header shows, cut in the window — the composer's remainder. */
 const STRUCTURE_REF = { source: { kind: 'snapshot' as const, id: '' }, revision: 'rev-1', path: ['session', 'title'], kind: 'text' as const, offset: 12, total: 40 };
@@ -66,6 +67,9 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       queuedPromptIds: fixture.queued ? ['queued-example'] : [],
       durableIngress: fixture.durableIngress,
       contentRefs: fixture.structureUnread ? [STRUCTURE_REF] : undefined,
+      detailLoads: fixture.structureError
+        ? { [contentSegmentKey(STRUCTURE_REF)]: { status: 'error' as const, message: 'read failed' } }
+        : {},
       globalCoverage: fixture.partialPrompts ? { version: 1 as const,
         tasks: { returned: 0, total: 0, hasMore: false }, attachments: { returned: 0, total: 0, hasMore: false },
         prompts: { returned: 8, total: 12, hasMore: true },
@@ -74,6 +78,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     loadTranscriptEntities = fixture.loadEntities;
     loadContentSegment = fixture.loadContent;
     beginContentRead = fixture.beginRead;
+    contentRefsFor = () => [] as const;
     getState = () => this.state;
     getAgentState = () => this.state;
     setFocusedAgent() {}
@@ -123,6 +128,7 @@ beforeEach(() => {
   fixture.queued = true;
   fixture.partialPrompts = false;
   fixture.structureUnread = false;
+  fixture.structureError = false;
   fixture.durableIngress = undefined;
   fixture.acquires = 0;
   fixture.releases = 0;
@@ -430,7 +436,7 @@ it('moves an unconfirmed send into the composer in one click, or drops it once t
 });
 
 
-it('keeps partial prompt records reachable with no loaded queued row and requests exactly one main-agent page', async () => {
+it('hides idle partial prompt records from the composer footer when no queue or recovery item needs attention, and surfaces continuation in the queue bar or during held ingress', async () => {
   fixture.queued = false;
   fixture.partialPrompts = true;
   root = createRoot(container);
@@ -441,12 +447,25 @@ it('keeps partial prompt records reachable with no loaded queued row and request
       </Routes></MemoryRouter></I18nProvider>
     </QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  const disclosure = container.querySelector<HTMLButtonElement>('[data-composer-status-line] [data-prompt-records-remainder] button');
-  expect(disclosure?.textContent).toContain('More message records');
+  expect(container.querySelector('[data-composer-status-line] [data-prompt-records-remainder]')).toBeNull();
   expect(container.querySelector('[data-header-toggle="queue"]')).toBeNull();
   expect(container.querySelector('[data-queue-count]')).toBeNull();
   expect(fixture.loadEntities).not.toHaveBeenCalled();
-  await act(async () => disclosure!.click());
+
+  await act(async () => { root!.unmount(); root = undefined; });
+  fixture.queued = true;
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(container.querySelector('[data-composer-status-line] [data-prompt-records-remainder]')).toBeNull();
+  const queueToggle = container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]');
+  expect(queueToggle).not.toBeNull();
+  await act(async () => queueToggle!.click());
   const action = container.querySelector<HTMLButtonElement>('[data-content-continuation-action]');
   expect(container.textContent).toContain('8 / 12 message records loaded');
   await act(async () => action!.click());
@@ -454,7 +473,7 @@ it('keeps partial prompt records reachable with no loaded queued row and request
   expect(container.querySelector('[data-composer-input][contenteditable]')).not.toBeNull();
 });
 
-it('reads session structure a window did not carry without waiting for a press', async () => {
+it('reads session structure silently without showing a pending disclosure until a read errors', async () => {
   fixture.queued = false;
   fixture.structureUnread = true;
   root = createRoot(container);
@@ -467,10 +486,22 @@ it('reads session structure a window did not carry without waiting for a press',
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(fixture.beginRead).toHaveBeenCalledExactlyOnceWith('main', { kind: 'snapshot', id: '' }, ['session'], true, expect.arrayContaining([['session', 'title'], ['session', 'metadata', 'cwd']]));
   expect(fixture.loadContent).not.toHaveBeenCalled();
+  expect(container.querySelector('[data-session-remainder]')).toBeNull();
+
+  await act(async () => { root!.unmount(); root = undefined; });
+  fixture.structureError = true;
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   await act(async () => { container.querySelector<HTMLButtonElement>('[data-session-remainder-toggle]')!.click(); });
   const action = container.querySelector<HTMLButtonElement>('[data-continuation-kind="session"] [data-content-continuation-action]');
-  expect(action?.disabled).toBe(true);
-  expect(action?.textContent).toContain('Loading');
+  expect(action).not.toBeNull();
+  expect(action?.disabled).toBe(false);
 });
 
 it('releases the visible snapshot demand when the session view leaves', async () => {

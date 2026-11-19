@@ -1602,18 +1602,23 @@ function ChildAgentWorkspace({
     }
   };
   const displayContextTokens = agentLiveState.contextTokens ?? selectedNode?.contextTokens;
-  const displayMaxContextTokens = agentLiveState.maxContextTokens ?? selectedNode?.maxContextTokens;
+  const resolvedMaxContextTokens = agentLiveState.maxContextTokens === 0
+    ? undefined
+    : agentLiveState.maxContextTokens
+      ?? selectedNode?.maxContextTokens
+      ?? (executorId === 'native' ? resolvedDisplayModel?.max_context_size : undefined);
   const displayUsage = agentLiveState.usage ?? selectedNode?.usage;
   // This agent's own compaction point: a child never inherits its parent's
   // session override, so the read and write address this agent id.
   const contextAutoCompact = useContextMeterAutoCompact({
-    sessionId: !composerDisabled && (controller === null || agentLiveState.transcriptReady) ? sessionId : undefined,
+    sessionId: agentKnown && executorId !== undefined && (controller === null || agentLiveState.transcriptReady) ? sessionId : undefined,
     agentId,
     modelId: displayModel,
     modelLabel: resolvedDisplayModel?.display_name ?? displayModel,
-    maxContextTokens: displayMaxContextTokens,
+    maxContextTokens: resolvedMaxContextTokens,
     running: headerBusy,
   });
+  const displayMaxContextTokens = resolvedMaxContextTokens ?? contextAutoCompact?.status.effectiveMaxContextTokens;
   // The composer footer's context meter is the same one the main session
   // renders; its cumulative card reads THIS agent's projected lifetime totals.
   // Per-agent projections price nothing, so the cost stays unknown (null)

@@ -5147,6 +5147,7 @@ boundExecution,
     profileName: boundProfile,
     profileCatalog: agentProfileCatalogMode,
   });
+  const effectiveContextLimit = contextLimit ?? contextAutoCompact?.status.effectiveMaxContextTokens;
 
   // ---- conversation shell seat ----
   // The composer element is published into ConversationShell's seat (stable
@@ -5301,6 +5302,9 @@ boundExecution,
           sendNowDisabled={state.resyncing || state.resyncFailed}
           sendNowUnavailable={nativeSteeringUnavailable ? t('harness.steerUnsupported') : undefined}
           timingReady={queueTimingReady}
+          promptContinuation={hasPromptContinuation && promptCoverage !== undefined
+            ? { coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }
+            : undefined}
           agentRefTasks={state.tasks} onOpenAgent={openAgent}
         />
         </TranscriptDetailProvider>
@@ -5454,12 +5458,19 @@ boundExecution,
     }
   ), [trayItems, trayAgentNames, reviewRequest?.seq, mainTimelineActions.resolveApproval, mainTimelineActions.answerQuestion, mainTimelineActions.dismissQuestion, handleBatchResolve,
     controller, state.detailLoads, state.contentRefs, sessionId, permissionMode, handlePermissionChange]);
-  // The composer footer carries connection facts and reading continuation only;
-  // each message keeps its own send lifecycle on the timeline.
+  // The composer footer carries connection facts and actionable continuation only;
+  // idle completed-history prompt caps stay out of the footer unless recovery
+  // hold, held/failed durable ingress, or an explicit load error needs attention.
+  const hasActionableDurableIngress = useMemo(
+    () => mainDurableIngress?.some((item) => item.admission === 'held' || item.admission === 'failed') ?? false,
+    [mainDurableIngress],
+  );
   const composerStatusNotice = useMemo(() => {
-    if (!hasPromptContinuation) return undefined;
-    return promptCoverage !== undefined ? <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} /> : null;
-  }, [hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities]);
+    if (!hasPromptContinuation || promptCoverage === undefined) return undefined;
+    if (queueRowCount > 0) return undefined;
+    if (!recoveryHold && !hasActionableDurableIngress && promptEntityLoad?.status !== 'error') return undefined;
+    return <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} />;
+  }, [hasPromptContinuation, promptCoverage, queueRowCount, recoveryHold, hasActionableDurableIngress, promptEntityLoad, handleLoadPromptEntities]);
 
   const composerBusy = canAbortActiveTurn(state);
   // The working line under the composer: only while the agent itself is
@@ -5602,8 +5613,8 @@ boundExecution,
             efforts={supportedEfforts}
             effort={effectiveEffort}
             contextUsage={
-              contextUsed !== undefined && contextLimit !== undefined
-                ? { used: contextUsed, limit: contextLimit }
+              contextUsed !== undefined && effectiveContextLimit !== undefined
+                ? { used: contextUsed, limit: effectiveContextLimit }
                 : undefined
             }
             contextAutoCompact={contextAutoCompact}
@@ -5692,7 +5703,7 @@ boundExecution,
     supportedEfforts,
     effectiveEffort,
     contextUsed,
-    contextLimit,
+    effectiveContextLimit,
     contextAutoCompact,
     compactionProgress,
     sessionId,

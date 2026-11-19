@@ -8445,4 +8445,41 @@ describe('terminal-facing transcript facts', () => {
     const next = setSessionRecord(state, { ...session, title: 'New title', agent_config: { model: 'large' } });
     expect(next).toMatchObject({ model: 'large', maxContextTokens: undefined, session: { title: 'New title' } });
   });
+
+  it('preserves contextTokens and maxContextTokens across a cold transcript reset when meta.agent omits them', () => {
+    const seeded = {
+      ...createViewState(session.id),
+      model: 'example/model',
+      contextTokens: 48_000,
+      maxContextTokens: 200_000,
+    };
+    const projected = projectAgentTranscriptView(seeded, 'main', emptySnapshot({
+      meta: { agent: { model: 'example/model' } },
+    }));
+    expect(projected.contextTokens).toBe(48_000);
+    expect(projected.maxContextTokens).toBe(200_000);
+  });
+
+  it('does not clobber positive wire-projected contextTokens when a cold snapshot shell reports fallback zero', () => {
+    const wireSeeded = {
+      ...createViewState(session.id),
+      transcriptReady: true,
+      model: 'example/model',
+      contextTokens: 64_000,
+      maxContextTokens: 200_000,
+    };
+    const next = applyTranscriptShell(session.id, {
+      session,
+      as_of_seq: 1,
+      epoch: 'cold',
+      messages: { items: [], has_more: false },
+      pending_approvals: [],
+      pending_questions: [],
+      in_flight_turn: null,
+      context_tokens: 0,
+      max_context_tokens: 200_000,
+    }, wireSeeded);
+    expect(next.contextTokens).toBe(64_000);
+    expect(next.maxContextTokens).toBe(200_000);
+  });
 });

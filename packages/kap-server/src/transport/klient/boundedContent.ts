@@ -149,6 +149,14 @@ export function boundedListPreview<T extends object>(entity: T, maxBytes = 2048)
   }
 }
 
+function isUserTextFrame(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record['kind'] === 'text' && record['role'] === 'user';
+}
+
+const USER_FRAME_PRESERVE_WINDOW = 32;
+
 function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number, agentId?: string, structureDirection: StructureDirection = 'head'): { value: unknown; refs: ContentRef[] } {
   const media = agentId === undefined ? undefined : { source, entity, agentId };
   let textBytes = source.kind === 'turn' || source.kind === 'frame' ? 16 * 1024 : CONTENT_PREVIEW_BYTES;
@@ -156,10 +164,11 @@ function projectAt(value: unknown, path: Path, source: ContentSource, entity: ob
   let rosterWindow = ROSTER_WINDOW;
   let structureWindow = 8;
   let completeSendReceipts = true;
+  let preserveUserFrames = true;
   for (;;) {
     const cuts: Cut[] = [];
     const receiptProjection = { complete: completeSendReceipts, retained: false };
-    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media, structureDirection, receiptProjection, rosterWindow);
+    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media, structureDirection, receiptProjection, rosterWindow, preserveUserFrames);
     const refs = bindCuts(entity, source, cuts);
     if (jsonBytes({ value: projected, refs }) <= maxBytes) return { value: projected, refs };
     if (receiptProjection.retained) { completeSendReceipts = false; continue; }
@@ -168,6 +177,7 @@ function projectAt(value: unknown, path: Path, source: ContentSource, entity: ob
     if (rosterWindow > 8) { rosterWindow = Math.floor(rosterWindow / 2); continue; }
     if (textBytes > 32) { textBytes = Math.floor(textBytes / 2); continue; }
     if (structureWindow > 1) { structureWindow = Math.floor(structureWindow / 2); continue; }
+    if (preserveUserFrames) { preserveUserFrames = false; continue; }
     return { value: projected, refs };
   }
 }
@@ -260,7 +270,7 @@ function isSendMessageReceipt(output: string): boolean {
   }
 }
 
-function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }, structureDirection: StructureDirection = 'head', receiptProjection = { complete: false, retained: false }, rosterWindow = ROSTER_WINDOW): unknown {
+function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }, structureDirection: StructureDirection = 'head', receiptProjection = { complete: false, retained: false }, rosterWindow = ROSTER_WINDOW, preserveUserFrames = false): unknown {
   budget.nodes -= 1;
   if (media !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const projected = projectInlineToolMedia(value, path, media.source, media.entity, media.agentId);
@@ -283,11 +293,27 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
     const count = structure ? Math.min(value.length, structureWindow)
       : roster ? Math.min(value.length, rosterWindow)
       : depth > 12 || budget.nodes < 0 ? 0 : Math.min(value.length, arrayWindow);
-    const start = structure && structureDirection === 'tail' ? value.length - count : 0;
-    const projected = value.slice(start, start + count).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure || roster ? { nodes: 128 } : budget, structureWindow, media, structureDirection, receiptProjection, rosterWindow));
-    if (count < value.length) {
+    let start = structure && structureDirection === 'tail' ? value.length - count : 0;
+    let sliceCount = count;
+    if (
+      preserveUserFrames &&
+      structure &&
+      structureDirection === 'tail' &&
+      start > 0 &&
+      path.length === 3 &&
+      path[0] === 'steps' &&
+      path[2] === 'frames'
+    ) {
+      const firstUser = value.findIndex((item, index) => index < start && isUserTextFrame(item));
+      if (firstUser !== -1 && value.length - firstUser <= USER_FRAME_PRESERVE_WINDOW) {
+        start = firstUser;
+        sliceCount = value.length - start;
+      }
+    }
+    const projected = value.slice(start, start + sliceCount).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure || roster ? { nodes: 128 } : budget, structureWindow, media, structureDirection, receiptProjection, rosterWindow, preserveUserFrames));
+    if (sliceCount < value.length) {
       if (structure && structureDirection === 'tail') cuts.push({ path, kind: 'array', offset: start, total: value.length, direction: 'backward' });
-      else cuts.push({ path, kind: 'array', offset: count, total: value.length });
+      else cuts.push({ path, kind: 'array', offset: sliceCount, total: value.length });
     }
     return projected;
   }
@@ -319,7 +345,7 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
         return [key, Array.isArray(child) ? [] : {}];
       }
     }
-    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media, structureDirection, receiptProjection, rosterWindow)];
+    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media, structureDirection, receiptProjection, rosterWindow, preserveUserFrames)];
   }));
 }
 

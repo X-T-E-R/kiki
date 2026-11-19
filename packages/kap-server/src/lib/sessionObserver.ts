@@ -1,8 +1,10 @@
 import {
   IAgentLifecycleService,
   IEventService,
+  ISessionContext,
   ISessionIndex,
   ISessionManager,
+  ISessionMetadata,
   type ISessionScopeHandle,
   type Scope,
   type SessionSummary,
@@ -167,6 +169,13 @@ export async function readSessionObserver(core: Scope, sessionId: string): Promi
 export async function readAgentObserver(core: Scope, sessionId: string, agentId: string) {
   const session = await readSessionObserver(core, sessionId);
   if (session === undefined) return undefined;
-  if (session.live !== undefined) return { session, agent: session.live.accessor.get(IAgentLifecycleService).get(agentId) };
-  return { session, metadata: session.metadata?.agents?.[agentId] };
+  if (session.live !== undefined) {
+    const agent = session.live.accessor.get(IAgentLifecycleService).get(agentId);
+    const workspaceId = session.live.accessor.get(ISessionContext).workspaceId;
+    const metadata = agent === undefined
+      ? session.live.accessor.get(ISessionMetadata).snapshot().agents?.[agentId]
+      : undefined;
+    return { session, agent, metadata, workspaceId };
+  }
+  return { session, metadata: session.metadata?.agents?.[agentId], workspaceId: session.summary.workspaceId };
 }

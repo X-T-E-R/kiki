@@ -232,15 +232,17 @@ const VISIBLE_SNAPSHOT_PATHS: readonly (readonly string[])[] = [
   ['session', 'worktree'],
   ['session', 'agent_config'],
   ['session', 'delivery'],
-  ['subagents'],
 ];
 
 /**
  * True for a snapshot ref whose field some screen shows. Matched as a path
- * prefix, so a ref on a whole visible object (`session.agent_config`) keeps its
- * outlet while a ref on one of its own leaves does too.
+ * prefix for `session.*` fields, while `subagents` only matches the root roster
+ * array itself (nested truncated fields like `subagents[i].result_summary` are
+ * not auto-drained by the roster reader and must not leave a permanent pending
+ * disclosure in the composer footer).
  */
 function showsSnapshotField(ref: ContentRef): boolean {
+  if (ref.path.length === 1 && ref.path[0] === 'subagents') return ref.kind === 'array';
   return VISIBLE_SNAPSHOT_PATHS.some((visible) =>
     visible.every((key, index) => String(ref.path[index]) === key));
 }
