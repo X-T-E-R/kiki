@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import {
   ErrorCodes,
+  IFileSystemStorageService,
   IRuntimeResolver,
   IHostFileSystem,
   ISessionContext,
@@ -14,10 +15,12 @@ import {
   IWorkspaceFsService,
   IWorkspaceInstanceManager,
   IWorkspaceService,
+  MAIN_AGENT_ID,
   isError2,
   type ISessionScopeHandle,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { subagentWorkspaceRoots } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import {
   fsDiffRequestSchema,
   fsGitStatusRequestSchema,
@@ -47,6 +50,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { AdmissionError } from '../services/connections/admission';
 import { peerAudience } from '../services/connections/audience';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import {
   launchDetached,
@@ -238,12 +242,44 @@ function acquireSessionFs(
   return createRuntimeFs(core, context.workspaceId, workspace, runtimeId, required);
 }
 
+type ColdSessionFsResolution =
+  | { readonly kind: 'cold'; readonly runtimeFs: RuntimeFsScope; readonly workspaceLease: WorkspaceInstanceLease }
+  | { readonly kind: 'fallback_session' }
+  | undefined;
+
+export async function readColdSessionAdditionalDirs(
+  core: Scope,
+  workspaceId: string,
+  sessionId: string,
+  baseDirs: readonly string[],
+  forceRead = false,
+): Promise<readonly string[]> {
+  try {
+    const scope = `sessions/${workspaceId}/${sessionId}`;
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const metaInfo = storage.statMeta !== undefined
+      ? await storage.statMeta(scope, 'state.json').catch(() => undefined)
+      : storage.stat !== undefined
+        ? await storage.stat(scope, 'state.json').catch(() => undefined)
+        : undefined;
+    if (!forceRead && metaInfo !== undefined && metaInfo.size > 262_144) {
+      return baseDirs;
+    }
+    const saved = await readColdSessionMeta(core, workspaceId, sessionId);
+    const savedDirs = subagentWorkspaceRoots(saved?.agents?.[MAIN_AGENT_ID], MAIN_AGENT_ID)?.additionalDirs;
+    if (savedDirs === undefined || savedDirs.length === 0) return baseDirs;
+    return [...new Set([...baseDirs, ...savedDirs])];
+  } catch {
+    return baseDirs;
+  }
+}
+
 async function acquireColdSessionFs(
   core: Scope,
   sessionId: string,
   runtimeId: string,
   required: readonly RuntimeCapability[],
-): Promise<{ readonly runtimeFs: RuntimeFsScope; readonly workspaceLease: WorkspaceInstanceLease } | undefined> {
+): Promise<ColdSessionFsResolution> {
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   if (summary === undefined) return undefined;
   let workspaceLease: WorkspaceInstanceLease;
@@ -258,17 +294,31 @@ async function acquireColdSessionFs(
   }
   try {
     await workspaceLease.instance.program.dirs.ready;
-    const runtimeFs = createRuntimeFs(
+    const additionalDirs = await readColdSessionAdditionalDirs(
       core,
-      workspaceLease.instance.id,
-      {
-        workDir: summary.cwd ?? workspaceLease.instance.root,
-        additionalDirs: workspaceLease.instance.program.dirs.additionalDirs,
-      },
-      runtimeId,
-      required,
+      summary.workspaceId,
+      sessionId,
+      workspaceLease.instance.program.dirs.additionalDirs,
     );
-    return { runtimeFs, workspaceLease };
+    const roots = {
+      workDir: summary.cwd ?? workspaceLease.instance.root,
+      additionalDirs,
+    };
+    try {
+      const runtimeFs = createRuntimeFs(core, workspaceLease.instance.id, roots, runtimeId, required);
+      return { kind: 'cold', runtimeFs, workspaceLease };
+    } catch (error) {
+      if (runtimeId === 'local') throw error;
+      if (runtimeId.startsWith('ssh:')) {
+        await core.accessor.get(IWorkspaceInstanceManager).prepareSshRuntime(workspaceLease.instance.id).catch(() => {});
+        try {
+          const runtimeFs = createRuntimeFs(core, workspaceLease.instance.id, roots, runtimeId, required);
+          return { kind: 'cold', runtimeFs, workspaceLease };
+        } catch {}
+      }
+      workspaceLease.dispose();
+      return { kind: 'fallback_session' };
+    }
   } catch (error) {
     workspaceLease.dispose();
     throw error;
@@ -378,9 +428,14 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         }
         if (runtimeFs === undefined) {
           const cold = await acquireColdSessionFs(core, session_id, runtimeId, required);
-          if (cold !== undefined) {
+          if (cold?.kind === 'cold') {
             runtimeFs = cold.runtimeFs;
             workspaceLease = cold.workspaceLease;
+          } else if (cold?.kind === 'fallback_session') {
+            operation = await acquireSessionOperation(core, session_id, 'operation');
+            if (operation.handle !== undefined) {
+              runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, required);
+            }
           } else if (fsAction === 'search') {
             runtimeFs = await resolveWorkspaceFs(core, session_id, runtimeId, required, allowUnregisteredLocal);
           }
@@ -602,9 +657,14 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         }
         if (runtimeFs === undefined) {
           const cold = await acquireColdSessionFs(core, session_id, runtimeId, ['fs']);
-          if (cold !== undefined) {
+          if (cold?.kind === 'cold') {
             runtimeFs = cold.runtimeFs;
             workspaceLease = cold.workspaceLease;
+          } else if (cold?.kind === 'fallback_session') {
+            operation = await acquireSessionOperation(core, session_id, 'operation');
+            if (operation.handle !== undefined) {
+              runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, ['fs']);
+            }
           }
         }
         if (runtimeFs === undefined) {

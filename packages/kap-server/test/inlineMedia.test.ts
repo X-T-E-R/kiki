@@ -665,4 +665,66 @@ describe('canonical inline media original', () => {
       rmSync(tempHome, { recursive: true, force: true });
     }
   });
+
+  it('skips persistent preview disk cache and sets no-store for private and ephemeral sessions', async () => {
+    const { existsSync, mkdtempSync, readdirSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { clearMediaPreviewMemoryCacheForTest } = await import('../src/services/mediaPreview');
+    const tempHome = mkdtempSync(join(tmpdir(), 'kiki-private-preview-cache-'));
+    const diskCacheDir = join(tempHome, 'cache', 'media-previews-v1');
+    const original = bitmap();
+    const blobHash = createHash('sha256').update(original).digest('hex');
+    const fileId = `blobref:main:${blobHash}`;
+    const blobs = { get: vi.fn(async (_scope: string, id: string) => id === blobHash ? original : undefined) };
+    const summaries = new Map<string, { id: string; workspaceId: string; private?: boolean }>([
+      ['private-cold', { id: 'private-cold', workspaceId: 'ws1', private: true }],
+      ['ephemeral-live', { id: 'ephemeral-live', workspaceId: 'ws1', private: false }],
+      ['public-cold', { id: 'public-cold', workspaceId: 'ws1', private: false }],
+    ]);
+    const services = new Map<unknown, unknown>([
+      [ISessionIndex, { get: async (id: string) => summaries.get(id) }],
+      [ISessionManager, {
+        isEphemeral: (id: string) => id === 'ephemeral-live',
+        get: () => undefined,
+      }],
+      [IBootstrapService, { homeDir: tempHome, scope: () => 'sessions' }],
+      [IBlobStore, blobs],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    const app = Fastify();
+    servers.push(app);
+    installErrorHandler(app);
+    registerSessionMediaRoutes(app as unknown as Parameters<typeof registerSessionMediaRoutes>[0], core);
+    try {
+      clearMediaPreviewMemoryCacheForTest();
+      const privRes = await app.inject({
+        url: `/sessions/private-cold/media/${encodeURIComponent(fileId)}/preview?media_type=image/bmp`,
+      });
+      expect(privRes.statusCode).toBe(200);
+      expect(privRes.headers['cache-control']).toBe('private, no-store');
+
+      const ephRes = await app.inject({
+        url: `/sessions/ephemeral-live/media/${encodeURIComponent(fileId)}/preview?media_type=image/bmp`,
+      });
+      expect(ephRes.statusCode).toBe(200);
+      expect(ephRes.headers['cache-control']).toBe('private, no-store');
+
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const filesAfterPrivate = existsSync(diskCacheDir) ? readdirSync(diskCacheDir) : [];
+      expect(filesAfterPrivate).toHaveLength(0);
+
+      const pubRes = await app.inject({
+        url: `/sessions/public-cold/media/${encodeURIComponent(fileId)}/preview?media_type=image/bmp`,
+      });
+      expect(pubRes.statusCode).toBe(200);
+      expect(pubRes.headers['cache-control']).toBe('private, max-age=31536000, immutable');
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const filesAfterPublic = existsSync(diskCacheDir) ? readdirSync(diskCacheDir) : [];
+      expect(filesAfterPublic.length).toBeGreaterThan(0);
+    } finally {
+      clearMediaPreviewMemoryCacheForTest();
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
 });

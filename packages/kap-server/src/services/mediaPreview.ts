@@ -36,13 +36,19 @@ export function clearMediaPreviewMemoryCacheForTest(): void {
   previewResultCacheBytes = 0;
 }
 
+export interface CreateMediaPreviewOptions {
+  readonly persistToDisk?: boolean;
+}
+
 export async function createMediaPreview(
   file: SessionMediaFile,
   mediaType: string | undefined,
   signal: AbortSignal,
   cacheKey?: string,
+  options?: CreateMediaPreviewOptions,
 ): Promise<{ bytes: Uint8Array; mime: string }> {
   signal.throwIfAborted();
+  const persistToDisk = options?.persistToDisk ?? true;
   if (cacheKey !== undefined && cacheKey.length > 0) {
     const cached = previewResultCache.get(cacheKey);
     if (cached !== undefined) {
@@ -50,7 +56,12 @@ export async function createMediaPreview(
       previewResultCache.set(cacheKey, cached);
       return cached;
     }
-    return sharedServerPreviewFlight(cacheKey, signal, (flightSignal) => computeMediaPreview(file, mediaType, flightSignal));
+    return sharedServerPreviewFlight(
+      cacheKey,
+      signal,
+      (flightSignal) => computeMediaPreview(file, mediaType, flightSignal),
+      persistToDisk,
+    );
   }
   return computeMediaPreview(file, mediaType, signal);
 }
@@ -59,26 +70,32 @@ function sharedServerPreviewFlight(
   key: string,
   signal: AbortSignal,
   compute: (signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string }>,
+  persistToDisk: boolean,
 ): Promise<{ bytes: Uint8Array; mime: string }> {
-  let flight = previewResultFlights.get(key);
+  const flightKey = `${persistToDisk ? 'disk' : 'mem'}\0${key}`;
+  let flight = previewResultFlights.get(flightKey);
   if (flight === undefined) {
     const controller = new AbortController();
     const promise = (async () => {
-      const diskHit = await readDiskCachedPreview(key, controller.signal);
-      if (diskHit !== undefined) {
-        storeServerPreviewResult(key, diskHit);
-        return diskHit;
+      if (persistToDisk) {
+        const diskHit = await readDiskCachedPreview(key, controller.signal);
+        if (diskHit !== undefined) {
+          storeServerPreviewResult(key, diskHit);
+          return diskHit;
+        }
       }
       const computed = await compute(controller.signal);
       storeServerPreviewResult(key, computed);
-      void writeDiskCachedPreview(key, computed);
+      if (persistToDisk) {
+        void writeDiskCachedPreview(key, computed);
+      }
       return computed;
     })();
     flight = { controller, users: 0, promise };
-    previewResultFlights.set(key, flight);
+    previewResultFlights.set(flightKey, flight);
     const current = flight;
     const clear = () => {
-      if (previewResultFlights.get(key) === current) previewResultFlights.delete(key);
+      if (previewResultFlights.get(flightKey) === current) previewResultFlights.delete(flightKey);
     };
     void current.promise.then(clear, clear);
   }
@@ -91,8 +108,8 @@ function sharedServerPreviewFlight(
       settled = true;
       signal.removeEventListener('abort', cancel);
       current.users -= 1;
-      if (current.users === 0 && previewResultFlights.get(key) === current) {
-        previewResultFlights.delete(key);
+      if (current.users === 0 && previewResultFlights.get(flightKey) === current) {
+        previewResultFlights.delete(flightKey);
         current.controller.abort();
       }
       done();

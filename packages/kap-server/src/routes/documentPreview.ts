@@ -19,6 +19,7 @@ import {
 } from '@kiki/agent-core-v2';
 import type { WorkspaceInstanceLease } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import type { TranscriptService } from '../services/transcript/transcriptService';
+import { readColdSessionAdditionalDirs } from './fs';
 import { openSessionMedia } from './sessionMedia';
 import { RuntimeWorkspaceView } from '@kiki/agent-core-v2/runtime/runtimeWorkspaceView';
 import { IHostProcessService } from '@kiki/agent-core-v2/os/interface/hostProcess';
@@ -463,7 +464,12 @@ async function openPreviewFile(
       await workspaceLease.instance.program.dirs.ready;
       workspaceId = workspaceLease.instance.id;
       workDir = summary.cwd ?? workspaceLease.instance.root;
-      additionalDirs = workspaceLease.instance.program.dirs.additionalDirs;
+      additionalDirs = await readColdSessionAdditionalDirs(
+        core,
+        summary.workspaceId,
+        sessionId,
+        workspaceLease.instance.program.dirs.additionalDirs,
+      );
     } catch (error) {
       workspaceLease.dispose();
       throw error;
@@ -471,15 +477,44 @@ async function openPreviewFile(
   }
 
   const runtimeId = request.source.runtime_id ?? 'local';
-  let lease: ReturnType<IRuntimeResolver['acquire']>;
-  try {
-    lease = core.accessor.get(IRuntimeResolver).acquire({ workspaceId, runtimeId }, ['fs']);
-  } catch (error) {
-    await settleReleases([() => workspaceLease?.dispose(), () => operation?.dispose()]);
-    throw error;
+  let lease: ReturnType<IRuntimeResolver['acquire']> | undefined;
+  if (operation === undefined && runtimeId !== 'local') {
+    try {
+      lease = core.accessor.get(IRuntimeResolver).acquire({ workspaceId, runtimeId }, ['fs']);
+    } catch {
+      if (runtimeId.startsWith('ssh:')) {
+        await core.accessor.get(IWorkspaceInstanceManager).prepareSshRuntime(workspaceId).catch(() => {});
+        try {
+          lease = core.accessor.get(IRuntimeResolver).acquire({ workspaceId, runtimeId }, ['fs']);
+        } catch {}
+      }
+      if (lease === undefined) {
+        workspaceLease?.dispose();
+        workspaceLease = undefined;
+        operation = await acquireSessionOperation(core, sessionId, 'document-preview');
+        if (operation.handle === undefined) {
+          await operation.dispose();
+          return { sessionExists: false, dispose: () => {} };
+        }
+        const context = operation.handle.accessor.get(ISessionContext);
+        const workspace = operation.handle.accessor.get(ISessionWorkspaceContext);
+        workspaceId = context.workspaceId;
+        workDir = workspace.workDir;
+        additionalDirs = workspace.additionalDirs;
+      }
+    }
   }
+  if (lease === undefined) {
+    try {
+      lease = core.accessor.get(IRuntimeResolver).acquire({ workspaceId, runtimeId }, ['fs']);
+    } catch (error) {
+      await settleReleases([() => workspaceLease?.dispose(), () => operation?.dispose()]);
+      throw error;
+    }
+  }
+  const activeLease = lease;
   try {
-    const runtime = lease.runtime;
+    const runtime = activeLease.runtime;
     const fs = runtime.fs;
     if (fs === undefined) throw new Error(`runtime ${runtimeId} has no filesystem capability`);
     const path = request.source.path;
@@ -509,11 +544,11 @@ async function openPreviewFile(
           }
         },
       },
-      dispose: () => settleReleases([() => lease.dispose(), () => workspaceLease?.dispose(), () => operation?.dispose()]),
+      dispose: () => settleReleases([() => activeLease.dispose(), () => workspaceLease?.dispose(), () => operation?.dispose()]),
     };
   } catch (error) {
     try {
-      await settleReleases([() => lease.dispose(), () => workspaceLease?.dispose(), () => operation?.dispose()]);
+      await settleReleases([() => activeLease.dispose(), () => workspaceLease?.dispose(), () => operation?.dispose()]);
     } catch (releaseError) {
       throw new AggregateError([error, releaseError], 'document preview release failed', { cause: error });
     }

@@ -767,4 +767,56 @@ describe('server-v2 /api fs routes', () => {
     const body = await postWorkspaceSuggest<null>({ workspace: work });
     expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
   });
+
+  it('cold session fs honors persisted main additionalDirs without resuming local sessions and falls back to session scope for unresolved non-local runtimes', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { ISessionIndex } = await import('@kiki/agent-core-v2');
+    const { workspaceRootsLabels } = await import('@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata');
+    const extraDir = await mkdtemp(join(tmpdir(), 'kimi-server-v2-fs-extra-'));
+    try {
+      await writeFile(join(extraDir, 'extra-note.txt'), 'from-extra-dir');
+      await symlink(extraDir, join(work!, 'linked-extra'), process.platform === 'win32' ? 'junction' : 'dir');
+      const id = await createSession();
+      const manager = server!.core.accessor.get(ISessionManager);
+      const summary = await server!.core.accessor.get(ISessionIndex).get(id);
+      expect(summary).toBeDefined();
+      await manager.close(id);
+      expect(manager.get(id)).toBeUndefined();
+
+      const deniedBefore = await postFs<null>(id, 'stat', { path: 'linked-extra/extra-note.txt' });
+      expect(deniedBefore.code).toBe(41304);
+      expect(manager.get(id)).toBeUndefined();
+
+      const statePath = join(home!, 'sessions', summary!.workspaceId, id, 'state.json');
+      const stateJson = JSON.parse(await readFile(statePath, 'utf8')) as {
+        cwd?: string;
+        agents?: Record<string, { labels?: Record<string, string> }>;
+      };
+      stateJson.agents = {
+        ...stateJson.agents,
+        main: {
+          ...stateJson.agents?.['main'],
+          labels: {
+            ...stateJson.agents?.['main']?.labels,
+            ...workspaceRootsLabels({ workDir: stateJson.cwd ?? work!, additionalDirs: [extraDir] }),
+          },
+        },
+      };
+      await writeFile(statePath, JSON.stringify(stateJson), 'utf8');
+
+      const coldExtra = await postFs<FsEntryWire>(id, 'stat', { path: 'linked-extra/extra-note.txt' });
+      expect(coldExtra.code).toBe(0);
+      expect(coldExtra.data.size).toBe(14);
+      expect(manager.get(id)).toBeUndefined();
+
+      const sshFallback = await postFs<null>(id, 'stat', {
+        path: 'a.txt',
+        runtime_id: 'ssh:session-scoped-missing',
+      });
+      expect(sshFallback.code).not.toBe(0);
+      expect(manager.get(id)).toBeDefined();
+    } finally {
+      await rm(extraDir, { recursive: true, force: true });
+    }
+  });
 });
