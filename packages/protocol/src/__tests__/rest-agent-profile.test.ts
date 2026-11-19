@@ -351,4 +351,95 @@ describe('named agent profile REST protocol', () => {
 
     expect(patchConfigRequestSchema.parse({ disabled_named_profiles: ['reviewer'] })).toEqual({ disabled_named_profiles: ['reviewer'] });
   });
+
+  it('accepts every editable updateNamedAgentProfileRequestSchema field solo and rejects combining any field with raw_text', () => {
+    type UpdateShapeKey = keyof typeof updateNamedAgentProfileRequestSchema.shape;
+    type NonEditableKey = 'scope' | 'workspace_id' | 'source_file' | 'raw_text';
+    type EditableKey = Exclude<UpdateShapeKey, NonEditableKey>;
+
+    const editableSamples: Record<EditableKey, unknown> = {
+      description: 'Updated helper',
+      when_to_use: 'Use for focused verification',
+      main: false,
+      executor: 'codex-app-server',
+      executor_instance: 'auto',
+      executor_launch: { env: { EXAMPLE_FLAG: '1' } },
+      executor_prompt: { delivery: 'append', include: ['agents_md'] },
+      allow_kiki_subagents: true,
+      kiki_context: ['memory'],
+      pinned_model_alias: 'provider/fast',
+      recipe: './recipes/profile.toml',
+      recipe_options: { safe: true },
+      restrict_models_to_menu: true,
+      thinking_effort: 'high',
+      allowed_models: ['provider/fast'],
+      deny_models: ['provider/blocked'],
+      allowed_efforts: ['high'],
+      preferred_models: ['provider/fast'],
+      discouraged_models: ['provider/slow'],
+      preferred_efforts: ['medium'],
+      allowed_subagents: ['explore'],
+      can_spawn_subagents: false,
+      preferred_subagents: ['explore'],
+      deny_subagents: ['legacy'],
+      spawn_constraints: { allowed_models: ['provider/fast'] },
+      model_profiles: [{ alias: 'provider/fast', thinking_effort: 'low' }],
+      prompt_overrides: { fields: { extra_rule: 'Keep concise' } },
+      service_tier: 'priority',
+      auto_compact: 120000,
+      context_strategy: 'summarize',
+      tools: ['Read'],
+      disallowed_tools: ['Bash'],
+      routes: [{ id: 'fast', description: 'Fast route', model_alias: 'provider/fast' }],
+      prompt: 'Updated body',
+    };
+
+    const nonEditableKeys = new Set<string>(['scope', 'workspace_id', 'source_file', 'raw_text']);
+    const schemaEditableKeys = Object.keys(updateNamedAgentProfileRequestSchema.shape)
+      .filter((key) => !nonEditableKeys.has(key))
+      .toSorted();
+    expect(Object.keys(editableSamples).toSorted()).toEqual(schemaEditableKeys);
+
+    for (const [key, sample] of Object.entries(editableSamples)) {
+      const solo = updateNamedAgentProfileRequestSchema.safeParse({
+        scope: 'user',
+        workspace_id: 'wd_test',
+        [key]: sample,
+      });
+      expect(solo.success, `solo patch for ${key} must succeed`).toBe(true);
+
+      const combined = updateNamedAgentProfileRequestSchema.safeParse({
+        scope: 'user',
+        workspace_id: 'wd_test',
+        raw_text: '---\nname: helper\n---\nbody\n',
+        [key]: sample,
+      });
+      expect(combined.success, `raw_text + ${key} must fail`).toBe(false);
+    }
+
+    expect(updateNamedAgentProfileRequestSchema.safeParse({
+      scope: 'user',
+      workspace_id: 'wd_test',
+      executor_instance: null,
+    }).success).toBe(true);
+    expect(updateNamedAgentProfileRequestSchema.safeParse({
+      scope: 'user',
+      workspace_id: 'wd_test',
+      executor_launch: null,
+    }).success).toBe(true);
+    expect(updateNamedAgentProfileRequestSchema.safeParse({
+      scope: 'user',
+      workspace_id: 'wd_test',
+    }).success).toBe(false);
+    expect(updateNamedAgentProfileRequestSchema.safeParse({
+      scope: 'user',
+      workspace_id: 'wd_test',
+      routes: [],
+    }).success).toBe(false);
+    expect(updateNamedAgentProfileRequestSchema.safeParse({
+      scope: 'user',
+      workspace_id: 'wd_test',
+      raw_text: '---\nname: helper\n---\nbody\n',
+    }).success).toBe(true);
+  });
 });

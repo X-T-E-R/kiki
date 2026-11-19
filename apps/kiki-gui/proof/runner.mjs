@@ -43,6 +43,33 @@ const MIME = {
   '.wasm': 'application/wasm', '.mp4': 'video/mp4', '.webp': 'image/webp', '.ico': 'image/x-icon',
 };
 
+const REACT_CONSOLE_ERROR_PATTERNS = [
+  /Minified React error #\d+/i,
+  /Rendered (?:more|fewer) hooks/i,
+  /Invalid hook call/i,
+  /\[app:error-boundary\]/,
+  /\[settings:pane-error\]/,
+  /The above error occurred in the <[^>]+> component/i,
+];
+
+function isFatalReactConsoleError(text) {
+  return REACT_CONSOLE_ERROR_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+async function detectErrorBoundary(page) {
+  return page.evaluate(() => {
+    try {
+      const renderFail = sessionStorage.getItem('kiki.lastRenderFailure');
+      if (renderFail) return `sessionStorage.lastRenderFailure: ${renderFail.slice(0, 400)}`;
+    } catch { /* storage unavailable */ }
+    const settingsErr = document.querySelector('[data-settings-pane-error]');
+    if (settingsErr) return `SettingsPaneBoundary: ${(settingsErr.textContent ?? '').trim().slice(0, 400)}`;
+    const appAlertPre = document.querySelector('main > section[role="alert"] pre');
+    if (appAlertPre) return `AppErrorBoundary: ${(appAlertPre.textContent ?? '').trim().slice(0, 400)}`;
+    return null;
+  }).catch(() => null);
+}
+
 export const UPDATE_GOLDENS_FLAG = '--update-goldens';
 const ONLY_PREFIX = '--only=';
 const MATRIX_PREFIX = '--matrix=';
@@ -373,7 +400,12 @@ async function runJob({ browser, job, webUrl, out, shotNames, jobTimeoutMs }) {
       console.error(`[pageerror] ${id}: ${error.message}`);
     });
     page.on('console', (message) => {
-      if (message.type() === 'error') console.error(`[console:error] ${id}: ${message.text()}`);
+      if (message.type() !== 'error') return;
+      const text = message.text();
+      console.error(`[console:error] ${id}: ${text}`);
+      if (isFatalReactConsoleError(text)) {
+        errors.push(`console:error: ${text.slice(0, 500)}`);
+      }
     });
     await installTimelineMonitor(page);
     await page.goto(link('/new'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -384,6 +416,8 @@ async function runJob({ browser, job, webUrl, out, shotNames, jobTimeoutMs }) {
     if (!await waitForAppHandshake(control, 15_000)) console.warn(`[${id}] the app never opened a websocket to the fixture`);
     const jobContext = { page, view, out, webUrl, fixtureUrl, link, control, shot, errors };
     await withTimeout(entry.run(jobContext), jobTimeoutMs, `job ${id}`);
+    const boundaryHit = await detectErrorBoundary(page);
+    if (boundaryHit !== null) errors.push(boundaryHit);
     if (errors.length > 0) throw new Error(`pageerror: ${errors.join(' | ')}`);
     return { id, name: entry.name, view, ok: true, ms: Date.now() - started, shots: jobShots };
   } catch (error) {

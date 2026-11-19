@@ -80,6 +80,7 @@ import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader
 import { resolveAgentSourceGraph } from '#/workspace/workspaceAgentProfileLoader/internal/agentSourceGraph';
 import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
 import { AgentProfileWriterService } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriterService';
+import type { AgentProfileWriteRequest } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriter';
 import { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
 import { discoverCachedAgentFiles } from '#/agent/profile/agentFileDiscoveryCache';
 
@@ -965,6 +966,68 @@ describe('agent profile loaders + session catalog', () => {
         expect(cleared.profile.disallowedTools).toBeUndefined();
         expect(cleared.profile.executorInstance).toBeUndefined();
         expect(cleared.profile.executorLaunch).toBeUndefined();
+      });
+    });
+  });
+
+  it('keeps every editable AgentProfileWriteRequest field accepted solo and mutually exclusive with rawText', async () => {
+    type EditableWriterKey = Exclude<keyof AgentProfileWriteRequest, 'name' | 'scope' | 'sourcePath' | 'rawText'>;
+    const soloSamples: Record<EditableWriterKey, AgentProfileWriteRequest[EditableWriterKey]> = {
+      description: 'Solo description',
+      whenToUse: 'Solo usage hint',
+      main: false,
+      executor: 'native',
+      executorInstance: 'auto',
+      executorLaunch: { env: { EXAMPLE_FLAG: '1' } },
+      executorPrompt: { delivery: 'append', include: ['agents_md'] },
+      allowKikiSubagents: true,
+      kikiContext: ['memory'],
+      modelAlias: 'provider/fast',
+      recipe: './recipes/profile.toml',
+      recipeOptions: { safe: true },
+      restrictModelsToMenu: true,
+      thinkingEffort: 'high',
+      allowedModels: ['provider/fast'],
+      denyModels: ['provider/blocked'],
+      allowedEfforts: ['high'],
+      preferredModels: ['provider/fast'],
+      discouragedModels: ['provider/slow'],
+      preferredEfforts: ['medium'],
+      allowedSubagents: ['explore'],
+      canSpawnSubagents: false,
+      preferredSubagents: ['explore'],
+      denySubagents: ['legacy'],
+      spawnConstraints: { allowedModels: ['provider/fast'] },
+      modelProfiles: [{ alias: 'provider/fast', thinkingEffort: 'low' }],
+      promptOverrides: { fields: { extra_rule: 'Keep concise' } },
+      serviceTier: 'priority',
+      autoCompact: 120000,
+      contextStrategy: 'summarize',
+      tools: ['Read'],
+      disallowedTools: ['Bash'],
+      routes: [{ id: 'reviewer.fast', description: 'Fast route', modelAlias: 'provider/fast' }],
+      prompt: 'Solo prompt body.',
+    };
+
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      await writeAgent(root, 'reviewer.md', agentMd('reviewer', 'Original body.'));
+      await writeAgent(join(root, '.routes', 'reviewer'), 'fast.md', routeMd('reviewer.fast', 'reviewer', 'Route body.'));
+      await withStack(fixture, { routesEnabled: true }, async (stack) => {
+        await stack.ready();
+        for (const [key, value] of Object.entries(soloSamples) as Array<[EditableWriterKey, unknown]>) {
+          const soloRequest = { name: 'reviewer', scope: 'user', [key]: value } as AgentProfileWriteRequest;
+          await expect(stack.writer.update(soloRequest), `solo writer update for ${key}`).resolves.toBeDefined();
+          const combinedRequest = {
+            name: 'reviewer',
+            scope: 'user',
+            rawText: '---\nname: reviewer\ndescription: raw\n---\nRaw body.\n',
+            [key]: value,
+          } as AgentProfileWriteRequest;
+          await expect(stack.writer.update(combinedRequest), `rawText + ${key} must fail`).rejects.toMatchObject({
+            code: 'validation.failed',
+          });
+        }
       });
     });
   });

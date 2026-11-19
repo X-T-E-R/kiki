@@ -128,7 +128,16 @@ const ENFORCED_SLOS = {
   olderPageP95Ms: 8_000,
   coldSubagentP95Ms: 3_500,
   maxServerEldP99Ms: 1_250,
+  protocolColdRouteMaxMs: 1_500,
+  browserPageErrors: 0,
+  browserReactErrors: 0,
+  browserFailedApiResponses: 0,
+  browserColdRpcMaxMs: 1_500,
+  browserContextMeterFailures: 0,
+  browserFooterDrainFailures: 0,
+  browserHiddenUserTurns: 0,
   browserLayoutViolations: 0,
+  browserTranscriptMountFailures: 0,
 };
 
 function evaluateSlos(report) {
@@ -146,8 +155,38 @@ function evaluateSlos(report) {
   if (p.maxServerEldP99Ms > ENFORCED_SLOS.maxServerEldP99Ms) {
     breaches.push(`protocol.maxServerEldP99Ms=${p.maxServerEldP99Ms}ms > ${ENFORCED_SLOS.maxServerEldP99Ms}ms`);
   }
-  if (report.browser && report.browser.aggregates.totalLayoutViolations > ENFORCED_SLOS.browserLayoutViolations) {
-    breaches.push(`browser.totalLayoutViolations=${report.browser.aggregates.totalLayoutViolations} > 0`);
+  if ((p.maxColdRouteMs ?? 0) > ENFORCED_SLOS.protocolColdRouteMaxMs) {
+    breaches.push(`protocol.maxColdRouteMs=${p.maxColdRouteMs}ms > ${ENFORCED_SLOS.protocolColdRouteMaxMs}ms`);
+  }
+  if (report.browser) {
+    const b = report.browser.aggregates;
+    if ((b.totalPageErrors ?? 0) > ENFORCED_SLOS.browserPageErrors) {
+      breaches.push(`browser.totalPageErrors=${b.totalPageErrors} > 0`);
+    }
+    if ((b.totalReactErrors ?? 0) > ENFORCED_SLOS.browserReactErrors) {
+      breaches.push(`browser.totalReactErrors=${b.totalReactErrors} > 0`);
+    }
+    if ((b.totalFailedApiResponses ?? 0) > ENFORCED_SLOS.browserFailedApiResponses) {
+      breaches.push(`browser.totalFailedApiResponses=${b.totalFailedApiResponses} > 0`);
+    }
+    if ((b.maxColdRpcMs ?? 0) > ENFORCED_SLOS.browserColdRpcMaxMs) {
+      breaches.push(`browser.maxColdRpcMs=${b.maxColdRpcMs}ms > ${ENFORCED_SLOS.browserColdRpcMaxMs}ms`);
+    }
+    if ((b.contextMeterFailures ?? 0) > ENFORCED_SLOS.browserContextMeterFailures) {
+      breaches.push(`browser.contextMeterFailures=${b.contextMeterFailures} > 0`);
+    }
+    if ((b.footerDrainFailures ?? 0) > ENFORCED_SLOS.browserFooterDrainFailures) {
+      breaches.push(`browser.footerDrainFailures=${b.footerDrainFailures} > 0`);
+    }
+    if ((b.hiddenUserTurns ?? 0) > ENFORCED_SLOS.browserHiddenUserTurns) {
+      breaches.push(`browser.hiddenUserTurns=${b.hiddenUserTurns} > 0`);
+    }
+    if ((b.totalLayoutViolations ?? 0) > ENFORCED_SLOS.browserLayoutViolations) {
+      breaches.push(`browser.totalLayoutViolations=${b.totalLayoutViolations} > 0`);
+    }
+    if ((b.transcriptMountFailures ?? 0) > ENFORCED_SLOS.browserTranscriptMountFailures) {
+      breaches.push(`browser.transcriptMountFailures=${b.transcriptMountFailures} > 0`);
+    }
   }
   if (report.samples.length === 0) {
     breaches.push('samples.length=0 (empty benchmark sample set)');
@@ -171,24 +210,30 @@ function formatSummaryText(report) {
       ? `${row.scrollOlder.canonicalHydration.elapsedMs}ms`
       : 'n/a';
     lines.push(
-      `  ${row.descriptor} -> coldOpen=${row.coldOpen.ttfcMs}ms(total=${row.coldOpen.totalMs}ms,${row.coldOpen.httpRequests}req,eldP99=${row.coldOpen.eldP99Ms}ms) scrollPages=${row.scrollOlder.pagesFetched}(p50=${row.scrollOlder.pageMsQuantiles.p50}ms,p95=${row.scrollOlder.pageMsQuantiles.p95}ms,hydrate=${hydTxt}) coldSub=${subTxt}`,
+      `  ${row.descriptor} -> coldOpen=${row.coldOpen.ttfcMs}ms(total=${row.coldOpen.totalMs}ms,maxRoute=${row.coldOpen.maxColdRouteMs ?? 0}ms,${row.coldOpen.httpRequests}req,eldP99=${row.coldOpen.eldP99Ms}ms) scrollPages=${row.scrollOlder.pagesFetched}(p50=${row.scrollOlder.pageMsQuantiles.p50}ms,p95=${row.scrollOlder.pageMsQuantiles.p95}ms,hydrate=${hydTxt}) coldSub=${subTxt}`,
     );
   }
   const agg = report.protocol.aggregates;
   lines.push(
-    `[perf:protocol:agg] coldOpen(p50=${agg.coldOpenTtfcMs.p50}ms,p95=${agg.coldOpenTtfcMs.p95}ms) olderPage(p50=${agg.olderPageMs.p50}ms,p95=${agg.olderPageMs.p95}ms) coldSubagent(p50=${agg.coldSubagentTtfcMs.p50}ms,p95=${agg.coldSubagentTtfcMs.p95}ms) maxEldP99=${agg.maxServerEldP99Ms}ms`,
+    `[perf:protocol:agg] coldOpen(p50=${agg.coldOpenTtfcMs.p50}ms,p95=${agg.coldOpenTtfcMs.p95}ms) maxColdRoute=${agg.maxColdRouteMs ?? 0}ms olderPage(p50=${agg.olderPageMs.p50}ms,p95=${agg.olderPageMs.p95}ms) coldSubagent(p50=${agg.coldSubagentTtfcMs.p50}ms,p95=${agg.coldSubagentTtfcMs.p95}ms) maxEldP99=${agg.maxServerEldP99Ms}ms`,
   );
   if (report.browser) {
     const bagg = report.browser.aggregates;
     lines.push(
       `[perf:browser:agg] guiBuild=${report.browser.guiBuild.buildMs}ms(cached=${report.browser.guiBuild.reusedCache}) coldOpen(p50=${bagg.coldOpenTtfcMs.p50}ms,p95=${bagg.coldOpenTtfcMs.p95}ms) scrollMaxLongTask(p50=${bagg.scrollMaxLongTaskMs.p50}ms,p95=${bagg.scrollMaxLongTaskMs.p95}ms) subSwitch(p50=${bagg.subagentSwitchMs.p50}ms,p95=${bagg.subagentSwitchMs.p95}ms) layoutViolations=${bagg.totalLayoutViolations}`,
     );
+    lines.push(
+      `[perf:browser:invariants] pageErr=${bagg.totalPageErrors ?? 0} reactErr=${bagg.totalReactErrors ?? 0} apiFail=${bagg.totalFailedApiResponses ?? 0} coldRpcMax=${bagg.maxColdRpcMs ?? 0}ms ctxMeterFail=${bagg.contextMeterFailures ?? 0} footerFail=${bagg.footerDrainFailures ?? 0} hiddenUserTurns=${bagg.hiddenUserTurns ?? 0} mountFail=${bagg.transcriptMountFailures ?? 0}`,
+    );
     for (const brow of report.browser.sampleResults) {
       const swTxt = brow.subagentSwitch
         ? `${brow.subagentSwitch.switchMs}ms(longTaskMax=${brow.subagentSwitch.maxLongTaskMs}ms)`
         : 'n/a';
+      const inv = brow.invariants ?? {};
+      const ctxTxt = inv.contextMeter?.applicable ? (inv.contextMeter.ok ? 'ok' : inv.contextMeter.reason) : 'n/a';
+      const footTxt = inv.footerDrain?.ok ? 'ok' : 'stuck';
       lines.push(
-        `  [browser] ${brow.label}[${brow.stratum}] coldOpen=${brow.coldOpen.ttfcMs}ms(http=${brow.coldOpen.httpRequests},longTasks=${brow.coldOpen.longTaskCount},maxLT=${brow.coldOpen.maxLongTaskMs}ms,TBT=${brow.coldOpen.totalBlockingTimeMs}ms) scroll=${brow.scrollOlder.scrollWindowMs}ms(http=${brow.scrollOlder.httpRequests},maxLT=${brow.scrollOlder.maxLongTaskMs}ms) subSwitch=${swTxt}`,
+        `  [browser] ${brow.label}[${brow.stratum}] coldOpen=${brow.coldOpen.ttfcMs}ms(maxRpc=${brow.coldOpen.maxColdRpcMs ?? 0}ms,http=${brow.coldOpen.httpRequests},maxLT=${brow.coldOpen.maxLongTaskMs}ms) scroll=${brow.scrollOlder.scrollWindowMs}ms(layout=${brow.scrollOlder.layoutViolations}) subSwitch=${swTxt} ctx=${ctxTxt} footer=${footTxt} hiddenTurns=${inv.hiddenUserTurnCount ?? 0} apiFail=${inv.failedApiResponses?.length ?? 0}`,
       );
     }
   }

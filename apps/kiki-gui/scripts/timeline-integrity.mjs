@@ -142,11 +142,10 @@ export async function timelineAtRest(page, { frames = 6, timeoutMs = 3000 } = {}
 export const TIMELINE_MAX_TRANSIENT_FRAMES = 3;
 
 /**
- * Proof gate: fail when rows overlap / escape at rest, or when an overlap or
- * escape stayed on screen longer than the transient budget. Holes (gaps) are
- * reported but not gated — they never hide content.
+ * Collect both settled-state (at-rest) and live (> transient frame budget)
+ * timeline overlap/escape violations without throwing.
  */
-export async function assertTimelineIntegrity(page, context) {
+export async function collectTimelineIntegrity(page) {
   const rest = await timelineAtRest(page);
   const report = await drainTimeline(page);
   const failures = rest.filter((violation) => violation.kind !== 'hole').map((violation) => ({ at: 'rest', ...violation }));
@@ -155,10 +154,93 @@ export async function assertTimelineIntegrity(page, context) {
     if (worst !== undefined && worst.frames > TIMELINE_MAX_TRANSIENT_FRAMES) failures.push({ at: 'live', kind, ...worst });
   }
   const totals = summarizeTimeline(report);
+  return { frames: report.frames, totals, failures };
+}
+
+/**
+ * Proof gate: fail when rows overlap / escape at rest, or when an overlap or
+ * escape stayed on screen longer than the transient budget. Holes (gaps) are
+ * reported but not gated — they never hide content.
+ */
+export async function assertTimelineIntegrity(page, context) {
+  const { frames, totals, failures } = await collectTimelineIntegrity(page);
   if (failures.length > 0) {
     throw new Error(`${context}: timeline rows overlap — ${JSON.stringify(failures.slice(0, 4))} totals=${JSON.stringify(totals)}`);
   }
-  return { frames: report.frames, totals };
+  return { frames, totals };
+}
+
+/**
+ * Verify that rendered non-system turns display visible user message content
+ * outside collapsed `[data-history-fold]` groups without requiring manual
+ * fold expansion.
+ */
+export async function inspectTranscriptVisibility(page, targetAgentId = 'main') {
+  return page.evaluate((aid) => {
+    const host = document.querySelector(`[data-agent-workspace-target="${aid}"]`);
+    const scroller = host?.querySelector('[data-transcript-scroll]') ?? document.querySelector('[data-transcript-scroll]');
+    if (!scroller) {
+      return { ok: false, reason: 'no_scroller', turnsChecked: 0, totalVisibleUserBlocks: 0, hiddenUserTurns: [] };
+    }
+    const rows = [...scroller.querySelectorAll('[data-transcript-virtual-item]')];
+    const byTurn = new Map();
+    for (const row of rows) {
+      const turnNode = row.querySelector('[data-turn-id]');
+      const turnId = turnNode?.getAttribute('data-turn-id');
+      if (!turnId) continue;
+      if (!byTurn.has(turnId)) {
+        byTurn.set(turnId, { rows: [], visibleUserBlocks: 0, foldedBlocks: 0, assistantBlocks: 0 });
+      }
+      const entry = byTurn.get(turnId);
+      entry.rows.push(row);
+      for (const el of row.querySelectorAll('[data-block-id^="user-"]')) {
+        const insideCollapsedFold = el.closest('[data-history-fold]:not([data-history-fold-open])') !== null;
+        const text = (el.textContent ?? '').trim();
+        const hasMedia = el.querySelector('[data-user-media]') !== null;
+        if (!insideCollapsedFold && (text.length > 0 || hasMedia)) {
+          entry.visibleUserBlocks += 1;
+        }
+      }
+      if (row.querySelector('[data-history-fold]') !== null) entry.foldedBlocks += 1;
+      if (row.querySelector('[data-block-id^="assistant-"], [data-block-id^="agent-frame-"], [data-assistant-prose]') !== null) {
+        entry.assistantBlocks += 1;
+      }
+    }
+    const turnIds = [...byTurn.keys()];
+    const hiddenUserTurns = [];
+    const systemSelector = [
+      '[data-subagent-ended]',
+      '[data-model-switch-notice]',
+      '[data-compaction-history]',
+      '[data-compaction-summary]',
+      '[data-notice-key]',
+      '[data-block-id^="system-"]',
+      '[data-block-id^="reminder-"]',
+    ].join(', ');
+    let nonSystemTurnsChecked = 0;
+    for (let i = 1; i < turnIds.length; i += 1) {
+      const tid = turnIds[i];
+      const info = byTurn.get(tid);
+      const hasSystemOrigin = info.rows.some((r) => r.querySelector(systemSelector) !== null);
+      if (hasSystemOrigin) continue;
+      nonSystemTurnsChecked += 1;
+      if (info.visibleUserBlocks === 0 && (info.foldedBlocks > 0 || info.assistantBlocks > 0)) {
+        hiddenUserTurns.push(tid);
+      }
+    }
+    const totalVisibleUserBlocks = [...byTurn.values()].reduce((acc, v) => acc + v.visibleUserBlocks, 0);
+    const hasAnyNonSystemTurn = [...byTurn.values()].some(
+      (info) => !info.rows.some((r) => r.querySelector(systemSelector) !== null),
+    );
+    const ok = hiddenUserTurns.length === 0 && (!hasAnyNonSystemTurn || totalVisibleUserBlocks > 0 || turnIds.length <= 1);
+    return {
+      ok,
+      reason: ok ? null : hiddenUserTurns.length > 0 ? 'hidden_user_turns' : 'no_visible_user_blocks',
+      turnsChecked: nonSystemTurnsChecked,
+      totalVisibleUserBlocks,
+      hiddenUserTurns,
+    };
+  }, targetAgentId);
 }
 
 /** Totals per `kind:persistence` across labels. */

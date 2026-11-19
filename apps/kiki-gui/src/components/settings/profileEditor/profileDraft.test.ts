@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { NamedAgentProfile } from '@kiki/protocol';
+import { updateNamedAgentProfileRequestSchema, type NamedAgentProfile } from '@kiki/protocol';
 
 import { allowedSubagentsOpen, canSpawnDraft, draftFromProfile, openAllowedSubagents, patchBody, toggleKikiContext } from './profileDraft';
+
+function parsePatchBody(...args: Parameters<typeof patchBody>): ReturnType<typeof patchBody> {
+  const body = patchBody(...args);
+  updateNamedAgentProfileRequestSchema.parse(body);
+  return body;
+}
 
 const base: NamedAgentProfile = {
   name: 'helper', description: 'Helper', main: false, source: 'user',
@@ -12,10 +18,12 @@ describe('profile draft executor instance', () => {
   it('writes a schedule only when it changed, and clears it when the engine becomes native', () => {
     const external = { ...base, executor: 'agy-cli', executor_instance: 'auto' as const };
     const baseline = draftFromProfile(external);
-    expect(patchBody(external, baseline, baseline).executor_instance).toBeUndefined();
-    expect(patchBody(external, baseline, { ...baseline, executorInstance: 'instance-work' }).executor_instance).toBe('instance-work');
-    expect(patchBody(external, baseline, { ...baseline, executorInstance: 'account:work' }).executor_instance).toEqual({ account_id: 'work' });
-    expect(patchBody(external, baseline, { ...baseline, executor: '' }).executor_instance).toBeNull();
+    const untouched = patchBody(external, baseline, baseline);
+    expect(untouched.executor_instance).toBeUndefined();
+    expect(updateNamedAgentProfileRequestSchema.safeParse(untouched).success).toBe(false);
+    expect(parsePatchBody(external, baseline, { ...baseline, executorInstance: 'instance-work' }).executor_instance).toBe('instance-work');
+    expect(parsePatchBody(external, baseline, { ...baseline, executorInstance: 'account:work' }).executor_instance).toEqual({ account_id: 'work' });
+    expect(parsePatchBody(external, baseline, { ...baseline, executor: '' }).executor_instance).toBeNull();
   });
 });
 
@@ -42,7 +50,7 @@ describe('profile draft subagent dispatch fields', () => {
 
   it('recommends without silently restricting: a preferred-only edit writes no allowed list and no false', () => {
     const baseline = draftFromProfile(base);
-    const body = patchBody(base, baseline, {
+    const body = parsePatchBody(base, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, preferredSubagents: ['explore'] },
     });
     expect(body.preferred_subagents).toEqual(['explore']);
@@ -59,13 +67,13 @@ describe('profile draft subagent dispatch fields', () => {
     };
     const baseline = draftFromProfile(profile);
     expect('can_spawn_subagents' in patchBody(profile, baseline, baseline)).toBe(false);
-    expect(patchBody(profile, baseline, {
+    expect(parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, canSpawnSubagents: undefined },
     }).can_spawn_subagents).toBeNull();
-    expect(patchBody(profile, baseline, {
+    expect(parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: undefined },
     }).allowed_subagents).toBeNull();
-    expect(patchBody(profile, baseline, {
+    expect(parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, preferredSubagents: [] },
     }).preferred_subagents).toEqual([]);
   });
@@ -81,14 +89,14 @@ describe('profile draft subagent dispatch fields', () => {
     const baseline = draftFromProfile(profile);
     // An untouched list rides along with nothing: a description edit cannot
     // restate the preset list, let alone drop a scoped source.
-    const body = patchBody(profile, baseline, { ...baseline, description: 'A different summary' });
+    const body = parsePatchBody(profile, baseline, { ...baseline, description: 'A different summary' });
     expect(body.description).toBe('A different summary');
     expect(body).not.toHaveProperty('allowed_subagents');
 
     // Reordering writes the scoped entry as a bare name, which the server
     // merges onto the mapping already on disk, and the pin comes back whole.
     const reordered = baseline.subagentPolicy.allowedSubagents!.toReversed();
-    const moved = patchBody(profile, baseline, {
+    const moved = parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: reordered },
     });
     expect(moved.allowed_subagents).toEqual(['reviewer', 'explore']);
@@ -103,7 +111,7 @@ describe('profile draft subagent dispatch fields', () => {
       }],
     };
     const baseline = draftFromProfile(profile);
-    const moved = patchBody(profile, baseline, {
+    const moved = parsePatchBody(profile, baseline, {
       ...baseline,
       subagentPolicy: {
         ...baseline.subagentPolicy,
@@ -129,7 +137,7 @@ describe('profile draft subagent dispatch fields', () => {
     expect(allowedSubagentsOpen(baseline.subagentPolicy.allowedSubagents)).toBe(true);
     const opened = openAllowedSubagents(baseline.subagentPolicy.allowedSubagents);
     expect(opened?.map((entry) => entry.name)).toEqual(['*', 'explore']);
-    const body = patchBody(profile, baseline, {
+    const body = parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: opened },
     });
     // The source is not restated, so the server's sparse merge keeps it.
@@ -145,7 +153,7 @@ describe('profile draft subagent dispatch fields', () => {
     // Reordering the named leases under an open domain must not drop the
     // scoped one, and a genuinely bare name may go.
     const rows = [...baseline.subagentPolicy.allowedSubagents!].filter((entry) => entry.name !== '*').toReversed();
-    const body = patchBody(profile, baseline, {
+    const body = parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: [{ name: '*', modelAlias: '', effort: '' }, ...rows] },
     });
     // 'reviewer' is a bare name beside the wildcard, which already says it, so
@@ -160,7 +168,7 @@ describe('profile draft subagent dispatch fields', () => {
     };
     const baseline = draftFromProfile(profile);
     const opened = openAllowedSubagents(baseline.subagentPolicy.allowedSubagents);
-    const body = patchBody(profile, baseline, {
+    const body = parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: opened },
     });
     // "Stop limiting" opens the domain and carries the pin; it does not drop it.
@@ -183,7 +191,7 @@ describe('profile draft subagent dispatch fields', () => {
     expect(baseline.subagentPolicy.allowedSubagents![0]!.lease).toEqual(lease);
     const opened = openAllowedSubagents(baseline.subagentPolicy.allowedSubagents);
     expect(opened?.map((entry) => entry.name)).toEqual(['*', 'explore']);
-    const body = patchBody(profile, baseline, {
+    const body = parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, allowedSubagents: opened!.toReversed() },
     });
     expect(body.allowed_subagents).toEqual(['*', 'explore']);
@@ -194,7 +202,7 @@ describe('profile draft subagent dispatch fields', () => {
   it('keeps denial and preference independent of the preset list', () => {
     const profile: NamedAgentProfile = { ...base, deny_subagents: ['legacy'] };
     const baseline = draftFromProfile(profile);
-    const body = patchBody(profile, baseline, {
+    const body = parsePatchBody(profile, baseline, {
       ...baseline, subagentPolicy: { ...baseline.subagentPolicy, denySubagents: ['legacy', 'other'] },
     });
     expect(body.deny_subagents).toEqual(['legacy', 'other']);
@@ -209,18 +217,18 @@ describe('profile draft allow_kiki_subagents', () => {
   it('writes true to enable and null to disable, never false', () => {
     const baseline = draftFromProfile(lead);
     expect(baseline.allowKikiSubagents).toBe(false);
-    expect(patchBody(lead, baseline, { ...baseline, allowKikiSubagents: true }).allow_kiki_subagents).toBe(true);
+    expect(parsePatchBody(lead, baseline, { ...baseline, allowKikiSubagents: true }).allow_kiki_subagents).toBe(true);
     const on = { ...lead, allow_kiki_subagents: true };
     const onDraft = draftFromProfile(on);
-    expect(patchBody(on, onDraft, { ...onDraft, allowKikiSubagents: false }).allow_kiki_subagents).toBeNull();
+    expect(parsePatchBody(on, onDraft, { ...onDraft, allowKikiSubagents: false }).allow_kiki_subagents).toBeNull();
     expect('allow_kiki_subagents' in patchBody(on, onDraft, onDraft)).toBe(false);
   });
 
   it('clears the flag when the profile stops being an external main', () => {
     const on = { ...lead, allow_kiki_subagents: true };
     const draft = draftFromProfile(on);
-    expect(patchBody(on, draft, { ...draft, main: false }).allow_kiki_subagents).toBeNull();
-    expect(patchBody(on, draft, { ...draft, executor: '' }).allow_kiki_subagents).toBeNull();
+    expect(parsePatchBody(on, draft, { ...draft, main: false }).allow_kiki_subagents).toBeNull();
+    expect(parsePatchBody(on, draft, { ...draft, executor: '' }).allow_kiki_subagents).toBeNull();
   });
 
   it('does not write the flag for a native or subagent profile', () => {
@@ -241,7 +249,7 @@ describe('profile draft kiki_context', () => {
   it('writes the list when a group turns on, and nothing when untouched', () => {
     const baseline = draftFromProfile(lead);
     const on = { ...baseline, kikiContext: toggleKikiContext(baseline.kikiContext, 'board', true, baseline.kikiContext) };
-    expect(patchBody(lead, baseline, on).kiki_context).toEqual(['board']);
+    expect(parsePatchBody(lead, baseline, on).kiki_context).toEqual(['board']);
     expect('kiki_context' in patchBody(lead, baseline, baseline)).toBe(false);
     const empty = { ...lead, kiki_context: [] as NamedAgentProfile['kiki_context'] };
     expect('kiki_context' in patchBody(empty, draftFromProfile(empty), draftFromProfile(empty))).toBe(false);
@@ -252,7 +260,7 @@ describe('profile draft kiki_context', () => {
     const listedDraft = draftFromProfile(listed);
     const off = toggleKikiContext(listedDraft.kikiContext, 'memory', false, listedDraft.kikiContext);
     expect(off).toEqual([]);
-    expect(patchBody(listed, listedDraft, { ...listedDraft, kikiContext: off }).kiki_context).toEqual([]);
+    expect(parsePatchBody(listed, listedDraft, { ...listedDraft, kikiContext: off }).kiki_context).toEqual([]);
 
     const absent = draftFromProfile(lead);
     const roundTrip = toggleKikiContext(toggleKikiContext(undefined, 'cron', true, undefined), 'cron', false, undefined);
@@ -263,24 +271,24 @@ describe('profile draft kiki_context', () => {
   it('removing the field sends null, which is not the same as []', () => {
     const empty = { ...lead, kiki_context: [] as NamedAgentProfile['kiki_context'] };
     const draft = draftFromProfile(empty);
-    expect(patchBody(empty, draft, { ...draft, kikiContext: undefined }).kiki_context).toBeNull();
+    expect(parsePatchBody(empty, draft, { ...draft, kikiContext: undefined }).kiki_context).toBeNull();
     const listed = { ...lead, kiki_context: ['history', 'hooks'] as NamedAgentProfile['kiki_context'] };
     const listedDraft = draftFromProfile(listed);
-    expect(patchBody(listed, listedDraft, { ...listedDraft, kikiContext: undefined }).kiki_context).toBeNull();
+    expect(parsePatchBody(listed, listedDraft, { ...listedDraft, kikiContext: undefined }).kiki_context).toBeNull();
   });
 
   it('drops the field when the profile stops being an external main, and never writes it for a native one', () => {
     const listed = { ...lead, kiki_context: ['memory'] as NamedAgentProfile['kiki_context'] };
     const draft = draftFromProfile(listed);
-    expect(patchBody(listed, draft, { ...draft, main: false }).kiki_context).toBeNull();
-    expect(patchBody(listed, draft, { ...draft, executor: '' }).kiki_context).toBeNull();
+    expect(parsePatchBody(listed, draft, { ...draft, main: false }).kiki_context).toBeNull();
+    expect(parsePatchBody(listed, draft, { ...draft, executor: '' }).kiki_context).toBeNull();
     const native = draftFromProfile({ ...base, main: true });
     expect('kiki_context' in patchBody({ ...base, main: true }, native, { ...native, kikiContext: ['memory'] })).toBe(false);
   });
 
   it('keeps delegation on its own flag', () => {
     const baseline = draftFromProfile(lead);
-    const body = patchBody(lead, baseline, { ...baseline, allowKikiSubagents: true, kikiContext: ['threads'] });
+    const body = parsePatchBody(lead, baseline, { ...baseline, allowKikiSubagents: true, kikiContext: ['threads'] });
     expect(body.allow_kiki_subagents).toBe(true);
     expect(body.kiki_context).toEqual(['threads']);
   });
@@ -292,10 +300,10 @@ describe('profile draft model menu and advice', () => {
     const baseline = draftFromProfile(base);
     expect(baseline.restrictModelsToMenu).toBe(false);
     expect(patchBody(base, baseline, baseline)).not.toHaveProperty('restrict_models_to_menu');
-    expect(patchBody(base, baseline, { ...baseline, restrictModelsToMenu: true }).restrict_models_to_menu).toBe(true);
+    expect(parsePatchBody(base, baseline, { ...baseline, restrictModelsToMenu: true }).restrict_models_to_menu).toBe(true);
     const restricted = { ...base, restrict_models_to_menu: true };
     const enabled = draftFromProfile(restricted);
-    expect(patchBody(restricted, enabled, { ...enabled, restrictModelsToMenu: false }).restrict_models_to_menu).toBe(false);
+    expect(parsePatchBody(restricted, enabled, { ...enabled, restrictModelsToMenu: false }).restrict_models_to_menu).toBe(false);
   });
 
   it('round-trips soft advice separately from hard constraints and removes only edited advice', () => {
@@ -305,7 +313,7 @@ describe('profile draft model menu and advice', () => {
     expect(baseline.preferredModels).toEqual(['fixture/fast']);
     expect(baseline.discouragedModels).toEqual(['fixture/costly']);
     expect(baseline.preferredEfforts).toEqual(['low']);
-    const patch = patchBody(profile, baseline, { ...baseline, preferredModels: [], preferredEfforts: ['high'] });
+    const patch = parsePatchBody(profile, baseline, { ...baseline, preferredModels: [], preferredEfforts: ['high'] });
     expect(patch.preferred_models).toBeNull();
     expect(patch.preferred_efforts).toEqual(['high']);
     expect(patch).not.toHaveProperty('allowed_models');
@@ -336,7 +344,7 @@ describe('profile draft recipe options', () => {
 
   it('writes only changed recipe_options while leaving other frontmatter sparse', () => {
     const baseline = draftFromProfile(profile);
-    const patch = patchBody(profile, baseline, {
+    const patch = parsePatchBody(profile, baseline, {
       ...baseline,
       recipeOptions: { safe: false, legacy: false, experimental: true },
     });

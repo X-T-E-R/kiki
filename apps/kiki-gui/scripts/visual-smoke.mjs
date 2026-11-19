@@ -39,6 +39,33 @@ const RUN_TIMEOUT_MS = 5 * 60_000;
 const VIEWPORT = { width: 1440, height: 900 };
 const COMPOSER_READY = '[data-composer-input][contenteditable="true"]:not([aria-disabled="true"])';
 
+const REACT_CONSOLE_ERROR_PATTERNS = [
+  /Minified React error #\d+/i,
+  /Rendered (?:more|fewer) hooks/i,
+  /Invalid hook call/i,
+  /\[app:error-boundary\]/,
+  /\[settings:pane-error\]/,
+  /The above error occurred in the <[^>]+> component/i,
+];
+
+function isFatalReactConsoleError(text) {
+  return REACT_CONSOLE_ERROR_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+async function detectErrorBoundary(page) {
+  return page.evaluate(() => {
+    try {
+      const renderFail = sessionStorage.getItem('kiki.lastRenderFailure');
+      if (renderFail) return `sessionStorage.lastRenderFailure: ${renderFail.slice(0, 400)}`;
+    } catch { /* storage unavailable */ }
+    const settingsErr = document.querySelector('[data-settings-pane-error]');
+    if (settingsErr) return `SettingsPaneBoundary: ${(settingsErr.textContent ?? '').trim().slice(0, 400)}`;
+    const appAlertPre = document.querySelector('main > section[role="alert"] pre');
+    if (appAlertPre) return `AppErrorBoundary: ${(appAlertPre.textContent ?? '').trim().slice(0, 400)}`;
+    return null;
+  }).catch(() => null);
+}
+
 /** Settle finite animations, then capture. Mirrors visual-proof's `shot`. */
 async function shot(page, name) {
   await page.evaluate(async () => {
@@ -1207,7 +1234,16 @@ async function runScenario(browser, webUrl, scenario) {
     });
     const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() !== 'error') return;
+      const text = message.text();
+      if (isFatalReactConsoleError(text)) {
+        errors.push(`console:error: ${text.slice(0, 500)}`);
+      }
+    });
     const shots = await withTimeout(scenario.run(page, link, control), SCENARIO_TIMEOUT_MS, `scenario ${scenario.name}`);
+    const boundaryHit = await detectErrorBoundary(page);
+    if (boundaryHit !== null) errors.push(boundaryHit);
     if (errors.length > 0) throw new Error(`pageerror: ${errors.join(' | ')}`);
     return { name: scenario.name, ok: true, ms: Date.now() - started, shots };
   } catch (error) {

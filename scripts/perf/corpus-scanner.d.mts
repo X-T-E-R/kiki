@@ -7,6 +7,8 @@ export interface CorpusRecord {
   readonly maxChildWireBytes: number;
   readonly maxChildWireMb: number;
   readonly maxChildAgentId: string | null;
+  readonly branchAgentId: string | null;
+  readonly branchWireBytes: number;
   readonly mediaCount: number;
   readonly blobCount: number;
   readonly attachmentCount: number;
