@@ -250,7 +250,7 @@ export async function readSessionViewCanonicalEntity(
   if (source.kind === 'task') {
     const liveTask = transcript?.getTask(source.id);
     if (liveTask !== undefined && transcript?.hasMoreOlder !== true) return liveTask;
-    const windowTask = store === undefined && typeof service.readColdWindowEntity === 'function'
+    const windowTask = (liveTask === undefined || transcript?.hasMoreOlder === true) && typeof service.readColdWindowEntity === 'function'
       ? await service.readColdWindowEntity(sessionId, input.agentId, source, input.signal) as TranscriptTask | undefined
       : undefined;
     const persisted = typeof service.readPersistedTask === 'function'
@@ -713,6 +713,9 @@ async function readSessionViewTranscriptDetailRaw(
       if ((task === undefined || transcript.hasMoreOlder) && typeof transcriptService.readPersistedTask === 'function') {
         const persisted = await transcriptService.readPersistedTask(sessionId, input.agentId, input.id, input.signal);
         if (persisted !== undefined) task = task === undefined ? persisted : mergeTaskMetadata(persisted, task);
+      }
+      if (task === undefined && transcript.hasMoreOlder && typeof transcriptService.readColdWindowEntity === 'function') {
+        task = await transcriptService.readColdWindowEntity(sessionId, input.agentId, { kind: 'task', id: input.id }, input.signal) as TranscriptTask | undefined;
       }
       if (task === undefined && transcript.hasMoreOlder) {
         const snapshot = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal);
