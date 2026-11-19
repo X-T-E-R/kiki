@@ -77,10 +77,10 @@ const SHORTCUT_SCRIPT = [
 
 function shortcutStem(name: string): string {
   const stem = name.trim();
-  if (stem.length < 1 || stem.length > 240 || stem === '.' || stem === '..' || path.win32.basename(stem) !== stem) {
+  if (stem.length === 0 || stem.length > 240 || stem === '.' || stem === '..' || path.win32.basename(stem) !== stem) {
     throw new BrowserError('browser.invalid', 'Shortcut name must be a single file name on the desktop');
   }
-  if (/[<>:"|?*\\/\u0000-\u001f]/.test(stem) || stem.endsWith('.') || stem.endsWith(' ')) {
+  if (/[<>:"|?*\\/\u0000-\u001F]/.test(stem) || stem.endsWith('.') || stem.endsWith(' ')) {
     throw new BrowserError('browser.invalid', 'Shortcut name must be a single file name on the desktop');
   }
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(stem)) {
@@ -133,7 +133,7 @@ export class BrowserSetupService extends Disposable implements IBrowserSetupServ
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
   ) {
     super();
-    this.egoRuntime = new EgoBrowserRuntime(hostProcess, hostFs);
+    this.egoRuntime = new EgoBrowserRuntime(hostProcess, hostFs, process.env, process.platform, log);
     this._register({ dispose: async () => {
       const flight = this.egoFlight;
       flight?.controller.abort(new BrowserError('browser.execution_failed', 'Ego Lite detection cancelled'));

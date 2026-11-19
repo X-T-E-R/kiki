@@ -462,6 +462,28 @@ describe('google-genai trailing model turn', () => {
     expect(stream.continuationToken).toBeUndefined();
   });
 
+  it('aborts the underlying non-streaming fetch when the caller signal aborts', async () => {
+    let fetchSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      fetchSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_, reject) => {
+        fetchSignal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        }, { once: true });
+      });
+    });
+    const controller = new AbortController();
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-4-argon', apiKey: KEY, stream: false });
+    const pending = provider.generate('system', [], [user('Hi')], { auth: { apiKey: KEY }, signal: controller.signal });
+    await vi.waitFor(() => {
+      expect(fetchSignal).toBeDefined();
+    });
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchSignal?.aborted).toBe(true);
+  });
+
   it('does not continue MAX_TOKENS or change the explicit output budget', async () => {
     const seen = installFetch(() => responseSse({
       candidates: [{

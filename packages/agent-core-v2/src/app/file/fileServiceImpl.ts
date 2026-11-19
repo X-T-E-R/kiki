@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { LifecycleScope } from '#/app/scopes';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { ILogService } from '#/_base/log/log';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 import {
   IFileService,
@@ -18,6 +19,8 @@ import {
 const BLOB_SCOPE = 'files';
 const INDEX_SCOPE = 'file';
 const INDEX_KEY = 'index.json';
+const CORRUPT_INDEX_KEY_PREFIX = 'index.corrupt-';
+const RECOVERED_MEDIA_TYPE = 'application/octet-stream';
 const GC_BATCH_SIZE = 32;
 const GC_RETRY_DELAY_MS = 100;
 
@@ -67,7 +70,10 @@ export class FileServiceImpl extends Disposable implements IFileService {
   private disposePromise: Promise<void> | undefined;
   private disposed = false;
 
-  constructor(@IBlobStore private readonly blobs: IBlobStore) {
+  constructor(
+    @IBlobStore private readonly blobs: IBlobStore,
+    @ILogService private readonly log: ILogService,
+  ) {
     super();
   }
 
@@ -202,19 +208,59 @@ export class FileServiceImpl extends Disposable implements IFileService {
       this.requestGc();
       return;
     }
-    try {
-      const parsed = JSON.parse(textDecoder.decode(raw)) as IndexFile;
-      const map = new Map<string, FileMeta>();
-      if (parsed && Array.isArray(parsed.files)) {
-        for (const f of parsed.files) {
-          if (isFileMeta(f)) map.set(f.id, f);
-        }
-      }
-      this.setIndex(map);
-    } catch {
-      this.setIndex(new Map());
+    const parsed = this.parseIndex(raw);
+    if (parsed !== undefined) {
+      this.setIndex(parsed);
+      this.requestGc();
+      return;
     }
+    const backupKey = `${CORRUPT_INDEX_KEY_PREFIX}${Date.now()}-${randomUUID()}.json`;
+    await this.blobs.put(INDEX_SCOPE, backupKey, raw);
+    const recovered = await this.recoverIndexFromBlobs();
+    this.setIndex(recovered);
+    this.log.warn('file index is corrupt; backed up and rebuilt from stored blobs', {
+      scope: INDEX_SCOPE,
+      backupKey,
+      recoveredCount: recovered.size,
+    });
+    await this.writeIndex().catch((error: unknown) => {
+      this.log.warn('failed to persist rebuilt file index', { error });
+    });
     this.requestGc();
+  }
+
+  private parseIndex(raw: Uint8Array): Map<string, FileMeta> | undefined {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(textDecoder.decode(raw));
+    } catch {
+      return undefined;
+    }
+    if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as Partial<IndexFile>).files)) {
+      return undefined;
+    }
+    const map = new Map<string, FileMeta>();
+    for (const f of (parsed as IndexFile).files) {
+      if (isFileMeta(f)) map.set(f.id, f);
+    }
+    return map;
+  }
+
+  private async recoverIndexFromBlobs(): Promise<Map<string, FileMeta>> {
+    const map = new Map<string, FileMeta>();
+    const createdAt = new Date().toISOString();
+    for (const id of await this.blobs.list(BLOB_SCOPE)) {
+      if (!isFileId(id)) continue;
+      const size = await this.blobSize(id);
+      if (size === undefined) continue;
+      map.set(id, { id, name: id, media_type: RECOVERED_MEDIA_TYPE, size, created_at: createdAt });
+    }
+    return map;
+  }
+
+  private async blobSize(id: string): Promise<number | undefined> {
+    if (this.blobs.size !== undefined) return this.blobs.size(BLOB_SCOPE, id);
+    return (await this.blobs.get(BLOB_SCOPE, id))?.byteLength;
   }
 
   private setIndex(map: Map<string, FileMeta>): void {

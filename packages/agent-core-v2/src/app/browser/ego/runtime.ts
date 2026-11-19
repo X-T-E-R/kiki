@@ -1,9 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { isAbsolute, join } from 'pathe';
 
+import type { ILogger } from '#/_base/log/log';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
 import type { BrowserTab } from '#/app/browser/browser';
 import type { BrowserResolvedConnection } from '#/app/browser/browserConfig';
@@ -132,33 +134,75 @@ function spaceFile(sessionDir: string): string {
   return join(sessionDir, EGO_SPACE_FILE);
 }
 
-async function readSpaces(files: IHostFileSystem, sessionDir: string): Promise<Record<string, EgoSpaceBinding>> {
+function isMissingFile(error: unknown): boolean {
+  return error instanceof HostFsError && error.code === OsFsErrors.codes.OS_FS_NOT_FOUND;
+}
+
+function normalizeSpaces(parsed: unknown): Record<string, EgoSpaceBinding> | undefined {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const normalized: Record<string, EgoSpaceBinding> = {};
+  for (const [key, raw] of Object.entries(parsed)) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry['connectionId'] !== 'string' || typeof entry['name'] !== 'string') continue;
+    const spaceId = typeof entry['spaceId'] === 'number' && Number.isSafeInteger(entry['spaceId']) && entry['spaceId'] >= 0
+      ? String(entry['spaceId'])
+      : typeof entry['spaceId'] === 'string' && entry['spaceId'] !== '' ? entry['spaceId'] : undefined;
+    const ownedRaw = Array.isArray(entry['ownedSpaceIds'])
+      ? entry['ownedSpaceIds'].map((id) => egoNumericSpaceId(id)).filter((id): id is number => id !== undefined)
+      : [];
+    const ownedSpaceIds = ownedRaw.length > 0 ? [...new Set(ownedRaw)] : undefined;
+    normalized[key] = { connectionId: entry['connectionId'], name: entry['name'], spaceId, ownedSpaceIds };
+  }
+  return normalized;
+}
+
+function parseSpaces(text: string): Record<string, EgoSpaceBinding> | undefined {
   try {
-    const parsed = JSON.parse(await files.readText(spaceFile(sessionDir))) as Record<string, unknown>;
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const normalized: Record<string, EgoSpaceBinding> = {};
-    for (const [key, raw] of Object.entries(parsed)) {
-      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const entry = raw as Record<string, unknown>;
-      if (typeof entry['connectionId'] !== 'string' || typeof entry['name'] !== 'string') continue;
-      const spaceId = typeof entry['spaceId'] === 'number' && Number.isSafeInteger(entry['spaceId']) && entry['spaceId'] >= 0
-        ? String(entry['spaceId'])
-        : typeof entry['spaceId'] === 'string' && entry['spaceId'] !== '' ? entry['spaceId'] : undefined;
-      const ownedRaw = Array.isArray(entry['ownedSpaceIds'])
-        ? entry['ownedSpaceIds'].map((id) => egoNumericSpaceId(id)).filter((id): id is number => id !== undefined)
-        : [];
-      const ownedSpaceIds = ownedRaw.length > 0 ? [...new Set(ownedRaw)] : undefined;
-      normalized[key] = { connectionId: entry['connectionId'], name: entry['name'], spaceId, ownedSpaceIds };
-    }
-    return normalized;
+    return normalizeSpaces(JSON.parse(text));
   } catch {
-    return {};
+    return undefined;
   }
 }
 
+function atomicReplace(files: IHostFileSystem): (path: string, data: string) => Promise<void> {
+  if (files.replaceText === undefined) {
+    throw new BrowserError('browser.execution_failed', 'Ego Lite space bindings need a host filesystem with atomic replace');
+  }
+  return files.replaceText.bind(files);
+}
+
+async function preserveCorruptSpaces(files: IHostFileSystem, file: string, text: string, log: Pick<ILogger, 'warn'> | undefined): Promise<void> {
+  const digest = createHash('sha256').update(text).digest('hex').slice(0, 16);
+  const backup = `${file}.corrupt-${digest}`;
+  try {
+    if (await files.readText(backup) === text) return;
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
+  await atomicReplace(files)(backup, text);
+  log?.warn('Ego Lite space bindings file is corrupt; preserved a backup before rewriting it', { path: file, backup });
+}
+
+async function readSpaces(files: IHostFileSystem, sessionDir: string, log: Pick<ILogger, 'warn'> | undefined): Promise<Record<string, EgoSpaceBinding>> {
+  const file = spaceFile(sessionDir);
+  let text: string;
+  try {
+    text = await files.readText(file);
+  } catch (error) {
+    if (isMissingFile(error)) return {};
+    throw error;
+  }
+  const spaces = parseSpaces(text);
+  if (spaces !== undefined) return spaces;
+  await preserveCorruptSpaces(files, file, text, log);
+  return {};
+}
+
 async function writeSpaces(files: IHostFileSystem, sessionDir: string, value: Record<string, EgoSpaceBinding>): Promise<void> {
+  const replace = atomicReplace(files);
   await files.mkdir(sessionDir, { recursive: true });
-  await files.writeText(spaceFile(sessionDir), `${JSON.stringify(value)}\n`);
+  await replace(spaceFile(sessionDir), `${JSON.stringify(value)}\n`);
 }
 
 function sameLease(current: EgoSpaceBinding | undefined, started: EgoSpaceBinding): current is EgoSpaceBinding {
@@ -193,6 +237,7 @@ export class EgoBrowserRuntime {
     private readonly files: IHostFileSystem,
     private readonly env: NodeJS.ProcessEnv = process.env,
     private readonly platform: NodeJS.Platform = process.platform,
+    private readonly log?: Pick<ILogger, 'warn'>,
   ) {}
 
   arm(connectionId: string): void {
@@ -286,7 +331,11 @@ export class EgoBrowserRuntime {
   }
 
   async readBinding(sessionDir: string, agentId: string): Promise<EgoSpaceBinding | undefined> {
-    return (await readSpaces(this.files, sessionDir))[agentId];
+    try {
+      return (await readSpaces(this.files, sessionDir, this.log))[agentId];
+    } catch {
+      return undefined;
+    }
   }
 
   private async updateSpace(
@@ -298,7 +347,7 @@ export class EgoBrowserRuntime {
     connectionId: string,
   ): Promise<void> {
     await withFile(spaceFile(sessionDir), async () => {
-      const all = await readSpaces(this.files, sessionDir);
+      const all = await readSpaces(this.files, sessionDir, this.log);
       const current = all[agentId];
       if (current === undefined) {
         if (started.spaceId !== undefined) return;
@@ -319,7 +368,7 @@ export class EgoBrowserRuntime {
 
   private async deleteIfStarted(sessionDir: string, agentId: string, started: EgoSpaceBinding, writtenSpaceId: string | undefined): Promise<void> {
     await withFile(spaceFile(sessionDir), async () => {
-      const all = await readSpaces(this.files, sessionDir);
+      const all = await readSpaces(this.files, sessionDir, this.log);
       const current = all[agentId];
       const expected = writtenSpaceId ?? started.spaceId;
       const owned = current !== undefined && current.connectionId === started.connectionId && current.name === started.name
@@ -343,7 +392,7 @@ export class EgoBrowserRuntime {
     aliveIds: readonly number[],
   ): Promise<void> {
     await withFile(spaceFile(sessionDir), async () => {
-      const all = await readSpaces(this.files, sessionDir);
+      const all = await readSpaces(this.files, sessionDir, this.log);
       const current = all[agentId];
       if (!sameLease(current, started)) return;
       const aliveSet = new Set(aliveIds);

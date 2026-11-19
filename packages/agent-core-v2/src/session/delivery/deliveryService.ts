@@ -2,7 +2,9 @@ import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { isStorageError, StorageErrors } from '#/persistence/interface/storage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
@@ -34,6 +36,7 @@ export class SessionDeliveryService extends Service implements ISessionDeliveryS
     @ISessionContext private readonly context: ISessionContext,
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this.ready = this.load();
@@ -89,12 +92,26 @@ export class SessionDeliveryService extends Service implements ISessionDeliveryS
 
   private async load(): Promise<void> {
     await this.metadata.ready;
-    const stored = await this.documents.get<DeliveryDocument>(this.context.metaScope, DELIVERY_KEY);
+    const stored = await this.readStored();
     const metadata = await this.metadata.read();
     const customMode = metadata.custom?.['delivery'];
     const mode = stored?.mode ?? metadata.delivery ?? (customMode === 'reply' || customMode === 'message' ? customMode : undefined) ?? DEFAULT_MODE;
     this.current = mode === 'message' ? 'message' : 'reply';
     if (this.current !== DEFAULT_MODE) this.effectiveChanged.fire(this.current);
+  }
+
+  private async readStored(): Promise<DeliveryDocument | undefined> {
+    try {
+      return await this.documents.get<DeliveryDocument>(this.context.metaScope, DELIVERY_KEY);
+    } catch (error) {
+      if (!isStorageError(error, StorageErrors.codes.STORAGE_DECODE_FAILED)) throw error;
+      this.log.warn('session delivery document is unreadable; falling back to session metadata', {
+        sessionId: this.context.sessionId,
+        key: DELIVERY_KEY,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
 }
 
