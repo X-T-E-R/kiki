@@ -46,6 +46,7 @@ export function runCommand(
     timeout: options?.timeoutMs ?? DEFAULT_LIST_TIMEOUT_MS,
     maxBuffer: DEFAULT_MAX_BUFFER_BYTES,
     env: options?.env,
+    windowsHide: true,
   });
   if (result.error !== undefined || result.status !== 0) {
     return { ok: false, stdout: Buffer.alloc(0) };
@@ -73,6 +74,7 @@ export function runCommandAsync(
       child = spawn(command, args, {
         env: options?.env,
         stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
       });
     } catch {
       resolve({ ok: false, stdout: Buffer.alloc(0) });

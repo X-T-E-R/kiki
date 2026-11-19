@@ -68,6 +68,7 @@ describe('detectFdPath', () => {
     expect(detectFdPath()).toBe('/usr/local/bin/fd');
     expect(mocks.spawnSync).toHaveBeenCalledWith('/usr/local/bin/fd', ['--version'], {
       stdio: 'ignore',
+      windowsHide: true,
     });
   });
 
@@ -81,7 +82,10 @@ describe('detectFdPath', () => {
     mocks.spawnSync.mockReturnValue({ status: 0 });
 
     expect(detectFdPath()).toBe(binaryPath);
-    expect(mocks.spawnSync).toHaveBeenCalledWith(binaryPath, ['--version'], { stdio: 'ignore' });
+    expect(mocks.spawnSync).toHaveBeenCalledWith(binaryPath, ['--version'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
     expect(mocks.resolveCommandPath).not.toHaveBeenCalled();
   });
 });

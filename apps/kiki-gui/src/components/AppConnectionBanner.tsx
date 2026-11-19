@@ -34,7 +34,11 @@ export function AppConnectionBanner({
 }) {
   const { t } = useI18n();
   const [details, setDetails] = useState(false);
-  const bannerVisible = !((wsStatus === 'open' || ((wsStatus === 'connecting' || wsStatus === 'closed') && suppressInitialConnecting === true)) && recovery === undefined);
+  const suppressedTransient =
+    suppressInitialConnecting === true &&
+    (wsStatus === 'connecting' || wsStatus === 'closed') &&
+    (recovery === undefined || (recovery.status === 'retrying' && recovery.failure === null));
+  const bannerVisible = !((wsStatus === 'open' && recovery === undefined) || suppressedTransient);
   const location = useSpaceLocation({ enabled: bannerVisible });
   const conn = useOptionalConnection();
   const log = useSyncExternalStore(subscribeConnectionLog, connectionLog, connectionLog);
@@ -42,7 +46,7 @@ export function AppConnectionBanner({
   if (!bannerVisible) return null;
   const blocked = recovery?.status === 'blocked';
   const retrying = recovery?.status === 'retrying' || (!blocked && wsStatus === 'connecting');
-  const canReconnect = !blocked && recovery === undefined;
+  const canReconnect = !blocked;
   const failure = recovery?.failure;
 
   const retryAttempt = latestRetryAttempt(log);
@@ -84,7 +88,7 @@ export function AppConnectionBanner({
             {t('app.backToSpace', { space: location.localSpaceName })}
           </button>
         ) : null}
-        {recovery ? <button type="button" className={buttonClass} disabled={!failure} onClick={() => { setDetails(true); }}>{t('app.connectionDetails')}</button> : null}
+        {recovery ? <button type="button" data-banner-details className={buttonClass} disabled={!failure} onClick={() => { setDetails(true); }}>{t('app.connectionDetails')}</button> : null}
       </div>
     </div>
     {details && failure ? <Dialog onClose={() => { setDetails(false); }} ariaLabel={t('app.connectionDetails')} overlayId="connection-failure-details" stacked>

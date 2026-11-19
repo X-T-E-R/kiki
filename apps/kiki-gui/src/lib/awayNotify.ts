@@ -112,8 +112,8 @@ export class AwayNotifier {
     const current = this.deps;
     if (current === undefined || generation !== this.scopeGeneration) return undefined;
     const currentPrefs = (current.prefs ?? readAwayNotificationPrefs)();
-    const deliverable = wanted.filter((event) => currentPrefs.enabled && currentPrefs.kinds[event.kind]).filter((event) => away ||
-      (event.kind === 'completed' && current.isViewingSession !== undefined && !current.isViewingSession(event.sessionId)));
+    if (!away) return undefined;
+    const deliverable = wanted.filter((event) => currentPrefs.enabled && currentPrefs.kinds[event.kind]);
     if (deliverable.length === 0) return undefined;
     const now = (current.now ?? Date.now)();
     const plan = planAttentionNotifications(deliverable, currentPrefs, this.rate, now);

@@ -673,11 +673,7 @@ class HttpEventSocket {
   private nudge(): void {
     if (this.closed) return;
     if (this.state === 'open') {
-      if (this.heartbeatMs !== undefined && Date.now() - this.lastInboundAt > Math.max(25_000, this.heartbeatMs * 2.5)) {
-        this.restart('stale_heartbeat');
-        return;
-      }
-      this.sendLivenessProbe(2_000);
+      this.sendLivenessProbe(5_000);
       return;
     }
     if (this.ws !== undefined) {

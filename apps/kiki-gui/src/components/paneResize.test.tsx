@@ -233,11 +233,12 @@ describe('Sidebar resize wiring', () => {
 });
 
 describe('clampPreviewWidth', () => {
-  it('keeps the preview pane within min width and the 60% viewport cap', () => {
+  it('keeps the preview pane within min width, MAX_PREVIEW_WIDTH (1100), and the 70% viewport cap', () => {
     expect(clampPreviewWidth(100, 1920)).toBe(320);
-    expect(clampPreviewWidth(2000, 1920)).toBe(760);
+    expect(clampPreviewWidth(2000, 1920)).toBe(1100);
+    expect(clampPreviewWidth(1100, 1200)).toBe(840);
     expect(clampPreviewWidth(600, 400)).toBe(320);
-    expect(DEFAULT_PREVIEW_WIDTH).toBe(420);
+    expect(DEFAULT_PREVIEW_WIDTH).toBe(480);
   });
 
   it('additionally clamps against available conversation-row space', () => {

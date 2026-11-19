@@ -298,6 +298,29 @@ describe('server-v2 /api workspaceFs surfaces', () => {
       await expect(client.rest!.filesystem.readHostFileBytes(file)).rejects.toMatchObject({ code: 50001 });
     });
 
+    it('expands leading ~/ and ~\\ against os.homedir() on fs:content while rejecting ~otheruser', async () => {
+      const homeScratch = await mkdtemp(join(homedir(), '.kiki-tilde-test-'));
+      try {
+        const relDir = homeScratch.slice(homedir().length).replace(/^[\\/]+/, '');
+        const file = join(homeScratch, 'citation.toml');
+        await writeFile(file, 'ok = true\n');
+
+        const posixRes = await getContent(`~/${relDir}/citation.toml`);
+        expect(posixRes.status).toBe(200);
+        expect(await posixRes.text()).toBe('ok = true\n');
+
+        const winRes = await getContent(`~\\${relDir}\\citation.toml`);
+        expect(winRes.status).toBe(200);
+        expect(await winRes.text()).toBe('ok = true\n');
+
+        const otherUserRes = await getContent('~otheruser/citation.toml');
+        expect(otherUserRes.status).toBe(400);
+        expect(((await otherUserRes.json()) as Envelope<null>).code).toBe(40001);
+      } finally {
+        await rm(homeScratch, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
     it.skipIf(process.platform === 'win32')('rejects non-regular files (40001)', async () => {
       expect(((await (await getContent('/dev/null')).json()) as Envelope<null>).code).toBe(40001);
     });

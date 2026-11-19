@@ -49,6 +49,7 @@ export function runStatusLineCommand(
         // Own process group on POSIX so a timeout can drop the whole tree,
         // not just the shell wrapper.
         detached: !isWin,
+        windowsHide: true,
       });
     } catch {
       finish(null);
@@ -59,7 +60,7 @@ export function runStatusLineCommand(
       if (child.pid === undefined) return;
       if (isWin) {
         try {
-          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
         } catch {
           // best effort
         }

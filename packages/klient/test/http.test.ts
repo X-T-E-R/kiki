@@ -306,6 +306,8 @@ describe('http transport', () => {
       klient.terminal.nudge();
       expect(server.frames.at(-1)).toMatchObject({ type: 'ping' });
       await vi.advanceTimersByTimeAsync(2_000);
+      expect(server.sockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(3_000);
       expect(server.sockets).toHaveLength(2);
       server.push({ type: 'ping', data: { heartbeatMs: 10_000, nonce: 'watch' } });
       await vi.advanceTimersByTimeAsync(19_001);
@@ -315,6 +317,28 @@ describe('http transport', () => {
       await vi.advanceTimersByTimeAsync(8_000);
       await rejection;
       klient.terminal.terminalDetach('s1', 't1');
+    } finally { await klient.close(); vi.useRealTimers(); }
+  });
+  it('probes on wake nudge after long silence instead of pre-emptively restarting a live socket', async () => {
+    vi.useFakeTimers();
+    const server = new FakeWebSocketServer();
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
+    try {
+      klient.terminal.onStatus(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      server.push({ type: 'ping', data: { heartbeatMs: 10_000, nonce: 'init' } });
+      await vi.advanceTimersByTimeAsync(0);
+      // Simulate suspended/throttled renderer wake: jump wall clock > 30s without running intermediate timers.
+      vi.setSystemTime(Date.now() + 35_000);
+      klient.terminal.nudge();
+      expect(server.sockets).toHaveLength(1);
+      const probe = server.frames.at(-1);
+      expect(probe).toMatchObject({ type: 'ping' });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(server.sockets).toHaveLength(1);
+      server.push({ type: 'pong', data: { nonce: (probe?.['data'] as { nonce?: string } | undefined)?.nonce } });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(server.sockets).toHaveLength(1);
     } finally { await klient.close(); vi.useRealTimers(); }
   });
   it('reports why the event socket closed, with its close code and heartbeat timing', async () => {

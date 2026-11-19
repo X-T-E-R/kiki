@@ -208,7 +208,7 @@ export async function launchDetached(cmd: LaunchCommand): Promise<void> {
       detached: true,
       stdio: 'ignore',
       shell: cmd.shell,
-      windowsHide: cmd.shell === true ? true : undefined,
+      windowsHide: true,
       windowsVerbatimArguments: cmd.windowsVerbatimArguments,
     });
     child.once('error', (err) => {
