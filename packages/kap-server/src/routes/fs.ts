@@ -471,7 +471,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
             await handleSearch(runtimeFs.fs, req, reply, signal);
             return;
           case 'grep':
-            await handleGrep(runtimeFs.fs, req, reply);
+            await handleGrep(runtimeFs.fs, req, reply, signal);
             return;
           case 'git_status':
             await handleGitStatus(runtimeFs.fs, req, reply);
@@ -489,8 +489,8 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
             await handleReveal(runtimeFs.fs, req, reply);
             return;
         }
-      } catch (err) {
-        if (!signal.aborted) sendMappedError(reply, req, err);
+      } catch (error) {
+        if (!signal.aborted) sendMappedError(reply, req, error);
       } finally {
         await runtimeFs?.lease.dispose();
         workspaceLease?.dispose();
@@ -541,8 +541,8 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         }
         const data = await runtimeFs.fs.search(searchRequest, signal);
         reply.send(okEnvelope(data, req.id));
-      } catch (err) {
-        if (!signal.aborted) sendMappedError(reply, req, err);
+      } catch (error) {
+        if (!signal.aborted) sendMappedError(reply, req, error);
       } finally {
         await runtimeFs?.lease.dispose();
       }
@@ -569,7 +569,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       tags: ['fs'],
       operationId: 'workspaceFsSuggest',
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       const { workspace, runtime_id, ...suggestRequest } = req.body;
       let runtimeFs: RuntimeFsScope | undefined;
       try {
@@ -588,14 +588,14 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
           );
           return;
         }
-        const data = await runtimeFs.fs.suggest(suggestRequest);
+        const data = await runtimeFs.fs.suggest(suggestRequest, signal);
         reply.send(okEnvelope(data, req.id));
-      } catch (err) {
-        sendMappedError(reply, req, err);
+      } catch (error) {
+        if (!signal.aborted) sendMappedError(reply, req, error);
       } finally {
         await runtimeFs?.lease.dispose();
       }
-    },
+    }, req),
   );
   app.post(
     workspaceSuggestRoute.path,
@@ -708,7 +708,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
           downloadStream.destroy();
         });
         return r.send(downloadStream) as unknown as void;
-      } catch (err) {
+      } catch (error) {
         if (stream !== undefined) {
           stream.destroy();
           responseCleanup?.release();
@@ -718,7 +718,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
             requestLog(req)?.error({ session_id, path: relPath, err: cleanupError }, 'fs download cleanup failed before response');
           }
         }
-        sendMappedError(reply, req, err);
+        sendMappedError(reply, req, error);
       } finally {
         if (stream === undefined) {
           await runtimeFs?.lease.dispose();
@@ -843,13 +843,13 @@ async function handleSearch(fs: IWorkspaceFsService, req: Req, reply: Reply, sig
   reply.send(okEnvelope(data, req.id));
 }
 
-async function handleGrep(fs: IWorkspaceFsService, req: Req, reply: Reply): Promise<void> {
+async function handleGrep(fs: IWorkspaceFsService, req: Req, reply: Reply, signal: AbortSignal): Promise<void> {
   const parsed = fsGrepRequestSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
     reply.send(buildValidationEnvelope(parsed.error.issues, req.id));
     return;
   }
-  const data = await fs.grep(parsed.data);
+  const data = await fs.grep(parsed.data, signal);
   reply.send(okEnvelope(data, req.id));
 }
 
@@ -910,15 +910,15 @@ async function handleOpenIn(fs: IWorkspaceFsService, sessionId: string, req: Req
         isDirectory: resolved.isDirectory,
       }),
     );
-  } catch (err) {
+  } catch (error) {
     requestLog(req)?.warn(
-      { session_id: sessionId, app_id: body.app_id, err },
+      { session_id: sessionId, app_id: body.app_id, error },
       'fs open-in launch failed',
     );
     reply.send(
       errEnvelope(
         ErrorCode.INTERNAL_ERROR,
-        `failed to open in ${body.app_id}: ${err instanceof Error ? err.message : String(err)}`,
+        `failed to open in ${body.app_id}: ${error instanceof Error ? error.message : String(error)}`,
         req.id,
       ),
     );
