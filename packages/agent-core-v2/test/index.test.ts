@@ -674,9 +674,6 @@ describe('AgentRecords persistence metadata', () => {
   });
 });
 
-describe.skip('agent replay range build', () => {
-});
-
 class RecordingInMemoryWireRecordPersistence extends InMemoryWireRecordPersistence {
   readonly rewrites: WireRecord[][] = [];
 

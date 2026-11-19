@@ -1,3 +1,4 @@
+import { camelToSnake } from '#/app/config/toml';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
 
 import { runHook } from './runHook';
@@ -131,8 +132,4 @@ function toHookInputData(input: Record<string, unknown>): Record<string, unknown
     result[camelToSnake(key)] = value;
   }
   return result;
-}
-
-function camelToSnake(value: string): string {
-  return value.replaceAll(/[A-Z]/g, (ch) => `_${ch.toLowerCase()}`);
 }

@@ -67,3 +67,28 @@ export function sortValue(value: unknown): string | number | null {
   // oxlint-disable-next-line typescript/no-base-to-string
   return Buffer.from(String(value), 'utf16le').swap16().toString('hex');
 }
+
+function sortableNumberHex(value: number): string {
+  if (Number.isNaN(value)) return 'ffffffffffffffff';
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setFloat64(0, value === 0 ? 0 : value, false);
+  const hi = view.getUint32(0, false);
+  const lo = view.getUint32(4, false);
+  if ((hi & 0x80000000) !== 0) {
+    view.setUint32(0, ~hi >>> 0, false);
+    view.setUint32(4, ~lo >>> 0, false);
+  } else {
+    view.setUint32(0, (hi ^ 0x80000000) >>> 0, false);
+  }
+  return Buffer.from(buffer).toString('hex');
+}
+
+export function totalSortKey(value: unknown): string {
+  if (value === undefined || value === null) return '0:';
+  if (typeof value === 'boolean') return value ? '1:1' : '1:0';
+  if (typeof value === 'number') return `2:${sortableNumberHex(value)}`;
+  if (typeof value === 'string') return `3:${Buffer.from(value, 'utf16le').swap16().toString('hex')}`;
+  // oxlint-disable-next-line typescript/no-base-to-string
+  return `4:${Buffer.from(String(value), 'utf16le').swap16().toString('hex')}`;
+}

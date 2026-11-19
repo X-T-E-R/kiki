@@ -31,8 +31,10 @@ import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDo
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
+import { ILogService } from '#/_base/log/log';
+import { stubLog } from '../../_base/log/stubs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const fixture = path.resolve(here, '../../fixtures/plugin-import');
 const echo = path.resolve(here, '../../fixtures/plugin-host');
 const namespace = 'plugin-import-v1';
@@ -40,7 +42,7 @@ const hosts: ScopedTestHost[] = [];
 const storages: FileStorageService[] = [];
 let root: string;
 let home: string;
-function host(targetHome = home): ScopedTestHost {
+function host(targetHome = home, log = stubLog()): ScopedTestHost {
   const storage = new FileStorageService(targetHome);
   storages.push(storage);
   const result = createScopedTestHost([
@@ -53,6 +55,7 @@ function host(targetHome = home): ScopedTestHost {
     stubPair(IFlagService, { _serviceBrand: undefined, enabled: () => true } as unknown as IFlagService),
     stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
     stubPair(IFileSystemStorageService, storage),
+    stubPair(ILogService, log),
   ]);
   hosts.push(result);
   return result;
@@ -177,6 +180,30 @@ describe('native finite session-source import', () => {
       const result = await importOne(service, pluginId, sourceId, input, 'losses.jsonl');
       expect(result.job.losses.filter((item) => item.code === 'bad_jsonl').reduce((sum, item) => sum + item.count, 0)).toBe(300);
       expect(result.job.losses.filter((item) => item.code === 'attachment_not_imported').reduce((sum, item) => sum + item.count, 0)).toBe(1);
+    }
+  });
+  it('logs instead of leaving an unhandled rejection when a failed job cannot persist its final state', async () => {
+    const log = stubLog();
+    const warn = vi.spyOn(log, 'warn');
+    const target = host(home, log);
+    const input = path.join(root, 'persist-failure'); await mkdir(input);
+    await writeFile(path.join(input, 'one.jsonl'), JSON.stringify({ type: 'user', message: { content: 'hello' } }));
+    const service = target.app.accessor.get(IPluginImportService);
+    const docs = target.app.accessor.get(IAtomicDocumentStore);
+    const preview = await service.preview({ pluginId: 'kiki-history', sourceId: 'claude-code', home: input, externalId: 'one.jsonl' });
+    const set = docs.set.bind(docs);
+    vi.spyOn(docs, 'set').mockImplementation((scope, key, value, options) => key.startsWith('jobs.') && (value as ImportJob).status !== 'queued'
+      ? Promise.reject(new Error('ENOSPC: no space left on device'))
+      : set(scope, key, value, options));
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const started = await service.start({ previewId: preview.id, acknowledge: true });
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith('plugin import job failed to record its final state', expect.objectContaining({ jobId: started.id })));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
     }
   });
   it('discovers every file across directory and locale ordering page boundaries', async () => {

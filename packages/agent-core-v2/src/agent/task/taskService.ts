@@ -70,6 +70,7 @@ import {
   type AgentTaskReceipt,
   type AgentTaskOutputSnapshot,
   type AgentTaskOutputPage,
+  type AgentTaskRetentionStats,
   type AgentTaskStatus,
   type AgentTaskTrackOptions,
   type AgentTaskWaitDelivery,
@@ -767,7 +768,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       await entry.outputWriteQueue;
     }
     await cached?.outputWriteQueue;
-    await this.persistence.deleteTask(taskId).catch(() => {});
+    await this.persistence.deleteTask(taskId).catch((error) => {
+      this.log.error('task record deletion failed', { taskId, error });
+    });
   }
 
   track(handle: ITaskHandle, options: AgentTaskTrackOptions): IAgentTaskEntry {
@@ -1030,6 +1033,21 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.pendingWaitDeliveries.size > 0;
   }
 
+  getRetentionStats(): AgentTaskRetentionStats {
+    let retainedOutputBytes = 0;
+    const taskOutputSizes: number[] = [];
+    for (const entry of this.tasks.values()) {
+      retainedOutputBytes += entry.retainedOutputBytes;
+      taskOutputSizes.push(entry.outputSizeBytes);
+    }
+    return {
+      activeTaskCount: this.tasks.size,
+      cachedOutputCount: this.cachedOutputs.size,
+      retainedOutputBytes,
+      taskOutputSizes,
+    };
+  }
+
   private async reconcileNotificationDeliveryAfterUndo(): Promise<void> {
     this.notificationUndoGeneration += 1;
     this.buildingNotificationKeys.clear();
@@ -1266,7 +1284,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const updated = { ...ghost, terminalNotificationSuppressed: true };
     this.ghosts.set(taskId, updated);
     this.fireWorkChange();
-    await this.persistence.writeTask(updated).catch(() => {});
+    await this.persistence.writeTask(updated).catch((error) => {
+      this.log.error('task notification suppression persistence failed', { taskId, error });
+    });
   }
 
   async suppressAllTerminalNotifications(): Promise<void> {
@@ -1302,7 +1322,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         taskId, status, notificationId: taskNotificationId(taskId, status),
       }))?.abort();
     }
-    void this.deliverTasksViaWait(tasks);
+    void this.deliverTasksViaWait(tasks).catch(error => this.log.error('task wait delivery failed', { error }));
   }
 
   private async deliverTasksViaWait(tasks: readonly AgentTaskWaitDelivery[]): Promise<void> {
@@ -1917,7 +1937,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const persistence = this.persistence;
     entry.persistWriteQueue = entry.persistWriteQueue
       .then(() => persistence.writeTask(this.toInfo(entry)))
-      .catch(() => { });
+      .catch((error: unknown) => {
+        this.log.error('task metadata persistence failed; retrying on next write', { taskId: entry.taskId, error });
+      });
     return entry.persistWriteQueue;
   }
 

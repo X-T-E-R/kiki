@@ -17,8 +17,6 @@ import {
   READ_IMAGE_BYTE_BUDGET,
   resolveMaxImageEdgePx,
   resolveReadImageByteBudget,
-  setConfiguredMaxImageEdgePx,
-  setConfiguredReadImageByteBudget,
   type ImageCompressionTelemetryClient,
   validateImageDataUrl,
 } from '#/agent/media/image-compress';
@@ -1791,34 +1789,22 @@ describe('cropImageForModel — telemetry', () => {
 });
 
 describe('image-compress config resolver seam', () => {
-  afterEach(() => {
-    setConfiguredMaxImageEdgePx(undefined);
-    setConfiguredReadImageByteBudget(undefined);
-  });
-
   it('resolves the longest-edge ceiling from config, falling back to the built-in', () => {
     expect(resolveMaxImageEdgePx()).toBe(MAX_IMAGE_EDGE_PX);
-    setConfiguredMaxImageEdgePx(1500);
-    expect(resolveMaxImageEdgePx()).toBe(1500);
-    setConfiguredMaxImageEdgePx(undefined);
-    expect(resolveMaxImageEdgePx()).toBe(MAX_IMAGE_EDGE_PX);
+    expect(resolveMaxImageEdgePx(1500)).toBe(1500);
+    expect(resolveMaxImageEdgePx(undefined)).toBe(MAX_IMAGE_EDGE_PX);
   });
 
   it('ignores non-positive-int configured ceilings', () => {
-    setConfiguredMaxImageEdgePx(0);
-    expect(resolveMaxImageEdgePx()).toBe(MAX_IMAGE_EDGE_PX);
-    setConfiguredMaxImageEdgePx(-5);
-    expect(resolveMaxImageEdgePx()).toBe(MAX_IMAGE_EDGE_PX);
-    setConfiguredMaxImageEdgePx(1.5);
-    expect(resolveMaxImageEdgePx()).toBe(MAX_IMAGE_EDGE_PX);
+    expect(resolveMaxImageEdgePx(0)).toBe(MAX_IMAGE_EDGE_PX);
+    expect(resolveMaxImageEdgePx(-5)).toBe(MAX_IMAGE_EDGE_PX);
+    expect(resolveMaxImageEdgePx(1.5)).toBe(MAX_IMAGE_EDGE_PX);
   });
 
   it('resolves the read-image byte budget from config, falling back to the built-in', () => {
     expect(resolveReadImageByteBudget()).toBe(READ_IMAGE_BYTE_BUDGET);
-    setConfiguredReadImageByteBudget(128 * 1024);
-    expect(resolveReadImageByteBudget()).toBe(128 * 1024);
-    setConfiguredReadImageByteBudget(undefined);
-    expect(resolveReadImageByteBudget()).toBe(READ_IMAGE_BYTE_BUDGET);
+    expect(resolveReadImageByteBudget(128 * 1024)).toBe(128 * 1024);
+    expect(resolveReadImageByteBudget(undefined)).toBe(READ_IMAGE_BYTE_BUDGET);
   });
 
   it('offloads large image downscales with >2x pre-decimation to a registered CPU worker pool', { timeout: PARALLEL_WORKER_CONTENTION_TIMEOUT_MS }, async () => {

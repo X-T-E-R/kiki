@@ -1,9 +1,9 @@
+import { isPlainObject } from '#/_base/utils/types';
+
+export { isPlainObject };
+
 export function stripTomlBom(text: string): string {
   return text.startsWith('\uFEFF') ? text.slice(1) : text;
-}
-
-export function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function deepEqual(a: unknown, b: unknown): boolean {

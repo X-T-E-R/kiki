@@ -20,7 +20,7 @@ import { InMemoryStorageService } from '#/persistence/backends/memory/inMemorySt
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { WIRE_PROTOCOL_VERSION } from '#/wire/migration/migration';
-import { wireJournalBackupKey } from '#/wire/repair';
+import { WIRE_JOURNAL_BACKUP_RETENTION, wireJournalBackupKey } from '#/wire/repair';
 import { WireError, WireErrors } from '#/wire/errors';
 import { IWireService } from '#/wire/wire';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
@@ -238,7 +238,7 @@ describe('WireService seal', () => {
     }
     expect(journalSize).toBeGreaterThan(64 * 4096);
     const tail = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!);
-    tail[tail.byteLength - 10] = '0'.charCodeAt(0) === tail[tail.byteLength - 10] ? '1'.charCodeAt(0) : '0'.charCodeAt(0);
+    tail[tail.byteLength - 10] = tail[tail.byteLength - 10] === 0x30 ? 0x31 : 0x30;
     await storage.write(scope, AGENT_WIRE_RECORD_KEY, tail);
     wire.appendRecord({ type: 'turn.prompt', turnId: 73 });
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
@@ -1484,7 +1484,7 @@ describe('WireService corruption repair', () => {
     ]);
   });
 
-  it('keeps the first backup when the journal corrupts again after a repair', async () => {
+  it('backs up every repair to its own numbered key when the journal corrupts again', async () => {
     const first = `${currentMetadata()}\nGARBAGE-1\n`;
     await seedCorrupt(first);
     await collect(wire.readJournal());
@@ -1494,6 +1494,28 @@ describe('WireService corruption repair', () => {
     await collect(wire.readJournal());
 
     expect(await rawBytes(BACKUP_KEY)).toBe(first);
+    expect(await rawBytes(wireJournalBackupKey(AGENT_WIRE_RECORD_KEY, 1))).toBe(second);
+  });
+
+  it('retains only the newest repair backups', async () => {
+    const corruptions = Array.from(
+      { length: WIRE_JOURNAL_BACKUP_RETENTION + 2 },
+      (_, i) => `${currentMetadata()}\nGARBAGE-${i}\n`,
+    );
+    for (const raw of corruptions) {
+      await seedCorrupt(raw);
+      await collect(wire.readJournal());
+    }
+
+    const backups = await storage.list(testWireScope(SCOPE, KEY), BACKUP_KEY);
+    expect(backups.toSorted()).toEqual(
+      Array.from({ length: WIRE_JOURNAL_BACKUP_RETENTION }, (_, i) =>
+        wireJournalBackupKey(AGENT_WIRE_RECORD_KEY, i + 2),
+      ).toSorted(),
+    );
+    expect(await rawBytes(wireJournalBackupKey(AGENT_WIRE_RECORD_KEY, corruptions.length - 1))).toBe(
+      corruptions.at(-1),
+    );
   });
 
   it('repairs through the migration rewrite path when corruption meets an old version', async () => {
@@ -1616,6 +1638,7 @@ describe('WireService corruption repair', () => {
 
     expect(await rawBytes()).toBe(`${prefix}${JSON.stringify({ type: 'wire.test.new', time: 7 })}\n`);
     expect(await rawBytes(BACKUP_KEY)).toBe(raw);
+    expect(await rawBytes(wireJournalBackupKey(AGENT_WIRE_RECORD_KEY, 1))).toBeUndefined();
     expect(await collect(svc.readJournal())).toEqual([
       { type: 'metadata', protocol_version: WIRE_PROTOCOL_VERSION, created_at: 1 },
       { type: 'wire.test.new', time: 7 },

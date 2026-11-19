@@ -1,5 +1,6 @@
 import { basename, dirname, isAbsolute, join, normalize } from 'pathe';
 import { Disposable } from '#/_base/di/lifecycle';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -74,7 +75,11 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
       })());
     }));
     this._register(toolExecutor.hooks.onDidExecuteTool.register('agentsMdReminder', async (ctx, next) => {
-      try { await this.afterTool(ctx); } catch {}
+      try {
+        await this.afterTool(ctx);
+      } catch (error) {
+        onUnexpectedError(error);
+      }
       await next();
     }));
   }

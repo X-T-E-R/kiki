@@ -4,14 +4,21 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IConfigService } from '#/app/config/config';
 import {
-  setConfiguredMaxImageEdgePx,
-  setConfiguredReadImageByteBudget,
+  resolveMaxImageEdgePx,
+  resolveReadImageByteBudget,
 } from '#/agent/media/image-compress';
 
 import { IMAGE_SECTION, type ImageConfig } from './configSection';
 
-export interface IImageConfigBridge {
+export interface ImageDeliveryLimits {
+  readonly maxEdgePx?: number;
+  readonly readByteBudget?: number;
+}
+
+export interface IImageConfigBridge extends ImageDeliveryLimits {
   readonly _serviceBrand: undefined;
+  readonly maxEdgePx: number;
+  readonly readByteBudget: number;
 }
 
 export const IImageConfigBridge: ServiceIdentifier<IImageConfigBridge> =
@@ -19,22 +26,32 @@ export const IImageConfigBridge: ServiceIdentifier<IImageConfigBridge> =
 
 export class ImageConfigBridge extends Disposable implements IImageConfigBridge {
   declare readonly _serviceBrand: undefined;
+  private currentMaxEdgePx: number | undefined;
+  private currentReadByteBudget: number | undefined;
 
   constructor(@IConfigService private readonly config: IConfigService) {
     super();
-    this.push(this.config.get<ImageConfig>(IMAGE_SECTION));
+    this.sync(this.config.get<ImageConfig>(IMAGE_SECTION));
     this._register(
       this.config.onDidSectionChange((e) => {
         if (e.domain === IMAGE_SECTION) {
-          this.push(e.value as ImageConfig);
+          this.sync(e.value as ImageConfig);
         }
       }),
     );
   }
 
-  private push(image: ImageConfig | undefined): void {
-    setConfiguredMaxImageEdgePx(image?.maxEdgePx);
-    setConfiguredReadImageByteBudget(image?.readByteBudget);
+  get maxEdgePx(): number {
+    return resolveMaxImageEdgePx(this.currentMaxEdgePx);
+  }
+
+  get readByteBudget(): number {
+    return resolveReadImageByteBudget(this.currentReadByteBudget);
+  }
+
+  private sync(image: ImageConfig | undefined): void {
+    this.currentMaxEdgePx = image?.maxEdgePx;
+    this.currentReadByteBudget = image?.readByteBudget;
   }
 }
 

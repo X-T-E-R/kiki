@@ -4,6 +4,7 @@ import type { ContentPart } from '#/kosong/contract/message';
 import { VideoUploadUnsupportedError } from '#/kosong/contract/errors';
 import { inlineVideoPart, isVideoUploadAuthError } from '#/agent/media/videoUpload';
 import { compressAudioForModel, compressVideoForModel } from '#/agent/media/av-compress';
+import type { ImageDeliveryLimits } from '#/agent/media/imageConfigBridge';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 
@@ -228,6 +229,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     private readonly providerType?: string,
     private readonly imagePolicy?: ResolvedImagePolicy,
     private readonly cpuWorker?: ICpuWorkerService,
+    private readonly imageLimits?: ImageDeliveryLimits,
   ) {
     this.description = buildDescription(capabilities);
     this.compressTelemetry =
@@ -469,8 +471,8 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       }
 
       const imageDeliveryLimits = {
-        readByteBudget: resolveReadImageByteBudget(),
-        maxEdge: resolveMaxImageEdgePx(),
+        readByteBudget: resolveReadImageByteBudget(this.imageLimits?.readByteBudget),
+        maxEdge: resolveMaxImageEdgePx(this.imageLimits?.maxEdgePx),
       };
       if (
         fileType.kind === 'image' &&
@@ -496,6 +498,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       if (fileType.kind === 'image') {
         if (args.region !== undefined) {
           const outcome = await cropImageForModel(mediaData, fileType.mimeType, args.region, {
+            maxEdge: imageDeliveryLimits.maxEdge,
             skipResize: args.full_resolution === true,
             telemetry: this.compressTelemetry,
             acceptedMimes: this.imagePolicy?.acceptedTypes,

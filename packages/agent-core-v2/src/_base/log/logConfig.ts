@@ -2,6 +2,7 @@ import { join } from 'pathe';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ScopeSeed } from '#/_base/di/scope';
+import { parsePositiveIntEnv } from '#/_base/utils/env';
 
 import type { LogLevel } from './log';
 
@@ -43,11 +44,11 @@ export function resolveLoggingConfig(input: ResolveLoggingInput): LoggingConfig 
   return {
     level: parseLevel(env['KIKI_LOG_LEVEL']) ?? DEFAULT_LOG_LEVEL,
     globalLogPath: resolveGlobalLogPath(input.homeDir),
-    globalMaxBytes: parsePositiveInt(env['KIKI_LOG_GLOBAL_MAX_BYTES']) ?? DEFAULT_GLOBAL_MAX_BYTES,
-    globalFiles: parsePositiveInt(env['KIKI_LOG_GLOBAL_FILES']) ?? DEFAULT_GLOBAL_FILES,
+    globalMaxBytes: parsePositiveIntEnv(env['KIKI_LOG_GLOBAL_MAX_BYTES']) ?? DEFAULT_GLOBAL_MAX_BYTES,
+    globalFiles: parsePositiveIntEnv(env['KIKI_LOG_GLOBAL_FILES']) ?? DEFAULT_GLOBAL_FILES,
     sessionMaxBytes:
-      parsePositiveInt(env['KIKI_LOG_SESSION_MAX_BYTES']) ?? DEFAULT_SESSION_MAX_BYTES,
-    sessionFiles: parsePositiveInt(env['KIKI_LOG_SESSION_FILES']) ?? DEFAULT_SESSION_FILES,
+      parsePositiveIntEnv(env['KIKI_LOG_SESSION_MAX_BYTES']) ?? DEFAULT_SESSION_MAX_BYTES,
+    sessionFiles: parsePositiveIntEnv(env['KIKI_LOG_SESSION_FILES']) ?? DEFAULT_SESSION_FILES,
   };
 }
 
@@ -62,11 +63,4 @@ function parseLevel(value: string | undefined): LogLevel | undefined {
   const v = value.toLowerCase().trim();
   if (v === 'off' || v === 'error' || v === 'warn' || v === 'info' || v === 'debug') return v;
   return undefined;
-}
-
-function parsePositiveInt(value: string | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  const n = Number.parseInt(value, 10);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  return n;
 }

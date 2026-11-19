@@ -267,16 +267,17 @@ describe('apiKey env suppression (probe 1)', () => {
     await expect(withStrayEnv.generate('sys', [], [])).rejects.toThrow(/apiKey is required/);
   });
 
-  it('uses the KIMI_API_KEY env fallback when composing kimi', () => {
+  it('uses the KIMI_API_KEY env fallback when composing kimi', async () => {
     process.env['KIMI_API_KEY'] = 'sk-kimi-from-env';
     process.env['OPENAI_API_KEY'] = 'sk-openai-must-not-win';
     const provider = registry.createChatProvider({
       protocol: 'openai',
       providerType: 'kimi',
       modelName: 'kimi-k2',
+      baseUrl: 'https://example.test/v1',
     });
-    const apiKey = (provider as unknown as { _apiKey?: string })._apiKey;
-    expect(apiKey).toBe('sk-kimi-from-env');
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], PROBE_HISTORY));
+    expect(request.headers.get('authorization')).toBe('Bearer sk-kimi-from-env');
   });
 
   it('keeps the base env fallback for plain openai (no endpoint declared)', async () => {
@@ -292,45 +293,48 @@ describe('apiKey env suppression (probe 1)', () => {
     await expect(withKey.generate('sys', [], [])).rejects.toThrow(APIConnectionError);
   });
 
-  it('prefers an explicit config apiKey over the env chain', () => {
+  it('prefers an explicit config apiKey over the env chain', async () => {
     process.env['KIMI_API_KEY'] = 'sk-kimi-from-env';
     const provider = registry.createChatProvider({
       protocol: 'openai',
       providerType: 'kimi',
       modelName: 'kimi-k2',
       apiKey: 'sk-explicit-config',
+      baseUrl: 'https://example.test/v1',
     });
-    const apiKey = (provider as unknown as { _apiKey?: string })._apiKey;
-    expect(apiKey).toBe('sk-explicit-config');
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], PROBE_HISTORY));
+    expect(request.headers.get('authorization')).toBe('Bearer sk-explicit-config');
   });
 });
 
 describe('config defaultHeaders win (probe 2)', () => {
-  it('merges trait headers under config headers via the trailing synthetic trait', () => {
+  it('merges trait headers under config headers via the trailing synthetic trait', async () => {
     const provider = registry.createChatProvider({
       protocol: 'openai',
       providerType: 'header-vendor',
       modelName: 'm',
+      apiKey: 'sk-header-test',
+      baseUrl: 'https://example.test/v1',
       defaultHeaders: { 'x-shared': 'config', 'x-config-only': 'config' },
     });
-    const headers = (provider as unknown as { _defaultHeaders?: Record<string, string> })
-      ._defaultHeaders;
-    expect(headers).toEqual({
-      'x-shared': 'config',
-      'x-trait-only': 'trait',
-      'x-config-only': 'config',
-    });
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], PROBE_HISTORY));
+    expect(request.headers.get('x-shared')).toBe('config');
+    expect(request.headers.get('x-trait-only')).toBe('trait');
+    expect(request.headers.get('x-config-only')).toBe('config');
   });
 
-  it('passes trait headers through when no config headers are set', () => {
+  it('passes trait headers through when no config headers are set', async () => {
     const provider = registry.createChatProvider({
       protocol: 'openai',
       providerType: 'header-vendor',
       modelName: 'm',
+      apiKey: 'sk-header-test',
+      baseUrl: 'https://example.test/v1',
     });
-    const headers = (provider as unknown as { _defaultHeaders?: Record<string, string> })
-      ._defaultHeaders;
-    expect(headers).toEqual({ 'x-shared': 'trait', 'x-trait-only': 'trait' });
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], PROBE_HISTORY));
+    expect(request.headers.get('x-shared')).toBe('trait');
+    expect(request.headers.get('x-trait-only')).toBe('trait');
+    expect(request.headers.get('x-config-only')).toBeNull();
   });
 });
 

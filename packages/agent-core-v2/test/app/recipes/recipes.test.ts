@@ -640,7 +640,7 @@ describe('Recipe script hooks', () => {
     const runner = makeHookRunner([]);
     const results = await runner.trigger('Stop', { additionalHooks: async () => hooks });
     expect(results).toMatchObject([{ action: 'allow' }, { action: 'allow' }]);
-    expect(results.map((result) => result.stdout?.split('|')[1]?.trim()).sort()).toEqual(['CHILD', 'PARENT']);
+    expect(results.map((result) => result.stdout?.split('|')[1]?.trim()).toSorted()).toEqual(['CHILD', 'PARENT']);
     await writeFile(path.join(hooks[0]!.cwd!, 'hook.js'), 'CORRUPT');
     await expect(service.scriptHooks(resolved)).rejects.toThrow('corrupt');
     await runner.dispose();

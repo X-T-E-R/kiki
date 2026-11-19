@@ -31,9 +31,18 @@ export interface KeyringEntry {
   deleteCredential(): boolean;
 }
 
+export interface AsyncKeyringEntry {
+  getPassword(): Promise<string | null | undefined>;
+  setPassword(password: string): Promise<void>;
+  deleteCredential(): Promise<boolean>;
+}
+
 export interface KeyringApi {
   createEntry(service: string, account: string): KeyringEntry;
   findAccounts(service: string): string[];
+  createAsyncEntry?(service: string, account: string): Promise<AsyncKeyringEntry> | AsyncKeyringEntry;
+  findAccountsAsync?(service: string): Promise<string[]>;
+  readonly preferAsync?: boolean;
 }
 
 export type KeyringOperation = 'load' | 'save' | 'remove' | 'list';
@@ -111,12 +120,44 @@ export class KeyringTokenStorage implements TokenStorage {
     return tokenFromWire(parsed as Partial<TokenInfoWire>);
   }
 
-  private tryKeyring<T>(
+  private async getPassword(name: string): Promise<string | null> {
+    if (this.keyring.createAsyncEntry !== undefined) {
+      const entry = await this.keyring.createAsyncEntry(this.service, name);
+      return (await entry.getPassword()) ?? null;
+    }
+    return this.keyring.createEntry(this.service, name).getPassword();
+  }
+
+  private async setPassword(name: string, value: string): Promise<void> {
+    if (this.keyring.createAsyncEntry !== undefined) {
+      const entry = await this.keyring.createAsyncEntry(this.service, name);
+      await entry.setPassword(value);
+      return;
+    }
+    this.keyring.createEntry(this.service, name).setPassword(value);
+  }
+
+  private async deleteCredential(name: string): Promise<boolean> {
+    if (this.keyring.createAsyncEntry !== undefined) {
+      const entry = await this.keyring.createAsyncEntry(this.service, name);
+      return entry.deleteCredential();
+    }
+    return this.keyring.createEntry(this.service, name).deleteCredential();
+  }
+
+  private async findAccounts(): Promise<string[]> {
+    if (this.keyring.findAccountsAsync !== undefined) {
+      return this.keyring.findAccountsAsync(this.service);
+    }
+    return this.keyring.findAccounts(this.service);
+  }
+
+  private async tryKeyring<T>(
     operation: KeyringOperation,
-    fn: () => T,
-  ): { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown } {
+    fn: () => Promise<T> | T,
+  ): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown }> {
     try {
-      return { ok: true, value: fn() };
+      return { ok: true, value: await fn() };
     } catch (error) {
       keyringDegraded = true;
       keyringDegradationError = error;
@@ -143,9 +184,9 @@ export class KeyringTokenStorage implements TokenStorage {
         if (access.isFileChangedSinceRemoval()) {
           access.clearRemoval();
         } else {
-          const removed = this.tryKeyring('remove', () => {
-            const deleted = this.keyring.createEntry(this.service, name).deleteCredential();
-            if (!deleted && this.keyring.findAccounts(this.service).includes(name)) {
+          const removed = await this.tryKeyring('remove', async () => {
+            const deleted = await this.deleteCredential(name);
+            if (!deleted && (await this.findAccounts()).includes(name)) {
               throw new Error(`failed to delete keyring credential "${name}"`);
             }
           });
@@ -158,7 +199,7 @@ export class KeyringTokenStorage implements TokenStorage {
         }
       }
 
-      const read = this.tryKeyring('load', () => this.keyring.createEntry(this.service, name).getPassword());
+      const read = await this.tryKeyring('load', () => this.getPassword(name));
       if (!read.ok) {
         const fallback = await access.load();
         if (fallback !== undefined) return fallback;
@@ -173,7 +214,7 @@ export class KeyringTokenStorage implements TokenStorage {
           : this.reconcileOnHitStrict(name, read.value, access);
       }
 
-      const listing = this.tryKeyring('load', () => this.keyring.findAccounts(this.service));
+      const listing = await this.tryKeyring('load', () => this.findAccounts());
       if (!listing.ok || listing.value.includes(name)) {
         const fallback = await access.load();
         if (fallback !== undefined) return fallback;
@@ -185,18 +226,18 @@ export class KeyringTokenStorage implements TokenStorage {
       const first = await access.load();
       if (first === undefined) return undefined;
       if (this.coexist) {
-        const migrated = this.tryKeyring('save', () => {
-          this.keyring.createEntry(this.service, name).setPassword(this.serialize(first));
-        });
+        const migrated = await this.tryKeyring('save', () =>
+          this.setPassword(name, this.serialize(first)),
+        );
         if (migrated.ok) this.observer?.onMigrated?.(name);
         return first;
       }
 
       let serialized = this.serialize(first);
       let latest = first;
-      const initial = this.tryKeyring('save', () => {
-        this.keyring.createEntry(this.service, name).setPassword(serialized);
-      });
+      const initial = await this.tryKeyring('save', () =>
+        this.setPassword(name, serialized),
+      );
       if (!initial.ok) return latest;
 
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -210,9 +251,9 @@ export class KeyringTokenStorage implements TokenStorage {
           if (await access.removeIfMatches(serialized)) this.observer?.onMigrated?.(name);
           return latest;
         }
-        const rewrite = this.tryKeyring('load', () => {
-          this.keyring.createEntry(this.service, name).setPassword(currentSerialized);
-        });
+        const rewrite = await this.tryKeyring('load', () =>
+          this.setPassword(name, currentSerialized),
+        );
         if (!rewrite.ok) return current;
         serialized = currentSerialized;
         latest = current;
@@ -232,9 +273,9 @@ export class KeyringTokenStorage implements TokenStorage {
 
     if (keyringToken === undefined) {
       const fileSerialized = this.serialize(fileToken);
-      const write = this.tryKeyring('load', () => {
-        this.keyring.createEntry(this.service, name).setPassword(fileSerialized);
-      });
+      const write = await this.tryKeyring('load', () =>
+        this.setPassword(name, fileSerialized),
+      );
       if (!write.ok) return fileToken;
       if (await access.removeIfMatches(fileSerialized)) this.observer?.onMigrated?.(name);
       return fileToken;
@@ -246,9 +287,9 @@ export class KeyringTokenStorage implements TokenStorage {
       issuedAt(fileToken) > issuedAt(keyringToken)
     ) {
       const fileSerialized = this.serialize(fileToken);
-      const write = this.tryKeyring('load', () => {
-        this.keyring.createEntry(this.service, name).setPassword(fileSerialized);
-      });
+      const write = await this.tryKeyring('load', () =>
+        this.setPassword(name, fileSerialized),
+      );
       if (!write.ok) return fileToken;
       if (await access.removeIfMatches(fileSerialized)) this.observer?.onMigrated?.(name);
       return fileToken;
@@ -267,9 +308,9 @@ export class KeyringTokenStorage implements TokenStorage {
     const fileToken = await access.load();
     if (keyringToken === undefined) {
       if (fileToken === undefined) return undefined;
-      this.tryKeyring('load', () => {
-        this.keyring.createEntry(this.service, name).setPassword(this.serialize(fileToken));
-      });
+      await this.tryKeyring('load', () =>
+        this.setPassword(name, this.serialize(fileToken)),
+      );
       return fileToken;
     }
     if (
@@ -278,9 +319,9 @@ export class KeyringTokenStorage implements TokenStorage {
       classifyToken(fileToken).kind === 'valid' &&
       issuedAt(fileToken) > issuedAt(keyringToken)
     ) {
-      this.tryKeyring('load', () => {
-        this.keyring.createEntry(this.service, name).setPassword(this.serialize(fileToken));
-      });
+      await this.tryKeyring('load', () =>
+        this.setPassword(name, this.serialize(fileToken)),
+      );
       return fileToken;
     }
     const stale =
@@ -303,9 +344,9 @@ export class KeyringTokenStorage implements TokenStorage {
       if (this.coexist) {
         await access.save(token);
         if (!keyringDegraded) {
-          this.tryKeyring('save', () => {
-            this.keyring.createEntry(this.service, name).setPassword(this.serialize(token));
-          });
+          await this.tryKeyring('save', () =>
+            this.setPassword(name, this.serialize(token)),
+          );
         }
         return;
       }
@@ -318,9 +359,9 @@ export class KeyringTokenStorage implements TokenStorage {
         await access.save(token);
         return;
       }
-      const write = this.tryKeyring('save', () => {
-        this.keyring.createEntry(this.service, name).setPassword(this.serialize(token));
-      });
+      const write = await this.tryKeyring('save', () =>
+        this.setPassword(name, this.serialize(token)),
+      );
       if (!write.ok) {
         if (classifyToken(token).kind === 'revoked') {
           throw new OAuthStorageUnavailableError(`keyring unavailable while saving revoked credential "${name}"`, {
@@ -334,9 +375,9 @@ export class KeyringTokenStorage implements TokenStorage {
         await access.removeFile();
         access.clearRemoval();
       } catch (error) {
-        const rollback = this.tryKeyring('remove', () => {
-          const deleted = this.keyring.createEntry(this.service, name).deleteCredential();
-          if (!deleted && this.keyring.findAccounts(this.service).includes(name)) {
+        const rollback = await this.tryKeyring('remove', async () => {
+          const deleted = await this.deleteCredential(name);
+          if (!deleted && (await this.findAccounts()).includes(name)) {
             throw new Error(`failed to roll back keyring credential "${name}"`, { cause: error });
           }
         });
@@ -354,10 +395,10 @@ export class KeyringTokenStorage implements TokenStorage {
     assertValidTokenName(name);
     const gone = await this.legacy.withTokenLock(name, async (access) => {
       access.markRemoved();
-      const result = this.tryKeyring('remove', () => {
-        const deleted = this.keyring.createEntry(this.service, name).deleteCredential();
+      const result = await this.tryKeyring('remove', async () => {
+        const deleted = await this.deleteCredential(name);
         if (deleted) return true;
-        return !this.keyring.findAccounts(this.service).includes(name);
+        return !(await this.findAccounts()).includes(name);
       });
       await access.remove();
       return result;
@@ -368,7 +409,7 @@ export class KeyringTokenStorage implements TokenStorage {
 
   async list(): Promise<string[]> {
     if (keyringDegraded) return this.legacy.list();
-    const accounts = this.tryKeyring('list', () => this.keyring.findAccounts(this.service));
+    const accounts = await this.tryKeyring('list', () => this.findAccounts());
     if (!accounts.ok) return this.legacy.list();
     return [...new Set([...accounts.value, ...(await this.legacy.list())])];
   }
@@ -393,6 +434,32 @@ export function probeKeyringBackend(keyring: KeyringApi): boolean {
   } finally {
     try {
       entry?.deleteCredential();
+    } catch {
+    }
+  }
+}
+
+export async function probeKeyringBackendAsync(keyring: KeyringApi): Promise<boolean> {
+  if (keyring.createAsyncEntry === undefined) {
+    return probeKeyringBackend(keyring);
+  }
+  const account = `probe-${process.pid}-${randomBytes(8).toString('hex')}`;
+  const sentinel = `probe-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let entry: AsyncKeyringEntry | undefined;
+  try {
+    entry = await keyring.createAsyncEntry(KEYRING_PROBE_SERVICE, account);
+    await entry.setPassword(sentinel);
+    if ((await entry.getPassword()) !== sentinel) return false;
+    await entry.deleteCredential();
+    const accounts = keyring.findAccountsAsync !== undefined
+      ? await keyring.findAccountsAsync(KEYRING_PROBE_SERVICE)
+      : keyring.findAccounts(KEYRING_PROBE_SERVICE);
+    return !accounts.includes(account);
+  } catch {
+    return false;
+  } finally {
+    try {
+      await entry?.deleteCredential();
     } catch {
     }
   }
@@ -467,7 +534,7 @@ export function resolveTokenStorage(
     observer?.onBackendSelected?.('file', 'no-backend');
     return legacy;
   }
-  if (!probeKeyringBackend(keyring)) {
+  if (keyring.preferAsync !== true && !probeKeyringBackend(keyring)) {
     if (mode === 'keyring') throw unavailable('keyring backend probe failed');
     observer?.onBackendSelected?.('file', 'probe-failed');
     return legacy;
@@ -496,10 +563,15 @@ interface KeyringInspection {
   readonly error?: unknown;
 }
 
-function inspectKeyring(keyring: KeyringApi, service: string, name: string): KeyringInspection {
+async function inspectKeyring(keyring: KeyringApi, service: string, name: string): Promise<KeyringInspection> {
   let raw: string | null;
   try {
-    raw = keyring.createEntry(service, name).getPassword();
+    if (keyring.createAsyncEntry !== undefined) {
+      const entry = await keyring.createAsyncEntry(service, name);
+      raw = (await entry.getPassword()) ?? null;
+    } else {
+      raw = keyring.createEntry(service, name).getPassword();
+    }
   } catch (error) {
     return { kind: 'unreadable', error };
   }
@@ -514,7 +586,10 @@ function inspectKeyring(keyring: KeyringApi, service: string, name: string): Key
     return { kind: 'valid', token: tokenFromWire(parsed as Partial<TokenInfoWire>) };
   }
   try {
-    return keyring.findAccounts(service).includes(name)
+    const accounts = keyring.findAccountsAsync !== undefined
+      ? await keyring.findAccountsAsync(service)
+      : keyring.findAccounts(service);
+    return accounts.includes(name)
       ? { kind: 'unreadable', error: new Error('Keyring credential could not be read') }
       : { kind: 'missing' };
   } catch (error) {
@@ -547,7 +622,7 @@ export async function inspectTokenStorage(
     return file();
   }
 
-  const keyringResult = inspectKeyring(keyring, keyringServiceForCredentialsDir(credentialsDir), name);
+  const keyringResult = await inspectKeyring(keyring, keyringServiceForCredentialsDir(credentialsDir), name);
   if (keyringResult.kind === 'unreadable') {
     if (mode === 'keyring') {
       throw unavailable(`keyring credential "${name}" is unavailable`, keyringResult.error);

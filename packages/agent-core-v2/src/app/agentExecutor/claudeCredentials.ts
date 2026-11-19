@@ -1,5 +1,6 @@
 import { join } from 'pathe';
 
+import { isPlainObject } from '#/_base/utils/types';
 import type { AgentExecutorCredentialSource } from './agentExecutor';
 
 export const CLAUDE_EXPLICIT_SETTINGS_SOURCES = ['project', 'local'] as const;
@@ -55,10 +56,6 @@ function truthy(value: string): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 /** The Claude Code configuration directory: `CLAUDE_CONFIG_DIR`, else `~/.claude`. */
 export function claudeConfigDir(env: ClaudeCredentialsEnv, osHomeDir: string): string {
   const override = env.get('CLAUDE_CONFIG_DIR');
@@ -80,11 +77,11 @@ export function credentialFromClaudeSettings(
   settings: unknown,
   path: string,
 ): ClaudeCredentialsResult | undefined {
-  if (!isRecord(settings)) return undefined;
+  if (!isPlainObject(settings)) return undefined;
   const helper = settings['apiKeyHelper'];
   if (typeof helper === 'string' && present(helper)) return { source: 'api_key_helper', detail: path };
   const env = settings['env'];
-  if (!isRecord(env)) return undefined;
+  if (!isPlainObject(env)) return undefined;
   for (const name of CLAUDE_CREDENTIAL_ENV_VARS) {
     const value = env[name];
     if (typeof value === 'string' && present(value)) return { source: 'settings_env', detail: `${path}#env.${name}` };
@@ -140,7 +137,7 @@ export function credentialFromClaudeCliStatus(output: string): ClaudeCredentials
   } catch {
     return { source: 'unknown' };
   }
-  if (!isRecord(parsed)) return { source: 'unknown' };
+  if (!isPlainObject(parsed)) return { source: 'unknown' };
   const apiProvider = parsed['apiProvider'];
   if (typeof apiProvider === 'string' && apiProvider !== 'firstParty') {
     return { source: 'external_backend', detail: apiProvider };

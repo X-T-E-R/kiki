@@ -1,3 +1,4 @@
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
@@ -11,7 +12,7 @@ import { IFlagService } from '#/app/flag/flag';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { THREAD_COMMUNICATION_SECTION, type ThreadCommunicationConfig } from '#/app/threadCommunication/configSection';
 import { Error2, ErrorCodes } from '#/errors';
-import { isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
+import { IComputerAdmissionService, isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
@@ -72,9 +73,16 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     @IFlagService private readonly flags: IFlagService,
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @IBootstrapService private readonly bootstrap?: IBootstrapService,
+    @ref(IComputerAdmissionService) private readonly computerAdmission?: LiveRef<IComputerAdmissionService>,
   ) {
     super();
     this.publishComputerSelection();
+    if (this.computerAdmission !== undefined) {
+      const ref = this.computerAdmission;
+      this._register(ref.onDidChange(() => {
+        if (ref.current !== undefined) this.publishComputerSelection();
+      }));
+    }
     if (this.settings.onDidSectionChange !== undefined) {
       this._register(this.settings.onDidSectionChange(() => {
         this.publishComputerSelection();
@@ -99,7 +107,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     } catch {
       connection = undefined;
     }
-    setComputerConnectionSelection(connection);
+    setComputerConnectionSelection(connection, this.computerAdmission?.current);
   }
 
   globalState(id: OptionalCapabilityId): OptionalCapabilityGlobalState {

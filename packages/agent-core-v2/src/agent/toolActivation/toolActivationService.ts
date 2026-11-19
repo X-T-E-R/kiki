@@ -12,7 +12,10 @@ import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedA
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
-import { isSendMessageCapabilityAdmitted } from '#/agent/toolPolicy/sendMessageAdmission';
+import {
+  isLegacyShippedMessageBinding as isLegacyShippedSendMessageBinding,
+  isSendMessageCapabilityAdmitted,
+} from '#/agent/toolPolicy/sendMessageAdmission';
 import { IAgentToolPolicyService, withToolPolicySnapshot } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolContribution } from '#/agent/toolRegistry/toolContribution';
@@ -182,17 +185,14 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     name: string,
     source: 'builtin' | 'user' | 'mcp' | 'plugin',
   ): boolean {
-    const data = this.profile.data();
+    if (name !== SEND_MESSAGE_TOOL_NAME) return false;
     if (
-      this.delivery.effectiveMode() !== 'message' ||
-      data.activeToolNames === undefined ||
-      data.activeToolNames.includes(name)
+      !isLegacyShippedSendMessageBinding(
+        this.profile.data(),
+        this.delivery.effectiveMode(),
+        (definitionId) => this.shippedProfiles.isCleanActivePath(definitionId),
+      )
     ) return false;
-    const definitionId = data.profileDefinitionId ?? data.boundProfile?.definitionId;
-    if (definitionId === undefined) return false;
-    const shipped = definitionId.startsWith('shipped://agent-profiles/') ||
-      this.shippedProfiles.isCleanActivePath(definitionId);
-    if (!shipped) return false;
     return this.policyService.isToolActiveForProfile({ ...policy, tools: undefined }, name, source);
   }
 

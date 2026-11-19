@@ -43,7 +43,7 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
 import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
-import { computerSelectionAdmits, isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
+import { IComputerAdmissionService, computerSelectionAdmits, isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
@@ -68,6 +68,7 @@ interface McpToolRegistration {
 interface ComputerToolSession {
   readonly client: MCPClient;
   readonly tools: readonly KosongTool[];
+  readonly rawTools: readonly MCPToolDefinition[];
   readonly enabledNames: ReadonlySet<string>;
   readonly admitCall?: () => Promise<{ release(): void } | undefined>;
 }
@@ -112,6 +113,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IConfigService private readonly configService: IConfigService,
     @IMcpRegistryService private readonly serverRegistry: IMcpRegistryService,
     @ref(IAgentToolPolicyService) private readonly toolPolicy: LiveRef<IAgentToolPolicyService>,
+    @ref(IComputerAdmissionService) private readonly computerAdmission?: LiveRef<IComputerAdmissionService>,
   ) {
     super();
     this.sessionOverrides = mcpHandle.selection?.overrides ?? new Map();
@@ -129,7 +131,10 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     if (this.configService.onDidSectionChange !== undefined) {
       this._register(this.configService.onDidSectionChange((event) => {
         if (event.domain !== COMPUTER_CONFIG_SECTION) return;
-        setComputerConnectionSelection(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection);
+        setComputerConnectionSelection(
+          this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection,
+          this.computerAdmission?.current,
+        );
         this.reopenComputerSessions();
       }));
     }
@@ -531,7 +536,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
 
   private reopenComputerSessions(): void {
     for (const [serverName, session] of this.computerSessions) {
-      const registered = this.registerMcpServer(serverName, session.client, session.tools, session.enabledNames, session.admitCall);
+      const registered = this.registerMcpServer(serverName, session.client, session.tools, session.rawTools, session.enabledNames, session.admitCall);
       void this.dispatcher.dispatch(new ToolListUpdated({
         reason: registered.registered.length > 0 ? 'mcp.connected' : 'mcp.disconnected',
         serverName,
@@ -644,6 +649,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       entry.name,
       resolved.client,
       resolved.tools,
+      resolved.rawTools,
       resolved.enabledNames,
       resolved.admitCall,
     );
@@ -691,6 +697,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     serverName: string,
     client: MCPClient,
     tools: readonly KosongTool[],
+    rawTools: readonly MCPToolDefinition[],
     enabledTools: ReadonlySet<string>,
     admitCall?: () => Promise<{ release(): void } | undefined>,
   ): {
@@ -700,12 +707,13 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     const serverConfig = this.mcpHandle.connectionManager.configOf(serverName);
     const computer = isComputerMcpConfig(serverConfig);
     const connection = this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection;
-    if (computer) this.computerSessions.set(serverName, { client, tools, enabledNames: enabledTools, admitCall });
+    if (computer) this.computerSessions.set(serverName, { client, tools, rawTools, enabledNames: enabledTools, admitCall });
     this.unregisterMcpServer(serverName);
     if (computer && (!this.computerAdmitted() || !computerSelectionAdmits(serverName, serverConfig, connection))) {
       return { registered: [], collisions: [] };
     }
     const callAdmission = this.gateSessionCall(serverName, computer, admitCall);
+    const annotationsByName = new Map(rawTools.map((raw) => [raw.name, raw.annotations]));
     const qualifiedNames: string[] = [];
     const collisions: McpToolCollision[] = [];
     const seenInThisCall = new Map<string, string>();
@@ -745,6 +753,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
             providerType: () => this.profile.getModelProviderType(),
             computerControl: computer,
             computerUsagePreference: () => this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.usagePreference ?? 'avoid',
+            annotations: annotationsByName.get(tool.name),
             reconnect: (signal) => this.reconnectForToolCall(serverName, client, signal),
             isRemoved: () =>
               this.mcpHandle.connectionManager.get(serverName)?.status === 'removed',

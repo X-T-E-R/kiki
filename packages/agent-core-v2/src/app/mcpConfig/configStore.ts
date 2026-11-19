@@ -4,9 +4,10 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { AsyncEmitter, type Event, type IWaitUntil } from '#/_base/event';
+import { isPlainObject } from '#/_base/utils/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
-import { ErrorCodes, Error2 } from '#/errors';
+import { ErrorCodes, Error2, toErrorMessage } from '#/errors';
 import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-schema';
 import { mcpServerConfigsEqual } from '#/mcpCore/connection-manager';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -117,7 +118,7 @@ export class McpConfigStore extends Disposable implements IMcpConfigStore {
         throw new Error2(ErrorCodes.REQUEST_INVALID, `MCP server "${expected.name}" changed before it could be disabled`);
       }
       const raw = file.rawServers[expected.name];
-      if (!isRecord(raw)) throw configError(`Invalid MCP server "${expected.name}" in global config`);
+      if (!isPlainObject(raw)) throw configError(`Invalid MCP server "${expected.name}" in global config`);
       await this.write(file, {
         ...file.rawServers,
         [expected.name]: { ...raw, enabled: false },
@@ -157,7 +158,7 @@ export class McpConfigStore extends Disposable implements IMcpConfigStore {
     try {
       bytes = await this.storage.read(CONFIG_SCOPE, MCP_CONFIG_KEY);
     } catch (error: unknown) {
-      throw configError(`Failed to read ${this.path}: ${describeError(error)}`, error);
+      throw configError(`Failed to read ${this.path}: ${toErrorMessage(error)}`, error);
     }
     if (bytes === undefined) {
       return { raw: {}, rawServers: {}, servers: [] };
@@ -172,13 +173,13 @@ export class McpConfigStore extends Disposable implements IMcpConfigStore {
     try {
       parsed = JSON.parse(text) as unknown;
     } catch (error: unknown) {
-      throw configError(`Invalid JSON in ${this.path}: ${describeError(error)}`, error);
+      throw configError(`Invalid JSON in ${this.path}: ${toErrorMessage(error)}`, error);
     }
-    if (!isRecord(parsed)) {
+    if (!isPlainObject(parsed)) {
       throw configError(`Invalid MCP config in ${this.path}: expected a JSON object`);
     }
     const rawServersValue = parsed['mcpServers'];
-    if (rawServersValue !== undefined && !isRecord(rawServersValue)) {
+    if (rawServersValue !== undefined && !isPlainObject(rawServersValue)) {
       throw configError(`Invalid MCP config in ${this.path}: "mcpServers" must be an object`);
     }
     const rawServers = rawServersValue ?? {};
@@ -230,14 +231,6 @@ function serverNotFound(name: string): Error2 {
 
 function configError(message: string, cause?: unknown): Error2 {
   return new Error2(ErrorCodes.CONFIG_INVALID, message, { cause });
-}
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 registerScopedService(

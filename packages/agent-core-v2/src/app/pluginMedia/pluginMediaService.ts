@@ -4,6 +4,8 @@ import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { mediaGenerateInputSchema, mediaOutcomeSchema, mediaCapabilitiesSchema, mediaVoicePageSchema, mediaCancelOutcomeSchema, mediaSourcesInputSchema, mediaCatalogSchema, type MediaJob, type MediaGenerateInput, type MediaOutcome, type MediaCapabilityQuery, type MediaVoiceQuery, type MediaSource } from '@kiki/protocol';
 import { Service } from '#/_base/di/service';
+import { toErrorMessage } from '#/_base/errors/errorMessage';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
@@ -340,7 +342,14 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     if (before.handle !== undefined) {
       try {
         cancellation = mediaCancelOutcomeSchema.parse(await this.hosts.requestMediaProvider(before.view.provider, 'cancel', before.handle, AbortSignal.timeout(30_000), { jobId: id, stagingDir: await this.staging(id) }, before.provider));
-      } catch { }
+      } catch (error) {
+        onUnexpectedError(error);
+        cancellation = {
+          remote: 'unsupported',
+          billing: 'unknown',
+          message: `Local waiting/reception stopped; remote cancellation failed (${toErrorMessage(error)}); remote generation may continue and incur charges.`,
+        };
+      }
     }
     const record = await this.stored(id);
     return (await this.save({ ...record, view: { ...record.view, cancellation, can_resume: cancellation.remote !== 'cancelled' && record.view.can_resume } })).view;

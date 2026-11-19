@@ -189,7 +189,10 @@ export class PluginHostService extends Service implements IPluginHostService {
     if (visiting.has(info.id)) throw new Error(`Plugin dependency cycle: ${info.id}`);
     visiting.add(info.id);
     for (const [id, range] of Object.entries(info.manifest?.kiki?.dependencies ?? {})) {
-      const dependency = await this.plugins.getPluginInfo({ id }).catch(() => undefined);
+      const dependency = await this.plugins.getPluginInfo({ id }).catch((error) => {
+        this.logger?.current?.warn('plugin dependency lookup failed', { pluginId: info.id, dependencyId: id, error });
+        return undefined;
+      });
       if (dependency === undefined || !dependency.enabled || dependency.state !== 'ok') throw new Error(`Plugin ${info.id} requires enabled plugin ${id} ${range}`);
       if (dependency.version === undefined || valid(dependency.version) === null || !satisfies(dependency.version, range)) throw new Error(`Plugin ${info.id} requires ${id} ${range}; installed version is ${dependency.version ?? 'unknown'}`);
       await this.checkDependencies(dependency, visiting);
@@ -203,9 +206,17 @@ export class PluginHostService extends Service implements IPluginHostService {
     const installed = await this.plugins.listPlugins();
     const registrations: PluginImAdapterRegistration[] = [];
     for (const summary of installed.filter((item) => item.enabled && item.state === 'ok')) {
-      const info = await this.plugins.getPluginInfo({ id: summary.id }).catch(() => undefined);
+      const info = await this.plugins.getPluginInfo({ id: summary.id }).catch((error) => {
+        this.logger?.current?.warn('plugin info lookup failed during IM adapter reconciliation', { pluginId: summary.id, error });
+        return undefined;
+      });
       if (info === undefined || !info.enabled || info.state !== 'ok') continue;
-      try { await this.checkDependencies(info); } catch { continue; }
+      try {
+        await this.checkDependencies(info);
+      } catch (error) {
+        this.logger?.current?.warn('plugin dependency check failed during IM adapter reconciliation', { pluginId: info.id, error });
+        continue;
+      }
       let settings: Record<string, string | number | boolean>;
       try {
         settings = await this.settings.forExecution(info.id);

@@ -7,6 +7,7 @@ import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import type { WorkspaceConfig } from '#/tool/path-access';
+import type { ImageDeliveryLimits } from '#/agent/media/imageConfigBridge';
 import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { ReadMediaFileTool } from '#/agent/tools/read-media-file/readMediaFileTool';
@@ -22,6 +23,7 @@ export interface RegisterMediaToolsDeps {
   readonly providerType?: string;
   readonly imagePolicy?: ResolvedImagePolicy;
   readonly cpuWorker?: ICpuWorkerService;
+  readonly imageLimits?: ImageDeliveryLimits;
 }
 
 export function registerMediaTools(
@@ -45,6 +47,7 @@ export function registerMediaTools(
       deps.providerType,
       deps.imagePolicy,
       deps.cpuWorker,
+      deps.imageLimits,
     ),
   );
 }

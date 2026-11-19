@@ -1,7 +1,16 @@
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { ErrorCodes, Error2 } from '#/errors';
+import {
+  getShareBinRgPath,
+  getShareDir,
+  rgBinaryName,
+  rgUnavailableMessage,
+  type EnsureRgPathOptions,
+  type RgProbe,
+} from '#/os/backends/node-local/tools/rgLocator';
+
+export { getShareBinRgPath, rgUnavailableMessage, type EnsureRgPathOptions, type RgProbe };
 
 export type RgResolutionSource = 'system-path' | 'share-bin-cached';
 
@@ -10,43 +19,11 @@ export interface RgResolution {
   readonly source: RgResolutionSource;
 }
 
-export interface RgProbe {
-  exec(args: readonly string[]): Promise<{ readonly exitCode: number }>;
-}
-
-export interface EnsureRgPathOptions {
-  readonly shareDir?: string;
-  /** Lower-priority home directories whose `bin/` cache is probed after this home's own. */
-  readonly fallbackShareDirs?: readonly string[];
-  readonly signal?: AbortSignal;
-  readonly allowCachedFallback?: boolean;
-}
-
-function rgBinaryName(): string {
-  return process.platform === 'win32' ? 'rg.exe' : 'rg';
-}
-
-function getShareDir(): string {
-  const override = process.env['KIKI_HOME'];
-  if (override !== undefined && override !== '') return override;
-  return join(homedir(), '.kiki');
-}
-
-export function getShareBinRgPath(): string {
-  return join(getShareDir(), 'bin', rgBinaryName());
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) {
-    throw new DOMException('Aborted', 'AbortError');
-  }
-}
-
 export async function ensureRgPath(
   probe: RgProbe,
   options: EnsureRgPathOptions = {},
 ): Promise<RgResolution> {
-  throwIfAborted(options.signal);
+  options.signal?.throwIfAborted();
 
   const system = await probe.exec(['rg', '--version']).catch(() => ({ exitCode: -1 }));
   if (system.exitCode === 0) {
@@ -54,7 +31,7 @@ export async function ensureRgPath(
   }
 
   if (options.allowCachedFallback === true) {
-    throwIfAborted(options.signal);
+    options.signal?.throwIfAborted();
     const shareDir = options.shareDir ?? getShareDir();
     const cacheDirs = [
       shareDir,
@@ -70,22 +47,4 @@ export async function ensureRgPath(
   }
 
   throw new Error2(ErrorCodes.OS_FS_UNAVAILABLE, 'ripgrep (rg) is not available on PATH');
-}
-
-export function rgUnavailableMessage(cause: unknown): string {
-  const detail =
-    cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : 'unknown error';
-  const shareBin = getShareBinRgPath();
-  return (
-    `ripgrep (rg) is not available.\n` +
-    `\n` +
-    `Error: ${detail}\n` +
-    `\n` +
-    `Fix options:\n` +
-    `  macOS:   brew install ripgrep\n` +
-    `  Ubuntu:  sudo apt-get install ripgrep\n` +
-    `  Other:   https://github.com/BurntSushi/ripgrep#installation\n` +
-    `\n` +
-    `Alternatively, drop a static rg binary at ${shareBin}`
-  );
 }

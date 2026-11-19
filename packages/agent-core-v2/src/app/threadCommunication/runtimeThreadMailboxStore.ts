@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { abortable } from '#/_base/utils/abort';
 
 import type { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
 import { openRuntimeMailbox } from '#/persistence/backends/sqliteMailbox/authority';
@@ -1994,28 +1996,6 @@ function throwIfAborted(signal: AbortSignal): void {
 
 function combineAbortSignals(primary: AbortSignal, secondary?: AbortSignal): AbortSignal {
   return secondary === undefined ? primary : AbortSignal.any([primary, secondary]);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(abortError(signal));
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(abortError(signal));
-    signal.addEventListener('abort', onAbort, { once: true });
-    operation.then(
-      (value) => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      },
-    );
-  });
 }
 
 function isMailboxQueueFull(error: unknown): boolean {

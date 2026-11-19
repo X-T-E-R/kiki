@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, fsyncSync, openSync } from 'node:fs';
+import { chmodSync, closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as nodeFs from 'node:fs';
 import { chmod, link, open, rename, unlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { dirname } from 'pathe';
+import { dirname, join } from 'pathe';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
 
@@ -116,6 +116,32 @@ function syncFd(fd: number): Promise<void> {
   });
 }
 
+/** Suffix appended to an atomic-write temp file once its bytes are durably synced; only such temps are complete. */
+export const ATOMIC_TEMP_READY_SUFFIX = '.ready';
+
+async function markTempReady(tmpPath: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const readyPath = `${tmpPath}${ATOMIC_TEMP_READY_SUFFIX}`;
+  if (process.platform !== 'win32') {
+    await rename(tmpPath, readyPath);
+    return readyPath;
+  }
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    signal?.throwIfAborted();
+    try {
+      await rename(tmpPath, readyPath);
+      return readyPath;
+    } catch (error) {
+      lastError = error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY') throw error;
+    }
+    await delay(10 * (attempt + 1), undefined, { signal });
+  }
+  throw lastError;
+}
+
 export async function atomicWrite(
   filePath: string,
   content: string | Uint8Array,
@@ -127,7 +153,8 @@ export async function atomicWrite(
   signal?.throwIfAborted();
   const hex = randomBytes(4).toString('hex');
   const tag = preserveDestinationOnError ? 'stage' : 'tmp';
-  const tmpPath = `${filePath}.${tag}.${process.pid}.${hex}`;
+  const stagingPath = `${filePath}.${tag}.${process.pid}.${hex}`;
+  let tmpPath = stagingPath;
   let renamed = false;
   try {
     const fh = await open(tmpPath, 'w', mode);
@@ -139,6 +166,7 @@ export async function atomicWrite(
     } finally {
       await fh.close();
     }
+    if (!preserveDestinationOnError) tmpPath = await markTempReady(stagingPath, signal);
     if (preserveDestinationOnError) {
       await replaceFileNonDestructive(tmpPath, filePath, signal);
       renamed = true;
@@ -186,20 +214,56 @@ export async function atomicWrite(
   }
 }
 
-export async function atomicCreate(filePath: string, content: string): Promise<void> {
+export function atomicWriteSync(
+  filePath: string,
+  content: string | Uint8Array,
+  mode?: number,
+): void {
+  const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`;
+  let renamed = false;
+  try {
+    const fd = openSync(tmpPath, 'w', mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmpPath, filePath);
+    renamed = true;
+    if (mode !== undefined) {
+      try {
+        chmodSync(filePath, mode);
+      } catch {
+        if (process.platform !== 'win32') throw new BugIndicatingError(
+          `chmod(${filePath}, ${mode.toString(8)}) failed after atomic write`,
+        );
+      }
+    }
+  } finally {
+    if (!renamed) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+      }
+    }
+  }
+}
+
+export async function atomicCreate(filePath: string, content: string, mode?: number): Promise<void> {
   if (process.platform === 'android') {
-    await createFileExclusiveDirect(filePath, content);
+    await createFileExclusiveDirect(filePath, content, mode);
     return;
   }
-  const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
+  const tmpPath = join(dirname(filePath), `.create.${process.pid}.${randomBytes(8).toString('hex')}`);
   try {
-    await atomicWrite(tmpPath, content);
+    await atomicWrite(tmpPath, content, undefined, mode, undefined, true);
     try {
       await link(tmpPath, filePath);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOSYS' || code === 'ENOTSUP') {
-        await createFileExclusiveDirect(filePath, content);
+        await createFileExclusiveDirect(filePath, content, mode);
         return;
       }
       throw error;
@@ -210,8 +274,8 @@ export async function atomicCreate(filePath: string, content: string): Promise<v
   }
 }
 
-async function createFileExclusiveDirect(filePath: string, content: string): Promise<void> {
-  const fh = await open(filePath, 'wx');
+async function createFileExclusiveDirect(filePath: string, content: string, mode?: number): Promise<void> {
+  const fh = await open(filePath, 'wx', mode);
   try {
     await fh.writeFile(content, 'utf8');
     await fh.sync();
@@ -242,7 +306,8 @@ export async function atomicWriteStream(
   signal?.throwIfAborted();
   const hex = randomBytes(4).toString('hex');
   const tag = preserveDestinationOnError ? 'stage' : 'tmp';
-  const tmpPath = `${filePath}.${tag}.${process.pid}.${hex}`;
+  const stagingPath = `${filePath}.${tag}.${process.pid}.${hex}`;
+  let tmpPath = stagingPath;
   let renamed = false;
   const destroyable = source as AsyncIterable<Uint8Array> & {
     destroy?(error?: Error): void;
@@ -266,6 +331,7 @@ export async function atomicWriteStream(
     } finally {
       await fh.close();
     }
+    if (!preserveDestinationOnError) tmpPath = await markTempReady(stagingPath, signal);
     if (preserveDestinationOnError) {
       await replaceFileNonDestructive(tmpPath, filePath, signal);
       renamed = true;

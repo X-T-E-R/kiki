@@ -24,7 +24,7 @@ import {
   type OAuthMethodModel,
 } from './oauth-method-types';
 import type { DeviceAuthorization, TokenInfo } from './types';
-import { isRecord } from './utils';
+import { isRecord, readJson } from './utils';
 
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTH_BASE_URL = 'https://auth.openai.com';
@@ -69,14 +69,6 @@ export function openaiCodexAccountId(accessToken: string): string | undefined {
   if (!isRecord(claim)) return undefined;
   const accountId = claim['chatgpt_account_id'];
   return typeof accountId === 'string' && accountId.length > 0 ? accountId : undefined;
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return undefined;
-  }
 }
 
 function tokenFromResponse(data: unknown, operation: 'exchange' | 'refresh', priorRefresh?: string): TokenInfo {

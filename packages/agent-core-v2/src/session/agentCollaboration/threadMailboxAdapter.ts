@@ -1,5 +1,6 @@
 import { Disposable } from '#/_base/di/lifecycle';
 import { createDecorator } from '#/_base/di/instantiation';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { randomUUID } from 'node:crypto';
 
 import { LifecycleScope } from '#/app/scopes';
@@ -210,7 +211,7 @@ export class AgentCollaborationMailboxCleanup extends Disposable implements IAge
     super();
     if (sessions.onDidDeleteSession !== undefined) {
       this._register(sessions.onDidDeleteSession((event) => {
-        void this.discardSession(event.sessionId).catch(() => {});
+        void this.discardSession(event.sessionId).catch(onUnexpectedError);
       }));
     }
   }

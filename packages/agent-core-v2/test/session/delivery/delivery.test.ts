@@ -89,6 +89,19 @@ describe('SessionDeliveryService', () => {
     expect(delivery.effectiveMode()).toBe('reply');
   });
 
+  it('falls back to metadata and keeps a corrupt delivery document on load', async () => {
+    const metadata = ix.get(ISessionMetadata);
+    await metadata.ready;
+    await metadata.update({ delivery: 'message' }, { touchUpdatedAt: false });
+    const storage = ix.get(IFileSystemStorageService);
+    const corrupt = new TextEncoder().encode('{not json');
+    await storage.write(META_SCOPE, 'delivery.json', corrupt);
+    const delivery = ix.get(ISessionDeliveryService);
+    await expect(delivery.ready).resolves.toBeUndefined();
+    expect(delivery.mode()).toBe('message');
+    expect(await storage.read(META_SCOPE, 'delivery.json')).toEqual(corrupt);
+  });
+
   it('reopens the persisted mode and freezes an in-flight turn', async () => {
     const first = ix.get(ISessionDeliveryService);
     await first.ready;

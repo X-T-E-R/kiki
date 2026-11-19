@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
@@ -567,7 +568,10 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     state.refCount--;
     if (state.refCount > 0) return;
     state.retired = true;
-    const retirement = this.settleRetiredState(scope, key, state).catch(() => undefined);
+    const retirement = this.settleRetiredState(scope, key, state).catch((error) => {
+      if (state.onError !== undefined) state.onError(error);
+      else onUnexpectedError(error);
+    });
     state.retirement = retirement;
     pendingRetirements.add(retirement);
     void retirement.finally(() => pendingRetirements.delete(retirement));

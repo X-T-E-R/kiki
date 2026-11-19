@@ -1,6 +1,7 @@
 import Ajv, { type ErrorObject, type ValidateFunction } from 'ajv';
 import Ajv2019 from 'ajv/dist/2019';
 import Ajv2020 from 'ajv/dist/2020';
+import { normalizeId } from 'ajv/dist/compile/resolve';
 import addFormats from 'ajv-formats';
 
 type AnyAjv = Ajv | Ajv2019 | Ajv2020;
@@ -88,7 +89,20 @@ function formatValidationError(error: ErrorObject): string {
 }
 
 export function compileToolArgsValidator(schema: Record<string, unknown>): ToolArgsValidator {
-  return ajvFor(schema).compile(schema) as ToolArgsValidator;
+  const ajv = ajvFor(schema);
+  const id = schema['$id'];
+  const rootId = typeof id === 'string' ? normalizeId(id) : '';
+  if (rootId !== '' && (ajv.schemas[rootId] !== undefined || ajv.refs[rootId] !== undefined)) {
+    throw new Error(`schema with key or id "${rootId}" already exists`);
+  }
+  const registered = new Set([...Object.keys(ajv.schemas), ...Object.keys(ajv.refs)]);
+  try {
+    return ajv.compile(schema) as ToolArgsValidator;
+  } finally {
+    ajv.removeSchema(schema);
+    for (const key of Object.keys(ajv.schemas)) if (!registered.has(key)) delete ajv.schemas[key];
+    for (const key of Object.keys(ajv.refs)) if (!registered.has(key)) delete ajv.refs[key];
+  }
 }
 
 export function validateToolArgs(validator: ToolArgsValidator, args: JsonType): string | null {

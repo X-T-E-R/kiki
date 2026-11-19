@@ -83,6 +83,7 @@ export class CanonicalMailboxDatabase<V> {
     return this.worker.request({ type: 'legacy_deliveries', source, after, limit: 128 }, signal);
   }
   discardArchive(completedMigrationId?: string): Promise<void> { return this.worker.request({ type: 'discard_archive', completedMigrationId }); }
+  purgeExpired(limit = 1024, signal?: AbortSignal): Promise<number> { return this.worker.request({ type: 'purge_expired', owner: this.owner, limit }, signal); }
   metadata<T>(key: string, value?: T): Promise<T | undefined> { return this.worker.request({ type: 'metadata', key, value }); }
   verify(signal?: AbortSignal): Promise<MailboxVerification> { return this.worker.request({ type: 'verify' }, signal); }
   backup(destination: string, signal?: AbortSignal): Promise<MailboxVerification & { readonly pages: number }> { return this.worker.request({ type: 'backup', destination }, signal); }

@@ -31,6 +31,7 @@ export function requiredGrepLiteral(pattern: string, literal: boolean): string |
 export class WorkspaceTrigramIndex {
   readonly dirtyPaths = new Set<string>();
   private readonly path: string;
+  private readonly owner = `${process.pid}:${randomUUID()}`;
   private readonly controller = new AbortController();
   private epoch?: string;
   private revision = -1;
@@ -103,13 +104,14 @@ export class WorkspaceTrigramIndex {
     this.epoch = undefined;
     this.pending = (async () => {
       const options = { signal: this.controller.signal, timeoutMs: 120_000 };
-      await this.cpu.request({ type: 'workspace.trigram.begin', path: this.path, epoch }, options);
+      const started = await this.cpu.request<boolean>({ type: 'workspace.trigram.begin', path: this.path, epoch, owner: this.owner }, options);
+      if (!started) return;
       for (let offset = 0; offset < files.length; offset += 64) {
         const accepted = await this.cpu.request<boolean>({ type: 'workspace.trigram.update', path: this.path, epoch,
-          root: this.root, entries: files.slice(offset, offset + 64) }, options);
+          root: this.root, entries: files.slice(offset, offset + 64), owner: this.owner }, options);
         if (!accepted) return;
       }
-      const accepted = await this.cpu.request<boolean>({ type: 'workspace.trigram.finish', path: this.path, epoch }, options);
+      const accepted = await this.cpu.request<boolean>({ type: 'workspace.trigram.finish', path: this.path, epoch, owner: this.owner }, options);
       if (accepted && !this.rebuildRequested) {
         this.epoch = epoch;
         this.revision = this.latest?.revision ?? snapshot.revision;
@@ -131,8 +133,14 @@ export class WorkspaceTrigramIndex {
     if (required === undefined || insensitive && /[^\x00-\x7f]/u.test(required) ||
       this.epoch === undefined || this.revision !== snapshot.revision) return undefined;
     const limit = Math.min(2000, Math.max(0, Math.ceil(this.count / 4) - 1));
-    const paths = await this.cpu.request<readonly string[] | undefined>({ type: 'workspace.trigram.query',
-      path: this.path, epoch: this.epoch, literal: required, insensitive, limit }, { signal: this.controller.signal, timeoutMs: 5000 });
+    let paths: readonly string[] | undefined;
+    try {
+      paths = await this.cpu.request<readonly string[] | undefined>({ type: 'workspace.trigram.query',
+        path: this.path, epoch: this.epoch, literal: required, insensitive, limit }, { signal: this.controller.signal, timeoutMs: 5000 });
+    } catch (error) {
+      this.error = error;
+      return undefined;
+    }
     if (paths === undefined || this.revision !== snapshot.revision) return undefined;
     const eligible = new Set(snapshot.entries.filter(entry => entry.kind === 'file' && !entry.sensitive).map(entry => entry.path));
     const candidates = [...new Set([...paths, ...this.dirtyPaths])].filter(path => eligible.has(path));

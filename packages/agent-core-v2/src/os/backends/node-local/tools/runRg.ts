@@ -1,7 +1,10 @@
 import type { Readable } from 'node:stream';
 
+import { unwrapErrorCause } from '#/_base/errors/errors';
 import { BugIndicatingError } from '#/errors';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+
+import { rgUnavailableMessage } from './rgLocator';
 
 export const DEFAULT_TIMEOUT_MS = 20_000;
 export const SIGTERM_GRACE_MS = 5_000;
@@ -132,6 +135,23 @@ export async function runRgOnce(
     stderrTruncated,
     timedOut,
   };
+}
+
+export function rgErrorCode(error: unknown): string | undefined {
+  const unwrapped = unwrapErrorCause(error);
+  if (unwrapped !== null && typeof unwrapped === 'object' && 'code' in unwrapped) {
+    const code = (unwrapped as { code?: unknown }).code;
+    return typeof code === 'string' ? code : undefined;
+  }
+  return undefined;
+}
+
+export function formatRgSpawnError(error: unknown): string {
+  return rgErrorCode(error) === 'ENOENT'
+    ? rgUnavailableMessage(error)
+    : error instanceof Error
+      ? error.message
+      : String(error);
 }
 
 export function shouldRetryRipgrepEagain(result: RunRgResult): boolean {

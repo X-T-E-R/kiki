@@ -8,9 +8,10 @@ import { pipeline } from 'node:stream/promises';
 import { kimiRegionProfile, resolveKimiRegion } from '@kiki/oauth';
 import { extract as extractTar } from 'tar';
 import { type Entry, fromBuffer as yauzlFromBuffer } from 'yauzl';
-import { basename, join } from 'pathe';
+import { basename, dirname, join } from 'pathe';
 
 import { abortable } from '#/_base/utils/abort';
+import { replaceFileNonDestructive } from '#/_base/utils/fs';
 import { ErrorCodes, Error2 } from '#/errors';
 
 const RG_VERSION = '15.0.0';
@@ -54,11 +55,11 @@ export interface EnsureRgPathOptions {
   readonly allowCachedFallback?: boolean;
 }
 
-function rgBinaryName(): string {
+export function rgBinaryName(): string {
   return process.platform === 'win32' ? 'rg.exe' : 'rg';
 }
 
-function getShareDir(): string {
+export function getShareDir(): string {
   const override = process.env['KIKI_HOME'];
   if (override !== undefined && override !== '') return override;
   return join(homedir(), '.kiki');
@@ -289,75 +290,82 @@ export async function verifyArchiveChecksum(
 export async function extractRgFromZip(archivePath: string, destination: string): Promise<void> {
   const buf = await readFile(archivePath);
   const binName = rgBinaryName();
-  await new Promise<void>((resolve, reject) => {
-    yauzlFromBuffer(buf, { lazyEntries: true }, (openErr, zipfile) => {
-      if (openErr !== null || zipfile === undefined) {
-        reject(
-          new Error2(
-            ErrorCodes.OS_FS_UNAVAILABLE,
-            `Failed to open ripgrep archive: ${openErr?.message ?? 'unknown error'}`,
-            { cause: openErr ?? undefined },
-          ),
-        );
-        return;
-      }
-      let found = false;
-      const onEntry = (entry: Entry): void => {
-        if (basename(entry.fileName) !== binName) {
-          zipfile.readEntry();
-          return;
-        }
-        found = true;
-        zipfile.openReadStream(entry, (streamErr, stream) => {
-          if (streamErr !== null) {
-            reject(
-              new Error2(
-                ErrorCodes.OS_FS_UNAVAILABLE,
-                `Failed to read ${entry.fileName} from archive: ${streamErr.message}`,
-                { cause: streamErr },
-              ),
-            );
-            zipfile.close();
-            return;
-          }
-          const out = createWriteStream(destination);
-          void (async () => {
-            try {
-              await pipeline(stream, out);
-              zipfile.close();
-              resolve();
-            } catch (error) {
-              zipfile.close();
-              reject(
-                new Error2(
-                  ErrorCodes.OS_FS_UNAVAILABLE,
-                  error instanceof Error ? error.message : String(error),
-                  { cause: error },
-                ),
-              );
-            }
-          })();
-        });
-      };
-      zipfile.on('entry', onEntry);
-      zipfile.on('end', () => {
-        if (!found) {
+  const installDir = await mkdtemp(join(dirname(destination), '.rg-install-'));
+  const staged = join(installDir, binName);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      yauzlFromBuffer(buf, { lazyEntries: true }, (openErr, zipfile) => {
+        if (openErr !== null || zipfile === undefined) {
           reject(
             new Error2(
               ErrorCodes.OS_FS_UNAVAILABLE,
-              `Ripgrep archive did not contain expected binary '${binName}'. ` +
-                'CDN content may have changed.',
-              { details: { binary: binName } },
+              `Failed to open ripgrep archive: ${openErr?.message ?? 'unknown error'}`,
+              { cause: openErr ?? undefined },
             ),
           );
+          return;
         }
+        let found = false;
+        const onEntry = (entry: Entry): void => {
+          if (basename(entry.fileName) !== binName) {
+            zipfile.readEntry();
+            return;
+          }
+          found = true;
+          zipfile.openReadStream(entry, (streamErr, stream) => {
+            if (streamErr !== null) {
+              reject(
+                new Error2(
+                  ErrorCodes.OS_FS_UNAVAILABLE,
+                  `Failed to read ${entry.fileName} from archive: ${streamErr.message}`,
+                  { cause: streamErr },
+                ),
+              );
+              zipfile.close();
+              return;
+            }
+            const out = createWriteStream(staged);
+            void (async () => {
+              try {
+                await pipeline(stream, out);
+                zipfile.close();
+                resolve();
+              } catch (error) {
+                zipfile.close();
+                reject(
+                  new Error2(
+                    ErrorCodes.OS_FS_UNAVAILABLE,
+                    error instanceof Error ? error.message : String(error),
+                    { cause: error },
+                  ),
+                );
+              }
+            })();
+          });
+        };
+        zipfile.on('entry', onEntry);
+        zipfile.on('end', () => {
+          if (!found) {
+            reject(
+              new Error2(
+                ErrorCodes.OS_FS_UNAVAILABLE,
+                `Ripgrep archive did not contain expected binary '${binName}'. ` +
+                  'CDN content may have changed.',
+                { details: { binary: binName } },
+              ),
+            );
+          }
+        });
+        zipfile.on('error', (err: Error) => {
+          reject(err);
+        });
+        zipfile.readEntry();
       });
-      zipfile.on('error', (err: Error) => {
-        reject(err);
-      });
-      zipfile.readEntry();
     });
-  });
+    await replaceFileNonDestructive(staged, destination);
+  } finally {
+    await rm(installDir, { recursive: true, force: true });
+  }
 }
 
 export function rgUnavailableMessage(cause: unknown): string {

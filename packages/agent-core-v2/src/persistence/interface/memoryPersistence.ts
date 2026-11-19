@@ -7,6 +7,16 @@ export interface MemoryStoredObject {
   readonly entry: MemoryEntry | null;
   readonly revision: string;
 }
+export interface MemoryReadOptions {
+  readonly excludeTombstones?: boolean;
+  readonly statuses?: readonly string[];
+  readonly type?: string;
+}
+export interface MemoryScopeSummary {
+  readonly generation: number;
+  readonly activeCount: number;
+  readonly duplicateTitle: boolean;
+}
 export interface MemoryReadView {
   readonly generation: number;
   readonly objects: readonly MemoryStoredObject[];
@@ -84,8 +94,9 @@ export interface MemoryImportResult {
 }
 export interface IMemoryPersistence {
   readonly _serviceBrand: undefined;
-  read(scopes: readonly string[], generation?: number): Promise<MemoryReadView>;
+  read(scopes: readonly string[], generation?: number, options?: MemoryReadOptions): Promise<MemoryReadView>;
   readIds?(scope: string, ids: readonly string[], generation?: number): Promise<MemoryReadView>;
+  scopeSummary?(scope: string, titleLower?: string): Promise<MemoryScopeSummary>;
   revision(scope: string, id: string, revision: string): Promise<MemoryEntry | undefined>;
   commit(input: MemoryCommit): Promise<MemoryCommitReceipt>;
   receipt(operationId: string, request?: string): Promise<MemoryCommitReceipt | undefined>;

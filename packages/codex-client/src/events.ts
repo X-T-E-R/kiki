@@ -1787,12 +1787,12 @@ function record(value: unknown, name: string): Readonly<Record<string, unknown>>
   return value as Readonly<Record<string, unknown>>;
 }
 
-function requiredString(value: unknown, name: string): string {
+export function requiredString(value: unknown, name: string): string {
   if (typeof value !== 'string') throw new CodexClientError('protocol', `${name} must be a string`, value);
   return value;
 }
 
-function optionalString(value: unknown): string | undefined {
+export function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 

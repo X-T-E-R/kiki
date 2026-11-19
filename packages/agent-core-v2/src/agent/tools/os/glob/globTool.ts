@@ -6,6 +6,8 @@ import { ensureRgPath, rgUnavailableMessage, type EnsureRgPathOptions, type RgPr
 import {
   DEFAULT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
+  formatRgSpawnError,
+  rgErrorCode,
   runRgOnce,
   shouldRetryRipgrepEagain,
 } from '#/os/backends/node-local/tools/runRg';
@@ -14,7 +16,6 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
 import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
-import { unwrapErrorCause } from '#/_base/errors/errors';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
@@ -184,7 +185,7 @@ export class GlobTool implements IGlobTool {
         return { isError: true, output: `${searchRoot} is not a directory` };
       }
     } catch (error) {
-      if (errorCode(error) === 'ENOENT') {
+      if (rgErrorCode(error) === 'ENOENT') {
         return { isError: true, output: `${searchRoot} does not exist` };
       }
       return { isError: true, output: error instanceof Error ? error.message : String(error) };
@@ -230,7 +231,7 @@ export class GlobTool implements IGlobTool {
       try {
         run = await runRgOnce(processService, buildRgArgs(rgPath, args, false, env.pathClass === 'win32'), signal, { cwd: searchRoot });
       } catch (error) {
-        return { isError: true, output: formatSpawnError(error) };
+        return { isError: true, output: formatRgSpawnError(error) };
       }
       if (run.kind === 'aborted') {
         return { isError: true, output: 'Glob aborted' };
@@ -240,7 +241,7 @@ export class GlobTool implements IGlobTool {
         try {
           run = await runRgOnce(processService, buildRgArgs(rgPath, args, true, env.pathClass === 'win32'), signal, { cwd: searchRoot });
         } catch (error) {
-          return { isError: true, output: formatSpawnError(error) };
+          return { isError: true, output: formatRgSpawnError(error) };
         }
         if (run.kind === 'aborted') {
           return { isError: true, output: 'Glob aborted' };
@@ -429,23 +430,6 @@ function formatGlobWarning(stderr: string): string {
   return trimmed.length > 0
     ? `Glob completed with warnings; some directories could not be read: ${trimmed}`
     : 'Glob completed with warnings; some directories could not be read.';
-}
-
-function formatSpawnError(error: unknown): string {
-  return errorCode(error) === 'ENOENT'
-    ? rgUnavailableMessage(error)
-    : error instanceof Error
-      ? error.message
-      : String(error);
-}
-
-function errorCode(error: unknown): string | undefined {
-  const unwrapped = unwrapErrorCause(error);
-  if (unwrapped !== null && typeof unwrapped === 'object' && 'code' in unwrapped) {
-    const code = (unwrapped as { code?: unknown }).code;
-    return typeof code === 'string' ? code : undefined;
-  }
-  return undefined;
 }
 
 export function splitCompletePaths(stdoutText: string, truncatedOutput: boolean): string[] {

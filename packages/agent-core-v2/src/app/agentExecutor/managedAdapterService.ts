@@ -7,7 +7,7 @@ import { sliceUtf16 } from '#/_base/text/utf16';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
-import { Error2, ErrorCodes, isError2 } from '#/errors';
+import { Error2, ErrorCodes, isError2, toErrorMessage } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -344,7 +344,7 @@ export class ManagedAdapterService implements IManagedAdapterService {
       await this.restoreOwned(id, installation);
     } catch (error) {
       throw new Error2(ErrorCodes.CONFIG_INVALID,
-        `Source-owned adapter restore failed after the installation record update failed: ${errorText(error)}`,
+        `Source-owned adapter restore failed after the installation record update failed: ${toErrorMessage(error)}`,
         { cause: error });
     }
   }
@@ -358,7 +358,7 @@ export class ManagedAdapterService implements IManagedAdapterService {
       await this.restoreProduction(targetDir, before, names);
     } catch (error) {
       throw new Error2(ErrorCodes.CONFIG_INVALID,
-        `Source-owned adapter restore failed after a partial write: ${errorText(error)}`,
+        `Source-owned adapter restore failed after a partial write: ${toErrorMessage(error)}`,
         { cause: error });
     }
   }
@@ -692,10 +692,6 @@ function auditRecovers(text: string): boolean {
 
 function absentOwnedFile(error: unknown): boolean {
   return isError2(error) && error.code === ErrorCodes.OS_FS_NOT_FOUND;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function ownedRelease(files: readonly OwnedAdapterFile[] | undefined): ManagedAdapterRelease {

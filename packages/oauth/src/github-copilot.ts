@@ -22,7 +22,7 @@ import {
   type OAuthMethodModel,
 } from './oauth-method-types';
 import type { DeviceAuthorization, TokenInfo } from './types';
-import { isRecord } from './utils';
+import { isRecord, readJson } from './utils';
 
 const CLIENT_ID = 'Iv1.b507a08c87ecfe98';
 const GITHUB_DOMAIN = 'github.com';
@@ -57,14 +57,6 @@ export function githubCopilotBaseUrlFromToken(token: string): string {
   const host = match?.[1]?.replace(/^proxy\./, 'api.');
   if (host === undefined || !/^api\.[a-z0-9-]+\.githubcopilot\.com$/i.test(host)) return DEFAULT_BASE_URL;
   return `https://${host}`;
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return undefined;
-  }
 }
 
 export function createGitHubCopilotMethod(fetchImpl: typeof fetch = fetch): OAuthDeviceMethod {

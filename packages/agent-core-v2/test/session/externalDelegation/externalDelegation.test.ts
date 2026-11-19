@@ -3360,6 +3360,43 @@ describe('SessionExternalDelegationService', () => {
     expect(later.dispatchId).not.toBe(dispatch.dispatchId);
   });
 
+  it('keeps a running dispatch cancellable and logs terminal write failures when persistence fails', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    await service.list(authority);
+    const store = ix.get(IAtomicDocumentStore);
+    const write = store.set.bind(store);
+    let failWrites = false;
+    vi.spyOn(store, 'set').mockImplementation(async (scope, key, value) => {
+      if (failWrites) throw new Error('write failed');
+      await write(scope, key, value);
+    });
+    let releaseRunHandle!: () => void;
+    nextRunHandleGate = new Promise<void>((resolve) => { releaseRunHandle = resolve; });
+    const running = await service.dispatch({ authority, target: 'main', message: 'work' });
+    failWrites = true;
+    releaseRunHandle();
+    await vi.waitFor(() => {
+      expect(logCalls.map((entry) => entry.msg)).toContain('Failed to persist running external dispatch after retry.');
+    });
+    expect((await service.status({ authority, dispatchId: running.dispatchId })).status).toBe('running');
+    expect(logCalls.map((entry) => entry.msg)).not.toContain('External dispatch failed.');
+
+    failWrites = false;
+    expect((await service.cancel({ authority, dispatchId: running.dispatchId })).status).toBe('cancelled');
+    expect(runSignals[0]?.aborted).toBe(true);
+
+    const later = await service.dispatch({ authority, target: 'main', message: 'later work' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: later.dispatchId })).status).toBe('running');
+    });
+    failWrites = true;
+    completions.at(-1)!.resolve({ summary: 'done' });
+    await vi.waitFor(() => {
+      expect(logCalls.map((entry) => entry.msg)).toContain('External dispatch terminalization failed.');
+    });
+    expect((await service.status({ authority, dispatchId: later.dispatchId })).status).toBe('completed');
+  });
+
   it('persists only typed, redacted, byte-bounded external failures', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });

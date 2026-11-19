@@ -4,8 +4,14 @@ export function abortError(message = 'Aborted'): Error {
   return error;
 }
 
-export function isAbortError(error: unknown): error is Error {
-  return error instanceof Error && error.name === 'AbortError';
+export function isAbortError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  if (error instanceof Error && error.name === 'AbortError') return true;
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as object).constructor?.name === 'APIUserAbortError'
+  );
 }
 
 export class UserCancellationError extends Error {
@@ -52,7 +58,7 @@ export function linkAbortSignal(source: AbortSignal, target: AbortController): (
   };
 }
 
-function abortReason(signal: AbortSignal): Error {
+export function abortReason(signal: AbortSignal): Error {
   if (signal.reason instanceof Error && !isDefaultAbortReason(signal.reason)) {
     return signal.reason;
   }

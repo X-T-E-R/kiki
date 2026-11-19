@@ -692,26 +692,24 @@ describe('AgentTaskService', () => {
       ...fakeProcessTask(),
       start: (sink) => sink.appendOutput(output),
     }, { detached: false }));
-    const internals = svc as unknown as { tasks: Map<string, { retainedOutputBytes: number; outputSizeBytes: number }> };
     await vi.waitFor(() => {
-      expect(internals.tasks.size).toBe(12);
-      const entries = [...internals.tasks.values()];
-      expect(entries.every((entry) => entry.outputSizeBytes === output.length)).toBe(true);
-      expect(entries.reduce((sum, entry) => sum + entry.retainedOutputBytes, 0)).toBeLessThanOrEqual(1024 * 1024);
+      const stats = svc.getRetentionStats!();
+      expect(stats.activeTaskCount).toBe(12);
+      expect(stats.taskOutputSizes.every((size) => size === output.length)).toBe(true);
+      expect(stats.retainedOutputBytes).toBeLessThanOrEqual(1024 * 1024);
     });
     for (const taskId of ids) {
       expect(svc.getTask(taskId)?.status).toBe('running');
       expect(await svc.readOutput(taskId)).toBe(output);
     }
     await svc.stopAll();
-    await vi.waitFor(() => expect(internals.tasks.size).toBe(0));
+    await vi.waitFor(() => expect(svc.getRetentionStats!().activeTaskCount).toBe(0));
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('archives process, subagent, question and tracked executions while preserving output and notification deduplication', async () => {
     ix.set(IFileSystemStorageService, new InMemoryStorageService());
     ix.set(ITaskService, new SyncDescriptor(TaskService));
     const svc = ix.get(IAgentTaskService);
-    const internals = svc as unknown as { tasks: Map<string, unknown>; cachedOutputs: Map<string, unknown> };
     const ids: string[] = [];
     for (let batch = 0; batch < 3; batch++) {
       for (let i = 0; i < 8; i++) {
@@ -736,8 +734,8 @@ describe('AgentTaskService', () => {
         ids.push(entry.taskId);
         await svc.wait(entry.taskId);
       }
-      await vi.waitFor(() => expect(internals.tasks.size).toBe(0));
-      expect(internals.cachedOutputs.size).toBe(0);
+      await vi.waitFor(() => expect(svc.getRetentionStats!().activeTaskCount).toBe(0));
+      expect(svc.getRetentionStats!().cachedOutputCount).toBe(0);
     }
     expect(svc.list(false).map((info) => info.taskId)).toEqual(ids);
     expect(svc.list(false, 40, 0).map((info) => info.taskId)).toEqual(ids.slice(0, 40));
@@ -760,6 +758,35 @@ describe('AgentTaskService', () => {
     expect(requests.every((request) => request.aborted)).toBe(true);
     expect(stubLoop().hasPendingRequests()).toBe(false);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('logs a failed live task metadata write and rewrites the record on the next write', async () => {
+    const docs = ix.get(IAtomicDocumentStore);
+    const error = new Error('disk full');
+    const setDoc = vi.spyOn(docs, 'set').mockRejectedValueOnce(error);
+    const logError = vi.spyOn(ix.get(ILogService), 'error');
+    const svc = ix.get(IAgentTaskService);
+    let release!: () => void;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => { await running; await sink.settle({ status: 'completed' }); },
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(logError).toHaveBeenCalledWith('task metadata persistence failed; retrying on next write', { taskId, error });
+      });
+
+      await svc.suppressTerminalNotification(taskId);
+      expect(setDoc).toHaveBeenCalledTimes(2);
+      expect(setDoc.mock.calls[1]![2]).toMatchObject({
+        taskId,
+        terminalNotificationSuppressed: true,
+      });
+    } finally {
+      release();
+      await svc.wait(taskId);
+    }
+  });
 
   it('retains all unpersisted output after an append failure rather than advertising a partial file as complete', async () => {
     const storage = new InMemoryStorageService();

@@ -653,6 +653,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         await metadata.update({ private: opts.private }, { touchUpdatedAt: false });
       }
       await phase('materialize_tool_policy', () => handle.accessor.get(ISessionToolPolicy).ready);
+      await phase('materialize_delivery', () => handle.accessor.get(ISessionDeliveryService).ready);
       await Promise.all([
         phase('materialize_workspace_profiles', () => this.workspaceAgentProfileLoader.ready),
         phase('materialize_extra_profiles', () => this.extraAgentProfileLoader.ready),

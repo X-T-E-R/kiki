@@ -593,4 +593,13 @@ describe('findExistingRg inherited share dirs', () => {
     expect(resolved).toEqual({ path: baseRg, source: 'share-bin-cached' });
     expect(existsSync(join(fakeShare, 'bin', rgName()))).toBe(false);
   });
+
+  it('does not leave a partial destination binary when zip extraction fails', async () => {
+    const badZip = join(fakeShare, 'broken.zip');
+    writeFileSync(badZip, 'not a valid zip archive');
+    const destination = join(fakeShare, 'bin', rgName());
+
+    await expect(extractRgFromZip(badZip, destination)).rejects.toThrow(/Failed to open ripgrep archive/);
+    expect(existsSync(destination)).toBe(false);
+  });
 });

@@ -1,4 +1,5 @@
 import { readApiErrorMessage } from './api-error';
+import { nonEmptyString } from './utils';
 import { resolveConfiguredProviderApiKey } from './provider-api-key';
 import {
   fetchCustomRegistry,
@@ -130,12 +131,6 @@ const PROVIDER_API_KEY_ENV_NAMES: Readonly<Record<string, string>> = {
   openai: 'OPENAI_API_KEY',
   openai_responses: 'OPENAI_API_KEY',
 };
-
-function nonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
 
 function resolveProviderApiKey(provider: ProviderView): string | undefined {
   const env = providerEnvBag(provider);

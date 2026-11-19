@@ -6,8 +6,10 @@ import { CodexClientError, CodexRemoteError } from '#/errors';
 import {
   mapCodexNotification,
   mergeCodexRateLimits,
+  optionalString,
   parseCodexRateLimitSnapshot,
   parseCodexTurnOutcome,
+  requiredString,
 } from '#/events';
 import { StderrRing } from '#/stderrRing';
 import type {
@@ -1108,15 +1110,6 @@ function object(value: unknown, name: string): JsonObject {
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== 'string') throw new CodexClientError('protocol', `${name} must be a string`, value);
-  return value;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
 }
 
 function closedError(state: string): CodexClientError {

@@ -959,7 +959,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     const receipt = this.roomDeliveryReceipts.get(messageId);
     const target = receipt?.target ?? this.roomDeliveryTargets.get(messageId);
     if (target !== undefined) {
-      void this.persistRoomDeliveryReceipt(messageId, { target, status: 'completed' }).catch(() => {});
+      void this.persistRoomDeliveryReceipt(messageId, { target, status: 'completed' }).catch((persistError) => {
+        this.log.error('Failed to persist completed room delivery receipt', { messageId, error: persistError });
+      });
     }
     receipt?.resolve();
   }
@@ -973,7 +975,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         status: 'failed',
         error: error instanceof Error ? error.message : String(error),
         errorPayload: toErrorPayload(error),
-      }).catch(() => {});
+      }).catch((persistError) => {
+        this.log.error('Failed to persist failed room delivery receipt', { messageId, error: persistError });
+      });
     }
     receipt?.reject(error);
   }

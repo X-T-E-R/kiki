@@ -8,7 +8,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
 
 import { createRuntimeClient, type ClientCallbacks } from './client';
-import { HomeRuntimeError, isFatalRuntimeError } from './errors';
+import { HomeRuntimeError, isFatalRuntimeError, runtimeAbortReason } from './errors';
 import {
   RUNTIME_ELECTION_TIMEOUT_MS,
   RUNTIME_MAX_REQUEST_ID_LENGTH,
@@ -415,7 +415,7 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
     if (requestId.length === 0 || requestId.length > RUNTIME_MAX_REQUEST_ID_LENGTH) {
       return Promise.reject(new HomeRuntimeError('runtime.invalid_request', 'requestId must be a non-empty string of at most 128 characters'));
     }
-    if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    if (options.signal?.aborted) return Promise.reject(runtimeAbortReason(options.signal));
     const claim = this.fence.claim(this.hostId, name, requestId);
     if (claim.kind === 'duplicate' || claim.kind === 'conflict') {
       return Promise.reject(new HomeRuntimeError('runtime.duplicate_request', `request id is already guarded: ${requestId}`));
@@ -433,7 +433,7 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
     return new Promise<unknown>((resolve, reject) => {
       let callerSettled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const abortFromCaller = (): void => controller.abort(abortReason(options.signal!));
+      const abortFromCaller = (): void => controller.abort(runtimeAbortReason(options.signal!));
       const cleanupCaller = (): void => {
         if (timer !== undefined) clearTimeout(timer);
         options.signal?.removeEventListener('abort', abortFromCaller);
@@ -466,7 +466,7 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
           settledAt: Date.now(),
         });
       };
-      const onAbort = (): void => settleCaller(abortReason(controller.signal));
+      const onAbort = (): void => settleCaller(runtimeAbortReason(controller.signal));
       options.signal?.addEventListener('abort', abortFromCaller, { once: true });
       controller.signal.addEventListener('abort', onAbort, { once: true });
       let readDiagnostic: (() => string) | undefined;
@@ -529,11 +529,6 @@ function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
     };
     tick();
   });
-}
-
-function abortReason(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error && !(signal.reason instanceof DOMException)) return signal.reason;
-  return new HomeRuntimeError('runtime.aborted', 'runtime call aborted');
 }
 
 function ensureError(error: unknown): Error {

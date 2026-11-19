@@ -15,11 +15,22 @@ const port = parentPort;
 if (port === null) throw new Error('Canonical mailbox requires a worker');
 const configuration = workerData as { readonly database: string; readonly create: boolean; readonly readOnly?: boolean };
 const APPLICATION_ID = 0x4b4d4231;
+const DEFAULT_PURGE_EXPIRED_LIMIT = 1024;
+const PERIODIC_PURGE_BATCH_INTERVAL = 64;
+const PERIODIC_PURGE_LIMIT = 256;
 let connection: DatabaseSync | undefined;
+let findMessageByIdStmt: ReturnType<DatabaseSync['prepare']> | undefined;
+let findActivityByIdentityStmt: ReturnType<DatabaseSync['prepare']> | undefined;
+let ownerBatchCount = 0;
 let cancellation: Int32Array | undefined;
 
 function check(): void {
   if (cancellation !== undefined && Atomics.load(cancellation, 0) !== 0) throw new DOMException('Mailbox operation cancelled before commit', 'AbortError');
+}
+
+function rollbackQuietly(db: DatabaseSync): void {
+  if (!db.isTransaction) return;
+  try { db.exec('ROLLBACK'); } catch {}
 }
 
 function open(): DatabaseSync {
@@ -29,28 +40,50 @@ function open(): DatabaseSync {
   const db = new DatabaseSync(configuration.database, { readOnly: configuration.readOnly === true });
   try {
     db.exec('PRAGMA busy_timeout=100; PRAGMA foreign_keys=ON');
-    const application = Number(db.prepare('PRAGMA application_id').get()!['application_id']);
-    const version = Number(db.prepare('PRAGMA user_version').get()!['user_version']);
-    if ((application !== 0 && application !== APPLICATION_ID) || version > 1 || (!configuration.create && (application !== APPLICATION_ID || version !== 1))) throw new Error('Unsupported canonical mailbox SQLite schema');
-    if (application === 0 && db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get() !== undefined) throw new Error('Unrecognized canonical mailbox database');
-    if (configuration.readOnly === true) { db.exec('PRAGMA query_only=ON; PRAGMA cache_size=-8192'); connection = db; return db; }
-    if (application === 0) db.exec('PRAGMA auto_vacuum=INCREMENTAL');
-    db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-8192;
-      CREATE TABLE IF NOT EXISTS records(key TEXT PRIMARY KEY COLLATE BINARY, json TEXT NOT NULL CHECK(json_valid(json)), expire_at INTEGER NOT NULL DEFAULT 0 CHECK(expire_at>=0),
-        kind TEXT GENERATED ALWAYS AS (json_extract(json,'$.kind')) VIRTUAL,
-        peer_group TEXT GENERATED ALWAYS AS (json_extract(json,'$.peerGroup')) VIRTUAL,
-        peer_order TEXT GENERATED ALWAYS AS (json_extract(json,'$.peerOrder')) VIRTUAL) WITHOUT ROWID;
-      CREATE INDEX IF NOT EXISTS records_by_kind ON records(kind,key);
-      CREATE INDEX IF NOT EXISTS records_pending_by_scope ON records(json_extract(json,'$.target.hostId'),json_extract(json,'$.target.workspaceId'),key)
-        WHERE kind='target_meta' AND json_extract(json,'$.pendingCount')>0;
-      CREATE INDEX IF NOT EXISTS records_by_peer ON records(peer_group,peer_order,key) WHERE kind='peer_index';
-      CREATE INDEX IF NOT EXISTS records_by_expiry ON records(expire_at) WHERE expire_at>0;
-      CREATE INDEX IF NOT EXISTS records_by_message ON records(json_extract(json,'$.message.messageId'),key) WHERE kind='message';
-      CREATE INDEX IF NOT EXISTS records_by_legacy_activity ON records(json_extract(json,'$.legacyIdentity'),key) WHERE kind='activity';
-      CREATE TABLE IF NOT EXISTS legacy_archive(source TEXT NOT NULL,key TEXT NOT NULL,json TEXT NOT NULL CHECK(json_valid(json)),expire_at INTEGER NOT NULL,PRIMARY KEY(source,key)) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, json TEXT NOT NULL CHECK(json_valid(json))) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS imports(source TEXT PRIMARY KEY, after_key TEXT NOT NULL, items INTEGER NOT NULL, bytes INTEGER NOT NULL) WITHOUT ROWID;
-      PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=1;`);
+    if (configuration.readOnly === true) {
+      const application = Number(db.prepare('PRAGMA application_id').get()!['application_id']);
+      const version = Number(db.prepare('PRAGMA user_version').get()!['user_version']);
+      if (application !== APPLICATION_ID || version !== 1) throw new Error('Unsupported canonical mailbox SQLite schema');
+      db.exec('PRAGMA query_only=ON; PRAGMA cache_size=-8192');
+      findMessageByIdStmt = db.prepare("SELECT key,json,expire_at FROM records WHERE kind='message' AND json_extract(json,'$.message.messageId')=? AND key>=? AND key<? LIMIT 1");
+      findActivityByIdentityStmt = db.prepare("SELECT key,json,expire_at FROM records WHERE kind='activity' AND json_extract(json,'$.legacyIdentity')=? AND key>=? AND key<? LIMIT 1");
+      connection = db;
+      return db;
+    }
+    const initialApp = Number(db.prepare('PRAGMA application_id').get()!['application_id']);
+    if (initialApp === 0 && db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get() === undefined) {
+      db.exec('PRAGMA auto_vacuum=INCREMENTAL');
+    }
+    db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-8192; PRAGMA journal_size_limit=67108864');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const application = Number(db.prepare('PRAGMA application_id').get()!['application_id']);
+      const version = Number(db.prepare('PRAGMA user_version').get()!['user_version']);
+      if ((application !== 0 && application !== APPLICATION_ID) || version > 1 || (!configuration.create && (application !== APPLICATION_ID || version !== 1))) throw new Error('Unsupported canonical mailbox SQLite schema');
+      if (application === 0 && db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get() !== undefined) throw new Error('Unrecognized canonical mailbox database');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS records(key TEXT PRIMARY KEY COLLATE BINARY, json TEXT NOT NULL CHECK(json_valid(json)), expire_at INTEGER NOT NULL DEFAULT 0 CHECK(expire_at>=0),
+          kind TEXT GENERATED ALWAYS AS (json_extract(json,'$.kind')) VIRTUAL,
+          peer_group TEXT GENERATED ALWAYS AS (json_extract(json,'$.peerGroup')) VIRTUAL,
+          peer_order TEXT GENERATED ALWAYS AS (json_extract(json,'$.peerOrder')) VIRTUAL) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS records_by_kind ON records(kind,key);
+        CREATE INDEX IF NOT EXISTS records_pending_by_scope ON records(json_extract(json,'$.target.hostId'),json_extract(json,'$.target.workspaceId'),key)
+          WHERE kind='target_meta' AND json_extract(json,'$.pendingCount')>0;
+        CREATE INDEX IF NOT EXISTS records_by_peer ON records(peer_group,peer_order,key) WHERE kind='peer_index';
+        CREATE INDEX IF NOT EXISTS records_by_expiry ON records(expire_at) WHERE expire_at>0;
+        CREATE INDEX IF NOT EXISTS records_by_message ON records(json_extract(json,'$.message.messageId'),key) WHERE kind='message';
+        CREATE INDEX IF NOT EXISTS records_by_legacy_activity ON records(json_extract(json,'$.legacyIdentity'),key) WHERE kind='activity';
+        CREATE TABLE IF NOT EXISTS legacy_archive(source TEXT NOT NULL,key TEXT NOT NULL,json TEXT NOT NULL CHECK(json_valid(json)),expire_at INTEGER NOT NULL,PRIMARY KEY(source,key)) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, json TEXT NOT NULL CHECK(json_valid(json))) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS imports(source TEXT PRIMARY KEY, after_key TEXT NOT NULL, items INTEGER NOT NULL, bytes INTEGER NOT NULL) WITHOUT ROWID;
+        PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=1;`);
+      db.exec('COMMIT');
+    } catch (error) {
+      rollbackQuietly(db);
+      throw error;
+    }
+    findMessageByIdStmt = db.prepare("SELECT key,json,expire_at FROM records WHERE kind='message' AND json_extract(json,'$.message.messageId')=? AND key>=? AND key<? LIMIT 1");
+    findActivityByIdentityStmt = db.prepare("SELECT key,json,expire_at FROM records WHERE kind='activity' AND json_extract(json,'$.legacyIdentity')=? AND key>=? AND key<? LIMIT 1");
     connection = db;
     return db;
   } catch (error) { db.close(); throw error; }
@@ -61,7 +94,20 @@ function transaction<T>(run: (db: DatabaseSync) => T): T {
   check();
   db.exec('BEGIN IMMEDIATE');
   try { const result = run(db); check(); db.exec('COMMIT'); return result; }
-  catch (error) { db.exec('ROLLBACK'); throw error; }
+  catch (error) { rollbackQuietly(db); throw error; }
+}
+
+function purgeExpiredRows(db: DatabaseSync, now: number, limit: number): number {
+  const result = db.prepare('DELETE FROM records WHERE key IN (SELECT key FROM records WHERE expire_at>0 AND expire_at<=? LIMIT ?)').run(now, limit);
+  return Number(result.changes);
+}
+
+function incrementalVacuumIfEnabled(db: DatabaseSync, pages: number): void {
+  try {
+    if (Number(db.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum']) === 2) {
+      db.exec(`PRAGMA incremental_vacuum(${pages})`);
+    }
+  } catch {}
 }
 
 function metadata(db: DatabaseSync, key: string): unknown {
@@ -160,7 +206,13 @@ function verify(db: DatabaseSync): { readonly counts: Record<string, number>; re
 
 async function execute(operation: MailboxOperation): Promise<unknown> {
   check();
-  if (operation.type === 'close') { connection?.close(); connection = undefined; return undefined; }
+  if (operation.type === 'close') {
+    findMessageByIdStmt = undefined;
+    findActivityByIdentityStmt = undefined;
+    connection?.close();
+    connection = undefined;
+    return undefined;
+  }
   const db = open();
   switch (operation.type) {
     case 'owner': return transaction((db) => {
@@ -176,48 +228,65 @@ async function execute(operation: MailboxOperation): Promise<unknown> {
       return operation.keys.map((key) => { check(); const record = get.get(key, now); return record === undefined ? undefined : JSON.parse(String(record['json'])); });
     }
     case 'find_identity': {
-      const kind = operation.field === 'messageId' ? 'message' : 'activity';
-      const path = operation.field === 'messageId' ? '$.message.messageId' : '$.legacyIdentity';
-      const found = db.prepare('SELECT key,json,expire_at FROM records WHERE kind=? AND json_extract(json,?)=? AND key>=? AND key<? LIMIT 1').get(kind, path, operation.value, `${operation.partition}/`, `${operation.partition}0`);
+      const statement = operation.field === 'messageId' ? findMessageByIdStmt! : findActivityByIdentityStmt!;
+      const found = statement.get(operation.value, `${operation.partition}/`, `${operation.partition}0`);
       return found === undefined ? undefined : row(found);
     }
-    case 'batch': return transaction((db) => {
-      assertOwner(db, operation.owner);
-      const put = db.prepare('INSERT INTO records(key,json,expire_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET json=excluded.json,expire_at=excluded.expire_at');
-      const putMissing = db.prepare('INSERT INTO records(key,json,expire_at) VALUES(?,?,?) ON CONFLICT(key) DO NOTHING');
-      const remove = db.prepare('DELETE FROM records WHERE key=?');
-      const now = Date.now();
-      for (const op of operation.ops) {
-        check();
-        if (op.op === 'del') remove.run(op.key);
-        else {
-          const expireAt = op.expireAt ?? (op.ttl === undefined ? 0 : now + Math.floor(op.ttl));
-          if (!Number.isSafeInteger(expireAt) || expireAt < 0) throw new TypeError('Invalid absolute mailbox expiration');
-          (op.onlyIfMissing === true ? putMissing : put).run(op.key, JSON.stringify(op.value), expireAt);
-        }
-      }
-      if (operation.archive !== undefined) {
-        const archive = db.prepare('INSERT INTO legacy_archive VALUES(?,?,?,?) ON CONFLICT(source,key) DO UPDATE SET json=excluded.json,expire_at=excluded.expire_at');
-        const order = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_delivery_order'").get() === undefined ? undefined
-          : db.prepare(`INSERT OR IGNORE INTO legacy_delivery_order
-            SELECT source,json_array(json_extract(json,'$.message.target.hostId'),json_extract(json,'$.message.target.workspaceId'),json_extract(json,'$.message.target.sessionId')),
-              coalesce(json_extract(json,'$.message.targetSeq'),-1),key FROM legacy_archive WHERE source=? AND key=?`);
-        for (const item of operation.archive.rows) {
+    case 'purge_expired': {
+      const limit = Math.max(1, Math.min(operation.limit ?? DEFAULT_PURGE_EXPIRED_LIMIT, 4096));
+      const deleted = transaction((connection) => {
+        assertOwner(connection, operation.owner);
+        return purgeExpiredRows(connection, Date.now(), limit);
+      });
+      if (deleted > 0) incrementalVacuumIfEnabled(db, 64);
+      return deleted;
+    }
+    case 'batch': {
+      let purged = 0;
+      transaction((db) => {
+        assertOwner(db, operation.owner);
+        const put = db.prepare('INSERT INTO records(key,json,expire_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET json=excluded.json,expire_at=excluded.expire_at');
+        const putMissing = db.prepare('INSERT INTO records(key,json,expire_at) VALUES(?,?,?) ON CONFLICT(key) DO NOTHING');
+        const remove = db.prepare('DELETE FROM records WHERE key=?');
+        const now = Date.now();
+        for (const op of operation.ops) {
           check();
-          const json = JSON.stringify(item.value);
-          const retained = operation.archive.source.startsWith('thread-mailbox-v3/') ? JSON.stringify({ kind: item.value['kind'], digest: archiveDigest(json) }) : json;
-          archive.run(operation.archive.source, item.key, retained, item.expireAt);
-          if (order !== undefined && item.value['kind'] === 'delivery') order.run(operation.archive.source, item.key);
+          if (op.op === 'del') remove.run(op.key);
+          else {
+            const expireAt = op.expireAt ?? (op.ttl === undefined ? 0 : now + Math.floor(op.ttl));
+            if (!Number.isSafeInteger(expireAt) || expireAt < 0) throw new TypeError('Invalid absolute mailbox expiration');
+            (op.onlyIfMissing === true ? putMissing : put).run(op.key, JSON.stringify(op.value), expireAt);
+          }
         }
-      }
-      if (operation.importCheckpoint !== undefined) {
-        const point = operation.importCheckpoint;
-        db.prepare('INSERT INTO imports VALUES(?,?,?,?) ON CONFLICT(source) DO UPDATE SET after_key=excluded.after_key,items=excluded.items,bytes=excluded.bytes').run(point.source, point.after, point.items, point.bytes);
-      } else if (operation.ops.length > 0 && operation.owner !== undefined) {
-        db.prepare('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET json=excluded.json').run('hasNewWrites', 'true');
-      }
+        if (operation.archive !== undefined) {
+          const archive = db.prepare('INSERT INTO legacy_archive VALUES(?,?,?,?) ON CONFLICT(source,key) DO UPDATE SET json=excluded.json,expire_at=excluded.expire_at');
+          const order = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_delivery_order'").get() === undefined ? undefined
+            : db.prepare(`INSERT OR IGNORE INTO legacy_delivery_order
+              SELECT source,json_array(json_extract(json,'$.message.target.hostId'),json_extract(json,'$.message.target.workspaceId'),json_extract(json,'$.message.target.sessionId')),
+                coalesce(json_extract(json,'$.message.targetSeq'),-1),key FROM legacy_archive WHERE source=? AND key=?`);
+          for (const item of operation.archive.rows) {
+            check();
+            const json = JSON.stringify(item.value);
+            const retained = operation.archive.source.startsWith('thread-mailbox-v3/') ? JSON.stringify({ kind: item.value['kind'], digest: archiveDigest(json) }) : json;
+            archive.run(operation.archive.source, item.key, retained, item.expireAt);
+            if (order !== undefined && item.value['kind'] === 'delivery') order.run(operation.archive.source, item.key);
+          }
+        }
+        if (operation.importCheckpoint !== undefined) {
+          const point = operation.importCheckpoint;
+          db.prepare('INSERT INTO imports VALUES(?,?,?,?) ON CONFLICT(source) DO UPDATE SET after_key=excluded.after_key,items=excluded.items,bytes=excluded.bytes').run(point.source, point.after, point.items, point.bytes);
+        } else if (operation.ops.length > 0 && operation.owner !== undefined) {
+          db.prepare('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET json=excluded.json').run('hasNewWrites', 'true');
+          ownerBatchCount += 1;
+          if (ownerBatchCount % PERIODIC_PURGE_BATCH_INTERVAL === 0) {
+            purged = purgeExpiredRows(db, now, PERIODIC_PURGE_LIMIT);
+          }
+        }
+        return undefined;
+      });
+      if (purged > 0) incrementalVacuumIfEnabled(db, 32);
       return undefined;
-    });
+    }
     case 'scan': {
       const values: SQLInputValue[] = [operation.prefix, `${operation.prefix}\uffff`, operation.after ?? '', Date.now()];
       let sql = 'SELECT key,json,expire_at FROM records WHERE key>=? AND key<? AND key>? AND (expire_at=0 OR expire_at>?)';

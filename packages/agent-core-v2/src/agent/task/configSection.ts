@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { parseBooleanEnv } from '#/_base/utils/env';
+import { parseBooleanEnv, parsePositiveIntEnv } from '#/_base/utils/env';
 import {
   type EnvBindings,
   envBindings,
@@ -47,16 +47,9 @@ export function resolvePrintBackgroundMode(config: IConfigService): PrintBackgro
 export const KEEP_ALIVE_ON_EXIT_ENV = 'KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT';
 export const MAX_RUNNING_TASKS_ENV = 'KIKI_BACKGROUND_MAX_RUNNING_TASKS';
 
-function parsePositiveInt(raw: string): number | undefined {
-  const value = raw.trim();
-  if (value.length === 0 || !/^\d+$/.test(value)) return undefined;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
 export const taskEnvBindings: EnvBindings<AgentTaskConfig> = envBindings(AgentTaskConfigSchema, {
   keepAliveOnExit: { env: KEEP_ALIVE_ON_EXIT_ENV, parse: parseBooleanEnv },
-  maxRunningTasks: { env: MAX_RUNNING_TASKS_ENV, parse: parsePositiveInt },
+  maxRunningTasks: { env: MAX_RUNNING_TASKS_ENV, parse: parsePositiveIntEnv },
 });
 
 export const stripTaskEnv = stripEnvBoundFields(taskEnvBindings);

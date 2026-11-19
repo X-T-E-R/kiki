@@ -38,6 +38,7 @@
       "types": "./package.json",
       "default": "./package.json"
     },
+    "./build/windows-process-helper": "./scripts/build-windows-process-helper.mjs",
     "./*": {
       "types": "./src/*.ts",
       "default": "./src/*.ts"

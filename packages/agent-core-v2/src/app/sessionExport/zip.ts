@@ -6,6 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { dirname, join, relative, resolve } from 'pathe';
 import { ZipFile, type ReadStreamOptions } from 'yazl';
 
+import { abortReason } from '#/_base/utils/abort';
 import { ErrorCodes, Error2 } from '#/errors';
 
 import {
@@ -241,12 +242,6 @@ interface LazyZipFile extends ZipFile {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-function abortReason(signal: AbortSignal): Error {
-  return signal.reason instanceof Error
-    ? signal.reason
-    : new DOMException('The operation was aborted.', 'AbortError');
 }
 
 async function findConflictingSource(args: {

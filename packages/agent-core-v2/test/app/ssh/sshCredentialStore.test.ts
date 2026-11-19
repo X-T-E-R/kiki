@@ -222,6 +222,15 @@ describe('SSH credentials', () => {
       expect(await sshStore.read('phone-ssh', 'password')).toBeUndefined();
 
       const syncKeyring = createKimiOAuthKeyring({ homeDir: home });
+      expect(syncKeyring.preferAsync).toBe(true);
+      const asyncBrokerEntry = await syncKeyring.createAsyncEntry!('kimi-code', 'async-primary');
+      expect(await asyncBrokerEntry.getPassword()).toBeNull();
+      await asyncBrokerEntry.setPassword('{"access_token":"tok-async"}');
+      expect(await asyncBrokerEntry.getPassword()).toBe('{"access_token":"tok-async"}');
+      expect(await syncKeyring.findAccountsAsync!('kimi-code')).toEqual(['async-primary']);
+      expect(await asyncBrokerEntry.deleteCredential()).toBe(true);
+      expect(await syncKeyring.findAccountsAsync!('kimi-code')).toEqual([]);
+
       const syncEntry = syncKeyring.createEntry('kimi-code', 'primary');
       expect(syncEntry.getPassword()).toBeNull();
       syncEntry.setPassword('{"access_token":"tok-1"}');

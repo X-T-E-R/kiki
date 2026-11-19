@@ -6,6 +6,7 @@ import type {
 } from './agentProfile';
 import { AgentFileParseError } from './agentFile';
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
+import { isPlainRecord, isRecord, parseOptionalString, parseRequiredString } from './parseHelpers';
 import { parseSubagentPermissions } from './subagentLease';
 
 const ROUTE_ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/;
@@ -241,29 +242,20 @@ function parseStringList(value: unknown, field: string, path: string): readonly 
 }
 
 function requiredString(value: unknown, field: string, path: string): string {
-  const result = optionalString(value, field, path);
-  if (result === undefined) throw invalid(path, `Missing required frontmatter field "${field}"`);
-  return result;
+  return parseRequiredString(
+    value,
+    () => invalid(path, `Missing required frontmatter field "${field}"`),
+    () => invalid(path, `Frontmatter field "${field}" must be a non-empty string`),
+  );
 }
 
 function optionalString(value: unknown, field: string, path: string): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw invalid(path, `Frontmatter field "${field}" must be a non-empty string`);
-  }
-  return value.trim();
+  return parseOptionalString(
+    value,
+    () => invalid(path, `Frontmatter field "${field}" must be a non-empty string`),
+  );
 }
 
 function invalid(path: string, message: string, cause?: unknown): AgentFileParseError {
   return new AgentFileParseError(`Invalid agent route sidecar ${path}: ${message}`, cause);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }

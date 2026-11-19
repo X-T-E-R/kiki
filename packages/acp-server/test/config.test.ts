@@ -130,23 +130,41 @@ describe('acp-server config surface', () => {
   it(
     'session/set_mode propagates plan errors without reporting a new mode',
     async () => {
-      const session = Object.create(AcpSession.prototype) as AcpSession;
       const updates: unknown[] = [];
+      const conn = {
+        sessionUpdate: async (update: unknown) => {
+          updates.push(update);
+        },
+      };
       const agent = {
         enterPlan: async () => {
           throw new Error('plan toggle failed');
         },
         setPermission: async () => {},
       };
-      Object.assign(session as unknown as Record<string, unknown>, {
-        agent,
-        conn: { sessionUpdate: async (update: unknown) => updates.push(update) },
-        sessionId: 'session-test',
-        currentModeId: 'default',
-      });
+      const klient = {
+        session: () => ({
+          agent: () => agent,
+          interactions: {
+            acquireConsumer: async () => ({ release: async () => {} }),
+            list: async () => [],
+          },
+          events: {
+            on: () => ({ dispose: () => {} }),
+          },
+        }),
+      };
+      const session = new AcpSession(
+        conn as unknown as ConstructorParameters<typeof AcpSession>[0],
+        klient as unknown as ConstructorParameters<typeof AcpSession>[1],
+        'session-test',
+        {} as unknown as ConstructorParameters<typeof AcpSession>[3],
+        false,
+      );
+      const initialMode = session.modeState().currentModeId;
 
       await expect(session.setMode('plan')).rejects.toThrow('plan toggle failed');
-      expect((session as unknown as { currentModeId: string }).currentModeId).toBe('default');
+      expect(session.modeState().currentModeId).toBe(initialMode);
       expect(updates).toEqual([]);
     },
     30_000,

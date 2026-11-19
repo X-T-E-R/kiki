@@ -7,9 +7,11 @@ import {
   type ManagedKimiConfigShape,
 } from '@kiki/oauth';
 import { LifecycleScope } from '#/app/scopes';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
 import { sliceUtf16 } from '#/_base/text/utf16';
+import { isPlainObject } from '#/_base/utils/types';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
@@ -30,11 +32,11 @@ import {
   type ModelsDevProviderItem,
 } from './modelsDevImport';
 import {
-  getModelsDevCatalog,
+  IModelsDevUpstreamService,
+  ModelsDevUpstreamClient,
   modelsDevEntry,
   modelsDevModelToRecord,
   toModelsDevProviderItem,
-  upstreamFetch,
   UPSTREAM_FETCH_TIMEOUT_MS,
 } from './modelsDevUpstream';
 
@@ -45,24 +47,34 @@ export class ModelsDevImportService implements IModelsDevImportService {
 
   private writeChain: Promise<unknown> = Promise.resolve();
 
+  private fallbackUpstream: IModelsDevUpstreamService | undefined;
+
   constructor(
     @IConfigService private readonly config: IConfigService,
     @IKosongConfigService private readonly kosongConfig: IKosongConfigService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IAgentIdentity private readonly identity: IAgentIdentity,
+    @ref(IModelsDevUpstreamService) private readonly upstreamRef?: LiveRef<IModelsDevUpstreamService>,
   ) {}
+
+  private resolveUpstream(): IModelsDevUpstreamService {
+    const service = this.upstreamRef?.current;
+    if (service !== undefined) return service;
+    this.fallbackUpstream ??= new ModelsDevUpstreamClient();
+    return this.fallbackUpstream;
+  }
 
   private async outboundUserAgent(): Promise<string> {
     return (await this.identity.resolved()).outboundUserAgent;
   }
 
   async listModelsDevProviders(): Promise<ModelsDevProviderItem[]> {
-    const catalog = await getModelsDevCatalog(() => this.outboundUserAgent(), { preferLocal: true });
+    const catalog = await this.resolveUpstream().getCatalog(() => this.outboundUserAgent(), { preferLocal: true });
     return Object.entries(catalog).map(([id, entry]) => toModelsDevProviderItem(id, entry));
   }
 
   async getModelsDevProvider(catalogId: string): Promise<ModelsDevProviderItem> {
-    const catalog = await getModelsDevCatalog(() => this.outboundUserAgent(), { preferLocal: true });
+    const catalog = await this.resolveUpstream().getCatalog(() => this.outboundUserAgent(), { preferLocal: true });
     const entry = modelsDevEntry(catalog, catalogId);
     if (entry === undefined) {
       throw new Error2(
@@ -104,7 +116,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     options: ImportModelsDevProviderOptions,
   ): Promise<ImportModelsDevProviderResult> {
     const { catalogId } = options;
-    const catalog = await getModelsDevCatalog(await this.outboundUserAgent());
+    const catalog = await this.resolveUpstream().getCatalog(await this.outboundUserAgent());
     const entry = modelsDevEntry(catalog, catalogId);
     if (entry === undefined) {
       throw new Error2(
@@ -195,7 +207,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     let entries: Record<string, CustomRegistryProviderEntry>;
     try {
       entries = await fetchCustomRegistry(source, {
-        fetchImpl: upstreamFetch(),
+        fetchImpl: this.resolveUpstream().upstreamFetch(),
         userAgent: await this.outboundUserAgent(),
         signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
       });
@@ -229,11 +241,11 @@ export class ModelsDevImportService implements IModelsDevImportService {
     const surviving = new Set(Object.values(entries).map((entry) => entry.id));
     for (const [providerId, provider] of Object.entries(removed.providers)) {
       if (surviving.has(providerId)) continue;
-      if (!isRecord(provider)) continue;
+      if (!isPlainObject(provider)) continue;
       if (provider['oauth'] !== undefined) continue;
       const existingSource = provider['source'];
       if (
-        isRecord(existingSource) &&
+        isPlainObject(existingSource) &&
         existingSource['kind'] === 'apiJson' &&
         existingSource['url'] === url
       ) {
@@ -293,18 +305,14 @@ function registryKeyFromExisting(
   url: string,
 ): string | undefined {
   for (const provider of Object.values(providers)) {
-    if (!isRecord(provider)) continue;
+    if (!isPlainObject(provider)) continue;
     const source = provider['source'];
-    if (isRecord(source) && source['kind'] === 'apiJson' && source['url'] === url) {
+    if (isPlainObject(source) && source['kind'] === 'apiJson' && source['url'] === url) {
       const key = source['apiKey'];
       if (typeof key === 'string' && key.length > 0) return key;
     }
   }
   return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function truncateUpstreamMessage(err: unknown, limit = 300): string {

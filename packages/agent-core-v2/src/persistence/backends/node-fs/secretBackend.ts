@@ -1,10 +1,12 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeSync, closeSync } from 'node:fs';
-import { mkdir, open, readFile, rename, rm, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdir, readdir, readFile, rm, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { dirname, join } from 'pathe';
+
+import { atomicWrite, atomicWriteSync, syncDir, syncDirSync } from '#/_base/utils/fs';
 
 export interface AsyncSecretEntry {
   setPassword(value: string): Promise<void>;
@@ -60,7 +62,7 @@ parentPort.on('message', async ({ signal, payload, url, method, token, body }) =
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       body,
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(2500),
     });
     const text = await response.text();
     write({ ok: true, status: response.status, text });
@@ -134,54 +136,15 @@ function accountFilePath(homeDir: string, service: string, account: string): str
 async function writeAtomicSecretFile(path: string, envelope: StoredSecretEnvelope): Promise<void> {
   const directory = dirname(path);
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, 'wx', 0o600);
-  try {
-    await handle.chmod(0o600);
-    await handle.writeFile(JSON.stringify(envelope), 'utf8');
-  } catch (error) {
-    await handle.close();
-    await unlink(temporary).catch(() => undefined);
-    throw error;
-  }
-  await handle.close();
-  try {
-    await rename(temporary, path);
-  } catch (error) {
-    await unlink(temporary).catch(() => undefined);
-    throw error;
-  }
+  await atomicWrite(path, JSON.stringify(envelope), undefined, 0o600, undefined, true);
+  await syncDir(directory);
 }
 
 function writeAtomicSecretFileSync(path: string, envelope: StoredSecretEnvelope): void {
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  const fd = openSync(temporary, 'wx', 0o600);
-  try {
-    try {
-      chmodSync(temporary, 0o600);
-    } catch {
-    }
-    writeSync(fd, JSON.stringify(envelope), undefined, 'utf8');
-  } catch (error) {
-    closeSync(fd);
-    try {
-      unlinkSync(temporary);
-    } catch {
-    }
-    throw error;
-  }
-  closeSync(fd);
-  try {
-    renameSync(temporary, path);
-  } catch (error) {
-    try {
-      unlinkSync(temporary);
-    } catch {
-    }
-    throw error;
-  }
+  atomicWriteSync(path, JSON.stringify(envelope), 0o600);
+  syncDirSync(directory);
 }
 
 async function readSecretFile(path: string, expectedAccount: string): Promise<string | undefined> {
@@ -246,7 +209,7 @@ async function brokerRequestAsync(
       authorization: `Bearer ${broker.token}`,
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(10_000),
   });
   return { status: response.status, text: await response.text() };
@@ -270,7 +233,7 @@ function brokerRequestSync(
     token: broker.token,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const waited = Atomics.wait(signal, 0, 0, 12_000);
+  const waited = Atomics.wait(signal, 0, 0, 3_000);
   if (waited !== 'ok') {
     void worker.terminate().catch(() => undefined);
     if (syncHttpWorker === worker) syncHttpWorker = undefined;
@@ -355,13 +318,12 @@ function createBrokerSyncEntry(broker: BrokerEndpoints, service: string, account
   };
 }
 
-function listBrokerAccountsSync(broker: BrokerEndpoints, service: string): string[] {
-  const res = brokerRequestSync(broker, `/v1/secret/list?service=${encodeURIComponent(service)}`, 'GET');
-  if (res.status === 404) return [];
-  if (res.status < 200 || res.status >= 300) {
-    throw new Error(`Secret broker list failed with status ${res.status}`);
+function parseBrokerAccountList(status: number, text: string): string[] {
+  if (status === 404) return [];
+  if (status < 200 || status >= 300) {
+    throw new Error(`Secret broker list failed with status ${status}`);
   }
-  const parsed = JSON.parse(res.text) as {
+  const parsed = JSON.parse(text) as {
     readonly accounts?: unknown;
     readonly entries?: unknown;
   };
@@ -377,6 +339,39 @@ function listBrokerAccountsSync(broker: BrokerEndpoints, service: string): strin
     return parsed.entries.map((item) => (item as { account: string }).account);
   }
   throw new Error('Secret broker returned invalid account list');
+}
+
+function listBrokerAccountsSync(broker: BrokerEndpoints, service: string): string[] {
+  const res = brokerRequestSync(broker, `/v1/secret/list?service=${encodeURIComponent(service)}`, 'GET');
+  return parseBrokerAccountList(res.status, res.text);
+}
+
+async function listBrokerAccountsAsync(broker: BrokerEndpoints, service: string): Promise<string[]> {
+  const res = await brokerRequestAsync(broker, `/v1/secret/list?service=${encodeURIComponent(service)}`, 'GET');
+  return parseBrokerAccountList(res.status, res.text);
+}
+
+async function listSecretAccountsAsync(homeDir: string, service: string): Promise<string[]> {
+  const directory = serviceDirectory(homeDir, service);
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const accounts: string[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.secret.json')) continue;
+    try {
+      const parsed = JSON.parse(await readFile(join(directory, name), 'utf8')) as Partial<StoredSecretEnvelope>;
+      if (typeof parsed.account === 'string' && typeof parsed.value === 'string') {
+        accounts.push(parsed.account);
+      }
+    } catch {
+    }
+  }
+  return accounts;
 }
 
 function createFileAsyncEntry(homeDir: string, service: string, account: string): AsyncSecretEntry {
@@ -487,6 +482,32 @@ export function createSyncSecretEntry(
     }
   }
   return createFileSyncEntry(resolveCredentialsHome(config), service, account);
+}
+
+export function isBrokerSecretBackendActive(config: SecretBackendConfig = {}): boolean {
+  const env = config.env ?? process.env;
+  const backendMode = env['KIKI_SECRET_BACKEND']?.trim();
+  if (backendMode === 'file') return false;
+  return resolveBrokerEndpoints(env) !== undefined;
+}
+
+export async function listAsyncSecretAccounts(
+  service: string,
+  config: SecretBackendConfig = {},
+): Promise<string[]> {
+  const env = config.env ?? process.env;
+  const backendMode = env['KIKI_SECRET_BACKEND']?.trim();
+  const broker = backendMode === 'file' ? undefined : resolveBrokerEndpoints(env);
+  if (broker !== undefined) {
+    return listBrokerAccountsAsync(broker, service);
+  }
+  if (!isMobileSecretBrokerMode(backendMode) && backendMode !== 'file') {
+    const native = loadNativeKeyring();
+    if (native !== undefined) {
+      return native.findCredentials(service).map(({ account }) => account);
+    }
+  }
+  return listSecretAccountsAsync(resolveCredentialsHome(config), service);
 }
 
 export function listSyncSecretAccounts(

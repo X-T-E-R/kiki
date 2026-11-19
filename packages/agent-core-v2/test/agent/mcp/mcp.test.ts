@@ -1095,18 +1095,81 @@ describe('AgentMcpService', () => {
     expect(reconnects).toBe(0);
   });
 
-  it('reconnects the server and retries the call once when the transport dies', async () => {
+  it('does not replay a non-idempotent MCP tool call after indeterminate transport loss', async () => {
     const manager = new FakeMcpManager();
-    const deadClient = throwingClient(fakeMcpClient(), () => manager.fail('s'));
+    const counter = { calls: 0 };
+    const deadClient = countingClient(
+      throwingClient(fakeMcpClient(), () => manager.fail('s')),
+      counter,
+    );
+    let reconnects = 0;
+    manager.reconnectHandler = async () => { reconnects += 1; };
+    manager.setResolved('s', deadClient, await discoverTools(deadClient));
+    createService(manager);
+    manager.connect('s');
+
+    const echo = ix.get(IAgentToolRegistryService).resolve('mcp__s__echo');
+    await expect(executeTool(echo!, {
+      turnId: 1,
+      toolCallId: 'tc-non-idempotent',
+      args: { text: 'transfer funds' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow(/outcome is unknown.*not replayed/i);
+    expect(counter.calls).toBe(1);
+    expect(reconnects).toBe(0);
+  });
+
+  it('reconnects and retries an idempotentHint tool call when the transport dies', async () => {
+    const manager = new FakeMcpManager();
+    const idempotentDefs: MCPToolDefinition[] = [
+      {
+        name: 'echo',
+        description: 'Idempotent echo',
+        inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+        annotations: { idempotentHint: true },
+      },
+    ];
+    const deadClient = throwingClient(fakeMcpClient(idempotentDefs), () => manager.fail('s'));
     const freshCounter = { calls: 0 };
-    const freshClient = countingClient(fakeMcpClient(), freshCounter);
+    const freshClient = countingClient(fakeMcpClient(idempotentDefs), freshCounter);
     let reconnects = 0;
     manager.reconnectHandler = async (name) => {
       reconnects += 1;
-      manager.setResolved(name, freshClient, await discoverTools(freshClient));
+      manager.setResolved(name, freshClient, await discoverTools(freshClient), undefined, idempotentDefs);
       manager.connect(name);
     };
-    manager.setResolved('s', deadClient, await discoverTools(deadClient));
+    manager.setResolved('s', deadClient, await discoverTools(deadClient), undefined, idempotentDefs);
+    createService(manager);
+    manager.connect('s');
+
+    const echo = ix.get(IAgentToolRegistryService).resolve('mcp__s__echo');
+    const result = await executeTool(echo!, {
+      turnId: 1,
+      toolCallId: 'tc-idempotent-reconnect',
+      args: { text: 'safe retry' },
+      signal: new AbortController().signal,
+    });
+    expect(result.output).toBe('safe retry');
+    expect(freshCounter.calls).toBe(1);
+    expect(reconnects).toBe(1);
+  });
+
+  it('reconnects the server and retries the call once when the transport dies', async () => {
+    const manager = new FakeMcpManager();
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
+    const deadClient = throwingClient(fakeMcpClient(readOnlyDefs), () => manager.fail('s'));
+    const freshCounter = { calls: 0 };
+    const freshClient = countingClient(fakeMcpClient(readOnlyDefs), freshCounter);
+    let reconnects = 0;
+    manager.reconnectHandler = async (name) => {
+      reconnects += 1;
+      manager.setResolved(name, freshClient, await discoverTools(freshClient), undefined, readOnlyDefs);
+      manager.connect(name);
+    };
+    manager.setResolved('s', deadClient, await discoverTools(deadClient), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 
@@ -1221,11 +1284,15 @@ describe('AgentMcpService', () => {
 
   it('rethrows the original error when the server does not come back', async () => {
     const manager = new FakeMcpManager();
-    const deadClient = throwingClient(fakeMcpClient(), () => manager.fail('s'));
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
+    const deadClient = throwingClient(fakeMcpClient(readOnlyDefs), () => manager.fail('s'));
     manager.reconnectHandler = async (name) => {
       manager.fail(name);
     };
-    manager.setResolved('s', deadClient, await discoverTools(deadClient));
+    manager.setResolved('s', deadClient, await discoverTools(deadClient), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 
@@ -1243,11 +1310,15 @@ describe('AgentMcpService', () => {
 
   it('reports both errors when the reconnect attempt itself fails', async () => {
     const manager = new FakeMcpManager();
-    const deadClient = throwingClient(fakeMcpClient(), () => manager.fail('s'));
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
+    const deadClient = throwingClient(fakeMcpClient(readOnlyDefs), () => manager.fail('s'));
     manager.reconnectHandler = async () => {
       throw new Error('spawn failed');
     };
-    manager.setResolved('s', deadClient, await discoverTools(deadClient));
+    manager.setResolved('s', deadClient, await discoverTools(deadClient), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 
@@ -1294,15 +1365,19 @@ describe('AgentMcpService', () => {
 
   it('dedupes concurrent reconnects from parallel failing tool calls', async () => {
     const manager = new FakeMcpManager();
-    const deadClient = throwingClient(fakeMcpClient(), () => manager.fail('s'));
-    const freshClient = fakeMcpClient();
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
+    const deadClient = throwingClient(fakeMcpClient(readOnlyDefs), () => manager.fail('s'));
+    const freshClient = fakeMcpClient(readOnlyDefs);
     let reconnects = 0;
     manager.reconnectHandler = async (name) => {
       reconnects += 1;
-      manager.setResolved(name, freshClient, await discoverTools(freshClient));
+      manager.setResolved(name, freshClient, await discoverTools(freshClient), undefined, readOnlyDefs);
       manager.connect(name);
     };
-    manager.setResolved('s', deadClient, await discoverTools(deadClient));
+    manager.setResolved('s', deadClient, await discoverTools(deadClient), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 
@@ -1333,17 +1408,21 @@ describe('AgentMcpService', () => {
     const manager = new FakeMcpManager();
     const reconnectStarted = deferred<void>();
     const reconnectReleased = deferred<void>();
-    const deadClient = throwingClient(fakeMcpClient(), () => manager.fail('s'));
-    const freshClient = fakeMcpClient();
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
+    const deadClient = throwingClient(fakeMcpClient(readOnlyDefs), () => manager.fail('s'));
+    const freshClient = fakeMcpClient(readOnlyDefs);
     let reconnects = 0;
     manager.reconnectHandler = async (name) => {
       reconnects += 1;
       reconnectStarted.resolve();
       await reconnectReleased.promise;
-      manager.setResolved(name, freshClient, await discoverTools(freshClient));
+      manager.setResolved(name, freshClient, await discoverTools(freshClient), undefined, readOnlyDefs);
       manager.connect(name);
     };
-    manager.setResolved('s', deadClient, await discoverTools(deadClient));
+    manager.setResolved('s', deadClient, await discoverTools(deadClient), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 
@@ -1375,19 +1454,23 @@ describe('AgentMcpService', () => {
 
   it('reconnects and retries when the call fails with a raw transport error the manager did not observe', async () => {
     const manager = new FakeMcpManager();
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
     const deadClient = throwingClient(
-      fakeMcpClient(),
+      fakeMcpClient(readOnlyDefs),
       undefined,
       () => new TypeError('fetch failed'),
     );
-    const freshClient = fakeMcpClient();
+    const freshClient = fakeMcpClient(readOnlyDefs);
     let reconnects = 0;
     manager.reconnectHandler = async (name) => {
       reconnects += 1;
-      manager.setResolved(name, freshClient, await discoverTools(freshClient));
+      manager.setResolved(name, freshClient, await discoverTools(freshClient), undefined, readOnlyDefs);
       manager.connect(name);
     };
-    manager.setResolved('s', deadClient, await discoverTools(deadClient));
+    manager.setResolved('s', deadClient, await discoverTools(deadClient), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 
@@ -1471,7 +1554,11 @@ describe('AgentMcpService', () => {
 
   it('retries a transient transport failure in place without reconnecting', async () => {
     const manager = new FakeMcpManager();
-    const base = fakeMcpClient();
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
+    const base = fakeMcpClient(readOnlyDefs);
     let calls = 0;
     const flakyClient: MCPClient = {
       listTools: () => base.listTools(),
@@ -1486,7 +1573,7 @@ describe('AgentMcpService', () => {
     manager.reconnectHandler = async () => {
       reconnects += 1;
     };
-    manager.setResolved('s', flakyClient, await discoverTools(flakyClient));
+    manager.setResolved('s', flakyClient, await discoverTools(flakyClient), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 
@@ -1506,7 +1593,11 @@ describe('AgentMcpService', () => {
 
   it('reconnects when the transport failure persists past a successful probe', async () => {
     const manager = new FakeMcpManager();
-    const base = fakeMcpClient();
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
+    const base = fakeMcpClient(readOnlyDefs);
     let calls = 0;
     const deadClient: MCPClient = {
       listTools: () => base.listTools(),
@@ -1516,14 +1607,14 @@ describe('AgentMcpService', () => {
         throw new TypeError('fetch failed');
       },
     };
-    const freshClient = fakeMcpClient();
+    const freshClient = fakeMcpClient(readOnlyDefs);
     let reconnects = 0;
     manager.reconnectHandler = async (name) => {
       reconnects += 1;
-      manager.setResolved(name, freshClient, await discoverTools(freshClient));
+      manager.setResolved(name, freshClient, await discoverTools(freshClient), undefined, readOnlyDefs);
       manager.connect(name);
     };
-    manager.setResolved('s', deadClient, await discoverTools(deadClient));
+    manager.setResolved('s', deadClient, await discoverTools(deadClient), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 
@@ -1543,7 +1634,11 @@ describe('AgentMcpService', () => {
 
   it('abandons the retry when the call is aborted during the liveness probe', async () => {
     const manager = new FakeMcpManager();
-    const base = fakeMcpClient();
+    const readOnlyDefs = (await fakeMcpClient().listTools()).map((tool) => ({
+      ...tool,
+      annotations: { readOnlyHint: true },
+    }));
+    const base = fakeMcpClient(readOnlyDefs);
     const probeStarted = deferred<void>();
     const releaseProbe = deferred<void>();
     const client: MCPClient = {
@@ -1560,7 +1655,7 @@ describe('AgentMcpService', () => {
     manager.reconnectHandler = async () => {
       reconnects += 1;
     };
-    manager.setResolved('s', client, await discoverTools(client));
+    manager.setResolved('s', client, await discoverTools(client), undefined, readOnlyDefs);
     createService(manager);
     manager.connect('s');
 

@@ -308,22 +308,26 @@ function createAbortError(): DOMException {
   return new DOMException('The operation was aborted.', 'AbortError');
 }
 
-async function abortPromise(signal: AbortSignal | undefined): Promise<never> {
+async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (signal === undefined) {
-    return new Promise(() => {});
+    return promise;
   }
-  if (signal.aborted) {
-    throw createAbortError();
-  }
-  return new Promise((_, reject) => {
-    signal.addEventListener(
-      'abort',
-      () => {
-        reject(createAbortError());
-      },
-      { once: true },
-    );
+  let onAbort = (): void => {};
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      reject(createAbortError());
+    };
+    if (signal.aborted) {
+      onAbort();
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 function messageToGoogleGenAI(message: Message): GoogleContent {
@@ -1131,10 +1135,10 @@ export class GoogleGenAIChatProvider implements ChatProvider {
         const signal = options?.signal === undefined
           ? streamController.signal
           : AbortSignal.any([options.signal, streamController.signal]);
-        const openStream = async (continuationToken?: string): Promise<AsyncGenerator<Record<string, unknown>>> => await Promise.race([
+        const openStream = async (continuationToken?: string): Promise<AsyncGenerator<Record<string, unknown>>> => raceAbort(
           models.generateContentStream({ ...params, config: { ...config, abortSignal: signal, continuationToken } }),
-          abortPromise(signal),
-        ]);
+          signal,
+        );
         const stream = await openStream(options?.googleContinuationToken);
         return new GoogleGenAIStreamedMessage(
           stream as AsyncIterable<Record<string, unknown>>,
@@ -1145,10 +1149,10 @@ export class GoogleGenAIChatProvider implements ChatProvider {
         );
       }
 
-      const openResponse = async (continuationToken?: string): Promise<Record<string, unknown>> => await Promise.race([
-        models.generateContent({ ...params, config: { ...config, continuationToken } }),
-        abortPromise(options?.signal),
-      ]) as Record<string, unknown>;
+      const openResponse = async (continuationToken?: string): Promise<Record<string, unknown>> => await raceAbort(
+        models.generateContent({ ...params, config: { ...config, abortSignal: options?.signal, continuationToken } }),
+        options?.signal,
+      ) as Record<string, unknown>;
       const response = await openResponse(options?.googleContinuationToken);
       return new GoogleGenAIStreamedMessage(
         response as Record<string, unknown>,

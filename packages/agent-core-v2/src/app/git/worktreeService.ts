@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IEventService } from '#/app/event/event';
@@ -53,8 +54,8 @@ export class WorktreeService implements IWorktreeService {
   ) {
     void this.config.ready.then(() => {
       if (this.config.get<WorktreeConfig | undefined>(WORKTREE_SECTION)?.cleanup.auto !== true) return;
-      void this.gc(false).catch(() => undefined);
-      this.timer = setInterval(() => void this.gc(false).catch(() => undefined), 6 * 60 * 60 * 1000);
+      void this.gc(false).catch(onUnexpectedError);
+      this.timer = setInterval(() => void this.gc(false).catch(onUnexpectedError), 6 * 60 * 60 * 1000);
       this.timer.unref?.();
     });
   }

@@ -62,35 +62,43 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   readonly onDidChange = this.emitter.event;
   private readonly cursorSalt = randomUUID();
   constructor(@IMemoryPersistence private readonly persistence: IMemoryPersistence, @IMemoryScopes private readonly scopes: IMemoryScopes) { super(); }
-  private async view(scope: MemoryScope): Promise<{ base: string; view: MemoryReadView }> {
+  private async pointView(scope: MemoryScope, ids: readonly string[], generation?: number): Promise<{ base: string; view: MemoryReadView }> {
     const base = await this.scopes.resolve(scope);
-    return { base, view: await this.persistence.read([base]) };
-  }
-  private async pointView(scope: MemoryScope, ids: readonly string[]): Promise<MemoryReadView> {
-    const base = await this.scopes.resolve(scope);
-    return this.persistence.readIds === undefined ? this.persistence.read([base]) : this.persistence.readIds(base, ids);
+    const view = this.persistence.readIds === undefined
+      ? await this.persistence.read([base], generation)
+      : await this.persistence.readIds(base, ids, generation);
+    return { base, view };
   }
   async checkpoint(): Promise<string> { return String((await this.persistence.read([])).generation); }
   async snapshot(scopes: readonly MemoryScope[]): ReturnType<ISqliteMemoryStore['snapshot']> {
     const bases = await Promise.all(scopes.map((scope) => this.scopes.resolve(scope)));
-    const view = await this.persistence.read(bases);
+    const view = await this.persistence.read(bases, undefined, { excludeTombstones: true });
     return { generation: String(view.generation), entries: view.objects.flatMap((object) => {
       const scope = scopes[bases.indexOf(object.scope)];
       return scope === undefined || object.entry === null ? [] : [{ ...object.entry, scope }];
     }) };
   }
   async inventory(scope: MemoryScope): ReturnType<IMemoryStore['inventory']> {
-    const { view } = await this.view(scope);
+    const base = await this.scopes.resolve(scope);
+    const view = await this.persistence.read([base], undefined, { excludeTombstones: true });
     return { entries: view.objects.flatMap((object) => object.entry === null ? [] : [object.entry]), complete: true, warnings: [], fingerprint: String(view.generation) };
   }
   async list(scope: MemoryScope, includeInactive = false): ReturnType<IMemoryStore['list']> {
-    return (await this.inventory(scope)).entries.filter((entry) => includeInactive || entry.status === 'active' || entry.status === 'pending').toSorted((a, b) => b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id));
+    const base = await this.scopes.resolve(scope);
+    const view = await this.persistence.read([base], undefined, {
+      excludeTombstones: true,
+      statuses: includeInactive ? undefined : ['active', 'pending'],
+    });
+    return view.objects
+      .flatMap((object) => object.entry === null ? [] : [object.entry])
+      .filter((entry) => includeInactive || entry.status === 'active' || entry.status === 'pending')
+      .toSorted((a, b) => b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id));
   }
   async get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined> {
-    return (await this.pointView(scope, [id])).objects.find((object) => object.id === id)?.entry ?? undefined;
+    return (await this.pointView(scope, [id])).view.objects.find((object) => object.id === id)?.entry ?? undefined;
   }
   async getMany(scope: MemoryScope, ids: readonly string[]): Promise<ReadonlyMap<string, MemoryEntry>> {
-    return new Map((await this.pointView(scope, ids)).objects.flatMap((object) => object.entry === null || !ids.includes(object.id) ? [] : [[object.id, object.entry] as const]));
+    return new Map((await this.pointView(scope, ids)).view.objects.flatMap((object) => object.entry === null || !ids.includes(object.id) ? [] : [[object.id, object.entry] as const]));
   }
   async getRevision(scope: MemoryScope, id: string, revision: string): Promise<MemoryEntry | undefined> { return this.persistence.revision(await this.scopes.resolve(scope), id, revision); }
   async provenance(scope: MemoryScope, id: string): Promise<MemoryProvenance> { return this.persistence.provenance(await this.scopes.resolve(scope), id); }
@@ -115,9 +123,18 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     if (unit !== undefined && (!unit.id.trim() || unit.id.length > 1000 || !unit.payload || unit.payload.length > 64 * 1024)) fail('invalid_input', 'Source ingestion requires one stable source unit and a complete source payload');
     const admitted = unit === undefined ? undefined : await this.persistence.source(base, sourceId);
     if (admitted?.state === 'forgotten') fail('inactive_target', 'This exact source unit has been forgotten');
-    const view = await this.persistence.read([base]);
+    const initialIds: string[] = [];
+    if (original.id !== undefined) initialIds.push(original.id);
+    if (original.covered_by !== undefined) initialIds.push(original.covered_by.id);
+    if (admitted?.state === 'registered') initialIds.push(...admitted.objectIds);
+    const pointSupported = this.persistence.readIds !== undefined && this.persistence.scopeSummary !== undefined;
+    let view: MemoryReadView;
+    if (pointSupported) {
+      view = await this.persistence.readIds!(base, initialIds);
+    } else {
+      view = await this.persistence.read([base]);
+    }
     const objects = new Map(view.objects.map((object) => [object.id, object]));
-    const entries = view.objects.flatMap((object) => object.entry === null ? [] : [object.entry]);
     if (unit !== undefined) {
       if (admitted?.state === 'registered') {
         if (admitted.source.payload !== unit.payload) fail('invalid_input', 'A changed source requires a new source revision identity');
@@ -127,6 +144,15 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     }
     let input = original;
     const candidate = input.id === undefined ? undefined : objects.get(input.id)?.entry ?? undefined;
+    if (pointSupported && candidate !== undefined) {
+      const extraIds: string[] = [];
+      if (candidate.supersedes !== undefined && !objects.has(candidate.supersedes)) extraIds.push(candidate.supersedes);
+      if (candidate.covered_by !== undefined && !objects.has(candidate.covered_by.id)) extraIds.push(candidate.covered_by.id);
+      if (extraIds.length > 0) {
+        const extra = await this.persistence.readIds!(base, extraIds, view.generation);
+        for (const object of extra.objects) objects.set(object.id, object);
+      }
+    }
     if (input.action !== 'create' && !input.expectedRevision) throw new MemoryDomainError('missing_revision', 'Memory revision is required', 'Read the complete target and copy its latest revision.');
     if (input.action === 'create' ? input.id !== undefined || input.expectedRevision !== undefined : input.id === undefined) fail('invalid_input', 'Existing targets require ID and revision; create accepts neither');
     if (input.action !== 'create' && (candidate === undefined || candidate.revision !== input.expectedRevision)) fail('revision_conflict', 'Memory revision conflict');
@@ -175,15 +201,31 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     for (const alias of aliases) {
       const known = await this.persistence.source(base, alias);
       if (known.state === 'forgotten') fail('inactive_target', 'This exact source unit has been forgotten');
-      if (known.state === 'registered' && input.action === 'create') return this.retainSource(known.objectIds, view);
+      if (known.state === 'registered' && input.action === 'create') {
+        const aliasView = pointSupported ? await this.persistence.readIds!(base, known.objectIds, view.generation) : view;
+        return this.retainSource(known.objectIds, aliasView);
+      }
       if (known.state === 'registered' && unit !== undefined && !known.objectIds.includes(input.id!)) fail('invalid_input', 'This source unit belongs to another Memory lineage');
     }
     if (!create && !proposal && accepted === undefined && old !== undefined && same(old, entry)) return { entry: old, operationId: null, outcome: 'unchanged' };
-    const duplicate = input.pending ? entries.find((item) => item.status === 'pending' && item.supersedes === entry.supersedes && item.supersedes_revision === entry.supersedes_revision && item.pending_action === entry.pending_action && same(item, entry)) : undefined;
-    if (duplicate !== undefined) return { entry: duplicate, operationId: null, outcome: 'pending' };
-    if (input.action === 'create' && entries.some((item) => item.status === 'active' && item.title.toLowerCase() === title.toLowerCase())) fail('duplicate_title', 'Similar memory already exists; update or supersede it');
+    if (input.pending) {
+      const pendingView = pointSupported
+        ? await this.persistence.read([base], view.generation, { excludeTombstones: true, statuses: ['pending'] })
+        : view;
+      const pendingEntries = pendingView.objects.flatMap((object) => object.entry === null ? [] : [object.entry]);
+      const duplicate = pendingEntries.find((item) => item.status === 'pending' && item.supersedes === entry.supersedes && item.supersedes_revision === entry.supersedes_revision && item.pending_action === entry.pending_action && same(item, entry));
+      if (duplicate !== undefined) return { entry: duplicate, operationId: null, outcome: 'pending' };
+    }
+    const summary = pointSupported ? await this.persistence.scopeSummary!(base, input.action === 'create' ? title.toLowerCase() : undefined) : undefined;
+    if (summary !== undefined && summary.generation !== view.generation) fail('revision_conflict', 'Memory commit generation changed; reread and reconcile');
+    if (input.action === 'create') {
+      const hasDuplicateTitle = summary !== undefined
+        ? summary.duplicateTitle
+        : view.objects.some((object) => object.entry !== null && object.entry.status === 'active' && object.entry.title.toLowerCase() === title.toLowerCase());
+      if (hasDuplicateTitle) fail('duplicate_title', 'Similar memory already exists; update or supersede it');
+    }
     const edits: MemoryObjectEdit[] = [];
-    const add = (id: string, value: MemoryEntry | null): void => { edits.push({ scope: base, id, expectedRevision: objects.get(id)?.revision ?? null, entry: value, revision: value?.revision ?? newRevision() }); };
+    const add = (editId: string, value: MemoryEntry | null): void => { edits.push({ scope: base, id: editId, expectedRevision: objects.get(editId)?.revision ?? null, entry: value, revision: value?.revision ?? newRevision() }); };
     let predecessor: MemoryEntry | undefined;
     if (!input.pending) {
       predecessor = input.action === 'supersede' ? old : candidate?.status === 'pending' && candidate.pending_action === undefined && candidate.supersedes !== undefined ? objects.get(candidate.supersedes)?.entry ?? undefined : undefined;
@@ -192,12 +234,25 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     }
     add(id, entry);
     if (accepted !== undefined) add(accepted.id, null);
-    const active = new Map(entries.filter((item) => item.status === 'active').map((item) => [item.id, item]));
-    for (const edit of edits) if (edit.entry?.status === 'active') active.set(edit.id, edit.entry); else active.delete(edit.id);
-    if (active.size > 300) fail('invalid_input', 'Memory scope is full; merge existing entries');
+    let activeCount: number;
+    if (summary !== undefined) {
+      activeCount = summary.activeCount;
+      for (const edit of edits) {
+        const wasActive = objects.get(edit.id)?.entry?.status === 'active';
+        const willBeActive = edit.entry?.status === 'active';
+        if (!wasActive && willBeActive) activeCount += 1;
+        else if (wasActive && !willBeActive) activeCount -= 1;
+      }
+    } else {
+      const active = new Map(view.objects.flatMap((object) => object.entry !== null && object.entry.status === 'active' ? [[object.entry.id, object.entry] as const] : []));
+      for (const edit of edits) if (edit.entry?.status === 'active') active.set(edit.id, edit.entry); else active.delete(edit.id);
+      activeCount = active.size;
+    }
+    if (activeCount > 300) fail('invalid_input', 'Memory scope is full; merge existing entries');
+    const viewForSave: MemoryReadView = { generation: view.generation, objects: [...objects.values()] };
     const result: MemoryPutResult = { entry, operationId, outcome: entry.status === 'pending' ? 'pending' : 'applied', warnings: changed && basis?.kind === 'unknown' ? ['content changed without refreshed attribution'] : undefined };
     original.signal?.throwIfAborted();
-    await this.save(original.scope, view, { operationId, request, expectedGeneration: view.generation, edits,
+    await this.save(original.scope, viewForSave, { operationId, request, expectedGeneration: view.generation, edits,
       sources: [{ id: sourceId, scope: base, objectId: id, payload: unit?.payload ?? JSON.stringify({ writer: input.source, basis }), locator: unit?.locator ?? basis?.refs?.[0], learnedAt: now, aliases, signatures }],
       sourceTransfers: [predecessor, accepted, input.pending && (proposal || input.action === 'supersede') ? old : undefined].flatMap((prior) => prior === undefined ? [] : [{ scope: base, from: prior.id, to: id }]),
       adjudications: input.source.writer === 'user' && !input.pending ? edits.filter((edit) => edit.entry !== null).map((edit) => ({ id: `decision:${operationId}:${edit.id}`, scope: base, objectId: edit.id, kind: archive ? 'retirement' as const : 'correction' as const, revision: edit.revision, reason: entry.reason, sourceIds: [sourceId] })) : undefined,
@@ -221,7 +276,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     for (const edit of commit.edits) this.emitter.fire({ scope, id: edit.id, operationId: commit.operationId, beforeStatus: view.objects.find((object) => object.id === edit.id)?.entry?.status, afterStatus: edit.entry?.status });
   }
   async delete(scope: MemoryScope, id: string, expectedRevision: string, writer: MemoryWriter = 'user'): Promise<string> {
-    const { base, view } = await this.view(scope);
+    const { base, view } = await this.pointView(scope, [id]);
     const old = view.objects.find((object) => object.id === id)?.entry;
     if (old === undefined || old === null || old.revision !== expectedRevision) fail('revision_conflict', 'Memory revision conflict');
     const operationId = randomUUID();
@@ -232,9 +287,9 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   }
   async journal(scope: MemoryScope, id?: string): ReturnType<IMemoryStore['journal']> { return this.persistence.journal(await this.scopes.resolve(scope), id); }
   async undo(scope: MemoryScope, operationId: string | null): Promise<MemoryEntry | undefined> {
-    const { base, view } = await this.view(scope);
     const records = (await this.journal(scope)).filter((record) => record.operationId === operationId);
     if (records.length === 0) fail('not_found', 'Memory operation not found');
+    const { base, view } = await this.pointView(scope, records.map((record) => record.id));
     const nextOperation = randomUUID();
     const edits = records.map((record): MemoryObjectEdit => {
       const current = view.objects.find((object) => object.id === record.id);
@@ -255,7 +310,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const related = new Set<string>();
     for (const id of ids) for (const relatedId of (await this.persistence.provenance(base, id)).relatedObjectIds) related.add(relatedId);
     if (related.size > 1000) fail('invalid_input', 'Memory source lineage exceeds the forget batch limit');
-    const view = await this.persistence.read([base]);
+    const { view } = await this.pointView(scope, [...related]);
     const targets = [...related].toSorted().map((id): MemoryForgetTarget => {
       const object = view.objects.find((item) => item.id === id);
       if (object === undefined) fail('not_found', 'Memory forget target is missing or already forgotten');
@@ -267,7 +322,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     if (!operationId || targets.length === 0 || targets.length > 1000 || new Set(targets.map((target) => target.id)).size !== targets.length) fail('invalid_input', 'Forget requires an operation ID and a nonempty exact target set');
     const request = JSON.stringify({ action: 'forget', scope, targets });
     if (await this.persistence.receipt(operationId, request) !== undefined) return;
-    const { base, view } = await this.view(scope);
+    const { base, view } = await this.pointView(scope, targets.map((target) => target.id));
     for (const target of targets) if (view.objects.find((object) => object.id === target.id)?.revision !== target.expectedRevision) fail('revision_conflict', 'Forget preview changed');
     await this.save(scope, view, { operationId, request, expectedGeneration: view.generation, edits: [], barriers: targets.map((target) => ({ scope: base, objectId: target.id, at: new Date().toISOString() })), result: { forgotten: targets.map((target) => target.id) } });
     for (const target of targets) this.emitter.fire({ scope, id: target.id, operationId });
@@ -279,7 +334,11 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const selected = scopes.filter((scope) => request.scope === undefined || request.scope === scope.kind);
     const bases = await Promise.all(selected.map((scope) => this.scopes.resolve(scope)));
     const generation = position.fingerprint === undefined ? undefined : Number(position.fingerprint);
-    const view = await this.persistence.read(bases, generation);
+    const view = await this.persistence.read(bases, generation, {
+      excludeTombstones: true,
+      statuses: request.statuses,
+      type: request.type,
+    });
     signal?.throwIfAborted();
     const entries = view.objects.flatMap((object) => {
       const scope = selected[bases.indexOf(object.scope)];
@@ -304,20 +363,171 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   }
   async deletePersonaNamespaces(personaId: string): ReturnType<IMemoryStore['deletePersonaNamespaces']> {
     const entries = await this.listPersonaEntries(personaId);
+    if (entries.length === 0) return { namespaceCount: 0, entryCount: 0 };
     const namespaces = new Set<string>();
-    for (const entry of entries) { await this.delete(entry.scope, entry.id, entry.revision); namespaces.add(JSON.stringify(entry.scope)); }
+    const resolvedByKey = new Map<string, { readonly scope: MemoryScope; readonly base: string }>();
+    for (const entry of entries) {
+      const key = JSON.stringify(entry.scope);
+      namespaces.add(key);
+      if (!resolvedByKey.has(key)) {
+        resolvedByKey.set(key, { scope: entry.scope, base: await this.scopes.resolve(entry.scope) });
+      }
+    }
+    const batchSize = 1000;
+    for (let offset = 0; offset < entries.length; offset += batchSize) {
+      const chunk = entries.slice(offset, offset + batchSize);
+      const generation = (await this.persistence.read([])).generation;
+      const operationId = randomUUID();
+      const at = new Date().toISOString();
+      const edits: MemoryObjectEdit[] = [];
+      const journal: NonNullable<MemoryCommit['journal']>[number][] = [];
+      for (const entry of chunk) {
+        const base = resolvedByKey.get(JSON.stringify(entry.scope))!.base;
+        edits.push({ scope: base, id: entry.id, expectedRevision: entry.revision, entry: null, revision: newRevision() });
+        journal.push({ scope: base, operationId, action: 'delete', id: entry.id, at, writer: 'user', before: JSON.stringify(entry), beforeRevision: entry.revision, afterRevision: null });
+      }
+      try {
+        await this.persistence.commit({
+          operationId,
+          request: JSON.stringify({ action: 'deletePersonaNamespaces', personaId, offset, ids: chunk.map((entry) => entry.id) }),
+          expectedGeneration: generation,
+          edits,
+          journal,
+          result: { operationId, count: chunk.length },
+        });
+      } catch (error) {
+        if ((error as { code?: string }).code === 'revision_conflict') fail('revision_conflict', (error as Error).message);
+        throw error;
+      }
+      for (const entry of chunk) {
+        this.emitter.fire({ scope: entry.scope, id: entry.id, operationId, beforeStatus: entry.status, afterStatus: undefined });
+      }
+    }
     return { namespaceCount: namespaces.size, entryCount: entries.length };
   }
   async importLorebook(scope: MemoryScope, entries: readonly MemoryLorebookEntry[], source: Partial<MemorySource> = {}): ReturnType<IMemoryStore['importLorebook']> {
     const result: { entry: MemoryEntry; operationId: string }[] = [];
+    if (entries.length === 0) return result;
     const base = await this.scopes.resolve(scope);
     const writer: MemorySource = { ...source, writer: 'import' };
+    const existingView = await this.persistence.read([base], undefined, { excludeTombstones: true, statuses: ['active'] });
+    const activeObjects = existingView.objects.filter((object) => object.entry !== null);
+    const activeTitles = new Set(activeObjects.map((object) => object.entry!.title.toLowerCase()));
+    let activeCount = activeObjects.length;
+    let generation = existingView.generation;
+    const pending: Array<{
+      readonly entry: MemoryEntry;
+      readonly sourceRecord: NonNullable<MemoryCommit['sources']>[number];
+      readonly edit: MemoryObjectEdit;
+    }> = [];
+    const seenSourceIds = new Set<string>();
+    const now = new Date().toISOString();
     for (const [index, item] of entries.entries()) {
-      const title = (item.title ?? item.name ?? `Lorebook entry ${index + 1}`).trim();
-      const unitId = memorySourceUnitId(base, writer, item.content, [], `lorebook:${title}`)!;
-      if ((await this.persistence.source(base, JSON.stringify([base, unitId]))).state === 'forgotten') continue;
-      const saved = await this.ingest({ mutation: { scope, type: 'reference', title, body: item.content, pinned: item.constant, reason: 'Imported from Character Card lorebook', source: writer }, unit: { id: unitId, payload: item.content, origin: 'owner' } });
-      if (saved.operationId !== null) result.push({ entry: saved.entry, operationId: saved.operationId });
+      const rawTitle = (item.title ?? item.name ?? `Lorebook entry ${index + 1}`).trim();
+      const title = redactMemorySecrets(rawTitle);
+      const body = redactMemorySecrets(item.content.trim());
+      if (!title || title.length > 200 || !body || body.length > 1500) fail('invalid_input', 'Memory type, title, complete body, or reason is invalid');
+      const unitId = memorySourceUnitId(base, writer, item.content, [], `lorebook:${rawTitle}`)!;
+      const sourceId = JSON.stringify([base, unitId]);
+      if (seenSourceIds.has(sourceId)) continue;
+      const unit: MemorySourceUnit = { id: unitId, payload: item.content, origin: 'owner' };
+      const admitted = await this.persistence.source(base, sourceId);
+      if (admitted.state === 'forgotten') continue;
+      if (admitted.state === 'registered') {
+        if (admitted.source.payload !== unit.payload) fail('invalid_input', 'A changed source requires a new source revision identity');
+        continue;
+      }
+      const id = `m_${randomUUID().replaceAll('-', '')}`;
+      const revision = newRevision();
+      const entry: MemoryEntry = {
+        id,
+        type: 'reference',
+        title,
+        body,
+        basis: undefined,
+        validity: undefined,
+        pinned: item.constant ?? false,
+        status: 'active',
+        created: now,
+        updated: now,
+        revision,
+        source: writer,
+        reason: 'Imported from Character Card lorebook',
+        supersedes: undefined,
+        supersedes_revision: undefined,
+        superseded_by: undefined,
+        pending_action: undefined,
+        covered_by: undefined,
+      };
+      const canonicalSource = memorySourceUnitId(base, entry.source, entry.body, entry.basis?.refs);
+      const signatures = canonicalSource === undefined ? [] : [canonicalSource];
+      let signatureForgotten = false;
+      for (const signature of signatures) {
+        if ((await this.persistence.source(base, signature)).state === 'forgotten') {
+          signatureForgotten = true;
+          break;
+        }
+      }
+      if (signatureForgotten) fail('inactive_target', 'This exact source unit has been forgotten');
+      const aliases = memoryIngestSourceIds(base, unit).filter((value) => value !== sourceId);
+      let aliasRegistered = false;
+      for (const alias of aliases) {
+        const known = await this.persistence.source(base, alias);
+        if (known.state === 'forgotten') fail('inactive_target', 'This exact source unit has been forgotten');
+        if (known.state === 'registered') {
+          aliasRegistered = true;
+          break;
+        }
+      }
+      if (aliasRegistered) continue;
+      const lowerTitle = title.toLowerCase();
+      if (activeTitles.has(lowerTitle)) fail('duplicate_title', 'Similar memory already exists; update or supersede it');
+      if (activeCount + 1 > 300) fail('invalid_input', 'Memory scope is full; merge existing entries');
+      activeTitles.add(lowerTitle);
+      activeCount += 1;
+      seenSourceIds.add(sourceId);
+      pending.push({
+        entry,
+        edit: { scope: base, id, expectedRevision: null, entry, revision },
+        sourceRecord: { id: sourceId, scope: base, objectId: id, payload: item.content, locator: undefined, learnedAt: now, aliases, signatures },
+      });
+    }
+    const batchSize = 1000;
+    for (let offset = 0; offset < pending.length; offset += batchSize) {
+      const chunk = pending.slice(offset, offset + batchSize);
+      const operationId = randomUUID();
+      const edits = chunk.map((item) => item.edit);
+      const sources = chunk.map((item) => item.sourceRecord);
+      const journal = chunk.map((item) => ({
+        scope: base,
+        operationId,
+        action: 'create',
+        id: item.entry.id,
+        at: now,
+        writer: writer.writer,
+        before: null,
+        beforeRevision: null,
+        afterRevision: item.entry.revision,
+      }));
+      try {
+        const receipt = await this.persistence.commit({
+          operationId,
+          request: JSON.stringify({ action: 'importLorebook', base, offset, ids: chunk.map((item) => item.entry.id) }),
+          expectedGeneration: generation,
+          edits,
+          sources,
+          journal,
+          result: { operationId, count: chunk.length },
+        });
+        generation = receipt.generation;
+      } catch (error) {
+        if ((error as { code?: string }).code === 'revision_conflict') fail('revision_conflict', (error as Error).message);
+        throw error;
+      }
+      for (const item of chunk) {
+        this.emitter.fire({ scope, id: item.entry.id, operationId, beforeStatus: undefined, afterStatus: item.entry.status });
+        result.push({ entry: item.entry, operationId });
+      }
     }
     return result;
   }

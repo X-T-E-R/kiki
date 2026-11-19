@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { ILogService } from '#/_base/log/log';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
@@ -77,6 +78,7 @@ export class PluginImportService extends Service implements IPluginImportService
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this._register(this.plugins.onWillChange((event) => {
@@ -221,7 +223,9 @@ export class PluginImportService extends Service implements IPluginImportService
   private launch(job: ImportJob) {
     const controller = new AbortController();
     this.owners.set(job.id, job.selection.pluginId);
-    const promise = this.run(job, controller.signal).finally(() => { this.active.delete(job.id); this.owners.delete(job.id); });
+    const promise = this.run(job, controller.signal)
+      .catch((error: unknown) => { this.log.warn('plugin import job failed to record its final state', { jobId: job.id, error }); })
+      .finally(() => { this.active.delete(job.id); this.owners.delete(job.id); });
     this.active.set(job.id, { controller, promise });
   }
   private async run(initial: ImportJob, signal: AbortSignal): Promise<void> {

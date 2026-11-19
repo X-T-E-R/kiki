@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmod, lstat, link, mkdir, open, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, realpath, rename, unlink } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
+import { atomicCreate, atomicWrite, syncDir } from '#/_base/utils/fs';
 import { acquireFileLock } from '#/persistence/backends/node-fs/fileLock';
 
 import { HomeRuntimeError } from './errors';
@@ -49,8 +50,8 @@ const TOKEN_BYTES = 32;
 const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 const STALE_PROBE_TIMEOUT_MS = 500;
 const OWNER_LOCK_FILENAME = 'owner.lock';
-const OWNER_RENAME_RETRIES = 8;
-const OWNER_RENAME_DELAY_MS = 25;
+const OWNER_LOCK_WAIT_MS = 5_000;
+const CORRUPT_SUFFIX = '.corrupt-';
 
 export function runtimeDirFor(canonicalHomeDir: string): string {
   return join(canonicalHomeDir, ...RUNTIME_HOST_REL_PARTS);
@@ -135,16 +136,24 @@ function mapRuntimeIoError(error: unknown, path: string, op: string): HomeRuntim
   return new HomeRuntimeError('runtime.io_failed', `runtime ${op} failed for ${path}`, { cause: error });
 }
 
-function readTrimmedFile(path: string): Promise<string | undefined> {
-  return readFile(path, 'utf8')
-    .then((text) => {
-      const trimmed = text.trim();
-      return trimmed.length > 0 ? trimmed : undefined;
-    })
-    .catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return undefined;
-      throw error;
-    });
+function readOptionalFile(path: string): Promise<string | undefined> {
+  return readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+}
+
+function validToken(text: string | undefined): string | undefined {
+  const trimmed = text?.trim();
+  return trimmed !== undefined && TOKEN_PATTERN.test(trimmed) ? trimmed : undefined;
+}
+
+function corruptBackupPath(path: string): string {
+  return `${path}${CORRUPT_SUFFIX}${Date.now()}-${randomUUID().slice(0, 8)}`;
+}
+
+function acquireOwnerLock(runtimeDir: string, owner: Readonly<Record<string, unknown>>): ReturnType<typeof acquireFileLock> {
+  return acquireFileLock(join(runtimeDir, OWNER_LOCK_FILENAME), { waitForMs: OWNER_LOCK_WAIT_MS, owner });
 }
 
 async function unlinkQuietly(path: string): Promise<void> {
@@ -155,66 +164,17 @@ async function unlinkQuietly(path: string): Promise<void> {
 
 async function chmodIfSupported(path: string, mode: number): Promise<void> {
   if (process.platform === 'win32') return;
-  await chmod(path, mode).catch(() => undefined);
+  await chmod(path, mode).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOTSUP' || error.code === 'EOPNOTSUPP' || error.code === 'ENOSYS' || error.code === 'EROFS') {
+      return;
+    }
+    throw error;
+  });
 }
 
 async function ensurePrivateDir(runtimeDir: string): Promise<void> {
   await mkdir(runtimeDir, { recursive: true, mode: MODE_DIR });
   await chmodIfSupported(runtimeDir, MODE_DIR);
-}
-
-async function installStable(pending: string, target: string): Promise<void> {
-  if (process.platform === 'android') {
-    try {
-      const content = await readFile(pending);
-      const handle = await open(target, 'wx', MODE_PRIVATE_FILE);
-      try { await handle.writeFile(content); await handle.sync(); }
-      catch (writeError) { await handle.close().catch(() => undefined); await unlinkQuietly(target); throw writeError; }
-      await handle.close();
-      await chmodIfSupported(target, MODE_PRIVATE_FILE);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    } finally {
-      await unlinkQuietly(pending);
-    }
-    return;
-  }
-  try {
-    await link(pending, target);
-    await unlinkQuietly(pending);
-    return;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'EEXIST') {
-      await unlinkQuietly(pending);
-      return;
-    }
-    if (process.platform === 'win32') {
-      try {
-        await rename(pending, target);
-      } catch (renameError) {
-        await unlinkQuietly(pending);
-        if ((renameError as NodeJS.ErrnoException).code !== 'EEXIST') throw renameError;
-      }
-      return;
-    }
-    if (code === 'ENOSYS' || code === 'ENOTSUP') {
-      try {
-        const content = await readFile(pending);
-        const handle = await open(target, 'wx', MODE_PRIVATE_FILE);
-        try { await handle.writeFile(content); await handle.sync(); }
-        catch (writeError) { await handle.close().catch(() => undefined); await unlinkQuietly(target); throw writeError; }
-        await handle.close();
-        await chmodIfSupported(target, MODE_PRIVATE_FILE);
-      } catch (directError) {
-        if ((directError as NodeJS.ErrnoException).code !== 'EEXIST') throw directError;
-      } finally {
-        await unlinkQuietly(pending);
-      }
-      return;
-    }
-    throw error;
-  }
 }
 
 export async function bootstrapHomeIdentity(
@@ -236,31 +196,59 @@ export async function bootstrapHomeIdentity(
 
 async function ensureToken(canonicalHomeDir: string): Promise<string> {
   const path = runtimeTokenPath(canonicalHomeDir);
-  const existing = await readTrimmedFile(path);
-  if (existing !== undefined) {
-    if (!TOKEN_PATTERN.test(existing)) {
-      throw new HomeRuntimeError('runtime.io_failed', `runtime token at ${path} is malformed`);
+  const existing = await readOptionalFile(path);
+  if (existing === undefined) {
+    try {
+      await atomicCreate(path, randomToken(), MODE_PRIVATE_FILE);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
-    return existing;
+    const created = validToken(await readOptionalFile(path));
+    if (created !== undefined) return created;
+  } else {
+    const valid = validToken(existing);
+    if (valid !== undefined) return valid;
   }
-  const pending = `${path}${STAGING_PREFIX}${process.pid}-${randomUUID()}`;
-  const value = randomToken();
-  try {
-    await writeFile(pending, value, { mode: MODE_PRIVATE_FILE, flag: 'wx' });
-    await chmodIfSupported(pending, MODE_PRIVATE_FILE);
-    await installStable(pending, path);
-  } catch (error) {
-    await unlinkQuietly(pending);
-    throw error;
-  }
-  return finalizeToken(path, value);
+  return repairToken(canonicalHomeDir, path);
 }
 
-async function finalizeToken(path: string, written: string): Promise<string> {
-  const value = await readTrimmedFile(path);
-  if (value !== undefined && TOKEN_PATTERN.test(value)) return value;
-  if (TOKEN_PATTERN.test(written)) return written;
-  throw new HomeRuntimeError('runtime.io_failed', `runtime token at ${path} is unreadable`);
+async function repairToken(canonicalHomeDir: string, path: string): Promise<string> {
+  const runtimeDir = runtimeDirFor(canonicalHomeDir);
+  const lock = await acquireOwnerLock(runtimeDir, { kind: 'runtime-token' });
+  try {
+    const current = await readOptionalFile(path);
+    const valid = validToken(current);
+    if (valid !== undefined) return valid;
+    if (current !== undefined) {
+      await atomicWrite(corruptBackupPath(path), current, undefined, MODE_PRIVATE_FILE);
+    }
+    await atomicWrite(path, randomToken(), undefined, MODE_PRIVATE_FILE);
+    await syncDir(runtimeDir);
+    const repaired = validToken(await readOptionalFile(path));
+    if (repaired !== undefined) return repaired;
+    throw new HomeRuntimeError('runtime.io_failed', `runtime token at ${path} is unreadable`);
+  } finally {
+    await lock.release().catch(() => undefined);
+  }
+}
+
+function parseOwnerRecord(raw: string): PersistedOwnerRecord | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object') return {};
+  const record = parsed as Record<string, unknown>;
+  return {
+    ownerHostId: typeof record['ownerHostId'] === 'string' ? record['ownerHostId'] : undefined,
+    epoch:
+      typeof record['epoch'] === 'number' && Number.isSafeInteger(record['epoch']) && record['epoch'] >= 0
+        ? record['epoch']
+        : undefined,
+    commitToken: typeof record['commitToken'] === 'string' ? record['commitToken'] : undefined,
+  };
 }
 
 export async function readPersistedOwner(
@@ -268,21 +256,28 @@ export async function readPersistedOwner(
 ): Promise<PersistedOwnerRecord> {
   const path = runtimeOwnerPath(canonicalHomeDir);
   try {
-    const raw = await readFile(path, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed === null || typeof parsed !== 'object') return {};
-    const record = parsed as Record<string, unknown>;
-    return {
-      ownerHostId: typeof record['ownerHostId'] === 'string' ? record['ownerHostId'] : undefined,
-      epoch:
-        typeof record['epoch'] === 'number' && Number.isSafeInteger(record['epoch']) && record['epoch'] >= 0
-          ? record['epoch']
-          : undefined,
-      commitToken: typeof record['commitToken'] === 'string' ? record['commitToken'] : undefined,
-    };
+    const raw = await readOptionalFile(path);
+    if (raw === undefined) return {};
+    return parseOwnerRecord(raw) ?? (await quarantineCorruptOwner(canonicalHomeDir, path));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    if (error instanceof HomeRuntimeError) throw error;
     throw mapRuntimeIoError(error, path, 'read-owner');
+  }
+}
+
+async function quarantineCorruptOwner(canonicalHomeDir: string, path: string): Promise<PersistedOwnerRecord> {
+  const runtimeDir = runtimeDirFor(canonicalHomeDir);
+  const lock = await acquireOwnerLock(runtimeDir, { kind: 'runtime-owner-repair' });
+  try {
+    const raw = await readOptionalFile(path);
+    if (raw === undefined) return {};
+    const record = parseOwnerRecord(raw);
+    if (record !== undefined) return record;
+    await rename(path, corruptBackupPath(path));
+    await syncDir(runtimeDir);
+    return {};
+  } finally {
+    await lock.release().catch(() => undefined);
   }
 }
 
@@ -296,39 +291,20 @@ export async function writePersistedOwner(
   }
   throwIfOwnerCommitAborted(guard.signal);
   const path = runtimeOwnerPath(canonicalHomeDir);
-  const pending = `${path}${STAGING_PREFIX}${process.pid}-${randomUUID()}`;
+  const runtimeDir = runtimeDirFor(canonicalHomeDir);
   const payload = `${JSON.stringify(record)}\n`;
   let lock: Awaited<ReturnType<typeof acquireFileLock>> | undefined;
   try {
-    lock = await acquireFileLock(join(runtimeDirFor(canonicalHomeDir), OWNER_LOCK_FILENAME), {
-      waitForMs: 5_000,
-      owner: { kind: 'runtime-owner', ownerHostId: record.ownerHostId, epoch: record.epoch },
-    });
-    await writeFile(pending, payload, { mode: MODE_PRIVATE_FILE, flag: 'wx' });
-    await chmodIfSupported(pending, MODE_PRIVATE_FILE);
-    await renameWithRetry(pending, path, guard.signal);
+    lock = await acquireOwnerLock(runtimeDir, { kind: 'runtime-owner', ownerHostId: record.ownerHostId, epoch: record.epoch });
+    throwIfOwnerCommitAborted(guard.signal);
+    await atomicWrite(path, payload, undefined, MODE_PRIVATE_FILE, guard.signal, true);
+    await syncDir(runtimeDir);
   } catch (error) {
-    await unlinkQuietly(pending);
+    if (guard.signal.aborted) throwIfOwnerCommitAborted(guard.signal);
     if (error instanceof HomeRuntimeError) throw error;
     throw mapRuntimeIoError(error, path, 'write-owner');
   } finally {
     await lock?.release().catch(() => undefined);
-  }
-}
-
-async function renameWithRetry(source: string, target: string, signal: AbortSignal): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    throwIfOwnerCommitAborted(signal);
-    try {
-      await rename(source, target);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (!['EACCES', 'EBUSY', 'EPERM'].includes(code ?? '') || attempt >= OWNER_RENAME_RETRIES) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, OWNER_RENAME_DELAY_MS * (attempt + 1)));
-    }
   }
 }
 

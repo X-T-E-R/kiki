@@ -20,7 +20,6 @@ import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
-import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
@@ -42,6 +41,7 @@ import {
 import {
   DEFAULT_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
+  formatRgSpawnError,
   runRgOnce,
   shouldRetryRipgrepEagain,
   type RunRgResult,
@@ -261,7 +261,7 @@ export class GrepTool implements IGrepTool {
       }
       runResult = runOutcome;
     } catch (error) {
-      return { isError: true, output: formatSpawnError(error) };
+      return { isError: true, output: formatRgSpawnError(error) };
     }
 
     let postprocessResultCount = 0;
@@ -464,23 +464,6 @@ registerAgentToolService(IGrepTool, GrepTool, {
   domain: 'os/backends',
   requiredRuntimeCapabilities: ['fs', 'process'],
 });
-
-function formatSpawnError(error: unknown): string {
-  return errorCode(error) === 'ENOENT'
-    ? rgUnavailableMessage(error)
-    : error instanceof Error
-      ? error.message
-      : String(error);
-}
-
-function errorCode(error: unknown): string | undefined {
-  const unwrapped = unwrapErrorCause(error);
-  if (unwrapped !== null && typeof unwrapped === 'object' && 'code' in unwrapped) {
-    const code = (unwrapped as { code?: unknown }).code;
-    return typeof code === 'string' ? code : undefined;
-  }
-  return undefined;
-}
 
 type GrepMode = 'content' | 'files_with_matches' | 'count_matches';
 

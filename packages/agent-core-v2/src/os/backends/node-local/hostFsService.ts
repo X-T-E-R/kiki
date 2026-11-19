@@ -10,12 +10,14 @@ import {
   stat as nodeStat,
   writeFile,
 } from 'node:fs/promises';
+import { dirname } from 'pathe';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { decodeTextWithErrors, type TextDecodeErrors } from '@kiki/kaos/exec-env';
 
 import { type HostDirEntry, type HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { toHostFsError } from '#/os/interface/hostFsErrors';
+import { atomicWrite, syncDir } from '#/_base/utils/fs';
 import { CpuWorkerError } from '#/app/cpuWorker/host';
 import { runCpuTask } from '#/app/cpuWorker/runtime';
 import type { FileLineRangeOperation } from '#/app/cpuWorker/tasks';
@@ -51,6 +53,15 @@ export class HostFileSystem implements IHostFileSystem {
   async writeText(path: string, data: string): Promise<void> {
     try {
       await writeFile(path, data, 'utf8');
+    } catch (error) {
+      throw toHostFsError(error, { path, op: 'write' });
+    }
+  }
+
+  async replaceText(path: string, data: string): Promise<void> {
+    try {
+      await atomicWrite(path, data, undefined, undefined, undefined, true);
+      await syncDir(dirname(path));
     } catch (error) {
       throw toHostFsError(error, { path, op: 'write' });
     }

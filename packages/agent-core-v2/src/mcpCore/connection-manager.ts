@@ -11,7 +11,12 @@ import { isRemoteMcpConfig } from './client-remote';
 import { SseMcpClient } from './client-sse';
 import type { UnexpectedCloseReason } from './client-shared';
 import { computerSpawnHeld, StdioMcpClient } from './client-stdio';
-import { COMPUTER_ADMISSION_HELD, computerExecutorKind, onComputerAdmissionChange } from './computer';
+import {
+  COMPUTER_ADMISSION_HELD,
+  computerExecutorKind,
+  onComputerAdmissionChange,
+  type IComputerAdmissionService,
+} from './computer';
 import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import { assertMcpInputSchema, type MCPClient, type MCPToolDefinition } from './types';
 
@@ -105,6 +110,7 @@ export interface McpConnectionManagerOptions {
   readonly resolveDefaultTimeouts?: () => McpDefaultTimeouts;
   readonly resolveClientName?: () => string | undefined;
   readonly allowsCall?: (name: string) => Promise<boolean>;
+  readonly computerAdmission?: IComputerAdmissionService;
 }
 
 export class McpConnectionManager implements McpConnectionView {
@@ -131,7 +137,7 @@ export class McpConnectionManager implements McpConnectionView {
     this.admissionWatch = onComputerAdmissionChange(() => {
       if (this.stopping) return;
       void this.reconcileComputerAdmission();
-    });
+    }, options.computerAdmission);
   }
 
   getRemoteServerUrl(name: string): string | undefined {
@@ -429,7 +435,7 @@ export class McpConnectionManager implements McpConnectionView {
     if (this.stopping) return;
     const computerEntries = [...this.entries.values()].filter((entry) => computerExecutorKind(entry.config) !== undefined);
     for (const entry of computerEntries) {
-      if (this.stopping || !computerSpawnHeld(entry.name, entry.config)) continue;
+      if (this.stopping || !computerSpawnHeld(entry.name, entry.config, undefined, this.options.computerAdmission)) continue;
       entry.accepting = false;
       if (entry.calls.size > 0) await Promise.all(entry.calls);
       if (this.stopping || this.entries.get(entry.name) !== entry) continue;
@@ -452,7 +458,7 @@ export class McpConnectionManager implements McpConnectionView {
     }
     for (const entry of computerEntries) {
       if (this.stopping || entry.config.enabled === false) continue;
-      if (computerSpawnHeld(entry.name, entry.config)) continue;
+      if (computerSpawnHeld(entry.name, entry.config, undefined, this.options.computerAdmission)) continue;
       if (entry.status !== 'disabled' || entry.error !== 'computer-admission-held') continue;
       entry.accepting = true;
       entry.error = undefined;
@@ -463,7 +469,7 @@ export class McpConnectionManager implements McpConnectionView {
   }
 
   private async connectOneNow(entry: InternalEntry, attemptId: number): Promise<void> {
-    if (computerSpawnHeld(entry.name, entry.config)) {
+    if (computerSpawnHeld(entry.name, entry.config, undefined, this.options.computerAdmission)) {
       entry.accepting = false;
       entry.status = 'disabled';
       entry.error = 'computer-admission-held';
@@ -650,6 +656,7 @@ export class McpConnectionManager implements McpConnectionView {
         runtimeResolver,
         workspaceId,
         runtimeId,
+        computerAdmission: this.options.computerAdmission,
       });
     }
     if (config.transport === 'sse') {

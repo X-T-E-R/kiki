@@ -3,7 +3,9 @@ import { type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { z } from 'zod';
 
 import { type IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { toErrorPayload } from '#/_base/errors/serialize';
+import { isPlainObject } from '#/_base/utils/types';
 
 import type { HookResult } from './types';
 
@@ -69,7 +71,7 @@ export async function runHook(
       env: options.env,
     });
   } catch (error) {
-    const message = errorMessage(error);
+    const message = toErrorMessage(error);
     return blockResult({ message, reason: message, stderr: message });
   }
 
@@ -111,7 +113,7 @@ export async function runHook(
     void Promise.all([proc.wait(), stdoutDone, stderrDone]).then(
       ([code]) => settle(resultFromExitCode(code, stdout, stderr)),
       (error) => {
-        const message = errorMessage(error);
+        const message = toErrorMessage(error);
         return settle(blockResult({ message, reason: message, stdout, stderr: stderr + message }), true);
       },
     );
@@ -195,7 +197,7 @@ function structuredOutput(stdout: string): StructuredOutputResult {
   }
 
   if (!containsHookProtocolField(parsed)) return { kind: 'unstructured' };
-  if (!isRecord(parsed)) return { kind: 'invalid' };
+  if (!isPlainObject(parsed)) return { kind: 'invalid' };
   const output = HookJsonOutputSchema.safeParse(parsed);
   if (!output.success) return { kind: 'invalid' };
 
@@ -217,7 +219,7 @@ function structuredOutput(stdout: string): StructuredOutputResult {
 
 function containsHookProtocolField(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsHookProtocolField);
-  if (!isRecord(value)) return false;
+  if (!isPlainObject(value)) return false;
   if (Object.hasOwn(value, 'message') || Object.hasOwn(value, 'hookSpecificOutput')) return true;
   return Object.values(value).some(containsHookProtocolField);
 }
@@ -359,12 +361,4 @@ async function killProcess(proc: IHostProcess): Promise<unknown[]> {
     new Promise<void>((resolve) => setTimeout(resolve, KILL_GRACE_MS)).then(() => proc.kill('SIGKILL')),
   ]);
   return attempts.flatMap((attempt) => attempt.status === 'rejected' ? [attempt.reason] : []);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -264,14 +264,6 @@ describe('globPatternToRegex', () => {
       expect(regex.test('.config')).toBe(true);
     });
 
-    it.skip('Python treats **/foo.txt as recursive; current helper is segment-based and does not implement zero-or-more directories', () => {
-      const regex = globPatternToRegex('**/foo.txt', true);
-
-      expect(regex.test('foo.txt')).toBe(true);
-      expect(regex.test('a/foo.txt')).toBe(true);
-      expect(regex.test('a/b/foo.txt')).toBe(true);
-    });
-
     it('keeps single-star matching to a single path segment', () => {
       const regex = globPatternToRegex('*/foo.txt', true);
 

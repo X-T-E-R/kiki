@@ -822,21 +822,41 @@ describe('FileStorageService — orphaned temp recovery', () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  it('promotes a surviving temp file when the target is missing (dead writer pid)', async () => {
+  const DEAD_PID_BEYOND_TYPICAL_PID_LIMIT = 4_000_000;
+  const deadPid = DEAD_PID_BEYOND_TYPICAL_PID_LIMIT;
+
+  it('promotes a synced ready temp file when the target is missing (dead writer pid)', async () => {
     await mkdir(join(dir, 'scope'), { recursive: true });
-    const DEAD_PID_BEYOND_TYPICAL_PID_LIMIT = 4_000_000;
-    const deadPid = DEAD_PID_BEYOND_TYPICAL_PID_LIMIT;
     await writeFile(
-      join(dir, 'scope', `config.toml.tmp.${deadPid}.deadbeef`),
+      join(dir, 'scope', `config.toml.tmp.${deadPid}.deadbeef.ready`),
       encoder.encode('recovered = true'),
     );
     const svc = new FileStorageService(dir);
     const bytes = await svc.read('scope', 'config.toml');
     expect(bytes === undefined ? '' : new TextDecoder().decode(bytes)).toContain('recovered = true');
     await expect(
-      stat(join(dir, 'scope', `config.toml.tmp.${deadPid}.deadbeef`)),
+      stat(join(dir, 'scope', `config.toml.tmp.${deadPid}.deadbeef.ready`)),
     ).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await svc.read('scope', 'config.toml')).toBeDefined();
+  });
+
+  it('discards an unsynced temp file instead of promoting a possibly partial write', async () => {
+    await mkdir(join(dir, 'scope'), { recursive: true });
+    const partial = join(dir, 'scope', `config.toml.tmp.${deadPid}.deadbeef`);
+    await writeFile(partial, encoder.encode('recovered = tr'));
+    const svc = new FileStorageService(dir);
+    expect(await svc.read('scope', 'config.toml')).toBeUndefined();
+    await expect(stat(partial)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not resurrect a deleted document from an orphaned ready temp file', async () => {
+    const svc = new FileStorageService(dir);
+    await svc.write('scope', 'config.toml', encoder.encode('old = true'));
+    const orphan = join(dir, 'scope', `config.toml.tmp.${deadPid}.deadbeef.ready`);
+    await writeFile(orphan, encoder.encode('stale = true'));
+    await svc.delete('scope', 'config.toml');
+    await expect(stat(orphan)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await svc.read('scope', 'config.toml')).toBeUndefined();
   });
 
   it('does not promote temps from a live pid, and returns undefined with no candidates', async () => {
