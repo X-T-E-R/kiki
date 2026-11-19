@@ -2181,4 +2181,9 @@ describe('single Memory authority safe-boundary activation', () => {
     await storage.write('store/memory-sqlite-v1', 'memory.sqlite', new Uint8Array(0));
     await expect(reopened.authority.recoverReadOnly()).rejects.toThrow('database is missing or truncated');
   });
+
+  it('matches non-ASCII Unicode titles case-insensitively in SQLite scopeSummary', async () => {
+    await store.put({ action: 'create', scope: global, type: 'feedback', title: 'CAFÉ', body: 'Preserve non-ASCII duplicate detection.', reason: 'Unicode check', source });
+    await expect(store.put({ action: 'create', scope: global, type: 'feedback', title: 'café', body: 'Duplicate title with different Unicode case.', reason: 'Unicode check', source })).rejects.toMatchObject({ code: 'duplicate_title' });
+  });
 });

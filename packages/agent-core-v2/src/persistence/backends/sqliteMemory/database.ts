@@ -19,6 +19,7 @@ export class MemoryDatabase {
   constructor(readonly path: string) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
+    this.db.function('kiki_lower', { deterministic: true }, (value) => typeof value === 'string' ? value.toLowerCase() : '');
     this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA temp_store=FILE; PRAGMA journal_size_limit=67108864;`);
     const version = Number(this.db.prepare('PRAGMA user_version').get()?.['user_version']);
     if (![0, 1, 2, 3, 4].includes(version)) { this.db.close(); throw new Error('Unsupported Memory database schema'); }
@@ -353,7 +354,7 @@ export class MemoryDatabase {
       const checkSourceBarriers = this.hasSourceBarriers();
       if (!checkSourceBarriers) {
         const countRow = this.stmt("SELECT count(*) AS n FROM heads h JOIN revisions r ON r.scope=h.scope AND r.id=h.id AND r.revision=h.revision WHERE h.scope=? AND r.entry IS NOT NULL AND json_extract(r.entry,'$.status')='active' AND NOT EXISTS(SELECT 1 FROM barriers b WHERE b.scope=h.scope AND b.id=h.id)").get(scope);
-        const duplicateTitle = titleLower !== undefined && this.stmt("SELECT 1 FROM heads h JOIN revisions r ON r.scope=h.scope AND r.id=h.id AND r.revision=h.revision WHERE h.scope=? AND r.entry IS NOT NULL AND json_extract(r.entry,'$.status')='active' AND lower(json_extract(r.entry,'$.title'))=? AND NOT EXISTS(SELECT 1 FROM barriers b WHERE b.scope=h.scope AND b.id=h.id) LIMIT 1").get(scope, titleLower) !== undefined;
+        const duplicateTitle = titleLower !== undefined && this.stmt("SELECT 1 FROM heads h JOIN revisions r ON r.scope=h.scope AND r.id=h.id AND r.revision=h.revision WHERE h.scope=? AND r.entry IS NOT NULL AND json_extract(r.entry,'$.status')='active' AND kiki_lower(json_extract(r.entry,'$.title'))=? AND NOT EXISTS(SELECT 1 FROM barriers b WHERE b.scope=h.scope AND b.id=h.id) LIMIT 1").get(scope, titleLower) !== undefined;
         this.db.exec('COMMIT');
         return { generation, activeCount: Number(countRow?.['n'] ?? 0), duplicateTitle };
       }

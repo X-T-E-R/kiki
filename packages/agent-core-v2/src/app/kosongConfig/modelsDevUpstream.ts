@@ -197,7 +197,7 @@ registerScopedService(
   LifecycleScope.App,
   IModelsDevUpstreamService,
   ModelsDevUpstreamClient,
-  ScopeActivation.OnDemand,
+  ScopeActivation.OnScopeCreated,
   'kosongConfig',
 );
 

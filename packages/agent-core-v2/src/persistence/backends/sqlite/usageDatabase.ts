@@ -142,10 +142,21 @@ export class UsageDatabase {
   }
   private reclaimFreelist(): void {
     if (!this.writable) return;
-    if (Number(this.db.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum']) !== 2) return;
-    if (Number(this.db.prepare('PRAGMA freelist_count').get()!['freelist_count']) >= 256) {
-      this.db.exec('PRAGMA incremental_vacuum(256)');
-    }
+    try {
+      const mode = Number(this.db.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum']);
+      const freelist = Number(this.db.prepare('PRAGMA freelist_count').get()!['freelist_count']);
+      if (mode === 2) {
+        if (freelist >= 256) this.db.exec('PRAGMA incremental_vacuum(256)');
+        return;
+      }
+      if (mode === 0 && freelist >= 1024) {
+        const pageCount = Number(this.db.prepare('PRAGMA page_count').get()!['page_count']);
+        const hasRetired = this.db.prepare('SELECT 1 FROM retired_generation LIMIT 1').get() !== undefined;
+        if (!hasRetired && pageCount > 0 && freelist * 2 >= pageCount) {
+          this.db.exec('VACUUM');
+        }
+      }
+    } catch {}
   }
   private transaction<T>(work: () => T): T {
     if (!this.writable) throw Object.assign(new Error('Usage writer is owned by another process'), { code: 'usage.read_only', committed: false });

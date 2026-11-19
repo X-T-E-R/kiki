@@ -1,3 +1,4 @@
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
@@ -72,10 +73,15 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     @IFlagService private readonly flags: IFlagService,
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @IBootstrapService private readonly bootstrap?: IBootstrapService,
-    @IComputerAdmissionService private readonly computerAdmission?: IComputerAdmissionService,
+    @ref(IComputerAdmissionService) private readonly computerAdmission?: LiveRef<IComputerAdmissionService>,
   ) {
     super();
     this.publishComputerSelection();
+    if (this.computerAdmission !== undefined) {
+      this._register(this.computerAdmission.onDidChange((admission) => {
+        if (admission !== undefined) this.publishComputerSelection();
+      }));
+    }
     if (this.settings.onDidSectionChange !== undefined) {
       this._register(this.settings.onDidSectionChange(() => {
         this.publishComputerSelection();
@@ -100,7 +106,7 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     } catch {
       connection = undefined;
     }
-    setComputerConnectionSelection(connection, this.computerAdmission);
+    setComputerConnectionSelection(connection, this.computerAdmission?.current);
   }
 
   globalState(id: OptionalCapabilityId): OptionalCapabilityGlobalState {

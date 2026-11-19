@@ -103,9 +103,11 @@ function purgeExpiredRows(db: DatabaseSync, now: number, limit: number): number 
 }
 
 function incrementalVacuumIfEnabled(db: DatabaseSync, pages: number): void {
-  if (Number(db.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum']) === 2) {
-    db.exec(`PRAGMA incremental_vacuum(${pages})`);
-  }
+  try {
+    if (Number(db.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum']) === 2) {
+      db.exec(`PRAGMA incremental_vacuum(${pages})`);
+    }
+  } catch {}
 }
 
 function metadata(db: DatabaseSync, key: string): unknown {

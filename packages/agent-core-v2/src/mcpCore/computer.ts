@@ -184,7 +184,7 @@ registerScopedService(
   LifecycleScope.App,
   IComputerAdmissionService,
   ComputerAdmissionController,
-  ScopeActivation.OnDemand,
+  ScopeActivation.OnScopeCreated,
   'mcpCore',
 );
 

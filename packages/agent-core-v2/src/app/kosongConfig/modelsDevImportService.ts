@@ -7,6 +7,7 @@ import {
   type ManagedKimiConfigShape,
 } from '@kiki/oauth';
 import { LifecycleScope } from '#/app/scopes';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
 import { sliceUtf16 } from '#/_base/text/utf16';
@@ -46,16 +47,21 @@ export class ModelsDevImportService implements IModelsDevImportService {
 
   private writeChain: Promise<unknown> = Promise.resolve();
 
-  private readonly upstream: IModelsDevUpstreamService;
+  private fallbackUpstream: IModelsDevUpstreamService | undefined;
 
   constructor(
     @IConfigService private readonly config: IConfigService,
     @IKosongConfigService private readonly kosongConfig: IKosongConfigService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IAgentIdentity private readonly identity: IAgentIdentity,
-    @IModelsDevUpstreamService upstream?: IModelsDevUpstreamService,
-  ) {
-    this.upstream = upstream ?? new ModelsDevUpstreamClient();
+    @ref(IModelsDevUpstreamService) private readonly upstreamRef?: LiveRef<IModelsDevUpstreamService>,
+  ) {}
+
+  private resolveUpstream(): IModelsDevUpstreamService {
+    const service = this.upstreamRef?.current;
+    if (service !== undefined) return service;
+    this.fallbackUpstream ??= new ModelsDevUpstreamClient();
+    return this.fallbackUpstream;
   }
 
   private async outboundUserAgent(): Promise<string> {
@@ -63,12 +69,12 @@ export class ModelsDevImportService implements IModelsDevImportService {
   }
 
   async listModelsDevProviders(): Promise<ModelsDevProviderItem[]> {
-    const catalog = await this.upstream.getCatalog(() => this.outboundUserAgent(), { preferLocal: true });
+    const catalog = await this.resolveUpstream().getCatalog(() => this.outboundUserAgent(), { preferLocal: true });
     return Object.entries(catalog).map(([id, entry]) => toModelsDevProviderItem(id, entry));
   }
 
   async getModelsDevProvider(catalogId: string): Promise<ModelsDevProviderItem> {
-    const catalog = await this.upstream.getCatalog(() => this.outboundUserAgent(), { preferLocal: true });
+    const catalog = await this.resolveUpstream().getCatalog(() => this.outboundUserAgent(), { preferLocal: true });
     const entry = modelsDevEntry(catalog, catalogId);
     if (entry === undefined) {
       throw new Error2(
@@ -110,7 +116,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     options: ImportModelsDevProviderOptions,
   ): Promise<ImportModelsDevProviderResult> {
     const { catalogId } = options;
-    const catalog = await this.upstream.getCatalog(await this.outboundUserAgent());
+    const catalog = await this.resolveUpstream().getCatalog(await this.outboundUserAgent());
     const entry = modelsDevEntry(catalog, catalogId);
     if (entry === undefined) {
       throw new Error2(
@@ -201,7 +207,7 @@ export class ModelsDevImportService implements IModelsDevImportService {
     let entries: Record<string, CustomRegistryProviderEntry>;
     try {
       entries = await fetchCustomRegistry(source, {
-        fetchImpl: this.upstream.upstreamFetch(),
+        fetchImpl: this.resolveUpstream().upstreamFetch(),
         userAgent: await this.outboundUserAgent(),
         signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
       });

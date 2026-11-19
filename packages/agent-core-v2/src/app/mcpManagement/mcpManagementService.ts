@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { normalize } from 'pathe';
 
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -81,7 +82,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     @IHostProcessService private readonly hostProcess: IHostProcessService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @ILogService private readonly log: ILogService,
-    @IComputerAdmissionService private readonly computerAdmission?: IComputerAdmissionService,
+    @ref(IComputerAdmissionService) private readonly computerAdmission?: LiveRef<IComputerAdmissionService>,
   ) {
     super();
   }
@@ -265,7 +266,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
         startupTimeoutMs: section?.startupTimeoutMs,
         toolTimeoutMs: section?.toolTimeoutMs,
       }),
-      computerAdmission: this.computerAdmission,
+      computerAdmission: this.computerAdmission?.current,
     });
     try {
       await manager.connectAll({ [server.name]: mcpConfigWithoutName(server) });
@@ -518,7 +519,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
             startupTimeoutMs: section?.startupTimeoutMs,
             toolTimeoutMs: section?.toolTimeoutMs,
           }),
-          computerAdmission: this.computerAdmission,
+          computerAdmission: this.computerAdmission?.current,
         });
         await manager.connectAll(probeConfigs);
       }

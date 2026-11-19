@@ -28,10 +28,12 @@ interface QueryConnection {
 let db: QueryConnection | undefined;
 let cancellation: Int32Array | undefined;
 const sortKindCache = new Map<string, boolean>();
+let sortKindDataVersion: number | undefined;
 
 function invalidateSortKindCache(collection?: string): void {
   if (collection === undefined) {
     sortKindCache.clear();
+    sortKindDataVersion = undefined;
     return;
   }
   const prefix = `${collection}\0`;
@@ -152,7 +154,23 @@ function indexedEqualities(filter: Record<string, unknown> | undefined): Array<[
 
 async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?: string }> {
   const connection = open();
-  const signature = JSON.stringify([input.collection, input.filter, input.column, input.sort, input.columnOrder], (_key, value: unknown) => value instanceof RegExp ? ['regexp', value.source, value.flags] : value === undefined ? ['undefined'] : value);
+  let mixed: boolean | undefined;
+  if (input.sort !== undefined) {
+    const dataVersion = Number(connection.prepare('PRAGMA data_version').get()!['data_version']);
+    if (sortKindDataVersion !== dataVersion) {
+      sortKindCache.clear();
+      sortKindDataVersion = dataVersion;
+    }
+    const cacheKey = `${input.collection}\0${input.sort.field}`;
+    mixed = sortKindCache.get(cacheKey);
+    if (mixed === undefined) {
+      connection.function('kiki_sort_kind', (json) => { check(); return typeof getPath(JSON.parse(String(json)), input.sort!.field); });
+      const kinds = connection.prepare('SELECT DISTINCT kiki_sort_kind(r.json) AS kind FROM rows r WHERE r.collection=?').all(input.collection);
+      mixed = kinds.some((row) => row['kind'] !== 'number' && row['kind'] !== 'string') || new Set(kinds.map((row) => row['kind'])).size > 1;
+      sortKindCache.set(cacheKey, mixed);
+    }
+  }
+  const signature = JSON.stringify([input.collection, input.filter, input.column, input.sort, input.columnOrder, mixed], (_key, value: unknown) => value instanceof RegExp ? ['regexp', value.source, value.flags] : value === undefined ? ['undefined'] : value);
   let position: { key: string; value?: number | string; offset?: number } | undefined;
   if (input.cursor !== undefined) {
     const cursor = JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')) as { v: number; signature: string; position: typeof position };
@@ -181,14 +199,6 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
   }
   for (const [field, value] of indexedEqualities(input.filter)) { clauses.push(`kiki_value(r.json,${quote(field)}) IS ?`); parameters.push(scalarKey(value)); }
   if (input.sort !== undefined) {
-    const cacheKey = `${input.collection}\0${input.sort.field}`;
-    let mixed = sortKindCache.get(cacheKey);
-    if (mixed === undefined) {
-      connection.function('kiki_sort_kind', (json) => { check(); return typeof getPath(JSON.parse(String(json)), input.sort!.field); });
-      const kinds = connection.prepare('SELECT DISTINCT kiki_sort_kind(r.json) AS kind FROM rows r WHERE r.collection=?').all(input.collection);
-      mixed = kinds.some((row) => row['kind'] !== 'number' && row['kind'] !== 'string') || new Set(kinds.map((row) => row['kind'])).size > 1;
-      sortKindCache.set(cacheKey, mixed);
-    }
     orderedValue = mixed ? `kiki_order_key(r.json,${quote(input.sort.field)})` : `kiki_order(r.json,${quote(input.sort.field)})`;
     descending = input.sort.dir === 'desc';
   }

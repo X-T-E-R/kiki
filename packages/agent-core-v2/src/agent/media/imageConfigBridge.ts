@@ -11,12 +11,14 @@ import {
 import { IMAGE_SECTION, type ImageConfig } from './configSection';
 
 export interface ImageDeliveryLimits {
-  readonly maxEdgePx: number;
-  readonly readByteBudget: number;
+  readonly maxEdgePx?: number;
+  readonly readByteBudget?: number;
 }
 
 export interface IImageConfigBridge extends ImageDeliveryLimits {
   readonly _serviceBrand: undefined;
+  readonly maxEdgePx: number;
+  readonly readByteBudget: number;
 }
 
 export const IImageConfigBridge: ServiceIdentifier<IImageConfigBridge> =

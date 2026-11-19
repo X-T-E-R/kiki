@@ -113,7 +113,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IConfigService private readonly configService: IConfigService,
     @IMcpRegistryService private readonly serverRegistry: IMcpRegistryService,
     @ref(IAgentToolPolicyService) private readonly toolPolicy: LiveRef<IAgentToolPolicyService>,
-    @IComputerAdmissionService private readonly computerAdmission?: IComputerAdmissionService,
+    @ref(IComputerAdmissionService) private readonly computerAdmission?: LiveRef<IComputerAdmissionService>,
   ) {
     super();
     this.sessionOverrides = mcpHandle.selection?.overrides ?? new Map();
@@ -133,7 +133,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
         if (event.domain !== COMPUTER_CONFIG_SECTION) return;
         setComputerConnectionSelection(
           this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection,
-          this.computerAdmission,
+          this.computerAdmission?.current,
         );
         this.reopenComputerSessions();
       }));

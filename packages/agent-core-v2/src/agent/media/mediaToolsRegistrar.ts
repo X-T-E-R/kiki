@@ -134,6 +134,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     const skillCatalog = this.skillCatalog;
     const runtime = this.runtime;
     const session = this.session;
+    const imageConfigRef = this.imageConfigRef;
     const definitionRoots = kikiDefinitionReadRoots(this.bootstrap);
     let requester: ModelRequester | undefined;
     if (model !== undefined) {
@@ -173,7 +174,14 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       imagePolicy,
       telemetry: this.telemetry,
       cpuWorker: this.cpuWorkerRef?.current,
-      imageLimits: this.imageConfigRef?.current,
+      imageLimits: imageConfigRef === undefined ? undefined : {
+        get maxEdgePx() {
+          return imageConfigRef.current?.maxEdgePx;
+        },
+        get readByteBudget() {
+          return imageConfigRef.current?.readByteBudget;
+        },
+      },
     });
   }
 }

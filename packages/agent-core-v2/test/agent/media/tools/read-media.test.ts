@@ -9,6 +9,9 @@ import { VideoUploadUnsupportedError } from '#/kosong/contract/errors';
 import { Jimp } from 'jimp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { InstantiationService } from '#/_base/di/instantiationService';
+import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { Emitter } from '#/_base/event';
 import {
   resetUnexpectedErrorHandler,
@@ -16,9 +19,19 @@ import {
 } from '#/_base/errors/unexpectedError';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
-import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { Runtime } from '#/runtime/runtime';
-import type { ITelemetryService, TelemetryProperties } from '#/app/telemetry/telemetry';
+import { ITelemetryService, type TelemetryProperties } from '#/app/telemetry/telemetry';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
+import { IEventBus } from '#/app/event/eventBus';
+import { IFlagService } from '#/app/flag/flag';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
+import { IMAGE_SECTION } from '#/agent/media/configSection';
+import { IImageConfigBridge, ImageConfigBridge } from '#/agent/media/imageConfigBridge';
+import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import {
   ReadMediaFileInputSchema,
   type ReadMediaFileInput,
@@ -49,12 +62,13 @@ import {
 } from '#/tool/toolContract';
 import { EventBusService } from '#/app/event/eventBusService';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
-import type { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
-import type { ISessionContext } from '#/session/sessionContext/sessionContext';
-import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { isSensitiveFile, type WorkspaceConfig } from '#/tool/path-access';
 import { sniffImageDimensions } from '#/agent/media/file-type';
+import { StubConfigService } from '../../../kosong/stubs';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -1312,6 +1326,50 @@ describe('AgentMediaToolsRegistrar', () => {
     expect(registry.resolve('ReadMediaFile')).toBeUndefined();
     bindModel('vision-model-2', capabilities({ image_in: true, video_in: true }));
     expect(registry.resolve('ReadMediaFile')).toBeUndefined();
+  });
+
+  it('honors custom image config on the first ReadMediaFile call even when registrar activates before ImageConfigBridge', async () => {
+    const fs = createTestFs({
+      '/workspace/large.png': { data: pngBuffer(1200, 800), size: MAX_IMAGE_DECODE_BYTES + 1 },
+    });
+    const registry = new AgentToolRegistryService();
+    const config = new StubConfigService({
+      [IMAGE_SECTION]: { maxEdgePx: 1000, readByteBudget: 70 * 1024 * 1024 },
+    });
+    const services = new ServiceCollection();
+    services.set(IAgentToolRegistryService, registry);
+    services.set(IAgentProfileService, {
+      getModelCapabilities: () => capabilities({ image_in: true, video_in: false }),
+      getModel: () => 'vision-model',
+      getModelProviderType: () => undefined,
+      getRuntimeModel: (id: string) => ({ id, name: id, providerName: 'test', protocol: 'openai' }),
+      getRuntimeRequester: (id: string) => ({ model: { id, name: id, providerName: 'test', protocol: 'openai' } }),
+      getRecipeModelSettings: () => undefined,
+    } as unknown as IAgentProfileService);
+    services.set(IEventBus, new EventBusService());
+    services.set(IAgentRuntimeService, runtimeFor(fs));
+    services.set(ISessionWorkspaceContext, { workDir: '/workspace', additionalDirs: [] } as unknown as ISessionWorkspaceContext);
+    services.set(ITelemetryService, recordingTelemetry([]));
+    services.set(IFlagService, { enabled: () => true } as never);
+    services.set(IAgentStateService, new AgentStateService());
+    services.set(ISessionSkillCatalog, { catalog: { getSkillRoots: () => [] } } as unknown as ISessionSkillCatalog);
+    services.set(IBootstrapService, { homeDir: '/home' } as unknown as IBootstrapService);
+    services.set(ISessionContext, { sessionDir: '/session/current' } as unknown as ISessionContext);
+    services.set(IConfigService, config);
+    const ix = new InstantiationService(services);
+    try {
+      ix.provideAll([
+        { id: IAgentMediaToolsRegistrar, descriptor: new SyncDescriptor(AgentMediaToolsRegistrar), options: { activation: 'eager' } },
+        { id: IImageConfigBridge, descriptor: new SyncDescriptor(ImageConfigBridge), options: { activation: 'eager' } },
+      ]);
+      const tool = registry.resolve('ReadMediaFile') as ReadMediaFileTool;
+      expect(tool).toBeInstanceOf(ReadMediaFileTool);
+      const result = await execute(tool, { path: '/workspace/large.png' });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('limit 73400320 bytes and 1000px on the longest edge');
+    } finally {
+      await ix.dispose();
+    }
   });
 });
 

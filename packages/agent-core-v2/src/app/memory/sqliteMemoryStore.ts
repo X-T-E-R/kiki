@@ -411,8 +411,9 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const base = await this.scopes.resolve(scope);
     const writer: MemorySource = { ...source, writer: 'import' };
     const existingView = await this.persistence.read([base], undefined, { excludeTombstones: true, statuses: ['active'] });
-    const activeTitles = new Set(existingView.objects.flatMap((object) => object.entry !== null ? [object.entry.title.toLowerCase()] : []));
-    let activeCount = activeTitles.size;
+    const activeObjects = existingView.objects.filter((object) => object.entry !== null);
+    const activeTitles = new Set(activeObjects.map((object) => object.entry!.title.toLowerCase()));
+    let activeCount = activeObjects.length;
     let generation = existingView.generation;
     const pending: Array<{
       readonly entry: MemoryEntry;

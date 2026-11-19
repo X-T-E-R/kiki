@@ -76,7 +76,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IPluginService private readonly plugins?: IPluginService,
     @IPluginUsageService private readonly usage?: IPluginUsageService,
-    @IComputerAdmissionService private readonly computerAdmission?: IComputerAdmissionService,
+    @ref(IComputerAdmissionService) private readonly computerAdmission?: LiveRef<IComputerAdmissionService>,
   ) {
     super();
     this.sessionLifecycle = sessionLifecycle;
@@ -94,7 +94,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       allowsCall: (name) => this.mcpConfig.allowsCall?.(name) ?? Promise.resolve(true),
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
-      computerAdmission: this.computerAdmission,
+      computerAdmission: this.computerAdmission?.current,
     });
     this._register({ dispose: () => this.manager.shutdown() });
     this._register(
@@ -238,7 +238,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       },
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
-      computerAdmission: this.computerAdmission,
+      computerAdmission: this.computerAdmission?.current,
     });
     let overlayNames = new Set(Object.keys(servers));
     const initialOverlayNames = new Set(overlayNames);

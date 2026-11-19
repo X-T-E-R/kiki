@@ -457,4 +457,16 @@ describe('SqliteQueryStore', () => {
     expect(await readFile(join(directory, 'index.sqlite'))).toEqual(bytes);
     expect(await readFile(join(home, 'store', 'mailbox-preserved'), 'utf8')).toBe('canonical');
   });
+
+  it('rejects a sort cursor when a later write flips the collection between homogeneous and mixed sort keys', async () => {
+    const store = open();
+    await store.put('sort_mix', 'k1', { id: 1, v: 10 });
+    await store.put('sort_mix', 'k2', { id: 2, v: 20 });
+    await store.put('sort_mix', 'k3', { id: 3, v: 30 });
+    const first = await store.query<{ id: number; v: number | string }>('sort_mix').orderBy('v').limit(1).execute();
+    expect(first.items.map((row) => row.id)).toEqual([1]);
+    expect(first.nextCursor).toBeDefined();
+    await store.put('sort_mix', 'k4', { id: 4, v: 'mixed-string' });
+    await expect(store.query('sort_mix').orderBy('v').limit(1).cursor(first.nextCursor).execute()).rejects.toThrow('Invalid SQLite query cursor');
+  });
 });
