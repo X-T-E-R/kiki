@@ -225,9 +225,17 @@ export class SqliteSearchHost {
         this.finishReindex(new Error('search reindex timed out'));
       }, 30 * 60_000);
       this.reindexRequest = { id, resolve, reject, timer };
-      child.send({ type: 'reindex', id, revision, sessions: [...sessions] } satisfies IndexerRequest, (error) => {
-        if (error) this.finishReindex(error);
-      });
+      if (!child.connected) {
+        this.finishReindex(new Error('search indexer IPC channel is closed'));
+        return;
+      }
+      try {
+        child.send({ type: 'reindex', id, revision, sessions: [...sessions] } satisfies IndexerRequest, (error) => {
+          if (error) this.finishReindex(error);
+        });
+      } catch (error) {
+        this.finishReindex(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -305,7 +313,15 @@ export class SqliteSearchHost {
       await new Promise<void>((resolve) => {
         const deadline = setTimeout(() => child.kill(), 5000);
         child.once('exit', () => { clearTimeout(deadline); resolve(); });
-        child.send({ type: 'close' } satisfies IndexerRequest, (error) => { if (error) child.kill(); });
+        if (!child.connected) {
+          child.kill();
+          return;
+        }
+        try {
+          child.send({ type: 'close' } satisfies IndexerRequest, (error) => { if (error) child.kill(); });
+        } catch {
+          child.kill();
+        }
       });
     }
   }
@@ -355,7 +371,7 @@ export class SqliteSearchHost {
         for (const [id, session] of this.known) this.pending.set(id, session);
         const released = this.failReader(new Error('search database is rebuilding'));
         void (released ?? Promise.resolve()).then(() => {
-          if (this.child === child) child.send({ type: 'reader_released' } satisfies IndexerRequest);
+          if (this.child === child) this.safeSend(child, { type: 'reader_released' });
         });
       } else if (message.type === 'status') {
         this.rss = message.rss;
@@ -437,9 +453,16 @@ export class SqliteSearchHost {
       this.restart = arm(() => { this.restart = undefined; this.retryAt = 0; this.startIndexer(); }, delay);
       this.restart.unref();
     };
+    let spawned = false;
+    child.once('spawn', () => { spawned = true; });
     child.on('error', (error) => {
-      process.stderr.write(`search indexer spawn: ${error.message}\n`);
-      onExit(null, 'spawn-error');
+      if (!spawned) {
+        process.stderr.write(`search indexer spawn: ${error.message}\n`);
+        onExit(null, 'spawn-error');
+        return;
+      }
+      if (isIpcChannelClosedError(error)) return;
+      process.stderr.write(`search indexer ipc error: ${error.message}\n`);
     });
     child.on('exit', onExit);
     this.timer ??= setInterval(() => {
@@ -448,32 +471,47 @@ export class SqliteSearchHost {
         this.child.kill();
         return;
       }
-      this.child.send({ type: 'heartbeat' } satisfies IndexerRequest);
+      this.safeSend(this.child, { type: 'heartbeat' });
     }, this.options.heartbeatMs ?? 1000);
     this.timer.unref();
   }
 
+  private safeSend(child: ChildProcess, request: IndexerRequest): boolean {
+    if (!child.connected) return false;
+    try {
+      return child.send(request, () => {});
+    } catch {
+      return false;
+    }
+  }
+
   private flushPending(): void {
-    if (!this.ready || this.readonlyWriter || !this.child || this.rebuilding || !this.inventoryToSend) return;
+    if (!this.ready || this.readonlyWriter || !this.child || !this.child.connected || this.rebuilding || !this.inventoryToSend) return;
     this.inventoryToSend = false;
     const sessions = [...this.known.values()];
     for (let i = 0; i < Math.max(1, sessions.length); i += 1000) {
-      this.child.send({ type: 'sync', revision: this.inventoryRevision, first: i === 0,
-        last: i + 1000 >= sessions.length, sessions: sessions.slice(i, i + 1000) } satisfies IndexerRequest);
+      if (!this.safeSend(this.child, {
+        type: 'sync',
+        revision: this.inventoryRevision,
+        first: i === 0,
+        last: i + 1000 >= sessions.length,
+        sessions: sessions.slice(i, i + 1000),
+      })) {
+        this.inventoryToSend = true;
+        return;
+      }
     }
   }
 
   private flushTargeted(): void {
-    if (!this.ready || this.readonlyWriter || !this.child || this.rebuilding) return;
+    if (!this.ready || this.readonlyWriter || !this.child || !this.child.connected || this.rebuilding) return;
     for (const [sessionId, work] of this.targeted) {
       if (work.sent) continue;
       const request: IndexerRequest = work.session === undefined
         ? { type: 'retire_session', revision: work.revision, sessionId }
         : { type: 'sync_session', revision: work.revision, session: work.session };
-      try {
-        this.child.send(request);
-        work.sent = true;
-      } catch {}
+      if (this.safeSend(this.child, request)) work.sent = true;
+      else return;
     }
   }
 
@@ -544,4 +582,13 @@ export class SqliteSearchHost {
     }
     return exit;
   }
+}
+
+function isIpcChannelClosedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ERR_IPC_CHANNEL_CLOSED'
+    || code === 'EPIPE'
+    || code === 'ECONNRESET'
+    || error.message.includes('Channel closed');
 }
