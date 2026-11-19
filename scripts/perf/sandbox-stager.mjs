@@ -259,6 +259,27 @@ export function stageSessionAgentTree(srcSessionDir, dstSessionDir, stats, optio
     if (shouldCopyFullWire) {
       tracker?.trackFile(srcWire, scope);
       sessionWireBytesCopied += copyOrCloneFile(srcWire, path.join(dstAgentDir, 'wire.jsonl'), stats);
+      copySidecarIfBounded(
+        path.join(srcAgentDir, 'wire.jsonl.segments.json'),
+        path.join(dstAgentDir, 'wire.jsonl.segments.json'),
+        MAX_SIDECAR_BYTES,
+        stats,
+        tracker,
+        scope,
+      );
+      copyDirectoryBounded(
+        path.join(srcAgentDir, 'wire.jsonl.segments'),
+        path.join(dstAgentDir, 'wire.jsonl.segments'),
+        stats,
+        {
+          maxFileBytes: Number.POSITIVE_INFINITY,
+          maxTotalBytes: Number.POSITIVE_INFINITY,
+          filter: (relPath) => {
+            tracker?.trackFile(path.join(srcAgentDir, 'wire.jsonl.segments', relPath), scope);
+            return true;
+          },
+        },
+      );
       if (fullWires) {
         for (const ckptName of ['engine-v1', 'engine-v1.json']) {
           copySidecarIfBounded(path.join(srcAgentDir, 'replay-checkpoints', ckptName), path.join(dstAgentDir, 'replay-checkpoints', ckptName), maxCheckpointBytes, stats, tracker, scope);

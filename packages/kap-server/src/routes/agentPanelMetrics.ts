@@ -276,32 +276,43 @@ export async function readPersistedAgentPanelMetrics(
       if (runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
         return deadlineFallbackEntry(agentId, meta, false);
       }
-      const size = await logicalByteSize(storage, `${sessionScope}/agents/${agentId}`, 'wire.jsonl');
-      options.signal?.throwIfAborted();
-      if (size === undefined || size === 0) {
-        return deadlineFallbackEntry(agentId, meta, size === 0);
-      }
-      if (runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
+      try {
+        const size = await logicalByteSize(storage, `${sessionScope}/agents/${agentId}`, 'wire.jsonl');
+        options.signal?.throwIfAborted();
+        if (size === undefined || size === 0) {
+          return deadlineFallbackEntry(agentId, meta, size === 0);
+        }
+        if (runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
+          return deadlineFallbackEntry(agentId, meta, false);
+        }
+        const [facts, profile] = await Promise.all([
+          readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, agentId, meta, options.signal),
+          readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, meta, options.signal,
+            { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
+        ]);
+        const native = profile?.driver !== 'external' && !(metadata !== undefined && isExternalClientMain(metadata, agentId))
+          && (profile?.executorId ?? meta?.executor ?? 'native') === 'native';
+        const context: PersistedAgentContext = {
+          contextTokens: facts.contextTokens ?? null,
+          contextLimit: native ? persistedAgentContextLimit(core, profile, profile?.modelAlias ?? meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
+          compactionCount: native ? facts.panelAccounting?.successfulCompactions ?? null : null,
+        };
+        return [agentId, {
+          facts,
+          checkpointReady: facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+          context,
+          contextComplete: true,
+        }] as const;
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        log.warn('agent panel runtime prepass skipped unreadable wire', {
+          workspace_id: workspaceId,
+          session_id: sessionId,
+          agent_id: agentId,
+          err: error,
+        });
         return deadlineFallbackEntry(agentId, meta, false);
       }
-      const [facts, profile] = await Promise.all([
-        readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, agentId, meta, options.signal),
-        readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, agentId, meta, options.signal,
-          { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET }),
-      ]);
-      const native = profile?.driver !== 'external' && !(metadata !== undefined && isExternalClientMain(metadata, agentId))
-        && (profile?.executorId ?? meta?.executor ?? 'native') === 'native';
-      const context: PersistedAgentContext = {
-        contextTokens: facts.contextTokens ?? null,
-        contextLimit: native ? persistedAgentContextLimit(core, profile, profile?.modelAlias ?? meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
-        compactionCount: native ? facts.panelAccounting?.successfulCompactions ?? null : null,
-      };
-      return [agentId, {
-        facts,
-        checkpointReady: facts.complete && size > PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
-        context,
-        contextComplete: true,
-      }] as const;
     }));
     for (const [agentId, entry] of runtime) contexts.set(agentId, entry.context);
     const resolvedUsage = (agentId: string, canonical: PersistedUsage): PersistedUsage => {
