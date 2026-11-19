@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { InstallAppearancePackResponse, ListAppearancePacksResponse } from '@kiki/protocol';
+import { Agent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildStoredZip } from '../src/lib/storedZip';
@@ -171,7 +172,7 @@ describe('server-v2 appearance pack routes', () => {
 
   it('installs the shipped example pack from docs/examples unchanged', async () => {
     const dir = join(__dirname, '..', '..', '..', 'docs', 'examples', 'appearance-packs', 'dusk-harbor');
-    const names = (await readdir(dir)).sort();
+    const names = (await readdir(dir)).toSorted();
     const zip = buildStoredZip(await Promise.all(names.map(async (name) => ({ name, data: await readFile(join(dir, name)) }))));
     const result = await install(zip);
     expect(result.code, result.msg).toBe(0);
@@ -208,6 +209,21 @@ describe('remote background import policy', () => {
     const redirect = (async () => new Response(null, { status: 302, headers: { location: 'https://internal.example/a.png' } })) as unknown as typeof fetch;
     const resolve = async (host: string) => (host === 'internal.example' ? ['10.1.2.3'] : ['93.184.216.34']);
     await expect(fetchRemoteMedia('https://example.com/a.png', resolve, redirect)).rejects.toThrow(/public/);
+  });
+
+  it('resolves each hop once and hands the fetch a dispatcher pinned to that answer', async () => {
+    const answers = [['93.184.216.34'], ['127.0.0.1']];
+    let resolved = 0;
+    const resolve = async () => answers[Math.min(resolved++, answers.length - 1)]!;
+    const dispatchers: unknown[] = [];
+    const pinned = (async (_url: URL, init?: RequestInit & { dispatcher?: unknown }) => {
+      dispatchers.push(init?.dispatcher);
+      return new Response(new Uint8Array(PNG), { status: 200, headers: { 'content-type': 'image/png' } });
+    }) as unknown as typeof fetch;
+    await expect(fetchRemoteMedia('https://rebind.example/a.png', resolve, pinned)).resolves.toMatchObject({ mime: 'image/png' });
+    expect(resolved).toBe(1);
+    expect(dispatchers).toHaveLength(1);
+    expect(dispatchers[0]).toBeInstanceOf(Agent);
   });
 
   it('refuses a page that is not media, whatever its content type claims', async () => {

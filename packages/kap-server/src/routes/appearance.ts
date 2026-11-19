@@ -2,7 +2,7 @@ import { lookup } from 'node:dns/promises';
 import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import net from 'node:net';
+import net, { type LookupFunction } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 import {
   APPEARANCE_LIMITS,
@@ -29,6 +29,7 @@ import {
 import { IBootstrapService, type Scope } from '@kiki/agent-core-v2';
 import { resolveSpaceInheritance } from '@kiki/agent-core-v2/app/bootstrap/spaceInheritance';
 import { readSpaceHome } from '@kiki/agent-core-v2/app/bootstrap/spaceHome';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { z } from 'zod';
 
 import { buildStoredZip } from '../lib/storedZip';
@@ -78,7 +79,7 @@ export interface AppearanceRouteOptions {
   readonly inheritedThemesDirs?: readonly string[];
   /** Test seam for the URL importer; production resolves through DNS. */
   readonly resolveHost?: (host: string) => Promise<readonly string[]>;
-  /** Test seam for the URL importer; production uses global fetch. */
+  /** Test seam for the URL importer; production uses undici fetch with a dispatcher pinned to the validated addresses. */
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -218,55 +219,86 @@ async function defaultResolveHost(host: string): Promise<readonly string[]> {
   return (await lookup(host, { all: true })).map((entry) => entry.address);
 }
 
+function pinnedAgent(addresses: readonly string[]): Agent {
+  const entries = addresses.map((address) => ({ address, family: net.isIP(address) }));
+  const pinnedLookup: LookupFunction = (_hostname, options, callback) => {
+    const family = typeof options.family === 'number' ? options.family : 0;
+    const matching = entries.filter((entry) => isPublicAddress(entry.address) && (family === 0 || entry.family === family));
+    const first = matching[0];
+    if (first === undefined) {
+      callback(Object.assign(new Error('the address is not on the public internet'), { code: 'ENOTFOUND' }), '', 0);
+      return;
+    }
+    if (options.all === true) callback(null, matching);
+    else callback(null, first.address, first.family);
+  };
+  return new Agent({ connect: { lookup: pinnedLookup } });
+}
+
+type HopOutcome = { media: { bytes: Buffer; mime: string; name: string }; redirect?: never } | { media?: never; redirect: URL };
+
+async function fetchHop(current: URL, dispatcher: Agent, fetchImpl: typeof fetch): Promise<HopOutcome> {
+  const response = await fetchImpl(current, {
+    dispatcher,
+    redirect: 'manual',
+    credentials: 'omit',
+    headers: { accept: 'image/*,video/*' },
+    signal: AbortSignal.timeout(60_000),
+  } as RequestInit);
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get('location');
+    if (location === null) throw new PackError(ErrorCode.VALIDATION_FAILED, 'redirect without a location');
+    return { redirect: new URL(location, current) };
+  }
+  if (!response.ok || response.body === null) throw new PackError(ErrorCode.FS_PATH_NOT_FOUND, `the server answered ${response.status}`);
+  const declaredType = (response.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  const limit = maxBytesFor(declaredType.startsWith('video/') ? 'video/' : 'image/');
+  const length = Number(response.headers.get('content-length') ?? '0');
+  if (length > limit) throw new PackError(ErrorCode.FILE_TOO_LARGE, 'the file is too large');
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    total += chunk.byteLength;
+    if (total > limit) throw new PackError(ErrorCode.FILE_TOO_LARGE, 'the file is too large');
+    chunks.push(chunk);
+  }
+  const bytes = Buffer.concat(chunks);
+  const mime = sniffBackgroundMediaType(bytes.subarray(0, 32));
+  if (mime === null) throw new PackError(ErrorCode.VALIDATION_FAILED, 'not a supported image or video');
+  if (bytes.byteLength > maxBytesFor(mime)) throw new PackError(ErrorCode.FILE_TOO_LARGE, 'the file is too large');
+  const name = decodeURIComponent(current.pathname.split('/').at(-1) ?? '') || 'background';
+  return { media: { bytes, mime, name: name.slice(0, 200) } };
+}
+
 /**
  * Fetch one remote background under the media policy: https only, every hop
- * resolved and refused unless all its addresses are public, no credentials
+ * resolved and refused unless all its addresses are public, each hop's
+ * connection pinned to exactly those validated addresses, no credentials
  * sent, the declared and streamed size capped, and the bytes type-sniffed.
  */
 export async function fetchRemoteMedia(
   url: string,
   resolveHost: (host: string) => Promise<readonly string[]> = defaultResolveHost,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = undiciFetch as unknown as typeof fetch,
 ): Promise<{ bytes: Buffer; mime: string; name: string }> {
   let current = new URL(url);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     if (current.protocol !== 'https:') throw new PackError(ErrorCode.VALIDATION_FAILED, 'only https URLs can be imported');
     if (current.username !== '' || current.password !== '') throw new PackError(ErrorCode.VALIDATION_FAILED, 'URLs with credentials are refused');
-    const host = current.hostname.replace(/^\[|\]$/g, '');
+    const host = current.hostname.replaceAll(/^\[|\]$/g, '');
     const addresses = net.isIP(host) !== 0 ? [host] : await resolveHost(host).catch(() => []);
     if (addresses.length === 0 || !addresses.every(isPublicAddress)) {
       throw new PackError(ErrorCode.VALIDATION_FAILED, 'the address is not on the public internet');
     }
-    const response = await fetchImpl(current, {
-      redirect: 'manual',
-      credentials: 'omit',
-      headers: { accept: 'image/*,video/*' },
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
-      if (location === null) throw new PackError(ErrorCode.VALIDATION_FAILED, 'redirect without a location');
-      current = new URL(location, current);
-      continue;
+    const dispatcher = pinnedAgent(addresses);
+    let outcome: HopOutcome;
+    try {
+      outcome = await fetchHop(current, dispatcher, fetchImpl);
+    } finally {
+      await dispatcher.destroy().catch(() => undefined);
     }
-    if (!response.ok || response.body === null) throw new PackError(ErrorCode.FS_PATH_NOT_FOUND, `the server answered ${response.status}`);
-    const declaredType = (response.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
-    const limit = maxBytesFor(declaredType.startsWith('video/') ? 'video/' : 'image/');
-    const length = Number(response.headers.get('content-length') ?? '0');
-    if (length > limit) throw new PackError(ErrorCode.FILE_TOO_LARGE, 'the file is too large');
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-      total += chunk.byteLength;
-      if (total > limit) throw new PackError(ErrorCode.FILE_TOO_LARGE, 'the file is too large');
-      chunks.push(chunk);
-    }
-    const bytes = Buffer.concat(chunks);
-    const mime = sniffBackgroundMediaType(bytes.subarray(0, 32));
-    if (mime === null) throw new PackError(ErrorCode.VALIDATION_FAILED, 'not a supported image or video');
-    if (bytes.byteLength > maxBytesFor(mime)) throw new PackError(ErrorCode.FILE_TOO_LARGE, 'the file is too large');
-    const name = decodeURIComponent(current.pathname.split('/').at(-1) ?? '') || 'background';
-    return { bytes, mime, name: name.slice(0, 200) };
+    if (outcome.media !== undefined) return outcome.media;
+    current = outcome.redirect;
   }
   throw new PackError(ErrorCode.VALIDATION_FAILED, 'too many redirects');
 }
