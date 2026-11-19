@@ -264,4 +264,45 @@ describe('opened', () => {
     expect(plain.querySelector('[data-persona-binding-restore]')).toBeNull();
     expect(plain.querySelector('[data-persona-binding-current]')).not.toBeNull();
   });
+
+  it('patches cached sessions in place with live persona identity when apply succeeds', async () => {
+    getPersonaSettings.mockResolvedValue(behind);
+    applyPersonaSettings.mockResolvedValue({
+      personaId: 'xiao-you',
+      boundRevision: 'bbbbbbbb22222222',
+      latestRevision: 'bbbbbbbb22222222',
+      hasUpdate: false,
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounted.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['personas', { includeArchived: false }], [
+      { id: 'xiao-you', name: '小柚·新版', revision: 'bbbbbbbb22222222', archived: false, avatarMime: 'image/png', avatarShape: 'circle' },
+    ]);
+    queryClient.setQueryData(['sessions', false, undefined], {
+      pages: [{
+        items: [{
+          id: 'session_daily_xiao_you',
+          agent_config: { model: 'm', persona: { id: 'xiao-you', name: '小柚' } },
+        }],
+        has_more: false,
+      }],
+      pageParams: [undefined],
+    });
+    await act(async () => {
+      root.render(createElement(QueryClientProvider, { client: queryClient }, createElement(I18nProvider, null,
+        createElement(PersonaSettingsUpdate, { sessionId: 'session_daily_xiao_you' }))));
+    });
+    for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    await click(container, head);
+    await click(container, '[data-persona-binding-apply]');
+    const cached = queryClient.getQueryData<{ pages: { items: { id: string; agent_config: { persona?: { name: string; avatarShape?: string } } }[] }[] }>(['sessions', false, undefined]);
+    expect(cached?.pages[0]?.items[0]?.agent_config.persona).toMatchObject({
+      name: '小柚·新版',
+      avatarShape: 'circle',
+    });
+  });
 });

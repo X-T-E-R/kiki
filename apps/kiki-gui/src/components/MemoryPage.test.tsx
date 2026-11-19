@@ -184,12 +184,15 @@ async function selectType(container: HTMLElement, type: string) {
   expect(button.getAttribute('aria-pressed')).toBe('true');
 }
 
-async function search(container: HTMLElement, value: string) {
+async function search(container: HTMLElement, value: string, waitMs = 230) {
   const input = container.querySelector<HTMLInputElement>('[data-memory-search]')!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  if (waitMs > 0) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, waitMs)); });
+  }
   await flush();
 }
 
@@ -2735,5 +2738,83 @@ describe('MemoryPage automatic upgrade', () => {
     expect(container.querySelector('[data-memory-resume]')).not.toBeNull();
     expect(container.querySelector('[data-memory-upgrade]')).toBeNull();
     expect(retry).not.toHaveBeenCalled();
+  });
+});
+
+describe('MemoryPage unsaved-edit guards and search debounce/validation', () => {
+  it('guards scope pill switches and Entries/Inbox tab toggles behind dirty confirmation', async () => {
+    const settings: MemorySettings = { enabled: true, approval: 'review', budget: 2000, workspaces: {} };
+    seedMemories({ 'global::': [fixtureEntry({ id: 'm_edit', title: 'Original title', body: 'Original body' })] }, settings);
+    vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: [] });
+    const { container } = await mountGuardedPage('/memory', [workspace]);
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-memory-row="m_edit"]')!.click(); });
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-memory-edit]')!.click(); });
+    await flush();
+    const titleInput = container.querySelector<HTMLInputElement>('[data-memory-title]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(titleInput, 'Unsaved edit');
+      titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('[data-guard-dirty]')?.textContent).toBe('true');
+
+    // Switching to Workspace scope asks first; cancelling preserves the unsaved editor.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-memory-kind="workspace"]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-guard-pending]')?.textContent).toBe('true');
+    expect(container.querySelector('[data-memory-kind="global"]')?.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-guard-cancel]')!.click(); });
+    await flush();
+    expect(container.querySelector<HTMLInputElement>('[data-memory-title]')?.value).toBe('Unsaved edit');
+
+    // Switching to Inbox tab also asks first; cancelling keeps the editor, confirming switches.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-memory-tab="inbox"]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-guard-pending]')?.textContent).toBe('true');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-guard-cancel]')!.click(); });
+    await flush();
+    expect(container.querySelector<HTMLInputElement>('[data-memory-title]')?.value).toBe('Unsaved edit');
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-memory-tab="inbox"]')!.click(); });
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-guard-confirm]')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-memory-tab="inbox"]')?.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('debounces search, respects IME composition, and blocks >10-word or punctuation-only queries client-side', async () => {
+    const listSpy = seedMemories({ 'global::': [fixtureEntry({ id: 'm_a', title: 'Alpha', body: 'Needle body' })] });
+    const container = await renderPage();
+    const input = container.querySelector<HTMLInputElement>('[data-memory-search]')!;
+    expect(input.maxLength).toBe(200);
+
+    const callsAfterMount = listSpy.mock.calls.length;
+    // Rapid keystrokes before 200ms do not trigger a search request immediately.
+    await search(container, 'nee', 0);
+    expect(listSpy.mock.calls.length).toBe(callsAfterMount);
+
+    // IME composition suppresses search until compositionend + debounce.
+    await act(async () => { input.dispatchEvent(new Event('compositionstart', { bubbles: true })); });
+    await search(container, 'needle', 230);
+    expect(listSpy.mock.calls.length).toBe(callsAfterMount);
+    await act(async () => { input.dispatchEvent(new Event('compositionend', { bubbles: true })); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 230)); });
+    await flush();
+    expect(listSpy.mock.calls.length).toBe(callsAfterMount + 1);
+    expect(listSpy.mock.calls.at(-1)?.[1]).toMatchObject({ mode: 'search', query: 'needle' });
+
+    // Punctuation-only and >10-word queries show an inline hint without firing listMemory or wiping the list.
+    const callsBeforeInvalid = listSpy.mock.calls.length;
+    await search(container, '...', 230);
+    expect(listSpy.mock.calls.length).toBe(callsBeforeInvalid);
+    expect(container.querySelector('[data-memory-search-hint]')).not.toBeNull();
+    expect(rowIds(container)).toEqual(['m_a']);
+
+    await search(container, 'one two three four five six seven eight nine ten eleven', 230);
+    expect(listSpy.mock.calls.length).toBe(callsBeforeInvalid);
+    expect(container.querySelector('[data-memory-search-hint]')).not.toBeNull();
+    expect(rowIds(container)).toEqual(['m_a']);
   });
 });

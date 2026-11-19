@@ -66,10 +66,13 @@ describe('groupSearchHits', () => {
 });
 
 describe('isSearchable', () => {
-  it('requires two non-space characters', () => {
+  it('requires two non-space characters for Latin text and allows single CJK ideographs', () => {
     expect(isSearchable('')).toBe(false);
     expect(isSearchable(' a ')).toBe(false);
     expect(isSearchable('ab')).toBe(true);
+    expect(isSearchable('梦')).toBe(true);
+    expect(isSearchable(' 锁 ')).toBe(true);
+    expect(isSearchable('表')).toBe(true);
   });
 });
 

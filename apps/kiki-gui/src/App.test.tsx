@@ -462,6 +462,51 @@ describe('App sidebar Escape wiring', () => {
     }
   });
 
+  it('keeps global approval attention and Bell badge visible when the sidebar is filtered to a single workspace', async () => {
+    const base = appHarness.connection as {
+      client: { listSessions: (params?: { workspace_id?: string; pinned?: boolean }) => Promise<unknown> };
+    };
+    const wsASession = {
+      id: 'session_ws_a',
+      workspace_id: 'ws_a',
+      title: 'Workspace A idle',
+      metadata: { cwd: '/work/a' },
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      busy: false,
+      last_seq: 1,
+    };
+    const wsBApproval = {
+      id: 'session_ws_b',
+      workspace_id: 'ws_b',
+      title: 'Workspace B approval',
+      metadata: { cwd: '/work/b' },
+      pending_interaction: 'approval',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:01:00Z',
+      busy: true,
+      last_seq: 2,
+    };
+    const original = base.client.listSessions;
+    base.client.listSessions = async (params) => {
+      if (params?.pinned) return { items: [], has_more: false };
+      if (params?.workspace_id === 'ws_a') return { items: [wsASession], has_more: false };
+      return { items: [wsBApproval, wsASession], has_more: false };
+    };
+    writeLayoutPreferences({ filters: { workspaces: ['ws_a'], status: [], archived: 'hide' } });
+    try {
+      updateHarness.options = null;
+      await mountApp();
+      await vi.waitFor(() => {
+        const seen = updateHarness.options as { hasPendingApproval?: boolean } | null;
+        expect(seen?.hasPendingApproval).toBe(true);
+      });
+    } finally {
+      base.client.listSessions = original;
+      writeLayoutPreferences({ filters: { workspaces: [], status: [], archived: 'hide' } });
+    }
+  });
+
   describe('plugin focus requests', () => {
     // A live request: a window that watches would move to its session.
     const request = { request: { id: 1, pluginId: 'example-plugin', sessionId: 'example-session', at: 0 } };

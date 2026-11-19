@@ -7,7 +7,9 @@ import type {
   QuestionAnswer,
   QuestionItem,
   QuestionRequest,
+  Session,
 } from '@kiki/protocol';
+import type { SessionListData } from '@kiki/session-core/sessions';
 
 import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
@@ -27,6 +29,23 @@ const SECONDARY_BTN =
 const QUIET_BTN =
   'inline-flex min-h-7 pointer-coarse:min-h-8 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-55';
 
+export interface ActivityThreadTarget {
+  readonly agentId?: string;
+  readonly interactionId?: string;
+}
+
+export type ActivityInlineDetail =
+  | { readonly kind: 'approval'; readonly approvals: readonly ApprovalRequest[] }
+  | { readonly kind: 'question'; readonly questions: readonly QuestionRequest[] };
+
+export function activityInlineQueryKey(
+  sessionId: string,
+  reason: 'approval' | 'question',
+  lastSeq: number,
+) {
+  return ['activity-inline-interaction', sessionId, reason, lastSeq] as const;
+}
+
 function isRejectOptionKind(kind: string): boolean {
   const lower = kind.toLowerCase();
   return lower.includes('reject') || lower.includes('deny') || lower.includes('cancel');
@@ -40,7 +59,7 @@ function ApprovalDecisionRow({
 }: {
   sessionId: string;
   request: ApprovalRequest;
-  onOpenThread: () => void;
+  onOpenThread: (target?: ActivityThreadTarget) => void;
   onSettled: (id: string) => void;
 }) {
   const { t } = useI18n();
@@ -165,21 +184,32 @@ function ApprovalDecisionRow({
           : null}
 
         {detail.kind === 'plan_review' && !detail.hasOptions ? (
-          <button
-            type="button"
-            data-activity-approve={request.approval_id}
-            disabled={busy}
-            onClick={() => { void submit('approved'); }}
-            className={PRIMARY_BTN}
-          >
-            {t('activity.inline.approvePlan')}
-          </button>
+          <>
+            <button
+              type="button"
+              data-activity-approve={request.approval_id}
+              disabled={busy}
+              onClick={() => { void submit('approved'); }}
+              className={PRIMARY_BTN}
+            >
+              {t('activity.inline.approvePlan')}
+            </button>
+            <button
+              type="button"
+              data-activity-reject={request.approval_id}
+              disabled={busy}
+              onClick={() => { void submit('rejected'); }}
+              className={QUIET_BTN}
+            >
+              {t('activity.inline.reject')}
+            </button>
+          </>
         ) : null}
 
         <button
           type="button"
           data-activity-review-thread={request.approval_id}
-          onClick={onOpenThread}
+          onClick={() => { onOpenThread({ agentId: request.agent_id, interactionId: request.approval_id }); }}
           className={QUIET_BTN}
         >
           <span>{t('activity.reviewInThread')}</span>
@@ -198,7 +228,7 @@ function QuestionDecisionRow({
 }: {
   sessionId: string;
   request: QuestionRequest;
-  onOpenThread: () => void;
+  onOpenThread: (target?: ActivityThreadTarget) => void;
   onSettled: (id: string) => void;
 }) {
   const { t } = useI18n();
@@ -385,7 +415,10 @@ function QuestionDecisionRow({
         <button
           type="button"
           data-activity-review-thread={request.question_id}
-          onClick={onOpenThread}
+          onClick={() => {
+            const agentId = (request as QuestionRequest & { readonly agent_id?: string }).agent_id;
+            onOpenThread({ agentId, interactionId: request.question_id });
+          }}
           className={QUIET_BTN}
         >
           <span>{t('activity.reviewInThread')}</span>
@@ -417,7 +450,7 @@ export function ActivityInlineDecisionStrip({
   sessionId: string;
   reason: 'approval' | 'question';
   lastSeq: number;
-  onOpenThread: () => void;
+  onOpenThread: (target?: ActivityThreadTarget) => void;
   limiter?: ConcurrencyLimiter;
 }) {
   const { t } = useI18n();
@@ -427,8 +460,8 @@ export function ActivityInlineDecisionStrip({
 
   const supported = canInlineTriageSession(connection?.client, reason);
 
-  const detailQuery = useQuery({
-    queryKey: ['activity-inline-interaction', sessionId, reason, lastSeq],
+  const detailQuery = useQuery<ActivityInlineDetail>({
+    queryKey: activityInlineQueryKey(sessionId, reason, lastSeq),
     enabled: supported,
     staleTime: 10_000,
     queryFn: ({ signal }) =>
@@ -444,12 +477,37 @@ export function ActivityInlineDecisionStrip({
   });
 
   const handleSettled = (interactionId: string) => {
-    setSettledIds((prev) => {
-      const next = new Set(prev);
-      next.add(interactionId);
-      return next;
-    });
-    void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    const nextSettled = new Set([...settledIds, interactionId]);
+    setSettledIds(nextSettled);
+    const hasRemaining = detailQuery.data?.kind === 'approval'
+      ? detailQuery.data.approvals.some((req) => !nextSettled.has(req.approval_id))
+      : detailQuery.data?.kind === 'question'
+        ? detailQuery.data.questions.some((req) => !nextSettled.has(req.question_id))
+        : false;
+    if (!hasRemaining) {
+      queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => {
+        if (old === undefined || !Array.isArray(old.pages)) return old;
+        let changed = false;
+        const pages = old.pages.map((page) => {
+          let pageChanged = false;
+          const items = page.items.map((session) => {
+            if (session.id === sessionId && session.pending_interaction === reason) {
+              pageChanged = true;
+              changed = true;
+              return { ...session, pending_interaction: undefined };
+            }
+            return session;
+          });
+          return pageChanged ? { ...page, items } : page;
+        });
+        return changed ? { ...old, pages } : old;
+      });
+      queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
+        old !== undefined && old.id === sessionId && old.pending_interaction === reason
+          ? { ...old, pending_interaction: undefined }
+          : old,
+      );
+    }
     void queryClient.invalidateQueries({ queryKey: ['activity-inline-interaction', sessionId] });
   };
 
@@ -476,7 +534,7 @@ export function ActivityInlineDecisionStrip({
       ) : detailQuery.isError ? (
         <button
           type="button"
-          onClick={onOpenThread}
+          onClick={() => { onOpenThread(); }}
           className={QUIET_BTN}
         >
           <span>{t('activity.reviewInThread')}</span>

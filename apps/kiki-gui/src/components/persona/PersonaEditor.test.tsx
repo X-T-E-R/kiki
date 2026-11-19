@@ -26,6 +26,7 @@ import { PersonaEditor } from './PersonaEditor';
 const navigate = vi.fn();
 const getPersona = vi.fn();
 const putPersona = vi.fn();
+const putPersonaAvatar = vi.fn();
 const listWorkspaceCatalog = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const listModels = vi.fn();
@@ -37,7 +38,7 @@ vi.mock('../dirtyGuard', async (importOriginal) => ({
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../../state/connection', () => {
   const value = () => ({
-    client: { getPersona, putPersona, listWorkspaceCatalog, listNamedAgentProfiles, listModels, klient: { rest: { personas: {} } } },
+    client: { getPersona, putPersona, putPersonaAvatar, listWorkspaceCatalog, listNamedAgentProfiles, listModels, klient: { rest: { personas: {} } } },
     scopeId: 'local',
     sshLabel: null,
   });
@@ -49,7 +50,7 @@ const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT
 beforeAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = true; });
 afterAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = false; });
 beforeEach(() => {
-  for (const fn of [navigate, getPersona, putPersona, listWorkspaceCatalog, listNamedAgentProfiles, listModels]) fn.mockReset();
+  for (const fn of [navigate, getPersona, putPersona, putPersonaAvatar, listWorkspaceCatalog, listNamedAgentProfiles, listModels]) fn.mockReset();
   clearToasts();
   localStorage.setItem('kiki.locale', 'zh');
   listNamedAgentProfiles.mockResolvedValue({ items: [] });
@@ -395,5 +396,27 @@ describe('a new revision read back while the editor is open', () => {
     await fill(field(container, 'job') as HTMLInputElement, '写发布说明');
     await submit(container);
     expect((putPersona.mock.calls.at(-1)![0] as { revision?: string }).revision).toBe('revision-2');
+  });
+
+  it('exposes a primary Start chat button for active personas and hides/disables it when archived', async () => {
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
+    getPersona.mockResolvedValue(snapshot({ id: 'xiao-you', name: '小柚', description: '负责发布节奏。' }));
+    const { container, queryClient, rerender } = await renderWith('xiao-you');
+
+    const startBtn = container.querySelector<HTMLButtonElement>('[data-persona-start-chat]');
+    expect(startBtn).not.toBeNull();
+    await act(async () => { startBtn!.click(); });
+    expect(navigate).toHaveBeenCalledWith('/p/xiao-you/daily');
+
+    // Archived persona hides primary start button and disables overflow start action.
+    navigate.mockClear();
+    queryClient.setQueryData(['personas', { includeArchived: true }], [
+      { id: 'xiao-you', name: '小柚', revision: 'revision-1', archived: true },
+    ]);
+    await rerender();
+    expect(container.querySelector('[data-persona-start-chat]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-persona-actions]')!.click(); });
+    const menuStart = container.querySelector<HTMLButtonElement>('[data-persona-action="start"]')!;
+    expect(menuStart.disabled).toBe(true);
   });
 });

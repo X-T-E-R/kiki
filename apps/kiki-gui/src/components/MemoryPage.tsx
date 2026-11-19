@@ -85,6 +85,25 @@ export const MEMORY_SETTINGS_QUERY_KEY = ['memory-settings'] as const;
 const MEMORY_EDITOR_DIRTY_ID = 'memory-editor';
 /** Every workspace's computed effective state, whichever one the card shows. */
 const MEMORY_WORKSPACE_SETTINGS_KEY = ['memory-workspace-settings'] as const;
+const MEMORY_SEARCH_DEBOUNCE_MS = 200;
+const MEMORY_SEARCH_MAX_CHARS = 200;
+const MEMORY_SEARCH_MAX_WORDS = 10;
+
+type MemorySearchValidation =
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'valid'; readonly query: string }
+  | { readonly kind: 'too-many-words' }
+  | { readonly kind: 'too-long' }
+  | { readonly kind: 'no-text' };
+
+export function validateMemorySearch(raw: string): MemorySearchValidation {
+  const trimmed = raw.trim();
+  if (trimmed === '') return { kind: 'empty' };
+  if (trimmed.length > MEMORY_SEARCH_MAX_CHARS) return { kind: 'too-long' };
+  if (trimmed.split(/\s+/).length > MEMORY_SEARCH_MAX_WORDS) return { kind: 'too-many-words' };
+  if (!/[\p{L}\p{N}\p{S}]/u.test(trimmed)) return { kind: 'no-text' };
+  return { kind: 'valid', query: trimmed };
+}
 
 export interface MemoryPageProps {
   readonly workspaceOptions: readonly WorkspaceCatalogEntry[];
@@ -160,6 +179,11 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
   // Persona ranges may also be a Bot home outside the directory. The hook
   // validates that range, and waits rather than treating pending as absent.
   const effectiveScope = mode === 'persona' ? normalizedWorkspaceParam : scope;
+  const guard = useDirtyGuard();
+  const confirmLeaveEditor = (go: () => void) => {
+    if (guard?.confirmDiscard === undefined) { go(); return; }
+    guard.confirmDiscard(MEMORY_EDITOR_DIRTY_ID, go);
+  };
   const patchParams = (workspaceId: string | undefined, personaId: string | undefined, kind?: 'workspace' | 'persona') => {
     const updated = new URLSearchParams(params);
     updated.delete('entry');
@@ -169,8 +193,20 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
     else updated.set('workspace', workspaceId);
     if (personaId === undefined) updated.delete('persona');
     else updated.set('persona', personaId);
-    setEmptyKind(kind !== undefined && workspaceId === undefined && personaId === undefined ? { search: updated.toString(), kind } : undefined);
-    setParams(updated);
+    const nextEmptyKind = kind !== undefined && workspaceId === undefined && personaId === undefined
+      ? { search: updated.toString(), kind }
+      : undefined;
+    if (
+      updated.toString() === params.toString()
+      && nextEmptyKind?.kind === emptyKind?.kind
+      && nextEmptyKind?.search === emptyKind?.search
+    ) {
+      return;
+    }
+    confirmLeaveEditor(() => {
+      setEmptyKind(nextEmptyKind);
+      setParams(updated);
+    });
   };
   const settingsQuery = useQuery({
     queryKey: MEMORY_SETTINGS_QUERY_KEY,
@@ -570,13 +606,29 @@ function MemoryScopeView({
   const [tab, setTab] = useState<MemoryTab>(review && linkedTab === 'inbox' ? 'inbox' : 'entries');
   useEffect(() => { if (!review) setTab('entries'); }, [review]);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [composing, setComposing] = useState(false);
   const [typeFilter, setTypeFilter] = useState<MemoryType | 'all'>('all');
   const [showInactive, setShowInactive] = useState(linkedInactive);
   const [selectedId, setSelectedId] = useState<string | null>(linkedEntry === null ? null : `${namespace}:${linkedEntry}`);
   useEffect(() => {
+    if (composing) return;
+    const next = validateMemorySearch(search);
+    if (next.kind === 'empty') {
+      setDebouncedSearch('');
+      return;
+    }
+    if (next.kind !== 'valid') return;
+    const timer = setTimeout(() => {
+      setDebouncedSearch(next.query);
+    }, MEMORY_SEARCH_DEBOUNCE_MS);
+    return () => { clearTimeout(timer); };
+  }, [search, composing]);
+  useEffect(() => {
     if (linkedEntry === null) return;
     setSelectedId(`${namespace}:${linkedEntry}`);
     setSearch('');
+    setDebouncedSearch('');
     setTypeFilter('all');
     setCreating(false);
     setShowInactive(linkedInactive);
@@ -597,12 +649,12 @@ function MemoryScopeView({
   }));
 
   const lists = useQueries({ queries: sources.map((source) => {
-    const queryKey = ['memory', targetKey(source.target), { search, typeFilter, showInactive }];
+    const queryKey = ['memory', targetKey(source.target), { search: debouncedSearch, typeFilter, showInactive }];
     return {
       queryKey,
       queryFn: ({ signal }: { signal: AbortSignal }) => continueMemory(
         (cursor) => client.listMemory(source.target, cursor === undefined ? {
-          mode: search.trim() === '' ? 'list' : 'search', query: search,
+          mode: debouncedSearch === '' ? 'list' : 'search', query: debouncedSearch,
           type: typeFilter === 'all' ? undefined : typeFilter,
           include_inactive: showInactive, page_size: 20,
           statuses: showInactive ? ['active', 'superseded', 'archived'] : ['active'],
@@ -665,7 +717,15 @@ function MemoryScopeView({
     // Nothing is read while the store upgrades, so an absent row is not proof the entry is gone.
     if (!upgrading && !readingEntries && !listQuery.isError && !coverageIncomplete && selectedId !== null && selected === undefined) setSelectedId(null);
   }, [upgrading, readingEntries, listQuery.isError, coverageIncomplete, selectedId, selected]);
-  const filtersActive = search.trim() !== '' || typeFilter !== 'all' || showInactive;
+  const searchValidation = validateMemorySearch(search);
+  const searchHint = searchValidation.kind === 'too-many-words'
+    ? (locale === 'zh' ? '最多输入 10 个关键词。' : 'Use at most 10 words to search memory.')
+    : searchValidation.kind === 'too-long'
+      ? (locale === 'zh' ? '搜索词不能超过 200 个字符。' : 'Use at most 200 characters to search memory.')
+      : searchValidation.kind === 'no-text'
+        ? (locale === 'zh' ? '请输入文字或数字关键词进行搜索。' : 'Enter letters or numbers to search memory.')
+        : null;
+  const filtersActive = debouncedSearch !== '' || typeFilter !== 'all' || showInactive;
   const inactiveCount = entries.filter(({ entry }) => entry.status === 'archived' || entry.status === 'superseded').length;
 
   const detail = creating ? (
@@ -743,7 +803,10 @@ function MemoryScopeView({
             role="tab"
             aria-selected={active}
             data-memory-tab={candidate}
-            onClick={() => { setTab(candidate); }}
+            onClick={() => {
+              if (candidate === tab) return;
+              leaveEditor(() => { setTab(candidate); });
+            }}
             className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
               active ? 'border-accent font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
             }`}
@@ -817,7 +880,10 @@ function MemoryScopeView({
                       type="search"
                       data-memory-search
                       value={search}
+                      maxLength={MEMORY_SEARCH_MAX_CHARS}
                       onChange={(event) => { setSearch(event.target.value); }}
+                      onCompositionStart={() => { setComposing(true); }}
+                      onCompositionEnd={(event) => { setComposing(false); setSearch(event.currentTarget.value); }}
                       placeholder={t('memory.search.placeholder')}
                       aria-label={t('memory.search.aria')}
                       className="h-8 min-w-0 flex-1 rounded-md bg-ink/[0.04] px-3 text-[13px] text-ink placeholder:text-ink-faint focus-visible:outline-2 focus-visible:outline-selected-ink"
@@ -826,11 +892,16 @@ function MemoryScopeView({
                       target={target}
                       onOpenEntry={(id) => {
                         refresh();
-                        setSearch(''); setTypeFilter('all'); setCreating(false);
+                        setSearch(''); setDebouncedSearch(''); setTypeFilter('all'); setCreating(false);
                         setSelectedId(`${targetKey(target)}:${id}`);
                       }}
                     />
                   </div>
+                  {searchHint !== null && !composing ? (
+                    <p data-memory-search-hint role="status" className="text-[12px] text-amber-ink">
+                      {searchHint}
+                    </p>
+                  ) : null}
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                     {/* The type matters to what an entry is, so the filter
                         stays; on a phone its five chips are one dropdown. */}
@@ -887,7 +958,7 @@ function MemoryScopeView({
                         <p className="text-[13px] text-ink-soft">{t('memory.empty.filtered')}</p>
                         <button
                           type="button"
-                          onClick={() => { setSearch(''); setTypeFilter('all'); setShowInactive(false); }}
+                          onClick={() => { setSearch(''); setDebouncedSearch(''); setTypeFilter('all'); setShowInactive(false); }}
                           className="mt-1 text-[13px] font-medium text-ink underline underline-offset-2"
                         >
                           {t('memory.empty.clear')}

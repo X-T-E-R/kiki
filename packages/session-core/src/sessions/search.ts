@@ -55,9 +55,12 @@ export function groupSearchHits(
 /** Sidebar debounce: short queries are not worth a round-trip. */
 export const SEARCH_MIN_QUERY_LENGTH = 2;
 export const SEARCH_DEBOUNCE_MS = 300;
+const CJK_IDEOGRAPH_RE = /\p{Script=Han}/u;
 
 export function isSearchable(query: string): boolean {
-  return query.trim().length >= SEARCH_MIN_QUERY_LENGTH;
+  const trimmed = query.trim();
+  if (trimmed.length >= SEARCH_MIN_QUERY_LENGTH) return true;
+  return trimmed.length === 1 && CJK_IDEOGRAPH_RE.test(trimmed);
 }
 
 /* ------------------------------------------------------------------------ *

@@ -219,6 +219,33 @@ describe('quick switcher content search', () => {
     expect(document.querySelector('[data-switcher-search-status]')).toBeNull();
     expect(document.body.textContent).toContain('No sessions match');
   });
+
+  it('highlights hit snippets, shows turn and subagent badges, and carries encoded step and query params on open', async () => {
+    client.searchMessages.mockResolvedValue(
+      searchPage({ state: 'ready', indexed_sessions: 2, total_sessions: 2, documents: 4 }, [{
+        ...hit,
+        session_id: 'session/beta',
+        agent_id: 'sub/worker',
+        turn: 7,
+        step_id: 't7.3',
+        snippet: 'the cache lives here',
+      }]),
+    );
+    await mount();
+    await typeQuery('cache');
+    await waitFor(has('[data-switcher-hit-turn]'), 'the hit row with turn badge');
+
+    const hitRow = [...document.querySelectorAll<HTMLButtonElement>('#quick-switcher-list [role="option"]')]
+      .find((node) => node.textContent?.includes('the cache lives here'))!;
+    expect(hitRow.querySelector('mark')?.textContent?.toLowerCase()).toBe('cache');
+    expect(hitRow.querySelector('[data-switcher-hit-turn]')?.textContent).toBe('#7');
+    expect(hitRow.querySelector('[data-switcher-hit-agent]')?.textContent).toBe('sub/worker');
+
+    await act(async () => { hitRow.click(); });
+    expect(document.querySelector('[data-test-location]')?.textContent).toBe(
+      '/s/session%2Fbeta/agent/sub%2Fworker?turn=7&step=t7.3&q=cache',
+    );
+  });
 });
 
 describe('quick switcher memory advisor command', () => {

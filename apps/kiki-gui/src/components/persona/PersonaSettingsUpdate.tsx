@@ -32,8 +32,9 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 
-import type { SessionPersonaSettings } from '@kiki/protocol';
+import type { PersonaSummary, Session, SessionPersonaSettings } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
+import type { SessionListData } from '@kiki/session-core/sessions';
 
 import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
@@ -44,6 +45,8 @@ import { FeedbackLine, SavedTick } from '../controls';
 import { useSavedTick } from '../settings/useSavedTick';
 import { SidePanel } from '../SidePanel';
 import { PRIMARY_BUTTON } from '../ui';
+import { personaAvatarOf } from './PersonaAvatar';
+import { PERSONAS_QUERY_KEY } from './usePersonas';
 
 export interface PersonaSettingsUpdateProps {
   readonly sessionId: string;
@@ -100,8 +103,57 @@ function usePersonaSettings(sessionId: string): PersonaSettingsController {
   const applyMutation: UseMutationResult<SessionPersonaSettings, unknown, boolean> = useMutation({
     mutationFn: (restoreDefaults: boolean) => client.applyPersonaSettings(sessionId, restoreDefaults ? { restoreDefaults: true } : {}),
     onSuccess: (next, restoreDefaults) => {
-      // The response is the new reading; nothing has to be re-fetched.
+      // The response is the new reading; patch cached session metadata in place
+      // so open headers and session lists reflect the updated persona binding.
       queryClient.setQueryData<SessionPersonaSettings>(settingsQueryKey(sessionId), next);
+      const latestPersona = next.personaId === undefined
+        ? undefined
+        : queryClient
+            .getQueriesData<readonly PersonaSummary[]>({ queryKey: PERSONAS_QUERY_KEY })
+            .flatMap(([, list]) => list ?? [])
+            .find((entry) => entry.id === next.personaId);
+      const patchSession = (session: Session): Session => {
+        if (session.id !== sessionId || latestPersona === undefined) return session;
+        return {
+          ...session,
+          agent_config: {
+            ...session.agent_config,
+            persona: personaAvatarOf(latestPersona),
+          },
+        };
+      };
+      if (latestPersona !== undefined) {
+        queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => {
+          if (old === undefined || !Array.isArray(old.pages)) return old;
+          return {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              items: page.items.map(patchSession),
+            })),
+          };
+        });
+        queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
+          old === undefined ? old : patchSession(old),
+        );
+      }
+      if (typeof client.getSession === 'function') {
+        void client.getSession(sessionId).then((fresh) => {
+          queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => {
+            if (old === undefined || !Array.isArray(old.pages)) return old;
+            return {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                items: page.items.map((session) => (session.id === fresh.id ? fresh : session)),
+              })),
+            };
+          });
+          queryClient.setQueriesData<Session>({ queryKey: ['thread-ref'] }, (old) =>
+            old !== undefined && old.id === fresh.id ? fresh : old,
+          );
+        }).catch(() => {});
+      }
       markSaved();
       setConfirmRestore(false);
       setFailure(null);

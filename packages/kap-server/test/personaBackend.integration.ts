@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IAgentLifecycleService, IAgentProfileRegistry, IAgentProfileService, IAtomicDocumentStore, IConfigService, IEventBus, ISessionActivityView, ISessionIndex, ISessionManager, ISessionMetadata, IWorkspaceService, normalizeAgentProfile } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService, IAgentProfileRegistry, IAgentProfileService, IAtomicDocumentStore, IConfigService, IEventBus, IEventService, ISessionActivityView, ISessionIndex, ISessionManager, ISessionMetadata, IWorkspaceService, normalizeAgentProfile } from '@kiki/agent-core-v2';
 import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
@@ -510,5 +510,27 @@ describe('persona backend contracts', () => {
     const unboundHeads = await request<Record<string, { total: number; items: Session[] }>>('/personas/session-heads?per_persona_limit=10&include_private=true');
     expect(unboundHeads.data['nia-fast']?.items.map((item) => item.id)).toEqual(['cold-fast']);
     expect(unboundHeads.data['nia-director']?.items.map((item) => item.id)).toEqual(['cold-director']);
+  });
+
+  it('publishes session.meta.updated when applying persona settings via REST', async () => {
+    const original = await persona('nia-live');
+    const session = await create({ persona: 'nia-live', metadata: { cwd: home } });
+    await server.core.accessor.get(IPersonaStore).put({ ...original.definition, name: 'Nia Renamed', description: 'Updated.' });
+
+    const metaEvents: { sessionId?: string }[] = [];
+    const sub = server.core.accessor.get(IEventService).subscribe((event) => {
+      if (event.type === 'session.meta.updated') {
+        const payload = (event as { payload?: { sessionId?: string } }).payload;
+        metaEvents.push({ sessionId: payload?.sessionId });
+      }
+    });
+    try {
+      const applied = await request<{ hasUpdate: boolean }>(`/sessions/${session.id}/persona-settings`, 'POST', {});
+      expect(applied.code, applied.msg).toBe(0);
+      expect(applied.data.hasUpdate).toBe(false);
+      expect(metaEvents.some((entry) => entry.sessionId === session.id)).toBe(true);
+    } finally {
+      sub.dispose();
+    }
   });
 });

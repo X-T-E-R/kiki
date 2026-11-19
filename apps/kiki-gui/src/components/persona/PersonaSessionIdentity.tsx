@@ -129,11 +129,17 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
   const narrow = useMediaQuery('(max-width: 639px)');
 
   if (bound === undefined) return null;
-  // The session carries its own face; the directory only refines it (a newer
-  // shape choice than the frozen binding).
-  const face = summary?.avatarMime === undefined
+  const displayName = summary !== undefined && summary.name.trim() !== '' ? summary.name : bound.name;
+  // The session carries its own face; the directory refines it with live name,
+  // avatar, and shape changes once loaded.
+  const face = summary === undefined
     ? bound
-    : personaAvatarOf({ id: bound.id, name: bound.name, avatarMime: summary.avatarMime, avatarShape: summary.avatarShape ?? bound.avatarShape });
+    : personaAvatarOf({
+        id: bound.id,
+        name: displayName,
+        avatarMime: summary.avatarMime,
+        avatarShape: summary.avatarShape ?? bound.avatarShape,
+      });
   const isDaily = summary !== undefined && summary.homeSessionId === session.id;
   // One project cue per line: a topic's title element already carries the cwd
   // from `sm` up (that is the path the session runs in), so naming the
@@ -155,15 +161,15 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
       <div className="flex min-w-0 items-center gap-1.5">
         <PersonaAvatar persona={face} size={22} decorative />
         {/* Who this is stays readable at every width; only the length gives. */}
-        <span data-session-persona-name className="min-w-0 max-w-[9rem] truncate text-[13px] leading-[19px] font-medium text-ink">{bound.name}</span>
+        <span data-session-persona-name className="min-w-0 max-w-[9rem] truncate text-[13px] leading-[19px] font-medium text-ink">{displayName}</span>
         <button
           type="button"
           ref={toggle}
           data-persona-header-toggle={bound.id}
           aria-haspopup="menu"
           aria-expanded={open}
-          aria-label={t('persona.openSwitcherAria', { name: bound.name })}
-          title={t('persona.openSwitcherAria', { name: bound.name })}
+          aria-label={t('persona.openSwitcherAria', { name: displayName })}
+          title={t('persona.openSwitcherAria', { name: displayName })}
           onClick={() => { setOpen((value) => !value); }}
           className="flex h-5 w-4 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
         >

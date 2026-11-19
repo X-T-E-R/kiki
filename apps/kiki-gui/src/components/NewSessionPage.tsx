@@ -252,7 +252,8 @@ function NewSessionPageContent({
   const personaChip = useMemo(() => {
     if (state.persona === undefined) return undefined;
     const { id, name } = state.persona.definition;
-    return personaAvatarOf({ id, name, avatarMime: personaList.data?.find((item) => item.id === id)?.avatarMime });
+    const summary = personaList.data?.find((item) => item.id === id);
+    return personaAvatarOf({ id, name, avatarMime: summary?.avatarMime, avatarShape: summary?.avatarShape });
   }, [state.persona, personaList.data]);
   // A daily draft with a known persona leads with its identity block (face,
   // name, the fixed title); one whose persona the directory cannot name keeps
