@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize } from 'node:path';
@@ -314,6 +315,25 @@ describe('space registration REST', () => {
     await rm(join(path, '.space-preferences-undo.json'), { recursive: true });
     await apply(child, id, plan, ['pref:theme']);
     expect((await settings(main, 'main')).preferences.theme).toBe('dark');
+  });
+
+  it('restores an interrupted publication and stale lock left by a crashed process before the next update', async () => {
+    const { child, path, id } = await pair();
+    await edit(child, id, [{ id: 'pref:theme', value: 'dark' }]);
+    const statePath = join(path, 'space-preferences.json');
+    const before = await readFile(statePath, 'utf8');
+    const crashed = JSON.parse(before);
+    crashed.preferences.theme = 'light';
+    await writeFile(join(path, '.space-preferences-transaction.json'), JSON.stringify({ id: 'crashed', files: { [statePath]: Buffer.from(before).toString('base64') }, after: {} }));
+    await writeFile(`${statePath}.space-crashed`, 'staged');
+    await writeFile(statePath, JSON.stringify(crashed));
+    await mkdir(join(root!, '.space-preferences-lock'));
+    await writeFile(join(root!, '.space-preferences-lock/owner'), String(spawnSync(process.execPath, ['-e', '']).pid));
+    await edit(child, id, [{ id: 'pref:foldSteps', value: false }]);
+    expect((await settings(child, id)).preferences).toMatchObject({ theme: 'dark', foldSteps: false });
+    await expect(stat(join(path, '.space-preferences-transaction.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(`${statePath}.space-crashed`)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(join(root!, '.space-preferences-lock'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('preserves config identity, same-value local intent and unselected domains through fixed and follow', async () => {
