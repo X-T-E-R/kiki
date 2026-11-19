@@ -60,6 +60,8 @@ export async function openSearchDatabase(path: string): Promise<DatabaseSync> {
         line_offset INTEGER NOT NULL, ord INTEGER NOT NULL, role TEXT NOT NULL, time INTEGER NOT NULL,
         turn INTEGER, step_id TEXT, text TEXT NOT NULL,
         UNIQUE (file_id, line_offset, ord)) STRICT;
+      CREATE INDEX IF NOT EXISTS docs_session ON docs(session_id, role);
+      CREATE INDEX IF NOT EXISTS files_session ON files(session_id);
       CREATE VIRTUAL TABLE IF NOT EXISTS docs_terms USING fts5(terms, content='', tokenize='unicode61 remove_diacritics 0');
       CREATE VIRTUAL TABLE IF NOT EXISTS docs_tri USING fts5(text, content='docs', content_rowid='id', tokenize='trigram');
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL) STRICT;

@@ -67,6 +67,7 @@ function dispatch(request: NavigationRequest, signal: AbortSignal): unknown {
     case 'row': return engine.row(...args as Parameters<typeof engine.row>);
     case 'indexedTurnByte': return engine.indexedTurnByte(...args as Parameters<typeof engine.indexedTurnByte>);
     case 'invalidateCanonical': return engine.invalidateCanonical();
+    case 'deleteSession': return engine.deleteSession(args[0] as string);
     case 'close': engine.invalidateCanonical(); return database.close();
   }
 }

@@ -907,6 +907,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       { run: () => pluginUsageChangeSubscription.dispose() },
       { run: () => pluginUsageApplySubscription.dispose() },
       { run: () => capabilityInstallSubscription.dispose() },
+      { run: () => navigationSessionCleanupSubscription.dispose() },
+      { run: () => navigationPrivacyCleanupSubscription.dispose() },
       { run: () => authFailureLimiter?.dispose() },
       { run: () => transcriptService.dispose() },
       { run: () => locator?.close() },
@@ -1058,6 +1060,16 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
         payload: { capability_id: change.id, install: change.install },
       }),
     );
+  });
+  const navigationSessionCleanupSubscription = core.accessor.get(ISessionManager).onDidDeleteSession?.(({ sessionId }) => {
+    void locator?.deleteSession(sessionId).catch(() => undefined);
+  }) ?? { dispose: () => {} };
+  const navigationPrivacyCleanupSubscription = core.accessor.get(IEventService).subscribe((event) => {
+    if (event.type !== 'session.meta.updated') return;
+    const payload = event.payload as { sessionId?: unknown; patch?: { private?: unknown } } | undefined;
+    if (typeof payload?.sessionId === 'string' && payload.patch?.private === true) {
+      void locator?.deleteSession(payload.sessionId).catch(() => undefined);
+    }
   });
   void configService.ready
     .then(() => {

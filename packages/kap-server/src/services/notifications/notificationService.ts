@@ -15,7 +15,7 @@ import {
   Runtime, PROVIDERS, validateConfig, telegramProvider, wecomWebhookProvider, wecomHttps, createSafeHttpTransport,
   webhookProvider, type Config, type CredentialScope, type DeliveryView,
 } from '@nb-corp/nb-im';
-import { ensurePluginDigestReceipts, PluginDigestDelivery } from './pluginDigestDelivery';
+import { ensurePluginDigestReceipts, PluginDigestDelivery, prunePluginDigestReceipts } from './pluginDigestDelivery';
 import { sendProvider } from './providerDelivery';
 import { joinDeliveries } from '../../lib/joinDeliveries';
 
@@ -210,9 +210,30 @@ export class NotificationService {
         if (!value) throw new Error('credential_unavailable');
         return value;
       }, (id) => this.epochs.get(id) ?? 'unavailable');
-    runtime.outbox.db.exec('CREATE INDEX IF NOT EXISTS notifications_created_at_idx ON deliveries (created_at DESC, delivery_id DESC)');
-    runtime.outbox.db.exec('CREATE INDEX IF NOT EXISTS notifications_channel_created_idx ON deliveries (channel_id, created_at DESC, delivery_id DESC)');
-    ensurePluginDigestReceipts(runtime.outbox.db);
+    const outboxDb = runtime.outbox.db;
+    const migrateOutbox = (): void => {
+      const hasMeta = outboxDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kap_outbox_meta'").all().length > 0;
+      const version = hasMeta
+        ? Number((outboxDb.prepare("SELECT value FROM kap_outbox_meta WHERE key='schema_version'").get() as { value?: string } | undefined)?.value ?? 0)
+        : 0;
+      if (version < 2) {
+        outboxDb.exec('BEGIN IMMEDIATE');
+        try {
+          outboxDb.exec('CREATE TABLE IF NOT EXISTS kap_outbox_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+          outboxDb.exec('CREATE INDEX IF NOT EXISTS notifications_created_at_idx ON deliveries (created_at DESC, delivery_id DESC)');
+          outboxDb.exec('CREATE INDEX IF NOT EXISTS notifications_channel_created_idx ON deliveries (channel_id, created_at DESC, delivery_id DESC)');
+          if (ensurePluginDigestReceipts(outboxDb) === 'ready') {
+            outboxDb.prepare("INSERT INTO kap_outbox_meta(key,value) VALUES('schema_version','2') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+          }
+          outboxDb.exec('COMMIT');
+        } catch (error) {
+          try { outboxDb.exec('ROLLBACK'); } catch {}
+          throw error;
+        }
+      }
+      try { prunePluginDigestReceipts(outboxDb); } catch {}
+    };
+    migrateOutbox();
     runtime.start(() => { this.onError(); });
     this.state = { runtime, controller, sends };
   }

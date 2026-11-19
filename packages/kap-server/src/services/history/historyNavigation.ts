@@ -116,5 +116,6 @@ export class HistoryNavigation implements HistoryLocatorStore {
   get retainedBodyChars(): number { return this.worker.retainedBodyChars; }
   canonicalReadReport(): NavigationReport { return this.worker.report ?? EMPTY_REPORT; }
   invalidateCanonical(): void { this.generation += 1; this.worker.invalidate(); }
+  deleteSession(sessionId: string): Promise<number> { return this.invoke('deleteSession', [sessionId]); }
   close(): Promise<void> { return this.worker.close(); }
 }

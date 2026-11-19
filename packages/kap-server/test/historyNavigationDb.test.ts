@@ -469,4 +469,50 @@ describe('history navigation schema 4 postings', () => {
       expect((await stat(path)).size).toBeLessThan(before / 4);
     } finally { await rm(home, { recursive: true, force: true }); }
   });
+
+  it('rebuilds unrecognized higher derived schema versions instead of permanently failing to open', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-schema-future-'));
+    const path = join(home, 'navigation.sqlite');
+    const future = new DatabaseSync(path);
+    future.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=99;
+      CREATE TABLE future_index(id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+      INSERT INTO future_index VALUES(1, 'stale');`);
+    future.close();
+    try {
+      const db = await HistoryNavigationDb.open(path);
+      try {
+        expect(db.db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 4 });
+        expect(db.db.prepare('PRAGMA auto_vacuum').get()).toEqual({ auto_vacuum: 2 });
+        expect(db.db.prepare("SELECT name FROM sqlite_master WHERE name='future_index'").get()).toBeUndefined();
+      } finally { db.close(); }
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('prunes scopes by LRU cap and deletes session scopes on demand', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-scope-retention-'));
+    const path = join(home, 'navigation.sqlite');
+    const proof = { identity: 'fixture', size: 0, mtimeNs: '0', ctimeNs: '0', head: '0', tail: '0' };
+    const db = await HistoryNavigationDb.open(path, { maxScopes: 2 });
+    try {
+      const commitScope = async (session: string, gen: string) => {
+        const key = `ws\0${session}\0main`;
+        db.beginSlice();
+        await db.put(HISTORY_NAV_COLLECTION, ['ws', session, 'main', 'turn', '1', '', '', ''].join('\0'), {
+          workspace: 'ws', session, agent: 'main', kind: 'turn', turn: 1, active: true,
+          anchor: { v: 1, workspace: 'ws', session, agent: 'main', incarnation: 'fixture', kind: 'turn', turn: 1, start: 0, end: 1, digest: 'd' },
+        });
+        db.commitSlice(key, { v: 2, generation: gen, incarnation: 'fixture', offset: 1, ordinal: 1, complete: true, source: proof }, { ordinal: 1, legacyTurn: 1 });
+      };
+      await commitScope('s1', 'g1');
+      await commitScope('s2', 'g2');
+      await commitScope('s3', 'g3');
+      expect(db.readManifest('ws\0s1\0main')).toBeUndefined();
+      expect(db.readManifest('ws\0s2\0main')?.generation).toBe('g2');
+      expect(db.readManifest('ws\0s3\0main')?.generation).toBe('g3');
+
+      expect(db.deleteSession('s2')).toBe(1);
+      expect(db.readManifest('ws\0s2\0main')).toBeUndefined();
+      expect(db.readManifest('ws\0s3\0main')?.generation).toBe('g3');
+    } finally { db.close(); await rm(home, { recursive: true, force: true }); }
+  });
 });
