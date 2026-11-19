@@ -693,35 +693,40 @@ function NormalApp() {
     if (privateFilter === 'include') return all;
     return all.filter((session) => session.private !== true);
   }, [privateFilter, sessionsQuery.data, pinnedSessionsQuery.data]);
-  const personaSessions = useMemo(() => {
+  const globalSessions = useMemo(() => {
     if (workspaceFilter === undefined) return sessions;
-    const crossWorkspace = dedupeSessions(personaHeadQuery.data);
+    const rawCrossWorkspace = dedupeSessions(personaHeadQuery.data);
+    const crossWorkspace = privateFilter === 'only'
+      ? rawCrossWorkspace.filter((session) => session.private === true)
+      : privateFilter === 'include'
+        ? rawCrossWorkspace
+        : rawCrossWorkspace.filter((session) => session.private !== true);
     if (crossWorkspace.length === 0) return sessions;
     return dedupeSessions({
       pages: [{ items: [...sessions, ...crossWorkspace], has_more: false }],
       pageParams: [undefined],
     });
-  }, [workspaceFilter, sessions, personaHeadQuery.data]);
+  }, [workspaceFilter, sessions, personaHeadQuery.data, privateFilter]);
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
   // The one update schedule for the whole app: a check after the first screen,
   // a daily tick for a window left open, and a catch-up when it comes back. A
   // session waiting on an approval is a modal moment in its own right, so the
   // offer waits rather than landing on top of it.
   const hasPendingApproval = useMemo(
-    () => sessions.some((session) => session.pending_interaction === 'approval'),
-    [sessions],
+    () => globalSessions.some((session) => session.pending_interaction === 'approval'),
+    [globalSessions],
   );
   const desktopUpdate = useDesktopUpdateScheduler({ host, isDesktop: desktop, hasPendingApproval });
   // The phone header's ☰ carries the same count as the sidebar bell: a
   // session waiting on the user stays visible from the conversation the
   // drawer hides.
   const seen = useSessionSeen();
-  const personaDirectoryState = usePersonaDirectory({ sessions: personaSessions, seen });
+  const personaDirectoryState = usePersonaDirectory({ sessions: globalSessions, seen });
   const rawPersonaDirectory = personaDirectoryState.data === undefined ? undefined : personaDirectoryState.directory;
   const sidebarBadge = useMemo<SidebarBadge | undefined>(() => {
-    const inbox = buildConversationInbox(sessions, conversations.rooms, seen, workspaceOptions);
+    const inbox = buildConversationInbox(globalSessions, conversations.rooms, seen, workspaceOptions);
     return inbox.total === 0 ? undefined : { total: inbox.total, needsYou: inbox.needsYou.length > 0 };
-  }, [sessions, conversations.rooms, seen, workspaceOptions]);
+  }, [globalSessions, conversations.rooms, seen, workspaceOptions]);
   const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
     // A Bot's active home and a room member's own session keep their single
     // address (the Persona rows above, the room's row); everything else lists here.
@@ -753,7 +758,7 @@ function NormalApp() {
   );
   useAwayNotifications({
     host,
-    sessions,
+    sessions: globalSessions,
     listSessions: listNewestSessions,
   });
 
@@ -1021,7 +1026,7 @@ function NormalApp() {
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
         sessions={sessions}
-        personaSessions={personaSessions}
+        personaSessions={globalSessions}
         rooms={conversations.rooms}
         sessionGroups={sessionGroups}
         sessionsQuery={sessionsQuery}
@@ -1112,7 +1117,7 @@ function NormalApp() {
             path="/activity"
             element={
               <ActivityPage
-                sessions={sessions}
+                sessions={globalSessions}
                 rooms={conversations.rooms}
                 workspaceOptions={workspaceOptions}
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}

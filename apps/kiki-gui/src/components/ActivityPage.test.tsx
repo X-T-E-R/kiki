@@ -2,7 +2,7 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -77,18 +77,24 @@ function session(patch: Partial<Session> & { id: string }): Session {
   } as Session;
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-activity-test-location>{`${location.pathname}${location.search}`}</span>;
+}
+
 async function render(sessions: readonly Session[], path = '/activity', rooms: readonly RoomListItem[] = []) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mounts.push({ container, root });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(['sessions'], { items: sessions });
+  queryClient.setQueryData(['sessions'], { pages: [{ items: sessions, has_more: false }], pageParams: [undefined] });
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[path]}>
           <I18nProvider>
+            <LocationProbe />
             <ActivityPage
               sessions={sessions}
               rooms={rooms}
@@ -505,5 +511,92 @@ describe('ActivityPage', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(client.listThreadMessages).toHaveBeenLastCalledWith({ workspace_id: 'ws-2', cursor: undefined });
     expect(page.querySelector('[data-activity-comms-empty]')?.textContent).toContain('No thread in this workspace');
+  });
+
+  it('deep-links subagent approvals and questions with interaction id, offers Reject on plan_review, and avoids blanket sessions invalidation', async () => {
+    const subApproval: ApprovalRequest = {
+      approval_id: 'apr/1',
+      session_id: 'sess/1',
+      agent_id: 'sub/worker',
+      tool_call_id: 'tc-1',
+      tool_name: 'ExitPlanMode',
+      action: 'Review plan',
+      tool_input_display: { plan: 'Step 1: ship it' },
+      created_at: '2026-01-01T00:00:00.000Z',
+      expires_at: '2026-01-02T00:00:00.000Z',
+    };
+    const subQuestion = {
+      question_id: 'q/2',
+      session_id: 'sess/2',
+      agent_id: 'sub/ask',
+      questions: [{ id: 'q_0', question: 'Proceed?', options: [{ id: 'opt_0_0', label: 'Yes' }, { id: 'opt_0_1', label: 'No' }] }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    } as QuestionRequest & { agent_id: string };
+
+    client.listPendingApprovals.mockResolvedValue([subApproval]);
+    client.listPendingQuestions.mockResolvedValue([subQuestion]);
+    client.resolveApproval.mockResolvedValue({ resolved: true, resolved_at: '2026-01-01T00:01:00.000Z' });
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounts.push({ container, root });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const s1 = session({ id: 'sess/1', pending_interaction: 'approval', updated_at: '2026-01-01T00:00:00.000Z' });
+    const s2 = session({ id: 'sess/2', pending_interaction: 'question', updated_at: '2026-01-01T00:01:00.000Z' });
+    queryClient.setQueryData(['sessions', false, undefined], { pages: [{ items: [s1, s2], has_more: false }], pageParams: [undefined] });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/activity']}>
+            <I18nProvider>
+              <LocationProbe />
+              <ActivityPage
+                sessions={[s1, s2]}
+                rooms={[]}
+                workspaceOptions={[{ id: 'ws-1', name: 'fixture', root: '/w' }]}
+                onToggleSidebar={() => {}}
+              />
+            </I18nProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    for (let i = 0; i < 4; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // plan_review without options renders both Approve plan and Reject buttons.
+    expect(container.querySelector('[data-activity-approve="apr/1"]')).not.toBeNull();
+    expect(container.querySelector('[data-activity-reject="apr/1"]')).not.toBeNull();
+
+    // Review in thread for subagent approval deep-links with encoded session, agent, and interaction.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-activity-review-thread="apr/1"]')!.click(); });
+    expect(container.querySelector('[data-activity-test-location]')?.textContent).toBe(
+      '/s/sess%2F1/agent/sub%2Fworker?interaction=apr%2F1',
+    );
+
+    // Rejecting patches the cached session entry without triggering blanket ['sessions'] invalidation.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-activity-reject="apr/1"]')!.click(); });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(client.resolveApproval).toHaveBeenCalledWith('sess/1', 'apr/1', {
+      decision: 'rejected',
+      scope: undefined,
+      selected_option_id: undefined,
+    });
+    const sessionsInvalidated = invalidateSpy.mock.calls.some(([filter]) =>
+      Array.isArray(filter?.queryKey) && filter.queryKey[0] === 'sessions',
+    );
+    expect(sessionsInvalidated).toBe(false);
+    const cached = queryClient.getQueryData<{ pages: { items: Session[] }[] }>(['sessions', false, undefined]);
+    expect(cached?.pages[0]?.items.find((item) => item.id === 'sess/1')?.pending_interaction).toBeUndefined();
+
+    // Expand the subagent question and verify Review in thread deep-links to its subagent + question_id.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-activity-expand="sess/2"]')!.click(); });
+    for (let i = 0; i < 4; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-activity-review-thread="q/2"]')!.click(); });
+    expect(container.querySelector('[data-activity-test-location]')?.textContent).toBe(
+      '/s/sess%2F2/agent/sub%2Fask?interaction=q%2F2',
+    );
   });
 });

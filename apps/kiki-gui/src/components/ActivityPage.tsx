@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import type { PersonaSummary, RoomListItem, Session } from '@kiki/protocol';
 import {
@@ -41,7 +41,10 @@ import { pushToast } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';
 import {
   ActivityInlineDecisionStrip,
+  activityInlineQueryKey,
   canInlineTriageSession,
+  type ActivityInlineDetail,
+  type ActivityThreadTarget,
 } from './activity/ActivityInlineDecisionStrip';
 import { isLongWait, shortModelLabel } from './activity/activityTriageLimiter';
 import { ActivityComms } from './comms/ActivityComms';
@@ -72,8 +75,34 @@ const REASON_LABEL: Record<InboxReason, string> = {
   running: 'activity.reason.running',
 };
 
-function itemHref(item: InboxItem): string {
-  return item.roomId === undefined ? `/s/${item.sessionId}` : roomRefLink(item.roomId);
+function itemHref(item: InboxItem, target?: ActivityThreadTarget): string {
+  if (item.roomId !== undefined) return roomRefLink(item.roomId);
+  const base = `/s/${encodeURIComponent(item.sessionId)}`;
+  const agentSegment = target?.agentId !== undefined && target.agentId !== '' && target.agentId !== 'main'
+    ? `/agent/${encodeURIComponent(target.agentId)}`
+    : '';
+  const query = target?.interactionId !== undefined && target.interactionId !== ''
+    ? `?interaction=${encodeURIComponent(target.interactionId)}`
+    : '';
+  return `${base}${agentSegment}${query}`;
+}
+
+function cachedInteractionTarget(queryClient: QueryClient, item: InboxItem): ActivityThreadTarget | undefined {
+  if (item.roomId !== undefined || (item.reason !== 'approval' && item.reason !== 'question')) return undefined;
+  const cached = queryClient.getQueryData<ActivityInlineDetail>(
+    activityInlineQueryKey(item.sessionId, item.reason, item.lastSeq),
+  );
+  if (cached?.kind === 'approval') {
+    const first = cached.approvals[0];
+    return first === undefined ? undefined : { agentId: first.agent_id, interactionId: first.approval_id };
+  }
+  if (cached?.kind === 'question') {
+    const first = cached.questions[0];
+    if (first === undefined) return undefined;
+    const agentId = (first as typeof first & { readonly agent_id?: string }).agent_id;
+    return { agentId, interactionId: first.question_id };
+  }
+  return undefined;
 }
 
 function isEditableElement(target: EventTarget | null): boolean {
@@ -129,6 +158,7 @@ function InboxRow({
   onOpen: (href: string) => void;
 }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const rowRef = useRef<HTMLDivElement | null>(null);
   const waiting = item.reason === 'approval' || item.reason === 'question' || item.reason === 'budget';
   const failed = item.reason === 'failed';
@@ -158,7 +188,7 @@ function InboxRow({
             type="button"
             data-activity-open={item.sessionId}
             onFocus={onFocusRow}
-            onClick={() => { onOpen(itemHref(item)); }}
+            onClick={() => { onOpen(itemHref(item, cachedInteractionTarget(queryClient, item))); }}
             className="flex min-w-0 flex-1 items-start gap-2 rounded-md px-1 py-0.5 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
           >
             <ReasonMark item={item} />
@@ -260,7 +290,7 @@ function InboxRow({
             sessionId={item.sessionId}
             reason={item.reason}
             lastSeq={item.lastSeq}
-            onOpenThread={() => { onOpen(itemHref(item)); }}
+            onOpenThread={(target) => { onOpen(itemHref(item, target)); }}
           />
         ) : null}
       </div>
@@ -347,6 +377,7 @@ export interface ActivityPageProps {
 export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleSidebar }: ActivityPageProps) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
+  const queryClient = useQueryClient();
   const connection = useOptionalConnection();
   const seen = useSessionSeen();
 
@@ -503,7 +534,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
 
       if (event.key === 'Enter') {
         event.preventDefault();
-        open(itemHref(currentItem));
+        open(itemHref(currentItem, cachedInteractionTarget(queryClient, currentItem)));
         return;
       }
       if (event.key === ' ' && canInlineFor(currentItem)) {

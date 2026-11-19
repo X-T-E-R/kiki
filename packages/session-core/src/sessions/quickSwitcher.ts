@@ -26,6 +26,7 @@ export interface SwitcherHitItem {
   role: SearchMessageHit['role'];
   time: number;
   turn?: number;
+  stepId?: string;
   agentId?: string;
 }
 
@@ -139,6 +140,7 @@ export function buildSwitcherItems(input: {
     role: hit.role,
     time: hit.time,
     turn: hit.turn,
+    stepId: hit.step_id,
     agentId: hit.agent_id,
   }));
   // Settings sit last: a query that names a session should not be outranked

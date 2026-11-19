@@ -44,6 +44,7 @@ interface QuestionItemWire {
 interface QuestionWire {
   question_id: string;
   session_id: string;
+  agent_id?: string;
   turn_id?: number;
   tool_call_id?: string;
   questions: QuestionItemWire[];
@@ -434,6 +435,22 @@ describe('server-v2 /api/sessions/{sid}/questions', () => {
     });
     expect(dup.body.code).toBe(40902);
     expect(dup.body.data).toEqual({ resolved: false });
+  });
+
+  it('includes agent_id from interaction origin on pending question wire items', async () => {
+    const sid = await createSession();
+    const handle = getLiveSessionById(server!.core.accessor, sid)!;
+    const interaction = handle.accessor.get(ISessionInteractionService);
+    const created = interaction.enqueue({
+      kind: 'question',
+      payload: makeRequest('q-sub'),
+      origin: { agentId: 'sub_worker_1' },
+    });
+
+    const list = await getJson<ListWire>(`/api/sessions/${sid}/questions?status=pending`);
+    expect(list.body.code).toBe(0);
+    const item = list.body.data.items.find((entry) => entry.question_id === created.id);
+    expect(item?.agent_id).toBe('sub_worker_1');
   });
 
   it('returns 40401 for an unknown session', async () => {

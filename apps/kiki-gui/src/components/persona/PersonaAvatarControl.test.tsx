@@ -138,4 +138,38 @@ describe('PersonaAvatarControl', () => {
     expect(client.deletePersonaAvatar).toHaveBeenCalledWith('xiao-you');
     expect(toasts.at(-1)).toEqual({ tone: 'success', text: 'Avatar removed' });
   });
+
+  it('stages a cropped avatar locally during new-persona creation without uploading yet', async () => {
+    const onStageAvatar = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <PersonaAvatarControl
+              personaId={undefined}
+              persona={{ id: 'new', name: 'New Persona' }}
+              stagedAvatar={null}
+              onStageAvatar={onStageAvatar}
+            />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    expect(container.querySelector('[data-persona-avatar-upload]')).not.toBeNull();
+    await pick(container, picture(1024));
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-persona-avatar-shape="circle"]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-persona-avatar-save]')!.click(); });
+    await flush();
+
+    expect(client.putPersonaAvatar).not.toHaveBeenCalled();
+    expect(onStageAvatar).toHaveBeenCalledTimes(1);
+    expect(onStageAvatar.mock.calls[0]?.[0]).toMatchObject({ shape: 'circle' });
+  });
 });

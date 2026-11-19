@@ -1,5 +1,6 @@
-import { IAgentLifecycleService, IAgentProfileService, IAgentTaskService, ISessionIndex, MAIN_AGENT_ID, getLiveSessionById, type Scope } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService, IAgentProfileService, IAgentTaskService, IEventService, ISessionIndex, MAIN_AGENT_ID, getLiveSessionById, type Scope } from '@kiki/agent-core-v2';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
+import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { applyPersonaSettingsRequestSchema, sessionPersonaSettingsSchema } from '@kiki/protocol';
 import { z } from 'zod';
@@ -56,6 +57,15 @@ export function registerPersonaSettingsRoutes(app: RouteHost, core: Scope): void
         const agent = await ensureMainAgent(session);
         await Promise.all(session.accessor.get(IAgentLifecycleService).list().map(async (handle) => handle.accessor.get(IAgentTaskService).resumeRestoration?.()));
         await agent.accessor.get(IAgentProfileService).applyPersonaSettings(req.body.restoreDefaults);
+        core.accessor.get(IEventService).publish(
+          new SessionMetaUpdated({
+            payload: {
+              agentId: MAIN_AGENT_ID,
+              sessionId: req.params.session_id,
+              patch: {},
+            },
+          }),
+        );
         reply.send(okEnvelope(await read(req.params.session_id), req.id));
       });
     } catch (error) {

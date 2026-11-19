@@ -46,8 +46,9 @@ import { ScopeTag, SettingsPageScopeContext } from '../settings/SectionCard';
 import { SettingHelp } from '../settings/SettingHelp';
 import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented, SettingsSelect } from '../settings/SettingsPrimitives';
 import { useSavedTick } from '../settings/useSavedTick';
-import { INPUT } from '../ui';
-import { personaAvatarOf } from './PersonaAvatar';
+import { INPUT, PRIMARY_BUTTON } from '../ui';
+import type { AvatarCropResult } from './AvatarCropDialog';
+import { personaAvatarOf, personaAvatarQueryKey } from './PersonaAvatar';
 import { PersonaAvatarControl } from './PersonaAvatarControl';
 import { PersonaTasksSection } from './PersonaTasksSection';
 import { PersonaVisibilitySection } from './PersonaVisibilitySection';
@@ -142,9 +143,12 @@ export function PersonaEditor({
       snapshot={snapshot}
       summary={summary}
       takenIds={takenIds}
-      onSaved={(next) => {
+      onSaved={(next, avatarUploaded) => {
         queryClient.setQueryData(personaQueryKey(next.definition.id), next);
         void invalidatePersonas(queryClient);
+        if (avatarUploaded) {
+          void queryClient.invalidateQueries({ queryKey: personaAvatarQueryKey(next.definition.id) });
+        }
         onSaved(next.definition.id);
       }}
       onReload={() => snapshotQuery.refetch().then((result) => result.data)}
@@ -164,7 +168,7 @@ function PersonaForm({
   readonly snapshot: PersonaSnapshot | undefined;
   readonly summary?: PersonaSummary;
   readonly takenIds: ReadonlySet<string>;
-  readonly onSaved: (snapshot: PersonaSnapshot) => void;
+  readonly onSaved: (snapshot: PersonaSnapshot, avatarUploaded?: boolean) => void;
   /** Re-read the persona; resolves with the fact the server returned. */
   readonly onReload: () => Promise<PersonaSnapshot | undefined>;
   readonly onClosed: () => void;
@@ -223,8 +227,9 @@ function PersonaForm({
   const [attempted, setAttempted] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [saveFailure, setSaveFailure] = useState<string | null>(null);
+  const [stagedAvatar, setStagedAvatar] = useState<AvatarCropResult | null>(null);
   const [saved, pingSaved] = useSavedTick();
-  const dirty = !draftsEqual(draft, baseline);
+  const dirty = !draftsEqual(draft, baseline) || (creating && stagedAvatar !== null);
   const issues = validatePersonaDraft(draft, { creating, takenIds });
   const shownIssues = attempted ? issues : (issues.id === 'idTaken' ? { id: issues.id } : {});
 
@@ -278,18 +283,31 @@ function PersonaForm({
   ];
 
   const saveMutation = useMutation({
-    mutationFn: () => client.putPersona({
-      definition: definitionFromDraft(draft, snapshot?.definition, workspaces),
-      ...(expected !== undefined ? { revision: expected } : {}),
-      ...(snapshot?.examples !== undefined ? { examples: snapshot.examples } : {}),
-    }),
-    onSuccess: (next) => {
+    mutationFn: async () => {
+      const next = await client.putPersona({
+        definition: definitionFromDraft(draft, snapshot?.definition, workspaces),
+        ...(expected !== undefined ? { revision: expected } : {}),
+        ...(snapshot?.examples !== undefined ? { examples: snapshot.examples } : {}),
+      });
+      let avatarUploaded = false;
+      if (creating && stagedAvatar !== null) {
+        try {
+          await client.putPersonaAvatar(next.definition.id, stagedAvatar.file, stagedAvatar.shape);
+          avatarUploaded = true;
+        } catch (error) {
+          pushToast({ tone: 'error', text: t('persona.actionFailed', { detail: errorText(locale, error) }) });
+        }
+      }
+      return { snapshot: next, avatarUploaded };
+    },
+    onSuccess: ({ snapshot: next, avatarUploaded }) => {
       pingSaved();
+      setStagedAvatar(null);
       // The server's echo is the new truth: rebase on it, so the bar reads
       // clean and the next save carries this revision rather than the old one.
       adopt(draftFromDefinition(next.definition, workspaces), next.revision);
       pushToast({ tone: 'success', text: t(creating ? 'persona.createdToast' : 'persona.savedToast', { name: next.definition.name }) });
-      onSaved(next);
+      onSaved(next, avatarUploaded);
     },
     onError: (error: unknown) => {
       // Nothing is discarded: the draft, the pickers and the field values stay
@@ -307,6 +325,14 @@ function PersonaForm({
       return;
     }
     saveMutation.mutate();
+  };
+
+  const listedPersonas = queryClient.getQueryData<readonly PersonaSummary[]>(['personas', { includeArchived: true }]);
+  const archived = summary?.archived === true
+    || (snapshot !== undefined && listedPersonas?.find((item) => item.id === snapshot.definition.id)?.archived === true);
+  const startChat = () => {
+    if (snapshot === undefined || archived) return;
+    void navigate(`/p/${encodeURIComponent(snapshot.definition.id)}/daily`);
   };
 
   const identity = personaAvatarOf({
@@ -332,7 +358,12 @@ function PersonaForm({
     >
       {/* Masthead: the face and the name, set large — this is the card. */}
       <div className="flex min-w-0 items-start gap-4">
-        <PersonaAvatarControl persona={identity} personaId={snapshot?.definition.id} />
+        <PersonaAvatarControl
+          persona={identity}
+          personaId={snapshot?.definition.id}
+          stagedAvatar={creating ? stagedAvatar : undefined}
+          onStageAvatar={creating ? setStagedAvatar : undefined}
+        />
         <div className="min-w-0 flex-1 pt-1">
           <h2 className="truncate font-display text-[22px] leading-7 font-semibold tracking-tight text-ink">
             {draft.name.trim() === '' ? t('persona.newTitle') : draft.name}
@@ -342,7 +373,20 @@ function PersonaForm({
           </p>
         </div>
         {snapshot !== undefined ? (
-          <PersonaActions snapshot={snapshot} dirty={dirty} onChanged={() => { void invalidatePersonas(queryClient, snapshot.definition.id); }} onClosed={onClosed} onStartChat={() => { void navigate(`/p/${encodeURIComponent(snapshot.definition.id)}/daily`); }} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            {!archived ? (
+              <button
+                type="button"
+                data-persona-start-chat
+                disabled={dirty}
+                onClick={startChat}
+                className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}
+              >
+                {t('persona.startChat')}
+              </button>
+            ) : null}
+            <PersonaActions snapshot={snapshot} archived={archived} dirty={dirty} onChanged={() => { void invalidatePersonas(queryClient, snapshot.definition.id); }} onClosed={onClosed} onStartChat={startChat} />
+          </div>
         ) : null}
       </div>
 
@@ -574,8 +618,9 @@ function toggleScope(
 
 type PersonaAction = 'start' | 'duplicate' | 'export-png' | 'export-json' | 'export-charx' | 'archive' | 'delete';
 
-function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
+function PersonaActions({ snapshot, archived: archivedProp, dirty, onChanged, onClosed, onStartChat }: {
   readonly snapshot: PersonaSnapshot;
+  readonly archived?: boolean;
   readonly dirty: boolean;
   readonly onChanged: () => void;
   readonly onClosed: () => void;
@@ -590,7 +635,7 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
   const rootRef = useRef<HTMLDivElement>(null);
   const { id, name } = snapshot.definition;
   const listed = queryClient.getQueryData<readonly PersonaSummary[]>(['personas', { includeArchived: true }]);
-  const archived = listed?.find((item) => item.id === id)?.archived === true;
+  const archived = archivedProp ?? listed?.find((item) => item.id === id)?.archived === true;
 
   useEffect(() => {
     if (!open) return;
@@ -640,7 +685,7 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
   const run = async (action: PersonaAction) => {
     setOpen(false);
     try {
-      if (action === 'start') { onStartChat(); return; }
+      if (action === 'start') { if (!archived) onStartChat(); return; }
       if (action === 'duplicate') {
         const copy = await client.duplicatePersona(id);
         pushToast({ tone: 'success', text: t('persona.duplicatedToast', { name: copy.definition.name }) });
@@ -693,7 +738,7 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
                 type="button"
                 role="menuitem"
                 data-persona-action={item.key}
-                disabled={item.key === 'start' && dirty}
+                disabled={item.key === 'start' && (dirty || archived)}
                 onClick={() => { void run(item.key); }}
                 className={`flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-ink/[0.05] focus-visible:bg-ink/[0.05] focus-visible:outline-none disabled:opacity-50 pointer-coarse:min-h-11 ${item.danger === true ? 'text-danger' : 'text-ink'}`}
               >

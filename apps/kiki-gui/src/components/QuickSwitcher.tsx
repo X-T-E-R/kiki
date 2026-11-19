@@ -12,7 +12,10 @@ import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
   buildSwitcherItems,
+  highlightTerms,
   settingsCardRoute,
+  splitByRanges,
+  type MatchRange,
   type SwitcherItem,
   type SwitcherSettingItem,
 } from '@kiki/session-core/sessions';
@@ -34,6 +37,21 @@ import { Icon } from './icons';
 import { ThreadTitle } from './ThreadTitle';
 
 const ADVISOR_ACTION = 'memory-advisor-toggle';
+
+function Highlighted({ text, ranges }: { readonly text: string; readonly ranges: readonly MatchRange[] }) {
+  if (ranges.length === 0) return <>{text}</>;
+  return (
+    <>
+      {splitByRanges(text, ranges).map((part, index) =>
+        part.hit ? (
+          <mark key={index} className="rounded-[2px] bg-accent-soft px-px text-ink">{part.text}</mark>
+        ) : (
+          <span key={index}>{part.text}</span>
+        ),
+      )}
+    </>
+  );
+}
 
 export function QuickSwitcher({
   sessions,
@@ -153,9 +171,16 @@ export function QuickSwitcher({
     } else if (item.kind === 'action' || item.kind === 'setting') void navigate(item.route);
     else if (item.kind === 'hit') {
       const route = item.agentId && item.agentId !== 'main'
-        ? `/s/${item.sessionId}/agent/${item.agentId}` : `/s/${item.sessionId}`;
-      void navigate(item.turn === undefined ? route : `${route}?turn=${item.turn}`);
-    } else void navigate(`/s/${item.sessionId}`);
+        ? `/s/${encodeURIComponent(item.sessionId)}/agent/${encodeURIComponent(item.agentId)}`
+        : `/s/${encodeURIComponent(item.sessionId)}`;
+      const queryParams = new URLSearchParams();
+      if (item.turn !== undefined) queryParams.set('turn', String(item.turn));
+      if (item.stepId !== undefined && item.stepId !== '') queryParams.set('step', item.stepId);
+      const queryText = search.contentQuery.trim() || search.parsed.text.trim();
+      if (queryText !== '') queryParams.set('q', queryText);
+      const qs = queryParams.toString();
+      void navigate(qs === '' ? route : `${route}?${qs}`);
+    } else void navigate(`/s/${encodeURIComponent(item.sessionId)}`);
   };
 
   const onInputKeyDown = (event: React.KeyboardEvent) => {
@@ -300,12 +325,22 @@ export function QuickSwitcher({
                   ) : (
                     <>
                       <span className="line-clamp-2 text-[12px] leading-snug text-ink">
-                        {item.snippet}
+                        <Highlighted text={item.snippet} ranges={highlightTerms(item.snippet, search.contentQuery || search.parsed.text)} />
                       </span>
                       <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
                         <span className="truncate">
                           <ThreadTitle text={item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled} />
                         </span>
+                        {item.turn !== undefined ? (
+                          <span data-switcher-hit-turn className="shrink-0 rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft tabular-nums">
+                            #{item.turn}
+                          </span>
+                        ) : null}
+                        {item.agentId !== undefined && item.agentId !== '' && item.agentId !== 'main' ? (
+                          <span data-switcher-hit-agent className="max-w-28 shrink-0 truncate rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft">
+                            {item.agentId}
+                          </span>
+                        ) : null}
                         <span className="shrink-0">· {t(item.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${item.role}`)}</span>
                       </span>
                     </>

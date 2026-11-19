@@ -31,6 +31,7 @@ export type TimelineTarget =
 export type LocateOutcome =
   | { readonly status: 'found' }
   | { readonly status: 'kept' }
+  | { readonly status: 'cancelled' }
   | { readonly status: 'not-found' }
   | { readonly status: 'load-failed' }
   | { readonly status: 'no-timeline' };
@@ -146,7 +147,7 @@ function currentLocale() {
 }
 
 function failureKey(target: TimelineTarget, outcome: LocateOutcome): I18nKey | undefined {
-  if (outcome.status === 'found' || outcome.status === 'kept') return undefined;
+  if (outcome.status === 'found' || outcome.status === 'kept' || outcome.status === 'cancelled') return undefined;
   if (outcome.status === 'load-failed') return 'locate.failedLoad';
   if (target.kind === 'latest') return undefined;
   return target.kind === 'turn' ? 'locate.turnNotFound' : 'locate.notFound';
@@ -174,10 +175,15 @@ export async function locateInTimeline(target: TimelineTarget, options: LocateOp
     } else if (ready[0] !== undefined) {
       outcome = await ready[0].locate(target, { signal: options.signal });
     }
-  } catch {
+  } catch (error) {
+    if (options.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      return { status: 'cancelled' };
+    }
     outcome = { status: 'load-failed' };
   }
   if (options.signal?.aborted) return { status: 'no-timeline' };
+  if (outcome.status === 'cancelled') return outcome;
+  if (outcome.status === 'no-timeline' && ready.length > 0) return outcome;
   const key18n = failureKey(target, outcome.status === 'no-timeline' ? { status: 'not-found' } : outcome);
   if (options.notify !== false && key18n !== undefined) {
     const turn = target.kind === 'turn' ? turnLabel(target.turnId) : '';
