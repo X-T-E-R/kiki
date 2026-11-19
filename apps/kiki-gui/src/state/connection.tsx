@@ -47,6 +47,7 @@ import { useI18n } from '../i18n';
 import {
   clearAppShellCredentialState,
   installAppShellCredentialListener,
+  isEmbeddedAndroidHost,
   readAdoptedShellCredential,
 } from '../lib/appShell';
 import { API_CODES, ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
@@ -55,6 +56,7 @@ import { subscribePluginFreshness } from '../lib/pluginFreshness';
 import { subscribePersonaFreshness } from '../lib/personaFreshness';
 import {
   clearStoredConfig,
+  isValidConnectionUrl,
   readDeepLinkConfig,
   readStoredConfig,
   scrubConnectionUrl,
@@ -515,6 +517,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const host = useHost();
   const desktopRuntime = host.kind === 'tauri';
   const vscodeRuntime = isVscodeWebview();
+  const embeddedAndroid = !desktopRuntime && !vscodeRuntime && isEmbeddedAndroidHost();
   const { locale, t } = useI18n();
   const scopesRef = useRef(new Map<string, QueryClient>());
   const bootScope = pendingScopeReloadScope();
@@ -578,8 +581,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return {
         config: { url: '', token: adoptedShellToken },
         persist: false,
-        source: 'app-shell',
-        scopeId: 'direct:',
+        source: embeddedAndroid ? 'local-detection' : 'app-shell',
+        scopeId: embeddedAndroid ? 'local' : 'direct:',
       };
     }
     return null;
@@ -622,8 +625,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const controllersRef = useRef(new LiveControllerRegistry());
   const connectionEpochRef = useRef(0);
   const sshAttemptRef = useRef(0);
-  const localSelectionRef = useRef<ConnectionSelection | null>(null);
-  const [localSelection, setLocalSelection] = useState<ConnectionSelection | null>(null);
+  const initialEmbeddedLocal = embeddedAndroid && selection?.source === 'local-detection' ? selection : null;
+  const localSelectionRef = useRef<ConnectionSelection | null>(initialEmbeddedLocal);
+  const [localSelection, setLocalSelection] = useState<ConnectionSelection | null>(initialEmbeddedLocal);
   const updateLocalSelection = useCallback((next: ConnectionSelection | null) => {
     localSelectionRef.current = next;
     setLocalSelection(next);
@@ -635,11 +639,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const reloadSelectionRef = useRef<{ promise: Promise<ConnectionSelection | null> | null; consumed: boolean }>({ promise: null, consumed: false });
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
+  const isStagedShellSource = (source: ConnectionSelection['source'] | undefined): boolean =>
+    source === 'app-shell' || (embeddedAndroid && source === 'local-detection');
   const pairedShellTokenRef = useRef<string | null>(
-    selection?.source === 'app-shell' ? selection.config.token.trim() : null,
+    isStagedShellSource(selection?.source) ? selection!.config.token.trim() : null,
   );
-  if (selection?.source === 'app-shell' && selection.config.token.trim() !== '') {
-    pairedShellTokenRef.current = selection.config.token.trim();
+  if (isStagedShellSource(selection?.source) && selection!.config.token.trim() !== '') {
+    pairedShellTokenRef.current = selection!.config.token.trim();
   }
   const leaseClientIdRef = useRef(nextGuiLeaseClientId());
   /** Set by the desktop/local-detection recovery effect; called when the local socket drops. */
@@ -992,15 +998,24 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const restoredMetaRef = useRef<{ client: KikiClient; meta: MetaResponse } | null>(null);
 
   useEffect(() => {
-    if (localSelection === null || localEndpoint === null || localToken === null) { setLocalControl(null); return; }
+    if (localSelection === null || localEndpoint === null || localToken === null || !isValidConnectionUrl(localEndpoint)) {
+      setLocalControl(null);
+      return;
+    }
     if (localControlRef.current?.selection === localSelection && localControlRef.current.timeoutMs === requestTimeoutMs) return;
-    const instance = new KikiClient({
-      baseUrl: localEndpoint, token: localToken, timeoutMs: requestTimeoutMs,
-      onSessionMutation: (sessionId) => {
-        const localQueries = scopesRef.current.get('local');
-        if (localQueries !== undefined) refreshSessionAttention(localQueries, sessionId);
-      },
-    });
+    let instance: KikiClient;
+    try {
+      instance = new KikiClient({
+        baseUrl: localEndpoint, token: localToken, timeoutMs: requestTimeoutMs,
+        onSessionMutation: (sessionId) => {
+          const localQueries = scopesRef.current.get('local');
+          if (localQueries !== undefined) refreshSessionAttention(localQueries, sessionId);
+        },
+      });
+    } catch {
+      setLocalControl(null);
+      return;
+    }
     localControlRef.current = { selection: localSelection, client: instance, timeoutMs: requestTimeoutMs };
     setLocalControl(localControlRef.current);
   }, [localSelection, localEndpoint, localToken, requestTimeoutMs]);
@@ -1032,7 +1047,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     scopeId: string;
     client: KikiClient;
   } | null>(null);
-  const usesLocalControl = selection?.source === 'desktop';
+  const usesLocalControl = selection?.source === 'desktop' || (localSelection !== null && selection === localSelection);
   const staged = stagedClientRef.current?.selection === selection ? stagedClientRef.current : null;
   const selectedLocalClient = usesLocalControl ? localClient : null;
   const client = staged?.client ?? (clients?.endpoint === endpoint && clients.token === token && clients.scopeId === scopeId &&
@@ -1041,7 +1056,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const klient = client?.klient ?? null;
 
   useEffect(() => {
-    if (host.kind === 'tauri' || selection?.source !== 'local-detection') return;
+    if (host.kind === 'tauri' || selection?.source !== 'local-detection' || embeddedAndroid) return;
     let cancelled = false;
     let resolving = false;
     let resolveGeneration = 0;
@@ -1182,11 +1197,25 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (endpoint === null || token === null || (usesLocalControl && selectedLocalClient === null)) return;
+    if (!isValidConnectionUrl(endpoint)) {
+      setClients(null);
+      setMeta(null);
+      setConnectError({ kind: 'key', key: 'st.conn.urlInvalid' });
+      return;
+    }
     const onSessionMutation = (sessionId: string) => { refreshSessionAttention(queryClient, sessionId); };
     const rebound = rebindingClientRef.current !== null && clients?.client === rebindingClientRef.current ? rebindingClientRef.current : null;
-    const instance = staged?.client ?? selectedLocalClient ?? rebound ?? (selection?.source === 'remote'
-      ? createRemoteSpaceClient({ endpoint, token, connectionId: selection.connectionId!, timeoutMs: requestTimeoutMs, onSessionMutation })
-      : new KikiClient({ baseUrl: endpoint, token, timeoutMs: requestTimeoutMs, onSessionMutation }));
+    let instance: KikiClient;
+    try {
+      instance = staged?.client ?? selectedLocalClient ?? rebound ?? (selection?.source === 'remote'
+        ? createRemoteSpaceClient({ endpoint, token, connectionId: selection.connectionId!, timeoutMs: requestTimeoutMs, onSessionMutation })
+        : new KikiClient({ baseUrl: endpoint, token, timeoutMs: requestTimeoutMs, onSessionMutation }));
+    } catch (error: unknown) {
+      setClients(null);
+      setMeta(null);
+      setConnectError({ kind: 'raw', text: error instanceof Error ? error.message : String(error) });
+      return;
+    }
     if (rebindingClientRef.current === instance) rebindingClientRef.current = null;
     setClients({ endpoint, token, scopeId, client: instance });
     const controllers = controllersRef.current;
@@ -1275,7 +1304,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           errorCode === API_CODES.UNAUTHORIZED ||
           errorCode === 40300 ||
           errorCode === 40301;
-        if (selection?.source === 'app-shell') {
+        if (selection?.source === 'app-shell' || (embeddedAndroid && selection?.source === 'local-detection')) {
           setPairedAuthRevoked(authRejected);
           if (!authRejected) {
             retryTimer = setTimeout(() => {
@@ -1541,7 +1570,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [socket, nudgeConnection]);
 
   useEffect(() => {
-    if (connected || selection?.source !== 'app-shell' || pairedAuthRevoked) return;
+    if (connected || (selection?.source !== 'app-shell' && !(embeddedAndroid && selection?.source === 'local-detection')) || pairedAuthRevoked) return;
     const retryMeta = () => {
       setConnectError(null);
       setMetaAttempt((attempt) => attempt + 1);
@@ -1739,11 +1768,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     connectionEpochRef.current += 1;
     clearAppShellCredentialState(window);
     clearStoredConfig();
+    if (embeddedAndroid) updateLocalSelection(null);
     setMeta(null);
     setSelection(null);
     setConnectError(null);
     scrubUrl();
-  }, [activateLocal]);
+  }, [activateLocal, embeddedAndroid, updateLocalSelection]);
 
   /**
    * Retry a link that did not work.
@@ -1760,8 +1790,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const connect = useCallback((next: ConnectionConfig, persist = true) => {
     const prior = selectionRef.current;
+    const priorIsStaged = prior?.source === 'app-shell' || (embeddedAndroid && prior?.source === 'local-detection');
     const pairedToken =
-      (prior?.source === 'app-shell' ? prior.config.token.trim() : null) ??
+      (priorIsStaged ? prior!.config.token.trim() : null) ??
       pairedShellTokenRef.current ??
       readAdoptedShellCredential(window)?.trim() ??
       null;
@@ -1770,16 +1801,40 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const currentOrigin = typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : '';
     const isSameOrigin = nextUrl === '' || nextUrl === currentOrigin;
     const trimmedToken = next.token.trim();
+    if (!isValidConnectionUrl(trimmedUrl)) {
+      const generation = ++connectionEpochRef.current;
+      setClients(null);
+      setMeta(null);
+      setConnectError({ kind: 'key', key: 'st.conn.urlInvalid' });
+      setSelection({
+        config: { url: trimmedUrl, token: trimmedToken },
+        persist: false,
+        source: persist ? 'manual' : 'local-detection',
+        scopeId: `direct:${nextUrl}:${generation}`,
+      });
+      return;
+    }
     const reusesPairedToken =
       pairedToken !== null &&
       pairedToken !== '' &&
-      (trimmedToken === pairedToken || (prior?.source === 'app-shell' && trimmedToken === ''));
+      (trimmedToken === pairedToken || (priorIsStaged && trimmedToken === ''));
 
     if (reusesPairedToken) {
       const generation = ++connectionEpochRef.current;
       setConnectError(null);
       setMeta(null);
       if (isSameOrigin) {
+        if (embeddedAndroid) {
+          const nextLocal: ConnectionSelection = {
+            config: { url: trimmedUrl, token: pairedToken },
+            persist: false,
+            source: 'local-detection',
+            scopeId: 'local',
+          };
+          updateLocalSelection(nextLocal);
+          setSelection(nextLocal);
+          return;
+        }
         const equivalent =
           prior !== null &&
           prior.source === 'app-shell' &&
@@ -1793,6 +1848,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         });
         return;
       }
+      if (embeddedAndroid) updateLocalSelection(null);
       setSelection({
         config: { url: trimmedUrl, token: '' },
         persist: false,
@@ -1805,6 +1861,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     if (persist) {
       pairedShellTokenRef.current = null;
       clearAppShellCredentialState(window);
+      if (embeddedAndroid) updateLocalSelection(null);
     }
     const generation = ++connectionEpochRef.current;
     const equivalent = prior !== null &&
@@ -1818,7 +1875,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       source: persist ? 'manual' : 'local-detection',
       scopeId: equivalent ? prior.scopeId : `direct:${nextUrl}:${generation}`,
     });
-  }, []);
+  }, [embeddedAndroid, updateLocalSelection]);
 
   const adoptShellCredential = useCallback((token: string) => {
     const trimmed = token.trim();
@@ -1832,12 +1889,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setPairedAuthRevoked(false);
     const currentOrigin = typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : '';
     const currentUrl = current?.config.url.trim().replace(/\/+$/, '') ?? '';
+    const expectedSource = embeddedAndroid ? 'local-detection' : 'app-shell';
     if (
       current !== null &&
-      current.source === 'app-shell' &&
+      current.source === expectedSource &&
       (currentUrl === '' || currentUrl === currentOrigin) &&
       current.config.token.trim() === trimmed
     ) {
+      if (embeddedAndroid && localSelectionRef.current === null) updateLocalSelection(current);
       setConnectError(null);
       setMetaAttempt((attempt) => attempt + 1);
       return;
@@ -1845,37 +1904,37 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const generation = ++connectionEpochRef.current;
     setConnectError(null);
     setMeta(null);
-    setSelection({
-      config: { url: '', token: trimmed },
-      persist: false,
-      source: 'app-shell',
-      scopeId: `direct::${generation}`,
-    });
-  }, []);
+    const next: ConnectionSelection = embeddedAndroid
+      ? { config: { url: '', token: trimmed }, persist: false, source: 'local-detection', scopeId: 'local' }
+      : { config: { url: '', token: trimmed }, persist: false, source: 'app-shell', scopeId: `direct::${generation}` };
+    if (embeddedAndroid) updateLocalSelection(next);
+    setSelection(next);
+  }, [embeddedAndroid, updateLocalSelection]);
 
   const retryPairedConnection = useCallback(() => {
     const current = selectionRef.current;
+    const currentIsStaged = current?.source === 'app-shell' || (embeddedAndroid && current?.source === 'local-detection');
     const pairedToken =
-      (current?.source === 'app-shell' ? current.config.token.trim() : null) ??
+      (currentIsStaged ? current!.config.token.trim() : null) ??
       pairedShellTokenRef.current ??
       readAdoptedShellCredential(window)?.trim() ??
       null;
     if (!pairedToken) return;
     setPairedAuthRevoked(false);
     setConnectError(null);
-    if (current?.source === 'app-shell') {
+    if (currentIsStaged) {
+      if (embeddedAndroid && localSelectionRef.current === null && current !== null) updateLocalSelection(current);
       setMetaAttempt((attempt) => attempt + 1);
       return;
     }
     const generation = ++connectionEpochRef.current;
     setMeta(null);
-    setSelection({
-      config: { url: '', token: pairedToken },
-      persist: false,
-      source: 'app-shell',
-      scopeId: `direct::${generation}`,
-    });
-  }, []);
+    const next: ConnectionSelection = embeddedAndroid
+      ? { config: { url: '', token: pairedToken }, persist: false, source: 'local-detection', scopeId: 'local' }
+      : { config: { url: '', token: pairedToken }, persist: false, source: 'app-shell', scopeId: `direct::${generation}` };
+    if (embeddedAndroid) updateLocalSelection(next);
+    setSelection(next);
+  }, [embeddedAndroid, updateLocalSelection]);
 
   // Settings edits always persist: a connection typed into the settings page
   // is an explicit choice, the same as one typed into the connect screen.
@@ -1936,7 +1995,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         : null);
 
   const canRetryPaired =
-    selection?.source === 'app-shell' ||
+    isStagedShellSource(selection?.source) ||
     pairedShellTokenRef.current !== null ||
     readAdoptedShellCredential(typeof window !== 'undefined' ? window : undefined) !== null;
 
@@ -1951,7 +2010,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       ) : (
         <ConnectScreen
           initial={
-            selection?.source === 'app-shell'
+            isStagedShellSource(selection?.source)
               ? { url: config?.url ?? '', token: '' }
               : (config ?? { url: '', token: '' })
           }

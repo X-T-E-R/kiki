@@ -197,6 +197,30 @@ export function connectionAddress(endpoint: string): string {
   }
 }
 
+export type EndpointNetworkKind = 'lan' | 'tailscale' | 'https' | 'other';
+
+/** Classifies a suggested pairing endpoint so pills can label LAN vs Tailscale vs HTTPS. */
+export function endpointNetworkKind(endpoint: string): EndpointNetworkKind {
+  try {
+    const url = new URL(endpoint);
+    const bare = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (bare.endsWith('.ts.net') || bare.endsWith('.tailscale.net') || bare.startsWith('fd7a:115c:a1e0:')) {
+      return 'tailscale';
+    }
+    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare);
+    if (ipv4 !== null) {
+      const a = Number(ipv4[1]);
+      const b = Number(ipv4[2]);
+      if (a === 100 && b >= 64 && b <= 127) return 'tailscale';
+      if (a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return 'lan';
+    }
+    if (bare.endsWith('.local')) return 'lan';
+    return url.protocol === 'https:' ? 'https' : 'other';
+  } catch {
+    return 'other';
+  }
+}
+
 /** A UUID/host id that is recognizable without printing the whole thing. */
 export function fingerprint(value: string, head = 8, tail = 4): string {
   const text = value.trim();

@@ -187,6 +187,18 @@ export function selectInitialConnection(options: {
   return null;
 }
 
+export function isValidConnectionUrl(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (trimmed === '') return true;
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname !== '';
+  } catch {
+    return false;
+  }
+}
+
 function isPersistableDeepLink(url: string): boolean {
   if (url === '') return true;
   try {

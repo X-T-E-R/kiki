@@ -1705,6 +1705,18 @@ input[data-add-search]:focus-visible {
   );
 }
 
+/* Any open composer popover rises above the transcript's jump-to-latest pill
+ * (z-10) so narrow viewports never cover bottom menu options like YOLO, while
+ * remaining beneath mobile drawers (z-30+) and dialogs (z-50). */
+.conversation-shell[data-phase='active'] .conversation-seat:has(
+  .composer-floating-panel,
+  [data-permission-panel],
+  [data-composer-menu],
+  [data-send-timing-menu]
+) {
+  z-index: 20;
+}
+
 /* Phone: the seat's solid paper extends into the home-indicator strip so the
  * composer card never docks against it. */
 @media (max-width: 767px) {

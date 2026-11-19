@@ -765,13 +765,32 @@ describe('SpaceSwitcher', () => {
     }
   });
 
-  it('opens the outbound PairSheet directly from "+ Pair a space on another computer…"', async () => {
+  it('opens the unified 1-stop PairSheet from SpaceSwitcher and lets the user enable & show or immediately mint a pairing code for this computer', async () => {
+    const localIdentity = { homeId: '11bb22cc-33dd-4ee5-8ff6-0011223344aa', hostId: 'this-machine', protocol: 1 as const };
+    const tlsFingerprint = '0123456789abcdef'.repeat(4);
+    let inboundEnabled = false;
+    const inbound = vi.fn().mockImplementation(async () => ({
+      enabled: inboundEnabled,
+      configuredEnabled: inboundEnabled,
+      identity: localIdentity,
+      grants: [],
+    }));
+    const createPairCode = vi.fn().mockImplementation(async () => {
+      inboundEnabled = true;
+      return {
+        code: 'K9F2-7X4M',
+        expiresAt: Date.now() + 600_000,
+        target: localIdentity,
+        tlsFingerprint,
+        suggestedEndpoints: ['http://192.168.31.221:58627', 'http://100.71.207.100:58627'],
+      };
+    });
     list.mockResolvedValue({ items: [TWO.items[0]] });
     connection.localClient = {
       klient: {
         rest: {
           homes: { list },
-          connections: { list: vi.fn().mockResolvedValue([]), pair: vi.fn() },
+          connections: { list: vi.fn().mockResolvedValue([]), pair: vi.fn(), inbound, createPairCode },
         },
       },
     };
@@ -780,5 +799,34 @@ describe('SpaceSwitcher', () => {
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-space-pair-entry]')!.click(); });
     expect(document.querySelector('[data-space-switcher-menu]')).toBeNull();
     expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
+    expect(document.querySelector('[data-pair-tab="inbound"]')).not.toBeNull();
+
+    // Switch to "Pair this computer" while inbound is OFF: shows 1-click "Enable & show pairing code".
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-pair-tab="inbound"]')!.click(); });
+    await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(createPairCode).not.toHaveBeenCalled();
+    const enableBtn = document.querySelector<HTMLButtonElement>('[data-inbound-generate-code]')!;
+    expect(enableBtn.textContent).toBe('Enable & show pairing code');
+
+    // Click once -> enables & mints QR + code + LAN / Tailscale labeled pills.
+    await act(async () => { enableBtn.click(); });
+    await act(async () => { for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(createPairCode).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-inbound-code]')?.textContent).toBe('K9F2-7X4M');
+    expect(document.querySelector('[data-inbound-qr]')).not.toBeNull();
+    const pills = [...document.querySelectorAll<HTMLButtonElement>('[data-inbound-code-address]')];
+    expect(pills.map((pill) => pill.textContent)).toEqual([
+      'LAN·192.168.31.221:58627',
+      'Tailscale·100.71.207.100:58627',
+    ]);
+
+    // Switch back to "Connect to another" and then re-enter "Pair this computer" with inbound ON -> auto-mints immediately!
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-pair-tab="outbound"]')!.click(); });
+    expect(document.querySelector('[data-pair-sheet="outbound"]')).not.toBeNull();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-pair-tab="inbound"]')!.click(); });
+    await act(async () => { for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(createPairCode).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[data-inbound-code]')?.textContent).toBe('K9F2-7X4M');
+    expect(document.querySelector('[data-inbound-qr]')).not.toBeNull();
   });
 });

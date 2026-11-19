@@ -3,7 +3,7 @@
  * when that Kiki is already running and starts it when it is not.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { errorText } from '@kiki/session-core/i18n';
 import type { RemoteConnection } from '@kiki/protocol';
@@ -19,7 +19,7 @@ import { SettingField } from '../fields';
 import { SettingsSelect } from '../SettingsPrimitives';
 import { connectionFailureText } from './parts';
 
-export function AddConnectionBySshDialog({ client, profiles, defaultHome, initialProfileId, onClose, onAdded }: {
+export function AddConnectionBySshDialog({ client, profiles, defaultHome, initialProfileId, headerSlot, onClose, onAdded }: {
   client: KikiClient;
   /** Profiles the person already saved under SSH hosts. */
   profiles: readonly SshHost[];
@@ -27,6 +27,8 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
   defaultHome: string;
   /** Pre-selected from the profile row this was opened from. */
   initialProfileId?: string;
+  /** Optional mode-switcher tabs rendered above the SSH form. */
+  headerSlot?: ReactNode;
   onClose: () => void;
   onAdded: (record: RemoteConnection) => void;
 }) {
@@ -82,6 +84,7 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
         </button>
       </>}>
       <form id={formId} className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit(); }} data-remote-ssh-form>
+        {headerSlot}
         <SettingField label={t('st.ssh.remote.profileField')} htmlFor="remote-ssh-profile" layout="stack"
           help={t('st.ssh.remote.profileHint')}>
           <SettingsSelect id="remote-ssh-profile" variant="row" className="min-h-9 w-full py-2"

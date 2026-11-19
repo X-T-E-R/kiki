@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { RemoteConnection } from '@kiki/protocol';
 
 import {
-  browsableRemote, completeConnectionEndpoint, connectionAddress, connectionIdOfSpaceKey, endpointIssue, fingerprint, formatPairingCode, formatPairingUri, identityBlock, pairingCodeIssue, parsePairingUri,
+  browsableRemote, completeConnectionEndpoint, connectionAddress, connectionIdOfSpaceKey, endpointIssue, endpointNetworkKind, fingerprint, formatPairingCode, formatPairingUri, identityBlock, pairingCodeIssue, parsePairingUri,
   invitationBlock, labelIssue, readIdentityBlock, readInvitationBlock, remoteSpaceKey, remoteSpaceScope,
   remoteSummaryView, purposeKeys, spacePlatformLabel,
 } from './remoteConnections';
@@ -104,10 +104,17 @@ describe('readings that survive an offline peer', () => {
     expect(spacePlatformLabel(undefined)).toBeUndefined();
   });
 
-  it('reads an address without the scheme or path', () => {
+  it('reads an address without the scheme or path and classifies its network kind', () => {
     expect(connectionAddress('https://b.example.test:8443')).toBe('b.example.test:8443');
     expect(connectionAddress('https://b.example.test')).toBe('b.example.test');
     expect(connectionAddress('not a url')).toBe('not a url');
+    expect(endpointNetworkKind('http://192.168.31.221:58627')).toBe('lan');
+    expect(endpointNetworkKind('http://10.0.0.5:58627')).toBe('lan');
+    expect(endpointNetworkKind('http://172.20.1.5:58627')).toBe('lan');
+    expect(endpointNetworkKind('http://100.69.108.120:58627')).toBe('tailscale');
+    expect(endpointNetworkKind('https://macbook.tailnet.ts.net')).toBe('tailscale');
+    expect(endpointNetworkKind('https://kiki.example.test')).toBe('https');
+    expect(endpointNetworkKind('http://192.0.2.20:58627')).toBe('other');
   });
 
   it('keeps a long id recognizable without printing all of it', () => {

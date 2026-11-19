@@ -3659,7 +3659,7 @@ export function Composer({
                 data-composer-menu
                 role="listbox"
                 aria-label={menu.kind === 'slash' ? t('composer.slashAria') : t('composer.filesAria')}
-                className={`anim-enter absolute right-0 bottom-full left-0 z-30 mb-1.5 max-h-[min(18rem,calc(100dvh-160px))] overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
+                className={`composer-floating-panel anim-enter absolute right-0 bottom-full left-0 z-30 mb-1.5 max-h-[min(18rem,calc(100dvh-160px))] overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
                 // Keep textarea focus while rows are clicked.
                 onMouseDown={(event) => { event.preventDefault(); }}
                 onMouseLeave={() => { setSlashHoverIndex(null); }}
@@ -4085,7 +4085,7 @@ export function Composer({
                     id={sendTimingMenuId}
                     aria-label={t('composer.sendTimingAria')}
                     data-send-timing-menu
-                    className={`anim-enter absolute right-0 bottom-full z-40 mb-1.5 max-h-[min(var(--cp-max-h,22rem),calc(100dvh-120px))] w-60 overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
+                    className={`composer-floating-panel anim-enter absolute right-0 bottom-full z-40 mb-1.5 max-h-[min(var(--cp-max-h,22rem),calc(100dvh-120px))] w-60 overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
                   >
                     <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
                     <SendTimingRows

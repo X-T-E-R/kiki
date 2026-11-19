@@ -6,7 +6,7 @@ import type { RemoteConnection } from '@kiki/protocol';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import { appShellConnectUrl } from '../lib/appShell';
+import { appShellConnectUrl, isEmbeddedAndroidHost } from '../lib/appShell';
 import type { PreparedScope } from '../lib/navScope';
 import { isPeerConnectionSource } from '../lib/peerAccess';
 import { browsableRemote, connectionsApi, fingerprint, hasGuiPurpose, remoteConnectionKeys, useRemoteConnections } from '../lib/remoteConnections';
@@ -308,7 +308,7 @@ export function SpaceSwitcher() {
   const barSubtitle = isDefaultMain
     ? (location.state === 'connected' ? '' : location.subtitle)
     : location.subtitle;
-  const switchComputerUrl = appShellConnectUrl();
+  const switchComputerUrl = isEmbeddedAndroidHost() ? null : appShellConnectUrl();
 
   return (
     <>
@@ -414,11 +414,17 @@ export function SpaceSwitcher() {
         <PairSheet
           client={remoteClient}
           direction="outbound"
+          allowInboundTab
           onClose={() => { setPairSheetOpen(false); }}
+          onInvited={() => {
+            void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
+            void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
+          }}
           onPaired={(record) => {
             setPairSheetOpen(false);
             void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
             void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
+            void remoteConnections.refetch();
             pushToast({
               tone: 'success',
               text: record.fingerprintToVerify === undefined

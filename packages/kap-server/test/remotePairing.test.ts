@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -48,6 +48,38 @@ describe('direct endpoints', () => {
     expect(directEndpoints({ host: '127.0.0.1', port: 58627 }, ['http://192.168.1.40:58627'], fakeInterfaces)).toEqual(['http://192.168.1.40:58627']);
     expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, [], fakeInterfaces)).toEqual(['http://192.168.1.40:58627', 'http://100.88.1.2:58627']);
     expect(directEndpoints({ host: '192.168.1.40', port: 58627 }, [], fakeInterfaces)).toEqual(['http://192.168.1.40:58627']);
+  });
+
+  it('filters out Clash TUN, APIPA, loopback, and WSL/Hyper-V/Docker virtual switches while ranking LAN and Tailscale ahead of 172.16/12', () => {
+    const windowsInterfaces = {
+      'vEthernet (WSL (Hyper-V firewall))': [{ address: '172.22.96.1', netmask: '255.255.240.0', family: 'IPv4' as const, mac: '00:15:5d:00:ee:d9', internal: false, cidr: '172.22.96.1/20' }],
+      'vEthernet (Default Switch)': [{ address: '172.25.224.1', netmask: '255.255.240.0', family: 'IPv4' as const, mac: '00:15:5d:f0:14:e6', internal: false, cidr: '172.25.224.1/20' }],
+      Meta: [{ address: '198.18.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '198.18.0.1/16' }],
+      docker0: [{ address: '172.17.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '02:42:ac:11:00:01', internal: false, cidr: '172.17.0.1/16' }],
+      'Ethernet 3': [{ address: '169.254.12.34', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:03', internal: false, cidr: '169.254.12.34/16' }],
+      Tailscale: [{ address: '100.71.207.100', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.71.207.100/32' }],
+      'Corp LAN': [{ address: '172.20.10.5', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:04', internal: false, cidr: '172.20.10.5/24' }],
+      '以太网 2': [{ address: '192.168.31.221', netmask: '255.255.255.0', family: 'IPv4' as const, mac: 'ec:d6:8a:fb:6a:18', internal: false, cidr: '192.168.31.221/24' }],
+    };
+    expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, ['http://198.18.0.1:58627', 'http://169.254.1.2:58627', 'https://box.example.test'], windowsInterfaces)).toEqual([
+      'http://192.168.31.221:58627',
+      'http://100.71.207.100:58627',
+      'http://172.20.10.5:58627',
+      'https://box.example.test',
+    ]);
+
+    const macInterfaces = {
+      utun3: [{ address: '198.18.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '198.18.0.1/16' }],
+      utun4: [{ address: '100.69.108.120', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.69.108.120/32' }],
+      utun5: [{ address: '172.19.0.1', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '172.19.0.1/24' }],
+      bridge0: [{ address: '192.168.64.1', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:05', internal: false, cidr: '192.168.64.1/24' }],
+      en0: [{ address: '192.168.31.63', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:06', internal: false, cidr: '192.168.31.63/24' }],
+    };
+    expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, [], macInterfaces)).toEqual([
+      'http://192.168.31.63:58627',
+      'http://100.69.108.120:58627',
+      'http://172.19.0.1:58627',
+    ]);
   });
 
   it('formats and parses short-lived kiki://pair URIs without long-lived tokens', () => {
@@ -780,5 +812,72 @@ describe('paired peer surface parity and host boundaries', () => {
       peer.closeAllConnections();
       await new Promise<void>((resolve) => peer.close(() => resolve()));
     }
+  });
+
+  it('generates RFC 5280 validity without T and repairs legacy malformed peer-tls.json in place while preserving tlsFingerprint', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-tls-rfc5280-')); homes.push(home);
+    const fresh = await loadPeerTlsIdentity(home);
+    const freshCert = new X509Certificate(fresh.cert);
+    expect(freshCert.verify(freshCert.publicKey)).toBe(true);
+    expect(Number.isFinite(Date.parse(freshCert.validFrom))).toBe(true);
+    expect(Number.isFinite(Date.parse(freshCert.validTo))).toBe(true);
+    const spanDays = (Date.parse(freshCert.validTo) - Date.parse(freshCert.validFrom)) / 86400000;
+    expect(spanDays).toBeGreaterThan(700);
+    expect(spanDays).toBeLessThanOrEqual(825);
+    expect(freshCert.raw.toString('latin1')).not.toMatch(/\d{8}T\d{6}Z/);
+
+    const legacyHome = await mkdtemp(join(tmpdir(), 'kiki-tls-legacy-')); homes.push(legacyHome);
+    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const expectedFp = spkiFingerprint(publicKey);
+    const der = (tag: number, ...parts: Buffer[]): Buffer => {
+      const body = Buffer.concat(parts);
+      const length = body.length < 128 ? Buffer.from([body.length]) : (() => {
+        const bytes: number[] = []; let n = body.length;
+        while (n > 0) { bytes.unshift(n & 255); n >>>= 8; }
+        return Buffer.from([0x80 | bytes.length, ...bytes]);
+      })();
+      return Buffer.concat([Buffer.from([tag]), length, body]);
+    };
+    const seq = (...parts: Buffer[]) => der(0x30, ...parts);
+    const oid = (hex: string) => der(0x06, Buffer.from(hex, 'hex'));
+    const badTime = (date: Date) => der(0x18, Buffer.from(date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')));
+    const alg = seq(oid('2a8648ce3d040302'));
+    const name = seq(der(0x31, seq(oid('550403'), der(0x0c, Buffer.from('Kiki Peer')))));
+    const serial = randomBytes(16); serial[0] = (serial[0]! & 0x7f) | 1;
+    const now = Date.now();
+    const tbs = seq(
+      der(0xa0, der(0x02, Buffer.from([2]))),
+      der(0x02, serial),
+      alg,
+      name,
+      seq(badTime(new Date(now - 86400000)), badTime(new Date(now + 20 * 366 * 86400000))),
+      name,
+      publicKey.export({ type: 'spki', format: 'der' }),
+    );
+    const legacyCertDer = seq(tbs, alg, der(0x03, Buffer.from([0]), sign('sha256', tbs, privateKey)));
+    const legacyCertPem = `-----BEGIN CERTIFICATE-----\n${legacyCertDer.toString('base64').match(/.{1,64}/g)!.join('\n')}\n-----END CERTIFICATE-----\n`;
+    const keyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    expect(legacyCertDer.toString('latin1')).toMatch(/\d{8}T\d{6}Z/);
+
+    await mkdir(join(legacyHome, 'server'), { recursive: true });
+    const tlsPath = join(legacyHome, 'server', 'peer-tls.json');
+    await writeFile(tlsPath, JSON.stringify({ key: keyPem, cert: legacyCertPem }), 'utf8');
+
+    const repaired = await loadPeerTlsIdentity(legacyHome);
+    expect(repaired.tlsFingerprint).toBe(expectedFp);
+    expect(repaired.key).toBe(keyPem);
+    expect(repaired.cert).not.toBe(legacyCertPem);
+    const repairedCert = new X509Certificate(repaired.cert);
+    expect(repairedCert.verify(repairedCert.publicKey)).toBe(true);
+    expect(repairedCert.raw.toString('latin1')).not.toMatch(/\d{8}T\d{6}Z/);
+    expect(Number.isFinite(Date.parse(repairedCert.validFrom))).toBe(true);
+    expect(Number.isFinite(Date.parse(repairedCert.validTo))).toBe(true);
+
+    const persisted = JSON.parse(await readFile(tlsPath, 'utf8')) as { key: string; cert: string };
+    expect(persisted.key).toBe(keyPem);
+    expect(persisted.cert).toBe(repaired.cert);
+    const reloaded = await loadPeerTlsIdentity(legacyHome);
+    expect(reloaded.cert).toBe(repaired.cert);
+    expect(reloaded.tlsFingerprint).toBe(expectedFp);
   });
 });

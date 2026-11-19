@@ -41,30 +41,110 @@ export function machineLabel(): string {
 export function currentSpacePlatform(): SpacePlatform {
   return process.platform === 'win32' || process.platform === 'darwin' ? process.platform : 'linux';
 }
+const VIRTUAL_INTERFACE_PATTERN = /(?:^|[\s_-])(?:vethernet|wsl|hyper-v\S*|docker\d*|br-[0-9a-f]+|veth\S*|virbr\d*|cni\d*|flannel\S*|kube-\S*|podman\d*|vmnet\d*|vmware\S*|vboxnet\d*|virtualbox\S*|bridge\d*|awdl\d*|llw\d*|anpi\d*|ap\d+|clash\S*|mihomo\S*|meta|sing-?box\S*|wintun\S*|loopback\S*|npcap\S*)(?:$|[\s_(-])/i;
+const TUNNEL_INTERFACE_PATTERN = /^(?:utun|tun|tap|wg|tailscale)\d*$/i;
+function parseIpv4(host: string): readonly [number, number, number, number] | undefined {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (match === null) return undefined;
+  const parts = match.slice(1).map(Number);
+  if (parts.some((part) => part > 255)) return undefined;
+  return [parts[0]!, parts[1]!, parts[2]!, parts[3]!];
+}
+function isTailscaleHost(host: string): boolean {
+  const bare = (host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host).toLowerCase();
+  if (bare.endsWith('.ts.net') || bare.endsWith('.tailscale.net')) return true;
+  const parts = parseIpv4(bare);
+  return parts !== undefined && parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127;
+}
+function isUnusableDirectHost(host: string): boolean {
+  const bare = (host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host).toLowerCase();
+  if (bare === '' || bare === 'localhost' || bare === '::1' || bare === '::' || bare.startsWith('fe80:')) return true;
+  const parts = parseIpv4(bare);
+  if (parts === undefined) return false;
+  const [a, b] = parts;
+  return a === 0 || a === 127 || (a === 169 && b === 254) || (a === 198 && (b === 18 || b === 19));
+}
+function directHostRank(host: string, interfaceName = ''): number {
+  if (isTailscaleHost(host)) return 1;
+  const parts = parseIpv4(host);
+  const tunnel = TUNNEL_INTERFACE_PATTERN.test(interfaceName.trim());
+  if (parts !== undefined) {
+    const [a, b] = parts;
+    if (!tunnel && ((a === 192 && b === 168) || a === 10)) return 0;
+    if (!tunnel && a === 172 && b >= 16 && b <= 31) return 2;
+    return 4;
+  }
+  return 4;
+}
+function endpointRank(rawUrl: string): number {
+  try {
+    const parsed = new URL(rawUrl);
+    if (isTailscaleHost(parsed.hostname)) return 1;
+    const parts = parseIpv4(parsed.hostname);
+    if (parts !== undefined) {
+      const [a, b] = parts;
+      if ((a === 192 && b === 168) || a === 10) return 0;
+      if (a === 172 && b >= 16 && b <= 31) return 2;
+      return 4;
+    }
+    return parsed.protocol === 'https:' ? 3 : 4;
+  } catch {
+    return 5;
+  }
+}
+function isUsableEndpointUrl(rawUrl: string): boolean {
+  try {
+    return !isUnusableDirectHost(new URL(rawUrl).hostname);
+  } catch {
+    return false;
+  }
+}
 export function directAddresses(interfaces = networkInterfaces()): string[] {
-  const hosts = new Set<string>();
-  for (const entries of Object.values(interfaces)) {
+  const candidates = new Map<string, { rank: number; order: number }>();
+  let order = 0;
+  for (const [name, entries] of Object.entries(interfaces)) {
+    const isVirtual = VIRTUAL_INTERFACE_PATTERN.test(name);
     for (const entry of entries ?? []) {
       const family = entry.family as string | number;
-      if (entry.internal || (family !== 'IPv4' && family !== 4) || !isDirectConnectionHost(entry.address)) continue;
-      hosts.add(entry.address);
+      if (entry.internal || (family !== 'IPv4' && family !== 4) || !isDirectConnectionHost(entry.address) || isUnusableDirectHost(entry.address)) continue;
+      if (isVirtual && !isTailscaleHost(entry.address)) continue;
+      const rank = directHostRank(entry.address, name);
+      const existing = candidates.get(entry.address);
+      if (existing === undefined || rank < existing.rank) {
+        candidates.set(entry.address, { rank, order: existing?.order ?? order++ });
+      }
     }
   }
-  return [...hosts];
+  return [...candidates.entries()]
+    .sort((left, right) => left[1].rank - right[1].rank || left[1].order - right[1].order)
+    .map(([address]) => address);
 }
 export function directEndpoints(bound: { host: string; port: number } | number, extras: readonly string[] = [], interfaces = networkInterfaces()): string[] {
-  const urls = new Set<string>();
+  const urls = new Map<string, { rank: number; order: number }>();
+  let order = 0;
+  const add = (url: string, rank = endpointRank(url)): void => {
+    if (url === '' || !isUsableEndpointUrl(url)) return;
+    const existing = urls.get(url);
+    if (existing === undefined || rank < existing.rank) {
+      urls.set(url, { rank, order: existing?.order ?? order++ });
+    }
+  };
   const target = typeof bound === 'number' ? { host: '0.0.0.0', port: bound } : bound;
   const host = target.host.replace(/^::ffff:/i, '');
   if (target.port > 0) {
     if (host === '0.0.0.0' || host === '::' || host === '') {
-      for (const address of directAddresses(interfaces)) urls.add(`http://${address}:${target.port}`);
-    } else if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host.toLowerCase()) && isDirectConnectionHost(host)) {
-      urls.add(`http://${host.includes(':') ? `[${host}]` : host}:${target.port}`);
+      for (const [index, address] of directAddresses(interfaces).entries()) {
+        add(`http://${address}:${target.port}`, directHostRank(address));
+        order = Math.max(order, index + 1);
+      }
+    } else if (!isUnusableDirectHost(host) && isDirectConnectionHost(host)) {
+      add(`http://${host.includes(':') ? `[${host}]` : host}:${target.port}`);
     }
   }
-  for (const extra of extras) if (extra !== '') urls.add(extra);
-  return [...urls];
+  for (const extra of extras) add(extra);
+  return [...urls.entries()]
+    .sort((left, right) => left[1].rank - right[1].rank || left[1].order - right[1].order)
+    .map(([url]) => url);
 }
 export class PeerListeners {
   private readonly servers = new Map<string, { url: string; close: () => Promise<void> }>();
@@ -92,7 +172,7 @@ export class PeerListeners {
     this.flight = run.catch(() => undefined);
     return run.then(() => this.urls());
   }
-  urls(): string[] { return [...this.servers.values()].map((entry) => entry.url); }
+  urls(): string[] { return [...this.servers.values()].map((entry) => entry.url).sort((left, right) => endpointRank(left) - endpointRank(right)); }
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.refreshTimer);

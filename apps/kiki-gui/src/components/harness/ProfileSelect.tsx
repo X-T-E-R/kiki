@@ -640,7 +640,7 @@ export function ProfileSelect({
               : undefined)}
             className={portalInModal
               ? 'anim-enter fixed flex max-h-[calc(100dvh-120px)] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg'
-              : `anim-enter absolute left-0 z-50 flex max-h-[min(var(--cp-max-h,calc(100dvh-120px)),calc(100dvh-120px))] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
+              : `composer-floating-panel anim-enter absolute left-0 z-50 flex max-h-[min(var(--cp-max-h,calc(100dvh-120px)),calc(100dvh-120px))] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
             style={portalInModal
               ? {
                   backgroundColor: 'var(--color-paper)',

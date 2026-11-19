@@ -170,9 +170,9 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
 
 const PANEL_Y = 'bottom-[var(--cp-bottom,calc(100%_+_6px))] max-w-[min(var(--cp-max-w,100vw),calc(100vw_-_32px))]';
 /** A panel opened from the left of the status line: flush with the card's left edge. */
-export const COMPOSER_PANEL_START = `absolute z-40 ${PANEL_Y} left-[var(--cp-left,0px)]`;
+export const COMPOSER_PANEL_START = `composer-floating-panel absolute z-40 ${PANEL_Y} left-[var(--cp-left,0px)]`;
 /** A panel opened from the right of the status line: flush with the card's right edge. */
-export const COMPOSER_PANEL_END = `absolute z-40 ${PANEL_Y} right-[var(--cp-right,0px)]`;
+export const COMPOSER_PANEL_END = `composer-floating-panel absolute z-40 ${PANEL_Y} right-[var(--cp-right,0px)]`;
 
 /**
  * Anchors a SearchableSelect (whose root and panel it does not own) to the

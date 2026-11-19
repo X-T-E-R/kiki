@@ -436,67 +436,71 @@ function BrowserConnectForm({
           <p role="status" className="mt-2 text-[13px] leading-relaxed text-ink-soft">{detectNote}</p>
         ) : null}
 
-        <button
-          type="button"
-          aria-expanded={manualOpen}
-          aria-controls="connect-manual"
-          onClick={() => { setManualOpen((open) => !open); }}
-          className="mt-5 flex items-center gap-1.5 rounded-md py-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-        >
-          <DisclosureChevron open={manualOpen} className="text-current" />
-          {t(shellConnect !== null ? 'connect.useAccessToken' : 'connect.otherMachine')}
-        </button>
-        <div id="connect-manual" hidden={!manualOpen} className="mt-3">
+        {shellConnect === null ? (
+          <>
+            <button
+              type="button"
+              aria-expanded={manualOpen}
+              aria-controls="connect-manual"
+              onClick={() => { setManualOpen((open) => !open); }}
+              className="mt-5 flex items-center gap-1.5 rounded-md py-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+            >
+              <DisclosureChevron open={manualOpen} className="text-current" />
+              {t('connect.otherMachine')}
+            </button>
+            <div id="connect-manual" hidden={!manualOpen} className="mt-3">
 
-        <label htmlFor="connect-server-url" className="mb-1 block text-[12px] font-medium text-ink-soft">
-          {t('connect.serverUrl')}
-        </label>
-        <input
-          id="connect-server-url"
-          className="mb-4 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
-          placeholder={t('connect.urlPlaceholder', { target: __KIKI_PROXY_TARGET__ })}
-          value={url}
-          onChange={(event) => { setUrl(event.target.value); }}
-          spellCheck={false}
-        />
+            <label htmlFor="connect-server-url" className="mb-1 block text-[12px] font-medium text-ink-soft">
+              {t('connect.serverUrl')}
+            </label>
+            <input
+              id="connect-server-url"
+              className="mb-4 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
+              placeholder={t('connect.urlPlaceholder', { target: __KIKI_PROXY_TARGET__ })}
+              value={url}
+              onChange={(event) => { setUrl(event.target.value); }}
+              spellCheck={false}
+            />
 
-        <label htmlFor="connect-token" className="mb-1 flex items-baseline justify-between gap-2 text-[12px] font-medium text-ink-soft">
-          {t('connect.accessToken')}
-          <span title={t('connect.accessTokenHelp')} className="cursor-help text-[12px] font-normal text-ink-faint underline decoration-dotted underline-offset-2">
-            {t('connect.accessTokenWhere')}
-          </span>
-        </label>
-        <div className="mb-5 flex gap-2">
-          <input
-            id="connect-token"
-            className="min-w-0 flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
-            aria-describedby="connect-token-help"
-            value={token}
-            onChange={(event) => { setToken(event.target.value); }}
-            spellCheck={false}
-            type={showToken ? 'text' : 'password'}
-          />
-          <button
-            type="button"
-            className="rounded-lg border border-hairline px-3 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-ink"
-            aria-label={`${t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')} ${t('connect.token')}`}
-            onClick={() => { setShowToken((value) => !value); }}
-          >
-            {t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')}
-          </button>
-        </div>
-        <p id="connect-token-help" className="sr-only">{t('connect.accessTokenHelp')}</p>
+            <label htmlFor="connect-token" className="mb-1 flex items-baseline justify-between gap-2 text-[12px] font-medium text-ink-soft">
+              {t('connect.accessToken')}
+              <span title={t('connect.accessTokenHelp')} className="cursor-help text-[12px] font-normal text-ink-faint underline decoration-dotted underline-offset-2">
+                {t('connect.accessTokenWhere')}
+              </span>
+            </label>
+            <div className="mb-5 flex gap-2">
+              <input
+                id="connect-token"
+                className="min-w-0 flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
+                aria-describedby="connect-token-help"
+                value={token}
+                onChange={(event) => { setToken(event.target.value); }}
+                spellCheck={false}
+                type={showToken ? 'text' : 'password'}
+              />
+              <button
+                type="button"
+                className="rounded-lg border border-hairline px-3 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-ink"
+                aria-label={`${t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')} ${t('connect.token')}`}
+                onClick={() => { setShowToken((value) => !value); }}
+              >
+                {t(showToken ? 'st.providers.hideKey' : 'st.providers.showKey')}
+              </button>
+            </div>
+            <p id="connect-token-help" className="sr-only">{t('connect.accessTokenHelp')}</p>
 
-        {error !== null ? <ConnectError error={error} /> : null}
+            {error !== null ? <ConnectError error={error} /> : null}
 
-        <button
-          type="submit"
-          disabled={connecting}
-          className="w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60"
-        >
-          {connecting ? t('connect.connecting') : t('connect.connect')}
-        </button>
-        </div>
+            <button
+              type="submit"
+              disabled={connecting}
+              className="w-full rounded-md border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-ink-faint focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:opacity-60"
+            >
+              {connecting ? t('connect.connecting') : t('connect.connect')}
+            </button>
+            </div>
+          </>
+        ) : null}
         {onBack !== undefined && shellConnect === null ? (
           <button
             type="button"

@@ -31,6 +31,7 @@ import {
 } from '../../lib/remoteConnections';
 import { useSpaceLocation } from '../../lib/spaceLocation';
 import { currentSpace } from '../../lib/spaces';
+import { isValidConnectionUrl } from '../../state/connectionConfig';
 import { useConnection } from '../../state/connection';
 import { connectionLog, formatConnectionLog, subscribeConnectionLog } from '../../state/connectionDiagnostics';
 import { copyTextToClipboard } from '../../lib/clipboard';
@@ -81,7 +82,8 @@ function CurrentConnectionContent() {
     ? (remoteConnections.data ?? []).find((entry) => entry.id === activeConnectionId)
     : undefined;
   const isShellPaired = connectionSource === 'app-shell';
-  const shellConnect = appShellConnectUrl();
+  const embeddedAndroid = isEmbeddedAndroidHost();
+  const shellConnect = embeddedAndroid ? null : appShellConnectUrl();
   const [restarting, setRestarting] = useState(false);
   const [retryingRemote, setRetryingRemote] = useState(false);
   const [remoteRetryFeedback, setRemoteRetryFeedback] = useState<Feedback>(null);
@@ -102,9 +104,11 @@ function CurrentConnectionContent() {
   // origin, so KEEP must never inherit it into manual browser storage or send
   // it to an edited address.
   const [urlDraft, setUrlDraft] = useState(config.url);
+  const [urlError, setUrlError] = useState<string | null>(null);
   const [tokenDraft, setTokenDraft] = useState<SecretDraft>(KEEP_SECRET);
   useEffect(() => {
     setUrlDraft(config.url);
+    setUrlError(null);
     setTokenDraft(KEEP_SECRET);
     setEditingEndpoint(false);
   }, [config.url, config.token]);
@@ -119,6 +123,11 @@ function CurrentConnectionContent() {
   const applyDrafts = () => {
     if (!draftsDirty) return;
     const trimmedUrl = urlDraft.trim();
+    if (!isValidConnectionUrl(trimmedUrl)) {
+      setUrlError(t('st.conn.urlInvalid'));
+      return;
+    }
+    setUrlError(null);
     setEditingEndpoint(false);
     if (isShellPaired && tokenDraft.mode !== 'set') {
       applyConnection({ url: trimmedUrl, token: '' });
@@ -128,6 +137,7 @@ function CurrentConnectionContent() {
   };
   const discardDrafts = () => {
     setUrlDraft(config.url);
+    setUrlError(null);
     setTokenDraft(KEEP_SECRET);
     setEditingEndpoint(false);
   };
@@ -308,9 +318,14 @@ function CurrentConnectionContent() {
                 id="st-conn-url"
                 className={`${INPUT} font-mono`}
                 value={urlDraft}
-                onChange={(event) => { setUrlDraft(event.target.value); }}
+                aria-invalid={urlError !== null || undefined}
+                onChange={(event) => {
+                  setUrlDraft(event.target.value);
+                  if (urlError !== null) setUrlError(null);
+                }}
                 spellCheck={false}
               />
+              {urlError !== null ? <p role="alert" data-conn-url-error className="text-[12px] text-danger">{urlError}</p> : null}
             </div>
             <SecretField
               id="st-conn-token"

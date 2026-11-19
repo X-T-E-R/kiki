@@ -1739,6 +1739,7 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     return (
       <>
         <span data-shell-source>{connection.connectionSource ?? 'none'}</span>
+        <span data-shell-has-local-client>{String(connection.localClient !== null)}</span>
         <span data-shell-token>{connection.config.token}</span>
         <span data-shell-url>{connection.config.url}</span>
         <span data-shell-ws-status>{connection.wsStatus}</span>
@@ -2276,5 +2277,143 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     } finally {
       delete (window as unknown as { KikiAndroid?: unknown }).KikiAndroid;
     }
+  });
+
+  it('establishes localClient on KikiEmbedded Android hosts and hides the misleading kiki-shell://connect link in ConnectionSection', async () => {
+    const originalUa = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Linux; Android 15) KikiApp/android KikiEmbedded/1',
+    });
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-android',
+      server_home_id: 'home-android',
+      server_version: '0.1.0',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    expect(applyCommittedShellCredential(window, window.location.origin, 'embedded-owner-token')).toBe(true);
+
+    try {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      mounted.push({ container, root });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const router = createMemoryRouter(
+        [
+          {
+            path: '/settings/connection',
+            element: (
+              <>
+                <ShellStatusHarness />
+                <ConnectionSection />
+              </>
+            ),
+          },
+        ],
+        { initialEntries: ['/settings/connection'] },
+      );
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <HostProvider host={browserHost}>
+                <ConnectionProvider>
+                  <RouterProvider router={router} />
+                </ConnectionProvider>
+              </HostProvider>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flush();
+
+      expect(container.querySelector('[data-shell-source]')?.textContent).toBe('local-detection');
+      expect(container.querySelector('[data-shell-has-local-client]')?.textContent).toBe('true');
+      expect(container.querySelector('[data-shell-token]')?.textContent).toBe('embedded-owner-token');
+      expect(container.querySelector('[data-conn-app-shell]')).toBeNull();
+    } finally {
+      if (originalUa) {
+        Object.defineProperty(window.navigator, 'userAgent', originalUa);
+      } else {
+        delete (window.navigator as unknown as { userAgent?: string }).userAgent;
+      }
+    }
+  });
+
+  it('rejects malformed URL schemes inline in ConnectionSection and guards corrupted stored URLs in ConnectionProvider without crashing React', async () => {
+    mocks.meta.mockResolvedValue({
+      server_id: 'srv-url-guard',
+      server_home_id: 'home-url-guard',
+      server_version: '0.1.0',
+      current_space_id: 'main',
+      dangerous_bypass_auth: false,
+    });
+    localStorage.setItem('kiki.connection', JSON.stringify({ url: 'http://127.0.0.1:19410', token: 'owner-tok' }));
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mounted.push({ container, root });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        {
+          path: '/settings/connection',
+          element: (
+            <>
+              <ShellStatusHarness />
+              <ConnectionSection />
+            </>
+          ),
+        },
+      ],
+      { initialEntries: ['/settings/connection'] },
+    );
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <HostProvider host={browserHost}>
+              <ConnectionProvider>
+                <RouterProvider router={router} />
+              </ConnectionProvider>
+            </HostProvider>
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    const clientsBefore = mocks.klients.length;
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click();
+    });
+    const urlInput = container.querySelector<HTMLInputElement>('#st-conn-url')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(urlInput, 'hhttp://127.0.0.1:19410');
+      urlInput.dispatchEvent(new Event('input', { bubbles: true }));
+      urlInput.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-conn-url-error]')?.textContent).toContain('http://');
+    expect(container.querySelector('#st-conn-url')).not.toBeNull();
+    expect(mocks.klients.length).toBe(clientsBefore);
+
+    // Corrupted stored URL with invalid scheme renders recoverable ConnectScreen instead of crashing
+    await act(async () => { root.unmount(); });
+    container.remove();
+    localStorage.setItem('kiki.connection', JSON.stringify({ url: 'hhttp://127.0.0.1:19410', token: 'owner-tok' }));
+    const badMount = await mountBrowserShell();
+    await flush();
+    expect(badMount.container.querySelector('[role="alert"]')?.textContent).toContain('http://');
+    expect(badMount.container.querySelector('[data-shell-source]')).toBeNull();
+    await badMount.unmount();
   });
 });

@@ -106,7 +106,7 @@ describe('ConnectScreen browser form', () => {
     }
   });
 
-  it('links back to the mobile launcher when rendered inside the phone app shell', () => {
+  it('links back to the mobile launcher without a static access token form when rendered inside the phone app shell', () => {
     vi.stubGlobal('navigator', { language: 'en-US', userAgent: 'Mozilla/5.0 (Linux; Android 16; wv) KikiApp/android' });
     try {
       const html = renderScreen({ desktopBoot: null, desktopFailure: null });
@@ -114,7 +114,8 @@ describe('ConnectScreen browser form', () => {
       expect(html).toContain('href="https://localhost/index.html#change"');
       expect(html).toContain('Disconnected from this computer.');
       expect(html).toContain('Switch computer');
-      expect(html).toContain('Connect with access token');
+      expect(html).not.toContain('Connect with access token');
+      expect(html).not.toContain('connect-token');
       expect(html).not.toContain('Connect to Kiki on this computer.');
       expect(html).not.toContain('Connect to another machine…');
     } finally {

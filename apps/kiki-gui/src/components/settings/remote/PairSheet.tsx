@@ -11,7 +11,7 @@
  * phones).
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { formatPairingUri, type BridgeOperation, type PairCodeCreateOutput, type RemoteConnection, type SshHost } from '@kiki/protocol';
@@ -20,8 +20,10 @@ import { useI18n } from '../../../i18n';
 import type { KikiClient } from '../../../lib/client';
 import {
   completeConnectionEndpoint,
+  connectionAddress,
   connectionsApi,
   endpointIssue,
+  endpointNetworkKind,
   fingerprint,
   formatPairingCode,
   labelIssue,
@@ -73,9 +75,23 @@ function remainingLabel(expiresAt: number, now: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+function endpointNetworkLabelKey(address: string): I18nKey | null {
+  switch (endpointNetworkKind(address)) {
+    case 'lan':
+      return 'st.remote.endpointNetwork.lan';
+    case 'tailscale':
+      return 'st.remote.endpointNetwork.tailscale';
+    case 'https':
+      return 'st.remote.endpointNetwork.https';
+    default:
+      return null;
+  }
+}
+
 export function PairSheet({
   client,
   direction,
+  allowInboundTab = false,
   sshProfiles,
   defaultHome,
   initial,
@@ -85,6 +101,7 @@ export function PairSheet({
 }: {
   readonly client: KikiClient;
   readonly direction: PairSheetDirection;
+  readonly allowInboundTab?: boolean;
   readonly sshProfiles?: readonly SshHost[];
   readonly defaultHome?: string;
   readonly initial?: AddConnectionStart;
@@ -98,29 +115,35 @@ export function PairSheet({
   return (
     <OutboundPairSheet
       client={client}
+      allowInboundTab={allowInboundTab}
       sshProfiles={sshProfiles}
       defaultHome={defaultHome}
       initial={initial}
       onClose={onClose}
       onPaired={onPaired}
+      onInvited={onInvited}
     />
   );
 }
 
 function OutboundPairSheet({
   client,
+  allowInboundTab,
   sshProfiles,
   defaultHome,
   initial,
   onClose,
   onPaired,
+  onInvited,
 }: {
   readonly client: KikiClient;
+  readonly allowInboundTab: boolean;
   readonly sshProfiles?: readonly SshHost[];
   readonly defaultHome?: string;
   readonly initial?: AddConnectionStart;
   readonly onClose: () => void;
   readonly onPaired?: (record: RemoteConnection) => void;
+  readonly onInvited?: () => void;
 }) {
   const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
@@ -130,8 +153,7 @@ function OutboundPairSheet({
   const spaces = useSpaces(client);
   const home = defaultHome ?? spaces.data?.find((space) => space.id === MAIN_SPACE_ID)?.path ?? '';
 
-  const [way, setWay] = useState<'url' | 'ssh'>(initial?.kind ?? 'url');
-  const onUrlWay = way === 'url';
+  const [way, setWay] = useState<'url' | 'inbound' | 'ssh'>(initial?.kind ?? 'url');
   const [profileId] = useState(initial?.kind === 'ssh' ? initial.profileId : '');
   const [code, setCode] = useState('');
   const [label, setLabel] = useState('');
@@ -153,6 +175,33 @@ function OutboundPairSheet({
   const endpointProblem = endpointIssue(completedEndpoint);
   const codeProblem = pairingCodeIssue(code);
   const blocked = codeProblem !== null || labelProblem !== null || endpointProblem !== null || saving;
+  const canPasteFromClipboard = typeof navigator !== 'undefined' && typeof navigator.clipboard?.readText === 'function';
+
+  const applyPastedValue = (raw: string): boolean => {
+    const parsed = parsePairingUri(raw);
+    if (parsed !== undefined) {
+      setEndpoint(completeConnectionEndpoint(parsed.endpoint));
+      setCode(parsed.code);
+      setPairingFingerprint(parsed.fingerprint ?? '');
+      return true;
+    }
+    return false;
+  };
+
+  const pasteFromClipboard = async () => {
+    if (!canPasteFromClipboard) return;
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (text === '') return;
+      if (!applyPastedValue(text)) {
+        setPairingFingerprint('');
+        setEndpoint(completeConnectionEndpoint(text));
+      }
+      setFailure(null);
+    } catch {
+      // Clipboard read can be declined by the browser; the user can paste directly into either field.
+    }
+  };
 
   const submit = async (event?: React.FormEvent) => {
     event?.preventDefault();
@@ -183,6 +232,66 @@ function OutboundPairSheet({
     }
   };
 
+  const showModeTabs = allowInboundTab || sshFlag.enabled === true;
+  const modeTabs = showModeTabs ? (
+    <div className="space-y-1.5">
+      {!allowInboundTab ? (
+        <span className="block text-[12px] font-medium text-ink-soft">{t('st.remote.way.label')}</span>
+      ) : null}
+      <div role="tablist" aria-label={t('st.remote.way.label')} data-remote-add-ways className="flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          role="tab"
+          data-remote-add-way="url"
+          data-pair-tab="outbound"
+          aria-selected={way === 'url'}
+          onClick={() => { setWay('url'); }}
+          className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 ${way === 'url' ? 'bg-selected text-selected-ink' : ''}`}
+        >
+          <Icon name="web" size={12} />{t(allowInboundTab ? 'st.remote.way.outbound' : 'st.remote.way.url')}
+        </button>
+        {allowInboundTab ? (
+          <button
+            type="button"
+            role="tab"
+            data-pair-tab="inbound"
+            aria-selected={way === 'inbound'}
+            onClick={() => { setWay('inbound'); }}
+            className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 ${way === 'inbound' ? 'bg-selected text-selected-ink' : ''}`}
+          >
+            <Icon name="smartphone" size={12} />{t('st.remote.way.inbound')}
+          </button>
+        ) : null}
+        {sshFlag.enabled === true ? (
+          <button
+            type="button"
+            role="tab"
+            data-remote-add-way="ssh"
+            data-pair-tab="ssh"
+            aria-selected={way === 'ssh'}
+            onClick={() => { setWay('ssh'); }}
+            className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 ${way === 'ssh' ? 'bg-selected text-selected-ink' : ''}`}
+          >
+            <Icon name="terminal" size={12} />{t('st.remote.way.ssh')}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  ) : null;
+
+  if (way === 'inbound' && allowInboundTab) {
+    return (
+      <InboundPairSheet
+        client={client}
+        onClose={onClose}
+        onInvited={onInvited}
+        autoMintWhenEnabled
+        headerSlot={modeTabs}
+        width="lg"
+      />
+    );
+  }
+
   if (way === 'ssh') {
     return (
       <AddConnectionBySshDialog
@@ -190,6 +299,7 @@ function OutboundPairSheet({
         profiles={savedHosts}
         defaultHome={home}
         initialProfileId={profileId === '' ? undefined : profileId}
+        headerSlot={modeTabs}
         onClose={onClose}
         onAdded={(record) => { onPaired?.(record); }}
       />
@@ -229,33 +339,7 @@ function OutboundPairSheet({
         onSubmit={(event) => { event.preventDefault(); void submit(); }}
         data-remote-add-form
       >
-        {sshFlag.enabled === true ? (
-          <div className="space-y-1.5">
-            <span className="block text-[12px] font-medium text-ink-soft">{t('st.remote.way.label')}</span>
-            <div role="tablist" aria-label={t('st.remote.way.label')} data-remote-add-ways className="flex gap-1.5">
-              <button
-                type="button"
-                role="tab"
-                data-remote-add-way="url"
-                aria-selected={onUrlWay}
-                onClick={() => { setWay('url'); }}
-                className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 ${onUrlWay ? 'bg-selected text-selected-ink' : ''}`}
-              >
-                <Icon name="web" size={12} />{t('st.remote.way.url')}
-              </button>
-              <button
-                type="button"
-                role="tab"
-                data-remote-add-way="ssh"
-                aria-selected={!onUrlWay}
-                onClick={() => { setWay('ssh'); }}
-                className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5 ${!onUrlWay ? 'bg-selected text-selected-ink' : ''}`}
-              >
-                <Icon name="terminal" size={12} />{t('st.remote.way.ssh')}
-              </button>
-            </div>
-          </div>
-        ) : null}
+        {modeTabs}
 
         {sshFlag.enabled === true && savedHosts.length === 0 ? (
           <p data-remote-ssh-no-hosts className="text-[12px] leading-snug text-ink-soft">
@@ -277,29 +361,35 @@ function OutboundPairSheet({
           layout="stack"
           help={t('st.remote.endpointHint')}
         >
-          <input
-            id="remote-connection-endpoint"
-            data-remote-endpoint
-            className="w-full rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[12px] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
-            value={endpoint}
-            spellCheck={false}
-            placeholder="http://192.168.1.20:58627"
-            onChange={(event) => {
-              const parsed = parsePairingUri(event.target.value);
-              if (parsed !== undefined) {
-                setEndpoint(completeConnectionEndpoint(parsed.endpoint));
-                setCode(parsed.code);
-                setPairingFingerprint(parsed.fingerprint ?? '');
-                return;
-              }
-              setPairingFingerprint('');
-              setEndpoint(event.target.value);
-            }}
-            onBlur={() => {
-              setEndpoint((value) => completeConnectionEndpoint(value));
-              setTouched((state) => ({ ...state, endpoint: true }));
-            }}
-          />
+          <div className="flex items-center gap-2">
+            <input
+              id="remote-connection-endpoint"
+              data-remote-endpoint
+              className="min-w-0 flex-1 rounded-md bg-ink/[0.04] px-2.5 py-2 font-mono text-[12px] text-ink outline-none focus:bg-panel focus:shadow-[inset_0_0_0_1px_var(--color-hairline-strong)]"
+              value={endpoint}
+              spellCheck={false}
+              placeholder="http://192.168.1.20:58627"
+              onChange={(event) => {
+                if (applyPastedValue(event.target.value)) return;
+                setPairingFingerprint('');
+                setEndpoint(event.target.value);
+              }}
+              onBlur={() => {
+                setEndpoint((value) => completeConnectionEndpoint(value));
+                setTouched((state) => ({ ...state, endpoint: true }));
+              }}
+            />
+            {canPasteFromClipboard ? (
+              <button
+                type="button"
+                data-remote-paste-link
+                onClick={() => { void pasteFromClipboard(); }}
+                className={`${SECONDARY_BUTTON} shrink-0`}
+              >
+                {t('st.remote.pasteLink')}
+              </button>
+            ) : null}
+          </div>
           {pairingFingerprint !== '' ? (
             <div className="mt-1.5 flex items-center gap-1.5">
               <span
@@ -344,14 +434,7 @@ function OutboundPairSheet({
             autoCorrect="off"
             placeholder="XXXX-XXXX"
             onChange={(event) => {
-              const parsed = parsePairingUri(event.target.value);
-              if (parsed !== undefined) {
-                setEndpoint(completeConnectionEndpoint(parsed.endpoint));
-                setCode(parsed.code);
-                setPairingFingerprint(parsed.fingerprint ?? '');
-                return;
-              }
-              setPairingFingerprint('');
+              if (applyPastedValue(event.target.value)) return;
               setCode(formatPairingCode(event.target.value));
             }}
             onBlur={() => { setTouched((state) => ({ ...state, code: true })); }}
@@ -445,10 +528,16 @@ function InboundPairSheet({
   client,
   onClose,
   onInvited,
+  autoMintWhenEnabled = false,
+  headerSlot,
+  width = 'md',
 }: {
   readonly client: KikiClient;
   readonly onClose: () => void;
   readonly onInvited?: () => void;
+  readonly autoMintWhenEnabled?: boolean;
+  readonly headerSlot?: ReactNode;
+  readonly width?: 'md' | 'lg';
 }) {
   const { t, locale } = useI18n();
   const invitedRef = useRef(onInvited);
@@ -465,6 +554,8 @@ function InboundPairSheet({
   const [baselineGrantIds, setBaselineGrantIds] = useState<ReadonlySet<string> | null>(null);
   const [selectedEndpoint, setSelectedEndpoint] = useState('');
   const [now, setNow] = useState(() => Date.now());
+  const autoMintedRef = useRef(false);
+  const savingRef = useRef(false);
 
   useEffect(() => {
     if (issued === null) return undefined;
@@ -478,8 +569,9 @@ function InboundPairSheet({
     return () => { window.clearInterval(poll); };
   }, [issued, inboundStatus]);
 
-  const generateCode = async () => {
-    if (saving || devBypass) return;
+  const generateCode = useCallback(async () => {
+    if (savingRef.current || devBypass) return;
+    savingRef.current = true;
     setSaving(true);
     setFailure(null);
     const knownGrants = new Set((inboundStatus.data?.grants ?? []).map((grant) => grant.id));
@@ -504,21 +596,57 @@ function InboundPairSheet({
       const reason = connectionFailureText(error instanceof Error ? error.message : '');
       setFailure({ tone: 'error', text: reason === null ? errorText(locale, error) : t(reason) });
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
-  };
+  }, [allowBridge, allowTools, client, devBypass, inboundStatus, locale, t]);
+
+  useEffect(() => {
+    if (!autoMintWhenEnabled || autoMintedRef.current || issued !== null || devBypass) return;
+    if (inboundStatus.data?.enabled !== true) return;
+    autoMintedRef.current = true;
+    void generateCode();
+  }, [autoMintWhenEnabled, devBypass, generateCode, inboundStatus.data?.enabled, issued]);
 
   const newlyPairedGrant = issued !== null && baselineGrantIds !== null
     ? (inboundStatus.data?.grants ?? []).find((grant) => grant.status === 'approved' && !baselineGrantIds.has(grant.id))
     : undefined;
+
+  const waitingForAutoMint = autoMintWhenEnabled && issued === null && failure === null && (
+    inboundStatus.isPending || (gateAlreadyOn && !devBypass)
+  );
+
+  if (waitingForAutoMint) {
+    return (
+      <SidePanel
+        onClose={onClose}
+        overlayId="pair-sheet-inbound"
+        title={t(autoMintWhenEnabled ? 'st.remote.way.inbound' : 'st.inbound.inviteTitle')}
+        description={autoMintWhenEnabled ? t('st.inbound.pairThisComputerDesc') : undefined}
+        width={width}
+        data={{ 'data-pair-sheet': 'inbound', 'data-inbound-loading': '' }}
+        footer={(
+          <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>
+            {t('common.cancel')}
+          </button>
+        )}
+      >
+        <div className="space-y-5">
+          {headerSlot}
+          <p className="text-[13px] text-ink-soft" role="status">{t('st.inbound.codeWorking')}</p>
+        </div>
+      </SidePanel>
+    );
+  }
 
   if (issued === null) {
     return (
       <SidePanel
         onClose={onClose}
         overlayId="pair-sheet-inbound"
-        title={t('st.inbound.inviteTitle')}
-        width="md"
+        title={t(autoMintWhenEnabled ? 'st.remote.way.inbound' : 'st.inbound.inviteTitle')}
+        description={autoMintWhenEnabled ? t('st.inbound.pairThisComputerDesc') : undefined}
+        width={width}
         data={{ 'data-pair-sheet': 'inbound', 'data-inbound-consent': '' }}
         footer={(
           <>
@@ -537,12 +665,13 @@ function InboundPairSheet({
                 ? t('st.inbound.codeWorking')
                 : gateAlreadyOn
                   ? t('st.inbound.generateCode')
-                  : t('st.inbound.turnOnAndGenerate')}
+                  : t(autoMintWhenEnabled ? 'st.inbound.turnOnAndShow' : 'st.inbound.turnOnAndGenerate')}
             </button>
           </>
         )}
       >
         <div className="space-y-4">
+          {headerSlot}
           <p className="text-[13px] text-ink-soft">{t('st.inbound.consentLead')}</p>
 
           <div className="space-y-3 rounded-lg border border-hairline bg-ink/[0.02] p-3.5">
@@ -619,9 +748,9 @@ function InboundPairSheet({
     <SidePanel
       onClose={onClose}
       overlayId="pair-sheet-inbound"
-      title={t('st.inbound.inviteTitle')}
-      description={t('st.inbound.inviteBody')}
-      width="md"
+      title={t(autoMintWhenEnabled ? 'st.remote.way.inbound' : 'st.inbound.inviteTitle')}
+      description={t(autoMintWhenEnabled ? 'st.inbound.pairThisComputerDesc' : 'st.inbound.inviteBody')}
+      width={width}
       data={{ 'data-pair-sheet': 'inbound', 'data-inbound-pair-code': '' }}
       footer={(
         <>
@@ -641,6 +770,7 @@ function InboundPairSheet({
       )}
     >
       <div className="space-y-5">
+        {headerSlot}
         {newlyPairedGrant !== undefined ? (
           <div className="rounded-lg border border-success/40 bg-success/[0.06] px-3.5 py-3 text-[13px] font-medium text-success" data-inbound-paired-notice>
             {t('st.inbound.pairedNotice', { name: newlyPairedGrant.label })}
@@ -714,6 +844,7 @@ function InboundPairSheet({
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {issued.suggestedEndpoints.map((address) => {
                 const active = address === activeEndpoint;
+                const networkKey = endpointNetworkLabelKey(address);
                 return (
                   <button
                     key={address}
@@ -721,15 +852,22 @@ function InboundPairSheet({
                     data-inbound-code-address
                     data-inbound-code-address-active={active ? '' : undefined}
                     aria-pressed={active}
+                    title={address}
                     onClick={() => { setSelectedEndpoint(address); }}
-                    className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2.5 py-1 text-left font-mono text-[12px] transition-colors ${
+                    className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2.5 py-1 text-left text-[12px] transition-colors ${
                       active
                         ? 'border-selected-ink/40 bg-selected font-medium text-selected-ink'
                         : 'border-hairline bg-ink/[0.02] text-ink-soft hover:border-hairline-strong hover:text-ink'
                     }`}
                   >
                     {active ? <Icon name="check" size={12} className="shrink-0" /> : null}
-                    <span className="break-all">{address}</span>
+                    {networkKey !== null ? (
+                      <span className="shrink-0 text-[11px] font-medium opacity-80" data-inbound-endpoint-kind={endpointNetworkKind(address)}>
+                        {t(networkKey)}
+                      </span>
+                    ) : null}
+                    {networkKey !== null ? <span aria-hidden className="opacity-45">·</span> : null}
+                    <span className="break-all font-mono">{connectionAddress(address)}</span>
                   </button>
                 );
               })}
