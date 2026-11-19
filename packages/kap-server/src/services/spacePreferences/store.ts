@@ -590,7 +590,6 @@ export class SpacePreferencesStore {
       try { await mkdir(lock); break; } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         if (attempt > 0 || !await reclaimStaleLock(lock)) throw new Error('Another space update is in progress; retry after it finishes', { cause: error });
-        await rm(lock, { recursive: true, force: true });
       }
     }
     try {
