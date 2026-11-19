@@ -3953,6 +3953,7 @@ export interface AgentStateSnapshot {
         endpoint?: string;
       }>>;
       customHeaders?: Record<string, string>;
+      modelHintHeader?: string;
       defaultModel?: string;
       defaults?: /* GenerationParameters — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
         temperature?: number | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {

@@ -149,3 +149,67 @@ export function degradeOlderMediaParts(
     return { ...message, content };
   });
 }
+
+type HeavyMediaPart = Extract<ContentPart, { readonly type: 'video_url' | 'audio_url' }>;
+
+const HEAVY_MEDIA_OPEN_TAG_RE = /^<(video|audio)\s+path="([^"]+)">$/u;
+
+function isHeavyMediaPart(part: ContentPart): part is HeavyMediaPart {
+  return part.type === 'video_url' || part.type === 'audio_url';
+}
+
+function heavyMediaHintPath(
+  content: readonly ContentPart[],
+  index: number,
+  part: HeavyMediaPart,
+): string | undefined {
+  const prev = index > 0 ? content[index - 1] : undefined;
+  if (prev?.type === 'text') {
+    const match = HEAVY_MEDIA_OPEN_TAG_RE.exec(prev.text.trim());
+    if (match !== null) {
+      const expectedKind = part.type === 'video_url' ? 'video' : 'audio';
+      if (match[1] === expectedKind && match[2] !== undefined && match[2].length > 0) {
+        return match[2];
+      }
+    }
+  }
+  if (part.type === 'audio_url' && part.audioUrl.name !== undefined && part.audioUrl.name.length > 0) {
+    return part.audioUrl.name;
+  }
+  return undefined;
+}
+
+function staleHeavyMediaPlaceholder(
+  content: readonly ContentPart[],
+  index: number,
+  part: HeavyMediaPart,
+): string {
+  const kind = part.type === 'video_url' ? 'video' : 'audio';
+  const path = heavyMediaHintPath(content, index, part);
+  if (path !== undefined) {
+    return `[${kind} omitted from older turn to save bandwidth (path: ${path}); call ReadMediaFile again if you need to re-inspect it]`;
+  }
+  return `[${kind} omitted from older turn to save bandwidth; call ReadMediaFile again if you need to re-inspect it]`;
+}
+
+export function degradeOlderAudioVideoParts(
+  messages: readonly Message[],
+  keepRecent: number = MEDIA_DEGRADE_KEEP_RECENT,
+): readonly Message[] {
+  const heavyCount = messages.reduce(
+    (count, message) => count + message.content.filter(isHeavyMediaPart).length,
+    0,
+  );
+  let toDegrade = Math.max(0, heavyCount - keepRecent);
+  if (toDegrade === 0) return messages;
+
+  return messages.map((message) => {
+    if (toDegrade === 0 || !message.content.some(isHeavyMediaPart)) return message;
+    const content = message.content.map((part, index): ContentPart => {
+      if (toDegrade === 0 || !isHeavyMediaPart(part)) return part;
+      toDegrade -= 1;
+      return { type: 'text', text: staleHeavyMediaPlaceholder(message.content, index, part) };
+    });
+    return { ...message, content };
+  });
+}

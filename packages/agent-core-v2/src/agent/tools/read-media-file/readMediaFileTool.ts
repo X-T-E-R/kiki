@@ -3,6 +3,7 @@ import type { ResolvedImagePolicy } from '#/kosong/provider/providerImagePolicy'
 import type { ContentPart } from '#/kosong/contract/message';
 import { VideoUploadUnsupportedError } from '#/kosong/contract/errors';
 import { inlineVideoPart, isVideoUploadAuthError } from '#/agent/media/videoUpload';
+import { compressAudioForModel, compressVideoForModel } from '#/agent/media/av-compress';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -101,12 +102,19 @@ interface ImageDelivery {
   readonly resized?: boolean;
 }
 
+interface AvDelivery {
+  readonly kind: 'untouched' | 'compressed' | 'full';
+  readonly byteLength: number;
+  readonly mimeType: string;
+}
+
 function buildMediaNote(input: {
   readonly kind: 'image' | 'video' | 'audio';
   readonly mimeType: string;
   readonly byteSize: number;
   readonly dimensions: { readonly width: number; readonly height: number } | null;
   readonly delivery?: ImageDelivery;
+  readonly avDelivery?: AvDelivery;
 }): string {
   const parts: string[] = [
     `Read ${input.kind} file.`,
@@ -141,6 +149,15 @@ function buildMediaNote(input: {
     );
   } else if (delivery?.kind === 'full') {
     parts.push('Shown at native resolution; no downscaling applied.');
+  }
+  const avDelivery = input.avDelivery;
+  if (avDelivery?.kind === 'compressed') {
+    parts.push(
+      `The attached ${input.kind} was pre-compressed to ${avDelivery.mimeType} (${formatByteSize(avDelivery.byteLength)}) ` +
+        'to fit inline payload limits. Call ReadMediaFile again with full_resolution=true if you need the original uncompressed bytes.',
+    );
+  } else if (avDelivery?.kind === 'full') {
+    parts.push('Sent at original quality; local pre-compression skipped.');
   }
   if (input.kind === 'image' && input.dimensions && delivery?.kind !== 'crop') {
     parts.push(
@@ -220,19 +237,41 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     data: Buffer,
     mimeType: string,
     safePath: string,
-  ): Promise<ContentPart> {
+    fullResolution: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<{ readonly part: ContentPart; readonly avDelivery?: AvDelivery }> {
     if (this.videoUploader !== undefined) {
       try {
-        return await this.videoUploader({
+        const uploadInput = {
           data,
           mimeType,
           filename: safePath.split(/[\\/]/).at(-1),
-        });
+        };
+        const part =
+          signal === undefined
+            ? await this.videoUploader(uploadInput)
+            : await this.videoUploader(uploadInput, { signal });
+        return { part };
       } catch (error) {
+        if (signal?.aborted === true) throw error;
         if (shouldSurfaceVideoUploadError(error, this.inlineVideoSupported)) throw error;
       }
     }
-    return inlineVideoPart(data, mimeType);
+    if (fullResolution) {
+      return {
+        part: inlineVideoPart(data, mimeType),
+        avDelivery: { kind: 'full', byteLength: data.length, mimeType },
+      };
+    }
+    const compressed = await compressVideoForModel(data, mimeType, { signal });
+    return {
+      part: inlineVideoPart(compressed.data, compressed.mimeType),
+      avDelivery: {
+        kind: compressed.changed ? 'compressed' : 'untouched',
+        byteLength: compressed.finalByteLength,
+        mimeType: compressed.mimeType,
+      },
+    };
   }
 
   async resolveExecution(args: ReadMediaFileInput): Promise<ToolExecution> {
@@ -285,7 +324,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           pathClass: env.pathClass,
           homeDir: env.homeDir,
         }),
-      execute: async () => {
+      execute: async (ctx) => {
         const lease = target.host === undefined
           ? this.runtime.acquire(['fs']) : acquireToolRuntime(this.runtime, target.host, ['fs']);
         try {
@@ -301,7 +340,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          return tagSshResult(await this.execution(args, path, lease.runtime.fs!, env), inspected);
+          return tagSshResult(await this.execution(args, path, lease.runtime.fs!, env, ctx?.signal), inspected);
         } finally {
           lease.dispose();
         }
@@ -314,6 +353,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     safePath: string,
     fs: IHostFileSystem,
     env: HostEnvironmentInfo,
+    signal?: AbortSignal,
   ): Promise<ExecutableToolResult> {
     if (!args.path) {
       return { isError: true, output: 'File path cannot be empty.' };
@@ -395,11 +435,11 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
 
       if (
         (fileType.kind === 'video' || fileType.kind === 'audio') &&
-        (args.region !== undefined || args.full_resolution === true)
+        args.region !== undefined
       ) {
         return {
           isError: true,
-          output: 'region and full_resolution apply only to image files.',
+          output: 'region applies only to image files.',
         };
       }
 
@@ -450,6 +490,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       let dimensions = fileType.kind === 'image' ? sniffImageDimensions(mediaData) : null;
       let mediaPart: ContentPart;
       let delivery: ImageDelivery | undefined;
+      let avDelivery: AvDelivery | undefined;
       if (fileType.kind === 'image') {
         if (args.region !== undefined) {
           const outcome = await cropImageForModel(mediaData, fileType.mimeType, args.region, {
@@ -534,11 +575,37 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
           }
         }
       } else if (fileType.kind === 'video') {
-        mediaPart = await this.videoContentPart(mediaData, fileType.mimeType, safePath);
-      } else {
+        const videoOutcome = await this.videoContentPart(
+          mediaData,
+          fileType.mimeType,
+          safePath,
+          args.full_resolution === true,
+          signal,
+        );
+        mediaPart = videoOutcome.part;
+        avDelivery = videoOutcome.avDelivery;
+      } else if (args.full_resolution === true) {
         mediaPart = {
           type: 'audio_url',
           audioUrl: { url: `data:${fileType.mimeType};base64,${mediaData.toString('base64')}` },
+        };
+        avDelivery = {
+          kind: 'full',
+          byteLength: mediaData.length,
+          mimeType: fileType.mimeType,
+        };
+      } else {
+        const compressed = await compressAudioForModel(mediaData, fileType.mimeType, { signal });
+        mediaPart = {
+          type: 'audio_url',
+          audioUrl: {
+            url: `data:${compressed.mimeType};base64,${Buffer.from(compressed.data).toString('base64')}`,
+          },
+        };
+        avDelivery = {
+          kind: compressed.changed ? 'compressed' : 'untouched',
+          byteLength: compressed.finalByteLength,
+          mimeType: compressed.mimeType,
         };
       }
 
@@ -552,6 +619,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         byteSize: stat.size,
         dimensions,
         delivery,
+        avDelivery,
       });
 
       const output: ContentPart[] = [

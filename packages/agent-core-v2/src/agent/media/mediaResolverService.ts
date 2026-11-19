@@ -19,6 +19,11 @@ import { REQUEST_IDENTITY_RESERVED_HEADERS } from '#/kosong/requestIdentity/requ
 import { IBlobStore } from '#/persistence/interface/blobStore';
 
 import './flag';
+import {
+  compressAudioForModel,
+  compressVideoForModel,
+  resolveAvInlineByteBudget,
+} from './av-compress';
 import { detectFileType, MEDIA_SNIFF_BYTES } from './file-type';
 import {
   compressImageForModel,
@@ -54,6 +59,7 @@ import {
 } from './videoUpload';
 
 const CACHE_SCOPE = 'video-upload-cache';
+const AV_COMPRESS_CACHE_SCOPE = 'av-compress-cache';
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const VIDEO_UNAVAILABLE_TEXT =
   '[video omitted: the uploaded file is no longer available]';
@@ -156,24 +162,40 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     requester: ModelRequester,
     signal: AbortSignal | undefined,
   ): Promise<ContentPart> {
-    if (requester.model.capabilities.audio_in) {
-      try {
-        signal?.throwIfAborted();
-        const file = await this.mediaStore.open(ref.fileId, 'wav') ?? await this.mediaStore.open(ref.fileId);
-        const mime = file === undefined ? undefined : normalizeAudioMime(file.mediaType);
-        const type = mime !== undefined && SUPPORTED_AUDIO_MIMES.has(mime)
-          ? mime : file && AUDIO_MIME_BY_SUFFIX[extname(file.name).toLowerCase()];
-        if (file !== undefined && type !== undefined) {
-          const chunks: Uint8Array[] = [];
-          for await (const chunk of file.stream()) {
-            signal?.throwIfAborted();
-            chunks.push(chunk);
-          }
-          return { type: 'audio_url', audioUrl: { url: `data:${type};base64,${Buffer.concat(chunks).toString('base64')}`, name: file.name } };
+    if (!requester.model.capabilities.audio_in) {
+      return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+    }
+    const cacheKey = `audio\0${ref.fileId}\0${ref.fullResolution === true ? 'full' : 'auto'}`;
+    const memoed = this.resolved.get(cacheKey);
+    if (memoed !== undefined) return memoed;
+    try {
+      signal?.throwIfAborted();
+      const file = await this.mediaStore.open(ref.fileId, 'wav') ?? await this.mediaStore.open(ref.fileId);
+      const mime = file === undefined ? undefined : normalizeAudioMime(file.mediaType);
+      const type = mime !== undefined && SUPPORTED_AUDIO_MIMES.has(mime)
+        ? mime : file && AUDIO_MIME_BY_SUFFIX[extname(file.name).toLowerCase()];
+      if (file !== undefined && type !== undefined) {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of file.stream()) {
+          signal?.throwIfAborted();
+          chunks.push(chunk);
         }
-      } catch {
-        signal?.throwIfAborted();
+        const rawBytes = Buffer.concat(chunks);
+        const prepared = ref.fullResolution === true
+          ? { data: rawBytes, mimeType: type }
+          : await this.prepareInlineAv('audio', rawBytes, type, signal);
+        const part: ContentPart = {
+          type: 'audio_url',
+          audioUrl: {
+            url: `data:${prepared.mimeType};base64,${Buffer.from(prepared.data).toString('base64')}`,
+            name: file.name,
+          },
+        };
+        this.resolved.set(cacheKey, part);
+        return part;
       }
+    } catch {
+      signal?.throwIfAborted();
     }
     return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
   }
@@ -414,7 +436,8 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     const model = requester.model;
     if (!model.capabilities.video_in) return videoTag(await this.displayPath(ref));
     const providerKey = model.providerType ?? model.protocol;
-    const cacheKey = `${ref.fileId}\0${providerKey}`;
+    const mode = ref.fullResolution === true ? '\0full' : '';
+    const cacheKey = `${ref.fileId}\0${providerKey}${mode}`;
 
     const memoed = this.resolved.get(cacheKey);
     if (memoed !== undefined) return this.memoedOutcome(ref, memoed);
@@ -473,8 +496,12 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       },
     });
     if (uploader === undefined) {
+      if (!inlineSupported) return { part: videoTag(tagPath), memoize: true };
+      const prepared = ref.fullResolution === true
+        ? { data: bytes, mimeType }
+        : await this.prepareInlineAv('video', bytes, mimeType, signal);
       return {
-        part: inlineSupported ? inlineVideoPart(bytes, mimeType) : videoTag(tagPath),
+        part: inlineVideoPart(prepared.data, prepared.mimeType),
         memoize: true,
       };
     }
@@ -488,8 +515,12 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       if (signal?.aborted) throw error;
       if (isVideoUploadAuthError(error)) throw error;
       if (isVideoUploadUnsupportedError(error)) {
+        if (!inlineSupported) return { part: videoTag(tagPath), memoize: true };
+        const prepared = ref.fullResolution === true
+          ? { data: bytes, mimeType }
+          : await this.prepareInlineAv('video', bytes, mimeType, signal);
         return {
-          part: inlineSupported ? inlineVideoPart(bytes, mimeType) : videoTag(tagPath),
+          part: inlineVideoPart(prepared.data, prepared.mimeType),
           memoize: true,
         };
       }
@@ -512,6 +543,52 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       if (canonical === undefined) throw new Error(`media ${ref.fileId} is unavailable`);
       return { bytes: Buffer.from(canonical.data), filename: canonical.name };
     }
+  }
+
+  private async prepareInlineAv(
+    kind: 'video' | 'audio',
+    bytes: Uint8Array,
+    mimeType: string,
+    signal: AbortSignal | undefined,
+  ): Promise<{ readonly data: Uint8Array; readonly mimeType: string }> {
+    const budget = resolveAvInlineByteBudget();
+    if (bytes.length <= budget) return { data: bytes, mimeType };
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const cacheKey = `${kind}\0${mimeType}\0${digest}\0${String(budget)}`;
+    const cached = await this.readCachedCompressedAv(cacheKey);
+    if (cached !== undefined) return cached;
+    const compressed =
+      kind === 'video'
+        ? await compressVideoForModel(bytes, mimeType, { byteBudget: budget, signal })
+        : await compressAudioForModel(bytes, mimeType, { byteBudget: budget, signal });
+    if (compressed.changed) {
+      await this.writeCachedCompressedAv(cacheKey, compressed.mimeType, compressed.data);
+    }
+    return { data: compressed.data, mimeType: compressed.mimeType };
+  }
+
+  private async readCachedCompressedAv(
+    cacheKey: string,
+  ): Promise<{ readonly data: Uint8Array; readonly mimeType: string } | undefined> {
+    const raw = await this.blobs.get(AV_COMPRESS_CACHE_SCOPE, blobKey(cacheKey)).catch(() => undefined);
+    if (raw === undefined || raw.length === 0) return undefined;
+    const sep = raw.indexOf(0x0a);
+    if (sep <= 0 || sep >= raw.length - 1) return undefined;
+    const mimeType = textDecoder.decode(raw.subarray(0, sep));
+    if (!mimeType.startsWith('video/') && !mimeType.startsWith('audio/')) return undefined;
+    return { mimeType, data: raw.subarray(sep + 1) };
+  }
+
+  private async writeCachedCompressedAv(
+    cacheKey: string,
+    mimeType: string,
+    data: Uint8Array,
+  ): Promise<void> {
+    const header = textEncoder.encode(`${mimeType}\n`);
+    const payload = new Uint8Array(header.length + data.length);
+    payload.set(header, 0);
+    payload.set(data, header.length);
+    await this.blobs.put(AV_COMPRESS_CACHE_SCOPE, blobKey(cacheKey), payload).catch(() => undefined);
   }
 
   private async readCachedUpload(cacheKey: string, scope = CACHE_SCOPE): Promise<string | undefined> {

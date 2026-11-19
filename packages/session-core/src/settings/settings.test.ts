@@ -1265,6 +1265,12 @@ function registeredBuiltinFlags(): { id: string; defaultEnabled: boolean; owner:
   return flags;
 }
 
+const EXPLICIT_DEFAULT_OFF_FLAGS: ReadonlySet<string> = new Set([
+  // Explicit human requirement (t166): keep sliding-window audio/video degradation opt-in
+  // while measuring prompt prefix KV cache hit rate impact.
+  'degrade_stale_heavy_media',
+]);
+
 describe('experimental flag homes', () => {
   it('covers every distributed builtin registration with bilingual copy and a default-on capability', () => {
     const flags = registeredBuiltinFlags();
@@ -1273,7 +1279,8 @@ describe('experimental flag homes', () => {
     expect(EXPERIMENTAL_FLAG_HOMES.map((home) => home.id).toSorted()).toEqual(flags.map((flag) => flag.id).toSorted());
     for (const flag of flags) {
       const home = experimentalFlagHome(flag.id)!;
-      expect(flag.defaultEnabled, `${flag.id} in ${flag.owner}: default off needs an explicit human requirement`).toBe(true);
+      const expectedDefault = !EXPLICIT_DEFAULT_OFF_FLAGS.has(flag.id);
+      expect(flag.defaultEnabled, `${flag.id} in ${flag.owner}: default off needs an explicit human requirement`).toBe(expectedDefault);
       for (const locale of ['en', 'zh'] as const) {
         for (const key of [home.labelKey, home.descriptionKey]) {
           expect(Object.hasOwn(locale === 'en' ? en : zh, key), `${locale}: ${flag.id} ${key}`).toBe(true);

@@ -883,6 +883,7 @@ enter_approval_timeout_ms = 60000
       # model: string
       # endpoint: string
   # custom_headers: record<string, string>
+  # model_hint_header: string
   # default_model: string
   # defaults: object
     # temperature: number | object

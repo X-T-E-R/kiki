@@ -234,13 +234,26 @@ describe('FlagService', () => {
       import('#/app/pluginUsage/flag'),
       import('#/app/sessionManager/flag'),
       import('#/agent/media/flag'),
+      import('#/agent/contextProjector/flag'),
     ]);
     const ids = ['native_browser', 'native_ssh', 'agent-profile-routes', 'plugin_app_lifecycle', 'plugin_workspace_usage', 'session_idle_eviction', 'image_format_conversion'];
     expect(ids.every((id) => getContributedFlags().some((definition) => definition.id === id))).toBe(true);
+    expect(getContributedFlags().some((definition) => definition.id === 'degrade_stale_heavy_media')).toBe(true);
     const defaults = makeFlags().flags;
     for (const id of ids) {
       expect(defaults.explain(id), id).toMatchObject({ enabled: true, source: 'default', defaultEnabled: true });
     }
+    expect(defaults.explain('degrade_stale_heavy_media')).toMatchObject({
+      enabled: false,
+      source: 'default',
+      defaultEnabled: false,
+    });
+    const staleHeavyEnv = makeFlags({ KIKI_EXPERIMENTAL_DEGRADE_STALE_HEAVY_MEDIA: 'true' }).flags;
+    expect(staleHeavyEnv.explain('degrade_stale_heavy_media')).toMatchObject({
+      enabled: true,
+      source: 'env',
+      defaultEnabled: false,
+    });
     const forcedOff = makeFlags({ KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false' }).flags;
     expect(forcedOff.explain('native_browser')).toMatchObject({ enabled: false, source: 'env', defaultEnabled: true });
 

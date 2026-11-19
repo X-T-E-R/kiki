@@ -7562,6 +7562,8 @@ export const en = {
   'st.exp.desktopSearch.desc': 'Search conversations from the desktop. The first index builds in the background; indexing pauses when its disk has less than 2 GiB free.',
   'st.exp.imageConversion.name': 'Convert unsupported images',
   'st.exp.imageConversion.desc': 'Convert images a model can’t read into a format it accepts before sending them.',
+  'st.exp.degradeStaleHeavyMedia.name': 'Degrade older video & audio',
+  'st.exp.degradeStaleHeavyMedia.desc': 'Replace older video and audio attachments with re-readable placeholders before model requests to cut upload size. Enabling this may reduce prompt cache hits.',
   'st.exp.nativeSsh.name': 'SSH hosts',
   'st.exp.nativeSsh.desc': 'Use machines from your SSH config as places where sessions run.',
   'st.exp.nativeBrowser.name': 'Native browser control',

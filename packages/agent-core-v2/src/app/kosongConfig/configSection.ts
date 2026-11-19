@@ -77,6 +77,14 @@ export const ImagePolicyConfigSchema = z.object({
 });
 
 const StringRecordSchema = z.record(z.string(), z.string());
+const HTTP_HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const HttpHeaderNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => HTTP_HEADER_NAME_RE.test(value), {
+    message: 'model_hint_header must be a valid HTTP header name',
+  });
 
 const ApiDefaultSchema = z.object({ kind: z.literal('api_default') }).strict();
 export const GenerationParametersSchema = z.object({
@@ -120,6 +128,7 @@ const ProviderConfigObjectSchema = z.object({
   decisionEndpoint: z.string().optional(),
   decision: ProviderDecisionConfigSchema.optional(),
   customHeaders: StringRecordSchema.optional(),
+  modelHintHeader: HttpHeaderNameSchema.optional(),
   defaultModel: z.string().optional(),
   defaults: GenerationParametersSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),

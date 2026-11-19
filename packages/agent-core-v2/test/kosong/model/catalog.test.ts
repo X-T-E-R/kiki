@@ -42,6 +42,11 @@ import { IModelService, type ModelRecord, type ModelsSection } from '#/kosong/mo
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 
 import { HostRequestHeadersAdapter } from '#/app/kosongConfig/hostRequestHeadersAdapter';
+import {
+  ProvidersSectionSchema,
+  providersFromToml,
+  providersToToml,
+} from '#/app/kosongConfig/configSection';
 
 import { StubConfigService, stubModelOAuthTokens, stubTokenProvider } from '../stubs';
 import { stubAgentIdentity } from '../../app/agentIdentity/stubs';
@@ -2384,5 +2389,75 @@ describe('transient models on configured connections', () => {
       expect(models.getDefaultModel()).toBeUndefined();
       expect(() => catalog.getConnectionRequester('missing', 'remote/custom-model', 65536)).toThrow('does not exist');
     } finally { await host.dispose(); }
+  });
+});
+
+describe('provider model_hint_header', () => {
+  it('injects the configured header with the outbound model id and leaves unconfigured providers untouched', async () => {
+    const { host, catalog } = createHost({
+      providers: {
+        hinted: {
+          type: 'anthropic',
+          apiKey: 'fixture-key',
+          baseUrl: 'https://edge.example.test',
+          customHeaders: { 'x-llm-model': 'stale-value', 'X-Custom': 'keep' },
+          modelHintHeader: 'X-LLM-Model',
+        },
+        plain: {
+          type: 'openai',
+          apiKey: 'fixture-key',
+          baseUrl: 'https://plain.example.test/v1',
+        },
+      },
+      models: {
+        'hinted/demo': {
+          provider: 'hinted',
+          model: 'demo-wire-model',
+          maxContextSize: 64000,
+        },
+        'plain/demo': {
+          provider: 'plain',
+          model: 'plain-wire-model',
+          maxContextSize: 64000,
+        },
+      },
+    });
+    try {
+      const hintedModel = catalog.get('hinted/demo');
+      expect(hintedModel.headers['X-LLM-Model']).toBe('demo-wire-model');
+      expect(hintedModel.headers['x-llm-model']).toBeUndefined();
+      expect(hintedModel.headers['X-Custom']).toBe('keep');
+
+      const plainModel = catalog.get('plain/demo');
+      expect(plainModel.headers['X-LLM-Model']).toBeUndefined();
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it('round-trips model_hint_header through TOML helpers and rejects invalid header names', () => {
+    const parsed = ProvidersSectionSchema.parse(
+      providersFromToml({
+        edge: {
+          type: 'openai',
+          base_url: 'https://edge.example.test/v1',
+          model_hint_header: 'X-LLM-Model',
+        },
+      }),
+    );
+    expect(parsed['edge']?.modelHintHeader).toBe('X-LLM-Model');
+    expect(providersToToml(parsed, {})).toEqual({
+      edge: {
+        type: 'openai',
+        base_url: 'https://edge.example.test/v1',
+        model_hint_header: 'X-LLM-Model',
+      },
+    });
+
+    expect(() =>
+      ProvidersSectionSchema.parse({
+        edge: { modelHintHeader: 'Invalid Header\r\nName' },
+      }),
+    ).toThrow(/valid HTTP header name/);
   });
 });

@@ -39,9 +39,10 @@ export const ReadMediaFileInputSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'Images only: skip the default downscaling and view at native resolution. Fails with an ' +
-        'explicit error when the payload would exceed the per-image byte limit; use region for ' +
-        'files that large.',
+      'Skip default downscaling or local pre-compression and send original media bytes. ' +
+        'For images, fails with an explicit error when the payload exceeds the per-image byte limit ' +
+        '(use region for files that large). For inline video and audio, skips automatic ffmpeg ' +
+        'compression when the file exceeds the inline byte budget.',
     ),
 });
 

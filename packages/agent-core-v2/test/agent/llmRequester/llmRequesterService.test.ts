@@ -81,7 +81,9 @@ import {
   ambiguousRequestDelivery,
   isRetryableGenerateError,
   markProviderEventError,
+  normalizeAPIStatusError,
   noteExecutedRequestDelivery,
+  requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { readGenerateFailureFacts } from '#/kosong/contract/generate';
@@ -2695,6 +2697,38 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
     );
 
     const result = await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(3);
+    expect(projection.calls).toEqual(['normal', 'degraded', 'stripped']);
+  });
+
+  it('recovers through degraded then stripped stages for structured edge 413 with execution=not_executed', async () => {
+    const edge413 = normalizeAPIStatusError(
+      413,
+      '413 Request exceeds the edge inspection limit.',
+      null,
+      null,
+      null,
+      {
+        error: {
+          code: 'request_body_too_large',
+          message: 'Request exceeds the edge inspection limit.',
+        },
+        execution: 'not_executed',
+      },
+    );
+    expect(edge413).toBeInstanceOf(APIRequestTooLargeError);
+    expect(requestDeliveryProvenance(edge413)).toBeUndefined();
+
+    const calls = { value: 0 };
+    const projection = recordProjectionCalls();
+    const { service } = createService(
+      createRequester(calls, edge413, [edge413]),
+      projection.projector,
+    );
+
+    const result = await service.request({ source: { type: 'turn', turnId: 9, step: 1 } });
 
     expect(result.message.content).toEqual([{ type: 'text', text: 'ok' }]);
     expect(calls.value).toBe(3);

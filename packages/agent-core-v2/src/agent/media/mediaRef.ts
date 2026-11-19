@@ -119,6 +119,7 @@ const KIMI_FILE_SCHEME = 'kimi-file://';
 
 export interface DaemonFileRef {
   readonly fileId: string;
+  readonly fullResolution?: boolean;
 }
 
 export function isDaemonFileUrl(url: string): boolean {
@@ -134,7 +135,12 @@ export function parseDaemonFileUrl(url: string): DaemonFileRef | undefined {
   const rest = url.slice(KIMI_FILE_SCHEME.length);
   const queryAt = rest.indexOf('?');
   const fileId = queryAt === -1 ? rest : rest.slice(0, queryAt);
-  return fileId.length > 0 ? { fileId } : undefined;
+  if (fileId.length === 0) return undefined;
+  if (queryAt === -1) return { fileId };
+  const params = new URLSearchParams(rest.slice(queryAt + 1));
+  const rawFull = params.get('full_resolution')?.trim().toLowerCase();
+  const fullResolution = rawFull === '1' || rawFull === 'true' ? true : undefined;
+  return fullResolution === true ? { fileId, fullResolution } : { fileId };
 }
 
 export function daemonFileRefFromPart(

@@ -42,6 +42,7 @@ export interface ProviderConfig {
   decisionEndpoint?: string;
   decision?: ProviderDecisionConfig;
   customHeaders?: Record<string, string>;
+  modelHintHeader?: string;
   defaultModel?: string;
   defaults?: GenerationParameters;
   requestIdentity?: RequestIdentityPolicy;

@@ -492,7 +492,11 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     trace.capture(TRACE.hostHeaders, this.hostRequestHeaders.headers);
     trace.capture(TRACE.thirdPartyHeaders, this.hostRequestHeaders.thirdPartyHeaders);
     trace.capture(TRACE.identitySlug, this.hostRequestHeaders.identitySlug);
-    const headers = resolveOutboundHeaders(providerConfig?.type, providerConfig?.customHeaders, this.hostRequestHeaders, adapter);
+    const headers = applyModelHintHeader(
+      resolveOutboundHeaders(providerConfig?.type, providerConfig?.customHeaders, this.hostRequestHeaders, adapter),
+      providerConfig?.modelHintHeader,
+      wireName,
+    );
     return {
       model: {
         id,
@@ -672,6 +676,23 @@ export function resolveOutboundHeaders(
   const forwardsAll = adapter?.hostHeaders === 'full';
   const hostLayer = forwardsAll ? host.headers : host.thirdPartyHeaders;
   return { ...parseKimiCodeCustomHeaders(), ...hostLayer, ...customHeaders };
+}
+
+function applyModelHintHeader(
+  headers: Readonly<Record<string, string>>,
+  modelHintHeader: string | undefined,
+  modelName: string,
+): Readonly<Record<string, string>> {
+  const headerName = modelHintHeader?.trim();
+  if (headerName === undefined || headerName.length === 0) return headers;
+  const normalizedTarget = headerName.toLowerCase();
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === normalizedTarget) continue;
+    out[key] = value;
+  }
+  out[headerName] = modelName;
+  return out;
 }
 
 /**

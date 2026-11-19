@@ -20,6 +20,11 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { closeCpuPool } from '#/app/cpuWorker/runtime';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { AgentMediaResolverService } from '#/agent/media/mediaResolverService';
+import {
+  setConfiguredAvCompressRunner,
+  setConfiguredAvInlineByteBudget,
+  type AvCompressRunner,
+} from '#/agent/media/av-compress';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -229,6 +234,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  setConfiguredAvCompressRunner(undefined);
+  setConfiguredAvInlineByteBudget(undefined);
   await disposables.dispose();
   await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
@@ -554,6 +561,74 @@ describe('AgentMediaResolverService video strategy', () => {
       type: 'text',
       text: VIDEO_UNAVAILABLE_TEXT,
     });
+  });
+
+  it('compresses oversized inline video and audio once, memoizes across turns and instances, and honors full_resolution=1', async () => {
+    const bigVideo = Buffer.concat([MP4_MAGIC_BYTES, Buffer.alloc(1024, 0x44)]);
+    const bigAudio = Buffer.concat([Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt '), Buffer.alloc(1024, 0x55)]);
+    const compressedVideo = Buffer.from('compressed-mp4');
+    const compressedAudio = Buffer.from('compressed-mp3');
+    const runner = vi.fn<AvCompressRunner>(async (cmd, args) => {
+      if (cmd.includes('ffprobe')) return { stdout: '1/1\n', stderr: '' };
+      const outPath = args.at(-1)!;
+      await writeFile(outPath, outPath.endsWith('.mp4') ? compressedVideo : compressedAudio);
+      return { stdout: '', stderr: '' };
+    });
+    setConfiguredAvInlineByteBudget(256);
+    setConfiguredAvCompressRunner(runner);
+
+    const files = new Map([[FILE_ID, { name: 'clip.mp4', bytes: bigVideo }]]);
+    const blobs = blobStore();
+    const media = {
+      ...stubMediaStore(),
+      open: vi.fn(async (_id: string, variant?: 'wav') => variant === 'wav' ? {
+        name: 'voice.wav', mediaType: 'audio/wav', size: bigAudio.length,
+        stream: async function* () { yield bigAudio; },
+      } : undefined),
+    };
+
+    const res1 = resolver(files, undefined, media, blobs);
+    const req = requester({ protocol: 'anthropic', providerType: 'anthropic', videoIn: true, audioIn: true });
+    const vMsg = videoMessage(buildKimiFileUrl(FILE_ID));
+    const aMsg: Message = {
+      role: 'user',
+      toolCalls: [],
+      content: [{ type: 'audio_url', audioUrl: { url: buildKimiFileUrl(FILE_ID), name: 'voice.wav' } }],
+    };
+
+    const firstVideo = await res1.resolve([vMsg], req);
+    const secondVideo = await res1.resolve([vMsg], req);
+    expect(firstPart(firstVideo)).toEqual({
+      type: 'video_url',
+      videoUrl: { url: `data:video/mp4;base64,${compressedVideo.toString('base64')}` },
+    });
+    expect(firstPart(secondVideo)).toEqual(firstPart(firstVideo));
+
+    const firstAudio = await res1.resolve([aMsg], req);
+    const secondAudio = await res1.resolve([aMsg], req);
+    expect(firstPart(firstAudio)).toEqual({
+      type: 'audio_url',
+      audioUrl: { url: `data:audio/mpeg;base64,${compressedAudio.toString('base64')}`, name: 'voice.wav' },
+    });
+    expect(firstPart(secondAudio)).toEqual(firstPart(firstAudio));
+    expect(media.open).toHaveBeenCalledTimes(1);
+
+    const ffmpegCallsBeforeSecondInstance = runner.mock.calls.filter(([cmd]) => !cmd.includes('ffprobe')).length;
+    expect(ffmpegCallsBeforeSecondInstance).toBe(2);
+    const firstVideoCall = runner.mock.calls.find(([cmd]) => !cmd.includes('ffprobe'));
+    expect(firstVideoCall?.[1]).toContain('fps=fps=1:round=near,scale=\'trunc(min(1280,iw)/2)*2\':-2:flags=lanczos');
+
+    const res2 = resolver(files, undefined, media, blobs);
+    expect(firstPart(await res2.resolve([vMsg], req))).toEqual(firstPart(firstVideo));
+    expect(firstPart(await res2.resolve([aMsg], req))).toEqual(firstPart(firstAudio));
+    expect(runner.mock.calls.filter(([cmd]) => !cmd.includes('ffprobe')).length).toBe(2);
+
+    const fullResVideo = await res1.resolve([videoMessage(`${buildKimiFileUrl(FILE_ID)}?full_resolution=1`)], req);
+    expect(firstPart(fullResVideo)).toEqual({
+      type: 'video_url',
+      videoUrl: { url: `data:video/mp4;base64,${bigVideo.toString('base64')}` },
+    });
+    expect(runner.mock.calls.filter(([cmd]) => !cmd.includes('ffprobe')).length).toBe(2);
   });
 });
 

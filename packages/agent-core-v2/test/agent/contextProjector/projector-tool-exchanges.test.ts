@@ -8,6 +8,8 @@ import { buildContextCompactionShape } from '#/agent/contextMemory/compactionHan
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentContextProjectorService } from '#/agent/contextProjector/contextProjector';
 import { AgentContextProjectorService } from '#/agent/contextProjector/contextProjectorService';
+import { degradeOlderAudioVideoParts } from '#/agent/contextProjector/mediaProjection';
+import { IFlagService } from '#/app/flag/flag';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -1588,6 +1590,103 @@ describe('projector tool-exchange normalization', () => {
         .join('\n');
       expect(allTexts).toContain('must survive strict dedupe');
       expect(projectedStrictDup.at(-1)?.role).toBe('user');
+    });
+  });
+
+  describe('degrade_stale_heavy_media flag and sliding-window AV degradation', () => {
+    function buildHistoryWithMedia(): readonly ContextMessage[] {
+      return [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '<video path="/tmp/clip-1.mp4">' },
+            { type: 'video_url', videoUrl: { url: 'data:video/mp4;base64,VklEMQ==' } },
+            { type: 'text', text: '</video>' },
+            { type: 'image_url', imageUrl: { url: 'data:image/png;base64,SU1HMQ==' } },
+          ],
+          toolCalls: [],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Reviewed clip 1.' }],
+          toolCalls: [],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '<audio path="/tmp/voice-2.wav">' },
+            { type: 'audio_url', audioUrl: { url: 'data:audio/wav;base64,QVVEQg==' } },
+            { type: 'text', text: '</audio>' },
+          ],
+          toolCalls: [],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Reviewed audio 2.' }],
+          toolCalls: [],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'video_url', videoUrl: { url: 'data:video/mp4;base64,VklEMw==' } },
+          ],
+          toolCalls: [],
+        },
+      ];
+    }
+
+    it('leaves older video and audio intact when degrade_stale_heavy_media is disabled', () => {
+      const ix = disposables.add(new TestInstantiationService());
+      ix.stub(ILogService, createCapturingLog([]));
+      ix.stub(ITelemetryService, recordingTelemetry([]));
+      ix.set(IAgentStateService, new AgentStateService());
+      ix.stub(IFlagService, { enabled: () => false } as never);
+      ix.set(IAgentContextProjectorService, new SyncDescriptor(AgentContextProjectorService));
+      const service = ix.get(IAgentContextProjectorService);
+
+      const projected = service.project(buildHistoryWithMedia());
+      expect(projected[0]!.content[1]).toEqual({
+        type: 'video_url',
+        videoUrl: { url: 'data:video/mp4;base64,VklEMQ==' },
+      });
+      expect(projected[0]!.content[3]).toEqual({
+        type: 'image_url',
+        imageUrl: { url: 'data:image/png;base64,SU1HMQ==' },
+      });
+    });
+
+    it('degrades older video/audio while keeping recent 2 AV parts and all images when enabled', () => {
+      const ix = disposables.add(new TestInstantiationService());
+      ix.stub(ILogService, createCapturingLog([]));
+      ix.stub(ITelemetryService, recordingTelemetry([]));
+      ix.set(IAgentStateService, new AgentStateService());
+      ix.stub(IFlagService, { enabled: (id: string) => id === 'degrade_stale_heavy_media' } as never);
+      ix.set(IAgentContextProjectorService, new SyncDescriptor(AgentContextProjectorService));
+      const service = ix.get(IAgentContextProjectorService);
+
+      const projected = service.project(buildHistoryWithMedia());
+      expect(projected[0]!.content[1]).toEqual({
+        type: 'text',
+        text: '[video omitted from older turn to save bandwidth (path: /tmp/clip-1.mp4); call ReadMediaFile again if you need to re-inspect it]',
+      });
+      expect(projected[0]!.content[3]).toEqual({
+        type: 'image_url',
+        imageUrl: { url: 'data:image/png;base64,SU1HMQ==' },
+      });
+      expect(projected[2]!.content[1]).toEqual({
+        type: 'audio_url',
+        audioUrl: { url: 'data:audio/wav;base64,QVVEQg==' },
+      });
+      expect(projected[4]!.content[0]).toEqual({
+        type: 'video_url',
+        videoUrl: { url: 'data:video/mp4;base64,VklEMw==' },
+      });
+
+      const keepOne = degradeOlderAudioVideoParts(buildHistoryWithMedia(), 1);
+      expect(keepOne[2]!.content[1]).toEqual({
+        type: 'text',
+        text: '[audio omitted from older turn to save bandwidth (path: /tmp/voice-2.wav); call ReadMediaFile again if you need to re-inspect it]',
+      });
     });
   });
 });

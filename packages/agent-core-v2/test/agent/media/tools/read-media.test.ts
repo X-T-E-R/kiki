@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import * as posixPath from 'node:path/posix';
 
 import { UNKNOWN_CAPABILITY, type ModelCapability } from '#/kosong/contract/capability';
@@ -26,6 +27,14 @@ import {
   MAX_IMAGE_DECODE_BYTES,
   setConfiguredReadImageByteBudget,
 } from '#/agent/media/image-compress';
+import {
+  AV_INLINE_BYTE_BUDGET,
+  compressAudioForModel,
+  compressVideoForModel,
+  setConfiguredAvCompressRunner,
+  setConfiguredAvInlineByteBudget,
+  type AvCompressRunner,
+} from '#/agent/media/av-compress';
 import { createVideoUploader, registerMediaTools } from '#/agent/media/registerMediaTools';
 import { AgentMediaToolsRegistrar } from '#/agent/media/mediaToolsRegistrar';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -53,6 +62,8 @@ const PNG_HEIGHT = 1080;
 
 afterEach(() => {
   setConfiguredReadImageByteBudget(undefined);
+  setConfiguredAvCompressRunner(undefined);
+  setConfiguredAvInlineByteBudget(undefined);
 });
 
 function pngBuffer(width = PNG_WIDTH, height = PNG_HEIGHT): Buffer {
@@ -763,21 +774,32 @@ describe('ReadMediaFileTool', () => {
     expect(parts[2]).toEqual({ type: 'text', text: '</video>' });
   });
 
-  it('rejects region and full_resolution for videos', async () => {
-    const tool = makeTool({ '/workspace/clip.mp4': { data: mp4Buffer() } });
+  it('rejects region for videos while honoring full_resolution to skip local pre-compression', async () => {
+    const bigVideo = Buffer.concat([mp4Buffer(), Buffer.alloc(512, 0x22)]);
+    setConfiguredAvInlineByteBudget(128);
+    const runner = vi.fn<AvCompressRunner>(async () => ({ stdout: '', stderr: '' }));
+    setConfiguredAvCompressRunner(runner);
+
+    const tool = makeTool({ '/workspace/clip.mp4': { data: bigVideo } });
     const withRegion = await execute(tool, {
       path: '/workspace/clip.mp4',
       region: { x: 0, y: 0, width: 10, height: 10 },
     });
     expect(withRegion.isError).toBe(true);
-    expect(withRegion.output).toMatch(/image files/i);
+    expect(withRegion.output).toBe('region applies only to image files.');
 
     const withFullResolution = await execute(tool, {
       path: '/workspace/clip.mp4',
       full_resolution: true,
     });
-    expect(withFullResolution.isError).toBe(true);
-    expect(withFullResolution.output).toMatch(/image files/i);
+    expect(withFullResolution.isError).toBe(false);
+    expect(runner).not.toHaveBeenCalled();
+    expect(noteText(withFullResolution)).toContain('local pre-compression skipped');
+    const parts = outputParts(withFullResolution);
+    expect(parts[1]).toEqual({
+      type: 'video_url',
+      videoUrl: { url: `data:video/mp4;base64,${bigVideo.toString('base64')}` },
+    });
   });
 
   it('returns an inline audio_url part and <audio> wrapper when audio_in is supported', async () => {
@@ -820,23 +842,32 @@ describe('ReadMediaFileTool', () => {
     );
   });
 
-  it('rejects region, full_resolution, empty, and oversized audio files', async () => {
+  it('rejects region, empty, and oversized audio files while honoring full_resolution', async () => {
     const caps = capabilities({ audio_in: true });
-    const tool = makeTool({ '/workspace/clip.wav': { data: wavBuffer() } }, caps);
+    const bigAudio = Buffer.concat([wavBuffer(), Buffer.alloc(512, 0x33)]);
+    setConfiguredAvInlineByteBudget(128);
+    const runner = vi.fn<AvCompressRunner>(async () => ({ stdout: '', stderr: '' }));
+    setConfiguredAvCompressRunner(runner);
+    const tool = makeTool({ '/workspace/clip.wav': { data: bigAudio } }, caps);
 
     const withRegion = await execute(tool, {
       path: '/workspace/clip.wav',
       region: { x: 0, y: 0, width: 10, height: 10 },
     });
     expect(withRegion.isError).toBe(true);
-    expect(withRegion.output).toBe('region and full_resolution apply only to image files.');
+    expect(withRegion.output).toBe('region applies only to image files.');
 
     const withFullRes = await execute(tool, {
       path: '/workspace/clip.wav',
       full_resolution: true,
     });
-    expect(withFullRes.isError).toBe(true);
-    expect(withFullRes.output).toBe('region and full_resolution apply only to image files.');
+    expect(withFullRes.isError).toBe(false);
+    expect(runner).not.toHaveBeenCalled();
+    expect(noteText(withFullRes)).toContain('local pre-compression skipped');
+    expect(outputParts(withFullRes)[1]).toEqual({
+      type: 'audio_url',
+      audioUrl: { url: `data:audio/wav;base64,${bigAudio.toString('base64')}` },
+    });
 
     const empty = await execute(
       makeTool({ '/workspace/empty.wav': { data: wavBuffer(), size: 0 } }, caps),
@@ -853,6 +884,81 @@ describe('ReadMediaFileTool', () => {
     expect(oversized.output).toContain('exceeds the maximum');
   });
 
+  it('pre-compresses oversized inline video and audio and falls back gracefully when ffmpeg is missing', async () => {
+    expect(AV_INLINE_BYTE_BUDGET).toBe(12 * 1024 * 1024);
+    const smallVideo = mp4Buffer();
+    const runner = vi.fn<AvCompressRunner>(async (cmd, args) => {
+      if (cmd.includes('ffprobe')) return { stdout: '30/1\n', stderr: '' };
+      const outPath = args.at(-1)!;
+      if (outPath.endsWith('out-pass1.mp4')) {
+        await writeFile(outPath, Buffer.alloc(600, 0xaa));
+      } else if (outPath.endsWith('out-pass2.mp4')) {
+        await writeFile(outPath, Buffer.alloc(80, 0xbb));
+      } else if (outPath.endsWith('.mp3')) {
+        await writeFile(outPath, Buffer.alloc(64, 0xcc));
+      }
+      return { stdout: '', stderr: '' };
+    });
+    setConfiguredAvInlineByteBudget(200);
+    setConfiguredAvCompressRunner(runner);
+
+    const smallResult = await execute(makeTool({ '/workspace/small.mp4': { data: smallVideo } }), {
+      path: '/workspace/small.mp4',
+    });
+    expect(smallResult.isError).toBe(false);
+    expect(runner).not.toHaveBeenCalled();
+
+    const bigVideo = Buffer.concat([mp4Buffer(), Buffer.alloc(1024, 0x11)]);
+    const videoResult = await execute(makeTool({ '/workspace/big.mp4': { data: bigVideo } }), {
+      path: '/workspace/big.mp4',
+    });
+    expect(videoResult.isError).toBe(false);
+    expect(noteText(videoResult)).toContain('pre-compressed to video/mp4');
+    expect(outputParts(videoResult)[1]).toEqual({
+      type: 'video_url',
+      videoUrl: { url: `data:video/mp4;base64,${Buffer.alloc(80, 0xbb).toString('base64')}` },
+    });
+    const ffmpegCalls = runner.mock.calls.filter(([cmd]) => !cmd.includes('ffprobe'));
+    expect(ffmpegCalls).toHaveLength(2);
+    expect(ffmpegCalls[0]![1]).toContain('fps=fps=2:round=near,scale=\'trunc(min(1280,iw)/2)*2\':-2:flags=lanczos');
+    expect(ffmpegCalls[1]![1]).toContain('fps=fps=1:round=near,scale=\'trunc(min(960,iw)/2)*2\':-2:flags=lanczos');
+
+    const bigAudio = Buffer.concat([wavBuffer(), Buffer.alloc(1024, 0x22)]);
+    const audioResult = await execute(
+      makeTool({ '/workspace/big.wav': { data: bigAudio } }, capabilities({ audio_in: true })),
+      { path: '/workspace/big.wav' },
+    );
+    expect(audioResult.isError).toBe(false);
+    expect(noteText(audioResult)).toContain('pre-compressed to audio/mpeg');
+    expect(outputParts(audioResult)[1]).toEqual({
+      type: 'audio_url',
+      audioUrl: { url: `data:audio/mpeg;base64,${Buffer.alloc(64, 0xcc).toString('base64')}` },
+    });
+
+    const missingFfmpeg: AvCompressRunner = async () => {
+      throw Object.assign(new Error('spawn ffmpeg ENOENT'), { code: 'ENOENT' });
+    };
+    const fallbackVideo = await compressVideoForModel(bigVideo, 'video/mp4', {
+      byteBudget: 200,
+      runner: missingFfmpeg,
+    });
+    expect(fallbackVideo.changed).toBe(false);
+    expect(Buffer.compare(Buffer.from(fallbackVideo.data), bigVideo)).toBe(0);
+
+    const fallbackAudio = await compressAudioForModel(bigAudio, 'audio/wav', {
+      byteBudget: 200,
+      runner: missingFfmpeg,
+    });
+    expect(fallbackAudio.changed).toBe(false);
+    expect(Buffer.compare(Buffer.from(fallbackAudio.data), bigAudio)).toBe(0);
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      compressVideoForModel(bigVideo, 'video/mp4', { byteBudget: 200, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('uses the video uploader when provided', async () => {
     const uploadResult = {
       type: 'video_url' as const,
@@ -867,6 +973,7 @@ describe('ReadMediaFileTool', () => {
     expect(videoUploader).toHaveBeenCalledOnce();
     expect(videoUploader).toHaveBeenCalledWith(
       expect.objectContaining({ mimeType: 'video/mp4', filename: 'clip.mp4' }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(parts[1]).toEqual(uploadResult);
   });

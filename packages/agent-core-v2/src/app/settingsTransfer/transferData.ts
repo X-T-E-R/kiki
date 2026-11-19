@@ -20,7 +20,7 @@ export function categoryForUnit(path: readonly string[]): SettingsTransferCatego
   if (path[0] !== 'experimental') return categoryForDomain(path[0]!);
   const flag = path[1];
   if (flag === 'native_browser') return 'browser';
-  if (flag === 'image_format_conversion') return 'models';
+  if (flag === 'image_format_conversion' || flag === 'degrade_stale_heavy_media') return 'models';
   if (['agent-profile-routes', 'subagent_release_idle', 'local_session_resume', 'external_delegation_mcp'].includes(flag ?? '')) return 'agents';
   if (['tool-select', 'task_wait', 'plugin_app_lifecycle', 'plugin_workspace_usage', 'native_ssh'].includes(flag ?? '')) return 'tools';
   return 'permissions';

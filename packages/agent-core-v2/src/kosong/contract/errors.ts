@@ -588,16 +588,6 @@ const PROVIDER_RATE_LIMIT_MESSAGE_PATTERNS = [
 
 const PROVIDER_OVERLOAD_MESSAGE_PATTERNS = [/overload/] as const;
 
-const REQUEST_TOO_LARGE_MESSAGE_PATTERNS = [
-  /request exceeds the maximum size/,
-  /request entity too large/,
-  /request_too_large/,
-  /exceeds? the maximum allowed number of bytes/,
-  /payload too large/,
-  /content too large/,
-  /request (?:body )?too large/,
-] as const;
-
 const THINKING_EFFORT_CONFIG_DOCS_URL =
   'https://moonshotai.github.io/kimi-code/en/configuration/config-files.html#thinking';
 
@@ -1133,10 +1123,8 @@ export function isProviderOverloadStatusError(statusCode: number, message: strin
   return PROVIDER_OVERLOAD_MESSAGE_PATTERNS.some((pattern) => pattern.test(lowerMessage));
 }
 
-export function isRequestTooLargeStatusError(statusCode: number, message: string): boolean {
-  if (statusCode !== 413) return false;
-  const lowerMessage = message.toLowerCase();
-  return REQUEST_TOO_LARGE_MESSAGE_PATTERNS.some((pattern) => pattern.test(lowerMessage));
+export function isRequestTooLargeStatusError(statusCode: number, message = ''): boolean {
+  return statusCode === 413 && !isContextOverflowStatusError(statusCode, message);
 }
 
 const TOOL_EXCHANGE_ADJACENCY_MESSAGE_PATTERNS = [

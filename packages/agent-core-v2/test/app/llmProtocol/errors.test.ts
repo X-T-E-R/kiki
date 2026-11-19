@@ -12,10 +12,12 @@ import {
   isImageFormatError,
   isProviderRateLimitError,
   isRecoverableRequestStructureError,
+  isRequestTooLargeStatusError,
   isRetryableGenerateError,
   isToolExchangeAdjacencyError,
   normalizeAPIStatusError,
   parseRetryAfterMs,
+  requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import { describe, expect, it } from 'vitest';
 
@@ -376,21 +378,48 @@ describe('normalizeAPIStatusError', () => {
     [413, 'Request too large'],
     [413, 'Request body too large'],
     [413, 'http: request body too large'],
+    [413, 'Request exceeds the edge inspection limit.'],
+    [413, 'Request failed'],
+    [413, ''],
   ])('normalizes %i "%s" to APIRequestTooLargeError', (statusCode, message) => {
     const error = normalizeAPIStatusError(statusCode, message, 'req-large');
     expect(error).toBeInstanceOf(APIRequestTooLargeError);
     expect(error.statusCode).toBe(statusCode);
     expect(error.requestId).toBe('req-large');
+    expect(requestDeliveryProvenance(error)).toBeUndefined();
+    expect(isRequestTooLargeStatusError(statusCode, message)).toBe(true);
+  });
+
+  it('classifies structured edge 413 with not_executed provenance as APIRequestTooLargeError without blocking recovery', () => {
+    const error = normalizeAPIStatusError(
+      413,
+      '413 Request exceeds the edge inspection limit.',
+      'req-edge-413',
+      null,
+      null,
+      {
+        error: {
+          code: 'request_body_too_large',
+          message: 'Request exceeds the edge inspection limit.',
+        },
+        execution: 'not_executed',
+      },
+    );
+    expect(error).toBeInstanceOf(APIRequestTooLargeError);
+    expect(error.statusCode).toBe(413);
+    expect(requestDeliveryProvenance(error)).toBeUndefined();
+    expect(isRetryableGenerateError(error)).toBe(false);
   });
 
   it('keeps a 413 with token-overflow wording as APIContextOverflowError', () => {
-    const error = normalizeAPIStatusError(413, 'prompt is too long: 210000 tokens > 200000 maximum');
+    const message = 'prompt is too long: 210000 tokens > 200000 maximum';
+    const error = normalizeAPIStatusError(413, message);
     expect(error).toBeInstanceOf(APIContextOverflowError);
     expect(error).not.toBeInstanceOf(APIRequestTooLargeError);
+    expect(isRequestTooLargeStatusError(413, message)).toBe(false);
   });
 
   it.each([
-    [413, 'Request failed'],
     [400, 'Payload too large'],
     [422, 'Request entity too large'],
   ])('keeps %i "%s" as plain APIStatusError', (statusCode, message) => {
@@ -398,6 +427,7 @@ describe('normalizeAPIStatusError', () => {
     expect(error).toBeInstanceOf(APIStatusError);
     expect(error).not.toBeInstanceOf(APIRequestTooLargeError);
     expect(error).not.toBeInstanceOf(APIContextOverflowError);
+    expect(isRequestTooLargeStatusError(statusCode, message)).toBe(false);
   });
 });
 

@@ -7,8 +7,10 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentStateService } from '#/agent/state/agentState';
 import type { Message } from '#/kosong/contract/message';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IFlagService } from '#/app/flag/flag';
 import { projectCurrentMemory } from '#/app/memory/memoryProjection';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import './flag';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
@@ -17,6 +19,7 @@ import {
 import {
   MEDIA_DEGRADE_KEEP_RECENT,
   captureMediaStripSnapshot,
+  degradeOlderAudioVideoParts,
   degradeOlderMediaParts,
   omitUnsupportedAudio,
   stripMediaPartsBySnapshot,
@@ -42,6 +45,7 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentStateService private readonly states: IAgentStateService,
     @ref(IAgentMemorySnapshot) private readonly memory: LiveRef<IAgentMemorySnapshot>,
+    @ref(IFlagService) private readonly flags?: LiveRef<IFlagService>,
   ) {
     this.states.contributeState(contextProjectorLastRepairSignatureKey);
   }
@@ -62,6 +66,12 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     const media = policy.media;
     if (media === 'degraded') projected = degradeOlderMediaParts(projected, MEDIA_DEGRADE_KEEP_RECENT);
     else if (media !== undefined) projected = stripMediaPartsBySnapshot(projected, media.strip);
+    else if (
+      policy.staleHeavyMedia === 'degrade' ||
+      this.flags?.current?.enabled('degrade_stale_heavy_media') === true
+    ) {
+      projected = degradeOlderAudioVideoParts(projected, MEDIA_DEGRADE_KEEP_RECENT);
+    }
     if (policy.audio === 'omit_unsupported') projected = omitUnsupportedAudio(projected);
     return projected;
   }

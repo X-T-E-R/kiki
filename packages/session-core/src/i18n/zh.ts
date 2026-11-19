@@ -7491,6 +7491,8 @@ export const zh = {
   'st.exp.desktopSearch.desc': '从桌面搜索历史会话。首次索引在后台建立；索引所在磁盘可用空间低于 2 GiB 时暂停索引。',
   'st.exp.imageConversion.name': '转换不支持的图片',
   'st.exp.imageConversion.desc': '发送前，把模型无法读取的图片转换成它接受的格式。',
+  'st.exp.degradeStaleHeavyMedia.name': '降级历史音视频附件',
+  'st.exp.degradeStaleHeavyMedia.desc': '发送模型请求前，将较早轮次的视频与音频附件替换为可重新读取的占位文本以节省带宽。开启后可能影响提示词前缀缓存命中率。',
   'st.exp.nativeSsh.name': 'SSH 主机',
   'st.exp.nativeSsh.desc': '使用 SSH 配置中的机器作为会话运行位置。',
   'st.exp.nativeBrowser.name': '原生浏览器控制',

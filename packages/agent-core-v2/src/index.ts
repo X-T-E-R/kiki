@@ -823,6 +823,7 @@ import '#/features/dateChange/dateChangeFeature';
 export * from '#/features/modelSteering/modelSteering';
 export * from '#/features/modelSteering/modelSteeringService';
 import '#/features/modelSteering/modelSteeringFeature';
+import '#/agent/contextProjector/flag';
 export * from '#/agent/contextProjector/contextProjector';
 export * from '#/agent/contextProjector/contextProjectorService';
 export * from '#/agent/contextProjector/mediaProjection';

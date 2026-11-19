@@ -2627,6 +2627,7 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   { id: 'external_delegation_mcp', section: 'extensions', labelKey: 'st.exp.delegation.name', descriptionKey: 'st.exp.delegation.desc', effect: 'restart' },
   { id: 'desktop_search', section: 'search', labelKey: 'st.exp.desktopSearch.name', descriptionKey: 'st.exp.desktopSearch.desc', effect: 'restart' },
   { id: 'image_format_conversion', section: 'ai', labelKey: 'st.exp.imageConversion.name', descriptionKey: 'st.exp.imageConversion.desc', effect: 'now' },
+  { id: 'degrade_stale_heavy_media', section: 'ai', labelKey: 'st.exp.degradeStaleHeavyMedia.name', descriptionKey: 'st.exp.degradeStaleHeavyMedia.desc', effect: 'now' },
   { id: 'native_ssh', section: 'ssh', labelKey: 'st.exp.nativeSsh.name', descriptionKey: 'st.exp.nativeSsh.desc', effect: 'restart' },
   // Home is the 浏览器 tab: the flag gates the browser tools a session gets,
   // so its switch sits with the rest of the browser controls.
