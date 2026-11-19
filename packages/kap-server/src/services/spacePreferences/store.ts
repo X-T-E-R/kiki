@@ -29,8 +29,8 @@ type Files = Record<string, string | null>;
 interface Snapshot { detail: SpaceDetail; state: State; local: Record<string, unknown>; base: Record<string, unknown>; localResources: SpaceResource[]; baseResources: SpaceResource[] }
 interface Plan { preview: SpacePreview; request: SpacePlanRequest; snapshot: Snapshot; mainSnapshot: Snapshot; versions: Record<string, string>; mainVersions: Record<string, string> }
 interface Undo { id: string; files: Files; after: Record<string, string> }
-const journalSchema = z.object({ id: z.string(), files: z.record(z.string(), z.string().nullable()), before: z.record(z.string(), z.string()).optional() });
-type Journal = Undo & { before: Record<string, string> };
+const journalSchema = z.object({ id: z.string(), files: z.record(z.string(), z.string().nullable()), before: z.record(z.string(), z.string()).optional(), target: z.record(z.string(), z.string()).optional() });
+type Journal = Undo & { before: Record<string, string>; target: Record<string, string> };
 const STATE = 'space-preferences.json';
 const JOURNAL = '.space-preferences-transaction.json';
 const UNDO = '.space-preferences-undo.json';
@@ -600,7 +600,8 @@ export class SpacePreferencesStore {
     for (const [target, snapshot] of Object.entries(journal?.files ?? {}).toReversed()) {
       if (!allowedUndoPath(target, home, main)) continue;
       await rm(stagedPath(target, journal!.id), { force: true });
-      if (journal!.before !== undefined && await fileHash(target) === journal!.before[target]) continue;
+      const current = await fileHash(target);
+      if (journal!.before !== undefined && (current === journal!.before[target] || journal!.target !== undefined && current !== journal!.target[target])) continue;
       const value = await restorePublicSnapshot(target, snapshot);
       if (value === null) await removeDurable(target); else await writeAtomic(target, Buffer.from(value, 'base64'));
       restored = true;
@@ -612,6 +613,7 @@ export class SpacePreferencesStore {
   private async publish(home: string, files: Files, undoId: string): Promise<void> {
     const previous: Files = {};
     const before: Record<string, string> = {};
+    const target = Object.fromEntries(Object.entries(files).map(([path, contents]) => [path, hash(contents === null ? null : Buffer.from(contents, 'base64'))]));
     const staged: Record<string, string> = {};
     const published: string[] = [];
     const after: Record<string, string> = {};
@@ -622,7 +624,7 @@ export class SpacePreferencesStore {
     }
     const undo: Undo = { id: undoId, files: Object.fromEntries(Object.entries(previous).map(([path, contents]) => [path, publicSnapshot(path, contents)])), after };
     const journal = join(home, JOURNAL);
-    await writeAtomic(journal, JSON.stringify({ ...undo, before } satisfies Journal));
+    await writeAtomic(journal, JSON.stringify({ ...undo, before, target } satisfies Journal));
     try {
       for (const [path, contents] of Object.entries(files)) {
         if (contents === null) continue;
