@@ -6,8 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { DatabaseSync } from 'node:sqlite';
 
-import { LockFile, MiniDb } from '@kiki/minidb';
-import { ClusterDb, shardDirName } from '@kiki/minidb/cluster';
+import { LegacyClusterFixture, LegacyMinidbFixture, LegacyMinidbLock, legacyMinidbOpener, shardDirName } from '../../helpers/legacyMinidbFixture';
 import type { MailboxRow } from '#/persistence/backends/sqliteMailbox/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,9 +21,8 @@ const handles: Array<{ close(): Promise<void> }> = [];
 beforeEach(async () => { home = await createTestTempDir(); });
 afterEach(async () => { for (const handle of handles.splice(0).reverse()) await handle.close(); await rm(home, { recursive: true, force: true }); });
 
-async function source(rows = 3): Promise<ClusterDb<Record<string, unknown>>> {
-  const db = await ClusterDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v3'), shardCount: 2,
-    valueCodec: 'json', valueMode: 'disk', fsyncPolicy: 'always', recovery: 'strict', activeExpireIntervalMs: 0, lockHoldMs: 0, lockPoolMaxShards: 2, crossShard: 'none' });
+async function source(rows = 3): Promise<LegacyClusterFixture> {
+  const db = await LegacyClusterFixture.open(join(home, 'store/thread-mailbox-v3'), 2);
   await db.partitionBatch('w/test', Array.from({ length: rows }, (_, index) => ({ op: 'set' as const,
     key: `w/test/override/${index.toString().padStart(4, '0')}`, value: { kind: 'workspace_override', workspaceId: `workspace-${index}`, enabled: index % 2 === 0, updatedAt: index } })));
   return db;
@@ -103,19 +101,19 @@ describe('canonical mailbox SQLite migration', () => {
       const sourceRef = { ...target, sessionId: 'example-source' };
       const message = { source: sourceRef, target, messageId: 'after-expiry-page', targetSeq: 1, acceptedAt: 1,
         content: 'durable message after TTL page', idempotencyKey: 'example-key' };
-      const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+      const v1 = await LegacyMinidbFixture.open(join(home, 'store/thread-mailbox-v1'));
       await v1.batch([
         ...Array.from({ length: 256 }, (_, index) => ({ op: 'set' as const, key: `activity/ghost/event/${String(index).padStart(16, '0')}`,
           value: { kind: 'activity_event', target, activity: { seq: index + 1, epoch: 'expired', kind: 'terminal', at: 1, reason: 'gone' } }, ttl: 5_000 })),
         { op: 'set', key: 'delivery/z-live', value: { kind: 'delivery', message, state: 'pending', attempt: 0, idempotencyStorageKey: 'idem/example-key' } },
       ]);
       await v1.close();
-      const originalOpen = MiniDb.open.bind(MiniDb);
+      const originalOpen = legacyMinidbOpener.open.bind(legacyMinidbOpener);
       let expiredAfterOpen = false;
-      const open = vi.spyOn(MiniDb, 'open').mockImplementation(async (options) => {
-        const db = await originalOpen(options);
-        if (options.readOnly && options.dir.endsWith('thread-mailbox-v1') && !expiredAfterOpen) {
-          expect([...db.store.scan({ gt: '', count: 1 })]).toHaveLength(1);
+      const open = vi.spyOn(legacyMinidbOpener, 'open').mockImplementation(async (dir) => {
+        const db = await originalOpen(dir);
+        if (dir.endsWith('thread-mailbox-v1') && !expiredAfterOpen) {
+          expect(db.scan('', 1)).toHaveLength(1);
           vi.setSystemTime(now + 6_000);
           expect(db.get('delivery/z-live')).toBeDefined();
           expiredAfterOpen = true;
@@ -176,19 +174,19 @@ describe('canonical mailbox SQLite migration', () => {
     const sourceRef = { hostId: 'example-host', workspaceId: 'example-source-workspace', sessionId: 'example-source-session' };
     const target = { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-target' };
     const legacyMessage = { source: sourceRef, target, messageId: 'example-v1-message', targetSeq: 5, acceptedAt: 2, content: 'example legacy content', idempotencyKey: 'example-v1-key' };
-    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const v1 = await LegacyMinidbFixture.open(join(home, 'store/thread-mailbox-v1'));
     await v1.batch([
       { op: 'set', key: 'delivery/example-v1-message', value: { kind: 'delivery', message: legacyMessage, state: 'delivering', attempt: 3, activeAttemptId: 'example-attempt', idempotencyStorageKey: 'idem/example-v1-key' } },
       { op: 'set', key: 'idem/example-v1-key', value: { kind: 'idempotency', source: sourceRef, target, messageId: legacyMessage.messageId, idempotencyKey: legacyMessage.idempotencyKey, payloadHash: digest({ content: legacyMessage.content }) }, ttl: expiry - Date.now() },
       { op: 'set', key: 'activity/meta', value: { kind: 'activity_meta', target, epoch: 'example-epoch', nextSeq: 9, minSeq: 7 } },
       { op: 'set', key: 'activity/event/7', value: { kind: 'activity_event', target, activity: { seq: 7, epoch: 'example-epoch', kind: 'terminal', at: 3, reason: 'done' } } },
     ]);
-    const originalExpiry = v1.store.getRecord('idem/example-v1-key')!.expireAt;
+    const originalExpiry = v1.expireAtOf('idem/example-v1-key');
     await v1.close();
     const v2Target = { hostId: 'agent-collaboration-v2', workspaceId: 'example-agent-session', sessionId: 'example-agent-target' };
     const v2Message = { ...legacyMessage, target: v2Target, messageId: 'example-v2-message', idempotencyKey: 'example-v2-key', targetSeq: 2,
       content: JSON.stringify({ v: 1, kind: 'agent_collaboration_message', sourceTaskName: 'example-source', targetTaskName: 'example-target', content: 'example v2 content' }) };
-    const v2 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/agent-collaboration-mailbox-v2'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const v2 = await LegacyMinidbFixture.open(join(home, 'store/agent-collaboration-mailbox-v2'));
     await v2.batch([{ op: 'set', key: 'delivery/example-v2-message', value: { kind: 'delivery', message: v2Message, state: 'pending', attempt: 1, idempotencyStorageKey: 'idem/example-v2-key' } }]);
     await v2.close();
     const migration = createMailboxMigrationService(home); handles.push(migration);
@@ -216,7 +214,7 @@ describe('canonical mailbox SQLite migration', () => {
       { op: 'set', key: `${partition}/activity/0000000000000002`, value: { kind: 'activity', target, activity: { seq: 2, epoch: 'current-epoch', kind: 'terminal', at: 2, reason: 'done' } } },
     ]);
     await old.close();
-    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const v1 = await LegacyMinidbFixture.open(join(home, 'store/thread-mailbox-v1'));
     await v1.batch([
       { op: 'set', key: 'activity/meta', value: { kind: 'activity_meta', target, epoch: 'superseded-epoch', nextSeq: 5, minSeq: 1 } },
       { op: 'set', key: 'activity/event/1', value: { kind: 'activity_event', target, activity: { seq: 1, epoch: 'superseded-epoch', kind: 'terminal', at: 0, reason: 'superseded' } } },
@@ -245,7 +243,7 @@ describe('canonical mailbox SQLite migration', () => {
       { op: 'set', key: `${partition}/activity/0000000000000001`, value: { kind: 'activity', target, activity: { seq: 1, epoch: 'current-epoch', kind: 'terminal', at: 1, reason: 'done' } } },
     ]);
     await old.close();
-    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const v1 = await LegacyMinidbFixture.open(join(home, 'store/thread-mailbox-v1'));
     await v1.batch([
       { op: 'set', key: 'activity/meta', value: { kind: 'activity_meta', target, epoch: 'current-epoch', nextSeq: 4, minSeq: 1 } },
       { op: 'set', key: 'activity/event/2', value: { kind: 'activity_event', target, activity: { seq: 2, epoch: 'current-epoch', kind: 'attention', at: 2, reason: 'approval' } } },
@@ -353,7 +351,7 @@ describe('canonical mailbox SQLite migration', () => {
       await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
     } finally { await db.close(); }
     const original = join(home, 'store/thread-mailbox-sqlite-v1/recovery', result.migrationId!, 'originals/thread-mailbox-v3');
-    const lock = new LockFile(join(original, shardDirName(0, 2), 'db.lock'));
+    const lock = new LegacyMinidbLock(join(original, shardDirName(0, 2), 'db.lock'));
     expect(await lock.acquire()).toBe(true);
     const external = await createTestTempDir();
     try {
@@ -532,7 +530,7 @@ describe('canonical mailbox SQLite migration', () => {
   it('uses each real legacy activity meta key before earlier-sorted mixed-epoch events', async () => {
     const old = await source(0); await old.close();
     const targets = ['first', 'second'].map((sessionId) => ({ hostId: 'example-host', workspaceId: 'example-workspace', sessionId }));
-    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const v1 = await LegacyMinidbFixture.open(join(home, 'store/thread-mailbox-v1'));
     for (const target of targets) {
       const key = `activity/${digest(target)}`;
       await v1.batch([
@@ -570,7 +568,7 @@ describe('canonical mailbox SQLite migration', () => {
         value: { kind: 'message', message, idempotencyStorageKey: `example-canonical-${message.targetSeq}`, payloadHash: digest({ content: message.content }), state: 'pending', fence: 0 } })),
     ]);
     await old.close();
-    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const v1 = await LegacyMinidbFixture.open(join(home, 'store/thread-mailbox-v1'));
     await v1.batch([
       { op: 'set', key: 'delivery/z-first', value: { kind: 'delivery', message: { ...existing[0], source: sourceRef, producer: undefined, messageId: 'legacy-first', content: 'first', idempotencyKey: 'first' }, idempotencyStorageKey: 'idem/first', state: 'pending', attempt: 0 } },
       { op: 'set', key: 'delivery/a-second', value: { kind: 'delivery', message: { ...existing[1], source: sourceRef, producer: undefined, messageId: 'legacy-second', content: 'second', idempotencyKey: 'second' }, idempotencyStorageKey: 'idem/second', state: 'pending', attempt: 0 } },
@@ -606,7 +604,7 @@ describe('canonical mailbox SQLite migration', () => {
         idempotencyStorageKey: 'canonical-idempotency', payloadHash: digest({ content: message.content }), state: 'pending', fence: 0 } },
     ]);
     await old.close();
-    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const v1 = await LegacyMinidbFixture.open(join(home, 'store/thread-mailbox-v1'));
     await v1.batch([{ op: 'set', key: 'delivery/changed', value: { kind: 'delivery', message: { ...message, content: 'different content' },
       idempotencyStorageKey: 'idem/changed', state: 'pending', attempt: 0 } }]);
     await v1.close();
@@ -623,7 +621,7 @@ describe('canonical mailbox SQLite migration', () => {
     await old.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/0001', value: { kind: 'workspace_override', workspaceId: 'workspace', enabled: true, updatedAt: 1 } }]);
     await old.close();
     const target = { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-target' };
-    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const v1 = await LegacyMinidbFixture.open(join(home, 'store/thread-mailbox-v1'));
     await v1.batch([{ op: 'set', key: 'activity/event/0', value: { kind: 'activity_event', target, activity: { seq: 0, epoch: 'example-epoch', kind: 'terminal', at: 1, reason: 'done' } } }]);
     await v1.close();
     const migration = createMailboxMigrationService(home); handles.push(migration);
@@ -743,8 +741,8 @@ function digest(value: unknown): string { return createHash('sha256').update(JSO
 async function readSourceRows(): Promise<MailboxRow[]> {
   const rows: MailboxRow[] = [];
   for (let shard = 0; shard < 2; shard++) {
-    const db = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v3', shardDirName(shard, 2)), readOnly: true, valueCodec: 'json', indexGenerations: false, activeExpireIntervalMs: 0 });
-    try { for (const row of db.store.scan()) rows.push({ key: row.key.toString(), value: db.codec.decode(row.value), expireAt: row.expireAt }); }
+    const db = await legacyMinidbOpener.open(join(home, 'store/thread-mailbox-v3', shardDirName(shard, 2)));
+    try { for (const row of db.scan('', Number.MAX_SAFE_INTEGER)) rows.push({ key: row.key, value: row.value, expireAt: row.expireAt }); }
     finally { await db.close(); }
   }
   return rows;

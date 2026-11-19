@@ -200,7 +200,6 @@ export async function buildAndroidBundle() {
   });
 
   const workerNames = [
-    'text-build-worker.mjs',
     'sqlite-indexer.mjs',
     'sqlite-query-worker.mjs',
     'history-navigation-worker.mjs',

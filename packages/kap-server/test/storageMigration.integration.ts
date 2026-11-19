@@ -8,7 +8,7 @@ import * as engine from '@kiki/agent-core-v2';
 import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import { createMailboxMigrationService } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/migration';
 import { migrationPath } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/authority';
-import { ClusterDb } from '../../minidb/src/cluster/index';
+import { LegacyClusterFixture } from '../../agent-core-v2/test/helpers/legacyMinidbFixture';
 import { storageMigrationViewSchema, type StorageMigrationView } from '@kiki/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -38,12 +38,11 @@ afterEach(async () => {
   } finally { vi.restoreAllMocks(); vi.unstubAllEnvs(); }
 });
 
-async function boot(): Promise<{ old: ClusterDb<Record<string, unknown>>; base: string }> {
+async function boot(): Promise<{ old: LegacyClusterFixture; base: string }> {
   for (const key of Object.keys(process.env)) if (key.startsWith('KIKI_EXTERNAL_')) vi.stubEnv(key, undefined);
   vi.stubEnv('KIKI_SEARCH_DISABLED', '1');
   home = await mkdtemp(join(tmpdir(), 'kiki-storage-maintenance-'));
-  const old = await ClusterDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v3'), shardCount: 2,
-    valueCodec: 'json', recovery: 'strict', fsyncPolicy: 'always', activeExpireIntervalMs: 0, lockPoolMaxShards: 2, lockHoldMs: 0, crossShard: 'none' });
+  const old = await LegacyClusterFixture.open(join(home, 'store/thread-mailbox-v3'), 2);
   owned.push(old);
   await old.partitionBatch('w/example', [{ op: 'set', key: 'w/example/override', value: { kind: 'workspace_override', workspaceId: 'example', enabled: true, updatedAt: 1 } }]);
   server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', externalDelegation: undefined });

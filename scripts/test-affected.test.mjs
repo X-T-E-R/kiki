@@ -21,7 +21,6 @@ const packages = [
   { dir: 'packages/consumer', name: '@fixture/consumer', dependencies: ['@fixture/base'], scripts: { typecheck: 'tsc' }, vitestProject: 'consumer' },
   { dir: 'packages/leaf', name: '@fixture/leaf', dependencies: [], scripts: {} },
   { dir: 'packages/agent-core-v2', name: '@fixture/core', dependencies: [], scripts: { typecheck: 'tsc' } },
-  { dir: 'packages/minidb', name: '@fixture/minidb', dependencies: [], scripts: { typecheck: 'tsc' } },
   { dir: 'packages/protocol', name: '@fixture/protocol', dependencies: [], scripts: { typecheck: 'tsc' } },
   { dir: 'packages/transcript', name: '@fixture/transcript', dependencies: [], scripts: { typecheck: 'tsc' } },
 ];
@@ -80,7 +79,6 @@ void test('selects changed packages, reverse consumers, related Vitest, and boun
 
   for (const path of [
     'packages/agent-core-v2/src/service.ts',
-    'packages/minidb/src/store.ts',
     'packages/protocol/src/message.ts',
     'packages/transcript/src/layers.ts',
   ]) {

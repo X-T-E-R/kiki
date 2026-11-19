@@ -140,7 +140,6 @@
         ./packages/kaos
         ./packages/klient
         ./packages/lexical
-        ./packages/minidb
         ./packages/node-sdk
         ./packages/oauth
         ./packages/pi-tui
@@ -167,7 +166,6 @@
         "@kiki/dsh-compat"
         "@kiki/kap-server"
         "@kiki/kaos"
-        "@kiki/minidb"
         "@kiki/node-sdk"
         "@kiki/oauth"
         "@kiki/klient"

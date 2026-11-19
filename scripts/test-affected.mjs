@@ -36,7 +36,6 @@ const VITEST_PROJECTS = new Map([
   ['packages/kaos', 'kaos'],
   ['packages/kap-server', 'kap-server'],
   ['packages/klient', 'klient'],
-  ['packages/minidb', 'minidb'],
   ['packages/node-sdk', 'kimi-sdk'],
   ['packages/oauth', 'kimi-oauth'],
   ['packages/protocol', 'protocol'],

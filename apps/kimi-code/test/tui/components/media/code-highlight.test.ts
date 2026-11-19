@@ -1,6 +1,3 @@
-import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
-
 import chalk from 'chalk';
 import { describe, expect, it } from 'vitest';
 
@@ -16,13 +13,14 @@ describe('code-highlight', () => {
   it('maps known file extensions to supported highlight languages', () => {
     expect(langFromPath('src/foo.ts')).toBe('typescript');
     expect(langFromPath('src/foo.TS')).toBe('typescript');
+    expect(langFromPath('Cargo.toml')).toBe('toml');
   });
 
   it('treats unsupported file extensions as plain text', () => {
     expect(langFromPath('src/foo.abcxyz')).toBeUndefined();
   });
 
-  it('does not call cli-highlight for unsupported languages', () => {
+  it('falls back to plain text for unsupported languages without stderr noise', () => {
     const stderr = captureProcessWrite('stderr');
     try {
       expect(highlightLines('hello\nworld', 'abcxyz')).toEqual(['hello', 'world']);
@@ -38,21 +36,17 @@ describe('code-highlight', () => {
     }
   });
 
-  it('emits no red SGR for strings and regexps', () => {
-    // cli-highlight styles through its own chalk v4 instance; force colors on
-    // so the assertions below observe real SGR sequences.
-    const req = createRequire(import.meta.url);
-    const chalkV4 = req(
-      req.resolve('chalk', { paths: [dirname(req.resolve('cli-highlight'))] }),
-    ) as { level: number };
-    const prevLevel = chalkV4.level;
-    chalkV4.level = 1;
+  it('emits no red SGR for strings and regexps while highlighting keywords with theme tokens', () => {
+    const previousLevel = chalk.level;
+    chalk.level = 3;
     try {
       const js = highlightLines("const s = 'str';\nconst r = /re+/g;", 'javascript').join('\n');
       expect(js).not.toContain(`${ESC}[31m`);
-      expect(js).toContain(`${ESC}[34m`); // keywords stay highlighted
+      expect(js).toContain(chalk.hex(currentTheme.color('primary'))('const'));
+      expect(js).toContain("'str'");
+      expect(js).toContain('/re+/g');
     } finally {
-      chalkV4.level = prevLevel;
+      chalk.level = previousLevel;
     }
   });
 

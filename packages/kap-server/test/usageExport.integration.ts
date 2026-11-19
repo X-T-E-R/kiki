@@ -12,7 +12,8 @@ import { JsonAtomicDocumentStore, TomlAtomicDocumentStore } from '@kiki/agent-co
 import { OPERATION_USAGE_KEY } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsage';
 import { UsageSourceTracker } from '../src/usage/usageSourceTracker';
 import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/appendLogStore';
-import { MiniDbQueryStore, drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/backends/minidb/miniDbQueryStore';
+import { SqliteQueryStore } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteQueryStore';
+import { drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/queryStoreDisposals';
 import { SqliteUsageReadModel } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteUsageReadModel';
 import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
 import { RetainedUsageService } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsageService';
@@ -64,7 +65,7 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   ix.stub(IBootstrapService, bootstrap); ix.stub(IFileSystemStorageService, storage); ix.stub(IAppendLogStore, append); ix.stub(ILogService, log);
   ix.set(IEventService, new SyncDescriptor(EventService)); ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel)); ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
   ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
-  ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+  ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
   const model = ix.get(IUsageReadModel); cleanup.push(async () => { await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); });
   const retained = ix.get(IRetainedUsageService); const facts = ix.get(IUsageFactStore); const query = ix.get(IQueryStore); const sessions: SessionSummary[] = [];
   const index = { get: async (id: string) => sessions.find((session) => session.id === id), listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };

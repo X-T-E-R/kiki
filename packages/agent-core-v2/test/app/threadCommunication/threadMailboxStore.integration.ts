@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { LockError, MiniDb } from '@kiki/minidb';
+import { LegacyMinidbFixture } from '../../helpers/legacyMinidbFixture';
 import { DatabaseSync } from 'node:sqlite';
 
 import { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
@@ -171,15 +171,7 @@ async function seedLegacyMailbox(homeDir: string, producer: ThreadMessageProduce
     at: 2,
     reason: 'completed',
   };
-  const db = await MiniDb.open<Record<string, unknown>>({
-    dir: join(homeDir, 'store', 'thread-mailbox-v1'),
-    valueCodec: 'json',
-    valueMode: 'memory',
-    fsyncPolicy: 'always',
-    recovery: 'strict',
-    indexGenerations: false,
-    activeExpireIntervalMs: 0,
-  });
+  const db = await LegacyMinidbFixture.open(join(homeDir, 'store', 'thread-mailbox-v1'));
   try {
     await db.batch([
       {
@@ -714,15 +706,14 @@ describe('runtime thread mailbox', () => {
   it('keeps reused legacy TTL identity valid through backup, restore and old external-message pruning', async () => {
     const input = { ...acceptInput('legacy-reused'), producer: { kind: 'external_client' as const } };
     const legacy = { ...input, content: 'previous payload', messageId: 'legacy-expiring-message', targetSeq: 1, acceptedAt: 1 };
-    const old = await MiniDb.open<Record<string, unknown>>({ dir: join(homeDir, 'store/thread-mailbox-v1'),
-      valueCodec: 'json', fsyncPolicy: 'always', indexGenerations: false, activeExpireIntervalMs: 0 });
+    const old = await LegacyMinidbFixture.open(join(homeDir, 'store/thread-mailbox-v1'));
     const expiry = Date.now() + 5_000;
     await old.batch([
       { op: 'set', key: 'delivery/legacy-expiring-message', value: { kind: 'delivery', message: legacy, state: 'delivered', attempt: 1, idempotencyStorageKey: 'idem/reused' } },
       { op: 'set', key: 'idem/reused', value: { kind: 'idempotency', ...input, messageId: legacy.messageId,
         payloadHash: createHash('sha256').update(JSON.stringify({ content: legacy.content })).digest('base64url') }, ttl: expiry - Date.now() },
     ]);
-    const absoluteExpiry = old.store.getRecord('idem/reused')!.expireAt;
+    const absoluteExpiry = old.expireAtOf('idem/reused');
     await old.close();
     const migration = createMailboxMigrationService(homeDir);
     try {
@@ -1453,11 +1444,7 @@ describe('runtime thread mailbox', () => {
   }, 30_000);
 
   it('requires explicit migration and waits for the legacy writer without creating a mailbox', async () => {
-    const lock = await MiniDb.open<Record<string, unknown>>({
-      dir: join(homeDir, 'store', 'thread-mailbox-v1'),
-      valueCodec: 'json', valueMode: 'memory', fsyncPolicy: 'always', recovery: 'strict',
-      indexGenerations: false, activeExpireIntervalMs: 0,
-    });
+    const lock = await LegacyMinidbFixture.open(join(homeDir, 'store', 'thread-mailbox-v1'));
     const item = harness(homeDir); open.push(item);
     const migration = createMailboxMigrationService(homeDir);
     try {
@@ -1610,7 +1597,7 @@ describe('runtime thread mailbox', () => {
       ),
     );
     const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
-    expect(failures.some((result) => result.reason instanceof LockError)).toBe(false);
+    expect(failures.some((result) => (result.reason as { code?: unknown } | null)?.code === 'ELOCKED')).toBe(false);
     expect(failures).toEqual([]);
     expect(results.map((result) => result.status === 'fulfilled' ? result.value.message.targetSeq : 0).toSorted((a, b) => a - b)).toEqual(
       Array.from({ length: 20 }, (_, index) => index + 1),

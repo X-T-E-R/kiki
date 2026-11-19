@@ -575,73 +575,86 @@ export async function cropImageForModel(
   }
 
   try {
-    const image = await decodeToJimp(bytes, normalizedMime);
-    const originalWidth = image.width;
-    const originalHeight = image.height;
-
-    const x = Math.floor(region.x);
-    const y = Math.floor(region.y);
-    if (x < 0 || y < 0 || x >= originalWidth || y >= originalHeight || region.width < 1 || region.height < 1) {
-      return fail(
-        'out_of_bounds',
-        `Region (x=${String(region.x)}, y=${String(region.y)}, width=${String(region.width)}, ` +
-          `height=${String(region.height)}) lies outside the ${String(originalWidth)}x${String(originalHeight)} image.`,
-      );
-    }
-    const w = Math.min(Math.floor(region.width), originalWidth - x);
-    const h = Math.min(Math.floor(region.height), originalHeight - y);
-    const applied: ImageCropRegion = { x, y, width: w, height: h };
-    image.crop({ x, y, w, h });
-    const preferLossless = normalizedMime !== 'image/jpeg';
-
-    if (options.skipResize === true) {
-      const buffer = preferLossless
-        ? await image.getBuffer('image/png', { deflateLevel: 9 })
-        : await image.getBuffer('image/jpeg', { quality: 90 });
-      if (buffer.length > byteBudget) {
-        return fail(
-          'budget',
-          `The cropped region encodes to ${String(buffer.length)} bytes ` +
-            `(${formatByteSize(buffer.length)}), over the ${String(byteBudget)}-byte ` +
-            `(${formatByteSize(byteBudget)}) per-image limit. ` +
-            'Choose a smaller region, or allow downscaling.',
+    const outputMimeList = [...(options.outputMimes ?? options.acceptedMimes ?? new Set(['image/png', 'image/jpeg']))];
+    let cropped: ImageCropWorkerOutput;
+    if (hasRegisteredCpuPool()) {
+      const ownedBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      try {
+        cropped = await runCpuTask<ImageCropWorkerOutput>(
+          {
+            type: 'image.crop',
+            bytes: ownedBytes,
+            normalizedMime,
+            region,
+            maxEdge,
+            byteBudget,
+            skipResize: options.skipResize === true,
+            outputMimes: outputMimeList,
+          },
+          { signal: options.signal, transferList: [ownedBytes], bytes: ownedBytes.byteLength },
         );
+      } catch {
+        if (options.signal?.aborted) {
+          return fail('decode_failed', 'Failed to decode the image for cropping: aborted');
+        }
+        cropped = await executeImageCrop({
+          bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+          normalizedMime,
+          region,
+          maxEdge,
+          byteBudget,
+          skipResize: options.skipResize === true,
+          outputMimes: outputMimeList,
+        });
       }
-      return succeed({
-        ok: true,
-        data: new Uint8Array(buffer),
-        mimeType: preferLossless ? 'image/png' : 'image/jpeg',
-        width: image.width,
-        height: image.height,
-        originalWidth,
-        originalHeight,
-        region: applied,
-        resized: false,
-        originalByteLength: bytes.length,
-        finalByteLength: buffer.length,
+    } else {
+      cropped = await executeImageCrop({
+        bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+        normalizedMime,
+        region,
+        maxEdge,
+        byteBudget,
+        skipResize: options.skipResize === true,
+        outputMimes: outputMimeList,
       });
     }
 
-    fitWithinEdge(image, maxEdge);
-    const encoded = await encodeWithinBudget(image, {
-      preferLossless,
-      byteBudget,
-      fallbackEdges: FALLBACK_EDGES_PX,
-      outputMimes: options.outputMimes ?? options.acceptedMimes ?? new Set(['image/png', 'image/jpeg']),
-    });
-    if (encoded === null) return fail('unsupported_format', 'No accepted image output format is available.');
+    if (cropped.kind === 'out_of_bounds') {
+      return fail(
+        'out_of_bounds',
+        `Region (x=${String(region.x)}, y=${String(region.y)}, width=${String(region.width)}, ` +
+          `height=${String(region.height)}) lies outside the ${String(cropped.originalWidth)}x${String(cropped.originalHeight)} image.`,
+      );
+    }
+    if (cropped.kind === 'budget') {
+      return fail(
+        'budget',
+        `The cropped region encodes to ${String(cropped.byteLength)} bytes ` +
+          `(${formatByteSize(cropped.byteLength)}), over the ${String(byteBudget)}-byte ` +
+          `(${formatByteSize(byteBudget)}) per-image limit. ` +
+          'Choose a smaller region, or allow downscaling.',
+      );
+    }
+    if (cropped.kind === 'unsupported') {
+      return fail('unsupported_format', 'No accepted image output format is available.');
+    }
+    if (cropped.kind === 'decode_failed') {
+      return fail('decode_failed', `Failed to decode the image for cropping: ${cropped.message}`);
+    }
+
+    const data = new Uint8Array(cropped.data);
     return succeed({
       ok: true,
-      data: new Uint8Array(encoded.data),
-      mimeType: encoded.mimeType,
-      width: encoded.width,
-      height: encoded.height,
-      originalWidth,
-      originalHeight,
-      region: applied,
-      resized: encoded.width !== w || encoded.height !== h,
+      data,
+      mimeType: cropped.mimeType,
+      width: cropped.width,
+      height: cropped.height,
+      originalWidth: cropped.originalWidth,
+      originalHeight: cropped.originalHeight,
+      region: cropped.region,
+      resized: cropped.resized,
       originalByteLength: bytes.length,
-      finalByteLength: encoded.data.length,
+      finalByteLength: data.length,
     });
   } catch (error) {
     return fail(
@@ -895,6 +908,215 @@ export async function executeImageCompress(
   } catch {
     return { kind: 'error' };
   }
+}
+
+export interface ImageCropWorkerInput {
+  readonly bytes: ArrayBuffer;
+  readonly normalizedMime: string;
+  readonly region: ImageCropRegion;
+  readonly maxEdge: number;
+  readonly byteBudget: number;
+  readonly skipResize: boolean;
+  readonly outputMimes: readonly string[];
+}
+
+export type ImageCropWorkerOutput =
+  | {
+      readonly kind: 'cropped';
+      readonly data: ArrayBuffer;
+      readonly mimeType: string;
+      readonly width: number;
+      readonly height: number;
+      readonly originalWidth: number;
+      readonly originalHeight: number;
+      readonly region: ImageCropRegion;
+      readonly resized: boolean;
+    }
+  | { readonly kind: 'out_of_bounds'; readonly originalWidth: number; readonly originalHeight: number }
+  | { readonly kind: 'budget'; readonly byteLength: number }
+  | { readonly kind: 'unsupported' }
+  | { readonly kind: 'decode_failed'; readonly message: string };
+
+export async function executeImageCrop(
+  input: ImageCropWorkerInput,
+): Promise<ImageCropWorkerOutput> {
+  try {
+    const image = await decodeToJimp(new Uint8Array(input.bytes), input.normalizedMime);
+    const originalWidth = image.width;
+    const originalHeight = image.height;
+
+    const x = Math.floor(input.region.x);
+    const y = Math.floor(input.region.y);
+    if (
+      x < 0 ||
+      y < 0 ||
+      x >= originalWidth ||
+      y >= originalHeight ||
+      input.region.width < 1 ||
+      input.region.height < 1
+    ) {
+      return { kind: 'out_of_bounds', originalWidth, originalHeight };
+    }
+    const w = Math.min(Math.floor(input.region.width), originalWidth - x);
+    const h = Math.min(Math.floor(input.region.height), originalHeight - y);
+    const applied: ImageCropRegion = { x, y, width: w, height: h };
+    image.crop({ x, y, w, h });
+    const preferLossless = input.normalizedMime !== 'image/jpeg';
+
+    if (input.skipResize) {
+      const buffer = preferLossless
+        ? await image.getBuffer('image/png', { deflateLevel: 9 })
+        : await image.getBuffer('image/jpeg', { quality: 90 });
+      if (buffer.length > input.byteBudget) {
+        return { kind: 'budget', byteLength: buffer.length };
+      }
+      const outBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+      return {
+        kind: 'cropped',
+        data: outBuffer,
+        mimeType: preferLossless ? 'image/png' : 'image/jpeg',
+        width: image.width,
+        height: image.height,
+        originalWidth,
+        originalHeight,
+        region: applied,
+        resized: false,
+      };
+    }
+
+    fitWithinEdge(image, input.maxEdge);
+    const encoded = await encodeWithinBudget(image, {
+      preferLossless,
+      byteBudget: input.byteBudget,
+      fallbackEdges: FALLBACK_EDGES_PX,
+      outputMimes: new Set(input.outputMimes),
+    });
+    if (encoded === null) return { kind: 'unsupported' };
+    const outBuffer = encoded.data.buffer.slice(
+      encoded.data.byteOffset,
+      encoded.data.byteOffset + encoded.data.byteLength,
+    ) as ArrayBuffer;
+    return {
+      kind: 'cropped',
+      data: outBuffer,
+      mimeType: encoded.mimeType,
+      width: encoded.width,
+      height: encoded.height,
+      originalWidth,
+      originalHeight,
+      region: applied,
+      resized: encoded.width !== w || encoded.height !== h,
+    };
+  } catch (error) {
+    return {
+      kind: 'decode_failed',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export type AvatarImageMime = 'image/png' | 'image/jpeg' | 'image/webp';
+
+export interface AvatarNormalizeWorkerInput {
+  readonly bytes: ArrayBuffer;
+  readonly mimeType: AvatarImageMime;
+}
+
+export interface AvatarNormalizeWorkerOutput {
+  readonly data: ArrayBuffer;
+  readonly mimeType: AvatarImageMime;
+  readonly extension: 'png' | 'jpg' | 'webp';
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface ImageDimensionsWorkerInput {
+  readonly bytes: ArrayBuffer;
+  readonly mimeType: AvatarImageMime;
+}
+
+export interface ImageToPngWorkerInput {
+  readonly bytes: ArrayBuffer;
+  readonly mimeType: AvatarImageMime;
+}
+
+export async function executeAvatarNormalize(
+  input: AvatarNormalizeWorkerInput,
+): Promise<AvatarNormalizeWorkerOutput> {
+  const bytes = new Uint8Array(input.bytes);
+  const image = await decodeToJimp(bytes, input.mimeType);
+  const width = image.width;
+  const height = image.height;
+  const longest = Math.max(width, height);
+  let outputMime: AvatarImageMime = input.mimeType;
+  let output: Uint8Array = bytes;
+  if (longest > 256 || input.mimeType === 'image/png' || input.mimeType === 'image/jpeg') {
+    if (longest > 256) {
+      const factor = 256 / longest;
+      image.resize({ w: Math.max(1, Math.round(width * factor)), h: Math.max(1, Math.round(height * factor)) });
+    }
+    if (input.mimeType === 'image/webp') outputMime = 'image/png';
+    output = outputMime === 'image/jpeg'
+      ? await image.getBuffer('image/jpeg', { quality: 90 })
+      : await image.getBuffer('image/png', { deflateLevel: 9 });
+  }
+  const extension = outputMime === 'image/jpeg' ? 'jpg' : outputMime === 'image/webp' ? 'webp' : 'png';
+  const outBuffer = output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
+  return { data: outBuffer, mimeType: outputMime, extension, width: image.width, height: image.height };
+}
+
+export async function executeImageDimensions(
+  input: ImageDimensionsWorkerInput,
+): Promise<{ readonly width: number; readonly height: number }> {
+  const image = await decodeToJimp(new Uint8Array(input.bytes), input.mimeType);
+  return { width: image.width, height: image.height };
+}
+
+export async function executeImageToPng(input: ImageToPngWorkerInput): Promise<ArrayBuffer> {
+  const image = await decodeToJimp(new Uint8Array(input.bytes), input.mimeType);
+  const buffer = await image.getBuffer('image/png');
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+}
+
+export async function normalizeAvatarImage(
+  data: Uint8Array,
+  mimeType: AvatarImageMime,
+): Promise<{ readonly data: Uint8Array; readonly mimeType: AvatarImageMime; readonly extension: 'png' | 'jpg' | 'webp'; readonly width: number; readonly height: number }> {
+  const owned = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  const result = hasRegisteredCpuPool()
+    ? await runCpuTask<AvatarNormalizeWorkerOutput>(
+        { type: 'image.normalizeAvatar', bytes: owned, mimeType },
+        { transferList: [owned], bytes: owned.byteLength },
+      )
+    : await executeAvatarNormalize({ bytes: owned, mimeType });
+  return { ...result, data: new Uint8Array(result.data) };
+}
+
+export async function readAvatarDimensions(
+  data: Uint8Array,
+  mimeType: AvatarImageMime,
+): Promise<{ readonly width: number; readonly height: number }> {
+  const owned = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  return hasRegisteredCpuPool()
+    ? runCpuTask<{ readonly width: number; readonly height: number }>(
+        { type: 'image.dimensions', bytes: owned, mimeType },
+        { transferList: [owned], bytes: owned.byteLength },
+      )
+    : executeImageDimensions({ bytes: owned, mimeType });
+}
+
+export async function encodeImageAsPng(
+  data: Uint8Array,
+  mimeType: AvatarImageMime,
+): Promise<Uint8Array> {
+  const owned = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  const out = hasRegisteredCpuPool()
+    ? await runCpuTask<ArrayBuffer>(
+        { type: 'image.toPng', bytes: owned, mimeType },
+        { transferList: [owned], bytes: owned.byteLength },
+      )
+    : await executeImageToPng({ bytes: owned, mimeType });
+  return new Uint8Array(out);
 }
 
 type CropErrorKind =

@@ -8,7 +8,8 @@
  * everywhere: ↑/↓, PgUp/PgDn, and search editing.
  */
 
-import { fuzzyFilter, Key, matchesKey } from '@kiki/pi-tui';
+import { Key, matchesKey } from '@kiki/pi-tui';
+import { Fzf, byLengthAsc } from 'fzf';
 
 import { pageView, type PageView } from './paging';
 import { isPrintableChar, printableChar } from './printable-key';
@@ -37,8 +38,14 @@ export interface SearchableListView<T> {
   readonly query: string;
 }
 
+interface SearchableEntry<T> {
+  readonly item: T;
+  readonly text: string;
+}
+
 export class SearchableList<T> {
   private items: readonly T[];
+  private fzf: Fzf<readonly SearchableEntry<T>[]> | undefined;
   private readonly toSearchText: (item: T) => string;
   private readonly pageSize: number;
   private readonly searchable: boolean;
@@ -59,12 +66,45 @@ export class SearchableList<T> {
    */
   setItems(items: readonly T[]): void {
     this.items = items;
+    this.fzf = undefined;
     this.cursor = Math.min(this.cursor, Math.max(0, items.length - 1));
   }
 
   filtered(): readonly T[] {
-    if (this.query.length === 0) return this.items;
-    return fuzzyFilter([...this.items], this.query, this.toSearchText);
+    const trimmed = this.query.trim();
+    if (trimmed.length === 0) return this.items;
+    if (this.fzf === undefined) {
+      const entries: readonly SearchableEntry<T>[] = this.items.map((item) => ({
+        item,
+        text: this.toSearchText(item),
+      }));
+      this.fzf = new Fzf(entries, {
+        selector: (entry) => entry.text,
+        tiebreakers: [byLengthAsc],
+      });
+    }
+    const tokens = trimmed.split(/\s+/).filter((token) => token.length > 0);
+    if (tokens.length <= 1) {
+      return this.fzf.find(tokens[0] ?? trimmed).map((hit) => hit.item.item);
+    }
+    let scores = new Map<T, number>();
+    for (const [index, token] of tokens.entries()) {
+      const hits = this.fzf.find(token);
+      if (index === 0) {
+        for (const hit of hits) scores.set(hit.item.item, hit.score);
+      } else {
+        const next = new Map<T, number>();
+        for (const hit of hits) {
+          const prev = scores.get(hit.item.item);
+          if (prev !== undefined) next.set(hit.item.item, prev + hit.score);
+        }
+        scores = next;
+      }
+      if (scores.size === 0) return [];
+    }
+    return [...scores.entries()]
+      .toSorted((a, b) => b[1] - a[1])
+      .map(([item]) => item);
   }
 
   /** The item under the cursor, clamped into the filtered range. */

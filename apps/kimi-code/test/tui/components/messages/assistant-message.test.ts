@@ -1,8 +1,8 @@
 import { Markdown, visibleWidth } from '@kiki/pi-tui';
 import chalk from 'chalk';
-import * as cliHighlight from 'cli-highlight';
 import { describe, expect, it, vi } from 'vitest';
 
+import * as codeHighlight from '#/tui/components/media/code-highlight';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { createMarkdownTheme } from '#/tui/theme/pi-tui-theme';
@@ -11,11 +11,13 @@ import { setMarkdownRenderLatex } from '#/tui/utils/markdown-options';
 
 import { captureProcessWrite } from '../../../helpers/process';
 
-vi.mock('cli-highlight', async () => {
-  const actual = await vi.importActual<typeof import('cli-highlight')>('cli-highlight');
+vi.mock('#/tui/components/media/code-highlight', async () => {
+  const actual = await vi.importActual<typeof import('#/tui/components/media/code-highlight')>(
+    '#/tui/components/media/code-highlight',
+  );
   return {
     ...actual,
-    highlight: vi.fn(actual.highlight),
+    highlightCode: vi.fn(actual.highlightCode),
   };
 });
 
@@ -118,7 +120,7 @@ describe('AssistantMessageComponent', () => {
   });
 
   it('skips synchronous syntax highlighting in transient markdown themes', () => {
-    const highlightSpy = vi.mocked(cliHighlight.highlight);
+    const highlightSpy = vi.mocked(codeHighlight.highlightCode);
     highlightSpy.mockClear();
     const streamingTheme = createMarkdownTheme({ transient: true });
     const finalTheme = createMarkdownTheme();

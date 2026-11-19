@@ -6,6 +6,7 @@
  */
 
 import chalk from 'chalk';
+import { diffArrays } from 'diff';
 
 import { currentTheme } from '#/tui/theme';
 
@@ -47,42 +48,27 @@ export function computeDiffLines(
 ): DiffLine[] {
   const oldLines = oldText ? oldText.split('\n') : [];
   const newLines = newText ? newText.split('\n') : [];
-  const m = oldLines.length;
-  const n = newLines.length;
-
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    Array.from({ length: n + 1 }, () => 0),
-  );
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (oldLines[i - 1] === newLines[j - 1]) {
-        dp[i]![j] = dp[i - 1]![j - 1]! + 1;
-      } else {
-        dp[i]![j] = Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
-      }
-    }
-  }
-
-  const reversed: DiffLine[] = [];
-  let i = m;
-  let j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-      reversed.push({ kind: 'context', lineNum: newStart + j - 1, code: newLines[j - 1]! });
-      i--;
-      j--;
-    } else if (j > 0 && (i === 0 || dp[i]![j - 1]! >= dp[i - 1]![j]!)) {
-      reversed.push({ kind: 'add', lineNum: newStart + j - 1, code: newLines[j - 1]! });
-      j--;
-    } else {
-      reversed.push({ kind: 'delete', lineNum: oldStart + i - 1, code: oldLines[i - 1]! });
-      i--;
-    }
-  }
+  const changes = diffArrays(oldLines, newLines);
 
   const result: DiffLine[] = [];
-  for (let k = reversed.length - 1; k >= 0; k--) {
-    result.push(reversed[k]!);
+  let oldLine = oldStart;
+  let newLine = newStart;
+  for (const hunk of changes) {
+    if (hunk.removed) {
+      for (const code of hunk.value) {
+        result.push({ kind: 'delete', lineNum: oldLine++, code });
+      }
+    } else if (hunk.added) {
+      for (const code of hunk.value) {
+        result.push({ kind: 'add', lineNum: newLine++, code });
+      }
+    } else {
+      for (const code of hunk.value) {
+        result.push({ kind: 'context', lineNum: newLine, code });
+        oldLine++;
+        newLine++;
+      }
+    }
   }
 
   // While the text is still streaming, suppress trailing delete lines.

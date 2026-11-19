@@ -1,3 +1,5 @@
+import { CronPattern } from 'croner';
+
 import { translate, type I18nKey, type I18nParams, type Locale } from '../i18n/locale';
 
 const MINUTE_MAX = 59;
@@ -5,6 +7,14 @@ const HOUR_MAX = 23;
 const DAY_OF_MONTH_MAX = 31;
 const MONTH_MAX = 12;
 const DAY_OF_WEEK_MAX = 7;
+
+const FIELD_BOUNDS = [
+  { min: 0, max: MINUTE_MAX, isDow: false },
+  { min: 0, max: HOUR_MAX, isDow: false },
+  { min: 1, max: DAY_OF_MONTH_MAX, isDow: false },
+  { min: 1, max: MONTH_MAX, isDow: false },
+  { min: 0, max: DAY_OF_WEEK_MAX, isDow: true },
+] as const;
 
 export type CronTranslate = (key: I18nKey, params?: I18nParams) => string;
 
@@ -46,59 +56,78 @@ export type CronParseResult =
 /**
  * The same grammar the engine accepts: five whitespace-separated fields,
  * each a comma list of `*`, `n` or `a-b` terms with an optional positive step,
- * with stepped bare values extending to the field maximum. Parsed
- * here so the GUI can speak about an expression without pulling the engine in.
+ * with stepped bare values extending to the field maximum. Parsed via `croner`
+ * so the GUI and engine share the same cron parser without pulling the engine in.
  */
 export function parseCron(raw: string): CronParseResult {
   const trimmed = typeof raw === 'string' ? raw.trim() : '';
   if (trimmed === '') return { ok: false, raw: trimmed };
   const fields = trimmed.split(/\s+/);
   if (fields.length !== 5) return { ok: false, raw: trimmed };
-  const parsed = [
-    parseField(fields[0] as string, 0, MINUTE_MAX),
-    parseField(fields[1] as string, 0, HOUR_MAX),
-    parseField(fields[2] as string, 1, DAY_OF_MONTH_MAX),
-    parseField(fields[3] as string, 1, MONTH_MAX),
-    parseField(fields[4] as string, 0, DAY_OF_WEEK_MAX),
-  ] as const;
-  if (parsed.some((field) => field === undefined)) return { ok: false, raw: trimmed };
-  const [minutes, hours, daysOfMonth, months, daysOfWeek] = parsed as [
-    ParsedCronField,
-    ParsedCronField,
-    ParsedCronField,
-    ParsedCronField,
-    ParsedCronField,
-  ];
-  const normalizedWeekdays = new Set<number>();
-  for (const day of daysOfWeek.values) normalizedWeekdays.add(day === 7 ? 0 : day);
+
+  const normalizedFields: string[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const bound = FIELD_BOUNDS[i]!;
+    const normalized = normalizeFieldForCroner(fields[i]!, bound.min, bound.max, bound.isDow);
+    if (normalized === undefined) return { ok: false, raw: trimmed };
+    normalizedFields.push(normalized);
+  }
+
+  let pattern: CronPattern;
+  try {
+    pattern = new CronPattern(normalizedFields.join(' '), undefined, { mode: '5-part' });
+  } catch {
+    return { ok: false, raw: trimmed };
+  }
+
   return {
     ok: true,
     parsed: {
       raw: trimmed,
-      minutes,
-      hours,
-      daysOfMonth,
-      months,
-      daysOfWeek: { values: normalizedWeekdays, wildcard: daysOfWeek.wildcard },
+      minutes: { values: collectMask(pattern.minute, 0), wildcard: fields[0] === '*' },
+      hours: { values: collectMask(pattern.hour, 0), wildcard: fields[1] === '*' },
+      daysOfMonth: { values: collectMask(pattern.day, 1), wildcard: fields[2] === '*' },
+      months: { values: collectMask(pattern.month, 1), wildcard: fields[3] === '*' },
+      daysOfWeek: { values: collectMask(pattern.dayOfWeek, 0), wildcard: fields[4] === '*' },
     },
   };
 }
 
-function parseField(field: string, min: number, max: number): ParsedCronField | undefined {
-  if (field === '') return undefined;
+function collectMask(mask: readonly number[], offset: number): Set<number> {
   const values = new Set<number>();
+  for (let i = 0; i < mask.length; i += 1) {
+    if (mask[i]) values.add(i + offset);
+  }
+  return values;
+}
+
+function normalizeFieldForCroner(
+  field: string,
+  min: number,
+  max: number,
+  isDow: boolean,
+): string | undefined {
+  if (field === '') return undefined;
+  const out: string[] = [];
   for (const term of field.split(',')) {
     if (term === '') return undefined;
     const [range, stepText, ...rest] = term.split('/');
-    if (rest.length > 0) return undefined;
-    const step = stepText === undefined ? 1 : parseDigits(stepText);
-    if (step === undefined || step < 1) return undefined;
-    const base = range === undefined ? undefined : parseRange(range, min, max, stepText !== undefined);
+    if (rest.length > 0 || range === undefined || range === '') return undefined;
+    const step = stepText === undefined ? undefined : parseDigits(stepText);
+    if (stepText !== undefined && (step === undefined || step < 1)) return undefined;
+    const base = parseRange(range, min, max, step !== undefined);
     if (base === undefined) return undefined;
-    for (let value = base.start; value <= base.end; value += step) values.add(value);
+    if (step === undefined) {
+      out.push(range === '*' ? '*' : base.start === base.end ? String(base.start) : `${base.start}-${base.end}`);
+    } else if (base.start + step > base.end) {
+      out.push(String(base.start));
+    } else if (range === '*' && base.end === max && !isDow) {
+      out.push(`*/${step}`);
+    } else {
+      out.push(`${base.start}-${base.end}/${step}`);
+    }
   }
-  if (values.size === 0) return undefined;
-  return { values, wildcard: field === '*' };
+  return out.length === 0 ? undefined : out.join(',');
 }
 
 function parseDigits(text: string): number | undefined {

@@ -36,7 +36,6 @@ import {
   getSourceOwnedAdapterRoot,
   getWindowsProcessHelperFile,
 } from './native/native-assets';
-import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
 import { installKapUsageWorker } from './native/usage-worker';
@@ -101,14 +100,6 @@ function bootstrap(): void {
   const sourceOwnedAdapterRoot = getSourceOwnedAdapterRoot();
   if (sourceOwnedAdapterRoot !== null) process.env[SOURCE_OWNED_ADAPTER_ROOT_ENV] = sourceOwnedAdapterRoot;
   else if (!isSea()) delete process.env[SOURCE_OWNED_ADAPTER_ROOT_ENV];
-  const workerInstall = installMinidbTextBuildWorker();
-  startupTrace(
-    workerInstall.status === 'installed'
-      ? `minidb-worker:installed basename=${workerInstall.basename} sha256=${workerInstall.assetSha256}`
-      : workerInstall.status === 'failed'
-        ? `minidb-worker:failed code=${workerInstall.errorCode} sha256=${workerInstall.assetSha256 ?? 'unknown'}`
-        : `minidb-worker:${workerInstall.status}`,
-  );
   const usageWorkerInstall = installKapUsageWorker();
   startupTrace(usageWorkerInstall.status === 'failed'
     ? `usage-worker:failed code=${usageWorkerInstall.errorCode}`

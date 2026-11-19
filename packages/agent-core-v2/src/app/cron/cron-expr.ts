@@ -1,3 +1,5 @@
+import { Cron, CronPattern } from 'croner';
+
 import { Error2, ErrorCodes } from '#/errors';
 
 export interface ParsedCronExpression {
@@ -11,13 +13,17 @@ export interface ParsedCronExpression {
   readonly daysOfWeekWildcard: boolean;
 }
 
-const MINUTE_RANGE = { min: 0, max: 59 } as const;
-const HOUR_RANGE = { min: 0, max: 23 } as const;
-const DOM_RANGE = { min: 1, max: 31 } as const;
-const MONTH_RANGE = { min: 1, max: 12 } as const;
-const DOW_RANGE = { min: 0, max: 7 } as const;
+const FIELD_SPECS = [
+  { name: 'minute', min: 0, max: 59 },
+  { name: 'hour', min: 0, max: 23 },
+  { name: 'day-of-month', min: 1, max: 31 },
+  { name: 'month', min: 1, max: 12 },
+  { name: 'day-of-week', min: 0, max: 7 },
+] as const;
 
 const MS_PER_MINUTE = 60_000;
+const DIGIT_ONLY = /^\d+$/;
+const CRON_CACHE = new WeakMap<ParsedCronExpression, Cron>();
 
 export function parseCronExpression(expr: string): ParsedCronExpression {
   if (typeof expr !== 'string') {
@@ -37,65 +43,46 @@ export function parseCronExpression(expr: string): ParsedCronExpression {
       { details: { fieldCount: fields.length } },
     );
   }
-  const [minField, hourField, domField, monthField, dowField] = fields as [
-    string,
-    string,
-    string,
-    string,
-    string,
-  ];
 
-  const minutes = parseField(minField, MINUTE_RANGE.min, MINUTE_RANGE.max, 'minute');
-  const hours = parseField(hourField, HOUR_RANGE.min, HOUR_RANGE.max, 'hour');
-  const daysOfMonth = parseField(domField, DOM_RANGE.min, DOM_RANGE.max, 'day-of-month');
-  const months = parseField(monthField, MONTH_RANGE.min, MONTH_RANGE.max, 'month');
-  const dowRaw = parseField(dowField, DOW_RANGE.min, DOW_RANGE.max, 'day-of-week');
-  const daysOfWeek = new Set<number>();
-  for (const v of dowRaw) daysOfWeek.add(v === 7 ? 0 : v);
+  const normalized = fields.map((field, index) => {
+    const spec = FIELD_SPECS[index]!;
+    return normalizeFieldForCroner(field, spec.min, spec.max, spec.name);
+  }).join(' ');
 
-  return {
+  let pattern: CronPattern;
+  let cron: Cron;
+  try {
+    pattern = new CronPattern(normalized, undefined, { mode: '5-part' });
+    cron = new Cron(normalized, { mode: '5-part', paused: true, domAndDow: false });
+  } catch (error) {
+    throw new Error2(
+      ErrorCodes.CRON_EXPRESSION_INVALID,
+      error instanceof Error ? error.message : String(error),
+      { details: { raw: trimmed } },
+    );
+  }
+
+  const parsed: ParsedCronExpression = {
     raw: trimmed,
-    minutes,
-    hours,
-    daysOfMonth,
-    months,
-    daysOfWeek,
-    daysOfMonthWildcard: isWildcard(domField),
-    daysOfWeekWildcard: isWildcard(dowField),
+    minutes: collectMask(pattern.minute, 0),
+    hours: collectMask(pattern.hour, 0),
+    daysOfMonth: collectMask(pattern.day, 1),
+    months: collectMask(pattern.month, 1),
+    daysOfWeek: collectMask(pattern.dayOfWeek, 0),
+    daysOfMonthWildcard: fields[2] === '*',
+    daysOfWeekWildcard: fields[4] === '*',
   };
+  CRON_CACHE.set(parsed, cron);
+  return parsed;
 }
 
-function isWildcard(field: string): boolean {
-  return field === '*';
-}
-
-function parseField(field: string, min: number, max: number, name: string): Set<number> {
-  if (field === '') {
-    throw new Error2(ErrorCodes.CRON_EXPRESSION_INVALID, `cron ${name} field is empty`, {
-      details: { field: name },
-    });
-  }
+function collectMask(mask: readonly number[], offset: number): Set<number> {
   const out = new Set<number>();
-  const terms = field.split(',');
-  for (const term of terms) {
-    if (term === '') {
-      throw new Error2(
-        ErrorCodes.CRON_EXPRESSION_INVALID,
-        `cron ${name} field has empty term in list`,
-        { details: { field: name } },
-      );
-    }
-    addTerm(out, term, min, max, name);
-  }
-  if (out.size === 0) {
-    throw new Error2(ErrorCodes.CRON_EXPRESSION_INVALID, `cron ${name} field matches no values`, {
-      details: { field: name },
-    });
+  for (let i = 0; i < mask.length; i += 1) {
+    if (mask[i]) out.add(i + offset);
   }
   return out;
 }
-
-const DIGIT_ONLY = /^\d+$/;
 
 function parseCronInt(raw: string, name: string, role: string): number {
   if (!DIGIT_ONLY.test(raw)) {
@@ -108,9 +95,29 @@ function parseCronInt(raw: string, name: string, role: string): number {
   return Number.parseInt(raw, 10);
 }
 
-function addTerm(out: Set<number>, term: string, min: number, max: number, name: string): void {
+function normalizeFieldForCroner(field: string, min: number, max: number, name: string): string {
+  if (field === '') {
+    throw new Error2(ErrorCodes.CRON_EXPRESSION_INVALID, `cron ${name} field is empty`, {
+      details: { field: name },
+    });
+  }
+  const normalizedTerms: string[] = [];
+  for (const term of field.split(',')) {
+    if (term === '') {
+      throw new Error2(
+        ErrorCodes.CRON_EXPRESSION_INVALID,
+        `cron ${name} field has empty term in list`,
+        { details: { field: name } },
+      );
+    }
+    normalizedTerms.push(normalizeTermForCroner(term, min, max, name));
+  }
+  return normalizedTerms.join(',');
+}
+
+function normalizeTermForCroner(term: string, min: number, max: number, name: string): string {
   let rangePart = term;
-  let step = 1;
+  let step: number | undefined;
   const slash = term.indexOf('/');
   if (slash !== -1) {
     rangePart = term.slice(0, slash);
@@ -128,7 +135,6 @@ function addTerm(out: Set<number>, term: string, min: number, max: number, name:
         { details: { field: name, term, step: stepStr } },
       );
     }
-    step = parsedStep;
     if (rangePart === '') {
       throw new Error2(
         ErrorCodes.CRON_EXPRESSION_INVALID,
@@ -136,11 +142,13 @@ function addTerm(out: Set<number>, term: string, min: number, max: number, name:
         { details: { field: name, term } },
       );
     }
+    step = parsedStep;
   }
 
   let lo: number;
   let hi: number;
   if (rangePart === '*') {
+    if (step === undefined) return '*';
     lo = min;
     hi = max;
   } else {
@@ -154,18 +162,12 @@ function addTerm(out: Set<number>, term: string, min: number, max: number, name:
           { details: { field: name, value: single, min, max } },
         );
       }
-      if (slash !== -1) {
-        lo = single;
-        hi = max;
-      } else {
-        out.add(single);
-        return;
-      }
+      if (step === undefined) return String(single);
+      lo = single;
+      hi = max;
     } else {
-      const loStr = rangePart.slice(0, dash);
-      const hiStr = rangePart.slice(dash + 1);
-      lo = parseCronInt(loStr, name, 'range lower bound');
-      hi = parseCronInt(hiStr, name, 'range upper bound');
+      lo = parseCronInt(rangePart.slice(0, dash), name, 'range lower bound');
+      hi = parseCronInt(rangePart.slice(dash + 1), name, 'range upper bound');
       if (lo < min || hi > max || lo > hi) {
         throw new Error2(
           ErrorCodes.CRON_EXPRESSION_INVALID,
@@ -173,12 +175,23 @@ function addTerm(out: Set<number>, term: string, min: number, max: number, name:
           { details: { field: name, lo, hi, min, max } },
         );
       }
+      if (step === undefined) return `${lo}-${hi}`;
     }
   }
 
-  for (let v = lo; v <= hi; v += step) {
-    out.add(v);
-  }
+  if (lo + step > hi) return String(lo);
+  return rangePart === '*' && hi === max && name !== 'day-of-week'
+    ? `*/${step}`
+    : `${lo}-${hi}/${step}`;
+}
+
+function getCronInstance(expr: ParsedCronExpression): Cron {
+  const cached = CRON_CACHE.get(expr);
+  if (cached !== undefined) return cached;
+  const reparsed = parseCronExpression(expr.raw);
+  const cron = CRON_CACHE.get(reparsed)!;
+  CRON_CACHE.set(expr, cron);
+  return cron;
 }
 
 export function computeNextCronRun(expr: ParsedCronExpression, fromMs: number): number | null {
@@ -199,73 +212,12 @@ function nextRunWithinMinutes(
   fromMs: number,
   capMinutes: number,
 ): number | null {
-  const start = new Date(fromMs);
-  start.setSeconds(0, 0);
-  const date = new Date(start.getTime() + MS_PER_MINUTE);
-
+  const cron = getCronInstance(expr);
+  const next = cron.nextRun(new Date(fromMs));
+  if (next === null) return null;
+  const nextMs = next.getTime();
   const deadlineMs = fromMs + capMinutes * MS_PER_MINUTE;
-
-  let iterations = 0;
-  const HARD_ITERATION_CAP = 10_000_000;
-
-  while (date.getTime() <= deadlineMs && iterations++ < HARD_ITERATION_CAP) {
-    if (!expr.months.has(date.getMonth() + 1)) {
-      advanceMonth(date);
-      continue;
-    }
-
-    if (!dayMatches(expr, date)) {
-      advanceDay(date);
-      continue;
-    }
-
-    if (!expr.hours.has(date.getHours())) {
-      advanceHour(date);
-      continue;
-    }
-
-    if (!expr.minutes.has(date.getMinutes())) {
-      advanceMinute(date);
-      continue;
-    }
-
-    return date.getTime();
-  }
-
-  return null;
-}
-
-function dayMatches(expr: ParsedCronExpression, date: Date): boolean {
-  const dom = date.getDate();
-  const dow = date.getDay();
-  const domOk = expr.daysOfMonth.has(dom);
-  const dowOk = expr.daysOfWeek.has(dow);
-
-  if (expr.daysOfMonthWildcard && expr.daysOfWeekWildcard) return true;
-  if (expr.daysOfMonthWildcard) return dowOk;
-  if (expr.daysOfWeekWildcard) return domOk;
-  return domOk || dowOk;
-}
-
-function advanceMonth(date: Date): void {
-  date.setDate(1);
-  date.setHours(0, 0, 0, 0);
-  date.setMonth(date.getMonth() + 1);
-}
-
-function advanceDay(date: Date): void {
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() + 1);
-}
-
-function advanceHour(date: Date): void {
-  date.setMinutes(0, 0, 0);
-  date.setHours(date.getHours() + 1);
-}
-
-function advanceMinute(date: Date): void {
-  date.setSeconds(0, 0);
-  date.setMinutes(date.getMinutes() + 1);
+  return nextMs <= deadlineMs ? nextMs : null;
 }
 
 const MONTH_NAMES = [

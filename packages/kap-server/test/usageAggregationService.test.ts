@@ -4,7 +4,7 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
-import { MiniDbQueryStore, drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/backends/minidb/miniDbQueryStore';
+import { drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/queryStoreDisposals';
 import { SqliteQueryStore } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteQueryStore';
 import { SqliteUsageReadModel } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteUsageReadModel';
 import { InMemoryStorageService } from '@kiki/agent-core-v2/persistence/backends/memory/inMemoryStorageService';
@@ -163,7 +163,7 @@ function fixture(
   const ix = new TestInstantiationService();
   ix.stub(IBootstrapService, stubBootstrap(home));
   ix.stub(ILogService, stubLog());
-  ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+  ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore));
   const queryStore = ix.get(IQueryStore);
   const reads = new Map<string, number>();
   const agentLists = new Map<string, number>();
@@ -404,7 +404,7 @@ async function openRange(sessions: readonly SessionSummary[], wires: Readonly<Re
   ix.stub(IBootstrapService, stubBootstrap(home));
   ix.stub(ILogService, stubLog());
   ix.stub(IFileSystemStorageService, storage);
-  ix.set(IQueryStore, new SyncDescriptor<IQueryStore>(sqlite ? SqliteQueryStore : MiniDbQueryStore));
+  ix.set(IQueryStore, new SyncDescriptor<IQueryStore>(SqliteQueryStore));
   ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
   ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));

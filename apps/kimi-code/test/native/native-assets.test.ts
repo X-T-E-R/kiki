@@ -19,14 +19,9 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  getTextBuildWorkerRuntimeState,
-  resetTextBuildWorkerRuntime,
-} from '@kiki/minidb/worker-runtime';
 
 import {
   getEmbeddedNativeAssetManifest,
-  getMinidbTextBuildWorkerFile,
   getNativeCacheBase,
   getNativePackageRoot,
   getUsageReadModelWorkerFile,
@@ -39,7 +34,6 @@ import {
   type NativeAssetManifest,
   type NativeAssetSource,
 } from '#/native/native-assets';
-import { installMinidbTextBuildWorker } from '#/native/minidb-worker';
 import { installKapUsageWorker } from '#/native/usage-worker';
 import { installUsageReadModelWorker } from '#/native/usage-read-model-worker';
 import { resetUsageWorkerRuntime, usageWorkerEntry } from '@kiki/kap-server/usage-worker-runtime';
@@ -73,7 +67,7 @@ function fakeManifest(files: Record<string, string>, workerContent?: string): {
     };
   });
   const manifestKey = 'native/test-target/manifest.json';
-  const workerAssetKey = 'native/test-target/runtime/minidb-text-build-worker';
+  const workerAssetKey = 'native/test-target/runtime/usage-read-model-worker';
   const manifest: NativeAssetManifest = {
     version: NATIVE_ASSET_MANIFEST_VERSION,
     target: 'test-target',
@@ -89,9 +83,9 @@ function fakeManifest(files: Record<string, string>, workerContent?: string): {
         ? []
         : [
             {
-              key: 'minidb-text-build-worker',
+              key: 'usage-read-model-worker',
               assetKey: workerAssetKey,
-              relativePath: 'runtime/minidb/text-build-worker.mjs',
+              relativePath: 'runtime/usage/usage-read-model-worker.mjs',
               sha256: sha256(workerContent),
               mode: 0o644,
             },
@@ -178,7 +172,6 @@ function writeDocsTree(root: string, english: string, chinese: string): void {
 
 afterEach(() => {
   resetNativeAssetVerification();
-  resetTextBuildWorkerRuntime();
   resetUsageWorkerRuntime();
   configureUsageReadModelWorkerRuntime(undefined);
   configureMemoryWorkerRuntime(undefined);
@@ -321,7 +314,7 @@ describe('native assets', () => {
         worker,
       );
       const options = { cacheBase: dir, manifest, source, version: 'test' };
-      const first = getMinidbTextBuildWorkerFile(options);
+      const first = getUsageReadModelWorkerFile(options);
       const packageRoot = getNativePackageRoot('fake-native', options);
       expect(first).toBe(
         join(
@@ -331,24 +324,20 @@ describe('native assets', () => {
           'test-target',
           sha256(JSON.stringify(manifest)),
           'runtime',
-          'minidb',
-          'text-build-worker.mjs',
+          'usage',
+          'usage-read-model-worker.mjs',
         ),
       );
       expect(packageRoot?.startsWith(join(dir, 'native', 'test', 'test-target'))).toBe(true);
-      expect(getMinidbTextBuildWorkerFile(options)).toBe(first);
+      expect(getUsageReadModelWorkerFile(options)).toBe(first);
 
       writeFileSync(first!, 'corrupt');
       resetNativeAssetVerification();
-      expect(getMinidbTextBuildWorkerFile(options)).toBe(first);
+      expect(getUsageReadModelWorkerFile(options)).toBe(first);
       expect(readFileSync(first!, 'utf-8')).toBe(worker);
 
-      const installed = installMinidbTextBuildWorker(options);
+      const installed = installUsageReadModelWorker(options);
       expect(installed).toMatchObject({ status: 'installed', assetSha256: sha256(worker) });
-      expect(getTextBuildWorkerRuntimeState()).toMatchObject({
-        configured: true,
-        entry: { kind: 'packaged', path: first },
-      });
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -363,7 +352,6 @@ describe('native assets', () => {
       const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: (asset) => { if (asset !== key) throw new Error('Unexpected asset'); return content; } };
       expect(installKapUsageWorker({ cacheBase: dir, manifest, source, version: 'test' })).toMatchObject({ status: 'installed', basename: 'usage-parser-worker.mjs' });
       expect(readFileSync(usageWorkerEntry()!, 'utf8')).toBe(content.toString());
-      expect(getTextBuildWorkerRuntimeState()).toEqual({ configured: false });
     } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 
@@ -399,7 +387,6 @@ describe('native assets', () => {
       const options = { cacheBase: join(dir, 'cache'), manifest, source, version: 'test' };
       expect(installMemoryWorker(options)).toMatchObject({ status: 'installed', basename: 'memory-worker.mjs' });
       await smokeMemoryWorker(options);
-      expect(getTextBuildWorkerRuntimeState()).toEqual({ configured: false });
     } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   }, 30_000);
 
@@ -551,12 +538,12 @@ describe('native assets', () => {
     }
   });
 
-  it('reports missing and corrupt runtime worker assets without configuring MiniDb', () => {
+  it('reports missing and corrupt runtime worker assets without configuring the worker', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kimi-native-worker-fail-'));
     try {
       const missing = fakeManifest({});
       expect(
-        installMinidbTextBuildWorker({
+        installUsageReadModelWorker({
           cacheBase: dir,
           manifest: missing.manifest,
           source: missing.source,
@@ -568,19 +555,18 @@ describe('native assets', () => {
       const corruptSource: NativeAssetSource = {
         getAssetKeys: () => corrupt.source.getAssetKeys(),
         getRawAsset: (key) =>
-          key.endsWith('/runtime/minidb-text-build-worker')
+          key.endsWith('/runtime/usage-read-model-worker')
             ? Buffer.from('wrong')
             : corrupt.source.getRawAsset(key),
       };
       expect(
-        installMinidbTextBuildWorker({
+        installUsageReadModelWorker({
           cacheBase: dir,
           manifest: corrupt.manifest,
           source: corruptSource,
           version: 'test',
         }),
       ).toMatchObject({ status: 'failed', errorCode: 'Error' });
-      expect(getTextBuildWorkerRuntimeState()).toEqual({ configured: false });
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

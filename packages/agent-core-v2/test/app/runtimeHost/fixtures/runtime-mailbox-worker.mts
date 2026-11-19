@@ -1,7 +1,5 @@
 import { join } from 'node:path';
 
-import { LockError } from '@kiki/minidb';
-
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
 import { RuntimeThreadMailboxStore } from '#/app/threadCommunication/runtimeThreadMailboxStore';
@@ -50,7 +48,7 @@ try {
       });
       seqs.push(accepted.message.targetSeq);
     } catch (error) {
-      if (error instanceof LockError) lockErrors += 1;
+      if ((error as { code?: unknown } | null)?.code === 'ELOCKED') lockErrors += 1;
       else throw error;
     }
   }

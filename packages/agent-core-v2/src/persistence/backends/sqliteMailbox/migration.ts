@@ -4,8 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 
-import { LockFile, MiniDb } from '@kiki/minidb';
-import { shardDirName } from '@kiki/minidb/cluster';
+import { LegacyMinidbLock, legacyMinidbOpener, shardDirName } from './legacyMinidbReader';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { InstantiationService } from '#/_base/di/instantiationService';
@@ -26,7 +25,7 @@ import { CanonicalMailboxDatabase } from './database';
 import type { LegacyDeliveryCursor, MailboxOwner, MailboxRow, MailboxWrite } from './protocol';
 
 type Document = Record<string, unknown>;
-interface FrozenLock { readonly lock: LockFile; readonly token: string; originalPath: string; }
+interface FrozenLock { readonly lock: LegacyMinidbLock; readonly token: string; originalPath: string; }
 interface MaintenanceRuntime { readonly runtime: IHomeRuntimeService; readonly close: () => Promise<void>; }
 
 export function createMailboxMigrationService(homeDir: string): MailboxMigrationService {
@@ -384,25 +383,22 @@ class FileMailboxMigrationService implements MailboxMigrationService {
             let items = point?.items ?? 0;
             let bytes = point?.bytes ?? 0;
             await update({ ...manifest.status, currentSource: sourceId, currentKey: after === '' ? undefined : after });
-            const legacy = await MiniDb.open<Document>({ dir: directory, readOnly: true, valueCodec: 'json', valueMode: 'disk', recovery: 'strict', indexGenerations: false, activeExpireIntervalMs: 0 });
+            const legacy = await legacyMinidbOpener.open(directory);
             try {
-              const recovery = legacy.recoveryInfo;
-              if (recovery === null || recovery.corruptRanges.length > 0 || recovery.snapshotCorruptRanges.length > 0 || recovery.corruptBatches > 0 || recovery.lostBytes > 0) throw new Error(`Corrupted canonical source at ${sourceId}; the original and backup were preserved`);
               const reader = {
                 get: (key: string) => db!.partitionGet('', key), find: (partition: string, field: 'messageId' | 'legacyIdentity', value: string) => db!.findIdentity(partition, field, value),
                 sourceGet: (key: string): MailboxRow | undefined => {
-                  const record = legacy.store.getRecord(key);
-                  const value = legacy.get(key);
-                  return record === undefined || value === undefined ? undefined : { key, value, expireAt: record.expireAt };
+                  const row = legacy.get(key);
+                  return row === undefined ? undefined : { key: row.key, value: row.value, expireAt: row.expireAt };
                 },
               };
               for (;;) {
                 await this.checkCancelled(options.signal, manifest.status.migrationId!);
                 const rows: MailboxRow[] = [];
                 let pageBytes = 0;
-                for (const entry of legacy.store.scan({ gt: after, count: 256 })) {
-                  rows.push({ key: entry.key.toString('utf8'), value: legacy.codec.decode(entry.value), expireAt: entry.expireAt });
-                  pageBytes += entry.key.byteLength + entry.value.byteLength;
+                for (const entry of legacy.scan(after, 256)) {
+                  rows.push({ key: entry.key, value: entry.value, expireAt: entry.expireAt });
+                  pageBytes += entry.byteLength;
                   if (pageBytes >= 1024 * 1024) break;
                 }
                 if (rows.length === 0) break;
@@ -444,7 +440,7 @@ class FileMailboxMigrationService implements MailboxMigrationService {
                 for (;;) {
                   await this.checkCancelled(options.signal, manifest.status.migrationId!);
                   const rows: MailboxRow[] = [];
-                  for (const entry of legacy.store.scan({ gt: idemAfter, count: 256 })) rows.push({ key: entry.key.toString('utf8'), value: legacy.codec.decode(entry.value), expireAt: entry.expireAt });
+                  for (const entry of legacy.scan(idemAfter, 256)) rows.push({ key: entry.key, value: entry.value, expireAt: entry.expireAt });
                   if (rows.length === 0) break;
                   const writes = await convertLegacyMailboxRows(rows.filter((row) => row.value['kind'] === 'idempotency'), reader);
                   idemAfter = rows.at(-1)!.key;
@@ -668,7 +664,7 @@ async function acquireSourceLocks(homeDir: string, manifest: MigrationManifest, 
     const directories = source.name === 'thread-mailbox-v3' ? await shardDirectories(root) : [root];
     for (const directory of directories) {
       await checkCancelled?.();
-      const lock = new LockFile(join(directory, 'db.lock'));
+      const lock = new LegacyMinidbLock(join(directory, 'db.lock'));
       if (!await lock.acquire()) return lock.path;
       locks.push({ lock, token: lock.heldToken!, originalPath: lock.path });
     }
