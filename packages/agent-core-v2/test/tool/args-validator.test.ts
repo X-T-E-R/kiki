@@ -28,6 +28,14 @@ describe('args-validator (Ajv, format support)', () => {
     expect(validate(schema, 'not a uri')).toContain('format');
   });
 
+  it('recompiles refreshed schemas that reuse the same $id', () => {
+    const first = { $id: 'https://example.test/tool', type: 'object', required: ['a'] };
+    const refreshed = { $id: 'https://example.test/tool', type: 'object', required: ['b'] };
+    const firstValidator = compileToolArgsValidator(first);
+    expect(validate(refreshed, { a: 1 })).toContain("must have required property 'b'");
+    expect(validateToolArgs(firstValidator, { a: 1 })).toBeNull();
+  });
+
   it('format is ignored on non-strings', () => {
     const schema = { type: 'number', format: 'email' };
     expect(validate(schema, 42)).toBeNull();

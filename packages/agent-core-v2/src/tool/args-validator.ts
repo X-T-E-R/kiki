@@ -88,7 +88,12 @@ function formatValidationError(error: ErrorObject): string {
 }
 
 export function compileToolArgsValidator(schema: Record<string, unknown>): ToolArgsValidator {
-  return ajvFor(schema).compile(schema) as ToolArgsValidator;
+  const ajv = ajvFor(schema);
+  try {
+    return ajv.compile(schema) as ToolArgsValidator;
+  } finally {
+    ajv.removeSchema(schema);
+  }
 }
 
 export function validateToolArgs(validator: ToolArgsValidator, args: JsonType): string | null {
