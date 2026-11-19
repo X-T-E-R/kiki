@@ -64,7 +64,13 @@ export class OutputLayerClient {
         const parsed = JSON.parse(saved) as unknown;
         if (Array.isArray(parsed)) {
           for (const result of parsed as ReadingResult[]) {
-            if (result && result.status === 'completed' && typeof result.identity === 'string') {
+            if (
+              result
+              && result.status === 'completed'
+              && typeof result.identity === 'string'
+              && typeof result.text === 'string'
+              && typeof result.output === 'string'
+            ) {
               this.setCachedResult(result.identity, result);
             }
           }

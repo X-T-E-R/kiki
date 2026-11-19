@@ -211,6 +211,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
   const readSaved = useRecipeMutation(
     (installationId: string) => client.getRecipe(installationId),
     {
+      invalidateRecipeDetail: false,
       onSuccess: (saved, installationId) => {
         if (saved === undefined) {
           /* Only a successful read may consume the original merge baseline. */
@@ -240,6 +241,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
   const rebase = useRecipeMutation(
     (installationId: string) => client.getRecipe(installationId),
     {
+      invalidateRecipeDetail: false,
       onSuccess: (latest) => {
         if (latest === undefined) {
           setConflictReason(t('st.recipe.conflictGone'));
@@ -264,6 +266,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
       return client.saveLocalRecipe(input);
     },
     {
+      invalidateRecipeDetail: false,
       onSuccess: (saved, input) => {
         setConsentPreview(null);
         acceptPublished(saved, input.files);
@@ -297,6 +300,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
       files: input.files,
     }),
     {
+      invalidateRecipeDetail: false,
       onSuccess: (previewed) => {
         setFailure(null);
         // A preview that says it does not need consent still has to be
@@ -318,6 +322,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
       ...recipeConsentField(input.preview),
     }),
     {
+      invalidateRecipeDetail: false,
       onSuccess: (summary) => {
         setConsentPreview(null);
         setFailure(null);

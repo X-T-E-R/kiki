@@ -110,7 +110,7 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
             </button>
           </div>
         ) : modes.length === 0 ? (
-          <p className="px-2.5 py-3 text-[12px] text-ink-faint">{t('workMode.loadFailed')}</p>
+          <p className="px-2.5 py-3 text-[12px] text-ink-faint">{t('workMode.empty')}</p>
         ) : null}
 
         {modes.map((mode) => {

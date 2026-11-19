@@ -49,12 +49,14 @@ export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: numb
             const pageEntries = page.entries;
             after = pageEntries.at(-1)?.id ?? after;
             lastId.current = after;
+            let didTruncate = false;
             setEntries((current) => {
               const seen = new Set(current.map((entry) => entry.id));
               const merged = [...current, ...pageEntries.filter((entry) => !seen.has(entry.id))];
-              if (merged.length > ROOM_LOG_WINDOW) setTruncated(true);
+              if (merged.length > ROOM_LOG_WINDOW) didTruncate = true;
               return merged.length > ROOM_LOG_WINDOW ? merged.slice(-ROOM_LOG_WINDOW) : merged;
             });
+            if (didTruncate) setTruncated(true);
           }
           setError(null);
           setLoaded(true);

@@ -809,6 +809,7 @@ export const commonEn = {
   'workHome.task.tablesBody': 'Match CSV or .xlsx by key and report what changed.',
   'workMode.appliesToWindow': 'Applies to this window. Other windows on this space keep their own mode.',
   'workMode.aria': 'Window mode',
+  'workMode.empty': 'No modes saved yet.',
   'workMode.enabled': 'Ready',
   'workMode.loadFailed': 'Could not read the modes in this space.',
   'workMode.menu': 'Change window mode',

@@ -97,7 +97,11 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
   const visible = crumbs.filter((crumb) => crumb.agentId !== MAIN_AGENT_ID);
   const ancestors = omitLeaf ? visible.slice(0, -1) : visible;
   return (
-    <nav data-agent-breadcrumb aria-label={t('sv.sessionCrumb')} className="flex min-w-0 shrink items-center">
+    <nav
+      data-agent-breadcrumb
+      aria-label={t('sv.sessionCrumb')}
+      className={`flex items-center ${ancestors.length > 0 ? 'min-w-0 shrink overflow-hidden' : 'shrink-0'}`}
+    >
       <ol className={`flex min-w-0 items-center gap-1 ${omitLeaf ? 'flex-nowrap text-[13px] text-ink-faint' : 'flex-wrap text-[11px] text-ink-faint'}`}>
         <li className="shrink-0">
           <button
@@ -608,7 +612,7 @@ export const AgentFamilyPopover = memo(function AgentFamilyPopover({
         data-agent-family-trigger=""
         data-branch-crumb={isBranch ? (branchSealed ? 'merged' : 'open') : undefined}
         title={title}
-        className="group inline-flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 -ml-1.5 text-left transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
+        className={`group inline-flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 ${showBreadcrumb ? '-ml-1' : '-ml-1.5'} text-left transition-colors hover:bg-ink/[0.04] aria-expanded:bg-ink/[0.05] focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink`}
       >
         {headingContent}
         <Icon
