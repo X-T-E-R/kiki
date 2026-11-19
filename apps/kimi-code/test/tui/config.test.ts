@@ -152,6 +152,14 @@ command = "   "
     expect((await loadTuiConfig(filePath)).theme).toBe('dark');
   });
 
+  it('propagates non-ENOENT read errors on tui.toml without creating a corrupt backup', async () => {
+    mkdirSync(filePath);
+
+    await expect(saveTuiConfig({ ...DEFAULT_TUI_CONFIG, theme: 'dark' }, filePath)).rejects.toThrow();
+    const files = readdirSync(dir);
+    expect(files.filter((name) => name.startsWith('tui.toml.corrupt-'))).toHaveLength(0);
+  });
+
   it('saves and reloads the normalized config', async () => {
     await saveTuiConfig(
       {

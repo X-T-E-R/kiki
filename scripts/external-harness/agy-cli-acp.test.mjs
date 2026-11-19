@@ -3308,6 +3308,15 @@ void test('loadSession tolerates and repairs a truncated trailing audit line, re
     const repairedLines = (await readFile(auditPath, 'utf8')).trim().split('\n');
     for (const line of repairedLines) JSON.parse(line);
 
+    // Trailing whitespace after a malformed line must still be truncated and repaired.
+    await appendFile(auditPath, '{broken-with-ws\n   ');
+    const wsLoaded = bridge('fixture-alpha-high');
+    wsLoaded.auditDir = auditDir;
+    await wsLoaded.loadSession({ sessionId, cwd: root });
+    await wsLoaded.close();
+    const wsRepaired = (await readFile(auditPath, 'utf8')).trim().split('\n');
+    for (const line of wsRepaired) JSON.parse(line);
+
     const interiorCorrupt = bridge('fixture-alpha-high');
     interiorCorrupt.auditDir = auditDir;
     await appendFile(auditPath, '{broken-interior\n{"type":"close"}\n');
@@ -3328,8 +3337,31 @@ void test('loadSession tolerates and repairs a truncated trailing audit line, re
     const compactedRecords = (await readFile(compactPath, 'utf8')).trim().split('\n').map(JSON.parse);
     assert.ok(compactedRecords.some(r => r.type === 'session_new'));
     const frameRecords = compactedRecords.filter(r => r.type === 'native_frame_received');
-    assert.ok(frameRecords.length <= 200, `expected <= 200 frame records, got ${frameRecords.length}`);
+    assert.ok(
+      frameRecords.length < 240,
+      `expected compacted frame count well below 260, got ${frameRecords.length}`,
+    );
     assert.equal(frameRecords.at(-1).sequence, 259);
+
+    // Non-frame state records that remain above auditMaxBytes must advance the next compaction threshold
+    // rather than re-compacting on every appended line.
+    const stateBridge = bridge('fixture-alpha-high');
+    stateBridge.auditDir = auditDir;
+    stateBridge.auditMaxBytes = 2048;
+    const { sessionId: stateId } = await stateBridge.newSession({ cwd: root });
+    for (let i = 0; i < 20; i++) {
+      await stateBridge.audit({ id: stateId }, 'state_marker', {
+        index: i,
+        payload: 's'.repeat(200),
+      });
+    }
+    const stateThreshold = stateBridge.auditNextCompactAt.get(stateId);
+    const stateSize = (await stat(join(auditDir, `${stateId}.ndjson`))).size;
+    assert.ok(
+      stateThreshold >= stateSize,
+      `expected next compaction threshold (${stateThreshold}) >= current size (${stateSize})`,
+    );
+    await stateBridge.close();
     await compactBridge.close();
   } finally {
     await first.close().catch(() => {});

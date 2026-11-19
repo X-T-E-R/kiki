@@ -401,15 +401,15 @@ class DeviceToolProviderAndShareTest {
     }
 
     @Test
-    fun shareIntakeStore_backs_up_corrupt_index_and_prunes_orphan_batch_dirs() {
+    fun shareIntakeStore_backs_up_corrupt_index_preserves_existing_payloads_and_protects_in_flight_stage() {
         val dir = Files.createTempDirectory("kiki-share-corrupt").toFile()
         try {
             val inboxDir = File(dir, "shared-inbox").apply { mkdirs() }
             val corruptPayload = "{not valid json"
             File(inboxDir, "index.json").writeText(corruptPayload, StandardCharsets.UTF_8)
-            val orphanDir = File(inboxDir, "share_orphan123456").apply {
+            val preExistingDir = File(inboxDir, "share_previous1234").apply {
                 mkdirs()
-                File(this, "stale.txt").writeText("old")
+                File(this, "keep.txt").writeText("important")
             }
 
             val store = ShareIntakeStore(inboxDir, selfPackage = "dev.kiki.app", clock = { 1_700_000_000_123L })
@@ -425,8 +425,56 @@ class DeviceToolProviderAndShareTest {
             val backups = inboxDir.listFiles { f -> f.name.startsWith("index.json.corrupt-") }.orEmpty()
             assertEquals(1, backups.size)
             assertEquals(corruptPayload, backups.single().readText(StandardCharsets.UTF_8))
-            assertFalse(orphanDir.exists())
+            assertTrue(preExistingDir.exists(), "Corrupt fallback pass must not wipe previously staged payloads")
             assertTrue(inboxDir.listFiles { f -> f.name.endsWith(".tmp") }.orEmpty().isEmpty())
+
+            // Next healthy stageIncoming prunes unindexed orphans once index is clean.
+            val batch2 = store.stageIncoming(
+                IncomingSharePayload(
+                    action = Intent.ACTION_SEND,
+                    mimeType = "text/plain",
+                    text = "second healthy share",
+                ),
+            )
+            assertNotNull(batch2)
+            assertFalse(preExistingDir.exists())
+
+            // Concurrent clearAll during stream copy must not delete the in-flight batch directory.
+            val streamEntered = java.util.concurrent.CountDownLatch(1)
+            val allowStreamFinish = java.util.concurrent.CountDownLatch(1)
+            var stagedConcurrent: dev.kiki.android.host.share.ShareIntakeBatch? = null
+            val worker = Thread {
+                stagedConcurrent = store.stageIncoming(
+                    IncomingSharePayload(
+                        action = Intent.ACTION_SEND,
+                        mimeType = "text/plain",
+                        streams = listOf(
+                            IncomingShareStream(
+                                uriString = "content://com.example.provider/item/1",
+                                scheme = "content",
+                                authority = "com.example.provider",
+                                displayName = "concurrent.txt",
+                                mimeType = "text/plain",
+                                open = {
+                                    streamEntered.countDown()
+                                    allowStreamFinish.await()
+                                    ByteArrayInputStream("IN-FLIGHT-DATA".toByteArray(StandardCharsets.UTF_8))
+                                },
+                            ),
+                        ),
+                    ),
+                )
+            }
+            worker.start()
+            assertTrue(streamEntered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            store.clearAll()
+            allowStreamFinish.countDown()
+            worker.join(5_000)
+
+            assertNotNull(stagedConcurrent)
+            val filePath = stagedConcurrent!!.items.single().path
+            assertNotNull(filePath)
+            assertEquals("IN-FLIGHT-DATA", File(filePath).readText(StandardCharsets.UTF_8))
 
             val orphan2 = File(inboxDir, "share_orphan999999").apply { mkdirs() }
             store.clearAll()

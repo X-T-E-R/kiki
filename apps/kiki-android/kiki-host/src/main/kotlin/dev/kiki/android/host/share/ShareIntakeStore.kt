@@ -69,6 +69,12 @@ class ShareIntakeStore(
 ) {
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
     private val lock = Any()
+    private val inFlightBatchIds = HashSet<String>()
+
+    private data class LoadedIndex(
+        val batches: List<ShareIntakeBatch>,
+        val backedUpCorrupt: Boolean,
+    )
 
     private val indexFile: File get() = File(inboxRootDir, "index.json")
 
@@ -78,73 +84,89 @@ class ShareIntakeStore(
 
         val batchId = "share_" + UUID.randomUUID().toString().replace("-", "").take(12)
         val batchDir = File(inboxRootDir, batchId)
-        val stagedItems = ArrayList<SharedIntakeItem>()
-
-        val trimmedText = payload.text?.trim().orEmpty()
-        val trimmedSubject = payload.subject?.trim()?.takeIf { it.isNotEmpty() }
-        if (trimmedText.isNotEmpty()) {
-            val combinedText = if (trimmedSubject != null && !trimmedText.startsWith(trimmedSubject)) {
-                "$trimmedSubject\n$trimmedText"
-            } else {
-                trimmedText
-            }
-            stagedItems += SharedIntakeItem(
-                id = "${batchId}_txt",
-                name = trimmedSubject ?: "shared-text.txt",
-                mimeType = "text/plain",
-                text = combinedText.take(MAX_TEXT_CHARS),
-                bytes = combinedText.toByteArray(StandardCharsets.UTF_8).size.toLong(),
-            )
-        }
-
-        val usedNames = HashSet<String>()
-        for ((idx, stream) in payload.streams.take(maxStreamsPerBatch).withIndex()) {
-            if (!isSafeExternalContentStream(stream)) continue
-            batchDir.mkdirs()
-            val safeName = deduplicateFileName(
-                sanitizeFileName(stream.displayName, idx + 1, stream.mimeType ?: payload.mimeType),
-                usedNames,
-            )
-            val dest = File(batchDir, safeName)
-            val written = copyBounded(stream.open, dest, maxBytesPerStream)
-            if (written == null) {
-                runCatching { dest.delete() }
-                continue
-            }
-            stagedItems += SharedIntakeItem(
-                id = "${batchId}_${idx + 1}",
-                name = safeName,
-                mimeType = (stream.mimeType ?: payload.mimeType ?: "application/octet-stream").ifBlank { "application/octet-stream" },
-                path = dest.canonicalFile.absolutePath,
-                bytes = written,
-            )
-        }
-
-        if (stagedItems.isEmpty()) {
-            if (batchDir.exists()) runCatching { batchDir.deleteRecursively() }
-            return null
-        }
-
-        val batch = ShareIntakeBatch(
-            id = batchId,
-            createdAtMs = clock(),
-            subject = trimmedSubject,
-            items = stagedItems,
-        )
-
         synchronized(lock) {
-            inboxRootDir.mkdirs()
-            val existing = loadIndexLocked().toMutableList()
-            existing.add(0, batch)
-            while (existing.size > maxRetainedBatches) {
-                val evicted = existing.removeAt(existing.lastIndex)
-                val evictedDir = File(inboxRootDir, evicted.id)
-                if (evictedDir.exists()) runCatching { evictedDir.deleteRecursively() }
-            }
-            pruneOrphanBatchDirsLocked(existing.mapTo(HashSet()) { it.id })
-            saveIndexLocked(existing)
+            inFlightBatchIds.add(batchId)
         }
-        return batch
+        try {
+            val stagedItems = ArrayList<SharedIntakeItem>()
+
+            val trimmedText = payload.text?.trim().orEmpty()
+            val trimmedSubject = payload.subject?.trim()?.takeIf { it.isNotEmpty() }
+            if (trimmedText.isNotEmpty()) {
+                val combinedText = if (trimmedSubject != null && !trimmedText.startsWith(trimmedSubject)) {
+                    "$trimmedSubject\n$trimmedText"
+                } else {
+                    trimmedText
+                }
+                stagedItems += SharedIntakeItem(
+                    id = "${batchId}_txt",
+                    name = trimmedSubject ?: "shared-text.txt",
+                    mimeType = "text/plain",
+                    text = combinedText.take(MAX_TEXT_CHARS),
+                    bytes = combinedText.toByteArray(StandardCharsets.UTF_8).size.toLong(),
+                )
+            }
+
+            val usedNames = HashSet<String>()
+            for ((idx, stream) in payload.streams.take(maxStreamsPerBatch).withIndex()) {
+                if (!isSafeExternalContentStream(stream)) continue
+                batchDir.mkdirs()
+                val safeName = deduplicateFileName(
+                    sanitizeFileName(stream.displayName, idx + 1, stream.mimeType ?: payload.mimeType),
+                    usedNames,
+                )
+                val dest = File(batchDir, safeName)
+                val written = copyBounded(stream.open, dest, maxBytesPerStream)
+                if (written == null) {
+                    runCatching { dest.delete() }
+                    continue
+                }
+                stagedItems += SharedIntakeItem(
+                    id = "${batchId}_${idx + 1}",
+                    name = safeName,
+                    mimeType = (stream.mimeType ?: payload.mimeType ?: "application/octet-stream").ifBlank { "application/octet-stream" },
+                    path = dest.canonicalFile.absolutePath,
+                    bytes = written,
+                )
+            }
+
+            if (stagedItems.isEmpty()) {
+                if (batchDir.exists()) runCatching { batchDir.deleteRecursively() }
+                return null
+            }
+
+            val batch = ShareIntakeBatch(
+                id = batchId,
+                createdAtMs = clock(),
+                subject = trimmedSubject,
+                items = stagedItems,
+            )
+
+            synchronized(lock) {
+                inboxRootDir.mkdirs()
+                val loaded = loadIndexWithRecoveryLocked()
+                val existing = loaded.batches.toMutableList()
+                existing.add(0, batch)
+                val evictedIds = ArrayList<String>()
+                while (existing.size > maxRetainedBatches) {
+                    val evicted = existing.removeAt(existing.lastIndex)
+                    evictedIds += evicted.id
+                }
+                saveIndexLocked(existing)
+                for (evictedId in evictedIds) {
+                    val evictedDir = File(inboxRootDir, evictedId)
+                    if (evictedDir.exists()) runCatching { evictedDir.deleteRecursively() }
+                }
+                if (!loaded.backedUpCorrupt) {
+                    pruneOrphanBatchDirsLocked(existing.mapTo(HashSet()) { it.id })
+                }
+            }
+            return batch
+        } finally {
+            synchronized(lock) {
+                inFlightBatchIds.remove(batchId)
+            }
+        }
     }
 
     /**
@@ -160,12 +182,13 @@ class ShareIntakeStore(
 
     fun clearAll(): Int = synchronized(lock) {
         val current = loadIndexLocked()
+        saveIndexLocked(emptyList())
         for (batch in current) {
+            if (batch.id in inFlightBatchIds) continue
             val dir = File(inboxRootDir, batch.id)
             if (dir.exists()) runCatching { dir.deleteRecursively() }
         }
         pruneOrphanBatchDirsLocked(emptySet())
-        saveIndexLocked(emptyList())
         current.size
     }
 
@@ -205,14 +228,19 @@ class ShareIntakeStore(
         }
     }
 
-    private fun loadIndexLocked(): List<ShareIntakeBatch> {
-        if (!indexFile.isFile) return emptyList()
+    private fun loadIndexLocked(): List<ShareIntakeBatch> = loadIndexWithRecoveryLocked().batches
+
+    private fun loadIndexWithRecoveryLocked(): LoadedIndex {
+        if (!indexFile.isFile) return LoadedIndex(emptyList(), backedUpCorrupt = false)
         return try {
             val raw = indexFile.readText(StandardCharsets.UTF_8)
-            json.decodeFromString(ListSerializer(ShareIntakeBatch.serializer()), raw)
+            LoadedIndex(
+                batches = json.decodeFromString(ListSerializer(ShareIntakeBatch.serializer()), raw),
+                backedUpCorrupt = false,
+            )
         } catch (_: Throwable) {
             backupCorruptIndexLocked()
-            emptyList()
+            LoadedIndex(emptyList(), backedUpCorrupt = true)
         }
     }
 
@@ -230,7 +258,12 @@ class ShareIntakeStore(
     private fun pruneOrphanBatchDirsLocked(retainedIds: Set<String>) {
         val children = inboxRootDir.listFiles() ?: return
         for (child in children) {
-            if (child.isDirectory && child.name.startsWith("share_") && child.name !in retainedIds) {
+            if (
+                child.isDirectory &&
+                child.name.startsWith("share_") &&
+                child.name !in retainedIds &&
+                child.name !in inFlightBatchIds
+            ) {
                 runCatching { child.deleteRecursively() }
             }
         }

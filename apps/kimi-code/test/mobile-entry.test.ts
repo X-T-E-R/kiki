@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -92,6 +92,17 @@ describe('mobile-entry and android-entry compatibility', () => {
       mcpServers: Record<string, { url: string }>;
     };
     expect(parsed.mcpServers['android-phone']?.url).toBe('http://127.0.0.1:19100/mcp');
+  });
+
+  it('propagates non-ENOENT read errors on mcp.json without creating a corrupt backup', async () => {
+    const home = await makeTempHome('kiki-mobile-eisdir-mcp-');
+    await mkdir(join(home, 'mcp.json'));
+
+    expect(() =>
+      ensureManagedMobileMcp(home, 'android', 'http://127.0.0.1:19100/mcp', 'tok-123'),
+    ).toThrow();
+    const entries = await readdir(home);
+    expect(entries.filter((name) => name.startsWith('mcp.json.corrupt-'))).toHaveLength(0);
   });
 
   it('parses stdio bootstrap and control frames and emits @@kiki lines', async () => {

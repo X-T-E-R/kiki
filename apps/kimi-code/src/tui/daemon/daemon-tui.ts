@@ -360,6 +360,7 @@ export class DaemonTUI {
 
   private async finishDispose(): Promise<void> {
     this.stopped = true;
+    this.sessionOpenGeneration += 1;
     let failure: Error | undefined;
     const cleanup = async (operation: () => void | Promise<void>): Promise<void> => {
       try {
@@ -1132,9 +1133,11 @@ export class DaemonTUI {
   }
 
   private async openSession(sessionId: string): Promise<void> {
+    if (this.stopped) return;
     const generation = ++this.sessionOpenGeneration;
+    const isStale = (): boolean => this.stopped || this.sessionOpenGeneration !== generation;
     await this.programStatus.switchSession(sessionId);
-    if (this.sessionOpenGeneration !== generation) return;
+    if (isStale()) return;
     const previous = this.controller;
     this.clearStatusNotice();
     this.clearActivityTickTimer();
@@ -1144,7 +1147,7 @@ export class DaemonTUI {
     this.state.footer.advanceTip();
     if (previous !== undefined && previous.sessionId !== sessionId) {
       await this.clearAttachments();
-      if (this.sessionOpenGeneration !== generation) return;
+      if (isStale()) return;
       this.state.editor.setText('');
       this.renderer.clearNotes();
     }
@@ -1189,22 +1192,37 @@ export class DaemonTUI {
       unsubscribeContent();
       unsubscribeInterrupted();
     };
+    const abortIfStale = (): boolean => {
+      if (!this.stopped && this.controller === controller && this.sessionOpenGeneration === generation) {
+        return false;
+      }
+      if (this.controller === controller) {
+        this.focusedControllerDispose?.();
+        this.focusedControllerDispose = undefined;
+        this.mainControllerDispose?.();
+        this.mainControllerDispose = undefined;
+        this.controller = undefined;
+        this.contentContinuations.setTarget(undefined, 'main');
+        controller.close();
+      }
+      return true;
+    };
     await controller.open();
-    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
+    if (abortIfStale()) return;
     this.renderSession(controller.getState());
     await this.configureExplicitSources(sessionId);
-    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
+    if (abortIfStale()) return;
     await this.applyStartupOverrides(controller);
-    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
+    if (abortIfStale()) return;
     const models = await this.refreshModels();
-    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
+    if (abortIfStale()) return;
     const view = controller.getState();
     if (view.session !== undefined && !view.busy && !view.model && !view.profile && !this.state.appState.agentProfile && !this.state.appState.model) {
       const [configured, profiles] = await Promise.all([
         this.client.klient.global.config.get<string | undefined>('defaultModel'),
         this.client.listAgentProfiles(view.session.workspace_id),
       ]);
-      if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
+      if (abortIfStale()) return;
       const profile = profiles.items.find((item) => item.name === 'agent');
       const preferred = models.find((item) => item.id === (profile?.pinned_model_alias ?? configured))
         ?? (models.length === 1 && !profile?.pinned_model_alias ? models[0] : undefined);
@@ -1215,7 +1233,7 @@ export class DaemonTUI {
       }
     }
     await this.refreshSkillCommands(sessionId);
-    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
+    if (abortIfStale()) return;
     await this.refreshAgentCommands();
   }
 

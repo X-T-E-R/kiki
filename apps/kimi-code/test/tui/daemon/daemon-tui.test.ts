@@ -4227,3 +4227,78 @@ it('retries failed tool detail lookups and clears requested task details on targ
   await vi.waitFor(() => expect(lookupToolCall).toHaveBeenCalledTimes(3));
   await vi.waitFor(() => expect(loadTranscriptDetail).toHaveBeenCalledTimes(2));
 });
+
+it('aborts openSession when dispose runs during switchSession without leaking a controller', async () => {
+  const { tui } = driver();
+  const internal = tui as unknown as {
+    controller: unknown;
+    programStatus: { switchSession: ReturnType<typeof vi.fn> };
+    openSession(sessionId: string): Promise<void>;
+    dispose(): Promise<void>;
+  };
+  let resolveSwitch!: () => void;
+  internal.programStatus.switchSession = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveSwitch = resolve;
+      }),
+  );
+
+  const pendingOpen = internal.openSession('session-after-dispose');
+  await internal.dispose();
+  resolveSwitch();
+  await pendingOpen;
+
+  expect(internal.controller).toBeUndefined();
+});
+
+it('closes an in-flight controller cleanly if a superseding openSession rejects during switchSession', async () => {
+  const { tui } = driver();
+  const internal = tui as unknown as {
+    controller: { sessionId: string; close: () => void } | undefined;
+    client: {
+      klient: {
+        session: (id: string) => {
+          view: SessionViewFacade;
+        };
+      };
+    };
+    programStatus: { switchSession: ReturnType<typeof vi.fn> };
+    openSession(sessionId: string): Promise<void>;
+  };
+  let resolveSnapshotA!: () => void;
+  let subscribeCloseSpy: ReturnType<typeof vi.fn<() => void>> | undefined;
+  internal.programStatus.switchSession = vi
+    .fn()
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('switch B failed'));
+  const origSession = internal.client.klient.session;
+  internal.client.klient.session = (id: string) => {
+    const base = origSession(id);
+    if (id !== 'session-a') return base;
+    return {
+      ...base,
+      view: {
+        ...base.view,
+        snapshot: () =>
+          new Promise((resolve) => {
+            resolveSnapshotA = () => resolve(sessionSnapshot('session-a'));
+          }),
+        subscribe: (input, onSignal) => {
+          const handle = base.view.subscribe(input, onSignal);
+          subscribeCloseSpy = vi.fn(() => handle.close());
+          return { ...handle, close: subscribeCloseSpy };
+        },
+      },
+    };
+  };
+
+  const openA = internal.openSession('session-a');
+  await vi.waitFor(() => expect(internal.controller?.sessionId).toBe('session-a'));
+  await expect(internal.openSession('session-b')).rejects.toThrow('switch B failed');
+  resolveSnapshotA();
+  await openA;
+
+  expect(internal.controller).toBeUndefined();
+  expect(subscribeCloseSpy).toHaveBeenCalled();
+});

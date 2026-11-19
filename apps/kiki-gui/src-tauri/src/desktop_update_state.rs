@@ -17,7 +17,7 @@ pub(super) fn mutate_for(
     let _write = crate::DESKTOP_PREFS_WRITE_LOCK.lock()
         .map_err(|_| "Desktop preferences lock was poisoned")?;
     let main = crate::main_home_for(home)?;
-    let mut prefs = crate::read_main_desktop_prefs(&main);
+    let mut prefs = crate::read_main_desktop_prefs_strict(&main)?;
     let mut state = prefs.update_state.take().unwrap_or_default();
     let timestamp = |previous: &mut Option<serde_json::Number>, next: serde_json::Number| {
         let value = next.as_f64().filter(|value| value.is_finite() && *value >= 0.0)
@@ -534,5 +534,24 @@ mod tests {
 
         assert!(!read_desktop_prefs_for(&fixture.main).notifications);
         assert_eq!(read_desktop_prefs_for(&fixture.child).log_level, DesktopLogLevel::Trace);
+
+        // Non-UTF8 bytes are treated as corruption and backed up before overwrite.
+        let invalid_utf8: &[u8] = &[0xff, 0xfe, 0x00, 0x80];
+        fs::write(fixture.main.join("desktop.json"), invalid_utf8).unwrap();
+        fixture.write(&fixture.main, r#"{"closeToTray":true}"#);
+        let utf8_backups: Vec<_> = fs::read_dir(&fixture.main)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("desktop.json.corrupt-"))
+            .collect();
+        assert_eq!(utf8_backups.len(), 2);
+        assert!(utf8_backups.iter().any(|entry| fs::read(entry.path()).unwrap() == invalid_utf8));
+
+        // Non-NotFound / non-corrupt I/O errors fail closed without clobbering.
+        fs::remove_file(fixture.main.join("desktop.json")).unwrap();
+        fs::create_dir(fixture.main.join("desktop.json")).unwrap();
+        let patch: DesktopPrefsPatch = serde_json::from_str(r#"{"notifications":true}"#).unwrap();
+        assert!(write_desktop_prefs_file(&fixture.main, &patch).is_err());
+        assert!(fixture.main.join("desktop.json").is_dir());
     }
 }

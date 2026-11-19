@@ -92,19 +92,17 @@ async function readAuditFile(auditPath, options = {}) {
 		});
 		stream.on("end", () => {
 			try {
-				if (carry.length > 0) {
-					const trimmed = carry.trim();
-					if (trimmed.length > 0) {
-						if (pendingMalformed !== void 0) throw pendingMalformed.error;
-						try {
-							pushRecord(JSON.parse(trimmed));
-							hadTruncatedTail = true;
-							truncateToOffset = info.size;
-						} catch {
-							hadTruncatedTail = true;
-							truncateToOffset = validByteOffset;
-							warn(`Ignoring incomplete trailing audit record in ${auditPath}`);
-						}
+				const trimmedCarry = carry.trim();
+				if (trimmedCarry.length > 0) {
+					if (pendingMalformed !== void 0) throw pendingMalformed.error;
+					try {
+						pushRecord(JSON.parse(trimmedCarry));
+						hadTruncatedTail = true;
+						truncateToOffset = info.size;
+					} catch {
+						hadTruncatedTail = true;
+						truncateToOffset = validByteOffset;
+						warn(`Ignoring incomplete trailing audit record in ${auditPath}`);
 					}
 				} else if (pendingMalformed !== void 0) {
 					hadTruncatedTail = true;
@@ -2040,6 +2038,7 @@ var AgyBridge = class {
 	spawnProcess;
 	sessions;
 	auditBytes = /* @__PURE__ */ new Map();
+	auditNextCompactAt = /* @__PURE__ */ new Map();
 	auditChains = /* @__PURE__ */ new Map();
 	prunedAuditDir = false;
 	modelChoices;
@@ -2065,6 +2064,10 @@ var AgyBridge = class {
 		this.spawnProcess = spawnProcess;
 		this.sessions = /* @__PURE__ */ new Map();
 	}
+	nextAuditCompactThreshold(bytes) {
+		const growthStep = Math.max(1024, Math.floor(this.auditMaxBytes / 2));
+		return Math.max(this.auditMaxBytes, bytes + growthStep);
+	}
 	async audit(session, type, data) {
 		if (!this.auditDir) return;
 		const auditDir = this.auditDir;
@@ -2080,11 +2083,22 @@ var AgyBridge = class {
 				this.prunedAuditDir = true;
 				pruneExpiredAuditFiles(auditDir).catch(() => {});
 			}
+			let knownBytes = this.auditBytes.get(session.id);
+			if (knownBytes === void 0) {
+				const existingSize = (await stat(auditPath).catch(() => void 0))?.size ?? 0;
+				knownBytes = existingSize;
+				if (!this.auditNextCompactAt.has(session.id)) {
+					const initialThreshold = this.auditMaxBytes > 0 && existingSize >= this.auditMaxBytes ? this.nextAuditCompactThreshold(existingSize) : this.auditMaxBytes;
+					this.auditNextCompactAt.set(session.id, initialThreshold);
+				}
+			}
 			await appendFile(auditPath, line);
-			const written = (this.auditBytes.get(session.id) ?? 0) + Buffer.byteLength(line, "utf8");
-			if (this.auditMaxBytes > 0 && written >= this.auditMaxBytes) {
+			const written = knownBytes + Buffer.byteLength(line, "utf8");
+			const compactAt = this.auditNextCompactAt.get(session.id) ?? this.auditMaxBytes;
+			if (this.auditMaxBytes > 0 && written >= compactAt) {
 				const compactedBytes = await compactAuditFile(auditPath, { maxBytes: this.auditMaxBytes });
 				this.auditBytes.set(session.id, compactedBytes);
+				this.auditNextCompactAt.set(session.id, this.nextAuditCompactThreshold(compactedBytes));
 			} else this.auditBytes.set(session.id, written);
 		});
 		this.auditChains.set(session.id, next);

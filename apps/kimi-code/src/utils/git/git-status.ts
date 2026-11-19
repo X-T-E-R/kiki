@@ -7,7 +7,7 @@
  * expires, notifying `options.onChange` when displayed fields change.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
 
 import { resolveCommandPath } from '#/utils/process/resolve-command';
 
@@ -16,6 +16,7 @@ const STATUS_TTL_MS = 15_000;
 const PULL_REQUEST_TTL_MS = 60_000;
 const SPAWN_TIMEOUT_MS = 500;
 const PR_SPAWN_TIMEOUT_MS = 5_000;
+const HARD_TIMEOUT_GRACE_MS = 250;
 
 export interface GitStatus {
   readonly branch: string;
@@ -35,6 +36,8 @@ export interface PullRequestInfo {
 export interface GitStatusCache {
   /** Returns current cached status, or `null` when workDir is not a git repo or still probing. */
   getStatus(): GitStatus | null;
+  /** Stops future refreshes, suppresses `onChange`, and terminates any active child processes. */
+  dispose(): void;
 }
 
 export interface GitStatusCacheOptions {
@@ -80,6 +83,8 @@ export function createGitStatusCache(
   // binary must be resolved through PATH to an absolute path — a bare name
   // would let cmd.exe pick up a `git.exe` planted in the workspace.
   const git = resolveCommandPath('git', workDir);
+  let disposed = false;
+  const activeChildren = new Set<ChildProcess>();
   let repoDetected = false;
   let isRepo = false;
   let repoDetectPending = false;
@@ -104,7 +109,7 @@ export function createGitStatusCache(
 
   return {
     getStatus: () => {
-      if (git === undefined || (repoDetected && !isRepo)) return null;
+      if (disposed || git === undefined || (repoDetected && !isRepo)) return null;
       if (!repoDetected) {
         detectGitRepoIfNeeded(git);
         return null;
@@ -127,13 +132,92 @@ export function createGitStatusCache(
         pullRequest: pullRequest.branch === branch.value ? pullRequest.value : null,
       };
     },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      for (const child of activeChildren) {
+        killChildProcess(child);
+      }
+      activeChildren.clear();
+    },
   };
 
+  function runTrackedExec(
+    command: string,
+    args: readonly string[],
+    execOptions: Parameters<typeof execFile>[2],
+    hardTimeoutMs: number,
+  ): Promise<string | null> {
+    if (disposed) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let settled = false;
+      let child: ChildProcess | undefined;
+      let hardTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (value: string | null): void => {
+        if (settled) return;
+        settled = true;
+        if (hardTimer !== undefined) {
+          clearTimeout(hardTimer);
+          hardTimer = undefined;
+        }
+        if (child !== undefined) {
+          activeChildren.delete(child);
+        }
+        resolve(value);
+      };
+      try {
+        child = execFile(command, args, execOptions, (error, stdout) => {
+          if (error !== null || disposed) {
+            finish(null);
+            return;
+          }
+          finish(typeof stdout === 'string' ? stdout : stdout.toString('utf8'));
+        });
+      } catch {
+        finish(null);
+        return;
+      }
+      if (settled) return;
+      if (disposed) {
+        killChildProcess(child);
+        finish(null);
+        return;
+      }
+      if (child !== undefined) {
+        activeChildren.add(child);
+      }
+      hardTimer = setTimeout(() => {
+        killChildProcess(child);
+        finish(null);
+      }, hardTimeoutMs);
+      hardTimer.unref?.();
+    });
+  }
+
+  function runGit(
+    gitBin: string,
+    args: readonly string[],
+    maxBuffer = 256 * 1024,
+  ): Promise<string | null> {
+    return runTrackedExec(
+      gitBin,
+      args,
+      {
+        encoding: 'utf8',
+        timeout: SPAWN_TIMEOUT_MS,
+        maxBuffer,
+        windowsHide: true,
+      },
+      SPAWN_TIMEOUT_MS + HARD_TIMEOUT_GRACE_MS,
+    );
+  }
+
   function detectGitRepoIfNeeded(gitBin: string): void {
-    if (repoDetected || repoDetectPending) return;
+    if (disposed || repoDetected || repoDetectPending) return;
     repoDetectPending = true;
-    void detectGitRepo(gitBin, workDir).then((detected) => {
+    void detectGitRepo(runGit, gitBin, workDir).then((detected) => {
       repoDetectPending = false;
+      if (disposed) return;
       repoDetected = true;
       isRepo = detected;
       if (!detected) return;
@@ -144,12 +228,12 @@ export function createGitStatusCache(
   }
 
   function refreshBranchIfNeeded(gitBin: string, now: number): void {
-    if (branch.pending || now - branch.fetchedAt < BRANCH_TTL_MS) return;
+    if (disposed || branch.pending || now - branch.fetchedAt < BRANCH_TTL_MS) return;
     const requestId = branch.requestId + 1;
     branch = { ...branch, pending: true, requestId };
 
-    void readBranch(gitBin, workDir).then((value) => {
-      if (branch.requestId !== requestId) return;
+    void readBranch(runGit, gitBin, workDir).then((value) => {
+      if (disposed || branch.requestId !== requestId) return;
       const changed = branch.value !== value;
       branch = {
         value,
@@ -165,12 +249,12 @@ export function createGitStatusCache(
   }
 
   function refreshStatusIfNeeded(gitBin: string, now: number): void {
-    if (status.pending || now - status.fetchedAt < STATUS_TTL_MS) return;
+    if (disposed || status.pending || now - status.fetchedAt < STATUS_TTL_MS) return;
     const requestId = status.requestId + 1;
     status = { ...status, pending: true, requestId };
 
-    void readStatus(gitBin, workDir).then((next) => {
-      if (status.requestId !== requestId) return;
+    void readStatus(runGit, gitBin, workDir).then((next) => {
+      if (disposed || status.requestId !== requestId) return;
       const changed = !sameStatusValues(status, next);
       status = {
         ...next,
@@ -183,7 +267,7 @@ export function createGitStatusCache(
   }
 
   function refreshPullRequestIfNeeded(branchName: string, now: number): void {
-    if (pullRequest.pendingBranch === branchName) return;
+    if (disposed || pullRequest.pendingBranch === branchName) return;
     const fetchedAt = pullRequest.branch === branchName ? pullRequest.fetchedAt : 0;
     if (now - fetchedAt < PULL_REQUEST_TTL_MS) return;
 
@@ -196,8 +280,8 @@ export function createGitStatusCache(
       requestId,
     };
 
-    void readPullRequest(workDir).then((value) => {
-      if (pullRequest.requestId !== requestId) return;
+    void readPullRequest(runTrackedExec, workDir).then((value) => {
+      if (disposed || pullRequest.requestId !== requestId) return;
 
       const previous = pullRequest.branch === branchName ? pullRequest.value : null;
       const changed = !samePullRequest(previous, value);
@@ -213,6 +297,34 @@ export function createGitStatusCache(
   }
 }
 
+function killChildProcess(child: ChildProcess | undefined): void {
+  if (child === undefined || typeof child.kill !== 'function') return;
+  try {
+    if (!child.kill('SIGKILL')) {
+      child.kill();
+    }
+  } catch {
+    try {
+      child.kill();
+    } catch {
+      // Child already exited.
+    }
+  }
+}
+
+type RunGitFn = (
+  gitBin: string,
+  args: readonly string[],
+  maxBuffer?: number,
+) => Promise<string | null>;
+
+type RunTrackedExecFn = (
+  command: string,
+  args: readonly string[],
+  execOptions: Parameters<typeof execFile>[2],
+  hardTimeoutMs: number,
+) => Promise<string | null>;
+
 function sameStatusValues(a: StatusValues, b: StatusValues): boolean {
   return (
     a.dirty === b.dirty &&
@@ -223,50 +335,20 @@ function sameStatusValues(a: StatusValues, b: StatusValues): boolean {
   );
 }
 
-function runGitAsync(
-  git: string,
-  args: readonly string[],
-  maxBuffer = 256 * 1024,
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    try {
-      execFile(
-        git,
-        args,
-        {
-          encoding: 'utf8',
-          timeout: SPAWN_TIMEOUT_MS,
-          maxBuffer,
-          windowsHide: true,
-        },
-        (error, stdout) => {
-          if (error !== null) {
-            resolve(null);
-            return;
-          }
-          resolve(stdout);
-        },
-      );
-    } catch {
-      resolve(null);
-    }
-  });
-}
-
-async function detectGitRepo(git: string, workDir: string): Promise<boolean> {
-  const stdout = await runGitAsync(git, ['-C', workDir, 'rev-parse', '--is-inside-work-tree']);
+async function detectGitRepo(runGit: RunGitFn, git: string, workDir: string): Promise<boolean> {
+  const stdout = await runGit(git, ['-C', workDir, 'rev-parse', '--is-inside-work-tree']);
   return stdout !== null && stdout.trim() === 'true';
 }
 
-async function readBranch(git: string, workDir: string): Promise<string | null> {
-  const stdout = await runGitAsync(git, ['-C', workDir, 'branch', '--show-current']);
+async function readBranch(runGit: RunGitFn, git: string, workDir: string): Promise<string | null> {
+  const stdout = await runGit(git, ['-C', workDir, 'branch', '--show-current']);
   if (stdout === null) return null;
   const name = stdout.trim();
   return name.length > 0 ? name : null;
 }
 
-async function readStatus(git: string, workDir: string): Promise<StatusValues> {
-  const stdout = await runGitAsync(
+async function readStatus(runGit: RunGitFn, git: string, workDir: string): Promise<StatusValues> {
+  const stdout = await runGit(
     git,
     ['-C', workDir, 'status', '--porcelain', '-b'],
     4 * 1024 * 1024,
@@ -289,7 +371,7 @@ async function readStatus(git: string, workDir: string): Promise<StatusValues> {
       dirty = true;
     }
   }
-  const diff = dirty ? await readDiffStats(git, workDir) : { added: 0, deleted: 0 };
+  const diff = dirty ? await readDiffStats(runGit, git, workDir) : { added: 0, deleted: 0 };
   return {
     dirty,
     ahead,
@@ -300,10 +382,11 @@ async function readStatus(git: string, workDir: string): Promise<StatusValues> {
 }
 
 async function readDiffStats(
+  runGit: RunGitFn,
   git: string,
   workDir: string,
 ): Promise<{ added: number; deleted: number }> {
-  const stdout = await runGitAsync(
+  const stdout = await runGit(
     git,
     ['-C', workDir, 'diff', '--numstat', 'HEAD', '--'],
     4 * 1024 * 1024,
@@ -327,43 +410,32 @@ function parseDiffNumstatCount(value: string | undefined): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function readPullRequest(workDir: string): Promise<PullRequestInfo | null> {
-  return new Promise((resolve) => {
-    // Resolve gh through PATH as well — this runs with cwd = workDir, where a
-    // planted `gh.exe` would otherwise be picked up by cmd.exe on Windows.
-    const gh = resolveCommandPath('gh', workDir);
-    if (gh === undefined) {
-      resolve(null);
-      return;
-    }
-    try {
-      execFile(
-        gh,
-        ['pr', 'view', '--json', 'number,url'],
-        {
-          cwd: workDir,
-          encoding: 'utf8',
-          env: {
-            ...process.env,
-            GH_NO_UPDATE_NOTIFIER: '1',
-            GH_PROMPT_DISABLED: '1',
-          },
-          timeout: PR_SPAWN_TIMEOUT_MS,
-          maxBuffer: 256 * 1024,
-          windowsHide: true,
-        },
-        (error, stdout) => {
-          if (error !== null) {
-            resolve(null);
-            return;
-          }
-          resolve(parsePullRequest(stdout));
-        },
-      );
-    } catch {
-      resolve(null);
-    }
-  });
+async function readPullRequest(
+  runTrackedExec: RunTrackedExecFn,
+  workDir: string,
+): Promise<PullRequestInfo | null> {
+  // Resolve gh through PATH as well — this runs with cwd = workDir, where a
+  // planted `gh.exe` would otherwise be picked up by cmd.exe on Windows.
+  const gh = resolveCommandPath('gh', workDir);
+  if (gh === undefined) return null;
+  const stdout = await runTrackedExec(
+    gh,
+    ['pr', 'view', '--json', 'number,url'],
+    {
+      cwd: workDir,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GH_NO_UPDATE_NOTIFIER: '1',
+        GH_PROMPT_DISABLED: '1',
+      },
+      timeout: PR_SPAWN_TIMEOUT_MS,
+      maxBuffer: 256 * 1024,
+      windowsHide: true,
+    },
+    PR_SPAWN_TIMEOUT_MS + HARD_TIMEOUT_GRACE_MS,
+  );
+  return stdout === null ? null : parsePullRequest(stdout);
 }
 
 function samePullRequest(a: PullRequestInfo | null, b: PullRequestInfo | null): boolean {

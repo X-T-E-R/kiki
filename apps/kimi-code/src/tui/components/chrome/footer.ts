@@ -234,6 +234,7 @@ export class FooterComponent implements Component, MouseRoutable {
 
   setState(state: AppState): void {
     if (!sameWorkDir(state.workDir, this.gitCacheWorkDir)) {
+      this.gitCache.dispose();
       this.gitCacheWorkDir = state.workDir;
       this.gitCache = createGitStatusCache(state.workDir, { onChange: this.onRefresh });
     }
@@ -615,6 +616,9 @@ export class FooterComponent implements Component, MouseRoutable {
   }
 
   dispose(): void {
+    this.gitCache.dispose();
+    this.statusLineRunner?.dispose();
+    this.statusLineRunner = null;
     if (this.goalTimer !== null) {
       clearInterval(this.goalTimer);
       this.goalTimer = null;

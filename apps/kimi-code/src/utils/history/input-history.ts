@@ -25,6 +25,7 @@ const MAX_TAIL_READ_BYTES = 512 * 1024;
 const COMPACT_CHECK_EVERY_APPENDS = 50;
 
 const appendCounts = new Map<string, number>();
+const fileQueues = new Map<string, Promise<unknown>>();
 
 export interface InputHistoryEntry {
   content: string;
@@ -38,6 +39,18 @@ function isNotFound(error: unknown): boolean {
   return (
     typeof error === 'object' && error !== null && (error as { code?: string }).code === 'ENOENT'
   );
+}
+
+function withFileLock<T>(file: string, operation: () => Promise<T>): Promise<T> {
+  const previous = fileQueues.get(file) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(operation);
+  const tracked = next.finally(() => {
+    if (fileQueues.get(file) === tracked) {
+      fileQueues.delete(file);
+    }
+  });
+  fileQueues.set(file, tracked);
+  return next;
 }
 
 async function readTailText(file: string): Promise<{ text: string; truncated: boolean } | null> {
@@ -90,13 +103,16 @@ function parseEntries(raw: string): { entries: InputHistoryEntry[]; nonEmptyLine
   return { entries, nonEmptyLineCount };
 }
 
-async function compactHistoryFile(file: string, entries: readonly InputHistoryEntry[]): Promise<void> {
+async function compactHistoryFile(
+  file: string,
+  entries: readonly InputHistoryEntry[],
+): Promise<void> {
   const serialized =
     entries.length === 0 ? '' : `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`;
   await writeTextFileAtomic(file, serialized);
 }
 
-export async function loadInputHistory(file: string): Promise<InputHistoryEntry[]> {
+async function loadInputHistoryUnlocked(file: string): Promise<InputHistoryEntry[]> {
   const tail = await readTailText(file);
   if (tail === null) return [];
 
@@ -106,10 +122,16 @@ export async function loadInputHistory(file: string): Promise<InputHistoryEntry[
       ? entries.slice(-MAX_INPUT_HISTORY_ENTRIES)
       : entries;
 
-  if (tail.truncated || nonEmptyLineCount > COMPACT_THRESHOLD_ENTRIES) {
+  const shouldCompact =
+    (tail.truncated && bounded.length > 0) || nonEmptyLineCount > COMPACT_THRESHOLD_ENTRIES;
+  if (shouldCompact) {
     await compactHistoryFile(file, bounded).catch(() => {});
   }
   return bounded;
+}
+
+export async function loadInputHistory(file: string): Promise<InputHistoryEntry[]> {
+  return withFileLock(file, () => loadInputHistoryUnlocked(file));
 }
 
 /**
@@ -124,22 +146,24 @@ export async function appendInputHistory(
   const content = text.trim();
   if (content.length === 0) return false;
   if (content === lastContent) return false;
-  await appendJsonlLine(file, InputHistoryEntrySchema, { content });
+  return withFileLock(file, async () => {
+    await appendJsonlLine(file, InputHistoryEntrySchema, { content });
 
-  const nextCount = (appendCounts.get(file) ?? 0) + 1;
-  if (nextCount >= COMPACT_CHECK_EVERY_APPENDS) {
-    appendCounts.set(file, 0);
-    await maybeCompactAfterAppend(file).catch(() => {});
-  } else {
-    appendCounts.set(file, nextCount);
-  }
-  return true;
+    const nextCount = (appendCounts.get(file) ?? 0) + 1;
+    if (nextCount >= COMPACT_CHECK_EVERY_APPENDS) {
+      appendCounts.set(file, 0);
+      await maybeCompactAfterAppendUnlocked(file).catch(() => {});
+    } else {
+      appendCounts.set(file, nextCount);
+    }
+    return true;
+  });
 }
 
-async function maybeCompactAfterAppend(file: string): Promise<void> {
+async function maybeCompactAfterAppendUnlocked(file: string): Promise<void> {
   const info = await stat(file);
   if (info.size > MAX_TAIL_READ_BYTES) {
-    await loadInputHistory(file);
+    await loadInputHistoryUnlocked(file);
     return;
   }
   const tail = await readTailText(file);

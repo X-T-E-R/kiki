@@ -1937,9 +1937,9 @@ fn main_home_dir() -> Result<PathBuf, String> {
 
 static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn backup_corrupt_json_file(path: &Path, error: &serde_json::Error) {
+fn backup_corrupt_json_file(path: &Path, reason: &str) -> Result<(), String> {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return;
+        return Err(format!("Cannot derive filename for corrupt {}", path.display()));
     };
     let ts = unix_epoch_millis().unwrap_or(0);
     let mut backup = path.with_file_name(format!("{file_name}.corrupt-{ts}"));
@@ -1948,37 +1948,51 @@ fn backup_corrupt_json_file(path: &Path, error: &serde_json::Error) {
         backup = path.with_file_name(format!("{file_name}.corrupt-{ts}-{seq}"));
     }
     match fs::rename(path, &backup) {
-        Ok(()) => eprintln!(
-            "[desktop] backed up corrupt {} to {} ({error})",
-            path.display(),
-            backup.display()
-        ),
-        Err(rename_err) if rename_err.kind() == io::ErrorKind::NotFound => {}
-        Err(rename_err) => eprintln!(
-            "[desktop] failed to back up corrupt {}: {rename_err} (parse error: {error})",
-            path.display()
-        ),
+        Ok(()) => {
+            eprintln!(
+                "[desktop] backed up corrupt {} to {} ({reason})",
+                path.display(),
+                backup.display()
+            );
+            Ok(())
+        }
+        Err(rename_err) if rename_err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(rename_err) => {
+            eprintln!(
+                "[desktop] failed to back up corrupt {}: {rename_err} ({reason})",
+                path.display()
+            );
+            Err(format!("Failed to back up corrupt {}: {rename_err}", path.display()))
+        }
     }
 }
 
-fn read_main_desktop_prefs(main: &Path) -> DesktopPrefs {
+fn read_main_desktop_prefs_strict(main: &Path) -> Result<DesktopPrefs, String> {
     let path = main.join("desktop.json");
     match fs::read_to_string(&path) {
         Ok(raw) => match serde_json::from_str(&raw) {
-            Ok(prefs) => return prefs,
+            Ok(prefs) => return Ok(prefs),
             Err(error) => {
-                backup_corrupt_json_file(&path, &error);
-                return DesktopPrefs::default();
+                backup_corrupt_json_file(&path, &error.to_string())?;
+                return Ok(DesktopPrefs::default());
             }
         },
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => return DesktopPrefs::default(),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            backup_corrupt_json_file(&path, &error.to_string())?;
+            return Ok(DesktopPrefs::default());
+        }
+        Err(error) => return Err(format!("Failed to read {}: {error}", path.display())),
     }
     let legacy = kimi_home_dir().ok().map(|home| home.join("kiki").join("desktop.json"));
-    match legacy.and_then(|legacy_path| fs::read_to_string(legacy_path).ok()) {
+    Ok(match legacy.and_then(|legacy_path| fs::read_to_string(legacy_path).ok()) {
         Some(raw) => serde_json::from_str(&raw).unwrap_or_default(),
         None => DesktopPrefs::default(),
-    }
+    })
+}
+
+fn read_main_desktop_prefs(main: &Path) -> DesktopPrefs {
+    read_main_desktop_prefs_strict(main).unwrap_or_default()
 }
 
 fn read_desktop_prefs_for(home: &Path) -> DesktopPrefs {
@@ -1992,8 +2006,8 @@ fn read_desktop_prefs_for(home: &Path) -> DesktopPrefs {
         return prefs;
     }
     let child_path = home.join("desktop.json");
-    if let Ok(raw) = fs::read_to_string(&child_path) {
-        match serde_json::from_str::<DesktopPrefsPatch>(&raw) {
+    match fs::read_to_string(&child_path) {
+        Ok(raw) => match serde_json::from_str::<DesktopPrefsPatch>(&raw) {
             Ok(override_prefs) => {
                 prefs.notifications = override_prefs.notifications.unwrap_or(prefs.notifications);
                 prefs.close_to_tray = override_prefs.close_to_tray.unwrap_or(prefs.close_to_tray);
@@ -2001,8 +2015,14 @@ fn read_desktop_prefs_for(home: &Path) -> DesktopPrefs {
                 prefs.log_level = override_prefs.log_level.unwrap_or(prefs.log_level);
                 prefs.compatibility = override_prefs.compatibility.unwrap_or(prefs.compatibility);
             }
-            Err(error) => backup_corrupt_json_file(&child_path, &error),
+            Err(error) => {
+                let _ = backup_corrupt_json_file(&child_path, &error.to_string());
+            }
+        },
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            let _ = backup_corrupt_json_file(&child_path, &error.to_string());
         }
+        Err(_) => {}
     }
     if read_desktop_space(home).ok().flatten().is_some_and(|space| !space.credentials_shared) {
         prefs.compatibility = CompatibilitySettings { home_kind: CompatibilityHomeKind::Kiki, custom_home: None };
@@ -2065,7 +2085,7 @@ fn write_desktop_prefs_file(home: &Path, patch: &DesktopPrefsPatch) -> Result<()
     let _write = DESKTOP_PREFS_WRITE_LOCK.lock().map_err(|_| "Desktop preferences lock was poisoned")?;
     let main = main_home_for(home)?;
     if home == main {
-        let prefs = apply_desktop_prefs_patch(read_main_desktop_prefs(&main), patch);
+        let prefs = apply_desktop_prefs_patch(read_main_desktop_prefs_strict(&main)?, patch);
         return write_json_file(&main.join("desktop.json"), &prefs);
     }
     let path = home.join("desktop.json");
@@ -2073,11 +2093,16 @@ fn write_desktop_prefs_file(home: &Path, patch: &DesktopPrefsPatch) -> Result<()
         Ok(raw) => match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw) {
             Ok(map) => map,
             Err(error) => {
-                backup_corrupt_json_file(&path, &error);
+                backup_corrupt_json_file(&path, &error.to_string())?;
                 serde_json::Map::new()
             }
         },
-        Err(_) => serde_json::Map::new(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            backup_corrupt_json_file(&path, &error.to_string())?;
+            serde_json::Map::new()
+        }
+        Err(error) => return Err(format!("Failed to read {}: {error}", path.display())),
     };
     if let Some(value) = patch.notifications { child.insert("notifications".to_string(), value.into()); }
     if let Some(value) = patch.close_to_tray { child.insert("closeToTray".to_string(), value.into()); }
@@ -2088,7 +2113,7 @@ fn write_desktop_prefs_file(home: &Path, patch: &DesktopPrefsPatch) -> Result<()
         write_json_file(&path, &child)?;
     }
     if patch.window_mode.is_some() || patch.update_channel.is_some() || patch.auto_update.is_some() || patch.update_state.is_some() {
-        let mut main_prefs = read_main_desktop_prefs(&main);
+        let mut main_prefs = read_main_desktop_prefs_strict(&main)?;
         main_prefs.window_mode = patch.window_mode.unwrap_or(main_prefs.window_mode);
         main_prefs.update_channel = patch.update_channel.unwrap_or(main_prefs.update_channel);
         main_prefs.auto_update = patch.auto_update.unwrap_or(main_prefs.auto_update);

@@ -95,4 +95,27 @@ describe('input-history', () => {
     expect(compactedLines).toHaveLength(100);
     expect(JSON.parse(compactedLines[0]!)).toEqual({ content: 'cmd-150' });
   });
+
+  it('does not wipe history when a single trailing entry exceeds the tail read window', async () => {
+    const hugeContent = 'x'.repeat(600 * 1024);
+    const payload = `${JSON.stringify({ content: hugeContent })}\n`;
+    writeFileSync(file, payload, 'utf-8');
+
+    const entries = await loadInputHistory(file);
+    expect(entries).toEqual([]);
+    expect(readFileSync(file, 'utf-8')).toBe(payload);
+  });
+
+  it('serializes concurrent load compaction and append so new entries are never clobbered', async () => {
+    const lines = Array.from({ length: 240 }, (_, i) => JSON.stringify({ content: `old-${i}` }));
+    writeFileSync(file, `${lines.join('\n')}\n`, 'utf-8');
+
+    await Promise.all([
+      loadInputHistory(file),
+      appendInputHistory(file, 'concurrent-new-entry'),
+    ]);
+
+    const reloaded = await loadInputHistory(file);
+    expect(reloaded.at(-1)).toEqual({ content: 'concurrent-new-entry' });
+  });
 });

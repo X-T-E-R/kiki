@@ -338,4 +338,91 @@ describe('git status cache', () => {
     expect(linked).toContain('\u001B]8;;https://github.com/acme/repo/pull/12\u0007');
     expect(linked).toContain('\u001B]8;;\u0007');
   });
+
+  it('dispose kills active child processes and suppresses follow-up spawns and onChange', async () => {
+    const onChange = vi.fn();
+    const kill = vi.fn(() => true);
+    let finishProbe!: (error: Error | null, stdout: string, stderr: string) => void;
+    mocks.execFile.mockImplementationOnce(
+      (
+        _cmd: string,
+        _args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        finishProbe = callback;
+        return { kill };
+      },
+    );
+
+    const cache = createGitStatusCache('/tmp/repo', { onChange });
+    expect(cache.getStatus()).toBeNull();
+    expect(mocks.execFile).toHaveBeenCalledTimes(1);
+
+    cache.dispose();
+    expect(kill).toHaveBeenCalledWith('SIGKILL');
+
+    finishProbe(null, 'true\n', '');
+    await flushMicrotasks();
+
+    expect(mocks.execFile).toHaveBeenCalledTimes(1);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(cache.getStatus()).toBeNull();
+  });
+
+  it('hard-timeout kills hung child processes and unblocks subsequent refreshes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-24T00:00:00Z'));
+    const kill = vi.fn(() => true);
+    let branchCalls = 0;
+    mocks.execFile.mockImplementation(
+      (
+        cmd: string,
+        args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (cmd.endsWith('/gh')) {
+          callback(new Error('no pr'), '', '');
+          return;
+        }
+        if (args.includes('rev-parse')) {
+          callback(null, 'true\n', '');
+          return;
+        }
+        if (args.includes('branch')) {
+          branchCalls += 1;
+          if (branchCalls === 1) {
+            // Simulate a hung child whose execFile callback never fires.
+            return { kill };
+          }
+          callback(null, 'recovered-branch\n', '');
+          return;
+        }
+        if (args.includes('status')) {
+          callback(null, '## recovered-branch\n', '');
+          return;
+        }
+        callback(new Error('unexpected'), '', '');
+      },
+    );
+
+    const cache = createGitStatusCache('/tmp/repo');
+    cache.getStatus();
+    await flushMicrotasks();
+    expect(branchCalls).toBe(1);
+    expect(cache.getStatus()).toBeNull();
+
+    // Advance past the hard timeout grace window so the hung child is killed and settled.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(kill).toHaveBeenCalledWith('SIGKILL');
+
+    // After BRANCH_TTL_MS, a new refresh succeeds instead of staying wedged forever.
+    await vi.advanceTimersByTimeAsync(5_500);
+    cache.getStatus();
+    await flushMicrotasks();
+
+    expect(branchCalls).toBe(2);
+    expect(cache.getStatus()?.branch).toBe('recovered-branch');
+  });
 });

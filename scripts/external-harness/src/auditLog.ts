@@ -111,22 +111,20 @@ export async function readAuditFile(
     });
     stream.on('end', () => {
       try {
-        if (carry.length > 0) {
-          const trimmed = carry.trim();
-          if (trimmed.length > 0) {
-            if (pendingMalformed !== undefined) {
-              throw pendingMalformed.error;
-            }
-            try {
-              const parsed = JSON.parse(trimmed) as AuditRecord;
-              pushRecord(parsed);
-              hadTruncatedTail = true;
-              truncateToOffset = info.size;
-            } catch {
-              hadTruncatedTail = true;
-              truncateToOffset = validByteOffset;
-              warn(`Ignoring incomplete trailing audit record in ${auditPath}`);
-            }
+        const trimmedCarry = carry.trim();
+        if (trimmedCarry.length > 0) {
+          if (pendingMalformed !== undefined) {
+            throw pendingMalformed.error;
+          }
+          try {
+            const parsed = JSON.parse(trimmedCarry) as AuditRecord;
+            pushRecord(parsed);
+            hadTruncatedTail = true;
+            truncateToOffset = info.size;
+          } catch {
+            hadTruncatedTail = true;
+            truncateToOffset = validByteOffset;
+            warn(`Ignoring incomplete trailing audit record in ${auditPath}`);
           }
         } else if (pendingMalformed !== undefined) {
           hadTruncatedTail = true;

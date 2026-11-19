@@ -147,17 +147,26 @@ export function getTuiConfigPath(): string {
   return join(getDataDir(), 'tui.toml');
 }
 
+function isNotFound(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+}
+
 export async function loadTuiConfig(
   filePath: string = getTuiConfigPath(),
   warn?: (message: string) => void,
 ): Promise<TuiConfig> {
-  if (!existsSync(filePath)) {
-    await saveTuiConfig(DEFAULT_TUI_CONFIG, filePath);
-    return DEFAULT_TUI_CONFIG;
+  let text: string;
+  try {
+    text = await readFile(filePath, 'utf-8');
+  } catch (error) {
+    if (isNotFound(error)) {
+      await saveTuiConfig(DEFAULT_TUI_CONFIG, filePath);
+      return DEFAULT_TUI_CONFIG;
+    }
+    throw error;
   }
 
   try {
-    const text = await readFile(filePath, 'utf-8');
     return parseTuiConfig(text, warn);
   } catch {
     throw new TuiConfigParseError(DEFAULT_TUI_CONFIG);
@@ -189,10 +198,17 @@ export async function saveTuiConfig(
   config: TuiConfig,
   filePath: string = getTuiConfigPath(),
 ): Promise<void> {
-  if (existsSync(filePath)) {
+  let existingText: string | undefined;
+  try {
+    existingText = await readFile(filePath, 'utf-8');
+  } catch (error) {
+    if (!isNotFound(error)) {
+      throw error;
+    }
+  }
+  if (existingText !== undefined) {
     let existingValid = true;
     try {
-      const existingText = await readFile(filePath, 'utf-8');
       parseTuiConfig(existingText, () => {});
     } catch {
       existingValid = false;

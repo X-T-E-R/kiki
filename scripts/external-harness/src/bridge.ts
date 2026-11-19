@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFile, mkdir, open, readFile, unlink } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -97,6 +97,7 @@ export class AgyBridge {
   spawnProcess: SpawnProcessFn;
   sessions: Map<string, AgySession>;
   private readonly auditBytes = new Map<string, number>();
+  private readonly auditNextCompactAt = new Map<string, number>();
   private readonly auditChains = new Map<string, Promise<void>>();
   private prunedAuditDir = false;
   modelChoices?: string[];
@@ -142,6 +143,11 @@ export class AgyBridge {
     this.sessions = new Map();
   }
 
+  private nextAuditCompactThreshold(bytes: number): number {
+    const growthStep = Math.max(1024, Math.floor(this.auditMaxBytes / 2));
+    return Math.max(this.auditMaxBytes, bytes + growthStep);
+  }
+
   async audit(
     session: { id: string },
     type: string,
@@ -160,13 +166,27 @@ export class AgyBridge {
           this.prunedAuditDir = true;
           void pruneExpiredAuditFiles(auditDir).catch(() => {});
         }
+        let knownBytes = this.auditBytes.get(session.id);
+        if (knownBytes === undefined) {
+          const existingSize = (await stat(auditPath).catch(() => undefined))?.size ?? 0;
+          knownBytes = existingSize;
+          if (!this.auditNextCompactAt.has(session.id)) {
+            const initialThreshold =
+              this.auditMaxBytes > 0 && existingSize >= this.auditMaxBytes
+                ? this.nextAuditCompactThreshold(existingSize)
+                : this.auditMaxBytes;
+            this.auditNextCompactAt.set(session.id, initialThreshold);
+          }
+        }
         await appendFile(auditPath, line);
-        const written = (this.auditBytes.get(session.id) ?? 0) + Buffer.byteLength(line, 'utf8');
-        if (this.auditMaxBytes > 0 && written >= this.auditMaxBytes) {
+        const written = knownBytes + Buffer.byteLength(line, 'utf8');
+        const compactAt = this.auditNextCompactAt.get(session.id) ?? this.auditMaxBytes;
+        if (this.auditMaxBytes > 0 && written >= compactAt) {
           const compactedBytes = await compactAuditFile(auditPath, {
             maxBytes: this.auditMaxBytes,
           });
           this.auditBytes.set(session.id, compactedBytes);
+          this.auditNextCompactAt.set(session.id, this.nextAuditCompactThreshold(compactedBytes));
         } else {
           this.auditBytes.set(session.id, written);
         }
