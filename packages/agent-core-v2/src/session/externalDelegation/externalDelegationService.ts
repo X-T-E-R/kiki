@@ -1732,20 +1732,11 @@ function boundedTextCursor(value: string, rawCursor: number | undefined): number
   if (
     cursor > 0 &&
     cursor < value.length &&
-    isHighSurrogate(value.codePointAt(cursor - 1)) &&
-    isLowSurrogate(value.codePointAt(cursor))
+    (value.codePointAt(cursor - 1) ?? 0) > 0xffff
   ) {
     throw invalid('cursor is invalid.');
   }
   return cursor;
-}
-
-function isHighSurrogate(value: number): boolean {
-  return value >= 0xd800 && value <= 0xdbff;
-}
-
-function isLowSurrogate(value: number): boolean {
-  return value >= 0xdc00 && value <= 0xdfff;
 }
 
 function boundedLimit(
