@@ -1,8 +1,7 @@
 import type { Scope } from '@kiki/agent-core-v2';
 
 import { requestLog } from '../lib/requestLog';
-import { okEnvelope } from '../protocol/envelope';
-import { ErrorCode } from '../protocol/error-codes';
+import { okEnvelope, ErrorCode } from '@kiki/protocol';
 import type { ScopeKind } from './channel';
 import {
   type ChannelDescriptor,

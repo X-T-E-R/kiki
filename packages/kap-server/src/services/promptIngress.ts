@@ -7,7 +7,7 @@ import {
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
 import { fileNotFoundError } from '@kiki/agent-core-v2/app/file/fileService';
 import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
-import type { PromptItem, PromptSubmission, PromptSubmitResult, PromptSubmitReceipt } from '../protocol/rest-prompt';
+import type { PromptItem, PromptSubmission, PromptSubmitResult, PromptSubmitReceipt } from '@kiki/protocol';
 import { assertPromptFileRefs, sessionPromptFiles } from '../lib/promptMedia';
 import { mapError } from '../transport/errors';
 import type { RestoreProgress } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';

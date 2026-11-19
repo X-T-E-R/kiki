@@ -3,13 +3,19 @@ import { join } from 'node:path';
 import { IBootstrapService, IConfigRegistry, IConfigService, ILogService, type Scope } from '@kiki/agent-core-v2';
 import { readSpaceHome } from '@kiki/agent-core-v2/app/bootstrap/spaceHome';
 import {
-  spaceDetailParamsSchema, spaceDetailSchema, spacePlanRequestSchema, spacePreviewSchema,
-  spaceApplyRequestSchema, spaceMutationResponseSchema, spacePreferenceImportSchema,
-  spacePreferenceImportResponseSchema, spaceUndoRequestSchema,
+  spaceDetailParamsSchema,
+  spaceDetailSchema,
+  spacePlanRequestSchema,
+  spacePreviewSchema,
+  spaceApplyRequestSchema,
+  spaceMutationResponseSchema,
+  spacePreferenceImportSchema,
+  spacePreferenceImportResponseSchema,
+  spaceUndoRequestSchema,
+  ErrorCode,
 } from '@kiki/protocol';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { SpacePreferencesStore } from '../services/spacePreferences/store';
 
 function pathIdentity(value: string): string {

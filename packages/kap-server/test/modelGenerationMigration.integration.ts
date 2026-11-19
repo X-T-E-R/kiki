@@ -4,9 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { IConfigService, type Scope } from '@kiki/agent-core-v2';
-import { modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema } from '@kiki/protocol';
+import { modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, ErrorCode } from '@kiki/protocol';
 
-import { ErrorCode } from '../src/protocol/error-codes';
 import { registerConfigRoutes } from '../src/routes/config';
 import { startServer, type RunningServer } from '../src/start';
 import { authedFetch } from './helpers/auth';

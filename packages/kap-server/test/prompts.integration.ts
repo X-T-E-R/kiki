@@ -56,8 +56,7 @@ import {
   queuedPromptPreviews,
 } from '../../session-core/src/session/transcript';
 import { describe, expect, it, vi } from 'vitest';
-import { ErrorCode } from '../src/protocol/error-codes';
-import { modelSwitchActionSchema } from '../src/protocol/rest-model-switch';
+import { ErrorCode, modelSwitchActionSchema } from '@kiki/protocol';
 import { bearerToken } from './helpers/auth';
 import {
   type PromptItemWire,

@@ -24,7 +24,7 @@ import {
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { projectTurnPlans, type PlanInfo } from '../services/transcript/planProjection';

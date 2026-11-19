@@ -22,7 +22,7 @@ import { PeerBridgeConnection, type PeerBridgeRegistry } from './peerBridgeSocke
 import { peerAudience, isPeerFrameAllowed, isPeerProcedureAllowed, isWebProcedureAllowed, projectPeerBusEvent } from '../../services/connections/audience';
 import { webPrincipal } from '../../services/webAccess';
 import { BROKER_WS_BUFFER_BYTES, BROKER_WS_MESSAGE_BYTES } from '../../services/connections/manager';
-import { okEnvelope } from '../../protocol/envelope';
+import { okEnvelope } from '@kiki/protocol';
 import { selectWsBearerProtocol } from '../ws/bearerProtocol';
 import { registerSessionViewHttp, SessionViewHttpConnection, type SessionViewHttpOptions } from './sessionViewHttp';
 

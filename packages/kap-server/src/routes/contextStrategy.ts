@@ -1,12 +1,11 @@
 import { IAgentFullCompactionService, IAgentLifecycleService, IConfigService, MAIN_AGENT_ID, type Scope } from '@kiki/agent-core-v2';
 import type { LoopControl } from '@kiki/agent-core-v2/agent/loop/configSection';
-import { contextStrategyStatusSchema, contextStrategyWriteSchema } from '@kiki/protocol';
+import { contextStrategyStatusSchema, contextStrategyWriteSchema, ErrorCode } from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { readAgentObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { readPersistedContextStrategy } from './persistedCompactionSettings';
 

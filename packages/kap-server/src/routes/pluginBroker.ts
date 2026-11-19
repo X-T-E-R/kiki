@@ -17,17 +17,12 @@ import {
   type PluginHttpRouteResult,
   type Scope,
 } from '@kiki/agent-core-v2';
-import {
-  pluginHttpRouteDescriptorSchema,
-  type PluginGuiSlotContribution,
-  type PluginHttpRouteDescriptor,
-} from '@kiki/protocol';
+import { pluginHttpRouteDescriptorSchema, ErrorCode, type PluginGuiSlotContribution, type PluginHttpRouteDescriptor } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { ErrorCode } from '../protocol/error-codes';
 import {
   listPluginGuiSlotsResponseSchema,
   pluginBrokerRouteParamsSchema,

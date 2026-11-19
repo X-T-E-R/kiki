@@ -23,11 +23,13 @@ import { readColdSessionAdditionalDirs } from './fs';
 import { openSessionMedia } from './sessionMedia';
 import { RuntimeWorkspaceView } from '@kiki/agent-core-v2/runtime/runtimeWorkspaceView';
 import { IHostProcessService } from '@kiki/agent-core-v2/os/interface/hostProcess';
-import type { DocumentPreviewRequest, DocumentPreviewResponse } from '@kiki/protocol';
 import {
   documentPreviewAssetParamsSchema,
   documentPreviewRequestSchema,
   documentPreviewResponseSchema,
+  ErrorCode,
+  type DocumentPreviewRequest,
+  type DocumentPreviewResponse,
 } from '@kiki/protocol';
 import { z } from 'zod';
 
@@ -37,7 +39,6 @@ import { acquireSessionOperation } from '../lib/sessionOperationLease';
 import { authenticatedAuthorization } from '../middleware/auth';
 import { defineRoute } from '../middleware/defineRoute';
 import { peerAudience } from '../services/connections/audience';
-import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import {
   officePageCount,

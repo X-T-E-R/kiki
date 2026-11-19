@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 import {
   ErrorCodes,
   IFileSystemStorageService,
@@ -63,12 +64,7 @@ import { requestLog } from '../lib/requestLog';
 import { acquireSessionOperation, createDeferredCleanup, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { ErrorCode } from '../protocol/error-codes';
-import {
-  fsOpenInRequestSchema,
-  fsOpenRequestSchema,
-  fsRevealRequestSchema,
-} from '../protocol/rest-fs';
+import { ErrorCode, fsOpenInRequestSchema, fsOpenRequestSchema, fsRevealRequestSchema } from '@kiki/protocol';
 
 const noRuntimeWorktrees = {
   forPath: async () => undefined,
@@ -931,74 +927,32 @@ async function handleOpenIn(fs: IWorkspaceFsService, sessionId: string, req: Req
   reply.send(okEnvelope({ opened: true as const }, req.id));
 }
 
+const FS_ERROR_SPEC: MappedErrorSpec = {
+  admission: true,
+  omitStackCodes: new Set<string>([ErrorCodes.VALIDATION_FAILED]),
+  codes: {
+    [ErrorCodes.VALIDATION_FAILED]: ErrorCode.VALIDATION_FAILED,
+    [ErrorCodes.FS_PATH_ESCAPES]: ErrorCode.FS_PATH_ESCAPES_SESSION,
+    [ErrorCodes.FS_PATH_NOT_FOUND]: ErrorCode.FS_PATH_NOT_FOUND,
+    [ErrorCodes.FS_IS_DIRECTORY]: ErrorCode.FS_IS_DIRECTORY,
+    [ErrorCodes.FS_ALREADY_EXISTS]: ErrorCode.FS_ALREADY_EXISTS,
+    [ErrorCodes.FS_IS_BINARY]: ErrorCode.FS_IS_BINARY,
+    [ErrorCodes.FS_TOO_LARGE]: ErrorCode.FS_TOO_LARGE,
+    [ErrorCodes.FS_TOO_MANY_RESULTS]: ErrorCode.FS_TOO_MANY_RESULTS,
+    [ErrorCodes.FS_GREP_TIMEOUT]: ErrorCode.FS_GREP_TIMEOUT,
+    [ErrorCodes.FS_GIT_UNAVAILABLE]: ErrorCode.FS_GIT_UNAVAILABLE,
+    [ErrorCodes.SESSION_NOT_FOUND]: ErrorCode.SESSION_NOT_FOUND,
+    [ErrorCodes.OS_FS_NOT_FOUND]: ErrorCode.FS_PATH_NOT_FOUND,
+    [ErrorCodes.OS_FS_NOT_DIRECTORY]: ErrorCode.FS_PATH_NOT_FOUND,
+    [ErrorCodes.OS_FS_IS_DIRECTORY]: ErrorCode.FS_IS_DIRECTORY,
+    [ErrorCodes.OS_FS_ALREADY_EXISTS]: ErrorCode.FS_ALREADY_EXISTS,
+    [ErrorCodes.OS_FS_PERMISSION_DENIED]: ErrorCode.FS_PERMISSION_DENIED,
+  },
+  fallback: { logMessage: 'fs request failed' },
+};
+
 function sendMappedError(reply: Reply, req: { id: string }, err: unknown): void {
-  const requestId = req.id;
-  if (err instanceof AdmissionError) {
-    const payload = errEnvelope(40301, err.reason, requestId);
-    if (reply.code !== undefined) reply.code(err.status).send(payload);
-    else reply.send(payload);
-    return;
-  }
-  const log = requestLog(req);
-  if (isError2(err)) {
-    switch (err.code) {
-      case ErrorCodes.VALIDATION_FAILED:
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId));
-        return;
-      case ErrorCodes.FS_PATH_ESCAPES:
-        reply.send(errEnvelope(ErrorCode.FS_PATH_ESCAPES_SESSION, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_PATH_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_IS_DIRECTORY:
-        reply.send(errEnvelope(ErrorCode.FS_IS_DIRECTORY, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_ALREADY_EXISTS:
-        reply.send(errEnvelope(ErrorCode.FS_ALREADY_EXISTS, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_IS_BINARY:
-        reply.send(errEnvelope(ErrorCode.FS_IS_BINARY, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_TOO_LARGE:
-        reply.send(errEnvelope(ErrorCode.FS_TOO_LARGE, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_TOO_MANY_RESULTS:
-        reply.send(errEnvelope(ErrorCode.FS_TOO_MANY_RESULTS, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_GREP_TIMEOUT:
-        reply.send(errEnvelope(ErrorCode.FS_GREP_TIMEOUT, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_GIT_UNAVAILABLE:
-        reply.send(errEnvelope(ErrorCode.FS_GIT_UNAVAILABLE, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.SESSION_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.OS_FS_NOT_FOUND:
-      case ErrorCodes.OS_FS_NOT_DIRECTORY:
-        reply.send(errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.OS_FS_IS_DIRECTORY:
-        reply.send(errEnvelope(ErrorCode.FS_IS_DIRECTORY, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.OS_FS_ALREADY_EXISTS:
-        reply.send(errEnvelope(ErrorCode.FS_ALREADY_EXISTS, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.OS_FS_PERMISSION_DENIED:
-        reply.send(errEnvelope(ErrorCode.FS_PERMISSION_DENIED, err.message, requestId, err.stack));
-        return;
-    }
-  }
-  log?.error({ err }, 'fs request failed');
-  reply.send(
-    errEnvelope(
-      ErrorCode.INTERNAL_ERROR,
-      err instanceof Error ? err.message : String(err),
-      requestId,
-      err instanceof Error ? err.stack : undefined,
-    ),
-  );
+  dispatchMappedError(reply, req, err, FS_ERROR_SPEC);
 }
 
 function buildValidationEnvelope(

@@ -19,7 +19,7 @@ import {
   oauthLoginQuerySchema,
   oauthLoginStartRequestSchema,
   oauthLogoutRequestSchema,
-} from '../protocol/rest-oauth';
+} from '@kiki/protocol';
 
 interface RouteHost {
   get(

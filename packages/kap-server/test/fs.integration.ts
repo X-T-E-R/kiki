@@ -6,7 +6,7 @@ import { IAgentLifecycleService, IAgentTaskService, IModelCatalog, ISessionManag
 import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
 import { HostFileSystem } from '@kiki/agent-core-v2/os/backends/node-local/hostFsService';
 import { FakeRuntime } from '@kiki/agent-core-v2/runtime/fakeRuntime';
-import { ErrorCode } from '../src/protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

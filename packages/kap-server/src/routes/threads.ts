@@ -13,8 +13,8 @@ import {
 
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  ErrorCode,
   listThreadMessagesQuerySchema,
   listThreadMessagesResponseSchema,
   listThreadsQuerySchema,
@@ -28,8 +28,8 @@ import {
   threadWorkspaceParamSchema,
   waitThreadsRequestSchema,
   waitThreadsResponseSchema,
-} from '../protocol/rest-thread';
-import type { ThreadRef as ThreadRefWire } from '../protocol/thread';
+  type ThreadRef as ThreadRefWire,
+} from '@kiki/protocol';
 import { mapError } from '../transport/errors';
 
 interface AbortEvents {

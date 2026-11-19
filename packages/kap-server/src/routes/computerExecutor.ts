@@ -8,11 +8,11 @@ import {
   windowsMcpEnvironmentResponseSchema,
   windowsMcpRegisterRequestSchema,
   windowsMcpRegisterResponseSchema,
+  ErrorCode,
 } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 
 interface ComputerExecutorRouteHost {
   get(

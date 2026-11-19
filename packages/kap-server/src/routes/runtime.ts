@@ -11,13 +11,13 @@ import { RuntimeError } from '@kiki/agent-core-v2/runtime/runtimeRegistry';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  ErrorCode,
   runtimeBindingResponseSchema,
   sessionRuntimeParamsSchema,
   switchRuntimeRequestSchema,
   type RuntimeBindingResponse,
-} from '../protocol/rest-runtime';
+} from '@kiki/protocol';
 import { readPersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
 import { readSessionObserver } from '../lib/sessionObserver';
 import { ensureMainAgent } from '../transport/mainAgent';

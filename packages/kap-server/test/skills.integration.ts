@@ -20,7 +20,7 @@ import {
   activateSkillResultSchema,
   builtinSkillContentResponseSchema,
   listSkillsResponseSchema,
-} from '../src/protocol/rest-skill';
+} from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

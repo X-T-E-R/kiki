@@ -27,6 +27,7 @@ import {
 } from '@kiki/agent-core-v2/_base/utils/fileMeta';
 import { classifyTextSample } from '@kiki/agent-core-v2/_base/text/encoding';
 import { z } from 'zod';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
@@ -34,8 +35,7 @@ import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
 import { validateQuery } from '../middleware/validate';
 import { openApiDocumentJsonSchema } from '../middleware/schema';
-import { envelopeSchema } from '../protocol/envelope';
-import { ErrorCode } from '../protocol/error-codes';
+import { envelopeSchema, ErrorCode } from '@kiki/protocol';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
 
@@ -420,22 +420,28 @@ function sendOsFsError(
   throw err;
 }
 
+const WORKSPACE_FS_ERROR_SPEC: MappedErrorSpec = {
+  custom: (err, requestId, reply) => {
+    if (err instanceof HostFolderNotAbsoluteError) {
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
+      return true;
+    }
+    if (err instanceof HostFolderNotFoundError) {
+      reply.send(errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, err.message, requestId, err.stack));
+      return true;
+    }
+    if (err instanceof HostFolderPermissionError) {
+      reply.send(errEnvelope(ErrorCode.FS_PERMISSION_DENIED, err.message, requestId, err.stack));
+      return true;
+    }
+    return false;
+  },
+};
+
 function sendMappedError(
   reply: { send(payload: unknown): unknown },
   requestId: string,
   err: unknown,
 ): void {
-  if (err instanceof HostFolderNotAbsoluteError) {
-    reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
-    return;
-  }
-  if (err instanceof HostFolderNotFoundError) {
-    reply.send(errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, err.message, requestId, err.stack));
-    return;
-  }
-  if (err instanceof HostFolderPermissionError) {
-    reply.send(errEnvelope(ErrorCode.FS_PERMISSION_DENIED, err.message, requestId, err.stack));
-    return;
-  }
-  throw err;
+  dispatchMappedError(reply, requestId, err, WORKSPACE_FS_ERROR_SPEC);
 }

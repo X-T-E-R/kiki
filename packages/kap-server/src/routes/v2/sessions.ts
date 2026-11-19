@@ -15,8 +15,7 @@ import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';
 import { withReplyCloseSignal } from '../../procedures/requestSignal';
-import { errEnvelope, okEnvelope } from '../../protocol/envelope';
-import { ErrorCode } from '../../protocol/error-codes';
+import { errEnvelope, okEnvelope, ErrorCode } from '@kiki/protocol';
 import { resolveSessionFacts, type SessionFacts } from '../sessions';
 import { resolveSessionPersonaId } from '../sessionPersona';
 

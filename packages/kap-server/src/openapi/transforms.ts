@@ -35,13 +35,11 @@ import {
   fsOpenResponseSchema,
   fsRevealRequestSchema,
   fsRevealResponseSchema,
-} from '../protocol/rest-fs';
-import {
   questionDismissResultSchema,
   questionResolveRequestSchema,
   questionResolveResultSchema,
-} from '../protocol/rest-question';
-import { archiveSessionResponseSchema } from '../protocol/rest-session';
+  archiveSessionResponseSchema,
+} from '@kiki/protocol';
 
 const binarySchema = {
   type: 'string',

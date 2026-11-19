@@ -43,14 +43,19 @@ import {
   type Scope,
   type SessionApprovalRequest,
 } from '@kiki/agent-core-v2';
-import { messageContentSchema, type AsrTranscribeInput, type ImProviderKind, type MessageContent } from '@kiki/protocol';
+import {
+  messageContentSchema,
+  type AsrTranscribeInput,
+  type ImProviderKind,
+  type MessageContent,
+  type PromptSubmission,
+} from '@kiki/protocol';
 import type { IAgentScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
 import { promptIdentityKey } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { SEND_MESSAGE_SECTION, type SendMessageConfig } from '@kiki/agent-core-v2/agent/tools/message/configSection';
 import type { ImBinding, ImMessageMetadata, ImPolicy } from '@nb-corp/im-bridge-core/imSession';
 import { createSafeHttpTransport } from '@nb-corp/nb-im';
-import type { PromptSubmission } from '../../protocol/rest-prompt';
 
 import { IUserMessageRouter } from '@kiki/agent-core-v2/app/bot/messageRouting';
 import { IImMessageHistoryReader } from '@kiki/agent-core-v2/app/bot/imMessageHistory';

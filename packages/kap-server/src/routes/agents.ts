@@ -8,13 +8,17 @@ import { projectHookInspection, readPersistedHookInspection } from '@kiki/agent-
 import { loadWorkspaceHookRules, projectHookRules } from '@kiki/agent-core-v2/features/externalHooks/internal/snapshot';
 import { IAgentHookRules } from '@kiki/agent-core-v2/features/externalHooks/agent/hookRules';
 import { logicalByteSize } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
-import { agentHooksInspectSchema, promoteAgentRequestSchema } from '@kiki/protocol';
+import {
+  agentHooksInspectSchema,
+  promoteAgentRequestSchema,
+  ErrorCode,
+  sessionSchema,
+  type Session,
+} from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
-import { sessionSchema, type Session } from '../protocol/session';
 import { parseActionSuffix } from './action-suffix';
 
 interface RouteHost {

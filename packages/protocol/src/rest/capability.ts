@@ -28,10 +28,15 @@ export const capabilityStatusSchema = z.object({
   steps: z.array(capabilityStepSchema),
   plan: z.object({
     artifact: z.object({
-      version: z.string(), url: z.string().url(), sha256: z.string().regex(/^[0-9a-f]{64}$/),
-      metadataUrl: z.string().url(), maxBytes: z.number().int().positive(),
+      version: z.string(),
+      url: z.string().url(),
+      sha256: z.string().regex(/^[0-9a-f]{64}$/),
+      metadataUrl: z.string().url(),
+      maxBytes: z.number().int().positive(),
     }),
-    destination: z.string(), browserExtensionUrl: z.string().url().optional(), note: z.string(),
+    destination: z.string(),
+    browserExtensionUrl: z.string().url().optional(),
+    note: z.string(),
   }).optional(),
   install: capabilityInstallProgressSchema,
 });

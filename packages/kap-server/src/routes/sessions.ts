@@ -114,13 +114,14 @@ import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/
 import { FORKED_FROM_KEY, forkedFromOf, PROMOTED_FROM_KEY, promotedFromOf } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
-import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema, sessionCreationStatusSchema } from '@kiki/protocol';
-import { deleteArchivedSessions } from '../services/archivedSessionDeletion';
-import { toRestContextBreakdown } from '../protocol/context-usage';
-import { ErrorCode } from '../protocol/error-codes';
-import { pageResponseSchema } from '../protocol/pagination';
-import { toProtocolMessage } from '../services/messages/messageProjection';
 import {
+  deleteArchivedSessionRequestSchema,
+  deleteArchivedSessionsResponseSchema,
+  worktreeRemovalOutcomeSchema,
+  sessionCreationStatusSchema,
+  toRestContextBreakdown,
+  ErrorCode,
+  pageResponseSchema,
   archiveSessionResponseSchema,
   compactSessionRequestSchema,
   compactSessionResponseSchema,
@@ -144,19 +145,20 @@ import {
   undoSessionRequestSchema,
   undoSessionResponseSchema,
   updateSessionProfileRequestSchema,
-} from '../protocol/rest-session';
-import {
   emptySessionUsage,
   sessionSchema,
+  workspaceIdSchema,
   type Session,
   type SessionPendingInteraction,
   type SessionUsage,
   type SessionUsageError,
-} from '../protocol/session';
-import { workspaceIdSchema } from '../protocol/workspace';
+} from '@kiki/protocol';
+import { deleteArchivedSessions } from '../services/archivedSessionDeletion';
+import { toProtocolMessage } from '../services/messages/messageProjection';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { sendMappedError as dispatchMappedError } from './_error';
 import { requestLog } from '../lib/requestLog';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireSessionOperation, withSessionOperation } from '../lib/sessionOperationLease';
@@ -3034,18 +3036,18 @@ function sendMappedError(
   req: { id: string },
   err: unknown,
 ): void {
-  if (err instanceof AdmissionError) {
-    const payload = errEnvelope(40301, err.reason, req.id);
-    if (reply.code !== undefined) reply.code(err.status).send(payload);
-    else reply.send(payload);
-    return;
-  }
-  const mapped = mapSessionError(req, err);
-  if (mapped.code === 40301 && reply.code !== undefined) {
-    reply.code(403).send(mapped);
-    return;
-  }
-  reply.send(mapped);
+  dispatchMappedError(reply, req, err, {
+    admission: true,
+    custom: (error, _requestId, targetReply) => {
+      const mapped = mapSessionError(req, error);
+      if (mapped.code === 40301 && targetReply.code !== undefined) {
+        targetReply.code(403).send(mapped);
+        return true;
+      }
+      targetReply.send(mapped);
+      return true;
+    },
+  });
 }
 
 /** Projects a freshly created or promoted live session onto the wire, including its current event cursor. */

@@ -6,8 +6,9 @@ import {
   terminalResizeMessageSchema,
   unsubscribeV2PayloadSchema,
   WS_PROTOCOL_VERSION,
+  ErrorCode,
   type SessionCursor,
-} from '../../../protocol/ws-control';
+} from '@kiki/protocol';
 import {
   Error2,
   ErrorCodes as CoreErrorCodes,
@@ -52,7 +53,6 @@ import {
   type TranscriptSince,
 } from './sessionEventBroadcaster';
 import { FsWatchBridge } from './fsWatchBridge';
-import { ErrorCode } from '../../../protocol/error-codes';
 
 const DEFAULT_MAX_BUFFER_SIZE = 1000;
 

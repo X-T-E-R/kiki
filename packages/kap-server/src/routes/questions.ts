@@ -11,21 +11,19 @@ import {
   type QuestionResult,
   type Scope,
 } from '@kiki/agent-core-v2';
-import { ErrorCode } from '../protocol/error-codes';
 import {
-  type QuestionItem as ProtocolQuestionItem,
-  type QuestionOption as ProtocolQuestionOption,
-  type QuestionRequest as ProtocolQuestionRequest,
-  type QuestionResponse as ProtocolQuestionResponse,
-} from '../protocol/question';
-import {
+  ErrorCode,
   listPendingQuestionsQuerySchema,
   listPendingQuestionsResponseSchema,
   questionAlreadyResolvedDataSchema,
   questionDismissResultSchema,
   questionResolveRequestSchema,
   questionResolveResultSchema,
-} from '../protocol/rest-question';
+  type QuestionItem as ProtocolQuestionItem,
+  type QuestionOption as ProtocolQuestionOption,
+  type QuestionRequest as ProtocolQuestionRequest,
+  type QuestionResponse as ProtocolQuestionResponse,
+} from '@kiki/protocol';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

@@ -30,14 +30,14 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { toRestContextBreakdown } from '../protocol/context-usage';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  toRestContextBreakdown,
+  ErrorCode,
   sessionSnapshotResponseSchema,
   type InFlightTurn,
   type SessionSnapshotResponse,
   type SnapshotSubagent,
-} from '../protocol/rest-snapshot';
+} from '@kiki/protocol';
 import {
   alignFrozenContextHistory,
   type CapturedContextMessageHistory,

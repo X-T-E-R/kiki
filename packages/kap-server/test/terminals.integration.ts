@@ -16,15 +16,8 @@ import {
 } from '@kiki/agent-core-v2';
 import { createKlient } from '@kiki/klient/http';
 import type { TerminalSignal } from '@kiki/klient';
-import { ErrorCode } from '../src/protocol/error-codes';
-import type { Terminal } from '@kiki/agent-core-v2/os/interface/terminal';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WebSocket } from 'ws';
-
-import { type RunningServer, startServer } from '../src/start';
-import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
-import { authHeaders } from './helpers/auth';
 import {
+  ErrorCode,
   terminalAttachAckMessageSchema,
   terminalCloseAckMessageSchema,
   terminalDetachAckMessageSchema,
@@ -32,7 +25,14 @@ import {
   terminalInputAckMessageSchema,
   terminalOutputMessageSchema,
   terminalResizeAckMessageSchema,
-} from '../src/protocol/ws-control';
+} from '@kiki/protocol';
+import type { Terminal } from '@kiki/agent-core-v2/os/interface/terminal';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WebSocket } from 'ws';
+
+import { type RunningServer, startServer } from '../src/start';
+import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { authHeaders } from './helpers/auth';
 
 class FakeTerminalProcess implements TerminalProcess {
   private readonly dataListeners = new Set<(data: string) => void>();

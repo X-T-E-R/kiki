@@ -75,6 +75,7 @@ import {
   updateNamedAgentProfileRequestSchema,
   previewAgentProfileFileRequestSchema,
   previewAgentProfileFileResponseSchema,
+  ErrorCode,
   type NamedAgentProfile,
 } from '@kiki/protocol';
 import { z } from 'zod';
@@ -87,7 +88,6 @@ import { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem
 import { errEnvelope, okEnvelope } from '../envelope';
 import { peerAudience } from '../services/connections/audience';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireDraftProfileListCatalog, acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 import { previewExecutorPrompt } from './executorPromptPreview';

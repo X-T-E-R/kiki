@@ -30,8 +30,8 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  ErrorCode,
   cronTaskActionQuerySchema,
   cronTaskActionResponseSchema,
   deleteCronTaskResponseSchema,
@@ -43,7 +43,7 @@ import {
   updateCronTaskRequestSchema,
   cronScriptPreviewQuerySchema,
   cronScriptPreviewResponseSchema,
-} from '../protocol/rest-cron';
+} from '@kiki/protocol';
 import { parseActionSuffix } from './action-suffix';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;

@@ -20,6 +20,9 @@ import {
   mediaTypeMatches,
   parseAppearancePack,
   sniffBackgroundMediaType,
+  ErrorCode,
+  errEnvelope,
+  okEnvelope,
   type AppearancePack,
   type AppearancePackSummary,
 } from '@kiki/protocol';
@@ -32,8 +35,6 @@ import { buildStoredZip } from '../lib/storedZip';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { ZipReadError, readZipEntries, type ZipFileEntry } from '../lib/zipReader';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
-import { errEnvelope, okEnvelope } from '../protocol/envelope';
 import { classify } from '../security/bindClassify';
 
 interface AppearanceRequest {

@@ -5,7 +5,7 @@ import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@kiki/agent-core-v2/session/externalDelegation/flag';
 
 import type { ExternalDelegationSeatManager } from '../mcp/externalDelegationSeats';
-import type { ExternalDelegationState } from '../protocol/rest-meta';
+import type { ExternalDelegationState } from '@kiki/protocol';
 import { registerV2ExternalDelegationRoutes } from './v2/externalDelegation';
 import { registerV2ExternalDelegationSeatRoutes } from './v2/externalDelegationSeats';
 import { registerV2McpRoutes } from './v2/mcp';

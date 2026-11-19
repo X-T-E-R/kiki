@@ -1,8 +1,13 @@
 import { z } from 'zod';
 import { IWorktreeService, type Scope } from '@kiki/agent-core-v2';
-import { worktreeInspectionSchema, worktreeRecordSchema, worktreeRemoveRequestSchema, worktreeRemovalOutcomeSchema } from '@kiki/protocol';
+import {
+  worktreeInspectionSchema,
+  worktreeRecordSchema,
+  worktreeRemoveRequestSchema,
+  worktreeRemovalOutcomeSchema,
+  ErrorCode,
+} from '@kiki/protocol';
 import { errEnvelope, okEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
 import { defineRoute } from '../middleware/defineRoute';
 import { parseActionSuffix } from './action-suffix';
 

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { okEnvelope, errEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 import type { NotificationService } from '../services/notifications/notificationService';
 import type { NotificationChannel, NotificationGlobalSettings, NotificationInstance, NotificationCredentialSlot } from '@kiki/klient';
 

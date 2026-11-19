@@ -9,19 +9,17 @@ import { Error2, ErrorCodes, IThreadCommunicationService, IThreadMailboxStore, I
   type Scope, type ThreadRef } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ErrorCode } from '../src/protocol/error-codes';
 import {
+  ErrorCode,
   readThreadRequestSchema as publicReadThreadRequestSchema,
   readThreadResponseSchema as publicReadThreadResponseSchema,
   sendThreadMessageRequestSchema as publicSendThreadMessageRequestSchema,
   waitThreadsRequestSchema as publicWaitThreadsRequestSchema,
-} from '../../protocol/src/rest/thread';
-import {
   readThreadRequestSchema as serverReadThreadRequestSchema,
   readThreadResponseSchema as serverReadThreadResponseSchema,
   sendThreadMessageRequestSchema as serverSendThreadMessageRequestSchema,
   waitThreadsRequestSchema as serverWaitThreadsRequestSchema,
-} from '../src/protocol/rest-thread';
+} from '@kiki/protocol';
 import { registerThreadsRoutes } from '../src/routes/threads';
 import { type RunningServer, startServer } from '../src/start';
 import { authHeaders } from './helpers/auth';

@@ -4,12 +4,12 @@ import {
   guiStoreLengthResponseSchema,
   guiStoreRemoveItemBodySchema,
   guiStoreSetItemBodySchema,
+  ErrorCode,
 } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { IGuiStoreService } from '../services/guiStore/guiStore';
 
 interface GuiStoreRouteHost {

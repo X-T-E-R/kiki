@@ -1,7 +1,7 @@
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { type IConnectionRegistry } from '../transport/ws/connectionRegistry';
-import { connectionsListResponseSchema } from '../protocol/rest-connection';
+import { connectionsListResponseSchema } from '@kiki/protocol';
 
 interface ConnectionsRouteHost {
   get(

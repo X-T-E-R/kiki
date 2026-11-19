@@ -24,18 +24,11 @@ import { z } from 'zod';
 import { contentRefSchema } from '@kiki/transcript';
 
 import { approvalRequestSchema } from '../approval';
+import { restContextBreakdownSchema } from '../context-usage';
 import { messageSchema } from '../message';
 import { questionRequestSchema } from '../question';
 import { sessionSchema } from '../session';
 import { taskSchema } from '../task';
-
-export const restContextBreakdownSchema = z.object({
-  system_tokens: z.number().int().nonnegative(),
-  tools_tokens: z.number().int().nonnegative(),
-  messages_tokens: z.number().int().nonnegative(),
-  estimated: z.literal(true),
-});
-export type RestContextBreakdown = z.infer<typeof restContextBreakdownSchema>;
 
 export const inFlightToolCallSchema = z.object({
   tool_call_id: z.string().min(1),

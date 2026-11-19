@@ -1,16 +1,20 @@
 import type { z } from 'zod';
 
 import type { ContextMessage, LoopRecordedEvent } from '@kiki/agent-core-v2';
-import type { agentEventSchema } from '../../../protocol/events-zod';
-import type { MessageContent } from '../../../protocol/message';
+import {
+  type agentEventSchema,
+  type MessageContent,
+  type ContextBreakdown,
+  type Session,
+  type SessionPendingInteraction,
+  type Workspace,
+  type PluginWsTopicEvent,
+  type RoomChangedEvent,
+} from '@kiki/protocol';
 import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
 import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
 import type { AgentPhase } from '../../../services/legacyStatus/legacyStatus';
-import type { ContextBreakdown } from '../../../protocol/context-usage';
 import type { ConfigResponse } from '../../../protocol/rest-config';
-import type { Session, SessionPendingInteraction } from '../../../protocol/session';
-import type { Workspace } from '../../../protocol/workspace';
-import type { PluginWsTopicEvent, RoomChangedEvent } from '@kiki/protocol';
 
 export type { PluginWsTopicEvent };
 

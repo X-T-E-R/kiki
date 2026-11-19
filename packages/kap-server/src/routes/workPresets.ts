@@ -3,10 +3,16 @@ import { access } from 'node:fs/promises';
 import { IAtomicDocumentStore, IBootstrapService, IConfigService, IFlagService, IPluginService, IPluginHostService, nonemptyMarketplaceSource, parsePluginMarketplace, readPluginMarketplace, type PluginMarketplace, type Scope } from '@kiki/agent-core-v2';
 import { WORK_PRESETS_FLAG } from '../services/workPresets/flag';
 import { readBundledPluginCatalog, readPublishedPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
-import { enableWorkPresetRequestSchema, updateWorkPresetRequestSchema, workPresetMutationResponseSchema, workPresetParamsSchema, workPresetsResponseSchema } from '@kiki/protocol';
+import {
+  enableWorkPresetRequestSchema,
+  updateWorkPresetRequestSchema,
+  workPresetMutationResponseSchema,
+  workPresetParamsSchema,
+  workPresetsResponseSchema,
+  ErrorCode,
+} from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
 import { WorkPresetManager, type PresetPluginSource } from '../services/workPresets/manager';
 
 interface Host {

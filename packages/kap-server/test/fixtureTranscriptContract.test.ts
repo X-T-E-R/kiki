@@ -6,7 +6,7 @@ import {
 } from '@kiki/transcript';
 import { describe, expect, it } from 'vitest';
 
-import { wsEventEnvelopeSchema } from '../src/protocol/ws-control';
+import { wsEventEnvelopeSchema } from '@kiki/protocol';
 
 interface FixtureBatch {
   seq: number;

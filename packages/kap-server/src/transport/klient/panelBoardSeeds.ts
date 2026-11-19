@@ -1,7 +1,7 @@
 import type { Scope, ScopeSeed } from '@kiki/agent-core-v2';
 import { IAgentPanelService, RPCError } from '@kiki/klient/host';
 import { agentCapabilities } from '../../routes/agentProfileCapabilities';
-import { ErrorCode } from '../../protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 
 export function panelBoardSeeds(getCore: () => Scope): ScopeSeed {
   const panel: IAgentPanelService = {

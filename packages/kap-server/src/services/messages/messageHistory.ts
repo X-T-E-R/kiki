@@ -33,7 +33,7 @@ import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/a
 import { parseMediaBlobRef } from '@kiki/transcript';
 
 import { acquireSessionOperation } from '../../lib/sessionOperationLease';
-import type { Message, MessageRole } from '../../protocol/message';
+import type { Message, MessageRole } from '@kiki/protocol';
 import { toProtocolMessage } from './messageProjection';
 
 const DEFAULT_PAGE_SIZE = 50;

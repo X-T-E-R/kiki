@@ -14,18 +14,19 @@ import {
   sessionMediaOriginalsDir,
   type Scope,
 } from '@kiki/agent-core-v2';
-import { ErrorCode } from '../protocol/error-codes';
-import { messageRoleSchema } from '../protocol/message';
 import {
+  ErrorCode,
+  messageRoleSchema,
   editMessageRequestSchema,
   getMessageResponseSchema,
   listMessagesResponseSchema,
   messageActionResponseSchema,
   regenerateMessageRequestSchema,
-} from '../protocol/rest-message';
+} from '@kiki/protocol';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 import {
   assertPromptFileRefs,
   resolvePromptMediaFiles,
@@ -295,55 +296,42 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
   );
 }
 
+const MESSAGES_ERROR_SPEC: MappedErrorSpec = {
+  includeDetails: true,
+  custom: (err, requestId, reply) => {
+    if (err instanceof SessionNotFoundError) {
+      reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
+      return true;
+    }
+    if (err instanceof MessageNotFoundError) {
+      reply.send(errEnvelope(ErrorCode.MESSAGE_NOT_FOUND, err.message, requestId, err.stack));
+      return true;
+    }
+    return false;
+  },
+  codes: {
+    'session.not_found': ErrorCode.SESSION_NOT_FOUND,
+    'file.not_found': ErrorCode.FILE_NOT_FOUND,
+    'auth.provisioning_required': ErrorCode.AUTH_PROVISIONING_REQUIRED,
+    'auth.token_missing': ErrorCode.AUTH_TOKEN_MISSING,
+    'auth.token_unauthorized': ErrorCode.AUTH_TOKEN_UNAUTHORIZED,
+    'auth.model_not_resolved': ErrorCode.AUTH_MODEL_NOT_RESOLVED,
+    'session.busy': ErrorCode.SESSION_BUSY,
+    'session.undo_unavailable': ErrorCode.SESSION_UNDO_UNAVAILABLE,
+    'message.action_unavailable': ErrorCode.MESSAGE_ACTION_UNAVAILABLE,
+    'session.cursor_mismatch': ErrorCode.SESSION_CURSOR_MISMATCH,
+    'prompt.id_conflict': ErrorCode.PROMPT_ID_CONFLICT,
+    'work.admission_fenced': ErrorCode.WORK_ADMISSION_FENCED,
+    'request.invalid': ErrorCode.VALIDATION_FAILED,
+    'validation.failed': ErrorCode.VALIDATION_FAILED,
+  },
+  fallback: { logMessage: 'message request failed' },
+};
+
 function sendMappedError(
   reply: { send(payload: unknown): unknown },
   req: { id: string },
   err: unknown,
 ): void {
-  const requestId = req.id;
-  const log = requestLog(req);
-  if (err instanceof SessionNotFoundError) {
-    reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
-    return;
-  }
-  if (err instanceof MessageNotFoundError) {
-    reply.send(errEnvelope(ErrorCode.MESSAGE_NOT_FOUND, err.message, requestId, err.stack));
-    return;
-  }
-  if (isError2(err)) {
-    const code = (() => {
-      switch (err.code) {
-        case 'session.not_found': return ErrorCode.SESSION_NOT_FOUND;
-        case 'file.not_found': return ErrorCode.FILE_NOT_FOUND;
-        case 'auth.provisioning_required': return ErrorCode.AUTH_PROVISIONING_REQUIRED;
-        case 'auth.token_missing': return ErrorCode.AUTH_TOKEN_MISSING;
-        case 'auth.token_unauthorized': return ErrorCode.AUTH_TOKEN_UNAUTHORIZED;
-        case 'auth.model_not_resolved': return ErrorCode.AUTH_MODEL_NOT_RESOLVED;
-        case 'session.busy': return ErrorCode.SESSION_BUSY;
-        case 'session.undo_unavailable': return ErrorCode.SESSION_UNDO_UNAVAILABLE;
-        case 'message.action_unavailable': return ErrorCode.MESSAGE_ACTION_UNAVAILABLE;
-        case 'session.cursor_mismatch': return ErrorCode.SESSION_CURSOR_MISMATCH;
-        case 'prompt.id_conflict': return ErrorCode.PROMPT_ID_CONFLICT;
-        case 'work.admission_fenced': return ErrorCode.WORK_ADMISSION_FENCED;
-        case 'request.invalid':
-        case 'validation.failed': return ErrorCode.VALIDATION_FAILED;
-        default: return undefined;
-      }
-    })();
-    if (code !== undefined) {
-      reply.send({
-        code,
-        msg: err.message,
-        data: null,
-        request_id: requestId,
-        details: err.details,
-        stack: err.stack,
-      });
-      return;
-    }
-  }
-  log?.error({ err }, 'message request failed');
-  reply.send(
-    errEnvelope(ErrorCode.INTERNAL_ERROR, err instanceof Error ? err.message : String(err), requestId, err instanceof Error ? err.stack : undefined),
-  );
+  dispatchMappedError(reply, req, err, MESSAGES_ERROR_SPEC);
 }

@@ -41,7 +41,7 @@ import {
   resumeSessionById,
   type ContextMessage,
 } from '@kiki/agent-core-v2';
-import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
+import { sessionSnapshotResponseSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';

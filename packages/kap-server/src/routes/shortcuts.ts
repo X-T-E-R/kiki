@@ -1,11 +1,20 @@
 import {
-  DEFAULT_SHORTCUT_PREFERENCES, detectShortcutConflicts, resetShortcutPreferences, resolveShortcutBindings,
-  shortcutPlatformSchema, shortcutPreferencesSchema, shortcutReadQuerySchema, shortcutResetSchema,
-  shortcutResponseSchema, shortcutWriteSchema, type ShortcutPlatform, type ShortcutPreferences,
+  DEFAULT_SHORTCUT_PREFERENCES,
+  detectShortcutConflicts,
+  resetShortcutPreferences,
+  resolveShortcutBindings,
+  shortcutPlatformSchema,
+  shortcutPreferencesSchema,
+  shortcutReadQuerySchema,
+  shortcutResetSchema,
+  shortcutResponseSchema,
+  shortcutWriteSchema,
+  ErrorCode,
+  type ShortcutPlatform,
+  type ShortcutPreferences,
 } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { okEnvelope, errEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
 import type { IGuiStoreService } from '../services/guiStore/guiStore';
 
 interface ShortcutRouteHost {

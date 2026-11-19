@@ -6,10 +6,6 @@ import {
   personaSessionHeadsQuerySchema,
   personaSessionHeadsResponseSchema,
   personaStateUpdateSchema,
-  type Session,
-} from '@kiki/protocol';
-import { ISessionIndex, IWorkspacePersistence, IWorkspaceService, type Scope, type SessionSummary } from '@kiki/agent-core-v2';
-import {
   ErrorCode as ProtocolErrorCode,
   PERSONA_AVATAR_MAX_BYTES,
   personaArchiveInputSchema,
@@ -30,13 +26,15 @@ import {
   personaStateSchema,
   personaSummarySchema,
   personaExportQuerySchema,
+  ErrorCode,
+  type Session,
 } from '@kiki/protocol';
+import { ISessionIndex, IWorkspacePersistence, IWorkspaceService, type Scope, type SessionSummary } from '@kiki/agent-core-v2';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { boundedListPreview } from '../transport/klient/boundedContent';
 import { readSessionCursorSeq, type SessionCursorReader } from '../lib/sessionObserver';
 import { resolveSessionPersonaId } from './sessionPersona';

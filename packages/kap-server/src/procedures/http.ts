@@ -5,8 +5,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { McpSeat, SeatResolver } from '../mcp/seatResolver';
-import { errEnvelope, okEnvelope } from '../protocol/envelope';
-import { ErrorCode } from '../protocol/error-codes';
+import { errEnvelope, okEnvelope, ErrorCode } from '@kiki/protocol';
 import {
   externalDelegationLogFailure,
   externalDelegationPublicFailure,

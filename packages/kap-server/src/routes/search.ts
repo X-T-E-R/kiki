@@ -6,13 +6,13 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  ErrorCode,
   searchMessagesBodySchema,
   searchMessagesResponseSchema,
   type SearchMessagesBody,
   type SearchMessagesResponse,
-} from '../protocol/rest-search';
+} from '@kiki/protocol';
 import type { GlobalSearchPage, GlobalSearchQuery } from '../search/contract';
 import { GlobalSearchError, IGlobalSearchService } from '../search/searchService';
 

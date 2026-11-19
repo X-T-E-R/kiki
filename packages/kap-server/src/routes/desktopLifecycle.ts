@@ -1,9 +1,8 @@
 import { z } from 'zod';
 import { IBootstrapService, ISessionManager, ISessionActivityView, IAgentLifecycleService, IAgentActivityView, IAgentLoopService, IAgentPromptService, IAgentExecutionService, IAgentTaskService, ISessionExecutionControl, IWorkAdmissionService, type Scope } from '@kiki/agent-core-v2';
-import { desktopLifecycleRequestSchema, desktopLifecycleStateSchema, type DesktopLifecycleState } from '@kiki/protocol';
+import { desktopLifecycleRequestSchema, desktopLifecycleStateSchema, ErrorCode, type DesktopLifecycleState } from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
 import { writePrivateFile } from '../services/auth/privateFiles';
 
 const PREPARED_PROMPT_SUBMIT_RE = /^\/api\/sessions\/[^/]+\/prompts$/;

@@ -13,18 +13,13 @@ import {
 import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
 import { globalPercentFromTokens } from '@kiki/agent-core-v2/agent/fullCompaction/autoCompact';
 import type { LoopControl } from '@kiki/agent-core-v2/agent/loop/configSection';
-import {
-  autoCompactStatusSchema,
-  autoCompactWriteSchema,
-  autoCompactWriteResultSchema,
-} from '@kiki/protocol';
+import { autoCompactStatusSchema, autoCompactWriteSchema, autoCompactWriteResultSchema, ErrorCode } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { readAgentObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { ensureSessionAgent } from '../lib/sessionAgent';
 import { readPersistedAutoCompact } from './persistedCompactionSettings';
 

@@ -11,7 +11,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { IAgentToolSelectService } from '@kiki/agent-core-v2/agent/toolSelect/toolSelect';
 
-import type { ContextBreakdown } from '../../protocol/context-usage';
+import type { ContextBreakdown } from '@kiki/protocol';
 
 export { toLegacyPhase, type AgentPhase } from '@kiki/transcript-live';
 

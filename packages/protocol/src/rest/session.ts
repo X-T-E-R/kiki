@@ -18,6 +18,7 @@
 
 import { z } from 'zod';
 
+import { restContextBreakdownSchema } from '../context-usage';
 import { goalSnapshotSchema } from '../events';
 import { messageSchema } from '../message';
 import { cursorQuerySchema, pageResponseSchema } from '../pagination';
@@ -288,6 +289,7 @@ export const sessionStatusResponseSchema = z.object({
    *  marker, never a real limit. */
   max_context_tokens: z.number().int().nonnegative().optional(),
   context_usage: z.number().min(0).max(1),
+  context_breakdown: restContextBreakdownSchema.optional(),
 });
 export type SessionStatusResponse = z.infer<typeof sessionStatusResponseSchema>;
 

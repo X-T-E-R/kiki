@@ -11,12 +11,21 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { listLiveServerInstances } from '../instanceRegistry';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import {
-  attachSpaceRequestSchema, createSpaceRequestSchema, inspectSpacePathResponseSchema, spaceIdParamsSchema,
-  spaceRecordSchema, spacesResponseSchema, spacePresetsResponseSchema, deleteSpaceParamsSchema, deleteSpaceRequestSchema,
-  updateSpaceRequestSchema, updateSpaceResponseSchema, sshCopyCandidatesResponseSchema,
-} from '../protocol/rest-space';
+  ErrorCode,
+  attachSpaceRequestSchema,
+  createSpaceRequestSchema,
+  inspectSpacePathResponseSchema,
+  spaceIdParamsSchema,
+  spaceRecordSchema,
+  spacesResponseSchema,
+  spacePresetsResponseSchema,
+  deleteSpaceParamsSchema,
+  deleteSpaceRequestSchema,
+  updateSpaceRequestSchema,
+  updateSpaceResponseSchema,
+  sshCopyCandidatesResponseSchema,
+} from '@kiki/protocol';
 import { parseActionSuffix } from './action-suffix';
 import { registerSpacePreferenceRoutes } from './spacePreferences';
 

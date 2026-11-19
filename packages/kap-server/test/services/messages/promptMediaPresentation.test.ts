@@ -11,7 +11,7 @@ import { projectPresentedText } from '@kiki/transcript';
 import { prepareThreadRefContext } from '../../../../session-core/src/composer/threadRefs';
 import { projectMessageContent } from '../../../../session-core/src/session/transcript/classify';
 
-import type { PromptSubmission } from '../../../src/protocol/rest-prompt';
+import type { PromptSubmission } from '@kiki/protocol';
 import { contentToCoreParts, resolvePromptMediaFiles } from '../../../src/lib/promptMedia';
 import { projectPromptContentParts } from '../../../src/services/messages/messageProjection';
 

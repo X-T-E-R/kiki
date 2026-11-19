@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { cronDeliveryModeSchema, cronRunResultSchema, cronScriptExecutionSchema, cronTriggerCheckSchema, cronTriggerSchema, cronTriggerScriptIdSchema } from '@kiki/protocol';
+
+import {
+  cronRunResultSchema,
+  cronScriptExecutionSchema,
+  cronTriggerCheckSchema,
+  cronTriggerSchema,
+  cronTriggerScriptIdSchema,
+} from '../cron';
+import { cronDeliveryModeSchema } from '../events';
 
 export const cronTaskSchema = z.object({
   id: z.string(),
@@ -25,8 +33,13 @@ export const cronTaskDetailSchema = cronTaskSchema.extend({ prompt: z.string() }
 
 export const cronTaskDetailResponseSchema = z.object({ task: cronTaskDetailSchema });
 
-export const cronScriptPreviewQuerySchema = z.object({ session_id: z.string().min(1), script: cronTriggerScriptIdSchema });
-export const cronScriptPreviewResponseSchema = z.object({ execution: cronScriptExecutionSchema.nullable() });
+export const cronScriptPreviewQuerySchema = z.object({
+  session_id: z.string().min(1),
+  script: cronTriggerScriptIdSchema,
+});
+export const cronScriptPreviewResponseSchema = z.object({
+  execution: cronScriptExecutionSchema.nullable(),
+});
 
 export const createCronTaskRequestSchema = z.object({
   session_id: z.string().min(1),

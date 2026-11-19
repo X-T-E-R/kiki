@@ -18,7 +18,18 @@ import { agentExecutorsToToml } from '@kiki/agent-core-v2/app/agentExecutor/conf
 import { AGENT_EXECUTOR_INSTANCES_SECTION } from '@kiki/agent-core-v2/app/agentExecutor/executorInstances';
 import { MODEL_SWITCH_SECTION, modelSwitchPreferencesToToml } from '@kiki/agent-core-v2/app/modelSwitchPreferences/configSection';
 import { describeDecisionSource } from '@kiki/agent-core-v2/kosong/model/decision';
-import { decisionSourceSchema, publicExecutorInstance, type ExecutorInstanceConfig, modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
+import {
+  decisionSourceSchema,
+  publicExecutorInstance,
+  modelGenerationMigrationApplyRequestSchema,
+  modelGenerationMigrationApplyResponseSchema,
+  modelGenerationMigrationPreviewSchema,
+  modelGenerationMigrationRestoreRequestSchema,
+  modelGenerationMigrationRestoreResponseSchema,
+  ErrorCode,
+  removeSpaceConfigOverrideRequestSchema,
+  type ExecutorInstanceConfig,
+} from '@kiki/protocol';
 import {
   ANTHROPIC_MESSAGE_THREADS_SECTION,
   REQUEST_COMPRESSION_SECTION,
@@ -76,9 +87,7 @@ import {
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { configResponseSchema, patchConfigRequestSchema } from '../protocol/rest-config';
-import { removeSpaceConfigOverrideRequestSchema } from '../protocol/rest-space';
 import { REVIEWER_API_KEY_ENV } from './secrets';
 import type { ConfigResponse } from '../protocol/rest-config';
 

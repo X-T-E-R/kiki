@@ -16,6 +16,8 @@ export interface AsyncApiDocumentOptions {
   readonly serverHost?: string;
   readonly serverProtocol?: 'ws' | 'wss';
   readonly wsPath?: string;
+  /** Project terminal operations only when the exposure policy enables them. */
+  readonly enableTerminals?: boolean;
 }
 
 export function createAsyncApiDocument(
@@ -26,7 +28,10 @@ export function createAsyncApiDocument(
   const serverHost = options.serverHost ?? DEFAULT_SERVER_HOST;
   const serverProtocol = options.serverProtocol ?? 'ws';
   const wsPath = options.wsPath ?? DEFAULT_WS_PATH;
-  const messages = buildMessages();
+  const operations = options.enableTerminals === false
+    ? ASYNCAPI_OPERATIONS.filter((operation) => !operation.type.startsWith('terminal_'))
+    : ASYNCAPI_OPERATIONS;
+  const messages = buildMessages(operations);
   const channelMessages = Object.fromEntries(
     Object.keys(messages).map((id) => [id, { $ref: `#/components/messages/${id}` }]),
   );
@@ -59,14 +64,14 @@ export function createAsyncApiDocument(
       receiveClientMessages: {
         action: 'receive',
         channel: { $ref: `#/channels/${CHANNEL_ID}` },
-        messages: operationMessageRefs('client_to_server'),
+        messages: operationMessageRefs(operations, 'client_to_server'),
       },
       sendServerMessages: {
         action: 'send',
         channel: { $ref: `#/channels/${CHANNEL_ID}` },
         messages: [
-          ...operationMessageRefs('server_to_client'),
-          ...ackMessageRefs(),
+          ...operationMessageRefs(operations, 'server_to_client'),
+          ...ackMessageRefs(operations),
         ],
       },
     },
@@ -76,9 +81,9 @@ export function createAsyncApiDocument(
   };
 }
 
-function buildMessages(): Record<string, unknown> {
+function buildMessages(operations: readonly WsOperationDefinition[]): Record<string, unknown> {
   const messages: Record<string, unknown> = {};
-  for (const operation of ASYNCAPI_OPERATIONS) {
+  for (const operation of operations) {
     const id = messageId(operation.type);
     messages[id] = asyncApiMessage(operation.type, operation.description, operation.messageSchema);
     if (operation.ackSchema !== undefined) {
@@ -94,15 +99,18 @@ function buildMessages(): Record<string, unknown> {
 }
 
 function operationMessageRefs(
+  operations: readonly WsOperationDefinition[],
   direction: WsOperationDefinition['direction'],
 ): Array<{ $ref: string }> {
-  return ASYNCAPI_OPERATIONS
+  return operations
     .filter((operation) => operation.direction === direction)
     .map((operation) => ({ $ref: `#/components/messages/${messageId(operation.type)}` }));
 }
 
-function ackMessageRefs(): Array<{ $ref: string }> {
-  return ASYNCAPI_OPERATIONS
+function ackMessageRefs(
+  operations: readonly WsOperationDefinition[],
+): Array<{ $ref: string }> {
+  return operations
     .filter((operation) => operation.ackSchema !== undefined)
     .map((operation) => ({ $ref: `#/components/messages/${messageId(operation.type)}_ack` }));
 }

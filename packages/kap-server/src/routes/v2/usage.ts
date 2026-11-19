@@ -1,12 +1,23 @@
 import { IRequestGovernance, ISessionIndex, type Scope } from '@kiki/agent-core-v2';
-import { agentActivitySnapshotSchema, requestGovernanceSnapshotSchema, usageAccountingSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema, usageRescanStatusSchema } from '@kiki/protocol';
+import {
+  agentActivitySnapshotSchema,
+  requestGovernanceSnapshotSchema,
+  usageAccountingSnapshotSchema,
+  usageQuerySchema,
+  usageResponseSchema,
+  usagePricingQuerySchema,
+  usagePricingResponseSchema,
+  usagePricingUpdateSchema,
+  usageRescanStatusSchema,
+  errEnvelope,
+  okEnvelope,
+  ErrorCode,
+} from '@kiki/protocol';
 
 import { IModelPricingService } from '../../pricing/modelPricingService';
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';
-import { errEnvelope, okEnvelope } from '../../protocol/envelope';
-import { ErrorCode } from '../../protocol/error-codes';
 import { UsagePageTokenMismatchError } from '../../usage/usageAggregationService';
 import { usageRuntime } from '../../usage/usageRuntime';
 import { withReplyCloseSignal } from '../../procedures/requestSignal';

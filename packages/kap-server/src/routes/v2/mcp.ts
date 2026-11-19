@@ -3,7 +3,6 @@ import type { ServerResponse } from 'node:http';
 import {
   ErrorCodes,
   IMcpManagementService,
-  isError2,
   type Scope,
 } from '@kiki/agent-core-v2';
 import {
@@ -14,8 +13,8 @@ import {
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';
-import { errEnvelope, okEnvelope } from '../../protocol/envelope';
-import { ErrorCode } from '../../protocol/error-codes';
+import { errEnvelope, okEnvelope, ErrorCode } from '@kiki/protocol';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from '../_error';
 
 interface V2McpRouteHost {
   get(
@@ -202,26 +201,21 @@ const namedServerOAuthErrorSchemas = {
   [ErrorCode.MCP_OAUTH_FAILED]: {},
 };
 
+const V2_MCP_ERROR_SPEC: MappedErrorSpec = {
+  codes: {
+    [ErrorCodes.MCP_SERVER_NOT_FOUND]: ErrorCode.MCP_SERVER_NOT_FOUND,
+    [ErrorCodes.REQUEST_INVALID]: ErrorCode.VALIDATION_FAILED,
+    [ErrorCodes.CONFIG_INVALID]: ErrorCode.VALIDATION_FAILED,
+    [ErrorCodes.MCP_OAUTH_FAILED]: ErrorCode.MCP_OAUTH_FAILED,
+  },
+};
+
 function sendMappedError(
   reply: { send(payload: unknown): unknown },
   requestId: string,
   err: unknown,
 ): void {
-  if (isError2(err)) {
-    switch (err.code) {
-      case ErrorCodes.MCP_SERVER_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.MCP_SERVER_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.REQUEST_INVALID:
-      case ErrorCodes.CONFIG_INVALID:
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.MCP_OAUTH_FAILED:
-        reply.send(errEnvelope(ErrorCode.MCP_OAUTH_FAILED, err.message, requestId, err.stack));
-        return;
-    }
-  }
-  throw err;
+  dispatchMappedError(reply, requestId, err, V2_MCP_ERROR_SPEC);
 }
 
 export function registerV2McpRoutes(app: V2McpRouteHost, core: Scope): void {

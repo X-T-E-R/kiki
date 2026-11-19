@@ -1,11 +1,10 @@
 import type { Scope } from '@kiki/agent-core-v2';
 import { IHarnessQuotaService } from '@kiki/agent-core-v2';
-import { HARNESS_QUOTA_UNAVAILABLE_MESSAGE, harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema } from '@kiki/protocol';
+import { HARNESS_QUOTA_UNAVAILABLE_MESSAGE, harnessQuotaCacheResponseSchema, harnessQuotaReadRequestSchema, ErrorCode } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 
 interface HarnessQuotaRouteHost {
   get(

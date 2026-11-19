@@ -1,4 +1,4 @@
-import { ErrorCode } from '../protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 import type { z } from 'zod';
 
 interface ValidationRequest {

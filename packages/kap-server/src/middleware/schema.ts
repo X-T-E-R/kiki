@@ -1,4 +1,4 @@
-import { envelopeSchema } from '../protocol/envelope';
+import { envelopeSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 /**

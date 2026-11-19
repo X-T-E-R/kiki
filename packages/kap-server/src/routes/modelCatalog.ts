@@ -13,14 +13,14 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { z } from 'zod';
-import { decisionConnectionProbeInputSchema, decisionConnectionProbeResultSchema, moveReviewerKeyInputSchema, moveReviewerKeyResultSchema, memoryAdvisorConfigSchema } from '@kiki/protocol';
-import { IMemorySelector } from '@kiki/agent-core-v2/app/memory/memorySelector';
-import { moveReviewerKeyToConnection } from '@kiki/agent-core-v2/app/kosongConfig/reviewerConnection';
-
-import { errEnvelope, okEnvelope } from '../envelope';
-import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
+import { trySendMappedError } from './_error';
 import {
+  decisionConnectionProbeInputSchema,
+  decisionConnectionProbeResultSchema,
+  moveReviewerKeyInputSchema,
+  moveReviewerKeyResultSchema,
+  memoryAdvisorConfigSchema,
+  ErrorCode,
   createModelRequestSchema,
   createModelResponseSchema,
   createProviderRequestSchema,
@@ -47,7 +47,12 @@ import {
   revisionConflictDetailsSchema,
   setDefaultModelResponseSchema,
   type ProviderCollectionActionBody,
-} from '../protocol/rest-modelCatalog';
+} from '@kiki/protocol';
+import { IMemorySelector } from '@kiki/agent-core-v2/app/memory/memorySelector';
+import { moveReviewerKeyToConnection } from '@kiki/agent-core-v2/app/kosongConfig/reviewerConnection';
+
+import { errEnvelope, okEnvelope } from '../envelope';
+import { defineRoute } from '../middleware/defineRoute';
 import { parseActionSuffix } from './action-suffix';
 
 interface ModelCatalogRouteHost {
@@ -769,18 +774,10 @@ function sendMappedError(
   requestId: string,
   err: unknown,
 ): boolean {
-  if (!isError2(err)) return false;
-  const mapped = ENGINE_ERROR_CODES[err.code];
-  if (mapped === undefined) return false;
-  reply.send({
-    code: mapped,
-    msg: err.message,
-    data: null,
-    request_id: requestId,
-    details: err.details,
-    stack: err.stack,
+  return trySendMappedError(reply, requestId, err, {
+    codes: ENGINE_ERROR_CODES,
+    includeDetails: true,
   });
-  return true;
 }
 
 const ENGINE_ERROR_CODES: Readonly<Record<string, number>> = {

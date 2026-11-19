@@ -1,5 +1,5 @@
 import { APIProviderRateLimitError, Error2, ErrorCodes } from '@kiki/agent-core-v2';
-import { ErrorCode } from '../src/protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 

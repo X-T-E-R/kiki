@@ -2,12 +2,11 @@ import { IAgentLifecycleService, IAgentProfileService, IAgentTaskService, IEvent
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
-import { applyPersonaSettingsRequestSchema, sessionPersonaSettingsSchema } from '@kiki/protocol';
+import { applyPersonaSettingsRequestSchema, sessionPersonaSettingsSchema, ErrorCode } from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { mapError } from '../transport/errors';

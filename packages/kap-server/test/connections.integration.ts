@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { connectionsListResponseSchema } from '../src/protocol/rest-connection';
+import { connectionsListResponseSchema } from '@kiki/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 

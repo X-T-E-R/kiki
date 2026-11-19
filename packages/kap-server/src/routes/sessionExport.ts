@@ -8,19 +8,13 @@ import {
   ErrorCodes,
   ILogService,
   ISessionExportService,
-  isError2,
   type Scope,
 } from '@kiki/agent-core-v2';
 import type { KimiHostIdentity } from '@kiki/oauth';
 
-import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
-import { errEnvelope } from '../protocol/envelope';
-import {
-  exportSessionParamsSchema,
-  exportSessionRequestSchema,
-} from '../protocol/rest-session';
+import { ErrorCode, errEnvelope, exportSessionParamsSchema, exportSessionRequestSchema } from '@kiki/protocol';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 
 interface SessionExportRouteHost {
   post(
@@ -178,20 +172,18 @@ function sanitizeSessionId(sessionId: string): string {
   return sessionId.replaceAll(/[^A-Za-z0-9_-]/g, '_').slice(0, 48) || 'session';
 }
 
+const SESSION_EXPORT_ERROR_SPEC: MappedErrorSpec = {
+  includeStack: false,
+  codes: {
+    [ErrorCodes.SESSION_NOT_FOUND]: ErrorCode.SESSION_NOT_FOUND,
+  },
+  fallback: {
+    logMessage: 'session export failed',
+    includeStack: false,
+    nonErrorMessage: 'internal',
+  },
+};
+
 function sendMappedError(reply: SessionExportReply, req: { id: string }, error: unknown): void {
-  const requestId = req.id;
-  if (isError2(error)) {
-    if (error.code === ErrorCodes.SESSION_NOT_FOUND) {
-      reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, error.message, requestId));
-      return;
-    }
-  }
-  requestLog(req)?.error({ err: error }, 'session export failed');
-  reply.send(
-    errEnvelope(
-      ErrorCode.INTERNAL_ERROR,
-      error instanceof Error ? error.message : 'internal error',
-      requestId,
-    ),
-  );
+  dispatchMappedError(reply, req, error, SESSION_EXPORT_ERROR_SPEC);
 }

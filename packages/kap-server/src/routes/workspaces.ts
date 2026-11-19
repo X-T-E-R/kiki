@@ -21,8 +21,8 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  ErrorCode,
   createWorkspaceRequestSchema,
   createWorkspaceResponseSchema,
   deleteWorkspaceResponseSchema,
@@ -35,8 +35,9 @@ import {
   updateWorkspaceResponseSchema,
   workspaceIdParamSchema,
   workspaceTrustResponseSchema,
-} from '../protocol/rest-workspace';
-import { workspaceCatalogEntrySchema, type Workspace as WorkspaceWire } from '../protocol/workspace';
+  workspaceCatalogEntrySchema,
+  type Workspace as WorkspaceWire,
+} from '@kiki/protocol';
 
 interface WorkspaceRouteHost {
   get(

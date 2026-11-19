@@ -53,8 +53,7 @@ import {
   createKimiDefaultHeaders,
   type KimiHostIdentity,
 } from '@kiki/oauth';
-import { createAsyncApiDocument } from './protocol/asyncapi';
-import type { ExternalDelegationState } from './protocol/rest-meta';
+import { createAsyncApiDocument, CONNECTION_PROTOCOL, peerBridgeAttachPayloadSchema, type ExternalDelegationState } from '@kiki/protocol';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { installErrorHandler } from './error-handler';
@@ -105,7 +104,6 @@ import {
 import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middleware/origin';
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createKimiDeviceId } from '@kiki/oauth';
-import { CONNECTION_PROTOCOL, peerBridgeAttachPayloadSchema } from '@kiki/protocol';
 import { loadOrCreateLocalOwnerToken } from './services/auth/localOwner';
 import { ConnectionAdmission, AdmissionError } from './services/connections/admission';
 import { ConnectionAudience, peerGrant, isWebPathAllowed } from './services/connections/audience';

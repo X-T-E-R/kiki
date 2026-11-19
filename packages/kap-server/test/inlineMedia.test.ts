@@ -21,7 +21,7 @@ import { inlineMediaFile, openPublishedInlineMedia, parseInlineMediaIdentity } f
 import { publishedInlineMediaReader } from '../src/services/publishedMedia';
 import { resolvePromptSessionMediaRefs } from '../src/lib/promptMedia';
 import type { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
-import type { PromptSubmission } from '../src/protocol/rest-prompt';
+import type { PromptSubmission } from '@kiki/protocol';
 
 function bitmap(): Buffer {
   const bytes = Buffer.alloc(54 + 800 * 3 * 600);

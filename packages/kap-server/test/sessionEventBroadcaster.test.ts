@@ -58,9 +58,7 @@ import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type { AgentEvent } from '../src/transport/ws/v1/events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createAsyncApiDocument } from '../src/protocol/asyncapi';
-import { agentStatusUpdatedEventSchema, turnEndedEventSchema } from '../src/protocol/events-zod';
-import { sessionEventMessageSchema } from '../src/protocol/ws-control';
+import { createAsyncApiDocument, agentStatusUpdatedEventSchema, turnEndedEventSchema, sessionEventMessageSchema } from '@kiki/protocol';
 import {
   type BroadcastDelivery,
   type BroadcastTarget,

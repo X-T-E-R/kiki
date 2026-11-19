@@ -16,18 +16,21 @@ import {
   type AgentTaskInfo,
   type Scope,
 } from '@kiki/agent-core-v2';
-import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '@kiki/protocol';
-import { AgentTasksPageTokenError, readSessionAgentTasks } from '../services/sessionAgentTasks';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  listAgentTasksQuerySchema,
+  listAgentTasksResponseSchema,
+  ErrorCode,
   cancelTaskQuerySchema,
   cancelTaskResultSchema,
   getTaskQuerySchema,
   getTaskResponseSchema,
   listTasksQuerySchema,
   listTasksResponseSchema,
-} from '../protocol/rest-task';
-import type { Task, TaskKind, TaskStatus } from '../protocol/task';
+  type Task,
+  type TaskKind,
+  type TaskStatus,
+} from '@kiki/protocol';
+import { AgentTasksPageTokenError, readSessionAgentTasks } from '../services/sessionAgentTasks';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

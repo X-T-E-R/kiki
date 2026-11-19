@@ -14,13 +14,14 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 import {
   closeTerminalResponseSchema,
   getTerminalResponseSchema,
   listTerminalsResponseSchema,
 } from '../protocol/rest-terminal';
 import { parseActionSuffix } from './action-suffix';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 
 const createTerminalCompatRequestSchema = createTerminalRequestSchema.extend({
   runtime_id: z.string().min(1).optional(),
@@ -224,27 +225,25 @@ export function registerTerminalsRoutes(app: TerminalsRouteHost, core: Scope): v
   );
 }
 
+const TERMINALS_ERROR_SPEC: MappedErrorSpec = {
+  codes: {
+    [ErrorCodes.SESSION_NOT_FOUND]: ErrorCode.SESSION_NOT_FOUND,
+    [ErrorCodes.TERMINAL_NOT_FOUND]: ErrorCode.TERMINAL_NOT_FOUND,
+    [ErrorCodes.FS_PATH_ESCAPES]: ErrorCode.FS_PATH_ESCAPES_SESSION,
+  },
+  custom: (err, requestId, reply) => {
+    if (err instanceof Error && err.message.startsWith('Path outside workspace')) {
+      reply.send(errEnvelope(ErrorCode.FS_PATH_ESCAPES_SESSION, err.message, requestId, err.stack));
+      return true;
+    }
+    return false;
+  },
+};
+
 function sendMappedError(
   reply: { send(payload: unknown): unknown },
   requestId: string,
   err: unknown,
 ): void {
-  if (isError2(err)) {
-    switch (err.code) {
-      case ErrorCodes.SESSION_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.TERMINAL_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.TERMINAL_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FS_PATH_ESCAPES:
-        reply.send(errEnvelope(ErrorCode.FS_PATH_ESCAPES_SESSION, err.message, requestId, err.stack));
-        return;
-    }
-  }
-  if (err instanceof Error && err.message.startsWith('Path outside workspace')) {
-    reply.send(errEnvelope(ErrorCode.FS_PATH_ESCAPES_SESSION, err.message, requestId, err.stack));
-    return;
-  }
-  throw err;
+  dispatchMappedError(reply, requestId, err, TERMINALS_ERROR_SPEC);
 }

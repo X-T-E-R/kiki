@@ -12,7 +12,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { describe, expect, it } from 'vitest';
 
-import { promptExecutionOverridesSchema } from '../../../src/protocol/rest-prompt';
+import { promptExecutionOverridesSchema } from '@kiki/protocol';
 import { assertSessionIdle, prepareExecutionOverrides } from '../../../src/services/messages/messageActions';
 
 interface BusyFixture {

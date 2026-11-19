@@ -50,8 +50,7 @@ import type {
   Event,
 } from './events';
 import { isVolatileEventType } from './events';
-import type { SessionCursor } from '../../../protocol/ws-control';
-import type { InFlightTurn, SnapshotSubagent } from '../../../protocol/rest-snapshot';
+import { type SessionCursor, type InFlightTurn, type SnapshotSubagent } from '@kiki/protocol';
 import {
   detachGrades,
   filterOpsForGrade,

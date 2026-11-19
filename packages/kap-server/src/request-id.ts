@@ -1,4 +1,4 @@
-import { parseOrGenerateRequestId } from './protocol/request-id';
+import { parseOrGenerateRequestId } from '@kiki/protocol';
 
 const REQUEST_ID_HEADER = 'x-request-id';
 

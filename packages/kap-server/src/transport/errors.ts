@@ -1,7 +1,6 @@
 import { ErrorCodes, Error2 } from '@kiki/agent-core-v2';
 
-import { errEnvelope } from '../protocol/envelope';
-import { ErrorCode } from '../protocol/error-codes';
+import { errEnvelope, ErrorCode } from '@kiki/protocol';
 
 /** Thrown by {@link withTimeout} when a call exceeds its deadline. */
 export class TimeoutError extends Error {

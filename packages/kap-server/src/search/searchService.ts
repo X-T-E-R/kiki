@@ -21,7 +21,7 @@ import {
   type SessionSummary,
 } from '@kiki/agent-core-v2';
 import { normalizeLiteral, tokenize } from '@kiki/lexical';
-import type { SearchMessagesResponse } from '../protocol/rest-search';
+import type { SearchMessagesResponse } from '@kiki/protocol';
 import type { TranscriptStore } from '@kiki/transcript';
 import { LiveSearch } from './liveSearch';
 import type { HistoryLocatorStore } from '../services/history/historyLocatorStore';

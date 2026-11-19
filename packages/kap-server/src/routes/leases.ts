@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { defineRoute } from '../middleware/defineRoute';
-import { okEnvelope } from '../protocol/envelope';
+import { okEnvelope } from '@kiki/protocol';
 import type { LeaseRegistry } from '../services/leaseRegistry';
 
 interface LeaseRouteHost {

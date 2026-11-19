@@ -1,6 +1,6 @@
 import { IDebugCascadeService, ISessionManager, IWorkspaceInstanceManager, type Scope } from '@kiki/agent-core-v2';
 
-import { okEnvelope } from '../protocol/envelope';
+import { okEnvelope } from '@kiki/protocol';
 import { messageHistoryCacheReport } from '../services/messages/messageHistory';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { registerBusinessSnapshotRoutes } from './businessSnapshotRoutes';

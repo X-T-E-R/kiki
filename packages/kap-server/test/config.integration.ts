@@ -6,11 +6,16 @@ import { ConfigChanged, IConfigService, IEventService } from '@kiki/agent-core-v
 import { HooksConfigSchema } from '@kiki/agent-core-v2/features/externalHooks/configSection';
 import { DEFAULT_SESSION_TITLE_PROMPT } from '@kiki/agent-core-v2/session/sessionTitle/defaultPrompt';
 import { ExternalHooksRunnerService } from '@kiki/agent-core-v2/features/externalHooks/app/externalHooksRunnerService';
-import { configResponseSchema as sharedConfigResponseSchema, patchConfigRequestSchema as sharedPatchConfigRequestSchema, hooksConfigSchema, listExecutorsResponseSchema } from '@kiki/protocol';
+import {
+  configResponseSchema as sharedConfigResponseSchema,
+  patchConfigRequestSchema as sharedPatchConfigRequestSchema,
+  hooksConfigSchema,
+  listExecutorsResponseSchema,
+  ErrorCode,
+} from '@kiki/protocol';
 import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
 import type { RequestAttempt } from '@kiki/agent-core-v2/kosong/model/requestAdmission';
 import { configResponseSchema, patchConfigRequestSchema, type ConfigResponse } from '../src/protocol/rest-config';
-import { ErrorCode } from '../src/protocol/error-codes';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

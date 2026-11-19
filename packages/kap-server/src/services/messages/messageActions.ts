@@ -29,14 +29,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 
-import type {
-  EditMessageRequest,
-  RegenerateMessageRequest,
-} from '../../protocol/rest-message';
-import type {
-  PromptExecutionOverrides,
-  PromptSubmission,
-} from '../../protocol/rest-prompt';
+import { type EditMessageRequest, type RegenerateMessageRequest, type PromptExecutionOverrides, type PromptSubmission } from '@kiki/protocol';
 import { contentToCoreParts } from '../../lib/promptMedia';
 import { ensurePromptAuthReady } from '../../lib/promptAuth';
 import type { TranscriptService } from '../transcript/transcriptService';

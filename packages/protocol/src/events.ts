@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { contextBreakdownSchema, type ContextBreakdown } from './context-usage';
 import { ToolInputDisplaySchema, type ToolInputDisplay } from './display';
 import { assistantStreamPartSchema, messageContentSchema, type AssistantStreamPart, type MessageContent } from './message';
 import {
@@ -231,6 +232,8 @@ export interface GoalSnapshot {
   readonly terminalReason?: string;
 }
 
+export type GoalSnapshotWire = GoalSnapshot;
+
 export interface GoalToolResult {
   readonly goal: GoalSnapshot | null;
 }
@@ -385,6 +388,12 @@ export type KimiErrorCode =
   | 'web.private_address'
   | 'web.fetch_failed'
   | 'validation.failed'
+  | 'activity.agent_busy'
+  | 'activity.cancelling'
+  | 'activity.disposing'
+  | 'activity.disposed'
+  | 'activity.initializing'
+  | 'activity.session_rejected'
   | 'not_implemented'
   | 'internal';
 
@@ -599,14 +608,33 @@ export interface AgentStatusUpdatedEvent {
   readonly effectiveMaxContextTokens?: number;
   readonly reservedContextTokens?: number;
   readonly contextUsage?: number;
+  readonly contextBreakdown?: ContextBreakdown;
   readonly planMode?: boolean;
   readonly permission?: PermissionMode;
   readonly usage?: UsageStatus;
   readonly phase?: AgentPhase;
 }
 
+export interface AgentCreatedEvent {
+  readonly type: 'agent.created';
+  readonly time?: number;
+}
+
 export interface AgentDisposedEvent {
   readonly type: 'agent.disposed';
+  readonly time?: number;
+}
+
+export interface AgentBranchSealedEvent {
+  readonly type: 'agent.branch_sealed';
+  readonly sealed: boolean;
+  readonly foldId: string;
+  readonly time?: number;
+}
+
+export interface AgentToolLockChangedEvent {
+  readonly type: 'agent.tool_lock_changed';
+  readonly locked: boolean;
   readonly time?: number;
 }
 
@@ -683,6 +711,15 @@ export interface ConfigChangedEvent {
   readonly config: ConfigResponse;
 }
 
+export interface ConfigWarningEvent {
+  readonly type: 'event.config.warning';
+  readonly warnings: readonly { readonly domain?: string; readonly message: string }[];
+}
+
+export interface PersonaChangedEvent {
+  readonly type: 'event.persona.changed';
+}
+
 /**
  * Pushed when the daemon refreshes provider model metadata (manual or
  * scheduled) and the effective catalog changed. Carries the per-provider
@@ -749,10 +786,44 @@ export interface ErrorEvent extends KimiErrorPayload {
   readonly type: 'error';
 }
 
+export interface BindingAdvisoryEvent {
+  readonly version: 1;
+  readonly code:
+    | 'model_not_preferred'
+    | 'model_discouraged'
+    | 'effort_not_preferred'
+    | 'model_not_allowed'
+    | 'model_denied'
+    | 'effort_not_allowed'
+    | 'model_pin_overridden'
+    | 'effort_pin_overridden';
+  readonly dimension: 'model' | 'thinking_effort';
+  readonly ruleSource: string;
+  readonly ruleValue?: string;
+  readonly ruleValues?: readonly string[];
+  readonly requestedValue?: string;
+  readonly effectiveValue: string;
+  readonly valueSource:
+    | 'dispatch-explicit'
+    | 'runtime-explicit'
+    | 'resume-existing'
+    | 'route-default'
+    | 'caller-lease-default'
+    | 'profile-default'
+    | 'model-profile-default'
+    | 'model-default'
+    | 'config-default'
+    | 'executor-normalized'
+    | 'environment-forced';
+  readonly model?: string;
+  readonly message: string;
+}
+
 export interface WarningEvent {
   readonly type: 'warning';
   readonly message: string;
   readonly code?: string;
+  readonly advisory?: BindingAdvisoryEvent;
 }
 
 export interface TurnStartedEvent {
@@ -773,6 +844,8 @@ export interface TurnEndedEvent {
   readonly reason: TurnEndReason;
   readonly error?: KimiErrorPayload;
   readonly durationMs?: number;
+  readonly usage?: TokenUsage;
+  readonly tokensPerSecond?: number;
   readonly interruptReason?: TurnInterruptReason;
 }
 
@@ -856,12 +929,15 @@ export interface ThinkingDeltaEvent {
   readonly turnId: number;
   readonly step?: number;
   readonly stepId?: string;
+  readonly partId?: string;
   readonly delta: string;
 }
 
 export interface ToolCallDeltaEvent {
   readonly type: 'tool.call.delta';
   readonly turnId: number;
+  readonly step?: number;
+  readonly stepId?: string;
   readonly toolCallId: string;
   readonly name?: string;
   readonly argumentsPart?: string;
@@ -938,6 +1014,7 @@ export interface SubagentSpawnedEvent {
   readonly parentAgentId?: string;
   readonly callerAgentId?: string;
   readonly description?: string;
+  readonly userLabel?: string;
   readonly runInBackground: boolean;
   /** Model alias the child is bound to: the profile pin or the dispatch's
    *  explicit choice. Optional so older producers/consumers stay
@@ -946,6 +1023,9 @@ export interface SubagentSpawnedEvent {
   /** The child's effective thinking effort at spawn (same vocabulary as
    *  `agent.status.updated`). Optional for cross-version tolerance. */
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   /** Background-task id the run registered under in the caller's task store.
    *  Emitted after task registration, so cancel/status actions can bind to
    *  the task store without waiting for `task.started`. Optional for
@@ -1205,7 +1285,10 @@ export type AgentEvent =
   | ErrorEvent
   | WarningEvent
   | AgentStatusUpdatedEvent
+  | AgentCreatedEvent
   | AgentDisposedEvent
+  | AgentBranchSealedEvent
+  | AgentToolLockChangedEvent
   | SessionMetaUpdatedEvent
   | SessionWorktreeChangedEvent
   | SessionCreatedEvent
@@ -1216,8 +1299,10 @@ export type AgentEvent =
   | SessionWorkChangedEvent
   | SessionStatusChangedEvent
   | ConfigChangedEvent
+  | ConfigWarningEvent
   | ModelCatalogChangedEvent
   | PluginChangedEvent
+  | PersonaChangedEvent
   | CapabilityChangedEvent
   | GoalUpdatedEvent
   | SkillActivatedEvent
@@ -1615,6 +1700,12 @@ export const kimiErrorCodeSchema = z.enum([
   'web.private_address',
   'web.fetch_failed',
   'validation.failed',
+  'activity.agent_busy',
+  'activity.cancelling',
+  'activity.disposing',
+  'activity.disposed',
+  'activity.initializing',
+  'activity.session_rejected',
   'not_implemented',
   'internal',
 ]) satisfies z.ZodType<KimiErrorCode>;
@@ -1631,6 +1722,17 @@ const kimiErrorPayloadObjectSchema = z.object({
   retryable: z.boolean(),
   cause: kimiErrorPayloadSchema.optional(),
 }) satisfies z.ZodType<KimiErrorPayload>;
+
+export const agentTaskReceiptSchema = z.object({
+  schemaVersion: z.literal(1),
+  path: z.string(),
+  mediaType: z.literal('text/plain; charset=utf-8'),
+  bytes: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  contentState: z.enum(['final', 'unavailable']),
+  committedAt: isoDateTimeSchema,
+  sourceTurnId: z.number().int().nonnegative().optional(),
+});
 
 export const taskInfoBaseSchema = z.object({
   taskId: z.string(),
@@ -1787,16 +1889,35 @@ export const agentStatusUpdatedEventSchema = z.object({
   contextStrategy: z.enum(['summarize', 'auto', 'fresh']).optional(),
   contextStrategySource: z.enum(['session', 'profile', 'model', 'global', 'default', 'subagent', 'executor']).optional(),
   contextUsage: z.number().optional(),
+  contextBreakdown: contextBreakdownSchema.optional(),
   planMode: z.boolean().optional(),
   permission: permissionModeSchema.optional(),
   usage: usageStatusSchema.optional(),
   phase: agentPhaseSchema.optional(),
 }) satisfies z.ZodType<AgentStatusUpdatedEvent>;
 
+export const agentCreatedEventSchema = z.object({
+  type: z.literal('agent.created'),
+  time: z.number().optional(),
+}) satisfies z.ZodType<AgentCreatedEvent>;
+
 export const agentDisposedEventSchema = z.object({
   type: z.literal('agent.disposed'),
   time: z.number().optional(),
 }) satisfies z.ZodType<AgentDisposedEvent>;
+
+export const agentBranchSealedEventSchema = z.object({
+  type: z.literal('agent.branch_sealed'),
+  sealed: z.boolean(),
+  foldId: z.string(),
+  time: z.number().optional(),
+}) satisfies z.ZodType<AgentBranchSealedEvent>;
+
+export const agentToolLockChangedEventSchema = z.object({
+  type: z.literal('agent.tool_lock_changed'),
+  locked: z.boolean(),
+  time: z.number().optional(),
+}) satisfies z.ZodType<AgentToolLockChangedEvent>;
 
 export const sessionMetaUpdatedEventSchema = z.object({
   type: z.literal('session.meta.updated'),
@@ -1865,6 +1986,16 @@ export const configChangedEventSchema = z.object({
   config: configResponseSchema,
 }) satisfies z.ZodType<ConfigChangedEvent>;
 
+export const configWarningEventSchema = z.object({
+  type: z.literal('event.config.warning'),
+  warnings: z.array(
+    z.object({
+      domain: z.string().optional(),
+      message: z.string(),
+    }),
+  ),
+}) satisfies z.ZodType<ConfigWarningEvent>;
+
 export const modelCatalogChangedEventSchema = z.object({
   type: z.literal('event.model_catalog.changed'),
   changed: z.array(providerRefreshChangeSchema),
@@ -1875,6 +2006,10 @@ export const modelCatalogChangedEventSchema = z.object({
 export const pluginChangedEventSchema = z.object({
   type: z.literal('event.plugin.changed'),
 }) satisfies z.ZodType<PluginChangedEvent>;
+
+export const personaChangedEventSchema = z.object({
+  type: z.literal('event.persona.changed'),
+}) satisfies z.ZodType<PersonaChangedEvent>;
 
 export const capabilityChangedEventSchema = z.object({
   type: z.literal('event.capability.changed'),
@@ -1917,10 +2052,46 @@ export const errorEventSchema = kimiErrorPayloadObjectSchema.extend({
   type: z.literal('error'),
 }) satisfies z.ZodType<ErrorEvent>;
 
+export const bindingAdvisoryEventSchema = z.object({
+  version: z.literal(1),
+  code: z.enum([
+    'model_not_preferred',
+    'model_discouraged',
+    'effort_not_preferred',
+    'model_not_allowed',
+    'model_denied',
+    'effort_not_allowed',
+    'model_pin_overridden',
+    'effort_pin_overridden',
+  ]),
+  dimension: z.enum(['model', 'thinking_effort']),
+  ruleSource: z.string(),
+  ruleValue: z.string().optional(),
+  ruleValues: z.array(z.string()).readonly().optional(),
+  requestedValue: z.string().optional(),
+  effectiveValue: z.string(),
+  valueSource: z.enum([
+    'dispatch-explicit',
+    'runtime-explicit',
+    'resume-existing',
+    'route-default',
+    'caller-lease-default',
+    'profile-default',
+    'model-profile-default',
+    'model-default',
+    'config-default',
+    'executor-normalized',
+    'environment-forced',
+  ]),
+  model: z.string().optional(),
+  message: z.string(),
+}) satisfies z.ZodType<BindingAdvisoryEvent>;
+
 export const warningEventSchema = z.object({
   type: z.literal('warning'),
   message: z.string(),
   code: z.string().optional(),
+  advisory: bindingAdvisoryEventSchema.optional(),
 }) satisfies z.ZodType<WarningEvent>;
 
 export const turnStartedEventSchema = z.object({
@@ -1941,6 +2112,8 @@ export const turnEndedEventSchema = z.object({
   reason: turnEndReasonSchema,
   error: kimiErrorPayloadSchema.optional(),
   durationMs: z.number().optional(),
+  usage: tokenUsageSchema.optional(),
+  tokensPerSecond: z.number().nonnegative().optional(),
   interruptReason: turnInterruptReasonSchema.optional(),
 }) satisfies z.ZodType<TurnEndedEvent>;
 
@@ -2014,12 +2187,15 @@ export const thinkingDeltaEventSchema = z.object({
   turnId: z.number(),
   step: z.number().optional(),
   stepId: z.string().optional(),
+  partId: z.string().optional(),
   delta: z.string(),
 }) satisfies z.ZodType<ThinkingDeltaEvent>;
 
 export const toolCallDeltaEventSchema = z.object({
   type: z.literal('tool.call.delta'),
   turnId: z.number(),
+  step: z.number().optional(),
+  stepId: z.string().optional(),
   toolCallId: z.string(),
   name: z.string().optional(),
   argumentsPart: z.string().optional(),
@@ -2081,9 +2257,13 @@ export const subagentSpawnedEventSchema = z.object({
   parentAgentId: z.string().optional(),
   callerAgentId: z.string().optional(),
   description: z.string().optional(),
+  userLabel: z.string().optional(),
   runInBackground: z.boolean(),
   model: z.string().optional(),
   thinkingEffort: z.string().optional(),
+  thinkingEffortExplicit: z.boolean().optional(),
+  executorId: z.string().optional(),
+  executorProtocol: z.string().optional(),
   taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentSpawnedEvent>;
 
@@ -2314,7 +2494,10 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   errorEventSchema,
   warningEventSchema,
   agentStatusUpdatedEventSchema,
+  agentCreatedEventSchema,
   agentDisposedEventSchema,
+  agentBranchSealedEventSchema,
+  agentToolLockChangedEventSchema,
   sessionMetaUpdatedEventSchema,
   sessionWorktreeChangedEventSchema,
   sessionCreatedEventSchema,
@@ -2325,8 +2508,10 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   sessionWorkChangedEventSchema,
   sessionStatusChangedEventSchema,
   configChangedEventSchema,
+  configWarningEventSchema,
   modelCatalogChangedEventSchema,
   pluginChangedEventSchema,
+  personaChangedEventSchema,
   capabilityChangedEventSchema,
   goalUpdatedEventSchema,
   skillActivatedEventSchema,

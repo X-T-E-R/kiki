@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   capabilityStatusSchema,
   listCapabilitiesResponseSchema,
-} from '../src/protocol/rest-capability';
+} from '@kiki/protocol';
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';

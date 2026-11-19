@@ -23,7 +23,6 @@ import {
   IWorkspaceInstanceManager,
   IWorkspaceService,
   MAIN_AGENT_ID,
-  isError2,
   isUserActivatableSkillType,
   normalizeSkillName,
   promptRetryFor,
@@ -65,17 +64,17 @@ import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { publishedInlineMediaReader } from '../services/publishedMedia';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { ensureMainAgent } from '../transport/mainAgent';
-import { ErrorCode } from '../protocol/error-codes';
-import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import {
+  ErrorCode,
   activateSkillRequestSchema,
   activateSkillResultSchema,
   builtinSkillContentResponseSchema,
   listSkillsResponseSchema,
-} from '../protocol/rest-skill';
-import { workspaceIdParamSchema } from '../protocol/rest-workspace';
-import type { PromptSubmission } from '../protocol/rest-prompt';
-import type { SkillDescriptor } from '../protocol/skill';
+  workspaceIdParamSchema,
+  type PromptSubmission,
+  type SkillDescriptor,
+} from '@kiki/protocol';
+import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { parseActionSuffix } from './action-suffix';
 import { HostSkillInstallConflict, installHostSkill, previewHostSkill, type HostSkillName } from './hostSkillInstall';
 
@@ -734,38 +733,32 @@ function toProtocolSkill(skill: SkillElement, disabled = false): SkillDescriptor
   };
 }
 
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
+
+const SKILLS_ERROR_SPEC: MappedErrorSpec = {
+  detailsCodes: new Set<string>([
+    ErrorCodes.VALIDATION_FAILED,
+    ErrorCodes.REQUEST_INVALID,
+    ErrorCodes.CONFIG_INVALID,
+  ]),
+  codes: {
+    [ErrorCodes.SKILL_NOT_FOUND]: ErrorCode.SKILL_NOT_FOUND,
+    [ErrorCodes.SKILL_NAME_EMPTY]: ErrorCode.SKILL_NOT_FOUND,
+    [ErrorCodes.SKILL_TYPE_UNSUPPORTED]: ErrorCode.SKILL_NOT_ACTIVATABLE,
+    [ErrorCodes.FILE_NOT_FOUND]: ErrorCode.FILE_NOT_FOUND,
+    [ErrorCodes.VALIDATION_FAILED]: ErrorCode.VALIDATION_FAILED,
+    [ErrorCodes.REQUEST_INVALID]: ErrorCode.VALIDATION_FAILED,
+    [ErrorCodes.CONFIG_INVALID]: ErrorCode.VALIDATION_FAILED,
+    [ErrorCodes.AGENT_NOT_FOUND]: ErrorCode.SESSION_NOT_FOUND,
+    [ErrorCodes.PROMPT_ID_CONFLICT]: ErrorCode.PROMPT_ID_CONFLICT,
+    [ErrorCodes.INTERNAL]: ErrorCode.INTERNAL_ERROR,
+  },
+};
+
 function sendMappedError(
   reply: { send(payload: unknown): unknown },
   requestId: string,
   err: unknown,
 ): void {
-  if (isError2(err)) {
-    switch (err.code) {
-      case ErrorCodes.SKILL_NOT_FOUND:
-      case ErrorCodes.SKILL_NAME_EMPTY:
-        reply.send(errEnvelope(ErrorCode.SKILL_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.SKILL_TYPE_UNSUPPORTED:
-        reply.send(errEnvelope(ErrorCode.SKILL_NOT_ACTIVATABLE, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.FILE_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.FILE_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.VALIDATION_FAILED:
-      case ErrorCodes.REQUEST_INVALID:
-      case ErrorCodes.CONFIG_INVALID:
-        reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack), details: err.details });
-        return;
-      case ErrorCodes.AGENT_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.PROMPT_ID_CONFLICT:
-        reply.send(errEnvelope(ErrorCode.PROMPT_ID_CONFLICT, err.message, requestId, err.stack));
-        return;
-      case ErrorCodes.INTERNAL:
-        reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR, err.message, requestId, err.stack));
-        return;
-    }
-  }
-  throw err;
+  dispatchMappedError(reply, requestId, err, SKILLS_ERROR_SPEC);
 }

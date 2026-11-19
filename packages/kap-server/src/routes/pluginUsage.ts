@@ -1,9 +1,16 @@
 import { IBootstrapService, IPluginService, IPluginUsageService, ISessionPluginUsageService, ISessionIndex, IWorkspaceService, type Scope, type Workspace, type PluginUsageSnapshot } from '@kiki/agent-core-v2';
 import { withSessionOperation } from '../lib/sessionOperationLease';
-import { pluginUsageTargetSchema, pluginUsageRequestSchema, pluginUsageResponseSchema, type PluginUsageTarget, type PluginUsageResponse, type PluginUsageOverride } from '@kiki/protocol';
+import {
+  pluginUsageTargetSchema,
+  pluginUsageRequestSchema,
+  pluginUsageResponseSchema,
+  ErrorCode,
+  type PluginUsageTarget,
+  type PluginUsageResponse,
+  type PluginUsageOverride,
+} from '@kiki/protocol';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
 
 interface Host {
   get(path: string, options: { schema?: Record<string, unknown> }, handler: (...args: never[]) => unknown): unknown;

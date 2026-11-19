@@ -18,7 +18,7 @@ import {
   thinkingDeltaEventSchema,
   taskStartedEventSchema,
   taskTerminatedEventSchema,
-} from '../src/protocol/events-zod';
+} from '@kiki/protocol';
 
 const ENGINE_PROMPT_EVENTS = [
   PromptQueued,

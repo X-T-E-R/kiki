@@ -17,15 +17,17 @@ import {
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent } from '../transport/mainAgent';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  ErrorCode,
   listMcpServersResponseSchema,
   listToolsQuerySchema,
   listToolsResponseSchema,
   restartMcpServerResultSchema,
-} from '../protocol/rest-tool';
-import type { McpServer, ToolDescriptor } from '../protocol/tool';
+  type McpServer,
+  type ToolDescriptor,
+} from '@kiki/protocol';
 import { parseActionSuffix } from './action-suffix';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 
 const MCP_NAME_PREFIX = 'mcp__';
 const MCP_NAME_SEPARATOR = '__';
@@ -282,14 +284,16 @@ function mcpServerNotFound(serverId: string, requestId: string): unknown {
   );
 }
 
+const TOOLS_ERROR_SPEC: MappedErrorSpec = {
+  codes: {
+    [ErrorCodes.MCP_SERVER_NOT_FOUND]: ErrorCode.MCP_SERVER_NOT_FOUND,
+  },
+};
+
 function sendMappedError(
   reply: { send(payload: unknown): unknown },
   requestId: string,
   err: unknown,
 ): void {
-  if (err instanceof Error2 && err.code === ErrorCodes.MCP_SERVER_NOT_FOUND) {
-    reply.send(errEnvelope(ErrorCode.MCP_SERVER_NOT_FOUND, err.message, requestId, err.stack));
-    return;
-  }
-  throw err;
+  dispatchMappedError(reply, requestId, err, TOOLS_ERROR_SPEC);
 }

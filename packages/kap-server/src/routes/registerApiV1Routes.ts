@@ -5,7 +5,7 @@ import { IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
 import type { KimiHostIdentity } from '@kiki/oauth';
 
 import { okEnvelope } from '../envelope';
-import type { ExternalDelegationState, MetaFeature } from '../protocol/rest-meta';
+import type { ExternalDelegationState, MetaFeature } from '@kiki/protocol';
 import { type IConnectionRegistry } from '../transport/ws/connectionRegistry';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import type { TranscriptService } from '../services/transcript/transcriptService';

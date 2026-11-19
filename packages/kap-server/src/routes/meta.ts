@@ -1,11 +1,6 @@
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { metaResponseSchema } from '../protocol/rest-meta';
-import type {
-  ExternalDelegationState,
-  MetaFeature,
-  MetaResponse,
-} from '../protocol/rest-meta';
+import { metaResponseSchema, type ExternalDelegationState, type MetaFeature, type MetaResponse } from '@kiki/protocol';
 
 interface RouteHost {
   get(

@@ -13,7 +13,7 @@ import {
 import {
   listMcpServersResponseSchema,
   listToolsResponseSchema,
-} from '../src/protocol/rest-tool';
+} from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';

@@ -1,7 +1,7 @@
 import { ErrorCodes, isError2 } from '@kiki/agent-core-v2';
 
 import { errEnvelope } from './envelope';
-import { ErrorCode } from './protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 import type { FastifyError, FastifyReply } from 'fastify';
 
 interface ErrorHandlerHost {

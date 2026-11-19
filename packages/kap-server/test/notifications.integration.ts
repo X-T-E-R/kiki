@@ -21,7 +21,7 @@ import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
 import { startServer, type RunningServer } from '../src/start';
 import { NotificationService } from '../src/services/notifications/notificationService';
 import { registerNotificationRoutes } from '../src/routes/notifications';
-import { ErrorCode } from '../src/protocol/error-codes';
+import { ErrorCode } from '@kiki/protocol';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { ISessionStateService } from '@kiki/agent-core-v2/session/state/sessionState';

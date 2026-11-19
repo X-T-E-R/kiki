@@ -10,6 +10,7 @@ import {
   listSkinsResponseSchema,
   parseSkinFile,
   skinIdParamSchema,
+  ErrorCode,
   type GetSkinResponse,
   type ListSkinsResponse,
   type SkinFile,
@@ -19,7 +20,6 @@ import {
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 
 interface SkinsRouteHost {
   get(

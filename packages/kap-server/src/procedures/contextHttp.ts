@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Scope } from '@kiki/agent-core-v2';
-import { okEnvelope, errEnvelope } from '../protocol/envelope';
+import { okEnvelope, errEnvelope } from '@kiki/protocol';
 import type { SeatKlientDelegationAuth } from './http';
 import { ContextProcedureHost } from './contextHost';
 import { withReplyCloseSignal } from './requestSignal';

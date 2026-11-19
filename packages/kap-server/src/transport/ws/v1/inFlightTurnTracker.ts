@@ -1,7 +1,7 @@
 import type { LoopRecordedEvent } from '@kiki/agent-core-v2';
 
 import type { Event } from './events';
-import type { InFlightToolCall, InFlightTurn } from '../../../protocol/rest-snapshot';
+import type { InFlightToolCall, InFlightTurn } from '@kiki/protocol';
 
 const MAIN_AGENT_ID = 'main';
 

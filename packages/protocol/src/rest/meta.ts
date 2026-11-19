@@ -28,7 +28,24 @@ export const metaCapabilitiesSchema = z.object({
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;
 
+export const metaFeatureStateSchema = z.enum([
+  'Pending',
+  'Activating',
+  'Active',
+  'Unloading',
+  'Failed',
+]);
+
+export const metaFeatureSchema = z.object({
+  name: z.string().min(1),
+  state: metaFeatureStateSchema,
+  meta: z.record(z.string(), z.unknown()),
+});
+
+export type MetaFeature = z.infer<typeof metaFeatureSchema>;
+
 const externalDelegationDisabledReasonSchema = z.enum([
+  'feature_disabled',
   'session_index_unavailable',
   'workspace_drift',
   'bootstrap_failed',
@@ -73,6 +90,8 @@ export const metaResponseSchema = z.object({
    * probing routes.
    */
   backend: z.enum(['v1', 'v2']).optional(),
+  web_title: z.string().optional(),
+  features: z.array(metaFeatureSchema).optional(),
   storage_mode: z.enum(['maintenance', 'normal']).optional(),
   storage_status_path: z.literal('/api/storage').optional(),
 });

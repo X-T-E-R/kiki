@@ -36,5 +36,6 @@ export function errEnvelope(
   requestId: string,
   stack?: string,
 ): Envelope<null> {
+  if (stack === undefined) return { code, msg, data: null, request_id: requestId };
   return { code, msg, data: null, request_id: requestId, stack };
 }

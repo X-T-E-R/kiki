@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { registerMetaRoute } from '../src/routes/meta';
-import { metaResponseSchema } from '../src/protocol/rest-meta';
+import { metaResponseSchema } from '@kiki/protocol';
 
 const base = {
   serverVersion: 'test', serverId: 'server-a',

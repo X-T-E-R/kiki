@@ -6,15 +6,10 @@ import {
   type ShippedAgentProfileStatusEntry,
 } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { IShippedAgentProfileSource } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfileSource';
-import {
-  listShippedAgentProfilesResponseSchema,
-  shippedAgentProfileSchema,
-  type ShippedAgentProfile,
-} from '@kiki/protocol';
+import { listShippedAgentProfilesResponseSchema, shippedAgentProfileSchema, ErrorCode, type ShippedAgentProfile } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import { parseActionSuffix } from './action-suffix';
 
 interface ShippedAgentProfilesRouteHost {

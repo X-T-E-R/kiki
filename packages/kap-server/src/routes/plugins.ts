@@ -35,17 +35,16 @@ import { readDefaultPluginCatalog } from '@kiki/agent-core-v2/app/plugin/default
 import { pluginModelCatalog } from '@kiki/agent-core-v2/app/plugin/pluginModelCatalog';
 import { z } from 'zod';
 import {
-  pluginSettingsResponseSchema, pluginSettingsPatchSchema, pluginPrerequisiteInstallSchema, pluginNavigationSchema,
+  pluginSettingsResponseSchema,
+  pluginSettingsPatchSchema,
+  pluginPrerequisiteInstallSchema,
+  pluginNavigationSchema,
   pluginModelCatalogSchema,
-  pluginPanelSummarySchema, pluginPanelDocumentSchema, pluginPanelBridgeRequestSchema, pluginPanelBridgeResponseSchema,
-} from '@kiki/protocol';
-
-import { errEnvelope, okEnvelope } from '../envelope';
-import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { defineRoute } from '../middleware/defineRoute';
-import { authenticatedForwardHeaders } from '../middleware/auth';
-import { ErrorCode } from '../protocol/error-codes';
-import {
+  pluginPanelSummarySchema,
+  pluginPanelDocumentSchema,
+  pluginPanelBridgeRequestSchema,
+  pluginPanelBridgeResponseSchema,
+  ErrorCode,
   installPluginRequestSchema,
   listPluginsResponseSchema,
   pluginInfoParamSchema,
@@ -57,7 +56,12 @@ import {
   pluginIdParamSchema,
   pluginSummarySchema,
   type PluginMarketplaceEntryWire,
-} from '../protocol/rest-plugin';
+} from '@kiki/protocol';
+
+import { errEnvelope, okEnvelope } from '../envelope';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { defineRoute } from '../middleware/defineRoute';
+import { authenticatedForwardHeaders } from '../middleware/auth';
 import type { MintPluginPanelDocument } from './pluginPanelDocuments';
 import { parseActionSuffix } from './action-suffix';
 import { resolvePluginUsageWorkspace } from './pluginUsage';

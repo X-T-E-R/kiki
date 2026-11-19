@@ -13,8 +13,8 @@ import { z } from 'zod';
 import { requestLog } from '../lib/requestLog';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
-import { errEnvelope, okEnvelope } from '../protocol/envelope';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
+import { ErrorCode, errEnvelope, okEnvelope } from '@kiki/protocol';
 import {
   deleteFileParamSchema,
   deleteFileResponseSchema,
@@ -225,22 +225,24 @@ export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
   );
 }
 
+const FILES_ERROR_SPEC: MappedErrorSpec = {
+  custom: (err, requestId, reply) => {
+    if (err instanceof Error2 && err.code === ErrorCodes.FILE_NOT_FOUND) {
+      reply.code?.(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', requestId));
+      return true;
+    }
+    return false;
+  },
+  fallback: {
+    logMessage: 'file request failed',
+    httpStatus: 500,
+    includeStack: false,
+    nonErrorMessage: 'internal',
+  },
+};
+
 function sendMappedError(reply: FilesReply, req: { id: string }, err: unknown): void {
-  const requestId = req.id;
-  if (err instanceof Error2 && err.code === ErrorCodes.FILE_NOT_FOUND) {
-    reply.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', requestId));
-    return;
-  }
-  requestLog(req)?.error({ err }, 'file request failed');
-  reply
-    .code(500)
-    .send(
-      errEnvelope(
-        ErrorCode.INTERNAL_ERROR,
-        err instanceof Error ? err.message : 'internal error',
-        requestId,
-      ),
-    );
+  dispatchMappedError(reply, req, err, FILES_ERROR_SPEC);
 }
 
 const fieldValueSchema = z.object({ value: z.unknown() });

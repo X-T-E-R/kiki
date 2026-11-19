@@ -2,7 +2,7 @@ import { resolveSubagentDisplayName } from '@kiki/transcript-live';
 import type { AgentTaskInfo } from '@kiki/agent-core-v2';
 
 import type { Event } from './events';
-import type { SnapshotSubagent } from '../../../protocol/rest-snapshot';
+import type { SnapshotSubagent } from '@kiki/protocol';
 
 type SnapshotSubagentPhase = NonNullable<SnapshotSubagent['subagent_phase']>;
 type TrackedSubagentStatus = SnapshotSubagent['status'] | 'unknown';

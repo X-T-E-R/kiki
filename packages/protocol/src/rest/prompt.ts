@@ -55,6 +55,12 @@ export type PromptPlanGate = z.infer<typeof promptPlanGateSchema>;
 // Closed set of deferred-append timings a queued prompt can wait on. A newer
 // server always reports the effective `append_timing` on every `PromptItem`;
 // older responses omit it and callers fall back to `agent_idle`.
+export const promptSkillActivationSchema = z.object({
+  name: z.string().min(1),
+  args: z.string().optional(),
+});
+export type PromptSkillActivation = z.infer<typeof promptSkillActivationSchema>;
+
 export const deferredAppendTimingSchema = z.enum(['agent_idle', 'subagents_done', 'tasks_done']);
 export type DeferredAppendTiming = z.infer<typeof deferredAppendTimingSchema>;
 
@@ -109,14 +115,13 @@ export const promptSubmissionSchema = z.object({
   // bookkeeping to that turn exactly. Omit to let the engine assign one.
   prompt_id: z.string().min(1).optional(),
   persona_greeting_reply: z.boolean().optional(),
-  skills: z.array(z.object({ name: z.string().min(1), args: z.string().optional() })).min(1).optional(),
+  skills: z.array(promptSkillActivationSchema).min(1).optional(),
 });
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
 export type PromptSubmissionInput = z.input<typeof promptSubmissionSchema>;
 
 export const promptSteerSubmissionRequestSchema = promptSubmissionSchema;
 export type PromptSteerSubmissionRequest = z.input<typeof promptSteerSubmissionRequestSchema>;
-export type PromptSkillActivation = NonNullable<PromptSubmission['skills']>[number];
 
 export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
   execution: true,
@@ -164,6 +169,10 @@ export const promptItemSchema = z.object({
   // on older responses, where callers should assume `agent_idle`.
   append_timing: deferredAppendTimingSchema.optional(),
   revision: z.number().int().nonnegative().optional(),
+  model: z.string().optional(),
+  thinking: z.string().optional(),
+  after_model_switch: z.string().optional(),
+  queue_index: z.number().int().optional(),
 });
 export type PromptItem = z.infer<typeof promptItemSchema>;
 

@@ -3,12 +3,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
-import {
-  capabilityIdParamSchema,
-  capabilityStatusSchema,
-  listCapabilitiesResponseSchema,
-} from '../protocol/rest-capability';
+import { ErrorCode, capabilityIdParamSchema, capabilityStatusSchema, listCapabilitiesResponseSchema } from '@kiki/protocol';
 import { parseActionSuffix } from './action-suffix';
 
 interface CapabilitiesRouteHost {

@@ -8,14 +8,14 @@ import {
   type Interaction,
   type Scope,
 } from '@kiki/agent-core-v2';
-import { ErrorCode } from '../protocol/error-codes';
 import {
+  ErrorCode,
   approvalAlreadyResolvedDataSchema,
   approvalResolveRequestSchema,
   approvalResolveResultSchema,
   listPendingApprovalsQuerySchema,
   listPendingApprovalsResponseSchema,
-} from '../protocol/rest-approval';
+} from '@kiki/protocol';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';

@@ -1,10 +1,17 @@
 import { IAgentLifecycleService, IAgentMemoryAdvisor, ISessionManager, IConfigService, IMemoryAuthorityService, IMemoryStore, IMemorySelector, IWorkspaceService, MEMORY_SECTION, MemoryConfigSchema, MemoryDomainError, advisorStatus, memoryApplicability, memoryEnabled, type MemoryConfig, type MemoryScope, type Scope } from '@kiki/agent-core-v2';
-import { memoryPutBodySchema, memorySettingsPatchSchema, memorySettingsResponseSchema, memoryAdvisorProbeInputSchema, memoryAdvisorProbeResultSchema, memoryAdvisorStatusSchema } from '@kiki/protocol';
+import {
+  memoryPutBodySchema,
+  memorySettingsPatchSchema,
+  memorySettingsResponseSchema,
+  memoryAdvisorProbeInputSchema,
+  memoryAdvisorProbeResultSchema,
+  memoryAdvisorStatusSchema,
+  ErrorCode,
+} from '@kiki/protocol';
 import { z } from 'zod';
 import type { FastifyReply } from 'fastify';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 
 interface MemoryRouteHost {
   get(path: string, options: { preHandler: unknown[]; schema?: Record<string, unknown> }, handler: (req: any, reply: { send(payload: unknown): unknown } & Pick<FastifyReply, 'then'>) => unknown): unknown;

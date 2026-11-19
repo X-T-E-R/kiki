@@ -13,7 +13,7 @@ import type { ISessionMediaStore, SessionMediaFile } from '@kiki/agent-core-v2/a
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
 import type { ITelemetryService } from '@kiki/agent-core-v2/app/telemetry/telemetry';
 import { Error2 } from '@kiki/agent-core-v2/errors';
-import type { PromptSubmission } from '../protocol/rest-prompt';
+import type { PromptSubmission } from '@kiki/protocol';
 import type { PublishedMediaReader } from '../services/publishedMedia';
 import { audioWavAttachmentPath, inspectWav, type WavAudioFormat } from './ffmpegAudio';
 

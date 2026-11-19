@@ -1,8 +1,13 @@
 import { Error2, ErrorCodes, ISessionTerminalService, isError2, type Scope, type TerminalFrame } from '@kiki/agent-core-v2';
 import { withSessionOperation } from '../../lib/sessionOperationLease';
 import type { KlientFrame } from '@kiki/klient/host';
-import { terminalAttachMessageSchema, terminalDetachMessageSchema, terminalInputMessageSchema, terminalResizeMessageSchema } from '../../protocol/ws-control';
-import { ErrorCode } from '../../protocol/error-codes';
+import {
+  terminalAttachMessageSchema,
+  terminalDetachMessageSchema,
+  terminalInputMessageSchema,
+  terminalResizeMessageSchema,
+  ErrorCode,
+} from '@kiki/protocol';
 import { randomUUID } from 'node:crypto';
 
 export class TerminalHttpConnection {

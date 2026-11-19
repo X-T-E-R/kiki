@@ -1,9 +1,17 @@
 import { INbSearchService, type Scope } from '@kiki/agent-core-v2';
-import { nbSearchCapabilitiesSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialReadSchema, nbSearchManagedCredentialWriteSchema, nbSearchManagedCredentialViewSchema, nbSearchKeyUsageRequestSchema, nbSearchKeyUsageViewSchema } from '@kiki/protocol';
+import {
+  nbSearchCapabilitiesSchema,
+  nbSearchTestStatusSchema,
+  nbSearchManagedCredentialReadSchema,
+  nbSearchManagedCredentialWriteSchema,
+  nbSearchManagedCredentialViewSchema,
+  nbSearchKeyUsageRequestSchema,
+  nbSearchKeyUsageViewSchema,
+  ErrorCode,
+} from '@kiki/protocol';
 import { ManagedCredentialError } from '@kiki/agent-core-v2/app/nbSearch/managedCredentials';
 
 import { errEnvelope, okEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
 import { defineRoute } from '../middleware/defineRoute';
 
 interface NbSearchRouteHost {

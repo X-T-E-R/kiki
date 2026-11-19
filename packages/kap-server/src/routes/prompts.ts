@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { sessionAccessToken } from '../services/sessionAccess/access';
+import { sendMappedError as dispatchMappedError, type MappedErrorSpec } from './_error';
 
 import {
   DEFAULT_AGENT_PROFILE_NAME,
@@ -60,19 +61,9 @@ import {
   type ISessionScopeHandle,
   type Scope,
 } from '@kiki/agent-core-v2';
-import { turnAbortResponseSchema } from '@kiki/protocol';
-import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
-import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
-import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
-import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
-import { PromptAborted } from '@kiki/agent-core-v2/agent/prompt/promptService';
-import { PersistedModelSwitchReader } from '@kiki/agent-core-v2/agent/prompt/modelSwitchQueueRead';
-import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
-import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
-import { ErrorCode } from '../protocol/error-codes';
-import { ensurePromptAuthReady } from '../lib/promptAuth';
-import { projectPromptContentParts } from '../services/messages/messageProjection';
 import {
+  turnAbortResponseSchema,
+  ErrorCode,
   promptAbortResponseSchema,
   promptItemSchema,
   promptListResponseSchema,
@@ -89,10 +80,23 @@ import {
   promptTimingResultSchema,
   promptHoldRequestSchema,
   promptHoldResultSchema,
+  modelSwitchInputSchema,
+  modelSwitchReceiptSchema,
+  queuedModelSwitchSchema,
+  modelSwitchActionSchema,
   type PromptSkillActivation,
-} from '../protocol/rest-prompt';
+} from '@kiki/protocol';
+import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
+import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
+import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
+import { PromptAborted } from '@kiki/agent-core-v2/agent/prompt/promptService';
+import { PersistedModelSwitchReader } from '@kiki/agent-core-v2/agent/prompt/modelSwitchQueueRead';
+import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
+import { ensurePromptAuthReady } from '../lib/promptAuth';
+import { projectPromptContentParts } from '../services/messages/messageProjection';
 import { z } from 'zod';
-import { modelSwitchInputSchema, modelSwitchReceiptSchema, queuedModelSwitchSchema, modelSwitchActionSchema } from '../protocol/rest-model-switch';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import {
@@ -1341,34 +1345,30 @@ export function watchPromptSettlements(events: IEventBus): {
   };
 }
 
-function sendMappedError(
-  reply: { send(payload: unknown): unknown },
-  req: { id: string },
-  err: unknown,
-): void {
-  const requestId = req.id;
-  const log = requestLog(req);
-  if (isError2(err)) {
+const PROMPT_ERROR_SPEC: MappedErrorSpec = {
+  detailsCodes: new Set<string>([
+    ErrorCodes.WORK_ADMISSION_FENCED,
+    'request.invalid',
+    'validation.failed',
+    'config.invalid',
+  ]),
+  codes: {
+    [ErrorCodes.WORK_ADMISSION_FENCED]: ErrorCode.WORK_ADMISSION_FENCED,
+    'session.not_found': ErrorCode.SESSION_NOT_FOUND,
+    'agent.not_found': ErrorCode.SESSION_NOT_FOUND,
+    'file.not_found': ErrorCode.FILE_NOT_FOUND,
+    'prompt.not_found': ErrorCode.PROMPT_NOT_FOUND,
+    'prompt.id_conflict': ErrorCode.PROMPT_ID_CONFLICT,
+    'session.busy': ErrorCode.SESSION_BUSY,
+    'request.invalid': ErrorCode.VALIDATION_FAILED,
+    'validation.failed': ErrorCode.VALIDATION_FAILED,
+    'config.invalid': ErrorCode.VALIDATION_FAILED,
+    'skill.not_found': ErrorCode.SKILL_NOT_FOUND,
+    'skill.type_unsupported': ErrorCode.SKILL_NOT_ACTIVATABLE,
+  },
+  custom: (err, requestId, reply, req) => {
+    if (!isError2(err)) return false;
     switch (err.code) {
-      case ErrorCodes.WORK_ADMISSION_FENCED:
-        reply.send({ ...errEnvelope(ErrorCode.WORK_ADMISSION_FENCED, err.message, requestId, err.stack), details: err.details });
-        return;
-      case 'session.not_found':
-      case 'agent.not_found':
-        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case 'file.not_found':
-        reply.send(errEnvelope(ErrorCode.FILE_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case 'prompt.not_found':
-        reply.send(errEnvelope(ErrorCode.PROMPT_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case 'prompt.id_conflict':
-        reply.send(errEnvelope(ErrorCode.PROMPT_ID_CONFLICT, err.message, requestId, err.stack));
-        return;
-      case 'session.busy':
-        reply.send(errEnvelope(ErrorCode.SESSION_BUSY, err.message, requestId, err.stack));
-        return;
       case 'prompt.already_completed':
         reply.send({
           code: ErrorCode.PROMPT_ALREADY_COMPLETED,
@@ -1377,18 +1377,7 @@ function sendMappedError(
           request_id: requestId,
           stack: err.stack,
         });
-        return;
-      case 'request.invalid':
-      case 'validation.failed':
-      case 'config.invalid':
-        reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack), details: err.details });
-        return;
-      case 'skill.not_found':
-        reply.send(errEnvelope(ErrorCode.SKILL_NOT_FOUND, err.message, requestId, err.stack));
-        return;
-      case 'skill.type_unsupported':
-        reply.send(errEnvelope(ErrorCode.SKILL_NOT_ACTIVATABLE, err.message, requestId, err.stack));
-        return;
+        return true;
       case 'auth.provisioning_required':
         reply.send({
           code: ErrorCode.AUTH_PROVISIONING_REQUIRED,
@@ -1398,34 +1387,12 @@ function sendMappedError(
           stack: err.stack,
           details: null,
         });
-        return;
-      case 'auth.token_missing': {
-        const details = authProviderDetails(err);
-        if (details === undefined) {
-          log?.error({ err }, 'prompt request failed');
-          reply.send(
-            errEnvelope(
-              ErrorCode.INTERNAL_ERROR,
-              `auth error ${err.code} missing provider_id`,
-              requestId,
-            ),
-          );
-          return;
-        }
-        reply.send({
-          code: ErrorCode.AUTH_TOKEN_MISSING,
-          msg: err.message,
-          data: null,
-          request_id: requestId,
-          stack: err.stack,
-          details,
-        });
-        return;
-      }
+        return true;
+      case 'auth.token_missing':
       case 'auth.token_unauthorized': {
         const details = authProviderDetails(err);
         if (details === undefined) {
-          log?.error({ err }, 'prompt request failed');
+          if (req !== undefined) requestLog(req)?.error({ err }, 'prompt request failed');
           reply.send(
             errEnvelope(
               ErrorCode.INTERNAL_ERROR,
@@ -1433,17 +1400,19 @@ function sendMappedError(
               requestId,
             ),
           );
-          return;
+          return true;
         }
         reply.send({
-          code: ErrorCode.AUTH_TOKEN_UNAUTHORIZED,
+          code: err.code === 'auth.token_missing'
+            ? ErrorCode.AUTH_TOKEN_MISSING
+            : ErrorCode.AUTH_TOKEN_UNAUTHORIZED,
           msg: err.message,
           data: null,
           request_id: requestId,
           stack: err.stack,
           details,
         });
-        return;
+        return true;
       }
       case 'auth.model_not_resolved':
         reply.send({
@@ -1454,18 +1423,20 @@ function sendMappedError(
           stack: err.stack,
           details: authModelDetails(err),
         });
-        return;
+        return true;
+      default:
+        return false;
     }
-  }
-  log?.error({ err }, 'prompt request failed');
-  reply.send(
-    errEnvelope(
-      ErrorCode.INTERNAL_ERROR,
-      err instanceof Error ? err.message : String(err),
-      requestId,
-      err instanceof Error ? err.stack : undefined,
-    ),
-  );
+  },
+  fallback: { logMessage: 'prompt request failed' },
+};
+
+function sendMappedError(
+  reply: { send(payload: unknown): unknown },
+  req: { id: string },
+  err: unknown,
+): void {
+  dispatchMappedError(reply, req, err, PROMPT_ERROR_SPEC);
 }
 
 function authProviderDetails(err: Error2): { provider_id: string } | undefined {

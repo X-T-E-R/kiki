@@ -16,7 +16,7 @@ import {
   TRANSCRIPT_COVERAGE_VERSION,
   type TranscriptGradeSpec,
 } from '@kiki/transcript';
-import { okEnvelope } from '../../protocol/envelope';
+import { okEnvelope } from '@kiki/protocol';
 import { withReplyCloseSignal } from '../../procedures/requestSignal';
 import { assembleBrowseSnapshot, readBrowseSnapshotContent, SnapshotNotFoundError } from '../../routes/snapshot';
 import type { TranscriptService } from '../../services/transcript/transcriptService';

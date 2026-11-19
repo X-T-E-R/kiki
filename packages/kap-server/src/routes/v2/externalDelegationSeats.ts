@@ -1,9 +1,7 @@
 import { z } from 'zod';
 
 import { defineRoute } from '../../middleware/defineRoute';
-import { errEnvelope, okEnvelope } from '../../protocol/envelope';
-import { ErrorCode } from '../../protocol/error-codes';
-import type { ExternalDelegationState } from '../../protocol/rest-meta';
+import { errEnvelope, okEnvelope, ErrorCode, type ExternalDelegationState } from '@kiki/protocol';
 import type { ExternalDelegationSeatManager } from '../../mcp/externalDelegationSeats';
 
 interface SeatRouteHost {

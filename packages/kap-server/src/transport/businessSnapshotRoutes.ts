@@ -1,6 +1,6 @@
 import type { Scope } from '@kiki/agent-core-v2';
 
-import { okEnvelope } from '../protocol/envelope';
+import { okEnvelope } from '@kiki/protocol';
 import { mapError, withTimeout } from './errors';
 import type { RouteHost } from './serviceDispatcherRoutes';
 import {

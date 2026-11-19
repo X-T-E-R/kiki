@@ -1,12 +1,17 @@
 import { IBrowserConnectionStore, IConfigService, IMcpRegistryService, INbSearchService, type Scope } from '@kiki/agent-core-v2';
 import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { resolveProviderApiKey } from '@kiki/agent-core-v2/kosong/provider/providerDefinition';
-import { revealSecretRequestSchema, revealedSecretSchema, type RevealedSecret, type SecretRef } from '@kiki/protocol';
+import {
+  revealSecretRequestSchema,
+  revealedSecretSchema,
+  ErrorCode,
+  type RevealedSecret,
+  type SecretRef,
+} from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
-import { ErrorCode } from '../protocol/error-codes';
 import type { NotificationService } from '../services/notifications/notificationService';
 
 interface SecretsRouteHost {

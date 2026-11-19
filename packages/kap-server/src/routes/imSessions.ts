@@ -1,10 +1,18 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
-import { imBindingPatchSchema, imBindingTestResultSchema, imConfirmRequestSchema, imPolicySchema, imSetupRequestSchema, imSetupResultSchema, imTargetChannelsSchema } from '@kiki/protocol';
+import {
+  imBindingPatchSchema,
+  imBindingTestResultSchema,
+  imConfirmRequestSchema,
+  imPolicySchema,
+  imSetupRequestSchema,
+  imSetupResultSchema,
+  imTargetChannelsSchema,
+  ErrorCode,
+} from '@kiki/protocol';
 
 import { okEnvelope, errEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
 import { ImIdentityAlreadyBoundError, type ImSessionBridge } from '../services/imSession/bridge';
 import { ImSessionSetup, imSetupCatalog } from '../services/imSession/setup';
 

@@ -1,7 +1,7 @@
 import { parseDaemonFileUrl, type ContextMessage } from '@kiki/agent-core-v2';
 import { readTextPresentation } from '@kiki/transcript';
 
-import type { Message, MessageContent, MessageRole, ToolUseContent } from '../../protocol/message';
+import type { Message, MessageContent, MessageRole, ToolUseContent } from '@kiki/protocol';
 
 export { projectPromptContentParts } from '@kiki/transcript-live';
 

@@ -10,8 +10,13 @@ import {
 } from '@kiki/agent-core-v2';
 import { z } from 'zod';
 
-import { sessionCreateSchema, sessionSchema, type SessionCreate, type Session } from '../protocol/session';
-import { ErrorCode } from '../protocol/error-codes';
+import {
+  sessionCreateSchema,
+  sessionSchema,
+  ErrorCode,
+  type SessionCreate,
+  type Session,
+} from '@kiki/protocol';
 
 const receiptWaitMs = 50;
 

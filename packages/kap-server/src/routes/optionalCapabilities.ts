@@ -1,12 +1,11 @@
 import { ErrorCodes, IOptionalCapabilityPolicy, ISessionOptionalCapabilityService, isError2, isOptionalCapabilityId, type CapabilityChoice } from '@kiki/agent-core-v2';
-import { optionalCapabilitySessionRequestSchema, optionalCapabilitySessionResponseSchema } from '@kiki/protocol';
+import { optionalCapabilitySessionRequestSchema, optionalCapabilitySessionResponseSchema, ErrorCode } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { readSessionObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../envelope';
-import { ErrorCode } from '../protocol/error-codes';
 
 interface Host {
   get(path: string, options: { schema?: Record<string, unknown> }, handler: (...args: never[]) => unknown): unknown;

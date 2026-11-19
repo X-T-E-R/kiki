@@ -46,7 +46,7 @@
     "build": "node --max-old-space-size=8192 ../../node_modules/tsdown/dist/run.mjs",
     "bench": "vitest run --config vitest.bench.config.ts",
     "model-prices:update": "node scripts/update-model-prices.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node --max-old-space-size=8192 ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
     "test:mcp-bin-smoke": "node scripts/mcp-bin-smoke.mjs",
