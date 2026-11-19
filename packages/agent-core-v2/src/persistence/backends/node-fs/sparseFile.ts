@@ -13,7 +13,15 @@ export const SPARSE_UNIT_BYTES = 64 * 1024;
 export const DEFAULT_KEEP_HEAD_BYTES = 64 * 1024;
 const PROTECTED_BOUNDARY_BYTES = 4 * 1024;
 const SPARSE_PROBE_BYTES = 64;
+const FALLBACK_SPARSE_PROBE_OFFSETS = [
+  64 * 1024,
+  128 * 1024,
+  192 * 1024,
+  256 * 1024,
+] as const;
+const SPARSE_ATTR_CACHE_MAX = 2_048;
 const WORKER_IDLE_TIMEOUT_MS = 2_000;
+const SPARSE_ATTR_CACHE = new Map<string, boolean>();
 
 export interface SparseRange {
   readonly start: number;
@@ -331,32 +339,104 @@ export async function warmSparseFileWorker(signal?: AbortSignal): Promise<void> 
   }
 }
 
+export interface SparseMarkerInput {
+  readonly confirmedRanges?: readonly SparseRange[];
+  readonly pendingRanges?: readonly SparseRange[];
+}
+
+function normalizeOffsets(values: Iterable<unknown>): number[] {
+  const unique = new Set<number>();
+  for (const item of values) {
+    if (typeof item === 'number' && Number.isSafeInteger(item) && item >= 0) {
+      unique.add(item);
+    }
+  }
+  return [...unique].toSorted((a, b) => a - b);
+}
+
+async function readExistingConfirmedOffsets(filePath: string): Promise<number[]> {
+  try {
+    const raw = await readFile(sparseMarkerPath(filePath), 'utf8');
+    const parsed = JSON.parse(raw) as {
+      confirmedOffsets?: unknown;
+    } | null;
+    if (Array.isArray(parsed?.confirmedOffsets)) {
+      return normalizeOffsets(parsed.confirmedOffsets);
+    }
+  } catch {}
+  return [];
+}
+
+function invalidateSparseAttrCacheForInode(dev: bigint, ino: bigint): void {
+  const prefix = `${dev}:${ino}:`;
+  for (const key of SPARSE_ATTR_CACHE.keys()) {
+    if (key.startsWith(prefix)) SPARSE_ATTR_CACHE.delete(key);
+  }
+}
+
+export function clearSparseAttributeCache(): void {
+  SPARSE_ATTR_CACHE.clear();
+}
+
 export async function writeSparseMarker(
   filePath: string,
-  probeOffset: number,
+  input: number | SparseMarkerInput,
   signal?: AbortSignal,
 ): Promise<void> {
-  const payload = new TextEncoder().encode(JSON.stringify({ version: 1, probeOffset }));
+  const priorConfirmed = await readExistingConfirmedOffsets(filePath);
+  const confirmedOffsets = typeof input === 'number'
+    ? priorConfirmed
+    : normalizeOffsets([
+        ...priorConfirmed,
+        ...(input.confirmedRanges ?? []).map((range) => range.start),
+      ]);
+  const confirmedSet = new Set(confirmedOffsets);
+  const pendingOffsets = typeof input === 'number'
+    ? (confirmedSet.has(input) ? [] : normalizeOffsets([input]))
+    : normalizeOffsets((input.pendingRanges ?? []).map((range) => range.start)).filter(
+        (offset) => !confirmedSet.has(offset),
+      );
+  const probeOffset = confirmedOffsets[0] ?? pendingOffsets[0] ?? DEFAULT_KEEP_HEAD_BYTES;
+  const payload = new TextEncoder().encode(
+    JSON.stringify({
+      version: 1,
+      probeOffset,
+      confirmedOffsets,
+      pendingOffsets,
+    }),
+  );
   await writeFileAtomicNoUnlink(sparseMarkerPath(filePath), payload, signal);
 }
 
 export async function removeSparseMarker(filePath: string): Promise<void> {
+  const info = await stat(filePath, { bigint: true }).catch(() => undefined);
+  if (info !== undefined) invalidateSparseAttrCacheForInode(info.dev, info.ino);
   await unlink(sparseMarkerPath(filePath)).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   });
 }
 
-async function hasNulByteAtOffset(filePath: string, offset: number): Promise<boolean | undefined> {
+async function hasNulByteAtAnyOffset(
+  filePath: string,
+  offsets: readonly number[],
+): Promise<boolean | undefined> {
   let handle;
   try {
     handle = await open(filePath, 'r');
     const info = await handle.stat();
-    if (info.size <= offset) return undefined;
-    const probeLen = Math.min(SPARSE_PROBE_BYTES, info.size - offset);
-    const buf = Buffer.alloc(probeLen);
-    const { bytesRead } = await handle.read(buf, 0, probeLen, offset);
-    if (bytesRead <= 0) return false;
-    return buf.subarray(0, bytesRead).includes(0);
+    let checkedAny = false;
+    const buf = Buffer.alloc(SPARSE_PROBE_BYTES);
+    for (const offset of offsets) {
+      if (offset < 0 || info.size <= offset) continue;
+      const probeLen = Math.min(SPARSE_PROBE_BYTES, info.size - offset);
+      if (probeLen <= 0) continue;
+      checkedAny = true;
+      const { bytesRead } = await handle.read(buf, 0, probeLen, offset);
+      if (bytesRead > 0 && buf.subarray(0, bytesRead).includes(0)) {
+        return true;
+      }
+    }
+    return checkedAny ? false : undefined;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
@@ -365,34 +445,107 @@ async function hasNulByteAtOffset(filePath: string, offset: number): Promise<boo
   }
 }
 
+interface BigIntStatIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+}
+
+async function queryWin32SparseAttributeCached(
+  filePath: string,
+  knownStat?: BigIntStatIdentity,
+): Promise<boolean> {
+  if (process.platform !== 'win32') return false;
+  const info: BigIntStatIdentity | undefined =
+    knownStat ?? (await stat(filePath, { bigint: true }).catch(() => undefined));
+  if (info === undefined) return false;
+  const cacheKey = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}`;
+  const cached = SPARSE_ATTR_CACHE.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const isSparse = await queryWin32SparseAttribute(filePath);
+  if (SPARSE_ATTR_CACHE.size >= SPARSE_ATTR_CACHE_MAX) {
+    const oldest = SPARSE_ATTR_CACHE.keys().next().value;
+    if (oldest !== undefined) SPARSE_ATTR_CACHE.delete(oldest);
+  }
+  SPARSE_ATTR_CACHE.set(cacheKey, isSparse);
+  return isSparse;
+}
+
 export async function detectOrphanedSparseJournal(filePath: string): Promise<boolean> {
-  let markerOffset: number | undefined;
+  let markerFound = false;
+  let confirmedOffsets: number[] = [];
+  let markerProbeOffsets: number[] = [];
   try {
     const raw = await readFile(sparseMarkerPath(filePath), 'utf8');
-    const parsed = JSON.parse(raw) as { probeOffset?: unknown } | null;
-    const probe = parsed?.probeOffset;
-    markerOffset = typeof probe === 'number' && Number.isSafeInteger(probe) && probe >= 0
-      ? probe
-      : DEFAULT_KEEP_HEAD_BYTES;
+    markerFound = true;
+    const parsed = JSON.parse(raw) as {
+      probeOffset?: unknown;
+      confirmedOffsets?: unknown;
+      pendingOffsets?: unknown;
+    } | null;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return true;
+    }
+    confirmedOffsets = Array.isArray(parsed.confirmedOffsets)
+      ? normalizeOffsets(parsed.confirmedOffsets)
+      : [];
+    markerProbeOffsets = normalizeOffsets([
+      ...confirmedOffsets,
+      ...(Array.isArray(parsed.pendingOffsets) ? parsed.pendingOffsets : []),
+      parsed.probeOffset,
+    ]);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true;
   }
 
-  if (markerOffset !== undefined) {
-    const nul = await hasNulByteAtOffset(filePath, markerOffset);
-    return nul === undefined ? true : nul;
+  if (markerFound) {
+    if (confirmedOffsets.length > 0) {
+      const exists = await stat(filePath).then(() => true, () => false);
+      return exists;
+    }
+    const probes = markerProbeOffsets.length > 0 ? markerProbeOffsets : FALLBACK_SPARSE_PROBE_OFFSETS;
+    const nul = await hasNulByteAtAnyOffset(filePath, probes);
+    if (nul === true) return true;
+    if (process.platform === 'win32') return queryWin32SparseAttributeCached(filePath);
+    return nul === undefined;
   }
 
-  let size: number;
+  let info: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint };
   try {
-    size = (await stat(filePath)).size;
+    info = await stat(filePath, { bigint: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
+  const size = Number(info.size);
   if (size < DEFAULT_KEEP_HEAD_BYTES + SPARSE_UNIT_BYTES) return false;
-  const nul = await hasNulByteAtOffset(filePath, DEFAULT_KEEP_HEAD_BYTES);
-  return nul === true;
+  const lastAlignedOffset = Math.floor((size - SPARSE_UNIT_BYTES) / SPARSE_UNIT_BYTES) * SPARSE_UNIT_BYTES;
+  const fallbackOffsets = normalizeOffsets([...FALLBACK_SPARSE_PROBE_OFFSETS, lastAlignedOffset]).filter(
+    (offset) => offset >= DEFAULT_KEEP_HEAD_BYTES && offset < size,
+  );
+  const nul = await hasNulByteAtAnyOffset(filePath, fallbackOffsets);
+  if (nul === true) return true;
+  if (process.platform === 'win32') {
+    return queryWin32SparseAttributeCached(filePath, info);
+  }
+  return false;
+}
+
+export async function queryWin32ProcessCreationFileTime(
+  pid: number,
+  signal?: AbortSignal,
+): Promise<bigint | 'dead' | 'unknown'> {
+  if (process.platform !== 'win32') return 'unknown';
+  try {
+    const [raw] = await runWin32Command(`proctime\t${pid}`, signal);
+    if (raw === 'dead') return 'dead';
+    if (raw === 'denied' || raw === undefined || raw.length === 0) return 'unknown';
+    return BigInt(raw);
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason;
+    return 'unknown';
+  }
 }
 
 export async function queryWin32SparseAttribute(filePath: string, signal?: AbortSignal): Promise<boolean> {
@@ -488,6 +641,7 @@ async function defaultPunchSparseRanges(filePath: string, ranges: readonly Spars
     };
   }
   const statBefore = await stat(filePath, { bigint: true });
+  invalidateSparseAttrCacheForInode(statBefore.dev, statBefore.ino);
   const spec = normalized.map((range) => `${range.start}:${range.end}`).join(',');
   let parts: string[];
   try {
@@ -539,6 +693,7 @@ async function defaultPunchSparseRanges(filePath: string, ranges: readonly Spars
   const before = Number(parts[1]);
   const after = Number(parts[2]);
   const statAfter = await stat(filePath, { bigint: true });
+  invalidateSparseAttrCacheForInode(statAfter.dev, statAfter.ino);
   if (statAfter.mtimeNs !== statBefore.mtimeNs || statAfter.size !== statBefore.size) {
     return {
       status: 'mutated_or_unknown',

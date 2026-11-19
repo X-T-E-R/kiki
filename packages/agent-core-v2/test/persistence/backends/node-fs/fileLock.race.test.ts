@@ -1,6 +1,8 @@
+import { ChildProcess, spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { Worker } from 'node:worker_threads';
 
 import { join } from 'pathe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -38,8 +40,18 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-import { cleanupExpiredSessionLocks } from '#/persistence/backends/node-fs/fileLock';
+import {
+  acquireFileLock,
+  acquireSharedReadLease,
+  cleanupExpiredSessionLocks,
+  sharedReadDirectory,
+  trackReaderWorkerThread,
+  waitSharedReadIdle,
+  withColdReaderGate,
+} from '#/persistence/backends/node-fs/fileLock';
+import { openPinnedLogicalRead } from '#/persistence/coldSegmentLog';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { closeSparseFileWorker } from '#/persistence/backends/node-fs/sparseFile';
 
 describe('FileStorageService — stale takeover scheduling', () => {
   let directory: string | undefined;
@@ -325,5 +337,276 @@ describe('FileStorageService — transient access denial during acquisition', ()
     expect((await readdir(join(directory, 'session-locks'))).filter((entry) => entry.startsWith('session.lock.')))
       .toHaveLength(0);
   });
+
+  it('checks foreign Windows PID creation times via windows-process-helper without spawning powershell.exe (Round-3 R2-1b)', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-r3-proctime-'));
+    const wirePath = join(directory, 'wire.jsonl');
+    await writeFile(wirePath, '{"ok":1}\n');
+    const lockPath = `${wirePath}.cold.lock`;
+    const readersDir = sharedReadDirectory(wirePath);
+    await mkdir(readersDir, { recursive: true });
+
+    const spawned: string[] = [];
+    closeSparseFileWorker();
+    const childProto = ChildProcess.prototype as unknown as {
+      spawn(options: { file: string; args: string[] }): number;
+    };
+    const origSpawn = childProto.spawn;
+    const spawnSpy = vi.spyOn(childProto, 'spawn');
+    spawnSpy.mockImplementation(function (this: ChildProcess, options: { file: string; args: string[] }) {
+      spawned.push(options.file);
+      return origSpawn.call(this, options);
+    });
+
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        `
+        process.stdout.write(JSON.stringify({
+          pid: process.pid,
+          startedAt: Math.floor(Date.now() - process.uptime() * 1000),
+        }) + "\\n");
+        setInterval(() => {}, 10000);
+        `,
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
+    );
+
+    try {
+      const childInfo = await new Promise<{ pid: number; startedAt: number }>((resolveInfo, rejectInfo) => {
+        let buf = '';
+        child.stdout!.on('data', (chunk: Buffer) => {
+          buf += chunk.toString('utf8');
+          const nl = buf.indexOf('\n');
+          if (nl >= 0) resolveInfo(JSON.parse(buf.slice(0, nl)) as { pid: number; startedAt: number });
+        });
+        child.once('error', rejectInfo);
+      });
+
+      await writeFile(
+        lockPath,
+        JSON.stringify({
+          version: 1,
+          pid: childInfo.pid,
+          processStartedAt: childInfo.startedAt,
+          token: 'child-live-lock',
+          acquiredAt: Date.now(),
+          leaseMs: 60_000,
+        }),
+      );
+      const foreignReaderPath = join(readersDir, 'child-live.reader');
+      await writeFile(
+        foreignReaderPath,
+        JSON.stringify({
+          version: 1,
+          pid: childInfo.pid,
+          processStartedAt: childInfo.startedAt,
+          token: 'child-live-reader',
+          acquiredAt: Date.now(),
+          leaseMs: 60_000,
+        }),
+      );
+
+      spawned.length = 0;
+      await expect(acquireFileLock(lockPath, { waitForMs: 80 })).rejects.toMatchObject({
+        code: 'storage.locked',
+      });
+      await expect(waitSharedReadIdle(wirePath, AbortSignal.timeout(80))).rejects.toThrow();
+
+      setTimeout(() => {
+        void rm(lockPath, { force: true });
+      }, 90);
+      const storage = new FileStorageService(directory);
+      try {
+        const pinned = await openPinnedLogicalRead(storage, '', 'wire.jsonl');
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of pinned.read()) chunks.push(Buffer.from(chunk));
+          expect(Buffer.concat(chunks).toString('utf8')).toBe('{"ok":1}\n');
+        } finally {
+          await pinned.close();
+        }
+      } finally {
+        await storage.close();
+      }
+
+      for (const exe of spawned) {
+        expect(exe.toLowerCase()).not.toContain('powershell');
+        expect(exe.toLowerCase()).not.toContain('pwsh');
+      }
+
+      if (process.platform === 'win32') {
+        await writeFile(
+          lockPath,
+          JSON.stringify({
+            version: 1,
+            pid: childInfo.pid,
+            processStartedAt: childInfo.startedAt - 600_000,
+            token: 'child-recycled-pid-lock',
+            acquiredAt: Date.now() - 600_000,
+            leaseMs: 60_000,
+          }),
+        );
+        const reclaimed = await acquireFileLock(lockPath, { waitForMs: 2_000 });
+        await reclaimed.release();
+      }
+    } finally {
+      child.kill('SIGKILL');
+      await new Promise<void>((done) => {
+        if (child.exitCode !== null) done();
+        else child.once('exit', () => done());
+      });
+      closeSparseFileWorker();
+      spawnSpy.mockRestore();
+    }
+  }, 20_000);
+
+  it('recovers wire.jsonl.cold.lock and .watch sidecars immediately when a worker_threads owner is terminated (Round-3 R2-6a)', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-r3-worker-gate-'));
+    const wirePath = join(directory, 'wire.jsonl');
+    await writeFile(wirePath, '{"ok":1}\n');
+    const coldLockPath = `${wirePath}.cold.lock`;
+
+    const probeLock = await acquireFileLock(coldLockPath);
+    const basePayload = JSON.parse(await readFile(coldLockPath, 'utf8')) as Record<string, unknown>;
+    await probeLock.release();
+
+    let untrackedWorker: Worker | undefined;
+    let trackedWorker: Worker | undefined;
+    try {
+      untrackedWorker = new Worker(
+        `
+        const { threadId, parentPort } = require('node:worker_threads');
+        process.on('workerMessage', () => {});
+        parentPort.postMessage({ threadId });
+        setInterval(() => {}, 10000);
+        `,
+        { eval: true },
+      );
+      const { threadId: tid1 } = await new Promise<{ threadId: number }>((res, rej) => {
+        untrackedWorker!.once('message', res);
+        untrackedWorker!.once('error', rej);
+      });
+
+      const watchPath1 = `${coldLockPath}.watch-${process.pid}-dead-${tid1}`;
+      await writeFile(
+        coldLockPath,
+        JSON.stringify({ ...basePayload, threadId: tid1, token: `gate-${tid1}` }),
+      );
+      await writeFile(
+        watchPath1,
+        JSON.stringify({ ...basePayload, threadId: tid1, token: `gate-${tid1}` }),
+      );
+
+      await expect(acquireFileLock(coldLockPath, { waitForMs: 60 })).rejects.toMatchObject({
+        code: 'storage.locked',
+      });
+
+      await untrackedWorker.terminate();
+      untrackedWorker = undefined;
+
+      const result = await withColdReaderGate(wirePath, async () => 'gate-recovered', AbortSignal.timeout(3_000));
+      expect(result).toBe('gate-recovered');
+      await expect(stat(coldLockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(watchPath1)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      trackedWorker = new Worker(
+        `
+        const { threadId, parentPort } = require('node:worker_threads');
+        process.on('workerMessage', () => {});
+        parentPort.postMessage({ threadId });
+        setInterval(() => {}, 10000);
+        `,
+        { eval: true },
+      );
+      const { threadId: tid2 } = await new Promise<{ threadId: number }>((res, rej) => {
+        trackedWorker!.once('message', res);
+        trackedWorker!.once('error', rej);
+      });
+      trackReaderWorkerThread(trackedWorker, wirePath);
+      await writeFile(
+        coldLockPath,
+        JSON.stringify({ ...basePayload, threadId: tid2, token: `gate-tracked-${tid2}` }),
+      );
+      await trackedWorker.terminate();
+      trackedWorker = undefined;
+      await vi.waitFor(async () => {
+        await expect(stat(coldLockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      }, { timeout: 2_000 });
+    } finally {
+      await untrackedWorker?.terminate();
+      await trackedWorker?.terminate();
+    }
+  }, 20_000);
+
+  it('unblocks same-process waiters on already-released worker leases and retries failed .reader unlinks via unref timer while idle (Round-3 R2-6b)', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-r3-idle-retry-'));
+    const wirePath = join(directory, 'wire.jsonl');
+    await writeFile(wirePath, '{"ok":1}\n');
+    const readersDir = sharedReadDirectory(wirePath);
+
+    let blockReaderUnlink = true;
+    schedule.beforeUnlink = async (targetPath) => {
+      if (blockReaderUnlink && targetPath.endsWith('.reader')) {
+        throw Object.assign(new Error('EBUSY: sharing violation'), { code: 'EBUSY' });
+      }
+    };
+
+    const lease = await acquireSharedReadLease(wirePath);
+    const readerFiles = (await readdir(readersDir)).filter((name) => name.endsWith('.reader'));
+    expect(readerFiles).toHaveLength(1);
+    const leaseFile = join(readersDir, readerFiles[0]!);
+
+    await lease.release();
+    expect((await stat(leaseFile)).isFile()).toBe(true);
+
+    let idleWorker: Worker | undefined;
+    try {
+      idleWorker = new Worker(
+        `
+        const { threadId, parentPort, BroadcastChannel } = require('node:worker_threads');
+        const active = new Set();
+        process.on('workerMessage', (msg) => {
+          if (msg && msg.state && typeof msg.kikiReaderProbeToken === 'string') {
+            Atomics.store(msg.state, 0, active.has(msg.kikiReaderProbeToken) ? 1 : 2);
+            Atomics.notify(msg.state, 0);
+          }
+        });
+        const bc = new BroadcastChannel('kiki.fileLock.readers.v1');
+        bc.unref();
+        parentPort.postMessage({ threadId });
+        setInterval(() => {}, 10000);
+        `,
+        { eval: true },
+      );
+      const { threadId: workerTid } = await new Promise<{ threadId: number }>((res, rej) => {
+        idleWorker!.once('message', res);
+        idleWorker!.once('error', rej);
+      });
+
+      const basePayload = JSON.parse(await readFile(leaseFile, 'utf8')) as Record<string, unknown>;
+      const workerReleasedFile = join(readersDir, 'worker-idle-released.reader');
+      await writeFile(
+        workerReleasedFile,
+        JSON.stringify({
+          ...basePayload,
+          threadId: workerTid,
+          token: `already-released-${workerTid}`,
+        }),
+      );
+
+      await waitSharedReadIdle(wirePath, AbortSignal.timeout(500));
+
+      blockReaderUnlink = false;
+      await vi.waitFor(async () => {
+        await expect(stat(leaseFile)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(stat(workerReleasedFile)).rejects.toMatchObject({ code: 'ENOENT' });
+      }, { timeout: 2_000 });
+    } finally {
+      schedule.beforeUnlink = undefined;
+      await idleWorker?.terminate();
+    }
+  }, 20_000);
 });
 

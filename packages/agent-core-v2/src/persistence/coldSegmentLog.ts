@@ -720,6 +720,94 @@ async function removeSegments(
   await rmdir(`${located}.segments`).catch(() => undefined);
 }
 
+async function hasStaleSegmentDirectoriesOnDisk(
+  located: string,
+  keepSealIds: ReadonlySet<string>,
+): Promise<boolean> {
+  try {
+    const entries = await readdir(`${located}.segments`, { withFileTypes: true });
+    return entries.some((entry) => entry.isDirectory() && !keepSealIds.has(entry.name));
+  } catch {
+    return false;
+  }
+}
+
+async function sweepStaleSegmentDirectories(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  keepSealIds: ReadonlySet<string>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const prefix = `${key}.segments/`;
+  const listed = await storage.list(scope, prefix).catch(() => [] as readonly string[]);
+  const keysBySealId = new Map<string, string[]>();
+  const looseKeys: string[] = [];
+  for (const segKey of listed) {
+    if (!segKey.startsWith(prefix)) continue;
+    const rest = segKey.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    if (slash > 0) {
+      const dirName = rest.slice(0, slash);
+      if (keepSealIds.has(dirName)) continue;
+      let bucket = keysBySealId.get(dirName);
+      if (bucket === undefined) {
+        bucket = [];
+        keysBySealId.set(dirName, bucket);
+      }
+      bucket.push(segKey);
+    } else if (keepSealIds.size === 0) {
+      looseKeys.push(segKey);
+    }
+  }
+
+  const located = locatedJournal(storage, scope, key);
+  const looseFiles: string[] = [];
+  if (located !== undefined) {
+    const entries = await readdir(`${located}.segments`, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!keepSealIds.has(entry.name) && !keysBySealId.has(entry.name)) {
+          keysBySealId.set(entry.name, []);
+        }
+      } else if (keepSealIds.size === 0) {
+        looseFiles.push(`${located}.segments/${entry.name}`);
+      }
+    }
+  }
+
+  for (const [staleSealId, segKeys] of keysBySealId) {
+    signal?.throwIfAborted();
+    if (SEAL_ID.test(staleSealId)) {
+      await waitUnpinned(storage, scope, key, staleSealId, signal);
+    }
+    signal?.throwIfAborted();
+    for (const segKey of segKeys) {
+      await storage.delete(scope, segKey).catch(() => undefined);
+    }
+    if (located !== undefined) {
+      const dirPath = `${located}.segments/${staleSealId}`;
+      const subEntries = await readdir(dirPath).catch(() => [] as string[]);
+      for (const subName of subEntries) {
+        await unlink(`${dirPath}/${subName}`).catch(() => undefined);
+      }
+      await rmdir(dirPath).catch(() => undefined);
+    }
+  }
+
+  if (keepSealIds.size === 0) {
+    for (const segKey of looseKeys) {
+      await storage.delete(scope, segKey).catch(() => undefined);
+    }
+    for (const filePath of looseFiles) {
+      await unlink(filePath).catch(() => undefined);
+    }
+  }
+  if (located !== undefined) {
+    await rmdir(`${located}.segments`).catch(() => undefined);
+  }
+}
+
 function sealIdOf(bytes: Uint8Array): string | undefined {
   let parsed: unknown;
   try {
@@ -1103,6 +1191,7 @@ export async function discardColdUnlocked(
     const sealId = sealIdOf(bytes);
     if (sealId !== undefined) await waitUnpinned(storage, scope, key, sealId, options.signal);
     await removeSegments(storage, scope, key, listedSegmentKeys(bytes, key), sealId);
+    await sweepStaleSegmentDirectories(storage, scope, key, new Set(), options.signal);
     if (located !== undefined) {
       await removeSparseMarker(located);
     }
@@ -1212,6 +1301,16 @@ async function sealUnlocked(
     previousManifest.sealedCut === sealedCut &&
     retentionSatisfied
   ) {
+    const keepSet = new Set([previousManifest.sealId]);
+    if (located === undefined) {
+      await sweepStaleSegmentDirectories(storage, scope, key, keepSet, options.signal);
+    } else if (await hasStaleSegmentDirectoriesOnDisk(located, keepSet)) {
+      await withColdReaderGate(
+        located,
+        () => sweepStaleSegmentDirectories(storage, scope, key, keepSet, options.signal),
+        options.signal,
+      );
+    }
     const compressedBytes = await sumSegmentBytes(storage, scope, key, previousManifest.segments);
     const allocated = located === undefined ? undefined : await allocatedFileBytes(located, options.signal);
     return {
@@ -1379,27 +1478,49 @@ async function sealUnlocked(
           previousId !== sealId ? previousId : undefined,
         ).catch(() => undefined);
       }
+      await sweepStaleSegmentDirectories(storage, scope, key, new Set([sealId]), options.signal);
       if (willAttemptPunch && located !== undefined && !options.signal?.aborted) {
         await waitActiveReadersIdle(storage, scope, key, options.signal);
         if (!options.signal?.aborted) {
-          const firstHole = punchedSparseRanges[0]?.start ?? candidateSparse[0]!.start;
           const sparseManifest: ColdManifest = {
             ...manifest,
             originalRetained: false,
             sparseRanges: punchedSparseRanges,
           };
           const encodedSparseManifest = serializeValidatedManifest(sparseManifest, key);
-          await writeSparseMarker(located, firstHole, options.signal);
+          await writeSparseMarker(
+            located,
+            {
+              confirmedRanges: priorRemainingSparse,
+              pendingRanges: candidateSparse,
+            },
+            options.signal,
+          );
           await writeManifestAtomic(storage, scope, manifestKey, encodedSparseManifest, options.signal);
           manifest = sparseManifest;
           const punched = await punchSparseRanges(located, candidateSparse);
           allocatedBytesBefore = punched.allocatedBytesBefore;
           allocatedBytesAfter = punched.allocatedBytesAfter;
-          if (punched.status === 'unsupported_before_mutation' && !priorSparseStillActive) {
-            manifest = { ...manifest, originalRetained: true, sparseRanges: [] };
-            const fallbackEncoded = serializeValidatedManifest(manifest, key);
-            await writeManifestAtomic(storage, scope, manifestKey, fallbackEncoded);
-            await removeSparseMarker(located);
+          if (punched.status === 'punched') {
+            await writeSparseMarker(located, {
+              confirmedRanges: punchedSparseRanges,
+              pendingRanges: [],
+            }).catch(() => undefined);
+          } else if (punched.status === 'unsupported_before_mutation') {
+            if (!priorSparseStillActive) {
+              manifest = { ...manifest, originalRetained: true, sparseRanges: [] };
+              const fallbackEncoded = serializeValidatedManifest(manifest, key);
+              await writeManifestAtomic(storage, scope, manifestKey, fallbackEncoded);
+              await removeSparseMarker(located);
+            } else {
+              manifest = { ...manifest, originalRetained: false, sparseRanges: initialSparseRanges };
+              const fallbackEncoded = serializeValidatedManifest(manifest, key);
+              await writeManifestAtomic(storage, scope, manifestKey, fallbackEncoded);
+              await writeSparseMarker(located, {
+                confirmedRanges: initialSparseRanges,
+                pendingRanges: [],
+              }).catch(() => undefined);
+            }
           } else if (punched.status === 'mutated_or_unknown') {
             throw new StorageError(
               StorageErrors.codes.STORAGE_IO_FAILED,

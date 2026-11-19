@@ -89,6 +89,8 @@ public static class WindowsProcessHelper
     const uint FILE_ATTRIBUTE_SPARSE_FILE = 0x00000200;
     const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
     const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
+    const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    const uint STILL_ACTIVE = 259;
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr CreateJobObject(IntPtr attributes, string name);
@@ -131,6 +133,10 @@ public static class WindowsProcessHelper
     static extern bool SetFileInformationByHandle(SafeFileHandle hFile, int FileInformationClass, ref FileBasicInfo lpFileInformation, uint dwBufferSize);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool FlushFileBuffers(SafeFileHandle hFile);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetProcessTimes(IntPtr hProcess, out long lpCreationTime, out long lpExitTime, out long lpKernelTime, out long lpUserTime);
 
     static void Check(bool success, string operation)
     {
@@ -327,6 +333,31 @@ public static class WindowsProcessHelper
         }
     }
 
+    static string ProcessCreationFileTime(uint pid)
+    {
+        IntPtr hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (hProc == IntPtr.Zero)
+        {
+            int err = Marshal.GetLastWin32Error();
+            if (err == 87) return "dead";
+            if (err == 5) return "denied";
+            throw new Win32Exception(err, "OpenProcess");
+        }
+        try
+        {
+            uint exitCode;
+            if (GetExitCodeProcess(hProc, out exitCode) && exitCode != STILL_ACTIVE)
+                return "dead";
+            long creation, exit, kernel, user;
+            Check(GetProcessTimes(hProc, out creation, out exit, out kernel, out user), "GetProcessTimes");
+            return creation.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        finally
+        {
+            CloseHandle(hProc);
+        }
+    }
+
     static int RunSparseWorker()
     {
         var utf8NoBom = new UTF8Encoding(false);
@@ -346,6 +377,11 @@ public static class WindowsProcessHelper
                     if (cmd == "ping")
                     {
                         writer.WriteLine("ok\t1");
+                        continue;
+                    }
+                    if (cmd == "proctime")
+                    {
+                        writer.WriteLine("ok\t" + ProcessCreationFileTime(uint.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture)));
                         continue;
                     }
                     string path = Encoding.UTF8.GetString(Convert.FromBase64String(parts[1]));

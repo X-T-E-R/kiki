@@ -32,6 +32,7 @@ import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageSe
 import {
   _setSparsePunchOverrideForTests,
   allocatedFileBytes,
+  clearSparseAttributeCache,
   closeSparseFileWorker,
   queryWin32SparseAttribute,
 } from '#/persistence/backends/node-fs/sparseFile';
@@ -2183,19 +2184,27 @@ describe('cold segment journal', () => {
     }
   }, 30_000);
 
-  it('spawns zero subprocesses on dense/sealed/orphaned reads, never invokes powershell/csc, and degrades cleanly on legacy 1-arg helper (Round-2 #1)', async () => {
+  it('spawns zero powershell/csc processes, caches Win32 sparse-attribute checks on dense reads, and degrades cleanly on legacy 1-arg helper (Round-2 #1)', async () => {
     const sparseSource = await readFile(
       resolve(import.meta.dirname, '../../../../src/persistence/backends/node-fs/sparseFile.ts'),
       'utf8',
     );
-    expect(sparseSource.toLowerCase()).not.toContain('powershell');
-    expect(sparseSource.toLowerCase()).not.toContain('add-type');
-    expect(sparseSource.toLowerCase()).not.toContain('csc.exe');
+    const fileLockSource = await readFile(
+      resolve(import.meta.dirname, '../../../../src/persistence/backends/node-fs/fileLock.ts'),
+      'utf8',
+    );
+    for (const src of [sparseSource, fileLockSource]) {
+      expect(src.toLowerCase()).not.toContain('powershell');
+      expect(src.toLowerCase()).not.toContain('pwsh');
+      expect(src.toLowerCase()).not.toContain('add-type');
+      expect(src.toLowerCase()).not.toContain('csc.exe');
+    }
 
     const root = await mkdtemp(join(tmpdir(), 'cold-r2-no-ps-'));
     const storage = new FileStorageService(root);
     const spawned: Array<{ file: string; args: string[] }> = [];
     closeSparseFileWorker();
+    clearSparseAttributeCache();
     const childProto = ChildProcess.prototype as unknown as {
       spawn(options: { file: string; args: string[] }): number;
     };
@@ -2220,6 +2229,18 @@ describe('cold segment journal', () => {
       expect(densePayload.byteLength).toBeGreaterThan(131_072);
       await writeFile(wirePath, densePayload);
 
+      expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(densePayload);
+      for (const call of spawned) {
+        expect(call.file.toLowerCase()).toContain('windows-process-helper.exe');
+        expect(call.file.toLowerCase()).not.toContain('powershell');
+      }
+      if (process.platform === 'win32') {
+        expect(spawned.length).toBeLessThanOrEqual(1);
+      } else {
+        expect(spawned).toEqual([]);
+      }
+      closeSparseFileWorker();
+      spawned.length = 0;
       expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(densePayload);
       const densePin = await openPinnedLogicalRead(storage, SCOPE, KEY);
       expect(await concatBytes(densePin.read())).toEqual(densePayload);
@@ -2293,4 +2314,210 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 35_000);
+
+  it('detects orphaned sparse journals whose first hole starts past 65536 and preserves confirmed punched marker offsets across reseals (Round-3 R2-1a)', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await mkdtemp(join(tmpdir(), 'cold-r3-sparse-offset-'));
+    const storage = new FileStorageService(root);
+    try {
+      const payload = Buffer.from(
+        Array.from({ length: 340 }, (_, i) => `${JSON.stringify({
+          type: 'note',
+          id: `r3-1a-${i}`,
+          text: `SPARSE_OFFSET_${i}_${'K'.repeat(1_550)}`,
+        })}\n`).join(''),
+      );
+      expect(payload.byteLength).toBeGreaterThan(520_000);
+
+      const cut1 = payload.indexOf(0x0a, 393_216) + 1;
+      const cut2 = payload.indexOf(0x0a, 458_752) + 1;
+
+      const scope1 = 'agents/hole-131072';
+      await mkdir(join(root, scope1), { recursive: true });
+      const wire1 = join(root, scope1, KEY);
+      await writeFile(wire1, payload);
+      expect(await concatBytes(readLogicalBytes(storage, scope1, KEY))).toEqual(payload);
+
+      const seal1 = await sealColdSegments(storage, scope1, KEY, cut1, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 64 * 1024,
+        preserveOffsets: [98_304],
+      });
+      expect(seal1.originalRetained).toBe(false);
+      expect(seal1.sparseRanges?.[0]?.start).toBe(131_072);
+      await rm(`${wire1}.segments.json`);
+      await rm(`${wire1}.sparse`);
+
+      await expect(concatBytes(readLogicalBytes(storage, scope1, KEY))).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      await expect(openPinnedLogicalRead(storage, scope1, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+
+      const scope2 = 'agents/hole-327680';
+      await mkdir(join(root, scope2), { recursive: true });
+      const wire2 = join(root, scope2, KEY);
+      await writeFile(wire2, payload);
+      expect(await concatBytes(readLogicalBytes(storage, scope2, KEY))).toEqual(payload);
+
+      const seal2 = await sealColdSegments(storage, scope2, KEY, cut2, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 64 * 1024,
+        keepHeadBytes: 327_680,
+      });
+      expect(seal2.originalRetained).toBe(false);
+      expect(seal2.sparseRanges?.[0]?.start).toBe(327_680);
+      await rm(`${wire2}.segments.json`);
+      await rm(`${wire2}.sparse`);
+
+      await expect(concatBytes(readLogicalBytes(storage, scope2, KEY))).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+
+      const scope3 = 'agents/reseal-marker-preserve';
+      await mkdir(join(root, scope3), { recursive: true });
+      const wire3 = join(root, scope3, KEY);
+      await writeFile(wire3, payload);
+      const initialSeal3 = await sealColdSegments(storage, scope3, KEY, cut1, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 64 * 1024,
+        preserveOffsets: [98_304],
+      });
+      expect(initialSeal3.sparseRanges?.[0]?.start).toBe(131_072);
+
+      _setSparsePunchOverrideForTests(async () => ({
+        status: 'unsupported_before_mutation',
+        supported: false,
+        punchedRanges: [],
+      }));
+      try {
+        const reseal3 = await sealColdSegments(storage, scope3, KEY, cut2, {
+          codec: 'zstd',
+          reclaim: true,
+          segmentBytes: 64 * 1024,
+          preserveOffsets: [],
+        });
+        expect(reseal3.originalRetained).toBe(false);
+        expect(reseal3.sparseRanges).toEqual(initialSeal3.sparseRanges);
+      } finally {
+        _setSparsePunchOverrideForTests(undefined);
+      }
+
+      const marker3 = JSON.parse(await readFile(`${wire3}.sparse`, 'utf8')) as {
+        probeOffset: number;
+        confirmedOffsets: number[];
+      };
+      expect(marker3.probeOffset).toBe(131_072);
+      expect(marker3.confirmedOffsets).toContain(131_072);
+      expect(marker3.confirmedOffsets).not.toContain(65_536);
+
+      await rm(`${wire3}.segments.json`);
+      await expect(concatBytes(readLogicalBytes(storage, scope3, KEY))).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+    } finally {
+      _setSparsePunchOverrideForTests(undefined);
+      closeSparseFileWorker();
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 35_000);
+
+  it('sweeps orphaned .segments/<oldSealId> directories after foreground preemption on both subsequent seal and unseal (Round-3 R2-7)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-r3-orphan-sweep-'));
+    const storage = new FileStorageService(root);
+    try {
+      const part1 = Buffer.from(
+        Array.from({ length: 140 }, (_, i) => `${JSON.stringify({
+          type: 'note',
+          id: `s1-${i}`,
+          text: `SWEEP_PART1_${i}_${'R'.repeat(1_600)}`,
+        })}\n`).join(''),
+      );
+      const part2 = Buffer.from(
+        Array.from({ length: 90 }, (_, i) => `${JSON.stringify({
+          type: 'note',
+          id: `s2-${i}`,
+          text: `SWEEP_PART2_${i}_${'S'.repeat(1_600)}`,
+        })}\n`).join(''),
+      );
+
+      const runPreemptedReseal = async (scopeName: string): Promise<{ wirePath: string; activeSealId: string }> => {
+        await mkdir(join(root, scopeName), { recursive: true });
+        const wirePath = join(root, scopeName, KEY);
+        await writeFile(wirePath, part1);
+        const first = await compactRetainedJournal(wirePath, {
+          codec: 'zstd',
+          reclaim: true,
+          segmentBytes: 64 * 1024,
+          hotTailBytes: 32 * 1024,
+        });
+        expect(first.skipped).toBe(false);
+        const seal1Id = (JSON.parse(await readFile(`${wirePath}.segments.json`, 'utf8')) as { sealId: string }).sealId;
+
+        const fh = await open(wirePath, 'a');
+        try {
+          await fh.writeFile(part2);
+          await fh.sync();
+        } finally {
+          await fh.close();
+        }
+
+        const pinned = await openPinnedLogicalRead(storage, scopeName, KEY);
+        const preempt = new AbortController();
+        const resealPromise = compactRetainedJournal(wirePath, {
+          codec: 'zstd',
+          reclaim: true,
+          incremental: true,
+          segmentBytes: 64 * 1024,
+          hotTailBytes: 32 * 1024,
+          signal: preempt.signal,
+        });
+
+        let seal2Id = seal1Id;
+        await vi.waitFor(async () => {
+          seal2Id = (JSON.parse(await readFile(`${wirePath}.segments.json`, 'utf8')) as { sealId: string }).sealId;
+          expect(seal2Id).not.toBe(seal1Id);
+        }, { timeout: 10_000 });
+
+        preempt.abort(new Error('preempted during reader drain'));
+        await expect(resealPromise).rejects.toThrow('preempted during reader drain');
+
+        const dirsWhilePinned = await readdir(`${wirePath}.segments`);
+        expect(dirsWhilePinned.sort()).toEqual([seal1Id, seal2Id].sort());
+        expect(await concatBytes(pinned.read())).toEqual(Buffer.concat([part1, part2]));
+        await pinned.close();
+        return { wirePath, activeSealId: seal2Id };
+      };
+
+      const caseSeal = await runPreemptedReseal('agents/sweep-on-seal');
+      const followup = await compactRetainedJournal(caseSeal.wirePath, {
+        codec: 'zstd',
+        reclaim: true,
+        incremental: true,
+        segmentBytes: 64 * 1024,
+        hotTailBytes: 32 * 1024,
+      });
+      expect(followup.skipped).toBe(false);
+      const finalManifest = JSON.parse(await readFile(`${caseSeal.wirePath}.segments.json`, 'utf8')) as {
+        sealId: string;
+      };
+      const remainingDirs = await readdir(`${caseSeal.wirePath}.segments`);
+      expect(remainingDirs).toEqual([finalManifest.sealId]);
+
+      const caseUnseal = await runPreemptedReseal('agents/sweep-on-unseal');
+      await unsealRetainedJournal(caseUnseal.wirePath);
+      await expect(stat(`${caseUnseal.wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(`${caseUnseal.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(caseUnseal.wirePath)).toEqual(Buffer.concat([part1, part2]));
+    } finally {
+      closeSparseFileWorker();
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 40_000);
 });

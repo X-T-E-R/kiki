@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fsSync from 'node:fs';
 import {
@@ -15,10 +14,10 @@ import {
 } from 'node:fs/promises';
 import { posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { promisify } from 'node:util';
-import { isMainThread, postMessageToThread, threadId, type Worker } from 'node:worker_threads';
+import { BroadcastChannel, postMessageToThread, threadId, type Worker } from 'node:worker_threads';
 import * as portablePath from 'pathe';
 
+import { queryWin32ProcessCreationFileTime } from '#/persistence/backends/node-fs/sparseFile';
 import {
   isStorageError,
   StorageError,
@@ -68,19 +67,25 @@ const TRANSIENT_DENIAL_RETRIES = 4;
 const TRANSIENT_DENIAL_DELAY_MS = 10;
 const LOCK_WAIT_BASE_MS = 25;
 const LOCK_WAIT_MAX_MS = 250;
+const PENDING_UNLINK_RETRY_BASE_MS = 25;
+const PENDING_UNLINK_RETRY_MAX_MS = 100;
+const RELEASED_TOKEN_HISTORY_MAX = 4_096;
 const TRANSIENT_DENIAL_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const execFileAsync = promisify(execFile);
 const HELD = new Set<FileLock>();
 const READER_HELD = new Set<ReaderLeaseHandle>();
 const ACTIVE_THREAD_READER_TOKENS = new Set<string>();
+const RELEASED_LOCAL_READER_TOKENS = new Set<string>();
 const PENDING_READER_UNLINKS = new Set<string>();
 const DEAD_LOCAL_THREAD_IDS = new Set<number>();
-const TRACKED_WORKER_LEASE_DIRS = new Map<number, Set<string>>();
+const TRACKED_WORKER_JOURNALS = new Map<number, Set<string>>();
 const HOOKED_READER_WORKERS = new WeakSet<Worker>();
 const readerGateDepth = new Map<string, number>();
 const READER_GATE_WAIT_MS = 60_000;
 let exitHooked = false;
 let workerProbeHooked = false;
+let readerBroadcast: BroadcastChannel | undefined;
+let pendingUnlinkTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingUnlinkDelayMs = PENDING_UNLINK_RETRY_BASE_MS;
 
 interface ReaderLeaseHandle {
   releaseSync(): void;
@@ -106,31 +111,26 @@ async function ownerProcessAlive(payload: FileLockPayload, signal?: AbortSignal,
   signal?.throwIfAborted();
   if (!pidAlive(payload.pid)) return false;
   if (payload.pid === process.pid) {
-    return Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) <= 2_000;
+    if (Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) > 2_000) return false;
+    const ownerThreadId = payload.threadId ?? 0;
+    if (ownerThreadId === 0 || ownerThreadId === threadId) return true;
+    return localWorkerThreadAlive(ownerThreadId);
   }
   if (process.platform !== 'win32') return true;
   const identity = `${payload.pid}:${payload.processStartedAt}`;
   const proved = provedAt?.get(identity);
   if (proved !== undefined && Date.now() - proved < 5_000) return true;
-  try {
-    const { stdout } = await execFileAsync('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `(Get-Process -Id ${payload.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`,
-    ], { timeout: 5_000, windowsHide: true, maxBuffer: 4_096, signal });
-    const startedAt = Number(stdout.trim()) / 10_000 - WINDOWS_EPOCH_OFFSET_MS;
-    if (!Number.isFinite(startedAt) || startedAt < 0 || startedAt > Date.now() + 60_000) return true;
-    const alive = Math.abs(startedAt - payload.processStartedAt) <= 2_000;
-    if (alive && provedAt !== undefined) {
-      if (provedAt.size >= 128) provedAt.delete(provedAt.keys().next().value!);
-      provedAt.set(identity, Date.now());
-    }
-    return alive;
-  } catch {
-    signal?.throwIfAborted();
-    return pidAlive(payload.pid);
+  const fileTime = await queryWin32ProcessCreationFileTime(payload.pid, signal);
+  if (fileTime === 'dead') return false;
+  if (fileTime === 'unknown') return pidAlive(payload.pid);
+  const startedAt = Number(fileTime) / 10_000 - WINDOWS_EPOCH_OFFSET_MS;
+  if (!Number.isFinite(startedAt) || startedAt < 0 || startedAt > Date.now() + 60_000) return true;
+  const alive = Math.abs(startedAt - payload.processStartedAt) <= 2_000;
+  if (alive && provedAt !== undefined) {
+    if (provedAt.size >= 128) provedAt.delete(provedAt.keys().next().value!);
+    provedAt.set(identity, Date.now());
   }
+  return alive;
 }
 
 function isPayload(value: unknown): value is FileLockPayload {
@@ -175,6 +175,70 @@ function tryUnlinkSyncComplete(filePath: string): boolean {
   }
 }
 
+function recordReleasedReaderToken(token: string): void {
+  if (RELEASED_LOCAL_READER_TOKENS.size >= RELEASED_TOKEN_HISTORY_MAX) {
+    const oldest = RELEASED_LOCAL_READER_TOKENS.keys().next().value;
+    if (oldest !== undefined) RELEASED_LOCAL_READER_TOKENS.delete(oldest);
+  }
+  RELEASED_LOCAL_READER_TOKENS.add(token);
+}
+
+function ensureReaderBroadcast(): BroadcastChannel {
+  if (readerBroadcast !== undefined) return readerBroadcast;
+  const channel = new BroadcastChannel('kiki.fileLock.readers.v1');
+  channel.onmessage = (event: unknown) => {
+    const data = (event as { data?: unknown })?.data;
+    if (data === null || typeof data !== 'object') return;
+    const msg = data as { pid?: unknown; token?: unknown; leasePath?: unknown; unlinked?: unknown };
+    if (msg.pid !== process.pid || typeof msg.token !== 'string') return;
+    recordReleasedReaderToken(msg.token);
+    if (typeof msg.leasePath === 'string' && msg.leasePath.length > 0) {
+      if (msg.unlinked === true) {
+        PENDING_READER_UNLINKS.delete(msg.leasePath);
+      } else {
+        enqueuePendingReaderUnlink(msg.leasePath);
+      }
+    }
+  };
+  channel.unref();
+  readerBroadcast = channel;
+  return channel;
+}
+
+function notifyReaderLeaseReleased(token: string, leasePath: string, unlinked: boolean): void {
+  recordReleasedReaderToken(token);
+  try {
+    ensureReaderBroadcast().postMessage({
+      pid: process.pid,
+      token,
+      leasePath,
+      unlinked,
+    });
+  } catch {}
+}
+
+function enqueuePendingReaderUnlink(leasePath: string): void {
+  PENDING_READER_UNLINKS.add(leasePath);
+  schedulePendingReaderUnlinkRetry();
+}
+
+function schedulePendingReaderUnlinkRetry(): void {
+  if (PENDING_READER_UNLINKS.size === 0 || pendingUnlinkTimer !== undefined) return;
+  const currentDelay = pendingUnlinkDelayMs;
+  pendingUnlinkDelayMs = Math.min(PENDING_UNLINK_RETRY_MAX_MS, pendingUnlinkDelayMs * 2);
+  pendingUnlinkTimer = setTimeout(() => {
+    pendingUnlinkTimer = undefined;
+    void flushPendingReaderUnlinks().finally(() => {
+      if (PENDING_READER_UNLINKS.size > 0) {
+        schedulePendingReaderUnlinkRetry();
+      } else {
+        pendingUnlinkDelayMs = PENDING_UNLINK_RETRY_BASE_MS;
+      }
+    });
+  }, currentDelay);
+  pendingUnlinkTimer.unref?.();
+}
+
 async function flushPendingReaderUnlinks(): Promise<void> {
   if (PENDING_READER_UNLINKS.size === 0) return;
   for (const leasePath of [...PENDING_READER_UNLINKS]) {
@@ -187,12 +251,28 @@ async function flushPendingReaderUnlinks(): Promise<void> {
       }
     }
   }
+  if (PENDING_READER_UNLINKS.size === 0) {
+    pendingUnlinkDelayMs = PENDING_UNLINK_RETRY_BASE_MS;
+    if (pendingUnlinkTimer !== undefined) {
+      clearTimeout(pendingUnlinkTimer);
+      pendingUnlinkTimer = undefined;
+    }
+  }
 }
 
 function hookExit(): void {
-  if (!isMainThread && !workerProbeHooked) {
+  ensureReaderBroadcast();
+  if (!workerProbeHooked) {
     workerProbeHooked = true;
-    process.on('workerMessage', () => {});
+    process.on('workerMessage', (msg: unknown) => {
+      if (msg === null || typeof msg !== 'object') return;
+      const probe = msg as { kikiReaderProbeToken?: unknown; state?: unknown };
+      if (typeof probe.kikiReaderProbeToken === 'string' && probe.state instanceof Int32Array) {
+        const active = ACTIVE_THREAD_READER_TOKENS.has(probe.kikiReaderProbeToken);
+        Atomics.store(probe.state, 0, active ? 1 : 2);
+        Atomics.notify(probe.state, 0);
+      }
+    });
   }
   if (exitHooked) return;
   exitHooked = true;
@@ -207,40 +287,45 @@ function hookExit(): void {
   process.on('exit', releaseHeld);
 }
 
-async function reapDeadThreadLeases(deadThreadId: number): Promise<void> {
-  const dirs = TRACKED_WORKER_LEASE_DIRS.get(deadThreadId);
-  TRACKED_WORKER_LEASE_DIRS.delete(deadThreadId);
-  if (dirs === undefined) return;
-  for (const directory of dirs) {
-    let names: string[];
-    try {
-      names = await readdir(directory);
-    } catch {
-      continue;
+async function reapDeadThreadFileIfOwned(filePath: string, deadThreadId: number, retryReader: boolean): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, 'utf8');
+  } catch {
+    return;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (isPayload(parsed) && parsed.pid === process.pid && parsed.threadId === deadThreadId) {
+      if (retryReader) recordReleasedReaderToken(parsed.token);
+      await unlink(filePath).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && retryReader) {
+          enqueuePendingReaderUnlink(filePath);
+        }
+      });
     }
+  } catch {}
+}
+
+async function reapDeadThreadLeases(deadThreadId: number): Promise<void> {
+  const journals = TRACKED_WORKER_JOURNALS.get(deadThreadId);
+  TRACKED_WORKER_JOURNALS.delete(deadThreadId);
+  if (journals === undefined) return;
+  for (const resolvedJournal of journals) {
+    const directory = sharedReadDirectory(resolvedJournal);
+    const names = await readdir(directory).catch(() => [] as string[]);
     for (const name of names) {
       if (!name.endsWith('.reader')) continue;
-      const leasePath = join(directory, name);
-      let raw: string;
-      try {
-        raw = await readFile(leasePath, 'utf8');
-      } catch {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(raw) as unknown;
-        if (
-          isPayload(parsed) &&
-          parsed.pid === process.pid &&
-          parsed.threadId === deadThreadId
-        ) {
-          await unlink(leasePath).catch((error: unknown) => {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-              PENDING_READER_UNLINKS.add(leasePath);
-            }
-          });
-        }
-      } catch {}
+      await reapDeadThreadFileIfOwned(join(directory, name), deadThreadId, true);
+    }
+    const coldLockPath = `${resolvedJournal}.cold.lock`;
+    await reapDeadThreadFileIfOwned(coldLockPath, deadThreadId, false);
+    const parentDir = dirname(coldLockPath);
+    const watchPrefix = `${basename(coldLockPath)}.watch-`;
+    const parentEntries = await readdir(parentDir).catch(() => [] as string[]);
+    for (const entry of parentEntries) {
+      if (!entry.startsWith(watchPrefix)) continue;
+      await reapDeadThreadFileIfOwned(join(parentDir, entry), deadThreadId, false);
     }
   }
 }
@@ -249,12 +334,12 @@ export function trackReaderWorkerThread(worker: Worker, journalPath?: string): v
   const tid = worker.threadId;
   if (tid < 0) return;
   if (journalPath !== undefined && journalPath.length > 0) {
-    let dirs = TRACKED_WORKER_LEASE_DIRS.get(tid);
-    if (dirs === undefined) {
-      dirs = new Set();
-      TRACKED_WORKER_LEASE_DIRS.set(tid, dirs);
+    let journals = TRACKED_WORKER_JOURNALS.get(tid);
+    if (journals === undefined) {
+      journals = new Set();
+      TRACKED_WORKER_JOURNALS.set(tid, journals);
     }
-    dirs.add(sharedReadDirectory(journalPath));
+    journals.add(resolve(journalPath));
   }
   if (HOOKED_READER_WORKERS.has(worker)) return;
   HOOKED_READER_WORKERS.add(worker);
@@ -329,8 +414,10 @@ export async function acquireSharedReadLease(journalPath: string): Promise<{ rel
         unlinked = true;
         PENDING_READER_UNLINKS.delete(leasePath);
         READER_HELD.delete(handle);
+        notifyReaderLeaseReleased(token, leasePath, true);
       } else {
-        PENDING_READER_UNLINKS.add(leasePath);
+        enqueuePendingReaderUnlink(leasePath);
+        notifyReaderLeaseReleased(token, leasePath, false);
       }
     },
   };
@@ -347,16 +434,19 @@ export async function acquireSharedReadLease(journalPath: string): Promise<{ rel
         unlinked = true;
         PENDING_READER_UNLINKS.delete(leasePath);
         READER_HELD.delete(handle);
+        notifyReaderLeaseReleased(token, leasePath, true);
         return;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
           unlinked = true;
           PENDING_READER_UNLINKS.delete(leasePath);
           READER_HELD.delete(handle);
+          notifyReaderLeaseReleased(token, leasePath, true);
           return;
         }
         if (!isTransientAccessDenial(error) || attempt === TRANSIENT_DENIAL_RETRIES) {
-          PENDING_READER_UNLINKS.add(leasePath);
+          enqueuePendingReaderUnlink(leasePath);
+          notifyReaderLeaseReleased(token, leasePath, false);
           return;
         }
       }
@@ -399,8 +489,7 @@ export async function waitSharedReadIdle(journalPath: string, signal?: AbortSign
         const code = (error as NodeJS.ErrnoException).code;
         if (code === 'ENOENT') return;
         if (isTransientAccessDenial(error)) {
-          PENDING_READER_UNLINKS.add(leasePath);
-          pending = true;
+          enqueuePendingReaderUnlink(leasePath);
           return;
         }
         throw error;
@@ -415,7 +504,7 @@ export async function waitSharedReadIdle(journalPath: string, signal?: AbortSign
 async function localWorkerThreadAlive(targetThreadId: number): Promise<boolean> {
   if (DEAD_LOCAL_THREAD_IDS.has(targetThreadId)) return false;
   try {
-    await postMessageToThread(targetThreadId, { kikiReaderProbe: 1 }, 500);
+    await postMessageToThread(targetThreadId, { kikiLockProbe: 1 }, 500);
     return true;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -425,6 +514,41 @@ async function localWorkerThreadAlive(targetThreadId: number): Promise<boolean> 
     }
     return true;
   }
+}
+
+async function localThreadReaderTokenAlive(targetThreadId: number, token: string): Promise<boolean> {
+  if (RELEASED_LOCAL_READER_TOKENS.has(token)) return false;
+  if (targetThreadId !== 0 && DEAD_LOCAL_THREAD_IDS.has(targetThreadId)) return false;
+  const state = new Int32Array(new SharedArrayBuffer(4));
+  try {
+    await postMessageToThread(targetThreadId, { kikiReaderProbeToken: token, state }, 500);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ERR_WORKER_MESSAGING_FAILED' || code === 'ERR_WORKER_NOT_RUNNING') {
+      if (targetThreadId !== 0) DEAD_LOCAL_THREAD_IDS.add(targetThreadId);
+      return false;
+    }
+    return !RELEASED_LOCAL_READER_TOKENS.has(token);
+  }
+  let observed = Atomics.load(state, 0);
+  if (observed === 0) {
+    const atomicsWithWaitAsync = Atomics as unknown as {
+      waitAsync(
+        typedArray: Int32Array,
+        index: number,
+        value: number,
+        timeout?: number,
+      ): { async: false; value: string } | { async: true; value: Promise<string> };
+    };
+    const waited = atomicsWithWaitAsync.waitAsync(state, 0, 0, 25);
+    if (waited.async) await waited.value;
+    observed = Atomics.load(state, 0);
+  }
+  if (observed === 2) {
+    recordReleasedReaderToken(token);
+    return false;
+  }
+  return !RELEASED_LOCAL_READER_TOKENS.has(token);
 }
 
 async function sharedReaderAlive(
@@ -457,12 +581,12 @@ async function sharedReaderAlive(
   if (!pidAlive(payload.pid)) return false;
   if (payload.pid === process.pid) {
     if (Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) > 2_000) return false;
+    if (RELEASED_LOCAL_READER_TOKENS.has(payload.token)) return false;
     const leaseThreadId = payload.threadId ?? 0;
     if (leaseThreadId === threadId) {
       return ACTIVE_THREAD_READER_TOKENS.has(payload.token);
     }
-    if (leaseThreadId === 0) return true;
-    return localWorkerThreadAlive(leaseThreadId);
+    return localThreadReaderTokenAlive(leaseThreadId, payload.token);
   }
   if (process.platform !== 'win32') return true;
   const proved = provedAt.get(payload.token);
@@ -709,7 +833,8 @@ class FileLock implements IStorageLock {
   private async acquireAttempt(): Promise<boolean> {
     this.signal?.throwIfAborted();
     if (this.held) return true;
-    this.token = `${process.pid}:${randomUUID()}`;
+    hookExit();
+    this.token = `${process.pid}:${threadId}:${randomUUID()}`;
     this.acquiredAt = Date.now();
     await mkdir(dirname(this.lockPath), { recursive: true, mode: this.dirMode });
     await this.publishWatch();
@@ -928,6 +1053,7 @@ class FileLock implements IStorageLock {
     const payload: FileLockPayload = {
       version: 1,
       pid: process.pid,
+      threadId,
       processStartedAt: PROCESS_STARTED_AT,
       token: this.token,
       acquiredAt: this.acquiredAt,
