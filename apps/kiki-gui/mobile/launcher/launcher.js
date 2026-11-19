@@ -13325,6 +13325,8 @@
 		const win = window;
 		let activeStream = null;
 		let scanLoopActive = false;
+		let scanStarting = false;
+		let scanGeneration = 0;
 		let scannerHistoryEntry = false;
 		let managingServerId = null;
 		let unreachablePairedRecovery = null;
@@ -13840,6 +13842,8 @@
 			});
 		}
 		function stopCameraScanner(options = {}) {
+			scanGeneration += 1;
+			scanStarting = false;
 			scanLoopActive = false;
 			if (activeStream) {
 				for (const track of activeStream.getTracks()) track.stop();
@@ -13978,11 +13982,15 @@
 			qrPhotoInput.click();
 		}
 		async function startWebCameraLoop() {
+			if (scanStarting || activeStream !== null) return;
 			if (!navigator.mediaDevices?.getUserMedia) {
 				showScanFeedback(copy.cameraUnavailable, { offerPhotoPicker: true });
 				focusManualConnectInput();
 				return;
 			}
+			scanStarting = true;
+			const generation = ++scanGeneration;
+			scanButton.disabled = true;
 			let stream;
 			try {
 				stream = await navigator.mediaDevices.getUserMedia({
@@ -13990,9 +13998,17 @@
 					audio: false
 				});
 			} catch (error) {
+				scanStarting = false;
+				scanButton.disabled = false;
 				const errName = error && typeof error === "object" ? error.name : "";
 				showScanFeedback(errName === "NotAllowedError" || errName === "PermissionDeniedError" ? copy.cameraDenied : copy.cameraUnavailable, { offerPhotoPicker: true });
 				focusManualConnectInput();
+				return;
+			}
+			scanStarting = false;
+			if (generation !== scanGeneration || activeStream !== null) {
+				for (const track of stream.getTracks()) track.stop();
+				if (activeStream === null) scanButton.disabled = false;
 				return;
 			}
 			activeStream = stream;

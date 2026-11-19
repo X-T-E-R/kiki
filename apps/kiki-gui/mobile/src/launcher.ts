@@ -213,6 +213,8 @@ function bootstrapLauncherUi(): void {
 
   let activeStream: MediaStream | null = null;
   let scanLoopActive = false;
+  let scanStarting = false;
+  let scanGeneration = 0;
   let scannerHistoryEntry = false;
   let managingServerId: string | null = null;
   let unreachablePairedRecovery: RecoveryBinding | null = null;
@@ -959,6 +961,8 @@ function bootstrapLauncherUi(): void {
   }
 
   function stopCameraScanner(options: { fromHistory?: boolean } = {}): void {
+    scanGeneration += 1;
+    scanStarting = false;
     scanLoopActive = false;
     if (activeStream) {
       for (const track of activeStream.getTracks()) track.stop();
@@ -1107,11 +1111,15 @@ function bootstrapLauncherUi(): void {
   }
 
   async function startWebCameraLoop(): Promise<void> {
+    if (scanStarting || activeStream !== null) return;
     if (!navigator.mediaDevices?.getUserMedia) {
       showScanFeedback(copy.cameraUnavailable, { offerPhotoPicker: true });
       focusManualConnectInput();
       return;
     }
+    scanStarting = true;
+    const generation = ++scanGeneration;
+    scanButton.disabled = true;
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -1119,12 +1127,20 @@ function bootstrapLauncherUi(): void {
         audio: false,
       });
     } catch (error: unknown) {
+      scanStarting = false;
+      scanButton.disabled = false;
       const errName = error && typeof error === 'object' ? (error as { name?: string }).name : '';
       const denied = errName === 'NotAllowedError' || errName === 'PermissionDeniedError';
       showScanFeedback(denied ? copy.cameraDenied : copy.cameraUnavailable, {
         offerPhotoPicker: true,
       });
       focusManualConnectInput();
+      return;
+    }
+    scanStarting = false;
+    if (generation !== scanGeneration || activeStream !== null) {
+      for (const track of stream.getTracks()) track.stop();
+      if (activeStream === null) scanButton.disabled = false;
       return;
     }
 
