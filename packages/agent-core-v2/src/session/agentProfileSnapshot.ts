@@ -3,7 +3,11 @@ import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { readPersistedAgentCheckpoint } from './persistedAgentCheckpoint';
+import {
+  readPersistedAgentCheckpoint,
+  readPersistedCheckpointStatToken,
+  type PersistedCheckpointStatToken,
+} from './persistedAgentCheckpoint';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '#/workspace/sessionLifecycle/internal/addressing';
@@ -73,6 +77,7 @@ const persistedAgentProfileCaches = new WeakMap<AgentProfileSnapshotHost, Map<st
 interface PersistedAgentProfileFlight {
   readonly size: number;
   readonly mtimeMs: number;
+  readonly checkpointToken: string;
   readonly metadataKey: string;
   readonly promise: Promise<PersistedAgentProfileSnapshot | undefined>;
 }
@@ -125,16 +130,20 @@ export async function readPersistedAgentProfileSnapshot(
   const appendLog = 'accessor' in core ? core.accessor.get(IAppendLogStore) : core.appendLog;
   let size: number;
   let mtimeMs: number;
+  let ckptStat: PersistedCheckpointStatToken;
   try {
-    [size, mtimeMs] = await Promise.all([
+    [size, mtimeMs, ckptStat] = await Promise.all([
       logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY).then((value) => value ?? 0),
       storage.mtime(scope, AGENT_WIRE_RECORD_KEY).then((value) => value ?? 0),
+      readPersistedCheckpointStatToken(storage, scope),
     ]);
   } catch (error) {
     if (signal?.aborted === true) throw signal.reason ?? error;
     return metadataSnapshot(metadata);
   }
   signal?.throwIfAborted();
+  const inlineByteBudget = options?.inlineByteBudget;
+  const usesCheckpoint = inlineByteBudget !== undefined && size > inlineByteBudget;
   const metadataKey = persistedMetadataKey(metadata);
   const cache = persistedAgentProfileCache(core);
   const cached = cache.get(scope);
@@ -143,11 +152,17 @@ export async function readPersistedAgentProfileSnapshot(
     cache.set(scope, cached);
     return cached.snapshot;
   }
-  const inlineByteBudget = options?.inlineByteBudget;
-  const flightKey = inlineByteBudget !== undefined && size > inlineByteBudget ? `${scope}:budget:${inlineByteBudget}` : scope;
+  const checkpointToken = usesCheckpoint ? ckptStat.token : 'full';
+  const flightKey = usesCheckpoint ? `${scope}:budget:${inlineByteBudget}:ckpt:${checkpointToken}` : scope;
   const flights = persistedAgentProfileFlightMap(core);
   let flight = flights.get(flightKey);
-  if (flight === undefined || flight.size !== size || flight.mtimeMs !== mtimeMs || flight.metadataKey !== metadataKey) {
+  if (
+    flight === undefined ||
+    flight.size !== size ||
+    flight.mtimeMs !== mtimeMs ||
+    flight.checkpointToken !== checkpointToken ||
+    flight.metadataKey !== metadataKey
+  ) {
     const docs = 'accessor' in core ? core.accessor.get(IAtomicDocumentStore) : core.docs;
     let workers: ICpuWorkerService | undefined;
     if ('accessor' in core) {
@@ -156,10 +171,10 @@ export async function readPersistedAgentProfileSnapshot(
       workers = core.workers;
     }
     const promise = (async (): Promise<PersistedAgentProfileSnapshot | undefined> => {
-      const checkpoint = inlineByteBudget !== undefined && size > inlineByteBudget
+      const checkpoint = usesCheckpoint
         ? await readPersistedAgentCheckpoint(docs, storage, scope, size, mtimeMs, new Set([profileKey.name, profileActiveToolsKey.name]), workers)
         : undefined;
-      if (inlineByteBudget !== undefined && size > inlineByteBudget &&
+      if (usesCheckpoint &&
         (checkpoint === undefined || !checkpoint.states.has(profileKey.name) || !checkpoint.states.has(profileActiveToolsKey.name) || size - checkpoint.offset > inlineByteBudget)) {
         const fallback = metadataSnapshot(metadata);
         return fallback === undefined ? undefined : { ...fallback, wireCoverage: 'unscanned' };
@@ -172,7 +187,7 @@ export async function readPersistedAgentProfileSnapshot(
     })().finally(() => {
       if (flights.get(flightKey)?.promise === promise) flights.delete(flightKey);
     });
-    flight = { size, mtimeMs, metadataKey, promise };
+    flight = { size, mtimeMs, checkpointToken, metadataKey, promise };
     flights.set(flightKey, flight);
   }
   return waitForPersistedAgentProfile(flight.promise, signal);

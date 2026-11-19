@@ -410,14 +410,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return promise;
   }
 
-  private async hasIndexedSession(sessionId: string): Promise<boolean> {
-    return this.index.hasIndexed !== undefined
-      ? this.index.hasIndexed(sessionId)
-      : (await this.index.get(sessionId)) !== undefined;
-  }
-
   private async assertNewSession(sessionId: string, skipIndexLookup = false): Promise<void> {
-    if (this.sessions.has(sessionId) || (!skipIndexLookup && await this.hasIndexedSession(sessionId))) {
+    if (this.sessions.has(sessionId) || (!skipIndexLookup && (await this.index.get(sessionId)) !== undefined)) {
       throw new Error2(ErrorCodes.SESSION_ALREADY_EXISTS, `Session "${sessionId}" already exists`);
     }
     for (const scope of new Set([this.sessionScope(sessionId), sessionScopeOf(this.handlerScope, sessionId)])) {

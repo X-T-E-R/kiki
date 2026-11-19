@@ -3746,4 +3746,36 @@ describe('AgentPromptService', () => {
       userMessageId: 'managed-inject-1',
     });
   });
+
+  it('coalesces concurrent managed inject calls per promptId through loop assignment and rejects conflicting fingerprints', async () => {
+    const { prompt, loop, target } = harness();
+    const wire = target.accessor.get(IWireService);
+    const flushGate = deferred<void>();
+    let gateArmed = true;
+    const originalFlush = wire.flush.bind(wire);
+    vi.spyOn(wire, 'flush').mockImplementation(async () => {
+      if (gateArmed) {
+        gateArmed = false;
+        await flushGate.promise;
+      }
+      await originalFlush();
+    });
+    const enqueueSpy = vi.spyOn(loop, 'enqueue');
+    const injected = message('coalesced-steer');
+
+    const first = prompt.inject(injected, { promptId: 'coalesced-inject-1', retryFingerprint: 'fp-same' });
+    const second = prompt.inject(injected, { promptId: 'coalesced-inject-1', retryFingerprint: 'fp-same' });
+    const conflict = prompt.inject(message('conflicting-steer'), {
+      promptId: 'coalesced-inject-1',
+      retryFingerprint: 'fp-different',
+    });
+
+    await expect(conflict).rejects.toMatchObject({ code: 'prompt.id_conflict' });
+    flushGate.resolve();
+
+    const [turn1, turn2] = await Promise.all([first, second]);
+    expect(turn1).toBeDefined();
+    expect(turn2).toBe(turn1);
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
+  });
 });

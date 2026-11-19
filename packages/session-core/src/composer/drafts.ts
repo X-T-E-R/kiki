@@ -399,28 +399,105 @@ export interface PendingComposerSubmission {
   readonly afterModelSwitch?: string;
   readonly appendTiming?: DeferredAppendTiming;
   readonly skills?: readonly PromptSkillActivation[];
+  readonly inFlightGeneration?: number;
+  readonly inFlightPromise?: Promise<unknown>;
+  readonly retryInvalidated?: boolean;
 }
 
 const pendingSubmissionMemory = new Map<string, PendingComposerSubmission>();
+let nextPendingSubmissionGeneration = 0;
+
+type PendingSubmissionListener = (sessionId: string) => void;
+const pendingSubmissionListeners = new Set<PendingSubmissionListener>();
+
+function notifyPendingSubmission(sessionId: string): void {
+  for (const listener of pendingSubmissionListeners) listener(sessionId);
+}
+
+export function subscribePendingSubmissions(listener: PendingSubmissionListener): () => void {
+  pendingSubmissionListeners.add(listener);
+  return () => {
+    pendingSubmissionListeners.delete(listener);
+  };
+}
 
 export function readPendingSubmission(sessionId: string): PendingComposerSubmission | undefined {
   return pendingSubmissionMemory.get(sessionId);
 }
 
+export function isPendingSubmissionInFlight(sessionId: string, scope?: string): boolean {
+  const current = pendingSubmissionMemory.get(sessionId);
+  if (current?.inFlightGeneration === undefined) return false;
+  return scope === undefined || current.scope === scope;
+}
+
+export function beginPendingSubmissionFlight(
+  sessionId: string,
+  submission: Omit<PendingComposerSubmission, 'inFlightGeneration' | 'inFlightPromise' | 'retryInvalidated'>,
+  inFlightPromise?: Promise<unknown>,
+): { readonly submission: PendingComposerSubmission; readonly generation: number } {
+  nextPendingSubmissionGeneration += 1;
+  const generation = nextPendingSubmissionGeneration;
+  const next: PendingComposerSubmission = {
+    ...submission,
+    inFlightGeneration: generation,
+    inFlightPromise,
+  };
+  pendingSubmissionMemory.set(sessionId, next);
+  notifyPendingSubmission(sessionId);
+  return { submission: next, generation };
+}
+
+export function finishPendingSubmissionFlight(sessionId: string, generation: number): void {
+  const current = pendingSubmissionMemory.get(sessionId);
+  if (current === undefined || current.inFlightGeneration !== generation) return;
+  if (current.retryInvalidated === true || readDraft(sessionId) !== current.draftText) {
+    pendingSubmissionMemory.delete(sessionId);
+  } else {
+    pendingSubmissionMemory.set(sessionId, {
+      scope: current.scope,
+      connectionScopeId: current.connectionScopeId,
+      payload: current.payload,
+      key: current.key,
+      draftText: current.draftText,
+      afterModelSwitch: current.afterModelSwitch,
+      appendTiming: current.appendTiming,
+      skills: current.skills,
+    });
+  }
+  notifyPendingSubmission(sessionId);
+}
+
+export function invalidatePendingSubmissionRetry(sessionId: string): void {
+  const current = pendingSubmissionMemory.get(sessionId);
+  if (current === undefined) return;
+  if (current.inFlightGeneration === undefined) {
+    pendingSubmissionMemory.delete(sessionId);
+    notifyPendingSubmission(sessionId);
+    return;
+  }
+  if (current.retryInvalidated === true) return;
+  pendingSubmissionMemory.set(sessionId, { ...current, retryInvalidated: true });
+}
+
 export function writePendingSubmission(sessionId: string, submission: PendingComposerSubmission | undefined): void {
   if (submission === undefined) {
-    pendingSubmissionMemory.delete(sessionId);
+    if (pendingSubmissionMemory.delete(sessionId)) notifyPendingSubmission(sessionId);
     return;
   }
   pendingSubmissionMemory.set(sessionId, submission);
+  notifyPendingSubmission(sessionId);
 }
 
 export function clearPendingSubmissionsForConnection(connectionScopeId: string): void {
+  const cleared: string[] = [];
   for (const [key, entry] of pendingSubmissionMemory) {
     if (entry.connectionScopeId === connectionScopeId) {
       pendingSubmissionMemory.delete(key);
+      cleared.push(key);
     }
   }
+  for (const key of cleared) notifyPendingSubmission(key);
 }
 
 export function settlePendingSubmission(
@@ -430,11 +507,13 @@ export function settlePendingSubmission(
 ): boolean {
   const current = pendingSubmissionMemory.get(sessionId);
   if (current === undefined || current.key !== submissionKey) return false;
-  if (readDraft(sessionId) !== current.draftText) {
+  if (current.retryInvalidated === true || readDraft(sessionId) !== current.draftText) {
     pendingSubmissionMemory.delete(sessionId);
+    notifyPendingSubmission(sessionId);
     return false;
   }
   pendingSubmissionMemory.delete(sessionId);
+  notifyPendingSubmission(sessionId);
   writeDraft(sessionId, '');
   const chrome = readComposerState(sessionId);
   const nextAnnotations = sentAnnotationIds !== undefined && sentAnnotationIds.size > 0
@@ -504,7 +583,7 @@ export function resetInputHistoryForTests(): void {
  */
 export function appendToDraft(sessionId: string, text: string): void {
   if (text === '') return;
-  pendingSubmissionMemory.delete(sessionId);
+  invalidatePendingSubmissionRetry(sessionId);
   const current = readDraft(sessionId);
   const separator = current !== '' && !/[\s]$/.test(current) ? ' ' : '';
   writeDraft(sessionId, `${current}${separator}${text}`);
@@ -526,7 +605,7 @@ export function recoverSubmittedDraft(key: string, text: string, attachments: re
 }
 
 export function restorePromptToDraft(sessionId: string, content: readonly import('@kiki/protocol').MessageContent[]): void {
-  pendingSubmissionMemory.delete(sessionId);
+  invalidatePendingSubmissionRetry(sessionId);
   const text = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
   const restored: ComposerAttachment[] = content.flatMap((part): ComposerAttachment[] => {
     if (part.type !== 'image' && part.type !== 'video' && part.type !== 'file') return [];

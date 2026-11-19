@@ -22,20 +22,24 @@ import { useExecutorCatalog } from '../settings/profileEditor/engines';
 
 import type { DeferredAppendTiming, PermissionMode, PromptDeliveryReason, PromptItem, PromptSkillActivation } from '@kiki/protocol';
 import {
+  beginPendingSubmissionFlight,
   buildPromptContent,
   buildSkillActivation,
   clearPendingSubmissionsForConnection,
+  finishPendingSubmissionFlight,
   flushDrafts,
+  invalidatePendingSubmissionRetry,
   isNativeExecutor,
+  isPendingSubmissionInFlight,
   readComposerState,
   readDraft,
   readPendingSubmission,
   recoverSubmittedDraft,
   settlePendingSubmission,
   subscribeDraftAppends,
+  subscribePendingSubmissions,
   writeComposerState,
   writeDraft,
-  writePendingSubmission,
   type ComposerAttachment,
   type ExecutionChoice,
   type PendingComposerSubmission,
@@ -849,8 +853,20 @@ function ChildAgentWorkspace({
   const pendingSendRef = useRef<PendingComposerSubmission | null>(
     (() => {
       const saved = readPendingSubmission(draftKey);
-      return saved !== undefined && saved.scope === sendScope && saved.draftText === draft ? saved : null;
+      return saved !== undefined && saved.scope === sendScope && !saved.retryInvalidated && saved.draftText === draft ? saved : null;
     })(),
+  );
+  const subscribeTargetSubmission = useCallback(
+    (listener: () => void) =>
+      subscribePendingSubmissions((key) => {
+        if (key === draftKey) listener();
+      }),
+    [draftKey],
+  );
+  const submissionInFlight = useSyncExternalStore(
+    subscribeTargetSubmission,
+    () => isPendingSubmissionInFlight(draftKey, sendScope),
+    () => false,
   );
   // "Send now" receipts still open to a late durable read: prompt id → the
   // reason already reported (null = only the generic queued notice went out).
@@ -877,9 +893,10 @@ function ChildAgentWorkspace({
     const savedPending = readPendingSubmission(draftKey);
     draftRevisionRef.current += 1;
     draftRef.current = restored;
-    pendingSendRef.current = savedPending !== undefined && savedPending.scope === sendScope && savedPending.draftText === restored
-      ? savedPending
-      : null;
+    pendingSendRef.current =
+      savedPending !== undefined && savedPending.scope === sendScope && !savedPending.retryInvalidated && savedPending.draftText === restored
+        ? savedPending
+        : null;
     if (pendingSendRef.current === null) setSendNotice(null);
     setDraftState(restored);
     setAttachments(chrome.attachments ?? []);
@@ -889,7 +906,7 @@ function ChildAgentWorkspace({
     if (next !== draftRef.current) {
       draftRevisionRef.current += 1;
       pendingSendRef.current = null;
-      writePendingSubmission(draftKey, undefined);
+      invalidatePendingSubmissionRetry(draftKey);
       setSendNotice(null);
     }
     draftRef.current = next;
@@ -901,7 +918,7 @@ function ChildAgentWorkspace({
       if (updated !== previous) {
         draftRevisionRef.current += 1;
         pendingSendRef.current = null;
-        writePendingSubmission(draftKey, undefined);
+        invalidatePendingSubmissionRetry(draftKey);
       }
       return updated;
     });
@@ -1144,7 +1161,8 @@ function ChildAgentWorkspace({
     options?: Parameters<ComponentProps<typeof Composer>['onSend']>[2],
     useSwitchDependency = true,
   ) => {
-    if (!agentKnown) return;
+    if (!agentKnown || isPendingSubmissionInFlight(draftKey, sendScope)) return;
+    const rawDraftText = draftRef.current;
     const carry = serializeSelectionCarryover(annotations, text, options?.presentation);
     const submittedText = carry.quotedText;
     const content = buildPromptContent(submittedText, composerAttachments, carry.presentation);
@@ -1156,140 +1174,190 @@ function ChildAgentWorkspace({
     const payload = JSON.stringify([submittedText, content, useSwitchDependency, skills]);
     const previous = pendingSendRef.current ?? readPendingSubmission(draftKey);
     // A lost acceptance retries the original execution payload, even if the queue advances.
-    const submission: PendingComposerSubmission = previous?.scope === sendScope && previous.payload === payload
-      ? { ...previous, draftText: text }
-      : { scope: sendScope, connectionScopeId: scopeId, payload, key: crypto.randomUUID(), draftText: text, appendTiming, skills,
-        afterModelSwitch: useSwitchDependency ? modelSwitches.dependency?.input.operationId : undefined };
+    const baseSubmission = previous !== undefined && previous.scope === sendScope && !previous.retryInvalidated && previous.payload === payload
+      ? {
+          scope: previous.scope,
+          connectionScopeId: previous.connectionScopeId,
+          payload: previous.payload,
+          key: previous.key,
+          draftText: rawDraftText,
+          appendTiming: previous.appendTiming,
+          skills: previous.skills,
+          afterModelSwitch: previous.afterModelSwitch,
+        }
+      : {
+          scope: sendScope,
+          connectionScopeId: scopeId,
+          payload,
+          key: crypto.randomUUID(),
+          draftText: rawDraftText,
+          appendTiming,
+          skills,
+          afterModelSwitch: useSwitchDependency ? modelSwitches.dependency?.input.operationId : undefined,
+        };
+    let resolveFlight!: () => void;
+    const flightPromise = new Promise<void>((resolve) => {
+      resolveFlight = resolve;
+    });
+    const { submission, generation } = beginPendingSubmissionFlight(draftKey, baseSubmission, flightPromise);
     pendingSendRef.current = submission;
-    writePendingSubmission(draftKey, submission);
-    const hasNonTextAttachment = content.some((part) => part.type !== 'text');
-    // Native text-only sends use the key as their prompt id, so the echo can
-    // hand over to the projected row; other sends drop it when they settle.
-    const keyedEcho = !externalExecutor && !hasNonTextAttachment;
-    setSendEcho({ scope: sendScope, agentId, id: submission.key, text: submittedText, content, createdAt: new Date().toISOString(),
-      slow: false, preserved: false, retryable: false, status: 'sending' });
-    revealOwnSend(false);
-    let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
     try {
-      // The server already defaults to agent_idle; keep the ordinary six-arg
-      // child send shape and add the seventh/eighth args only when needed.
-      const effectiveTiming = submission.appendTiming === 'agent_idle' ? undefined : submission.appendTiming;
-      receipt = submission.skills !== undefined
-        ? await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch, effectiveTiming, submission.skills)
-        : effectiveTiming === undefined
-          ? await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch)
-          : await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch, effectiveTiming);
-    } catch (error) {
-      if (isDefinitivePromptRejection(error)) {
+      const hasNonTextAttachment = content.some((part) => part.type !== 'text');
+      // Native text-only sends use the key as their prompt id, so the echo can
+      // hand over to the projected row; other sends drop it when they settle.
+      const keyedEcho = !externalExecutor && !hasNonTextAttachment;
+      setSendEcho({ scope: sendScope, agentId, id: submission.key, text: submittedText, content, createdAt: new Date().toISOString(),
+        slow: false, preserved: false, retryable: false, status: 'sending' });
+      revealOwnSend(false);
+      let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
+      try {
+        // The server already defaults to agent_idle; keep the ordinary six-arg
+        // child send shape and add the seventh/eighth args only when needed.
+        const effectiveTiming = submission.appendTiming === 'agent_idle' ? undefined : submission.appendTiming;
+        receipt = submission.skills !== undefined
+          ? await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch, effectiveTiming, submission.skills)
+          : effectiveTiming === undefined
+            ? await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch)
+            : await client.sendAgentMessage(sessionId, agentId, submittedText, content, submission.key, submission.afterModelSwitch, effectiveTiming);
+      } catch (error) {
+        if (isDefinitivePromptRejection(error)) {
+          clearSendEcho(submission.key);
+          if (pendingSendRef.current?.key === submission.key) {
+            setSendNotice(null);
+          }
+          throw error instanceof NativeChildPromptSendError ? error.cause : error;
+        }
+        // An unknown outcome under a replayable key stays on the timeline as
+        // unconfirmed; anything else leaves it to the composer's draft.
+        if (keyedEcho && error instanceof NativeChildPromptSendError) {
+          setSendEcho((current) => current?.id === submission.key ? { ...current, status: 'offline' } : current);
+        } else clearSendEcho(submission.key);
+        // Native attachments have no replay receipt; a failed request may have
+        // been accepted already. The external path rejects attachments before send.
+        if (error instanceof NativeChildPromptSendError) {
+          if (pendingSendRef.current?.key === submission.key) {
+            setSendNotice({ scope: sendScope, text: t(hasNonTextAttachment
+              ? 'agentMessage.attachmentOutcomeUnknown' : 'agentMessage.promptOutcomeUnknown') });
+          }
+          return;
+        }
+        if (hasNonTextAttachment && !(error instanceof ExternalAgentAttachmentUnsupportedError)) {
+          if (pendingSendRef.current?.key === submission.key) {
+            setSendNotice({ scope: sendScope, text: t('agentMessage.attachmentOutcomeUnknown') });
+          }
+          return;
+        }
+        if (pendingSendRef.current?.key === submission.key) setSendNotice(null);
+        throw error;
+      }
+      if (receipt !== null && receipt.payloadConflict) {
+        // The earlier message under this key was accepted with different content,
+        // so this draft was NOT accepted. Fail closed before clearing: keep the
+        // draft for a retry and let the composer report the failure in place
+        // instead of reading as a delivered message.
         clearSendEcho(submission.key);
         if (pendingSendRef.current?.key === submission.key) {
           setSendNotice(null);
         }
-        throw error instanceof NativeChildPromptSendError ? error.cause : error;
+        throw new Error(t('agentMessage.payloadConflict'));
       }
-      // An unknown outcome under a replayable key stays on the timeline as
-      // unconfirmed; anything else leaves it to the composer's draft.
-      if (keyedEcho && error instanceof NativeChildPromptSendError) {
-        setSendEcho((current) => current?.id === submission.key ? { ...current, status: 'offline' } : current);
+      if (keyedEcho) {
+        setSendEcho((current) => current?.id === submission.key ? { ...current, settledOnServer: true } : current);
       } else clearSendEcho(submission.key);
-      // Native attachments have no replay receipt; a failed request may have
-      // been accepted already. The external path rejects attachments before send.
-      if (error instanceof NativeChildPromptSendError) {
+      if (
+        controller !== null &&
+        typeof controller.resync === 'function' &&
+        sessionState.cursor?.epoch?.startsWith('cold:') === true
+      ) {
+        void controller.resync();
+      }
+      const settled = settlePendingSubmission(draftKey, submission.key, carry.sentIds);
+      if (!settled) {
         if (pendingSendRef.current?.key === submission.key) {
-          setSendNotice({ scope: sendScope, text: t(hasNonTextAttachment
-            ? 'agentMessage.attachmentOutcomeUnknown' : 'agentMessage.promptOutcomeUnknown') });
+          pendingSendRef.current = null;
         }
         return;
       }
-      if (hasNonTextAttachment && !(error instanceof ExternalAgentAttachmentUnsupportedError)) {
-        if (pendingSendRef.current?.key === submission.key) {
-          setSendNotice({ scope: sendScope, text: t('agentMessage.attachmentOutcomeUnknown') });
-        }
-        return;
-      }
-      if (pendingSendRef.current?.key === submission.key) setSendNotice(null);
-      throw error;
-    }
-    if (receipt !== null && receipt.payloadConflict) {
-      // The earlier message under this key was accepted with different content,
-      // so this draft was NOT accepted. Fail closed before clearing: keep the
-      // draft for a retry and let the composer report the failure in place
-      // instead of reading as a delivered message.
-      clearSendEcho(submission.key);
-      if (pendingSendRef.current?.key === submission.key) {
-        setSendNotice(null);
-      }
-      throw new Error(t('agentMessage.payloadConflict'));
-    }
-    if (keyedEcho) {
-      setSendEcho((current) => current?.id === submission.key ? { ...current, settledOnServer: true } : current);
-    } else clearSendEcho(submission.key);
-    if (
-      controller !== null &&
-      typeof controller.resync === 'function' &&
-      sessionState.cursor?.epoch?.startsWith('cold:') === true
-    ) {
-      void controller.resync();
-    }
-    const settled = settlePendingSubmission(draftKey, submission.key, carry.sentIds);
-    if (!settled) {
-      if (pendingSendRef.current?.key === submission.key) {
+      if (composerOwnerActive.current && pendingSendRef.current?.key === submission.key) {
         pendingSendRef.current = null;
+        draftRef.current = '';
+        setSendNotice(null);
+        setDraft('');
+        setAttachments([]);
+        if (carry.sentIds.size > 0) {
+          setAnnotations((current) => current.filter((annotation) => !carry.sentIds.has(annotation.id)));
+        }
       }
-      return;
+      if (receipt === null) return;
+      // A persisted external agent returns a durable-mailbox acceptance. Native
+      // children return null and take the ordinary prompt path, whose delivery
+      // timing stays unknown here rather than being guessed.
+      const deduplicated = receipt.deduplicated;
+      let summary: string;
+      if (deduplicated) summary = t('agentMessage.deduplicated');
+      else if (receipt.delivery === 'queued') summary = t('agentMessage.pending');
+      else summary = t('agentMessage.delivered');
+      if (receipt.resumed === true) summary = `${summary} · ${t('subagent.event.resumed')}`;
+      // A deduplicated or queued receipt never claims a fresh delivery.
+      pushToast({
+        tone: deduplicated || receipt.delivery === 'queued' ? 'info' : 'success',
+        text: summary,
+      });
+    } finally {
+      finishPendingSubmissionFlight(draftKey, generation);
+      resolveFlight();
     }
-    if (composerOwnerActive.current && pendingSendRef.current?.key === submission.key) {
-      pendingSendRef.current = null;
-      draftRef.current = '';
-      setSendNotice(null);
-      setDraft('');
-      setAttachments([]);
-      if (carry.sentIds.size > 0) {
-        setAnnotations((current) => current.filter((annotation) => !carry.sentIds.has(annotation.id)));
-      }
-    }
-    if (receipt === null) return;
-    // A persisted external agent returns a durable-mailbox acceptance. Native
-    // children return null and take the ordinary prompt path, whose delivery
-    // timing stays unknown here rather than being guessed.
-    const deduplicated = receipt.deduplicated;
-    let summary: string;
-    if (deduplicated) summary = t('agentMessage.deduplicated');
-    else if (receipt.delivery === 'queued') summary = t('agentMessage.pending');
-    else summary = t('agentMessage.delivered');
-    if (receipt.resumed === true) summary = `${summary} · ${t('subagent.event.resumed')}`;
-    // A deduplicated or queued receipt never claims a fresh delivery.
-    pushToast({
-      tone: deduplicated || receipt.delivery === 'queued' ? 'info' : 'success',
-      text: summary,
-    });
   };
   const handleActivateSkill: NonNullable<ComponentProps<typeof Composer>['onActivateSkill']> = async (name, args, skillAttachments, userInput) => {
-    if (!agentKnown) return;
+    if (!agentKnown || isPendingSubmissionInFlight(draftKey, sendScope)) return;
+    const rawDraftText = draftRef.current;
     const activation = buildSkillActivation(args, skillAttachments);
     const payload = JSON.stringify(['skill', name, activation, userInput]);
     const previous = pendingSendRef.current ?? readPendingSubmission(draftKey);
-    const submission: PendingComposerSubmission = previous?.scope === sendScope && previous.payload === payload
-      ? { ...previous, draftText: userInput }
-      : { scope: sendScope, connectionScopeId: scopeId, payload, key: crypto.randomUUID(), draftText: userInput, afterModelSwitch: modelSwitches.dependency?.input.operationId };
-    pendingSendRef.current = submission;
-    writePendingSubmission(draftKey, submission);
-    revealOwnSend(false);
-    await client.activateSkill(sessionId, name, {
-      ...activation, agent_id: agentId, user_input: userInput, prompt_id: submission.key,
-      after_model_switch: submission.afterModelSwitch,
+    const baseSubmission = previous !== undefined && previous.scope === sendScope && !previous.retryInvalidated && previous.payload === payload
+      ? {
+          scope: previous.scope,
+          connectionScopeId: previous.connectionScopeId,
+          payload: previous.payload,
+          key: previous.key,
+          draftText: rawDraftText,
+          afterModelSwitch: previous.afterModelSwitch,
+        }
+      : {
+          scope: sendScope,
+          connectionScopeId: scopeId,
+          payload,
+          key: crypto.randomUUID(),
+          draftText: rawDraftText,
+          afterModelSwitch: modelSwitches.dependency?.input.operationId,
+        };
+    let resolveFlight!: () => void;
+    const flightPromise = new Promise<void>((resolve) => {
+      resolveFlight = resolve;
     });
-    const settled = settlePendingSubmission(draftKey, submission.key);
-    if (!settled) {
-      if (pendingSendRef.current?.key === submission.key) pendingSendRef.current = null;
-      return;
-    }
-    if (composerOwnerActive.current && pendingSendRef.current?.key === submission.key) {
-      pendingSendRef.current = null;
-      draftRef.current = '';
-      setDraft('');
-      setAttachments([]);
-      setSendNotice(null);
+    const { submission, generation } = beginPendingSubmissionFlight(draftKey, baseSubmission, flightPromise);
+    pendingSendRef.current = submission;
+    try {
+      revealOwnSend(false);
+      await client.activateSkill(sessionId, name, {
+        ...activation, agent_id: agentId, user_input: userInput, prompt_id: submission.key,
+        after_model_switch: submission.afterModelSwitch,
+      });
+      const settled = settlePendingSubmission(draftKey, submission.key);
+      if (!settled) {
+        if (pendingSendRef.current?.key === submission.key) pendingSendRef.current = null;
+        return;
+      }
+      if (composerOwnerActive.current && pendingSendRef.current?.key === submission.key) {
+        pendingSendRef.current = null;
+        draftRef.current = '';
+        setDraft('');
+        setAttachments([]);
+        setSendNotice(null);
+      }
+    } finally {
+      finishPendingSubmissionFlight(draftKey, generation);
+      resolveFlight();
     }
   };
   // The core chooses native safe-boundary steering or the external executor's
@@ -1300,7 +1368,7 @@ function ChildAgentWorkspace({
     presentation?: import('@kiki/transcript').TextPresentation,
     skills?: readonly PromptSkillActivation[],
   ) => {
-    if (!agentKnown) return;
+    if (!agentKnown || isPendingSubmissionInFlight(draftKey, sendScope)) return;
     const submittedDraft = projectPresentedText(text, presentation);
     const carry = serializeSelectionCarryover(annotations, text, presentation);
     const content = buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
@@ -1793,7 +1861,8 @@ function ChildAgentWorkspace({
           </ConversationDockColumn>
         ) : null}
         <Composer
-          variant="subagent" replyingTo={isBranch ? undefined : displayName} busy={headerBusy} disabled={composerDisabled}
+          variant="subagent" replyingTo={isBranch ? undefined : displayName} busy={headerBusy}
+          disabled={composerDisabled} sendDisabled={submissionInFlight}
           delegationPosition={isBranch ? 'main' : 'sub'}
           boundExecution={childExecution}
           engine={executorId === undefined ? { label: t('composer.unknown'), fork: false, images: false } : undefined}

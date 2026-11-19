@@ -569,6 +569,7 @@ function hasImplicitTurnRecords(records: readonly ColdWireRecord[]): boolean {
   let sawLegacyUserAppend = false;
   for (const { record } of records) {
     if (record.type === 'turn_begin') return true;
+    if (record.type === 'turn.started' && wireTurnId(record) === undefined) return true;
     if (record.type === 'turn.prompt') {
       if (wireTurnId(record) === undefined) return true;
       sawExplicitTurnPrompt = true;
@@ -2195,7 +2196,9 @@ export class TranscriptService {
     if (extendOlder) {
       const span = spanBytes > 0 ? spanBytes : FIRST_SCREEN_WINDOW_BYTES;
       const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, span, !tailFirst);
-      if (extended === undefined) return undefined;
+      if (extended === undefined) {
+        return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal, false);
+      }
       return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, extended, project, opened);
     }
     const cached = this.coldSnapshotCache.get(wirePath);
@@ -2524,7 +2527,8 @@ export class TranscriptService {
     while (mode !== 'first-screen' && visible.snapshot.items.length === 0 && visible.start > 0 && guard < 8) {
       const before = visible.start;
       const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, undefined, resolveHeaders);
-      if (extended === undefined || extended.start === before) break;
+      if (extended === undefined) return undefined;
+      if (extended.start === before) break;
       visible = extended;
       guard += 1;
     }
@@ -2543,6 +2547,12 @@ export class TranscriptService {
     const next = await this.tailRecordStart(wirePath, window.start, signal, spanBytes);
     if (next >= window.start) return window;
     const read = await this.readWireRange(wirePath, next, window.start, signal, !resolveHeaders);
+    if (next > 0 && read.records[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(read.records)) {
+      this.forgetColdWindow(wirePath);
+      this.retainedColdTurns.delete(wirePath);
+      this.deleteColdSnapshotCache(wirePath);
+      return undefined;
+    }
     const merged = [...read.records, ...window.records];
     const entire = next === 0 && read.complete && window.droppedTail !== true && !(window.skippedTurnIds?.length);
     const snapshot = await this.projectColdRecords(agentId, merged, entire, preserveOpenTurnIds, captureReplayState, entire ? undefined : window, signal);

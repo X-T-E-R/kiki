@@ -590,14 +590,24 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             }
             reuseAttemptFingerprints = true;
           }
+        } else if (request !== this.reconcileRequest) {
+          if (this.forcedReconcileRequest > request) {
+            this.projector.invalidateFingerprint();
+            reuseAttemptFingerprints = false;
+          } else {
+            reuseAttemptFingerprints = true;
+          }
         }
       }
-      if (committed && request === this.reconcileRequest) {
-        this.reuseReconcileFingerprints = true;
-        this.nextReconcileRetryAt = 0;
-        this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
-        this.reconcileRetryTimer.cancel();
-        return;
+      if (committed) {
+        if (request === this.reconcileRequest) {
+          this.reuseReconcileFingerprints = true;
+          this.nextReconcileRetryAt = 0;
+          this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
+          this.reconcileRetryTimer.cancel();
+          return;
+        }
+        attempt = -1;
       }
     }
     const delay = this.reconcileRetryDelayMs;
@@ -691,20 +701,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       name: PARENT_INDEX_NAME,
       field: `custom.${PARENT_SESSION_ID_KEY}`,
     });
-  }
-
-  hasIndexed(id: string, signal?: AbortSignal): Promise<boolean> {
-    signal?.throwIfAborted();
-    return this.withPointReadModel(
-      async (generation) => {
-        signal?.throwIfAborted();
-        if (this.mirror.pending().some((summary) => summary.id === id)) return true;
-        const cached: unknown = await this.queryStore.get(sessionCollection(generation), id, signal, { priority: true });
-        return isSessionSummaryShape(cached);
-      },
-      async () => (await abortable(this.getLegacy(id), signal)) !== undefined,
-      signal,
-    );
   }
 
   async get(id: string, workspaceId?: string, signal?: AbortSignal): Promise<SessionSummary | undefined> {

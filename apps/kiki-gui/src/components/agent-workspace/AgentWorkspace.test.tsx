@@ -3841,3 +3841,70 @@ it('guards handleFoldBranch against clobbering edited drafts or navigating away 
   await settle();
   expect(openSession).not.toHaveBeenCalled();
 });
+
+it('clears untrimmed trailing-whitespace drafts on send settlement and keeps a target-scoped in-flight latch across A -> B -> A remounts', async () => {
+  harness.sendAgentMessage.mockResolvedValueOnce(null);
+  await renderWorkspace();
+  await settle();
+
+  const trailingTextarea = await sendFromComposer('send this\n');
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith(
+    'session',
+    'child',
+    'send this',
+    [{ type: 'text', text: 'send this' }],
+    expect.any(String),
+    undefined,
+  );
+  expect(trailingTextarea.value).toBe('');
+
+  harness.sendAgentMessage.mockClear();
+  let resolveAttachmentSend!: (value: null) => void;
+  harness.sendAgentMessage.mockImplementationOnce(
+    () => new Promise((resolve) => { resolveAttachmentSend = resolve; }),
+  );
+  harness.host = {
+    kind: 'browser',
+    pickFiles: async () => [{
+      name: 'diagram.png',
+      size: 1,
+      type: 'image/png',
+      read: async () => new File(['x'], 'diagram.png', { type: 'image/png' }),
+    }],
+  };
+
+  await renderWorkspace();
+  await settle();
+  await clickAttach();
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
+
+  await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'child' } });
+  await settle();
+  const otherTextarea = composerInput(dock);
+  await typeText(otherTextarea, 'other target can send');
+  const otherSendButton = dock.querySelector<HTMLButtonElement>(
+    '[aria-label="Send message"], [aria-label="Queue prompt"], [aria-label="Send into this turn"]',
+  )!;
+  expect(otherSendButton.disabled).toBe(false);
+
+  await renderWorkspace();
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+  const remountedSendButton = dock.querySelector<HTMLButtonElement>(
+    '[aria-label="Send message"], [aria-label="Queue prompt"], [aria-label="Send into this turn"]',
+  )!;
+  expect(remountedSendButton.disabled).toBe(true);
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    resolveAttachmentSend(null);
+  });
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
+  expect(composerInput(dock).value).toBe('');
+});

@@ -37,9 +37,52 @@ const LIGHTWEIGHT_STATE_NAMES = new Set([
   planKey.name,
 ]);
 
+const CHECKPOINT_SUBSCOPE = 'replay-checkpoints';
+const CHECKPOINT_KEY = 'engine-v1';
 const CHECKPOINT_CACHE_MAX_ENTRIES = 128;
 const checkpointCaches = new WeakMap<IFileSystemStorageService, Map<string, DecodedCheckpoint | null>>();
 const checkpointFlights = new WeakMap<IFileSystemStorageService, Map<string, Promise<DecodedCheckpoint | undefined>>>();
+
+export interface PersistedCheckpointStatToken {
+  readonly token: string;
+  readonly distinguishable: boolean;
+}
+
+export async function readPersistedCheckpointStatToken(
+  storage: IFileSystemStorageService,
+  scope: string,
+): Promise<PersistedCheckpointStatToken> {
+  const checkpointScope = `${scope}/${CHECKPOINT_SUBSCOPE}`;
+  const checkpointPath = typeof storage.pathFor === 'function'
+    ? storage.pathFor(checkpointScope, CHECKPOINT_KEY)
+    : undefined;
+  if (checkpointPath === undefined) {
+    return { token: 'untracked', distinguishable: false };
+  }
+  try {
+    if (typeof storage.stat === 'function') {
+      const info = await storage.stat(checkpointScope, CHECKPOINT_KEY);
+      if (info === undefined) return { token: 'none', distinguishable: true };
+      return {
+        token: `${info.size}:${info.revision}:${info.identity ?? ''}`,
+        distinguishable: true,
+      };
+    }
+    const [ckptSize, ckptMtime] = await Promise.all([
+      storage.size(checkpointScope, CHECKPOINT_KEY),
+      storage.mtime(checkpointScope, CHECKPOINT_KEY),
+    ]);
+    if (ckptSize === undefined && ckptMtime === undefined) {
+      return { token: 'none', distinguishable: true };
+    }
+    return {
+      token: `${ckptSize ?? -1}:${ckptMtime ?? -1}`,
+      distinguishable: true,
+    };
+  } catch {
+    return { token: 'untracked', distinguishable: false };
+  }
+}
 
 function projectRequestedStates(
   decoded: DecodedCheckpoint | undefined,
@@ -61,8 +104,8 @@ async function decodeCheckpointSource(
   workers: ICpuWorkerService | undefined,
   signal?: AbortSignal,
 ): Promise<{ readonly wire: ReplayCheckpointWire; readonly states: ReadonlyMap<string, unknown> } | undefined> {
-  const checkpointScope = `${scope}/replay-checkpoints`;
-  const checkpointKey = 'engine-v1';
+  const checkpointScope = `${scope}/${CHECKPOINT_SUBSCOPE}`;
+  const checkpointKey = CHECKPOINT_KEY;
   const checkpointPath = typeof storage.pathFor === 'function'
     ? storage.pathFor(checkpointScope, checkpointKey)
     : undefined;
@@ -95,19 +138,22 @@ export async function readPersistedAgentCheckpoint(
   signal?: AbortSignal,
 ): Promise<{ readonly offset: number; readonly states: Map<string, unknown> } | undefined> {
   signal?.throwIfAborted();
+  const ckptStat = await readPersistedCheckpointStatToken(storage, scope);
+  signal?.throwIfAborted();
   const hasLargeState = names.has(contextMemoryKey.name);
   const fetchNames = hasLargeState ? names : new Set([...LIGHTWEIGHT_STATE_NAMES, ...names]);
   const extraNames = [...names].filter((name) => !LIGHTWEIGHT_STATE_NAMES.has(name)).sort().join(',');
+  const baseKey = `${scope}:${size}:${mtimeMs}:ckpt:${ckptStat.token}`;
   const cacheKey = hasLargeState
-    ? `${scope}:${size}:${mtimeMs}:full:${[...names].sort().join(',')}`
-    : `${scope}:${size}:${mtimeMs}:meta:${extraNames}`;
+    ? `${baseKey}:full:${[...names].sort().join(',')}`
+    : `${baseKey}:meta:${extraNames}`;
 
   let cache = checkpointCaches.get(storage);
   if (cache === undefined) {
     cache = new Map();
     checkpointCaches.set(storage, cache);
   }
-  if (!hasLargeState && cache.has(cacheKey)) {
+  if (!hasLargeState && ckptStat.distinguishable && cache.has(cacheKey)) {
     const cached = cache.get(cacheKey) ?? undefined;
     cache.delete(cacheKey);
     cache.set(cacheKey, cached ?? null);
@@ -125,10 +171,13 @@ export async function readPersistedAgentCheckpoint(
     flight = (async (): Promise<DecodedCheckpoint | undefined> => {
       const extracted = await decodeCheckpointSource(docs, storage, scope, fetchNames, workers, sharedSignal);
       if (extracted === undefined) {
-        if (!hasLargeState) {
-          cache.delete(cacheKey);
-          cache.set(cacheKey, null);
-          if (cache.size > CHECKPOINT_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+        if (!hasLargeState && ckptStat.distinguishable) {
+          const afterStat = await readPersistedCheckpointStatToken(storage, scope);
+          if (afterStat.distinguishable && afterStat.token === ckptStat.token) {
+            cache.delete(cacheKey);
+            cache.set(cacheKey, null);
+            if (cache.size > CHECKPOINT_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+          }
         }
         return undefined;
       }
@@ -152,10 +201,13 @@ export async function readPersistedAgentCheckpoint(
         prefixSha256: (end) => end < JOURNAL_HEAD_HASH_BYTES ? digest(0, end) : Promise.resolve(undefined),
       });
       const decoded = verified === undefined ? undefined : { offset: verified.offset, states: extracted.states };
-      if (!hasLargeState) {
-        cache.delete(cacheKey);
-        cache.set(cacheKey, decoded ?? null);
-        if (cache.size > CHECKPOINT_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+      if (!hasLargeState && ckptStat.distinguishable) {
+        const afterStat = await readPersistedCheckpointStatToken(storage, scope);
+        if (afterStat.distinguishable && afterStat.token === ckptStat.token) {
+          cache.delete(cacheKey);
+          cache.set(cacheKey, decoded ?? null);
+          if (cache.size > CHECKPOINT_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+        }
       }
       return decoded;
     })().finally(() => {

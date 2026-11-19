@@ -1634,4 +1634,107 @@ describe('server-v2 /api prompts', () => {
     }, { timeout: 5000 });
     expect(await workspaces.get(workspaceId)).toBeUndefined();
   });
+
+  it('serializes mid-submit failure with concurrent abort under lock and bounds stalled submitFlight waits on abort and close', async () => {
+    const id = await createSession(fixture.home!);
+    const failSubmitEntered = promiseGate<void>();
+    const releaseFailSubmit = promiseGate<void>();
+    const raceCancel = vi.fn(async () => {});
+    const raceIngress = new PromptIngress(fixture.server!.core, {
+      submit: async (_sessionId, execution) => {
+        await execution.beforeSubmit();
+        failSubmitEntered.resolve();
+        await releaseFailSubmit.promise;
+        throw new Error('submit failed right as abort arrived');
+      },
+      cancel: raceCancel,
+    });
+    try {
+      await raceIngress.submit(
+        id,
+        { prompt_id: 'race-fail-cancel', content: [{ type: 'text', text: 'Race cancel' }] },
+        'fp-race-fail',
+      );
+      await failSubmitEntered.promise;
+      releaseFailSubmit.resolve();
+      await raceIngress.abort(id, 'main', 'race-fail-cancel');
+      await vi.waitFor(async () => {
+        expect(await raceIngress.lookup(id, 'main', 'race-fail-cancel')).toMatchObject({
+          admission: 'cancelled',
+        });
+      });
+      expect(raceCancel).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseFailSubmit.resolve();
+      await raceIngress.close();
+    }
+
+    const stalledSubmit1 = promiseGate<import('../src/services/promptIngress').PromptIngressResult>();
+    const stalledSubmit2 = promiseGate<import('../src/services/promptIngress').PromptIngressResult>();
+    const enteredStalled1 = promiseGate<void>();
+    const enteredStalled2 = promiseGate<void>();
+    const stalledCancel = vi.fn(async () => {});
+    let stalledCalls = 0;
+    const boundedIngress = new PromptIngress(
+      fixture.server!.core,
+      {
+        submit: async (_sessionId, execution) => {
+          await execution.beforeSubmit();
+          stalledCalls += 1;
+          if (stalledCalls === 1) {
+            enteredStalled1.resolve();
+            return stalledSubmit1.promise;
+          }
+          enteredStalled2.resolve();
+          return stalledSubmit2.promise;
+        },
+        cancel: stalledCancel,
+      },
+      { submitSettleTimeoutMs: 50 },
+    );
+    try {
+      await boundedIngress.submit(
+        id,
+        { prompt_id: 'stalled-steer-1', content: [{ type: 'text', text: 'Stalled 1' }] },
+        'fp-stalled-1',
+      );
+      await enteredStalled1.promise;
+      const startedAbort = Date.now();
+      expect(await boundedIngress.abort(id, 'main', 'stalled-steer-1')).toBe(false);
+      await vi.waitFor(async () => {
+        const current = await boundedIngress.lookup(id, 'main', 'stalled-steer-1');
+        expect(current).toMatchObject({ admission: 'held' });
+        expect(current?.admission_error).toBeDefined();
+      }, { timeout: 2000 });
+      expect(Date.now() - startedAbort).toBeLessThan(2000);
+      expect(stalledCancel).not.toHaveBeenCalled();
+
+      const id2 = await createSession(fixture.home!);
+      await boundedIngress.submit(
+        id2,
+        { prompt_id: 'stalled-steer-2', content: [{ type: 'text', text: 'Stalled 2' }] },
+        'fp-stalled-2',
+      );
+      await enteredStalled2.promise;
+      const startedClose = Date.now();
+      await boundedIngress.close();
+      expect(Date.now() - startedClose).toBeLessThan(2000);
+    } finally {
+      stalledSubmit1.resolve({
+        prompt_id: 'stalled-steer-1',
+        user_message_id: 'stalled-steer-1',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Stalled 1' }],
+        created_at: new Date().toISOString(),
+      });
+      stalledSubmit2.resolve({
+        prompt_id: 'stalled-steer-2',
+        user_message_id: 'stalled-steer-2',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Stalled 2' }],
+        created_at: new Date().toISOString(),
+      });
+      await boundedIngress.close();
+    }
+  });
 });

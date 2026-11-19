@@ -453,10 +453,7 @@ export function registerSessionsRoutes(
       const body = req.body;
       const hasKnownSession = async (sessionId: string, signal?: AbortSignal): Promise<boolean> => {
         if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) return true;
-        const index = core.accessor.get(ISessionIndex);
-        return index.hasIndexed !== undefined
-          ? index.hasIndexed(sessionId, signal)
-          : (await index.get(sessionId, undefined, signal)) !== undefined;
+        return (await core.accessor.get(ISessionIndex).get(sessionId, undefined, signal)) !== undefined;
       };
       const createSession = async (forcedSessionId?: string): Promise<Session> => {
         if (forcedSessionId !== undefined) {

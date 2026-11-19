@@ -1324,6 +1324,13 @@ export class AgentPromptService implements IAgentPromptService {
 
   readonly [promptRetry] = {
     lookup: async (promptId: string, fingerprint: string): Promise<PromptRetryReceipt | undefined> => {
+      const activeInject = this.injectFlights.get(promptId);
+      if (activeInject !== undefined) {
+        if (activeInject.fingerprint !== fingerprint) {
+          throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+        }
+        await activeInject.promise.catch(() => undefined);
+      }
       const committed = this.states.get(promptRetryReceiptKey).get(promptId);
       if (committed === undefined) {
         if (this.states.get(promptAdmissionKey).has(promptId)) {
@@ -1367,6 +1374,13 @@ export class AgentPromptService implements IAgentPromptService {
       await this.flushPendingWireIds();
     },
     run: async <T>(promptId: string, fingerprint: string, operation: () => Promise<T>): Promise<T> => {
+      const activeInject = this.injectFlights.get(promptId);
+      if (activeInject !== undefined) {
+        if (activeInject.fingerprint !== fingerprint) {
+          throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+        }
+        await activeInject.promise.catch(() => undefined);
+      }
       const existing = this.retryFlights.get(promptId);
       if (existing !== undefined) {
         if (existing.fingerprint !== fingerprint) {
@@ -1403,7 +1417,7 @@ export class AgentPromptService implements IAgentPromptService {
     let reservation = this.promptIds.reserve(
       id,
       id,
-      accepted.has(id) ? { fingerprint: id, result: id } : undefined,
+      accepted.has(id) || this.injectFlights.has(id) ? { fingerprint: id, result: id } : undefined,
       false,
     );
     while (reservation.kind === 'conflict') {
@@ -1414,7 +1428,7 @@ export class AgentPromptService implements IAgentPromptService {
       reservation = this.promptIds.reserve(
         id,
         id,
-        accepted.has(id) ? { fingerprint: id, result: id } : undefined,
+        accepted.has(id) || this.injectFlights.has(id) ? { fingerprint: id, result: id } : undefined,
         false,
       );
     }
@@ -1457,6 +1471,7 @@ export class AgentPromptService implements IAgentPromptService {
   private readonly synchronousAdmissions = new WeakSet<PromptHandle>();
   private readonly unflushedPromptIds = new Set<string>();
   private readonly unlaunchedInjectedIds = new Set<string>();
+  private readonly injectFlights = new Map<string, { readonly fingerprint: string; readonly promise: Promise<Turn | undefined> }>();
 
   private async flushPendingWireIds(): Promise<void> {
     const snapshot = [...this.unflushedPromptIds];
@@ -2862,57 +2877,104 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async injectAdmitted(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined> {
-    const { message: rerouted, captions } = this.extractCompressionCaptions(message);
-    await this.materializeDaemonRefs(rerouted);
     const managed = options?.promptId !== undefined && options.retryFingerprint !== undefined;
-    const userMessageId = options?.userMessageId ?? options?.promptId;
-    const managedMessage = managed && userMessageId !== undefined ? { ...rerouted, id: userMessageId } : rerouted;
-    if (managed && options !== undefined && userMessageId !== undefined) {
+    if (!managed && options?.promptId !== undefined && this.injectFlights.has(options.promptId)) {
+      throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${options.promptId}' is already in use`);
+    }
+    if (managed && options !== undefined) {
       const promptId = options.promptId!;
-      const existingReceipt = this.states.get(promptRetryReceiptKey).get(promptId);
-      if (existingReceipt !== undefined && existingReceipt.fingerprint !== options.retryFingerprint) {
+      const retryFingerprint = options.retryFingerprint!;
+      const existingFlight = this.injectFlights.get(promptId);
+      if (existingFlight !== undefined) {
+        if (existingFlight.fingerprint !== retryFingerprint) {
+          throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+        }
+        return existingFlight.promise;
+      }
+      const activeRetryFlight = this.retryFlights.get(promptId);
+      if (activeRetryFlight !== undefined && activeRetryFlight.fingerprint !== retryFingerprint) {
         throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+      }
+      const existingReceipt = this.states.get(promptRetryReceiptKey).get(promptId);
+      if (existingReceipt !== undefined && existingReceipt.fingerprint !== retryFingerprint) {
+        throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+      }
+      if (existingReceipt === undefined && this.states.get(promptAdmissionKey).has(promptId)) {
+        throw new Error2(
+          ErrorCodes.PROMPT_ID_CONFLICT,
+          `prompt_id '${promptId}' was accepted without a replayable receipt; inspect the child before resubmitting`,
+        );
       }
       const existingIdentity = this.states.get(promptIdentityKey).get(promptId);
       if (existingIdentity !== undefined && !this.unlaunchedInjectedIds.has(promptId)) {
         if (this.unflushedPromptIds.has(promptId)) await this.flushPendingWireIds();
         return this.active?.turn;
       }
-      this.unlaunchedInjectedIds.add(promptId);
-      if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
-      if (existingIdentity === undefined) {
-        this.unflushedPromptIds.add(promptId);
-        await this.dispatcher.dispatch(new PromptEnqueued({
-          schemaVersion: 1,
-          promptId,
-          userMessageId,
-          createdAt: new Date().toISOString(),
-          message: managedMessage,
-          execution: undefined,
-          goalId: undefined,
-          deferredDisabledTools: undefined,
-          alreadyMaterialized: false,
-          appendTiming: 'agent_idle',
-          revision: 0,
-          queueIndex: this.queueOrder.length,
-          retryFingerprint: options.retryFingerprint,
-          retryStatus: 'running',
-        }));
+      const userMessageId = options.userMessageId ?? promptId;
+      const promise = (async (): Promise<Turn | undefined> => {
+        const { message: rerouted, captions } = this.extractCompressionCaptions(message);
+        await this.materializeDaemonRefs(rerouted);
+        const managedMessage = { ...rerouted, id: userMessageId };
+        this.unlaunchedInjectedIds.add(promptId);
+        if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
+        if (this.states.get(promptIdentityKey).get(promptId) === undefined) {
+          this.unflushedPromptIds.add(promptId);
+          await this.dispatcher.dispatch(new PromptEnqueued({
+            schemaVersion: 1,
+            promptId,
+            userMessageId,
+            createdAt: new Date().toISOString(),
+            message: managedMessage,
+            execution: undefined,
+            goalId: undefined,
+            deferredDisabledTools: undefined,
+            alreadyMaterialized: false,
+            appendTiming: 'agent_idle',
+            revision: 0,
+            queueIndex: this.queueOrder.length,
+            retryFingerprint,
+            retryStatus: 'running',
+          }));
+        }
+        if (this.unflushedPromptIds.has(promptId)) await this.flushPendingWireIds();
+        if (this.states.get(promptIdentityKey).get(promptId)?.phase !== 'launched') {
+          this.unflushedPromptIds.add(promptId);
+          await this.dispatcher.dispatch(new PromptLaunchCommitted({
+            launchId: randomUUID(),
+            promptId,
+            revision: 0,
+            committedAt: new Date().toISOString(),
+          }));
+        }
+        if (this.unflushedPromptIds.has(promptId)) await this.flushPendingWireIds();
+        this.unlaunchedInjectedIds.delete(promptId);
+        const request = new SteerStepRequest(managedMessage, captions, this.reminders, this.providerType(), (materialized) => {
+          void this.dispatcher.dispatch(
+            new TurnSteer({
+              turnId: this.loop.status().activeTurnId ?? this.active?.turn.id ?? 0,
+              promptId: materialized.id,
+              revision: undefined,
+              lineage: undefined,
+              input: materialized.content,
+              origin: materialized.origin ?? USER_PROMPT_ORIGIN,
+              managed: true,
+            }),
+          );
+        }, () => {}, 'activeOrNewTurn');
+        return (await this.loop.enqueue(request).assigned).turn;
+      })();
+      this.injectFlights.set(promptId, { fingerprint: retryFingerprint, promise });
+      try {
+        return await promise;
+      } finally {
+        if (this.injectFlights.get(promptId)?.promise === promise) {
+          this.injectFlights.delete(promptId);
+        }
       }
-      if (this.unflushedPromptIds.has(promptId)) await this.flushPendingWireIds();
-      if (this.states.get(promptIdentityKey).get(promptId)?.phase !== 'launched') {
-        this.unflushedPromptIds.add(promptId);
-        await this.dispatcher.dispatch(new PromptLaunchCommitted({
-          launchId: randomUUID(),
-          promptId,
-          revision: 0,
-          committedAt: new Date().toISOString(),
-        }));
-      }
-      if (this.unflushedPromptIds.has(promptId)) await this.flushPendingWireIds();
-      this.unlaunchedInjectedIds.delete(promptId);
     }
-    const request = new SteerStepRequest(managedMessage, captions, this.reminders, this.providerType(), (materialized) => {
+    const { message: rerouted, captions } = this.extractCompressionCaptions(message);
+    await this.materializeDaemonRefs(rerouted);
+    const request = new SteerStepRequest(rerouted, captions, this.reminders, this.providerType(), (materialized) => {
       void this.dispatcher.dispatch(
         new TurnSteer({
           turnId: this.loop.status().activeTurnId ?? this.active?.turn.id ?? 0,

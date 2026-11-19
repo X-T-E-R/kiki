@@ -347,3 +347,99 @@ it('decodes node-fs checkpoints via checkpoint.read and coalesces concurrent pro
     await rm(baseDir, { recursive: true, force: true });
   }
 });
+
+it('invalidates cached profile and runtime facts when engine-v1 is created while wire.jsonl is idle and skips null caching without pathFor', async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), 'checkpoint-stat-key-test-'));
+  const storage = new FileStorageService(baseDir);
+  const docs = new JsonAtomicDocumentStore(storage);
+  try {
+    const { host: fixtureHost, checkpoint } = checkpointFixture();
+    const totalSize = await fixtureHost.storage.size();
+    const wireChunks: Buffer[] = [];
+    for await (const chunk of fixtureHost.storage.readStream('', '', { start: 0, end: totalSize - 1 })) {
+      wireChunks.push(Buffer.from(chunk));
+    }
+    const agentScope = 'sessions/workspace/session/agents/main';
+    await storage.append(agentScope, 'wire.jsonl', Buffer.concat(wireChunks));
+    await storage.write(agentScope, 'wire.jsonl.generation', Buffer.from('fixture-generation'));
+    const wireSizeBefore = await storage.size(agentScope, 'wire.jsonl');
+    const wireMtimeBefore = await storage.mtime(agentScope, 'wire.jsonl');
+
+    const host = {
+      storage,
+      docs,
+      appendLog: { flush: async () => {} },
+    };
+
+    const beforeProfile = await readPersistedAgentProfileSnapshot(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { profileName: 'meta-fallback' } as never,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    );
+    const beforeFacts = await readPersistedAgentRuntimeFacts(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { contextTokens: 77 } as never,
+    );
+    expect(beforeProfile).toMatchObject({ source: 'metadata', wireCoverage: 'unscanned' });
+    expect(beforeFacts).toEqual({ contextTokens: 77, complete: false });
+
+    await docs.set(`${agentScope}/replay-checkpoints`, 'engine-v1', checkpoint);
+    expect(await storage.size(agentScope, 'wire.jsonl')).toBe(wireSizeBefore);
+    expect(await storage.mtime(agentScope, 'wire.jsonl')).toBe(wireMtimeBefore);
+
+    const afterProfile = await readPersistedAgentProfileSnapshot(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { profileName: 'meta-fallback' } as never,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    );
+    const afterFacts = await readPersistedAgentRuntimeFacts(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { contextTokens: 77 } as never,
+    );
+    expect(afterProfile).toMatchObject({ source: 'wire', profileName: 'research', activeToolNames: ['Read', 'Grep'] });
+    expect(afterProfile?.wireCoverage).toBeUndefined();
+    expect(afterFacts).toMatchObject({ contextTokens: 1234, turnCount: 8, complete: true });
+
+    let checkpointPresent = false;
+    let docReads = 0;
+    const memoryLikeHost = {
+      storage: {
+        ...fixtureHost.storage,
+        pathFor: () => undefined,
+      },
+      docs: {
+        get: async () => {
+          docReads += 1;
+          return checkpointPresent ? checkpoint : undefined;
+        },
+      },
+      appendLog: { flush: async () => {} },
+    };
+    expect(
+      await readPersistedAgentRuntimeFacts(memoryLikeHost as never, 'workspace', 'session', 'main', { contextTokens: 55 } as never),
+    ).toEqual({ contextTokens: 55, complete: false });
+    expect(docReads).toBe(1);
+    checkpointPresent = true;
+    expect(
+      await readPersistedAgentRuntimeFacts(memoryLikeHost as never, 'workspace', 'session', 'main', { contextTokens: 55 } as never),
+    ).toMatchObject({ contextTokens: 1234, turnCount: 8, complete: true });
+    expect(docReads).toBe(2);
+  } finally {
+    await storage.close();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});

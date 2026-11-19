@@ -99,7 +99,6 @@ export interface ISessionIndex {
   prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus>;
   readonly onDidChangeStatus: Event<SessionIndexStatus>;
   status(): SessionIndexStatus;
-  hasIndexed?(id: string, signal?: AbortSignal): Promise<boolean>;
   get(id: string, workspaceId?: string, signal?: AbortSignal): Promise<SessionSummary | undefined>;
   /** Fresh authoritative metadata discovery; exclusions cut whole attached subtrees, never the root. */
   archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]>;

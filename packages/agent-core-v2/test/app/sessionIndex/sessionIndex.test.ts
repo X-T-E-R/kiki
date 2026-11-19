@@ -3126,18 +3126,48 @@ describe('FileSessionIndex (read model)', () => {
       expect(batchWrites).toHaveBeenCalledTimes(1);
       expect(scheduled).toBeUndefined();
       expect(await store.get('s0', workspaceId)).toMatchObject({ title: 'external drift' });
-      const readdirSpy = vi.spyOn(fsp, 'readdir');
-      try {
-        expect(await store.hasIndexed?.('s0')).toBe(true);
-        expect(await store.hasIndexed?.('brand-new-session-id')).toBe(false);
-        expect(readdirSpy).not.toHaveBeenCalled();
-      } finally {
-        readdirSpy.mockRestore();
-      }
     } finally {
       scan.mockRestore();
       batchWrites.mockRestore();
       schedule.mockRestore();
+    }
+  }, 30_000);
+
+  it('preserves reuseFingerprints: false when reconcileNow joins during commit of a reusing pass', async () => {
+    await Promise.all(Array.from({ length: 8 }, (_, i) => seedSession(`s${i}`, { createdAt: 1, updatedAt: i + 1 })));
+    let tick: (() => void) | undefined;
+    const interval = vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void) => {
+      tick = fn;
+      return { unref() {} } as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    const store = build();
+    await store.prepare();
+    expect(tick).toBeTypeOf('function');
+
+    const originalPlan = SessionIndexProjector.prototype.planReconcile;
+    const observedReuseFlags: boolean[] = [];
+    let forcedReconcile: Promise<void> | undefined;
+    const planSpy = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(
+      async function (this: SessionIndexProjector, generation, options) {
+        observedReuseFlags.push(options?.reuseFingerprints ?? false);
+        const commit = await originalPlan.call(this, generation, options);
+        if (observedReuseFlags.length === 1) {
+          return async () => {
+            forcedReconcile = store.reconcileNow();
+            return commit();
+          };
+        }
+        return commit;
+      },
+    );
+    try {
+      tick!();
+      await vi.waitFor(() => expect(forcedReconcile).toBeDefined());
+      await forcedReconcile;
+      expect(observedReuseFlags).toEqual([true, false]);
+    } finally {
+      planSpy.mockRestore();
+      interval.mockRestore();
     }
   }, 30_000);
 

@@ -7207,3 +7207,85 @@ it('coalesces 32 orphan turn opening reads into a single file open with exact sp
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
+
+it('preserves canonical turn ordinals when extending an explicit cold tail upward into legacy implicit turn.prompt records', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-extend-implicit-turns-'));
+  const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+  await mkdir(wireDir, { recursive: true });
+  const wirePath = join(wireDir, 'wire.jsonl');
+  const records: Record<string, unknown>[] = [];
+  for (let id = 0; id < 8; id += 1) {
+    records.push(
+      {
+        type: 'turn.prompt',
+        promptId: `legacy-req-${id}`,
+        input: [{ type: 'text', text: `legacy-open-${String(id).padStart(2, '0')}` }],
+        origin: { kind: 'user' },
+        time: 1_000 + id,
+      },
+      { type: 'fixture.padding', padding: 'a'.repeat(600 << 10) },
+      { type: 'turn.ended', reason: 'completed', time: 1_100 + id },
+    );
+  }
+  for (let id = 8; id < 10; id += 1) {
+    records.push(
+      {
+        type: 'turn.prompt',
+        promptId: `legacy-req-${id}`,
+        input: [{ type: 'text', text: `legacy-open-${String(id).padStart(2, '0')}` }],
+        origin: { kind: 'user' },
+        time: 1_000 + id,
+      },
+      { type: 'fixture.padding', padding: 'b'.repeat(100 << 10) },
+      { type: 'turn.ended', reason: 'completed', time: 1_100 + id },
+    );
+  }
+  for (let id = 10; id < 35; id += 1) {
+    records.push(
+      {
+        type: 'turn.prompt',
+        turnId: id,
+        promptId: `explicit-req-${id}`,
+        input: [{ type: 'text', text: `explicit-open-${String(id).padStart(2, '0')}` }],
+        origin: { kind: 'user' },
+        time: 2_000 + id,
+      },
+      { type: 'fixture.padding', padding: 'c'.repeat(175 << 10) },
+      { type: 'turn.ended', turnId: id, reason: 'completed', time: 2_100 + id },
+    );
+  }
+  await writeFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const initial = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 20 });
+    expect(initial?.has_more).toBe(true);
+    const collected = [...(initial?.items ?? []).filter((item) => item.kind === 'turn')];
+    expect(collected.at(-1)?.turnId).toBe('t34');
+
+    let beforeTurn = collected[0]?.turnId;
+    let hasMore = initial?.has_more ?? false;
+    let pages = 0;
+    while (hasMore && beforeTurn !== undefined && pages < 10) {
+      pages += 1;
+      const older = await readSessionViewTranscriptPage(service, 's1', {
+        agentId: 'main',
+        beforeTurn,
+        pageSize: 20,
+      });
+      const olderTurns = (older?.items ?? []).filter((item) => item.kind === 'turn');
+      collected.unshift(...olderTurns);
+      hasMore = older?.has_more ?? false;
+      beforeTurn = olderTurns[0]?.turnId;
+    }
+
+    expect(hasMore).toBe(false);
+    expect(collected.map((turn) => turn.turnId)).toEqual(
+      Array.from({ length: 35 }, (_, index) => `t${index}`),
+    );
+    expect(collected.find((turn) => turn.turnId === 't8')).toMatchObject({ prompt: 'legacy-open-08' });
+    expect(collected.find((turn) => turn.turnId === 't9')).toMatchObject({ prompt: 'legacy-open-09' });
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);

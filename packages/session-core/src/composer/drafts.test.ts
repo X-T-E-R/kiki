@@ -10,14 +10,19 @@ import { configureSpaceStorage } from '../storage/spaceStorage';
 import { addAnnotation, removeAnnotation } from './selectionQuote';
 import {
   appendToDraft,
+  beginPendingSubmissionFlight,
   clearComposerState,
   clearNewSessionDraft,
   clearStoredDrafts,
+  finishPendingSubmissionFlight,
   flushDrafts,
   INPUT_HISTORY_LIMIT,
+  invalidatePendingSubmissionRetry,
+  isPendingSubmissionInFlight,
   pushInputHistory,
   readComposerState,
   readDraft,
+  readPendingSubmission,
   recoverSubmittedDraft,
   readInputHistory,
   readNewSessionDraft,
@@ -26,7 +31,9 @@ import {
   resetInputHistoryForTests,
   restorePromptToDraft,
   resolveComposerModelOverrides,
+  settlePendingSubmission,
   subscribeDraftAppends,
+  subscribePendingSubmissions,
   writeComposerState,
   writeDraft,
   writeNewSessionDraft,
@@ -624,5 +631,48 @@ describe('unacknowledged submissions', () => {
     expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
     expect(temporary.acknowledge).not.toThrow();
     expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+  });
+
+  it('retains in-flight pending submission latches across edits and settles untrimmed drafts cleanly', () => {
+    resetDraftMemoryForTests();
+    resetComposerMemoryForTests();
+    const events: string[] = [];
+    const unsubscribe = subscribePendingSubmissions((sessionId) => events.push(sessionId));
+    try {
+      writeDraft('target-a', 'send this\n');
+      const flight1 = beginPendingSubmissionFlight('target-a', {
+        scope: 'scope-a',
+        connectionScopeId: 'conn-1',
+        payload: '["send this"]',
+        key: 'k1',
+        draftText: 'send this\n',
+      });
+      expect(isPendingSubmissionInFlight('target-a', 'scope-a')).toBe(true);
+      expect(isPendingSubmissionInFlight('target-a', 'other-scope')).toBe(false);
+      expect(settlePendingSubmission('target-a', 'k1')).toBe(true);
+      finishPendingSubmissionFlight('target-a', flight1.generation);
+      expect(isPendingSubmissionInFlight('target-a', 'scope-a')).toBe(false);
+      expect(readDraft('target-a')).toBe('');
+      expect(readPendingSubmission('target-a')).toBeUndefined();
+
+      writeDraft('target-b', 'first');
+      const flight2 = beginPendingSubmissionFlight('target-b', {
+        scope: 'scope-b',
+        connectionScopeId: 'conn-1',
+        payload: '["first"]',
+        key: 'k2',
+        draftText: 'first',
+      });
+      invalidatePendingSubmissionRetry('target-b');
+      expect(isPendingSubmissionInFlight('target-b', 'scope-b')).toBe(true);
+      writeDraft('target-b', 'edited while sending');
+      expect(settlePendingSubmission('target-b', 'k2')).toBe(false);
+      finishPendingSubmissionFlight('target-b', flight2.generation);
+      expect(isPendingSubmissionInFlight('target-b', 'scope-b')).toBe(false);
+      expect(readDraft('target-b')).toBe('edited while sending');
+      expect(events.length).toBeGreaterThanOrEqual(4);
+    } finally {
+      unsubscribe();
+    }
   });
 });

@@ -1164,7 +1164,8 @@ async function extendColdPage(
     snapshot: next,
     progressed: boundary?.fingerprint !== nextBoundary?.fingerprint || boundary?.start !== nextBoundary?.start || boundary?.end !== nextBoundary?.end ||
       next.hasMoreOlder !== snapshot.hasMoreOlder || next.items.map(itemKey).join('\0') !== snapshot.items.map(itemKey).join('\0'),
-    prefixMaterialized: prefixWasMaterialized(boundary, nextBoundary),
+    prefixMaterialized: prefixWasMaterialized(boundary, nextBoundary) ||
+      (boundary !== undefined && boundary.start > 0 && nextBoundary === undefined && next.hasMoreOlder === false),
   };
 }
 
