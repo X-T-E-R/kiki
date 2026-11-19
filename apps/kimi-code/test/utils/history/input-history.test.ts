@@ -81,4 +81,18 @@ describe('input-history', () => {
     const entries = await loadInputHistory(file);
     expect(entries).toEqual([{ content: 'hi' }]);
   });
+
+  it('bounds loaded history to the latest 100 entries and compacts oversized files on load', async () => {
+    const lines = Array.from({ length: 250 }, (_, i) => JSON.stringify({ content: `cmd-${i}` }));
+    writeFileSync(file, `${lines.join('\n')}\n`, 'utf-8');
+
+    const entries = await loadInputHistory(file);
+    expect(entries).toHaveLength(100);
+    expect(entries[0]).toEqual({ content: 'cmd-150' });
+    expect(entries.at(-1)).toEqual({ content: 'cmd-249' });
+
+    const compactedLines = readFileSync(file, 'utf-8').trim().split('\n');
+    expect(compactedLines).toHaveLength(100);
+    expect(JSON.parse(compactedLines[0]!)).toEqual({ content: 'cmd-150' });
+  });
 });

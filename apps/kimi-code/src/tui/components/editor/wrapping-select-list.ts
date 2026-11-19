@@ -4,8 +4,6 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
   type SelectItem,
-  type SelectListLayoutOptions,
-  type SelectListTheme,
   type SgrMouseEvent,
 } from '@kiki/pi-tui';
 import { SELECT_POINTER } from '#/tui/constant/symbols';
@@ -32,43 +30,36 @@ function truncatePlainToWidth(text: string, maxWidth: number): string {
   return truncateToWidth(text, maxWidth, '').replace(TRAILING_ANSI_RESET, '');
 }
 
-interface SelectListInternals {
-  readonly filteredItems: SelectItem[];
-  readonly selectedIndex: number;
-  readonly maxVisible: number;
-  readonly theme: SelectListTheme;
-  readonly layout: SelectListLayoutOptions;
-}
-
 /**
  * SelectList that wraps item descriptions onto up to two lines instead of
  * truncating them to one. Long command / skill descriptions stay readable;
  * anything past the second line is ellipsized.
  *
- * Only `render` is replaced — selection, filtering, and key handling stay in
- * pi-tui. pi-tui keeps the row state private, so the renderer reads it
- * through a cast, the same idiom CustomEditor uses for autocomplete
- * internals.
+ * Only `render` and `routeMouse` are overridden — selection, filtering, and
+ * key handling stay in pi-tui.
  */
 export class WrappingSelectList extends SelectList {
   private renderedItemByRow: number[] = [];
 
   override routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
-    const { filteredItems } = this.internals();
-    if (filteredItems.length === 0) return false;
+    if (this.filteredItems.length === 0) return false;
     if (event.wheel !== null) {
       this.setSelectedIndex(
-        (this.internals().selectedIndex + event.wheel + filteredItems.length) % filteredItems.length,
+        (this.selectedIndex + event.wheel + this.filteredItems.length) % this.filteredItems.length,
       );
       return true;
     }
     if (event.leftClick) {
       const targetIndex = this.renderedItemByRow[line];
-      if (targetIndex === undefined || targetIndex < 0 || targetIndex >= filteredItems.length) {
+      if (
+        targetIndex === undefined ||
+        targetIndex < 0 ||
+        targetIndex >= this.filteredItems.length
+      ) {
         return false;
       }
       this.setSelectedIndex(targetIndex);
-      const item = filteredItems[targetIndex];
+      const item = this.filteredItems[targetIndex];
       if (item && this.onSelect) {
         this.onSelect(item);
       }
@@ -78,33 +69,35 @@ export class WrappingSelectList extends SelectList {
   }
 
   override render(width: number): string[] {
-    const { filteredItems, selectedIndex, maxVisible, theme } = this.internals();
     this.renderedItemByRow = [];
-    if (filteredItems.length === 0) {
-      return [theme.noMatch('  No matching commands')];
+    if (this.filteredItems.length === 0) {
+      return [this.theme.noMatch('  No matching commands')];
     }
 
     const primaryColumnWidth = this.primaryColumnWidth();
     const startIndex = Math.max(
       0,
-      Math.min(selectedIndex - Math.floor(maxVisible / 2), filteredItems.length - maxVisible),
+      Math.min(
+        this.selectedIndex - Math.floor(this.maxVisible / 2),
+        this.filteredItems.length - this.maxVisible,
+      ),
     );
-    const endIndex = Math.min(startIndex + maxVisible, filteredItems.length);
+    const endIndex = Math.min(startIndex + this.maxVisible, this.filteredItems.length);
 
     const lines: string[] = [];
     for (let i = startIndex; i < endIndex; i++) {
-      const item = filteredItems[i];
+      const item = this.filteredItems[i];
       if (!item) continue;
-      const itemLines = this.renderItemLines(item, i === selectedIndex, width, primaryColumnWidth);
+      const itemLines = this.renderItemLines(item, i === this.selectedIndex, width, primaryColumnWidth);
       for (let r = 0; r < itemLines.length; r++) {
         this.renderedItemByRow.push(i);
       }
       lines.push(...itemLines);
     }
 
-    if (startIndex > 0 || endIndex < filteredItems.length) {
-      const scrollText = `  (${selectedIndex + 1}/${filteredItems.length})`;
-      lines.push(theme.scrollInfo(truncatePlainToWidth(scrollText, width - 2)));
+    if (startIndex > 0 || endIndex < this.filteredItems.length) {
+      const scrollText = `  (${this.selectedIndex + 1}/${this.filteredItems.length})`;
+      lines.push(this.theme.scrollInfo(truncatePlainToWidth(scrollText, width - 2)));
     }
     return lines;
   }
@@ -115,7 +108,6 @@ export class WrappingSelectList extends SelectList {
     width: number,
     primaryColumnWidth: number,
   ): string[] {
-    const { theme } = this.internals();
     const prefix = isSelected ? `${SELECT_POINTER} ` : '  ';
     const prefixWidth = visibleWidth(prefix);
     const description = item.description
@@ -144,20 +136,24 @@ export class WrappingSelectList extends SelectList {
         const indent = ' '.repeat(descriptionStart);
         if (isSelected) {
           return descriptionLines.map((line, index) =>
-            theme.selectedText(index === 0 ? `${prefix}${truncatedValue}${spacing}${line}` : indent + line),
+            this.theme.selectedText(
+              index === 0 ? `${prefix}${truncatedValue}${spacing}${line}` : indent + line,
+            ),
           );
         }
         return descriptionLines.map((line, index) =>
           index === 0
-            ? prefix + truncatedValue + theme.description(spacing + line)
-            : theme.description(indent + line),
+            ? prefix + truncatedValue + this.theme.description(spacing + line)
+            : this.theme.description(indent + line),
         );
       }
     }
 
     const maxWidth = width - prefixWidth - 2;
     const truncatedValue = this.truncatePrimaryValue(item, isSelected, maxWidth, maxWidth);
-    return [isSelected ? theme.selectedText(`${prefix}${truncatedValue}`) : prefix + truncatedValue];
+    return [
+      isSelected ? this.theme.selectedText(`${prefix}${truncatedValue}`) : prefix + truncatedValue,
+    ];
   }
 
   private truncatePrimaryValue(
@@ -166,31 +162,29 @@ export class WrappingSelectList extends SelectList {
     maxWidth: number,
     columnWidth: number,
   ): string {
-    const { layout } = this.internals();
     const displayValue = item.label || item.value;
-    const truncated = layout.truncatePrimary
-      ? layout.truncatePrimary({ text: displayValue, maxWidth, columnWidth, item, isSelected })
+    const truncated = this.layout.truncatePrimary
+      ? this.layout.truncatePrimary({ text: displayValue, maxWidth, columnWidth, item, isSelected })
       : displayValue;
     return truncatePlainToWidth(truncated, maxWidth);
   }
 
   private primaryColumnWidth(): number {
-    const { filteredItems, layout } = this.internals();
     const rawMin =
-      layout.minPrimaryColumnWidth ?? layout.maxPrimaryColumnWidth ?? DEFAULT_PRIMARY_COLUMN_WIDTH;
+      this.layout.minPrimaryColumnWidth ??
+      this.layout.maxPrimaryColumnWidth ??
+      DEFAULT_PRIMARY_COLUMN_WIDTH;
     const rawMax =
-      layout.maxPrimaryColumnWidth ?? layout.minPrimaryColumnWidth ?? DEFAULT_PRIMARY_COLUMN_WIDTH;
+      this.layout.maxPrimaryColumnWidth ??
+      this.layout.minPrimaryColumnWidth ??
+      DEFAULT_PRIMARY_COLUMN_WIDTH;
     const min = Math.max(1, Math.min(rawMin, rawMax));
     const max = Math.max(1, Math.max(rawMin, rawMax));
-    const widest = filteredItems.reduce(
+    const widest = this.filteredItems.reduce(
       (acc, item) => Math.max(acc, visibleWidth(item.label || item.value) + PRIMARY_COLUMN_GAP),
       0,
     );
     return Math.max(min, Math.min(widest, max));
-  }
-
-  private internals(): SelectListInternals {
-    return this as unknown as SelectListInternals;
   }
 }
 

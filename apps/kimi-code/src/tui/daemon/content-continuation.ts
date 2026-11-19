@@ -7,6 +7,7 @@ import type {
 } from '@kiki/session-core/session/transcript/types';
 
 import type { ToolContinuationStatus } from '#/tui/types';
+import { isAbortError } from '#/utils/errors';
 
 const MAX_RANGE_CONTINUATION_CHARS = 65_536;
 
@@ -80,6 +81,7 @@ export class DaemonContentContinuationManager {
     if (this.controller === controller && this.agentId === agentId) return;
     this.releaseExpansionLeases();
     this.requestedLookups.clear();
+    this.requestedTaskDetails.clear();
     this.controller = controller;
     this.agentId = agentId;
   }
@@ -111,13 +113,21 @@ export class DaemonContentContinuationManager {
         const lookupKey = `${agentId}/${block.toolCallId}:${block.status}`;
         if (!this.requestedLookups.has(lookupKey)) {
           this.requestedLookups.add(lookupKey);
-          void controller.lookupToolCall(agentId, block.toolCallId).catch(() => {});
+          void controller.lookupToolCall(agentId, block.toolCallId).catch((error: unknown) => {
+            if (this.controller === controller && !isAbortError(error)) {
+              this.requestedLookups.delete(lookupKey);
+            }
+          });
         }
       } else if (block.kind === 'shell' && block.done) {
         const lookupKey = `${agentId}/${block.commandId}:done`;
         if (!this.requestedLookups.has(lookupKey)) {
           this.requestedLookups.add(lookupKey);
-          void controller.lookupToolCall(agentId, block.commandId).catch(() => {});
+          void controller.lookupToolCall(agentId, block.commandId).catch((error: unknown) => {
+            if (this.controller === controller && !isAbortError(error)) {
+              this.requestedLookups.delete(lookupKey);
+            }
+          });
         }
       }
     }
@@ -186,7 +196,11 @@ export class DaemonContentContinuationManager {
             this.requestedTaskDetails.add(triggerKey);
             void controller
               .loadTranscriptDetail(block.outputDetail.agentId, 'task', block.outputDetail.taskId)
-              .catch(() => {});
+              .catch((error: unknown) => {
+                if (this.controller === controller && !isAbortError(error)) {
+                  this.requestedTaskDetails.delete(triggerKey);
+                }
+              });
           }
         }
       } else if (block.kind === 'thinking' && block.frameId !== undefined) {

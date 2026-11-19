@@ -18,6 +18,12 @@ vi.mock('#/utils/process/resolve-command', () => ({
 
 import { createGitStatusCache, formatGitBadge } from '#/utils/git/git-status';
 
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 6; i++) {
+    await Promise.resolve();
+  }
+}
+
 beforeEach(() => {
   mocks.resolveCommandPath.mockImplementation((command: string) => `/usr/bin/${command}`);
 });
@@ -28,40 +34,49 @@ afterEach(() => {
 });
 
 describe('git status cache', () => {
-  it('caches branch and status reads until their TTL expires', async () => {
+  it('caches branch and status reads asynchronously without spawnSync until their TTL expires', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-24T00:00:00Z'));
     mocks.execFile.mockImplementation(
       (
-        _cmd: string,
-        _args: string[],
+        cmd: string,
+        args: string[],
         _options: unknown,
         callback: (error: Error | null, stdout: string, stderr: string) => void,
       ) => {
-        callback(new Error('no pull request'), '', '');
+        if (cmd.endsWith('/gh')) {
+          callback(new Error('no pull request'), '', '');
+          return;
+        }
+        if (args.includes('rev-parse')) {
+          callback(null, 'true\n', '');
+          return;
+        }
+        if (args.includes('branch')) {
+          callback(null, 'main\n', '');
+          return;
+        }
+        if (args.includes('status')) {
+          callback(null, '## main...origin/main [ahead 2, behind 1]\n M src/app.ts\n', '');
+          return;
+        }
+        if (args.includes('diff')) {
+          callback(null, '4\t1\tsrc/app.ts\n', '');
+          return;
+        }
+        callback(new Error('unexpected git invocation'), '', '');
       },
     );
-    mocks.spawnSync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args.includes('rev-parse')) {
-        return { status: 0, stdout: 'true\n' };
-      }
-      if (args.includes('branch')) {
-        return { status: 0, stdout: 'main\n' };
-      }
-      if (args.includes('status')) {
-        return {
-          status: 0,
-          stdout: '## main...origin/main [ahead 2, behind 1]\n M src/app.ts\n',
-        };
-      }
-      if (args.includes('diff')) {
-        return { status: 0, stdout: '4\t1\tsrc/app.ts\n' };
-      }
-      return { status: 1, stdout: '' };
-    });
 
-    const cache = createGitStatusCache('/tmp/repo');
+    const onChange = vi.fn();
+    const cache = createGitStatusCache('/tmp/repo', { onChange });
 
+    expect(cache.getStatus()).toBeNull();
+    expect(mocks.spawnSync).not.toHaveBeenCalled();
+
+    await flushMicrotasks();
+
+    expect(onChange).toHaveBeenCalled();
     expect(cache.getStatus()).toEqual({
       branch: 'main',
       dirty: true,
@@ -80,70 +95,59 @@ describe('git status cache', () => {
       diffDeleted: 1,
       pullRequest: null,
     });
-    expect(mocks.spawnSync).toHaveBeenCalledTimes(4);
-    expect(mocks.execFile).toHaveBeenCalledTimes(1);
-
-    await Promise.resolve();
+    expect(mocks.spawnSync).not.toHaveBeenCalled();
+    expect(mocks.execFile).toHaveBeenCalledTimes(5);
 
     vi.setSystemTime(new Date('2026-04-24T00:00:06Z'));
     cache.getStatus();
-    expect(mocks.spawnSync).toHaveBeenCalledTimes(5);
-    expect(mocks.execFile).toHaveBeenCalledTimes(1);
+    await flushMicrotasks();
+    expect(mocks.execFile).toHaveBeenCalledTimes(6);
 
     vi.setSystemTime(new Date('2026-04-24T00:00:16Z'));
     cache.getStatus();
-    expect(mocks.spawnSync).toHaveBeenCalledTimes(8);
-    expect(mocks.execFile).toHaveBeenCalledTimes(1);
+    await flushMicrotasks();
+    expect(mocks.execFile).toHaveBeenCalledTimes(9);
   });
 
   it('reads uncommitted diff line counts and current pull request metadata', async () => {
     const onChange = vi.fn();
     mocks.execFile.mockImplementation(
       (
-        _cmd: string,
-        _args: string[],
+        cmd: string,
+        args: string[],
         _options: unknown,
         callback: (error: Error | null, stdout: string, stderr: string) => void,
       ) => {
-        callback(null, '{"number":12,"url":"https://github.com/acme/repo/pull/12"}\n', '');
+        if (cmd.endsWith('/gh')) {
+          callback(null, '{"number":12,"url":"https://github.com/acme/repo/pull/12"}\n', '');
+          return;
+        }
+        if (args.includes('rev-parse')) {
+          callback(null, 'true\n', '');
+          return;
+        }
+        if (args.includes('branch')) {
+          callback(null, 'feature/footer\n', '');
+          return;
+        }
+        if (args.includes('status')) {
+          callback(null, '## feature/footer...origin/feature/footer\n M src/app.ts\n', '');
+          return;
+        }
+        if (args.includes('diff')) {
+          callback(null, '10\t3\tsrc/app.ts\n-\t-\timage.png\n0\t5\tdeleted.ts\n', '');
+          return;
+        }
+        callback(new Error('unexpected'), '', '');
       },
     );
-    mocks.spawnSync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args.includes('rev-parse')) {
-        return { status: 0, stdout: 'true\n' };
-      }
-      if (args.includes('branch')) {
-        return { status: 0, stdout: 'feature/footer\n' };
-      }
-      if (args.includes('status')) {
-        return {
-          status: 0,
-          stdout: '## feature/footer...origin/feature/footer\n M src/app.ts\n',
-        };
-      }
-      if (args.includes('diff')) {
-        return {
-          status: 0,
-          stdout: '10\t3\tsrc/app.ts\n-\t-\timage.png\n0\t5\tdeleted.ts\n',
-        };
-      }
-      return { status: 1, stdout: '' };
-    });
 
     const cache = createGitStatusCache('/tmp/repo', { onChange });
-    expect(cache.getStatus()).toEqual({
-      branch: 'feature/footer',
-      dirty: true,
-      ahead: 0,
-      behind: 0,
-      diffAdded: 10,
-      diffDeleted: 8,
-      pullRequest: null,
-    });
+    expect(cache.getStatus()).toBeNull();
 
-    await Promise.resolve();
+    await flushMicrotasks();
 
-    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalled();
     expect(cache.getStatus()).toEqual({
       branch: 'feature/footer',
       dirty: true,
@@ -160,44 +164,42 @@ describe('git status cache', () => {
 
   it('keeps footer git status working when gh pull-request lookup throws synchronously', async () => {
     const onChange = vi.fn();
-    mocks.execFile.mockImplementation(() => {
-      const error = Object.assign(new Error('spawn ENOTDIR'), { code: 'ENOTDIR' });
-      throw error;
-    });
-    mocks.spawnSync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args.includes('rev-parse')) {
-        return { status: 0, stdout: 'true\n' };
-      }
-      if (args.includes('branch')) {
-        return { status: 0, stdout: 'main\n' };
-      }
-      if (args.includes('status')) {
-        return {
-          status: 0,
-          stdout: '## main...origin/main\n M src/app.ts\n',
-        };
-      }
-      if (args.includes('diff')) {
-        return { status: 0, stdout: '2\t1\tsrc/app.ts\n' };
-      }
-      return { status: 1, stdout: '' };
-    });
+    mocks.execFile.mockImplementation(
+      (
+        cmd: string,
+        args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (cmd.endsWith('/gh')) {
+          const error = Object.assign(new Error('spawn ENOTDIR'), { code: 'ENOTDIR' });
+          throw error;
+        }
+        if (args.includes('rev-parse')) {
+          callback(null, 'true\n', '');
+          return;
+        }
+        if (args.includes('branch')) {
+          callback(null, 'main\n', '');
+          return;
+        }
+        if (args.includes('status')) {
+          callback(null, '## main...origin/main\n M src/app.ts\n', '');
+          return;
+        }
+        if (args.includes('diff')) {
+          callback(null, '2\t1\tsrc/app.ts\n', '');
+          return;
+        }
+        callback(new Error('unexpected'), '', '');
+      },
+    );
 
     const cache = createGitStatusCache('/tmp/repo', { onChange });
+    expect(cache.getStatus()).toBeNull();
 
-    expect(cache.getStatus()).toEqual({
-      branch: 'main',
-      dirty: true,
-      ahead: 0,
-      behind: 0,
-      diffAdded: 2,
-      diffDeleted: 1,
-      pullRequest: null,
-    });
+    await flushMicrotasks();
 
-    await Promise.resolve();
-
-    expect(onChange).not.toHaveBeenCalled();
     expect(cache.getStatus()).toEqual({
       branch: 'main',
       dirty: true,
@@ -216,17 +218,7 @@ describe('git status cache', () => {
     expect(mocks.execFile).not.toHaveBeenCalled();
   });
 
-  it('defers the repo probe until the first footer status read and caches a negative result', () => {
-    mocks.spawnSync.mockReturnValue({ status: 1, stdout: '' });
-    const cache = createGitStatusCache('/tmp/not-a-repo');
-    expect(mocks.spawnSync).not.toHaveBeenCalled();
-    expect(cache.getStatus()).toBeNull();
-    expect(mocks.spawnSync).toHaveBeenCalledTimes(1);
-    expect(cache.getStatus()).toBeNull();
-    expect(mocks.spawnSync).toHaveBeenCalledTimes(1);
-  });
-
-  it('spawns git and gh through their resolved absolute paths', async () => {
+  it('defers the repo probe until the first footer status read and caches a negative result', async () => {
     mocks.execFile.mockImplementation(
       (
         _cmd: string,
@@ -234,24 +226,50 @@ describe('git status cache', () => {
         _options: unknown,
         callback: (error: Error | null, stdout: string, stderr: string) => void,
       ) => {
-        callback(new Error('no pull request'), '', '');
+        callback(new Error('not a repo'), '', '');
       },
     );
-    mocks.spawnSync.mockImplementation((_cmd: string, args: string[]) => {
-      if (args.includes('rev-parse')) return { status: 0, stdout: 'true\n' };
-      if (args.includes('branch')) return { status: 0, stdout: 'main\n' };
-      if (args.includes('status')) return { status: 0, stdout: '## main...origin/main\n' };
-      return { status: 1, stdout: '' };
-    });
+    const cache = createGitStatusCache('/tmp/not-a-repo');
+    expect(mocks.execFile).not.toHaveBeenCalled();
+    expect(cache.getStatus()).toBeNull();
+    expect(mocks.execFile).toHaveBeenCalledTimes(1);
+    await flushMicrotasks();
+    expect(cache.getStatus()).toBeNull();
+    expect(mocks.execFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('spawns git and gh through their resolved absolute paths', async () => {
+    mocks.execFile.mockImplementation(
+      (
+        cmd: string,
+        args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (cmd.endsWith('/gh')) {
+          callback(new Error('no pull request'), '', '');
+          return;
+        }
+        if (args.includes('rev-parse')) callback(null, 'true\n', '');
+        else if (args.includes('branch')) callback(null, 'main\n', '');
+        else if (args.includes('status')) callback(null, '## main...origin/main\n', '');
+        else callback(new Error('unexpected'), '', '');
+      },
+    );
 
     const cache = createGitStatusCache('/tmp/repo');
-    expect(cache.getStatus()).not.toBeNull();
-    await Promise.resolve();
+    cache.getStatus();
+    await flushMicrotasks();
 
+    expect(cache.getStatus()).not.toBeNull();
     expect(mocks.resolveCommandPath).toHaveBeenCalledWith('git', '/tmp/repo');
-    for (const call of mocks.spawnSync.mock.calls) {
-      expect(call[0]).toBe('/usr/bin/git');
-    }
+    expect(mocks.spawnSync).not.toHaveBeenCalled();
+    expect(mocks.execFile).toHaveBeenCalledWith(
+      '/usr/bin/git',
+      expect.any(Array),
+      expect.anything(),
+      expect.any(Function),
+    );
     expect(mocks.execFile).toHaveBeenCalledWith(
       '/usr/bin/gh',
       expect.any(Array),
@@ -260,9 +278,21 @@ describe('git status cache', () => {
     );
   });
 
-  it('returns null when the working directory is not a git repo and formats badges', () => {
-    mocks.spawnSync.mockReturnValue({ status: 1, stdout: '' });
-    expect(createGitStatusCache('/tmp/not-a-repo').getStatus()).toBeNull();
+  it('returns null when the working directory is not a git repo and formats badges', async () => {
+    mocks.execFile.mockImplementation(
+      (
+        _cmd: string,
+        _args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        callback(new Error('not a repo'), '', '');
+      },
+    );
+    const cache = createGitStatusCache('/tmp/not-a-repo');
+    expect(cache.getStatus()).toBeNull();
+    await flushMicrotasks();
+    expect(cache.getStatus()).toBeNull();
     expect(
       formatGitBadge({
         branch: 'main',

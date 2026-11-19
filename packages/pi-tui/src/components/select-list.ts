@@ -41,12 +41,12 @@ export interface SelectListLayoutOptions {
 }
 
 export class SelectList implements Component, MouseRoutable {
-	private items: SelectItem[] = [];
-	private filteredItems: SelectItem[] = [];
-	private selectedIndex: number = 0;
-	private maxVisible: number = 5;
-	private theme: SelectListTheme;
-	private layout: SelectListLayoutOptions;
+	protected items: SelectItem[] = [];
+	protected filteredItems: SelectItem[] = [];
+	protected selectedIndex: number = 0;
+	protected maxVisible: number = 5;
+	protected theme: SelectListTheme;
+	protected layout: SelectListLayoutOptions;
 	private hitRows: number[] = [];
 
 	public onSelect?: (item: SelectItem) => void;

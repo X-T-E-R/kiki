@@ -299,7 +299,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	focused: boolean = false;
 
 	protected tui: TUI;
-	private theme: EditorTheme;
+	protected theme: EditorTheme;
 	private paddingX: number = 0;
 
 	// Store last render width for cursor navigation
@@ -322,14 +322,14 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteStartRow: number = -1;
 	private autocompleteRowCount: number = 0;
-	private autocompleteAbort?: AbortController;
-	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
+	protected autocompleteAbort?: AbortController;
+	protected autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
 
 	// Paste tracking for large pastes
-	private pastes: Map<number, string> = new Map();
+	protected pastes: Map<number, string> = new Map();
 	private pasteCounter: number = 0;
 
 	// Bracketed paste mode buffering
@@ -343,7 +343,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 	// Prompt history for up/down navigation
 	private history: string[] = [];
-	private historyIndex: number = -1; // -1 = not browsing, 0 = most recent, 1 = older, etc.
+	protected historyIndex: number = -1; // -1 = not browsing, 0 = most recent, 1 = older, etc.
 	private historyDraft: EditorState | null = null;
 	private hostHistoryDraft: unknown = undefined;
 	private historyFilter: ((entry: string) => boolean) | null = null;
@@ -487,7 +487,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		return currentVisualLine === visualLines.length - 1;
 	}
 
-	private navigateHistory(direction: 1 | -1): void {
+	protected navigateHistory(direction: 1 | -1): void {
 		this.lastAction = null;
 		if (this.history.length === 0) return;
 
@@ -2347,15 +2347,15 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		return firstPrefixIndex;
 	}
 
-	private createAutocompleteList(
+	protected createAutocompleteList(
 		prefix: string,
-		items: Array<{ value: string; label: string; description?: string }>,
+		items: SelectItem[],
 	): SelectList {
 		const layout = prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined;
 		return new SelectList(items, this.autocompleteMaxVisible, this.theme.selectList, layout);
 	}
 
-	private tryTriggerAutocomplete(explicitTab: boolean = false): void {
+	protected tryTriggerAutocomplete(explicitTab: boolean = false): void {
 		this.requestAutocomplete({ force: false, explicitTab });
 	}
 
@@ -2380,7 +2380,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		this.requestAutocomplete({ force: true, explicitTab });
 	}
 
-	private requestAutocomplete(options: { force: boolean; explicitTab: boolean }): void {
+	protected requestAutocomplete(options: { force: boolean; explicitTab: boolean }): void {
 		if (!this.autocompleteProvider) return;
 
 		if (options.force) {
@@ -2587,7 +2587,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		this.autocompletePrefix = "";
 	}
 
-	private cancelAutocomplete(): void {
+	protected cancelAutocomplete(): void {
 		this.cancelAutocompleteRequest();
 		this.clearAutocompleteUi();
 	}

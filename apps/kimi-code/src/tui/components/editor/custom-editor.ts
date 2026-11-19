@@ -40,21 +40,6 @@ const CAPS_LOCK_BIT = 64;
 const CTRL_BIT = 4;
 const SHIFT_BIT = 1;
 
-interface AutocompleteInternals {
-  cancelAutocomplete(): void;
-  readonly autocompleteAbort?: AbortController;
-  readonly autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
-}
-
-interface AutocompleteListFactoryInternals {
-  createAutocompleteList?: (prefix: string, items: SelectItem[]) => SelectList;
-}
-
-interface AutocompleteTriggerInternals {
-  tryTriggerAutocomplete: (explicitTab?: boolean) => void;
-  requestAutocomplete: (options: { force: boolean; explicitTab: boolean }) => void;
-}
-
 // Mirror pi-tui's private SLASH_COMMAND_SELECT_LIST_LAYOUT
 // (dist/components/editor.js); keep in sync when bumping pi-tui.
 const SLASH_COMMAND_SELECT_LIST_LAYOUT = {
@@ -195,36 +180,24 @@ export class CustomEditor extends Editor {
       disablePasteBurst: options.disablePasteBurst,
       inlineSlashTrigger: true,
     });
+  }
 
-    // pi-tui keeps `createAutocompleteList` private; shadow it with an
-    // instance property so slash command menus render descriptions wrapped
-    // to at most two lines. Non-slash completion (paths, @ mentions) keeps
-    // pi-tui's single-line list.
-    (this as unknown as AutocompleteListFactoryInternals).createAutocompleteList = (
-      prefix,
-      items,
-    ) => {
-      if (prefix.startsWith('/')) {
-        return new WrappingSelectList(
-          items,
-          this.getAutocompleteMaxVisible(),
-          theme.selectList,
-          SLASH_COMMAND_SELECT_LIST_LAYOUT,
-        );
-      }
-      return new SelectList(items, this.getAutocompleteMaxVisible(), theme.selectList);
-    };
+  protected override createAutocompleteList(prefix: string, items: SelectItem[]): SelectList {
+    if (prefix.startsWith('/')) {
+      return new WrappingSelectList(
+        items,
+        this.getAutocompleteMaxVisible(),
+        this.theme.selectList,
+        SLASH_COMMAND_SELECT_LIST_LAYOUT,
+      );
+    }
+    return new SelectList(items, this.getAutocompleteMaxVisible(), this.theme.selectList);
+  }
 
-    // pi-tui auto-triggers autocomplete for `/` (and letters in a slash
-    // context) with force:false, which routes through the slash-command
-    // branch. In bash mode `/` is a path separator, not a command prefix, so
-    // shadow the trigger to request file path completion (force:true) instead.
-    // Prompt mode keeps the original force:false behaviour. `tryTriggerAutocomplete`
-    // is private in pi-tui's typings but a plain prototype method at runtime.
-    const triggerInternals = this as unknown as AutocompleteTriggerInternals;
-    triggerInternals.tryTriggerAutocomplete = (explicitTab = false) => {
-      triggerInternals.requestAutocomplete({ force: this.inputMode === 'bash', explicitTab });
-    };
+  protected override tryTriggerAutocomplete(explicitTab = false): void {
+    // In bash mode `/` is a path separator, not a command prefix, so request
+    // file path completion (force:true) instead of the slash-command branch.
+    this.requestAutocomplete({ force: this.inputMode === 'bash', explicitTab });
   }
 
   override setDisablePasteBurst(disabled: boolean): void {
@@ -234,20 +207,15 @@ export class CustomEditor extends Editor {
   /**
    * While browsing input history, go back to the draft that was in the box
    * before browsing began and return true; otherwise do nothing and return
-   * false. pi-tui keeps the browse state private, so this steps its own
-   * history navigation down to the draft.
+   * false.
    */
   public restoreHistoryDraft(): boolean {
-    const history = this as unknown as {
-      historyIndex: number;
-      navigateHistory(direction: 1 | -1): void;
-    };
-    if (history.historyIndex < 0) return false;
-    while (history.historyIndex >= 0) {
-      const before = history.historyIndex;
-      history.navigateHistory(1);
+    if (this.historyIndex < 0) return false;
+    while (this.historyIndex >= 0) {
+      const before = this.historyIndex;
+      this.navigateHistory(1);
       // Each step moves toward the draft; stop if one ever does not.
-      if (history.historyIndex >= before) break;
+      if (this.historyIndex >= before) break;
     }
     return true;
   }
@@ -269,8 +237,7 @@ export class CustomEditor extends Editor {
       if (col < start || col > end) continue;
 
       const pasteId = Number(match[1]);
-      const pastes = (this as unknown as { pastes: Map<number, string> }).pastes;
-      const content = pastes.get(pasteId);
+      const content = this.pastes.get(pasteId);
       if (content === undefined) return false;
 
       const text = this.getText();
@@ -285,18 +252,15 @@ export class CustomEditor extends Editor {
   }
 
   private hasAutocompleteActivity(): boolean {
-    const autocomplete = this as unknown as AutocompleteInternals;
     return (
       this.isShowingAutocomplete() ||
-      autocomplete.autocompleteAbort !== undefined ||
-      autocomplete.autocompleteDebounceTimer !== undefined
+      this.autocompleteAbort !== undefined ||
+      this.autocompleteDebounceTimer !== undefined
     );
   }
 
   private cancelAutocompleteActivity(): void {
-    // pi-tui exposes `isShowingAutocomplete()` but keeps cancellation private.
-    // Kimi needs Esc to win over app-level cancel while the slash menu request is active.
-    (this as unknown as AutocompleteInternals).cancelAutocomplete();
+    this.cancelAutocomplete();
   }
 
   override render(width: number): string[] {
@@ -634,16 +598,12 @@ export class CustomEditor extends Editor {
     if (this.isShowingAutocomplete()) return;
     const { line, col } = this.getCursor();
     const textBeforeCursor = this.getLines()[line]?.slice(0, col) ?? '';
-    const editor = this as unknown as {
-      requestAutocomplete?: (options: { force: boolean; explicitTab: boolean }) => void;
-    };
-    if (editor.requestAutocomplete === undefined) return;
     const trigger = (): void => {
       // Use force:false so slash-aware logic runs: commands with argument
       // completions return their subcommands, commands without them return
       // null. force:true would bypass the slash branch and fall through to
       // path completion, wrongly popping up the file list.
-      editor.requestAutocomplete?.({ force: false, explicitTab: false });
+      this.requestAutocomplete({ force: false, explicitTab: false });
     };
 
     // Reopen path / argument completion right after a `/` is typed
@@ -654,13 +614,13 @@ export class CustomEditor extends Editor {
         trigger();
       } else if (this.inputMode === 'bash') {
         // In bash mode `/` is a path separator, not a slash command. A bare
-        // leading `/` is already handled by the tryTriggerAutocomplete shadow
-        // in the constructor; this branch covers the inline case (e.g. `ls /`,
-        // `cat /etc/`, `/add-dir/`) that pi-tui never auto-triggers. force:true
-        // is required so pi-tui's own slash-command handling is bypassed —
-        // force:false would let it pop up subcommand completions.
+        // leading `/` is already handled by tryTriggerAutocomplete; this branch
+        // covers the inline case (e.g. `ls /`, `cat /etc/`, `/add-dir/`) that
+        // pi-tui never auto-triggers. force:true is required so pi-tui's own
+        // slash-command handling is bypassed — force:false would let it pop up
+        // subcommand completions.
         if (textBeforeCursor.trimStart() !== '/') {
-          editor.requestAutocomplete?.({ force: true, explicitTab: false });
+          this.requestAutocomplete({ force: true, explicitTab: false });
         }
       } else {
         const isSlashArgument = textBeforeCursor.startsWith('/') && textBeforeCursor.includes(' ');

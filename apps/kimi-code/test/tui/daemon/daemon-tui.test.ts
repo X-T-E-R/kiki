@@ -4133,3 +4133,97 @@ it('reports a definite send-now authentication failure from the busy Enter path'
   tui.state.editor.onSubmit?.('Continue');
   await vi.waitFor(() => expect(requireAuth).toHaveBeenCalledWith('Sign in required (code 40111)'));
 });
+
+it('steers the focused child agent when child is busy even if main is idle', async () => {
+  const { tui, controller, controllerState } = driver();
+  controllerState.busy = false;
+  controller.getAgentState.mockReturnValue({ ...controllerState, busy: true });
+  controller.getPendingSteers.mockReturnValue([]);
+  controller.sendPromptNow.mockResolvedValue({ promptId: 'steer-1', outcome: 'steered' });
+  (tui as unknown as { focusedAgentId: string }).focusedAgentId = 'branch-1';
+
+  tui.state.editor.onSubmit?.('Focus here');
+  await vi.waitFor(() =>
+    expect(controller.sendPromptNow).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'branch-1', text: 'Focus here' }),
+    ),
+  );
+  expect(controller.getPendingSteers).toHaveBeenCalledWith('branch-1');
+});
+
+it('ignores stale skill command responses after switching sessions', async () => {
+  const { tui } = driver();
+  const internal = tui as unknown as {
+    client: { listSkills: ReturnType<typeof vi.fn> };
+    controller: { sessionId: string };
+    skillCommands: Map<string, unknown>;
+    refreshSkillCommands(sessionId: string): Promise<void>;
+  };
+  let resolveSkills!: (value: { skills: Array<{ name: string; description: string }> }) => void;
+  internal.client.listSkills.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveSkills = resolve;
+      }),
+  );
+
+  const pending = internal.refreshSkillCommands('session-1');
+  internal.controller = { ...internal.controller, sessionId: 'session-2' };
+  resolveSkills({ skills: [{ name: 'stale-skill', description: 'from old session' }] });
+  await pending;
+
+  expect(internal.skillCommands.has('stale-skill')).toBe(false);
+});
+
+it('retries failed tool detail lookups and clears requested task details on target switch', async () => {
+  const { DaemonContentContinuationManager } = await import('#/tui/daemon/content-continuation');
+  const manager = new DaemonContentContinuationManager();
+  const lookupToolCall = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('transient network error'))
+    .mockResolvedValue({ status: 'found' });
+  const loadTranscriptDetail = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('transient detail error'))
+    .mockResolvedValue(true);
+  const fakeController = {
+    beginContentRead: vi.fn(() => ({ release: vi.fn(), retry: vi.fn() })),
+    contentRefsFor: vi.fn(() => []),
+    isContentRange: vi.fn(() => false),
+    readContentRange: vi.fn(async () => ''),
+    loadTranscriptDetail,
+    lookupToolCall,
+    getToolCallDetail: vi.fn(() => undefined),
+    getContentRevision: vi.fn(() => 0),
+  };
+
+  manager.setTarget(fakeController, 'main');
+  manager.setExpanded(true);
+  const blocks = [
+    {
+      kind: 'tool',
+      id: 'b1',
+      toolCallId: 'tc-1',
+      name: 'Read',
+      status: 'done',
+      input: {},
+    },
+    {
+      kind: 'shell',
+      id: 'b2',
+      commandId: 'sh-1',
+      command: 'echo hi',
+      done: true,
+      outputDetail: { agentId: 'main', taskId: 'task-1' },
+    },
+  ] as unknown as Parameters<typeof manager.syncBlocks>[0];
+
+  manager.syncBlocks(blocks);
+  await vi.waitFor(() => expect(lookupToolCall).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(loadTranscriptDetail).toHaveBeenCalledTimes(1));
+
+  // Failed non-abort calls release their dedup keys so the next sync retries them.
+  manager.syncBlocks(blocks);
+  await vi.waitFor(() => expect(lookupToolCall).toHaveBeenCalledTimes(3));
+  await vi.waitFor(() => expect(loadTranscriptDetail).toHaveBeenCalledTimes(2));
+});

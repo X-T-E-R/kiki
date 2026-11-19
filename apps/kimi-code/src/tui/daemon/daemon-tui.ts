@@ -186,6 +186,7 @@ export class DaemonTUI {
   private readonly startup: DaemonTUIStartupInput;
   private currentTuiConfig: TuiConfig;
   private controller: SessionController | undefined;
+  private sessionOpenGeneration = 0;
   private mainControllerDispose: (() => void) | undefined;
   private focusedControllerDispose: (() => void) | undefined;
   private activeInteractionId: string | undefined;
@@ -510,16 +511,27 @@ export class DaemonTUI {
       // When a turn is running and busy_submit is 'send_now' (the default),
       // plain Enter steers the active turn immediately (`sendPromptNow`).
       // Slash commands, shell commands (`!`), and active goals keep their normal paths.
+      const controller = this.controller;
+      const focusedAgentId = this.focusedAgentId;
+      const mainState = controller?.getState();
+      const focusedBusy =
+        controller !== undefined &&
+        (focusedAgentId === 'main'
+          ? mainState?.busy === true
+          : controller.getAgentState(focusedAgentId).busy === true);
+      const goalActive = focusedAgentId === 'main' && mainState?.goal?.status === 'active';
       if (
-        this.controller?.getState().busy === true &&
-        this.controller.getState().goal?.status !== 'active' &&
+        focusedBusy &&
+        !goalActive &&
         mode !== 'bash' &&
         trimmed !== '' &&
         !trimmed.startsWith('/') &&
         !trimmed.startsWith('!') &&
         (this.state.appState.busySubmit ?? 'send_now') === 'send_now'
       ) {
-        void this.steerSubmittedText(text, mode).catch((error: unknown) => this.showSubmissionError(error));
+        void this.steerSubmittedText(text, mode, focusedAgentId).catch((error: unknown) =>
+          this.showSubmissionError(error),
+        );
         return;
       }
       this.recordInputHistory(text, mode);
@@ -1057,6 +1069,7 @@ export class DaemonTUI {
 
   private async refreshSkillCommands(sessionId: string): Promise<void> {
     const response = await this.client.listSkills(sessionId);
+    if (this.controller?.sessionId !== sessionId) return;
     this.skillCommands.clear();
     for (const skill of daemonSkillCommands(response.skills)) {
       this.skillCommands.set(skill.commandName.toLowerCase(), skill);
@@ -1119,8 +1132,10 @@ export class DaemonTUI {
   }
 
   private async openSession(sessionId: string): Promise<void> {
-    const previous = this.controller;
+    const generation = ++this.sessionOpenGeneration;
     await this.programStatus.switchSession(sessionId);
+    if (this.sessionOpenGeneration !== generation) return;
+    const previous = this.controller;
     this.clearStatusNotice();
     this.clearActivityTickTimer();
     this.turnActivityTracker.reset();
@@ -1129,20 +1144,22 @@ export class DaemonTUI {
     this.state.footer.advanceTip();
     if (previous !== undefined && previous.sessionId !== sessionId) {
       await this.clearAttachments();
+      if (this.sessionOpenGeneration !== generation) return;
       this.state.editor.setText('');
       this.renderer.clearNotes();
     }
+    const current = this.controller;
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
     this.mainControllerDispose?.();
     if (
-      previous !== undefined &&
-      previous.sessionId !== sessionId &&
-      this.hasUnsettledAttachmentLeases(previous.sessionId)
+      current !== undefined &&
+      current.sessionId !== sessionId &&
+      this.hasUnsettledAttachmentLeases(current.sessionId)
     ) {
-      this.retainAttachmentSettlementController(previous);
+      this.retainAttachmentSettlementController(current);
     } else {
-      previous?.close();
+      current?.close();
     }
     this.releaseAttachmentSettlementController(sessionId);
     this.focusedAgentId = 'main';
@@ -1173,20 +1190,21 @@ export class DaemonTUI {
       unsubscribeInterrupted();
     };
     await controller.open();
-    if (this.controller !== controller) return;
+    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
     this.renderSession(controller.getState());
     await this.configureExplicitSources(sessionId);
-    if (this.controller !== controller) return;
+    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
     await this.applyStartupOverrides(controller);
+    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
     const models = await this.refreshModels();
-    if (this.controller !== controller) return;
+    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
     const view = controller.getState();
     if (view.session !== undefined && !view.busy && !view.model && !view.profile && !this.state.appState.agentProfile && !this.state.appState.model) {
       const [configured, profiles] = await Promise.all([
         this.client.klient.global.config.get<string | undefined>('defaultModel'),
         this.client.listAgentProfiles(view.session.workspace_id),
       ]);
-      if (this.controller !== controller) return;
+      if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
       const profile = profiles.items.find((item) => item.name === 'agent');
       const preferred = models.find((item) => item.id === (profile?.pinned_model_alias ?? configured))
         ?? (models.length === 1 && !profile?.pinned_model_alias ? models[0] : undefined);
@@ -1197,6 +1215,7 @@ export class DaemonTUI {
       }
     }
     await this.refreshSkillCommands(sessionId);
+    if (this.controller !== controller || this.sessionOpenGeneration !== generation) return;
     await this.refreshAgentCommands();
   }
 
@@ -1425,12 +1444,20 @@ export class DaemonTUI {
     this.showStatus(activityMessage, { tone: activityTone, source: 'activity', activity: activityLine });
   }
 
-  private async steerSubmittedText(raw: string, mode: 'prompt' | 'bash'): Promise<void> {
+  private async steerSubmittedText(
+    raw: string,
+    mode: 'prompt' | 'bash',
+    targetAgentId: string = this.focusedAgentId,
+  ): Promise<void> {
     const editor = this.state.editor;
     const text = raw.trim();
     const controller = this.controller;
     if (controller === undefined || text === '') return;
-    if (controller.getPendingSteers().some((steer) => steer.phase === 'unconfirmed' && steer.text === text)) {
+    if (
+      controller
+        .getPendingSteers(targetAgentId)
+        .some((steer) => steer.phase === 'unconfirmed' && steer.text === text)
+    ) {
       if (editor.getText() === '') {
         editor.setInputMode(mode);
         editor.setText(raw);
@@ -1444,6 +1471,7 @@ export class DaemonTUI {
         refreshMedia: (attachment) => this.refreshMediaAttachment(attachment),
         refreshFile: (attachment) => this.refreshFileAttachment(attachment),
       });
+      if (this.controller !== controller) return;
       const skillMap = new Map<string, string>();
       for (const skill of this.skillCommands.values()) {
         skillMap.set(skill.commandName, skill.name);
@@ -1454,7 +1482,7 @@ export class DaemonTUI {
       let acknowledged = false;
       const result = await controller
         .sendPromptNow({
-          agentId: this.focusedAgentId,
+          agentId: targetAgentId,
           text,
           content: prepared?.content,
           promptId,
@@ -3113,8 +3141,10 @@ export class DaemonTUI {
 
   private async handleBranchCommand(task: string): Promise<void> {
     const controller = await this.ensureSession();
+    if (this.controller !== controller) return;
     if (task === 'main') {
-      await this.openAgentTranscript('main');
+      await this.openAgentTranscript('main', controller);
+      if (this.controller !== controller) return;
       this.showStatus('Switched to main conversation.');
       return;
     }
@@ -3125,8 +3155,11 @@ export class DaemonTUI {
       task: task === '' ? undefined : task,
       title: task === '' ? undefined : task.slice(0, 64),
     });
+    if (this.controller !== controller) return;
     await controller.resync();
-    await this.openAgentTranscript(created.agent_id);
+    if (this.controller !== controller) return;
+    await this.openAgentTranscript(created.agent_id, controller);
+    if (this.controller !== controller) return;
     this.showStatus(
       `Switched to branch ${created.agent_id} — use /merge to fold back or /branch main to return.`,
     );
@@ -3134,9 +3167,11 @@ export class DaemonTUI {
 
   private async handleMergeCommand(summary: string): Promise<void> {
     const controller = await this.ensureSession();
+    if (this.controller !== controller) return;
     let targetBranchId = this.focusedAgentId !== 'main' ? this.focusedAgentId : undefined;
     if (targetBranchId === undefined) {
       const roster = await this.client.klient.session(controller.sessionId).agents();
+      if (this.controller !== controller) return;
       const forest = controller.getForest();
       const openBranches = new Set<string>();
       for (const [id, meta] of Object.entries(roster)) {
@@ -3162,13 +3197,16 @@ export class DaemonTUI {
       summary: summary === '' ? undefined : summary,
       done: true,
     });
+    if (this.controller !== controller) return;
     await controller.resync();
+    if (this.controller !== controller) return;
     if (folded.status === 'prompted') {
       this.showStatus(`Asked ${targetBranchId} to summarize and merge back into main.`);
       return;
     }
     if (this.focusedAgentId === targetBranchId && folded.sealed) {
-      await this.openAgentTranscript('main');
+      await this.openAgentTranscript('main', controller);
+      if (this.controller !== controller) return;
     }
     this.showStatus(`Merged ${targetBranchId} into main.`);
   }
@@ -3389,8 +3427,12 @@ export class DaemonTUI {
     this.mountEditorReplacement(picker);
   }
 
-  private async openAgentTranscript(agentId: string): Promise<void> {
-    const controller = await this.ensureSession();
+  private async openAgentTranscript(
+    agentId: string,
+    expectedController?: SessionController,
+  ): Promise<void> {
+    const controller = expectedController ?? (await this.ensureSession());
+    if (this.controller !== controller) return;
     this.focusedControllerDispose?.();
     this.focusedControllerDispose = undefined;
     this.focusedAgentId = agentId;
