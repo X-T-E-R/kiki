@@ -180,6 +180,7 @@ export interface IFileSystemStorageService {
   moveDirectory(sourceScope: string, targetScope: string): Promise<void>;
   size(scope: string, key: string): Promise<number | undefined>;
   mtime(scope: string, key: string): Promise<number | undefined>;
+  statMeta?(scope: string, key: string): Promise<{ readonly size: number; readonly mtimeMs: number } | undefined>;
   stat?(scope: string, key: string): Promise<StorageFileStat | undefined>;
   pathFor(scope: string, key: string): string | undefined;
   /** Signals key invalidation; node-fs also reconciles key metadata when its watcher becomes ready. */

@@ -33,6 +33,7 @@
     "perf:real-corpus": "node scripts/perf-real-corpus.mjs",
     "perf:real-corpus:quick": "node scripts/perf-real-corpus.mjs --quick --enforce",
     "perf:home": "node scripts/perf-home-api-send.mjs",
+    "perf:detail": "node scripts/perf-home-detail-ux.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "clean": "pnpm -r run clean",

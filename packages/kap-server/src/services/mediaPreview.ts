@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { compressImageForModel, MAX_IMAGE_DECODE_BYTES } from '@kiki/agent-core-v2/agent/media/image-compress';
 import { sniffMediaFromMagic } from '@kiki/agent-core-v2/agent/media/file-type';
@@ -11,8 +14,15 @@ export const MEDIA_PREVIEW_EDGE = 768;
 
 const PREVIEW_RESULT_CACHE_MAX_ENTRIES = 256;
 const PREVIEW_RESULT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const DISK_CACHE_SUBDIR = ['cache', 'media-previews-v1'] as const;
+const DISK_CACHE_FORMAT_VERSION = 1;
+const DISK_CACHE_MAX_ENTRIES = 512;
+const DISK_CACHE_MAX_BYTES = 96 * 1024 * 1024;
 const previewResultCache = new Map<string, { readonly bytes: Uint8Array; readonly mime: string }>();
 let previewResultCacheBytes = 0;
+let diskTempCounter = 0;
+let diskWritesSinceSweep = 0;
+const sweepingDirs = new Set<string>();
 const previewResultFlights = new Map<string, {
   readonly controller: AbortController;
   users: number;
@@ -21,13 +31,24 @@ const previewResultFlights = new Map<string, {
 
 export class MediaPreviewUnavailableError extends Error {}
 
+export function clearMediaPreviewMemoryCacheForTest(): void {
+  previewResultCache.clear();
+  previewResultCacheBytes = 0;
+}
+
+export interface CreateMediaPreviewOptions {
+  readonly persistToDisk?: boolean;
+}
+
 export async function createMediaPreview(
   file: SessionMediaFile,
   mediaType: string | undefined,
   signal: AbortSignal,
   cacheKey?: string,
+  options?: CreateMediaPreviewOptions,
 ): Promise<{ bytes: Uint8Array; mime: string }> {
   signal.throwIfAborted();
+  const persistToDisk = options?.persistToDisk ?? true;
   if (cacheKey !== undefined && cacheKey.length > 0) {
     const cached = previewResultCache.get(cacheKey);
     if (cached !== undefined) {
@@ -35,7 +56,12 @@ export async function createMediaPreview(
       previewResultCache.set(cacheKey, cached);
       return cached;
     }
-    return sharedServerPreviewFlight(cacheKey, signal, (flightSignal) => computeMediaPreview(file, mediaType, flightSignal));
+    return sharedServerPreviewFlight(
+      cacheKey,
+      signal,
+      (flightSignal) => computeMediaPreview(file, mediaType, flightSignal),
+      persistToDisk,
+    );
   }
   return computeMediaPreview(file, mediaType, signal);
 }
@@ -44,19 +70,32 @@ function sharedServerPreviewFlight(
   key: string,
   signal: AbortSignal,
   compute: (signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string }>,
+  persistToDisk: boolean,
 ): Promise<{ bytes: Uint8Array; mime: string }> {
-  let flight = previewResultFlights.get(key);
+  const flightKey = `${persistToDisk ? 'disk' : 'mem'}\0${key}`;
+  let flight = previewResultFlights.get(flightKey);
   if (flight === undefined) {
     const controller = new AbortController();
-    const promise = compute(controller.signal).then((result) => {
-      storeServerPreviewResult(key, result);
-      return result;
-    });
+    const promise = (async () => {
+      if (persistToDisk) {
+        const diskHit = await readDiskCachedPreview(key, controller.signal);
+        if (diskHit !== undefined) {
+          storeServerPreviewResult(key, diskHit);
+          return diskHit;
+        }
+      }
+      const computed = await compute(controller.signal);
+      storeServerPreviewResult(key, computed);
+      if (persistToDisk) {
+        void writeDiskCachedPreview(key, computed);
+      }
+      return computed;
+    })();
     flight = { controller, users: 0, promise };
-    previewResultFlights.set(key, flight);
+    previewResultFlights.set(flightKey, flight);
     const current = flight;
     const clear = () => {
-      if (previewResultFlights.get(key) === current) previewResultFlights.delete(key);
+      if (previewResultFlights.get(flightKey) === current) previewResultFlights.delete(flightKey);
     };
     void current.promise.then(clear, clear);
   }
@@ -69,8 +108,8 @@ function sharedServerPreviewFlight(
       settled = true;
       signal.removeEventListener('abort', cancel);
       current.users -= 1;
-      if (current.users === 0 && previewResultFlights.get(key) === current) {
-        previewResultFlights.delete(key);
+      if (current.users === 0 && previewResultFlights.get(flightKey) === current) {
+        previewResultFlights.delete(flightKey);
         current.controller.abort();
       }
       done();
@@ -104,6 +143,91 @@ function storeServerPreviewResult(key: string, result: { readonly bytes: Uint8Ar
   }
 }
 
+function resolveDiskCacheEntryPath(key: string): { readonly dir: string; readonly filePath: string } | undefined {
+  const sep = key.indexOf('\0');
+  if (sep <= 0) return undefined;
+  const homeDir = key.slice(0, sep);
+  const digest = createHash('sha256').update(key).digest('hex');
+  const dir = join(homeDir, ...DISK_CACHE_SUBDIR);
+  return { dir, filePath: join(dir, `${digest}.bin`) };
+}
+
+async function readDiskCachedPreview(
+  key: string,
+  signal: AbortSignal,
+): Promise<{ readonly bytes: Uint8Array; readonly mime: string } | undefined> {
+  const location = resolveDiskCacheEntryPath(key);
+  if (location === undefined) return undefined;
+  try {
+    const raw = await readFile(location.filePath);
+    signal.throwIfAborted();
+    if (raw.byteLength < 3 || raw[0] !== DISK_CACHE_FORMAT_VERSION) return undefined;
+    const mimeLength = raw[1]!;
+    if (mimeLength === 0 || raw.byteLength <= 2 + mimeLength) return undefined;
+    const mime = raw.subarray(2, 2 + mimeLength).toString('utf8');
+    const bytes = new Uint8Array(raw.buffer, raw.byteOffset + 2 + mimeLength, raw.byteLength - 2 - mimeLength);
+    if (bytes.byteLength > MEDIA_PREVIEW_BYTES) return undefined;
+    return { bytes, mime };
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return undefined;
+  }
+}
+
+async function writeDiskCachedPreview(
+  key: string,
+  result: { readonly bytes: Uint8Array; readonly mime: string },
+): Promise<void> {
+  const location = resolveDiskCacheEntryPath(key);
+  if (location === undefined || result.bytes.byteLength === 0 || result.bytes.byteLength > MEDIA_PREVIEW_BYTES) return;
+  const mimeBytes = Buffer.from(result.mime, 'utf8');
+  if (mimeBytes.byteLength === 0 || mimeBytes.byteLength > 255) return;
+  const payload = Buffer.allocUnsafe(2 + mimeBytes.byteLength + result.bytes.byteLength);
+  payload[0] = DISK_CACHE_FORMAT_VERSION;
+  payload[1] = mimeBytes.byteLength;
+  mimeBytes.copy(payload, 2);
+  payload.set(result.bytes, 2 + mimeBytes.byteLength);
+  const tempPath = `${location.filePath}.tmp.${process.pid}.${++diskTempCounter}`;
+  try {
+    await mkdir(location.dir, { recursive: true });
+    await writeFile(tempPath, payload);
+    await rename(tempPath, location.filePath);
+    if ((++diskWritesSinceSweep & 31) === 0) void sweepDiskPreviewCache(location.dir);
+  } catch {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function sweepDiskPreviewCache(dir: string): Promise<void> {
+  if (sweepingDirs.has(dir)) return;
+  sweepingDirs.add(dir);
+  try {
+    const names = (await readdir(dir)).filter((name) => name.endsWith('.bin'));
+    if (names.length <= DISK_CACHE_MAX_ENTRIES / 2) return;
+    const infos: { readonly path: string; readonly size: number; readonly mtimeMs: number }[] = [];
+    let totalBytes = 0;
+    for (const name of names) {
+      const path = join(dir, name);
+      const info = await stat(path).catch(() => undefined);
+      if (info === undefined || !info.isFile()) continue;
+      infos.push({ path, size: info.size, mtimeMs: info.mtimeMs });
+      totalBytes += info.size;
+    }
+    if (infos.length <= DISK_CACHE_MAX_ENTRIES && totalBytes <= DISK_CACHE_MAX_BYTES) return;
+    infos.sort((left, right) => left.mtimeMs - right.mtimeMs);
+    let remainingCount = infos.length;
+    for (const entry of infos) {
+      if (remainingCount <= DISK_CACHE_MAX_ENTRIES && totalBytes <= DISK_CACHE_MAX_BYTES) break;
+      await rm(entry.path, { force: true }).catch(() => undefined);
+      remainingCount -= 1;
+      totalBytes -= entry.size;
+    }
+  } catch {
+  } finally {
+    sweepingDirs.delete(dir);
+  }
+}
+
 async function computeMediaPreview(file: SessionMediaFile, mediaType: string | undefined, signal: AbortSignal): Promise<{ bytes: Uint8Array; mime: string }> {
   signal.throwIfAborted();
   if (file.size === 0) throw new MediaPreviewUnavailableError('This media is empty. Open or download the original.');
@@ -120,7 +244,7 @@ async function computeMediaPreview(file: SessionMediaFile, mediaType: string | u
   if (file.size > MAX_IMAGE_DECODE_BYTES) throw new MediaPreviewUnavailableError('This image is too large to decode as a preview. Open or download the original.');
   const bytes = await readPreviewSource(file, signal);
   const sourceMime = sniffMediaFromMagic(bytes)?.mimeType ?? mime;
-  const image = await compressImageForModel(bytes, sourceMime, { maxEdge: MEDIA_PREVIEW_EDGE, byteBudget: MEDIA_PREVIEW_BYTES, maxDecodeBytes: MAX_IMAGE_DECODE_BYTES, outputMimes: new Set(['image/jpeg']), acceptedMimes: new Set(['image/png', 'image/jpeg']) });
+  const image = await compressImageForModel(bytes, sourceMime, { maxEdge: MEDIA_PREVIEW_EDGE, byteBudget: MEDIA_PREVIEW_BYTES, maxDecodeBytes: MAX_IMAGE_DECODE_BYTES, outputMimes: new Set(['image/jpeg']), acceptedMimes: new Set(['image/png', 'image/jpeg']), signal });
   signal.throwIfAborted();
   if (image.data.byteLength > MEDIA_PREVIEW_BYTES || image.width <= 0 || image.height <= 0 || image.width > MEDIA_PREVIEW_EDGE || image.height > MEDIA_PREVIEW_EDGE) throw new MediaPreviewUnavailableError('This image could not be reduced to a small preview. Open or download the original.');
   return { bytes: image.data, mime: image.mimeType };

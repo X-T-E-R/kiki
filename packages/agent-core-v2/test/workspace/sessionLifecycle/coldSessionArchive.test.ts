@@ -495,6 +495,11 @@ describe('updateColdSessionProfile', () => {
     revisions.set('sessions/wd/unrelated-2', 2);
     const third = await readSessionArchiveFamily(storage, docs, 'sessions', 'root', [], noopLog);
     expect(third.map((s) => s.id).toSorted()).toEqual(['child', 'root', 'unrelated-2']);
-    expect(reads.toSorted()).toEqual(['sessions/wd/child', 'sessions/wd/root', 'sessions/wd/unrelated-2']);
+    expect(reads.toSorted()).toEqual(['sessions/wd/child', 'sessions/wd/root', 'unrelated-2'.replace(/^/, 'sessions/wd/')]);
+
+    reads.length = 0;
+    const unrelatedFamily = await readSessionArchiveFamily(storage, docs, 'sessions', 'unrelated-1', [], noopLog);
+    expect(unrelatedFamily.map((s) => s.id)).toEqual(['unrelated-1']);
+    expect(reads).toEqual(['sessions/wd/unrelated-1']);
   });
 });

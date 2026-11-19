@@ -1,11 +1,16 @@
 
+import { join } from 'node:path';
+
 import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventService } from '#/app/event/event';
+import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ISessionIndex, ISessionIndexMirror, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
 import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { FORKED_FROM_KEY, PROMOTED_FROM_KEY, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { normalizeSessionMeta, encodeSessionMeta, withoutAgentStatistics } from '#/session/sessionMetadata/sessionMetadataService';
@@ -40,12 +45,20 @@ function replaceCustomMetadata(
   return custom;
 }
 
-export function setColdSessionArchived(
+export async function setColdSessionArchived(
   accessor: ServicesAccessor,
   sessionId: string,
   archived: boolean,
 ): Promise<ColdSessionArchiveOutcome> {
-  return setColdArchived(archiveServices(accessor), sessionId, archived);
+  const outcome = await setColdArchived(archiveServices(accessor), sessionId, archived);
+  return outcome.kind === 'updated' ? 'updated' : 'not_found';
+}
+
+export function restoreColdSession(
+  accessor: ServicesAccessor,
+  sessionId: string,
+): Promise<ColdSessionProfileOutcome> {
+  return setColdArchived(archiveServices(accessor), sessionId, false);
 }
 
 async function setColdArchived(
@@ -53,9 +66,9 @@ async function setColdArchived(
   sessionId: string,
   archived: boolean,
   discovered?: SessionSummary,
-): Promise<ColdSessionArchiveOutcome> {
+): Promise<ColdSessionProfileOutcome> {
   const summary = discovered ?? await index.get(sessionId);
-  if (summary === undefined) return 'not_found';
+  if (summary === undefined) return { kind: 'not_found' };
   const metaScope = sessionScopeOf(
     workspacePersistenceScope(
       bootstrap.scope('sessions'),
@@ -69,25 +82,56 @@ async function setColdArchived(
     legacyMetaScope = legacySessionMetaScopeOf(metaScope);
     raw = await docs.get<SessionMeta>(legacyMetaScope, 'state.json');
   }
-  if (raw === undefined) return 'not_found';
+  if (raw === undefined) return { kind: 'not_found' };
   const persisted = normalizeSessionMeta(raw, sessionId);
   const archivedAt = archived ? persisted.archived ? persisted.archivedAt : Date.now() : undefined;
   const nextMeta: SessionMeta = { ...persisted, archived, archivedAt };
+  const cwd = nextMeta.cwd ?? summary.cwd;
   const encoded = encodeSessionMeta(nextMeta);
-  await docs.set(metaScope, 'state.json', encoded);
+  await docs.set(metaScope, 'state.json', encoded, { cooperative: true });
   if (legacyMetaScope !== undefined) await docs.delete(legacyMetaScope, 'state.json');
   mirror.record(
     buildSessionSummary({
       ...encoded,
       id: sessionId,
       workspaceId: summary.workspaceId,
-      cwd: encoded.cwd ?? summary.cwd,
+      cwd,
     }),
   );
   if (archived && !persisted.archived) {
     event.publish(new SessionArchived({ payload: { sessionId } }));
   }
-  return 'updated';
+  return { kind: 'updated', workspaceId: summary.workspaceId, cwd, meta: nextMeta };
+}
+
+export async function tryDeleteColdSession(
+  accessor: ServicesAccessor,
+  summary: SessionSummary,
+): Promise<boolean> {
+  let bootstrap: IBootstrapService;
+  let hostFs: IHostFileSystem;
+  let retainedUsage: IRetainedUsageService;
+  let appendLogStore: IAppendLogStore;
+  let index: ISessionIndex;
+  try {
+    bootstrap = accessor.get(IBootstrapService);
+    hostFs = accessor.get(IHostFileSystem);
+    retainedUsage = accessor.get(IRetainedUsageService);
+    appendLogStore = accessor.get(IAppendLogStore);
+    index = accessor.get(ISessionIndex);
+  } catch {
+    return false;
+  }
+  const sessionScope = sessionScopeOf(
+    workspacePersistenceScope(bootstrap.scope('sessions'), summary.workspaceId),
+    summary.id,
+  );
+  await retainedUsage.retainDeletedSession(summary);
+  await hostFs.remove(join(bootstrap.homeDir, sessionScope));
+  await index.remove(summary.id);
+  appendLogStore.append('', 'session_index.jsonl', { sessionId: summary.id, deleted: true });
+  await appendLogStore.flush('', 'session_index.jsonl');
+  return true;
 }
 
 export interface ColdSessionProfilePatch {
@@ -195,7 +239,7 @@ async function setArchivedBatch(
           return { id, ok: true };
         }
         const outcome = await setColdArchived(services, id, archived, discovered?.get(id));
-        return outcome === 'updated'
+        return outcome.kind === 'updated'
           ? { id, ok: true }
           : { id, ok: false, reason: 'not_found', message: `session ${id} does not exist` };
       });

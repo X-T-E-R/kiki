@@ -9,7 +9,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { sessionScopeOf, workspacePersistenceScope } from '#/workspace/sessionLifecycle/internal/addressing';
-import { setColdSessionArchived } from '#/workspace/sessionLifecycle/coldSessionArchive';
+import { setColdSessionArchived, tryDeleteColdSession } from '#/workspace/sessionLifecycle/coldSessionArchive';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
@@ -497,6 +497,30 @@ export class SessionManager implements ISessionManager {
 
   private async deleteInner(sessionId: string): Promise<void> {
     const temporary = this.ephemeral.get(sessionId);
+    if (
+      temporary === undefined &&
+      !this.sessions.has(sessionId) &&
+      !this.pendingResumes.has(sessionId) &&
+      this.instantiation !== undefined
+    ) {
+      const summary = await this.index.get(sessionId);
+      if (summary === undefined) {
+        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+      }
+      if (
+        !this.controllers.has(summary.workspaceId) &&
+        !this.closingWorkspaces.has(summary.workspaceId) &&
+        !this.workspaceOperations.has(summary.workspaceId)
+      ) {
+        const deletedCold = await this.instantiation.invokeFunction((accessor) =>
+          tryDeleteColdSession(accessor, summary),
+        );
+        if (deletedCold) {
+          this.didDeleteEmitter.fire({ sessionId });
+          return;
+        }
+      }
+    }
     const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
     if (target === undefined) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);

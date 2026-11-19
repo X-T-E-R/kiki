@@ -15,6 +15,10 @@ export function registerCpuPool(pool: CpuWorkerPool): { dispose(): Promise<void>
   return { async dispose() { owners.delete(pool); await pool.close(); } };
 }
 
+export function hasRegisteredCpuPool(): boolean {
+  return owners.size > 0;
+}
+
 export function runCpuTask<T>(operation: unknown, options?: CpuRequestOptions): Promise<T> {
   try {
     let pool: CpuWorkerPool | undefined;

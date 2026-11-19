@@ -3696,4 +3696,41 @@ describe('server-v2 /api/sessions (SQLite read model)', () => {
     expect(fetched.body.code).toBe(0);
     expect(fetched.body.data.id).toBe(id);
   });
+
+  it('restores and deletes archived cold sessions without materializing live session scopes', async () => {
+    const created = await postJson<SessionWire>('/api/sessions', {
+      metadata: { cwd: home as string },
+    });
+    expect(created.body.code).toBe(0);
+    const id = created.body.data.id;
+    const archived = await postJson<{ archived: boolean }>(`/api/sessions/${id}:archive`, {});
+    expect(archived.body.code).toBe(0);
+
+    await (server as RunningServer).close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const manager = server.core.accessor.get(ISessionManager);
+    expect(manager.get(id)).toBeUndefined();
+
+    const restored = await postJson<SessionWire>(`/api/sessions/${id}:restore`, {});
+    expect(restored.body.code).toBe(0);
+    expect(restored.body.data.archived).toBe(false);
+    expect(manager.get(id)).toBeUndefined();
+
+    const rearchived = await postJson<{ archived: boolean }>(`/api/sessions/${id}:archive`, {});
+    expect(rearchived.body.code).toBe(0);
+    expect(manager.get(id)).toBeUndefined();
+
+    const deleted = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>(`/api/sessions/${id}:delete-archived`, {});
+    expect(deleted.body.code).toBe(0);
+    expect(deleted.body.data.deleted_ids).toContain(id);
+    expect(deleted.body.data.failed).toEqual([]);
+    expect(await server.core.accessor.get(ISessionIndex).get(id)).toBeUndefined();
+  });
 });

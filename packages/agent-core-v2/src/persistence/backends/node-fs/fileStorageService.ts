@@ -317,6 +317,17 @@ export class FileStorageService implements IFileSystemStorageService {
     }
   }
 
+  async statMeta(scope: string, key: string): Promise<{ readonly size: number; readonly mtimeMs: number } | undefined> {
+    const filePath = this.pathFor(scope, key);
+    try {
+      const info = await stat(filePath);
+      return { size: info.size, mtimeMs: info.mtimeMs };
+    } catch (error) {
+      if (isEnoent(error)) return undefined;
+      throw toStorageIoError(error, { path: filePath, op: 'stat' });
+    }
+  }
+
   async stat(scope: string, key: string): Promise<StorageFileStat | undefined> {
     const filePath = this.pathFor(scope, key);
     try {

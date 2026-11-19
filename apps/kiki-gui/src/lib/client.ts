@@ -1371,7 +1371,7 @@ export class KikiClient {
   private static readonly UI_MEDIA_CACHE_MAX_ENTRIES = 256;
   private static readonly UI_MEDIA_CACHE_MAX_BYTES = 32 * 1024 * 1024;
   private static readonly UI_MEDIA_CACHE_MAX_ITEM_BYTES = 16 * 1024 * 1024;
-  private static readonly BACKGROUND_PREVIEW_CONCURRENCY = 2;
+  private static readonly BACKGROUND_PREVIEW_CONCURRENCY = 4;
   private readonly previewFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> }>();
   private readonly mediaFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string }> }>();
   private readonly uiMediaCache = new Map<string, { readonly bytes: Uint8Array; readonly mime: string; readonly name?: string; readonly etag?: string }>();
@@ -1440,8 +1440,8 @@ export class KikiClient {
     this.previewFlights.clear();
     for (const flight of this.mediaFlights.values()) flight.controller.abort();
     this.mediaFlights.clear();
-    for (const waiter of [...this.backgroundPreviewWaiters]) waiter.cancel();
-    this.backgroundPreviewWaiters.length = 0;
+    const waiters = this.backgroundPreviewWaiters.splice(0);
+    for (const waiter of waiters) waiter.cancel();
     this.previewBytes.clear();
     this.previewCacheBytes = 0;
     this.uiMediaCache.clear();

@@ -2,6 +2,7 @@ import type { MessagePort } from 'node:worker_threads';
 import { workspacePathInventory, workspacePathEntry, workspacePathFilter } from '#/os/backends/node-local/workspacePathInventory';
 import { executeWorkspaceTrigram, type WorkspaceTrigramOperation } from '#/os/backends/node-local/workspaceTrigramStore';
 import { decodeImageVerdict } from '#/agent/media/imageDecode';
+import type { ImageCompressWorkerInput } from '#/agent/media/image-compress';
 import { LocalLineReader, type LineRangeOptions, type TailRangeOptions } from '#/os/backends/node-local/lineReader';
 import { decodeWireInput, projectWireInput } from './wireTask';
 import { parseThreadTurnRecord } from '#/app/threadCommunication/threadTurnRecord';
@@ -14,6 +15,7 @@ export interface FileLineRangeOperation {
 
 export type CpuOperation =
   | { readonly type: 'image.decode'; readonly bytes: ArrayBuffer; readonly mimeType: string }
+  | ({ readonly type: 'image.compress' } & ImageCompressWorkerInput)
   | { readonly type: 'wire.context'; readonly input: MessagePort; readonly scope: string; readonly key: string }
   | { readonly type: 'wire.threadTurnRecord'; readonly input: MessagePort }
   | FileLineRangeOperation
@@ -35,6 +37,10 @@ export async function executeCpuOperation(operation: CpuOperation): Promise<unkn
     case 'workspace.trigram.finish':
     case 'workspace.trigram.query': return executeWorkspaceTrigram(operation);
     case 'image.decode': return decodeImageVerdict(new Uint8Array(operation.bytes), operation.mimeType);
+    case 'image.compress': {
+      const { executeImageCompress } = await import('#/agent/media/image-compress');
+      return executeImageCompress(operation);
+    }
     case 'wire.context': return projectWireInput(operation.input, operation.scope, operation.key);
     case 'wire.threadTurnRecord': {
       const chunks: string[] = [];

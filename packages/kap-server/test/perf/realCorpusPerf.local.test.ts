@@ -25,6 +25,8 @@ function seedSyntheticSourceCorpus(): string {
   const blobHash = createHash('sha256').update(blobPayload).digest('hex');
   writeFileSync(join(blobsDir, blobHash), blobPayload);
   writeFileSync(join(mediaDir, 'img_01.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  mkdirSync(join(mainDir, 'replay-checkpoints'), { recursive: true });
+  writeFileSync(join(mainDir, 'replay-checkpoints', 'engine-v1'), JSON.stringify({ version: 1, offset: 128 }));
 
   const mainLines: string[] = [];
   for (let t = 0; t < 30; t += 1) {
@@ -84,7 +86,7 @@ function seedSyntheticSourceCorpus(): string {
 }
 
 describe('real-corpus sandbox immutability, PII scrubbing, and benchmark contract', () => {
-  it('stages read-only junctions and hardlinks, scrubs private metadata, unlinks junctions cleanly, and preserves source fingerprints', async () => {
+  it('stages private writable copies without hardlinks or junctions, isolates osHomeDir, preserves engine-v1 checkpoints, and protects source fingerprints', async () => {
     const corpusRoot = seedSyntheticSourceCorpus();
     const sessionDir = join(
       corpusRoot,
@@ -100,18 +102,30 @@ describe('real-corpus sandbox immutability, PII scrubbing, and benchmark contrac
       expect(scan.eligibleCount).toBe(1);
 
       const selected = selectStratifiedSamples(scan.records, { seed: 42, perStratum: 1, backgroundCatalogCount: 0 });
+      const samples = selected.samples.length > 0 ? selected.samples : [{
+        ...scan.records[0]!,
+        ordinal: 1,
+        label: 'sample#1',
+        sandboxId: 'perf_sample_1',
+        stratum: 'medium-scroll-partial',
+        descriptor: 'sample#1 [stratum=medium-scroll-partial]',
+      }];
       const sandbox = stageCorpusSandbox({
         corpusHome: corpusRoot,
-        samples: selected.samples.length > 0 ? selected.samples : [{
-          ...scan.records[0]!,
-          ordinal: 1,
-          label: 'sample#1',
-          sandboxId: 'perf_sample_1',
-          stratum: 'medium-scroll-partial',
-          descriptor: 'sample#1 [stratum=medium-scroll-partial]',
-        }],
+        samples,
         backgroundRecords: [],
       });
+
+      expect(sandbox.hardlinkedFiles).toBe(0);
+      expect(sandbox.junctionCount).toBe(0);
+      expect(sandbox.copiedFiles).toBeGreaterThan(0);
+      expect(existsSync(sandbox.osHomeDir)).toBe(true);
+      expect(process.env['HOME']).toBe(sandbox.osHomeDir);
+      expect(process.env['USERPROFILE']).toBe(sandbox.osHomeDir);
+
+      const stagedSessionDir = join(sandbox.homeDir, 'sessions', sandbox.workspaceId, samples[0]!.sandboxId);
+      expect(existsSync(join(stagedSessionDir, 'agents', 'main', 'replay-checkpoints', 'engine-v1'))).toBe(true);
+      writeFileSync(join(stagedSessionDir, 'agents', 'main', 'wire.jsonl'), 'mutated-inside-sandbox\n');
 
       const immutability = sandbox.cleanup();
       expect(immutability.mutations).toBe(0);

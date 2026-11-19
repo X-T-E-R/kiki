@@ -4,6 +4,7 @@ import { issueText } from '../i18n/locale';
 import {
   buildPromptContent,
   buildSkillActivation,
+  fileToImageAttachment,
   formatBytes,
   hasMention,
   MAX_FILE_BYTES,
@@ -356,5 +357,26 @@ describe('SSH hosts as session state, not message content', () => {
     '<ssh_host_refs>\n[{"id":42}]\n</ssh_host_refs>',
   ])('leaves unknown host markup verbatim: %s', (text) => {
     expect(parseSshHostContext(text)).toEqual({ body: text, hosts: [] });
+  });
+});
+
+describe('fileToImageAttachment', () => {
+  it('encodes exact base64 via arrayBuffer and uses blob preview URLs for files above 64 KB', async () => {
+    const smallBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
+    const smallFile = new File([smallBytes], 'tiny.png', { type: 'image/png' });
+    const smallAttachment = await fileToImageAttachment(smallFile);
+    expect(smallAttachment.data).toBe(Buffer.from(smallBytes).toString('base64'));
+    expect(smallAttachment.previewUrl).toBe(`data:image/png;base64,${smallAttachment.data}`);
+
+    const largeBytes = new Uint8Array(70_000);
+    for (let i = 0; i < largeBytes.length; i += 1) largeBytes[i] = (i * 31) & 0xff;
+    const largeFile = new File([largeBytes], 'screenshot.png', { type: 'image/png' });
+    const largeAttachment = await fileToImageAttachment(largeFile);
+    expect(largeAttachment.data).toBe(Buffer.from(largeBytes).toString('base64'));
+    expect(largeAttachment.size).toBe(70_000);
+    if (typeof URL.createObjectURL === 'function') {
+      expect(largeAttachment.previewUrl.startsWith('blob:')).toBe(true);
+      URL.revokeObjectURL?.(largeAttachment.previewUrl);
+    }
   });
 });

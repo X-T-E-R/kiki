@@ -20,6 +20,7 @@ export async function startMockSseProvider() {
   const holdGates = new Map();
   const streamReadyResolvers = new Map();
   let requestCount = 0;
+  let nextReplyText = null;
 
   function ensureGate(gateId) {
     let gate = holdGates.get(gateId);
@@ -46,8 +47,9 @@ export async function startMockSseProvider() {
     req.on('data', (chunk) => {
       body += chunk;
     });
-    req.on('end', async () => {
-      requestCount += 1;
+    req.on('end', () => {
+      void (async () => {
+        requestCount += 1;
       let model = 'mock-fast';
       try {
         const parsed = JSON.parse(body);
@@ -66,10 +68,13 @@ export async function startMockSseProvider() {
       });
       res.flushHeaders?.();
 
+      const replyText = nextReplyText ?? 'Ack.';
+      nextReplyText = null;
+
       if (isResponsesApi) {
         const seq1 = JSON.stringify({
           type: 'response.output_text.delta',
-          delta: 'Ack.',
+          delta: replyText,
         });
         res.write(`event: response.output_text.delta\ndata: ${seq1}\n\n`);
       } else {
@@ -78,7 +83,7 @@ export async function startMockSseProvider() {
           object: 'chat.completion.chunk',
           created: 1700000000,
           model,
-          choices: [{ index: 0, delta: { role: 'assistant', content: 'Ack.' }, finish_reason: null }],
+          choices: [{ index: 0, delta: { role: 'assistant', content: replyText }, finish_reason: null }],
         });
         res.write(`data: ${chunk1}\n\n`);
       }
@@ -106,7 +111,7 @@ export async function startMockSseProvider() {
           response: {
             id: `resp-${requestCount}`,
             status: 'completed',
-            output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Ack.' }] }],
+            output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: replyText }] }],
             usage: { input_tokens: 12, output_tokens: 2, total_tokens: 14 },
           },
         });
@@ -122,6 +127,7 @@ export async function startMockSseProvider() {
         });
         res.end(`data: ${chunk2}\n\ndata: [DONE]\n\n`);
       }
+      })();
     });
   });
 
@@ -139,6 +145,9 @@ export async function startMockSseProvider() {
     port: address.port,
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     getRequestCount: () => requestCount,
+    setNextReplyText(text) {
+      nextReplyText = text;
+    },
     prepareHoldGate(gateId) {
       ensureGate(gateId);
       let resolveReady;

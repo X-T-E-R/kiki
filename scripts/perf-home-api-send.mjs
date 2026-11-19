@@ -2,53 +2,20 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { buildIsolatedPerfEnv } from './perf/sandbox-stager.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 
-const SCRUBBED_ENV_KEYS = [
-  'KIKI_DESKTOP_BUNDLED',
-  'KIKI_RUNTIME_MANAGED',
-  'KIKI_SQLITE_QUERY_WORKER_PATH',
-  'KIKI_SQLITE_INDEXER_PATH',
-  'KIKI_HISTORY_NAVIGATION_WORKER_ENTRY',
-  'KIKI_SQLITE_INDEXER_SEA',
-  'KIKI_USAGE_PARSER_WORKER_PATH',
-  'KIKI_USAGE_READ_MODEL_WORKER_PATH',
-  'KIKI_HOME',
-  'KIMI_CODE_HOME',
-  'NODE_OPTIONS',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'all_proxy',
-];
-
-function buildScrubbedEnv(extra = {}) {
-  const env = { ...process.env };
-  for (const key of SCRUBBED_ENV_KEYS) {
-    delete env[key];
-  }
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('KIKI_EXPERIMENTAL_')) {
-      delete env[key];
-    }
-  }
-  env.GH_HOST = '127.0.0.1:1';
-  env.GH_PROMPT_DISABLED = '1';
-  env.GH_NO_UPDATE_NOTIFIER = '1';
-  env.NO_PROXY = '*';
-  return { ...env, ...extra };
-}
-
 if (process.env.KIKI_PERF_HOME_TSX_READY !== '1') {
   const loaderUrl = pathToFileURL(path.join(REPO_ROOT, 'build', 'register-raw-text-loader.mjs')).href;
+  const realCorpusHome = process.env.KIKI_REAL_CORPUS_HOME ?? path.join(os.homedir(), '.kiki');
   const child = spawnSync(
     process.execPath,
     [
@@ -62,7 +29,9 @@ if (process.env.KIKI_PERF_HOME_TSX_READY !== '1') {
     ],
     {
       cwd: REPO_ROOT,
-      env: buildScrubbedEnv({ KIKI_PERF_HOME_TSX_READY: '1' }),
+      env: buildIsolatedPerfEnv({
+        extra: { KIKI_PERF_HOME_TSX_READY: '1', KIKI_REAL_CORPUS_HOME: realCorpusHome },
+      }),
       stdio: 'inherit',
       windowsHide: true,
     },
@@ -146,7 +115,7 @@ async function runBenchmark() {
   };
 
   try {
-    const serverEnv = buildScrubbedEnv({ KIKI_HOME: staged.stagedHome });
+    const serverEnv = staged.serverEnv;
     elMonitor.resetWindow();
     const bootT0 = performance.now();
     server = await startServer({
@@ -172,11 +141,9 @@ async function runBenchmark() {
     async function apiCall(method, urlPath, body, allowedCodes = [0]) {
       const t0 = performance.now();
       const headers = body === undefined ? authHeaders : { ...authHeaders, 'content-type': 'application/json' };
-      const res = await fetch(`${baseUrl}${urlPath}`, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
+      const init = { method, headers };
+      if (body !== undefined) init.body = JSON.stringify(body);
+      const res = await fetch(`${baseUrl}${urlPath}`, init);
       const json = await res.json();
       const elapsedMs = roundMs(performance.now() - t0);
       if (res.status !== 200 || !allowedCodes.includes(json.code)) {
@@ -583,7 +550,7 @@ async function runBenchmark() {
           httpReceiptMs: ckptRes.elapsedMs,
           firstDeltaMs: ckptFirstDeltaMs,
         };
-        progress(`cold checkpointed mega sync send finished: httpReceipt=${ckptRes.elapsedMs}ms firstDelta=${ckptFirstDeltaMs}ms`);
+        progress(`cold checkpointed mega sync send finished: httpReceipt=${ckptRes.elapsedMs}ms firstDelta=${String(ckptFirstDeltaMs)}ms`);
       }
     }
 
@@ -645,7 +612,7 @@ async function runBenchmark() {
         httpReceiptMs: syncRes.elapsedMs,
         firstDeltaMs,
       };
-      progress(`cold sync mega send finished: httpReceipt=${syncRes.elapsedMs}ms firstDelta=${firstDeltaMs}ms`);
+      progress(`cold sync mega send finished: httpReceipt=${syncRes.elapsedMs}ms firstDelta=${String(firstDeltaMs)}ms`);
     }
 
     for (const activeHandle of sessionManager.list()) {
@@ -812,3 +779,16 @@ function printSummary(report, forbiddenTokens) {
 }
 
 await runBenchmark();
+if (process.argv.includes('--with-detail')) {
+  const detailScript = path.join(__dirname, 'perf-home-detail-ux.mjs');
+  const detailArgs = process.argv.slice(2).filter((arg) => arg !== '--with-detail');
+  const detailRun = spawnSync(process.execPath, [detailScript, ...detailArgs], {
+    cwd: REPO_ROOT,
+    env: buildScrubbedEnv(),
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if ((detailRun.status ?? 1) !== 0) {
+    process.exit(detailRun.status ?? 1);
+  }
+}

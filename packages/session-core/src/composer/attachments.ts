@@ -236,14 +236,63 @@ export function reserveUploadFiles<T extends { name: string; size: number; type:
   return { accepted, stubs, next, lastProblem };
 }
 
+function encodeBytesToBase64(bytes: Uint8Array): string {
+  const nativeToBase64 = (bytes as Uint8Array & { toBase64?: () => string }).toBase64;
+  if (typeof nativeToBase64 === 'function') {
+    return nativeToBase64.call(bytes);
+  }
+  const nodeBuffer = (
+    globalThis as {
+      Buffer?: {
+        from(buf: ArrayBufferLike, byteOffset: number, length: number): { toString(enc: 'base64'): string };
+      };
+    }
+  ).Buffer;
+  if (typeof nodeBuffer?.from === 'function') {
+    return nodeBuffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
+  const CHUNK = 32_768;
+  const parts: string[] = [];
+  for (let offset = 0; offset < bytes.byteLength; offset += CHUNK) {
+    const slice = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.byteLength));
+    parts.push(String.fromCharCode(...slice));
+  }
+  return btoa(parts.join(''));
+}
+
 /** Reads a pasted/dropped image File into an attachment (base64 + preview). */
-export function fileToImageAttachment(file: File): Promise<ImageAttachment> {
+export async function fileToImageAttachment(file: File): Promise<ImageAttachment> {
+  const readFailed = () =>
+    new LocalizedError({
+      key: 'attach.readFailed',
+      params: { name: file.name === '' ? '(image)' : file.name },
+    });
+  if (typeof file.arrayBuffer === 'function') {
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch {
+      throw readFailed();
+    }
+    const bytes = new Uint8Array(buffer);
+    const data = encodeBytesToBase64(bytes);
+    const previewUrl =
+      file.size > 65_536 &&
+      typeof URL !== 'undefined' &&
+      typeof URL.createObjectURL === 'function' &&
+      file instanceof Blob
+        ? URL.createObjectURL(file)
+        : `data:${file.type};base64,${data}`;
+    return {
+      kind: 'image',
+      name: file.name,
+      mediaType: file.type,
+      data,
+      size: file.size,
+      previewUrl,
+    };
+  }
   return new Promise((resolve, reject) => {
-    const readFailed = () =>
-      new LocalizedError({
-        key: 'attach.readFailed',
-        params: { name: file.name === '' ? '(image)' : file.name },
-      });
     const reader = new FileReader();
     reader.onerror = () => { reject(readFailed()); };
     reader.onload = () => {

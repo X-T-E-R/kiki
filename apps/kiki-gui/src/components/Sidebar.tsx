@@ -1106,10 +1106,53 @@ export function Sidebar({
     setActionError(null);
     const next = togglePinned(isPinnedSession(session));
     const metadata = pinMetadataPatch(session, next);
+    const applyPatch = (entry: Session, serverUpdated?: Session): Session => {
+      const base =
+        serverUpdated !== undefined && serverUpdated !== null && typeof serverUpdated === 'object' && 'id' in serverUpdated
+          ? serverUpdated
+          : entry;
+      return {
+        ...base,
+        metadata: {
+          ...base.metadata,
+          ...metadata,
+          cwd: base.metadata.cwd,
+        },
+      };
+    };
+    const patchSessionLists = (transform: (entry: Session) => Session) => {
+      queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+        old === undefined || !Array.isArray(old.pages)
+          ? old
+          : {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                items: page.items.map((entry) => (entry.id === session.id ? transform(entry) : entry)),
+              })),
+            },
+      );
+      if (queryClient.getQueryData(['session', session.id]) !== undefined) {
+        queryClient.setQueryData<Session>(['session', session.id], (old) =>
+          old === undefined ? old : transform(old),
+        );
+      }
+    };
+    const previousMetadata = session.metadata;
+    patchSessionLists((entry) => applyPatch(entry));
     void client
       .updateSessionProfile(session.id, { metadata })
-      .then(() => { refreshSessions(); })
+      .then((updated) => {
+        patchSessionLists((entry) => applyPatch(entry, updated));
+        void queryClient.invalidateQueries({
+          queryKey: ['sessions'],
+          predicate: (query) =>
+            !Array.isArray((query.state.data as SessionListData | undefined)?.pages) ||
+            JSON.stringify(query.queryKey).includes('"pinned"'),
+        });
+      })
       .catch((error: unknown) => {
+        patchSessionLists((entry) => ({ ...entry, metadata: previousMetadata }));
         setActionError(error instanceof Error ? error.message : String(error));
       });
   };
@@ -2351,7 +2394,13 @@ export function Sidebar({
             setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? target.session.title, to: title }));
             setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
             setRenaming((current) => current === target ? null : current);
-            refreshSessions();
+            void queryClient.invalidateQueries({
+              queryKey: ['sessions'],
+              predicate: (query) => !Array.isArray((query.state.data as SessionListData | undefined)?.pages),
+            });
+            if (target.session.agent_config?.persona !== undefined) {
+              invalidatePersonaSessionLists(queryClient);
+            }
           }}
           onClose={closeRenameEditor}
         />

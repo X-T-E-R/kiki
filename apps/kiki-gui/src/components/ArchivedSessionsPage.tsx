@@ -230,6 +230,19 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
     setOutcome(NO_FAILURES);
     void client.restoreSession(session.id)
       .then(async () => {
+        queryClient.setQueriesData<{ pages: Array<{ items: Session[]; has_more: boolean; next_cursor?: string | null }>; pageParams: unknown[] }>(
+          { queryKey: ['archived-sessions'] },
+          (old) =>
+            old === undefined || !Array.isArray(old.pages)
+              ? old
+              : {
+                  ...old,
+                  pages: old.pages.map((page) => ({
+                    ...page,
+                    items: page.items.filter((entry) => entry.id !== session.id),
+                  })),
+                },
+        );
         invalidatePersonaSessionLists(queryClient);
         await Promise.all([refresh(), queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined)]);
       })

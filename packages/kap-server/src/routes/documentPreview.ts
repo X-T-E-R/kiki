@@ -7,13 +7,19 @@ import {
   ErrorCodes,
   IRuntimeResolver,
   ISessionContext,
+  ISessionIndex,
+  ISessionManager,
   ISessionWorkspaceContext,
   IPluginHostService,
   IPluginSettingsService,
   IPluginService,
+  IWorkspaceInstanceManager,
+  isError2,
   type Scope,
 } from '@kiki/agent-core-v2';
+import type { WorkspaceInstanceLease } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import type { TranscriptService } from '../services/transcript/transcriptService';
+import { readColdSessionAdditionalDirs } from './fs';
 import { openSessionMedia } from './sessionMedia';
 import { RuntimeWorkspaceView } from '@kiki/agent-core-v2/runtime/runtimeWorkspaceView';
 import { IHostProcessService } from '@kiki/agent-core-v2/os/interface/hostProcess';
@@ -422,21 +428,99 @@ async function openPreviewFile(
     };
   }
 
-  const operation = await acquireSessionOperation(core, sessionId, 'document-preview');
-  if (operation.handle === undefined) return { sessionExists: false, dispose: () => operation.dispose() };
+  let operation: Awaited<ReturnType<typeof acquireSessionOperation>> | undefined;
+  let workspaceLease: WorkspaceInstanceLease | undefined;
+  let workspaceId: string | undefined;
+  let workDir = '';
+  let additionalDirs: readonly string[] = [];
 
-  const context = operation.handle.accessor.get(ISessionContext);
-  const workspace = operation.handle.accessor.get(ISessionWorkspaceContext);
+  if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) {
+    operation = await acquireSessionOperation(core, sessionId, 'document-preview');
+    if (operation.handle !== undefined) {
+      const context = operation.handle.accessor.get(ISessionContext);
+      const workspace = operation.handle.accessor.get(ISessionWorkspaceContext);
+      workspaceId = context.workspaceId;
+      workDir = workspace.workDir;
+      additionalDirs = workspace.additionalDirs;
+    }
+  }
+  if (workspaceId === undefined) {
+    await operation?.dispose();
+    operation = undefined;
+    const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+    if (summary === undefined) return { sessionExists: false, dispose: () => {} };
+    try {
+      workspaceLease = await core.accessor.get(IWorkspaceInstanceManager).acquire({
+        workspaceId: summary.workspaceId,
+        root: summary.cwd,
+      });
+    } catch (error) {
+      if (isError2(error) && error.code === ErrorCodes.WORKSPACE_NOT_FOUND) {
+        return { sessionExists: false, dispose: () => {} };
+      }
+      throw error;
+    }
+    try {
+      await workspaceLease.instance.program.dirs.ready;
+      workspaceId = workspaceLease.instance.id;
+      workDir = summary.cwd ?? workspaceLease.instance.root;
+      additionalDirs = await readColdSessionAdditionalDirs(
+        core,
+        summary.workspaceId,
+        sessionId,
+        workspaceLease.instance.program.dirs.additionalDirs,
+      );
+    } catch (error) {
+      workspaceLease.dispose();
+      throw error;
+    }
+  }
+
   const runtimeId = request.source.runtime_id ?? 'local';
-  const lease = core.accessor.get(IRuntimeResolver).acquire({ workspaceId: context.workspaceId, runtimeId }, ['fs']);
+  let lease: ReturnType<IRuntimeResolver['acquire']> | undefined;
+  if (operation === undefined && runtimeId !== 'local') {
+    try {
+      lease = core.accessor.get(IRuntimeResolver).acquire({ workspaceId, runtimeId }, ['fs']);
+    } catch {
+      if (runtimeId.startsWith('ssh:')) {
+        await core.accessor.get(IWorkspaceInstanceManager).prepareSshRuntime(workspaceId).catch(() => {});
+        try {
+          lease = core.accessor.get(IRuntimeResolver).acquire({ workspaceId, runtimeId }, ['fs']);
+        } catch {}
+      }
+      if (lease === undefined) {
+        workspaceLease?.dispose();
+        workspaceLease = undefined;
+        operation = await acquireSessionOperation(core, sessionId, 'document-preview');
+        if (operation.handle === undefined) {
+          await operation.dispose();
+          return { sessionExists: false, dispose: () => {} };
+        }
+        const context = operation.handle.accessor.get(ISessionContext);
+        const workspace = operation.handle.accessor.get(ISessionWorkspaceContext);
+        workspaceId = context.workspaceId;
+        workDir = workspace.workDir;
+        additionalDirs = workspace.additionalDirs;
+      }
+    }
+  }
+  if (lease === undefined) {
+    try {
+      lease = core.accessor.get(IRuntimeResolver).acquire({ workspaceId, runtimeId }, ['fs']);
+    } catch (error) {
+      await settleReleases([() => workspaceLease?.dispose(), () => operation?.dispose()]);
+      throw error;
+    }
+  }
+  const activeLease = lease;
   try {
-    const runtime = lease.runtime;
+    const runtime = activeLease.runtime;
     const fs = runtime.fs;
     if (fs === undefined) throw new Error(`runtime ${runtimeId} has no filesystem capability`);
     const path = request.source.path;
     const absolute = runtime.path.isAbsolute(path);
     const externalHostPath = allowHostPath && runtimeId === 'local' && absolute && runtime.workspace.supportsExternalPaths === true;
-    const view = externalHostPath ? undefined : new RuntimeWorkspaceView(runtime, { workDir: workspace.workDir, additionalDirs: workspace.additionalDirs });
+    const view = externalHostPath ? undefined : new RuntimeWorkspaceView(runtime, { workDir, additionalDirs });
     const candidate = absolute ? runtime.path.resolve(path) : runtime.path.resolve(view!.workDir, path);
     const resolved = await fs.realpath(candidate);
     view?.assertAllowed(resolved, path);
@@ -460,11 +544,11 @@ async function openPreviewFile(
           }
         },
       },
-      dispose: () => settleReleases([() => lease.dispose(), () => operation.dispose()]),
+      dispose: () => settleReleases([() => activeLease.dispose(), () => workspaceLease?.dispose(), () => operation?.dispose()]),
     };
   } catch (error) {
     try {
-      await settleReleases([() => lease.dispose(), () => operation.dispose()]);
+      await settleReleases([() => activeLease.dispose(), () => workspaceLease?.dispose(), () => operation?.dispose()]);
     } catch (releaseError) {
       throw new AggregateError([error, releaseError], 'document preview release failed', { cause: error });
     }

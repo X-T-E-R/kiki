@@ -4,18 +4,23 @@ import { Readable } from 'node:stream';
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import {
   ErrorCodes,
+  IFileSystemStorageService,
   IRuntimeResolver,
   IHostFileSystem,
   ISessionContext,
+  ISessionIndex,
+  ISessionManager,
   ISessionWorkspaceContext,
   ITelemetryService,
   IWorkspaceFsService,
   IWorkspaceInstanceManager,
   IWorkspaceService,
+  MAIN_AGENT_ID,
   isError2,
   type ISessionScopeHandle,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { subagentWorkspaceRoots } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import {
   fsDiffRequestSchema,
   fsGitStatusRequestSchema,
@@ -34,7 +39,7 @@ import {
 import { GitService } from '@kiki/agent-core-v2/app/git/gitService';
 import { IBootstrapService } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
 import type { IWorktreeService } from '@kiki/agent-core-v2/app/git/worktreeModel';
-import { ITemporaryLocalRuntimeResolver, type TemporaryRuntimeLease } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
+import { ITemporaryLocalRuntimeResolver, type TemporaryRuntimeLease, type WorkspaceInstanceLease } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import type { RuntimeCapability, RuntimeLease } from '@kiki/agent-core-v2/runtime/runtime';
 import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
 import { WorkspaceGitService } from '@kiki/agent-core-v2/workspace/workspaceGit/workspaceGitService';
@@ -45,6 +50,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { AdmissionError } from '../services/connections/admission';
 import { peerAudience } from '../services/connections/audience';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { buildContentDisposition } from '../lib/contentDisposition';
 import {
   launchDetached,
@@ -236,6 +242,89 @@ function acquireSessionFs(
   return createRuntimeFs(core, context.workspaceId, workspace, runtimeId, required);
 }
 
+type ColdSessionFsResolution =
+  | { readonly kind: 'cold'; readonly runtimeFs: RuntimeFsScope; readonly workspaceLease: WorkspaceInstanceLease }
+  | { readonly kind: 'fallback_session' }
+  | undefined;
+
+export async function readColdSessionAdditionalDirs(
+  core: Scope,
+  workspaceId: string,
+  sessionId: string,
+  baseDirs: readonly string[],
+  forceRead = false,
+): Promise<readonly string[]> {
+  try {
+    const scope = `sessions/${workspaceId}/${sessionId}`;
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const metaInfo = storage.statMeta !== undefined
+      ? await storage.statMeta(scope, 'state.json').catch(() => undefined)
+      : storage.stat !== undefined
+        ? await storage.stat(scope, 'state.json').catch(() => undefined)
+        : undefined;
+    if (!forceRead && metaInfo !== undefined && metaInfo.size > 262_144) {
+      return baseDirs;
+    }
+    const saved = await readColdSessionMeta(core, workspaceId, sessionId);
+    const savedDirs = subagentWorkspaceRoots(saved?.agents?.[MAIN_AGENT_ID], MAIN_AGENT_ID)?.additionalDirs;
+    if (savedDirs === undefined || savedDirs.length === 0) return baseDirs;
+    return [...new Set([...baseDirs, ...savedDirs])];
+  } catch {
+    return baseDirs;
+  }
+}
+
+async function acquireColdSessionFs(
+  core: Scope,
+  sessionId: string,
+  runtimeId: string,
+  required: readonly RuntimeCapability[],
+): Promise<ColdSessionFsResolution> {
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary === undefined) return undefined;
+  let workspaceLease: WorkspaceInstanceLease;
+  try {
+    workspaceLease = await core.accessor.get(IWorkspaceInstanceManager).acquire({
+      workspaceId: summary.workspaceId,
+      root: summary.cwd,
+    });
+  } catch (error) {
+    if (isError2(error) && error.code === ErrorCodes.WORKSPACE_NOT_FOUND) return undefined;
+    throw error;
+  }
+  try {
+    await workspaceLease.instance.program.dirs.ready;
+    const additionalDirs = await readColdSessionAdditionalDirs(
+      core,
+      summary.workspaceId,
+      sessionId,
+      workspaceLease.instance.program.dirs.additionalDirs,
+    );
+    const roots = {
+      workDir: summary.cwd ?? workspaceLease.instance.root,
+      additionalDirs,
+    };
+    try {
+      const runtimeFs = createRuntimeFs(core, workspaceLease.instance.id, roots, runtimeId, required);
+      return { kind: 'cold', runtimeFs, workspaceLease };
+    } catch (error) {
+      if (runtimeId === 'local') throw error;
+      if (runtimeId.startsWith('ssh:')) {
+        await core.accessor.get(IWorkspaceInstanceManager).prepareSshRuntime(workspaceLease.instance.id).catch(() => {});
+        try {
+          const runtimeFs = createRuntimeFs(core, workspaceLease.instance.id, roots, runtimeId, required);
+          return { kind: 'cold', runtimeFs, workspaceLease };
+        } catch {}
+      }
+      workspaceLease.dispose();
+      return { kind: 'fallback_session' };
+    }
+  } catch (error) {
+    workspaceLease.dispose();
+    throw error;
+  }
+}
+
 async function resolveWorkspaceFs(
   core: Scope,
   ref: string,
@@ -315,9 +404,9 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       const fsAction = action as FsAction;
 
       let operation: SessionOperationLease | undefined;
+      let workspaceLease: WorkspaceInstanceLease | undefined;
       let runtimeFs: RuntimeFsScope | undefined;
       try {
-        operation = await acquireSessionOperation(core, session_id, 'operation');
         const result = z.object({ runtime_id: z.string().min(1).optional() }).passthrough().safeParse(req.body ?? {});
         if (!result.success) {
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'request body must be an object', req.id));
@@ -331,11 +420,26 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
           required.push('process');
         }
         const allowUnregisteredLocal = peerAudience(req) === undefined;
-        runtimeFs = operation.handle === undefined && fsAction === 'search'
-          ? await resolveWorkspaceFs(core, session_id, runtimeId, required, allowUnregisteredLocal)
-          : operation.handle === undefined
-            ? undefined
-            : acquireSessionFs(core, operation.handle, runtimeId, required);
+        if (core.accessor.get(ISessionManager).get(session_id) !== undefined) {
+          operation = await acquireSessionOperation(core, session_id, 'operation');
+          if (operation.handle !== undefined) {
+            runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, required);
+          }
+        }
+        if (runtimeFs === undefined) {
+          const cold = await acquireColdSessionFs(core, session_id, runtimeId, required);
+          if (cold?.kind === 'cold') {
+            runtimeFs = cold.runtimeFs;
+            workspaceLease = cold.workspaceLease;
+          } else if (cold?.kind === 'fallback_session') {
+            operation = await acquireSessionOperation(core, session_id, 'operation');
+            if (operation.handle !== undefined) {
+              runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, required);
+            }
+          } else if (fsAction === 'search') {
+            runtimeFs = await resolveWorkspaceFs(core, session_id, runtimeId, required, allowUnregisteredLocal);
+          }
+        }
         if (runtimeFs === undefined) {
           if (!allowUnregisteredLocal && fsAction === 'search' && isAbsolute(session_id)) {
             throw new AdmissionError(403, 'peer_workspace_not_registered');
@@ -393,6 +497,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         if (!signal.aborted) sendMappedError(reply, req, err);
       } finally {
         await runtimeFs?.lease.dispose();
+        workspaceLease?.dispose();
         await operation?.dispose();
       }
     }),
@@ -538,16 +643,34 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       }
 
       let operation: SessionOperationLease | undefined;
+      let workspaceLease: WorkspaceInstanceLease | undefined;
       let runtimeFs: RuntimeFsScope | undefined;
       let stream: Readable | undefined;
       let responseCleanup: ReturnType<typeof createDeferredCleanup> | undefined;
       try {
-        operation = await acquireSessionOperation(core, session_id, 'operation');
-        if (operation.handle === undefined) {
+        const runtimeId = req.query.runtime_id ?? 'local';
+        if (core.accessor.get(ISessionManager).get(session_id) !== undefined) {
+          operation = await acquireSessionOperation(core, session_id, 'operation');
+          if (operation.handle !== undefined) {
+            runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, ['fs']);
+          }
+        }
+        if (runtimeFs === undefined) {
+          const cold = await acquireColdSessionFs(core, session_id, runtimeId, ['fs']);
+          if (cold?.kind === 'cold') {
+            runtimeFs = cold.runtimeFs;
+            workspaceLease = cold.workspaceLease;
+          } else if (cold?.kind === 'fallback_session') {
+            operation = await acquireSessionOperation(core, session_id, 'operation');
+            if (operation.handle !== undefined) {
+              runtimeFs = acquireSessionFs(core, operation.handle, runtimeId, ['fs']);
+            }
+          }
+        }
+        if (runtimeFs === undefined) {
           reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, `session ${session_id} does not exist`, req.id));
           return;
         }
-        runtimeFs = acquireSessionFs(core, operation.handle, req.query.runtime_id ?? 'local', ['fs']);
         const resolved = await runtimeFs.fs.resolveDownload(relPath);
         const r = reply as unknown as FsDownloadReply;
         const ifNoneMatch = pickHeader(req.headers, 'if-none-match');
@@ -572,7 +695,11 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
         stream = createRuntimeReadStream(runtimeFs, resolved.absolute, range?.start ?? 0, range?.length ?? resolved.size);
         const downloadStream = stream;
         responseCleanup = createDeferredCleanup(
-          () => operation?.dispose(),
+          async () => {
+            await runtimeFs?.lease.dispose();
+            workspaceLease?.dispose();
+            await operation?.dispose();
+          },
           (error) => {
             requestLog(req)?.error({ session_id, path: relPath, err: error }, 'fs download cleanup failed');
             downloadStream.destroy(error instanceof Error ? error : new Error(String(error)));
@@ -599,6 +726,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       } finally {
         if (stream === undefined) {
           await runtimeFs?.lease.dispose();
+          workspaceLease?.dispose();
           await operation?.dispose();
         }
       }

@@ -738,7 +738,9 @@ function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSr
   const mime = bytes === undefined ? image.item.mime : resolveImageMime(bytes, load.status === 'ready' ? load.mime : image.item.mime) ?? image.item.mime;
   const typedSrc = useTypedImageUrl(bytes, load.status === 'ready' ? load.mime : undefined);
   const externalSeedSrc = hasCanonicalSource && seededSrc?.startsWith('blob:') === true ? undefined : seededSrc;
-  const previewFallbackSrc = externalSeedSrc ?? (load.status !== 'ready' ? load.thumbnailUrl : undefined);
+  const previewFallbackSrc = load.status === 'failed'
+    ? undefined
+    : (seededSrc ?? (load.status !== 'ready' ? load.thumbnailUrl : undefined));
   const fullSrc = hasCanonicalSource
     ? (load.status === 'ready' ? (typedSrc ?? load.url) : undefined)
     : (externalSeedSrc ?? image.item.url);
