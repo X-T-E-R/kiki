@@ -98,7 +98,7 @@ function npmGlobalPrefix(platform: NodeJS.Platform): Promise<string> {
 
 function execFileText(command: string, args: readonly string[]): Promise<string> {
   return new Promise((resolveOutput, reject) => {
-    execFile(command, [...args], { encoding: 'utf-8' }, (error, stdout) => {
+    execFile(command, [...args], { encoding: 'utf-8', windowsHide: true }, (error, stdout) => {
       if (error) {
         reject(error);
         return;

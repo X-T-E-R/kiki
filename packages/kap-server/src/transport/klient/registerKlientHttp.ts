@@ -30,11 +30,15 @@ export const KLIENT_CALL_PATH = '/api/klient/call';
 export const KLIENT_EVENTS_PATH = '/api/klient/events';
 export const KLIENT_HTTP_MAX_PAYLOAD_BYTES = 8 << 20;
 export const KLIENT_CALL_BODY_LIMIT_BYTES = HTTP_REQUEST_BODY_LIMIT_BYTES;
+export const KLIENT_WS_HEARTBEAT_INTERVAL_MS = 10_000;
+export const KLIENT_WS_SILENCE_TIMEOUT_MS = 90_000;
 
 export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly maxPayloadBytes?: number;
   readonly enableTerminals?: boolean;
   readonly peerBridgeRegistry?: PeerBridgeRegistry;
+  readonly heartbeatIntervalMs?: number;
+  readonly silenceTimeoutMs?: number;
 }
 
 interface KlientFailureTarget {
@@ -149,10 +153,18 @@ class KlientHttpConnection {
       (frame) => this.send(frame), (id, error) => this.sendError('view_error', id, error),
       { core: scope, service: opts.sessionViewTranscriptService, logger: app.log });
     this.peerBridge = new PeerBridgeConnection(peer ? peerGrantId : undefined, opts.peerBridgeRegistry, (frame) => this.sendChecked(frame));
+    const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? KLIENT_WS_HEARTBEAT_INTERVAL_MS;
+    const silenceTimeoutMs = opts.silenceTimeoutMs ?? KLIENT_WS_SILENCE_TIMEOUT_MS;
     this.heartbeat = setInterval(() => {
-      if (Date.now() - this.lastInboundAt > 30_000) { socket.terminate(); this.dispose(); return; }
-      this.send({ type: 'ping', data: { nonce: String(Date.now()), heartbeatMs: 10_000 } });
-    }, 10_000);
+      if (Date.now() - this.lastInboundAt > silenceTimeoutMs) { socket.terminate(); this.dispose(); return; }
+      this.send({ type: 'ping', data: { nonce: String(Date.now()), heartbeatMs: heartbeatIntervalMs } });
+      if (socket.readyState === socket.OPEN) {
+        try { socket.ping(undefined, undefined, () => {}); } catch { }
+      }
+    }, heartbeatIntervalMs);
+    socket.on('pong', () => {
+      if (!this.closed) this.lastInboundAt = Date.now();
+    });
     socket.on('message', (data) => {
       this.onMessage(data);
     });

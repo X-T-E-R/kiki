@@ -83,7 +83,7 @@ describe('AwayNotifier', () => {
       .toBe('/s/session%20%2F%20one/agent/child%20%2F%20two?interaction=approval%2F3');
   });
 
-  it('notifies B while A is foreground without changing approval/question/failure foreground rules', async () => {
+  it('suppresses completed OS toasts while focused (away === false) even for other sessions, and delivers them when away', async () => {
     away = false;
     const configure = (scopeKey: string) => notifier.configure({
       isAway, isViewingSession: (id) => id === 'a', scopeKey, notify,
@@ -91,13 +91,17 @@ describe('AwayNotifier', () => {
     });
     configure('home-a/local');
     await notifier.report([event('a', 'completed'), event('b', 'completed'), event('c', 'approval'), event('d', 'failed')]);
+    expect(notify).not.toHaveBeenCalled();
+
+    away = true;
+    await notifier.report([event('b', 'completed')]);
     expect(notify).toHaveBeenCalledExactlyOnceWith({ title: 'single', route: '/s/b' });
     configure('home-b/local');
     await notifier.report([event('b', 'completed')]);
     expect(notify).toHaveBeenCalledTimes(2);
   });
 
-  it('preserves completion during a same-scope list refresh, but drops an old-scope probe', async () => {
+  it('preserves completion during a same-scope list refresh while away, but drops an old-scope probe', async () => {
     let resolve: ((value: boolean) => void) | undefined;
     const configure = (scopeKey: string, title: string) => notifier.configure({
       isAway: () => new Promise<boolean>((done) => { resolve = done; }),
@@ -107,12 +111,12 @@ describe('AwayNotifier', () => {
     configure('home-a/local', 'before');
     const pending = notifier.report([event('b', 'completed')]);
     configure('home-a/local', 'after');
-    resolve?.(false);
+    resolve?.(true);
     await pending;
     expect(notify).toHaveBeenCalledExactlyOnceWith({ title: 'after', route: '/s/b' });
     const previous = notifier.report([event('c', 'completed')]);
     configure('home-b/local', 'other');
-    resolve?.(false);
+    resolve?.(true);
     await previous;
     expect(notify).toHaveBeenCalledTimes(1);
   });

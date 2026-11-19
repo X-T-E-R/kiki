@@ -160,6 +160,7 @@ function detectGitRepo(git: string, workDir: string): boolean {
     const result = spawnSync(git, ['-C', workDir, 'rev-parse', '--is-inside-work-tree'], {
       encoding: 'utf8',
       timeout: SPAWN_TIMEOUT_MS,
+      windowsHide: true,
     });
     return result.status === 0 && result.stdout.trim() === 'true';
   } catch {
@@ -172,6 +173,7 @@ function readBranch(git: string, workDir: string): string | null {
     const result = spawnSync(git, ['-C', workDir, 'branch', '--show-current'], {
       encoding: 'utf8',
       timeout: SPAWN_TIMEOUT_MS,
+      windowsHide: true,
     });
     if (result.status !== 0) return null;
     const name = result.stdout.trim();
@@ -196,6 +198,7 @@ function readStatus(
       encoding: 'utf8',
       timeout: SPAWN_TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
     });
     if (result.status !== 0) {
       return { dirty: false, ahead: 0, behind: 0, diffAdded: 0, diffDeleted: 0 };
@@ -234,6 +237,7 @@ function readDiffStats(git: string, workDir: string): { added: number; deleted: 
       encoding: 'utf8',
       timeout: SPAWN_TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
     });
     if (result.status !== 0) return { added: 0, deleted: 0 };
 
@@ -280,6 +284,7 @@ function readPullRequest(workDir: string): Promise<PullRequestInfo | null> {
           },
           timeout: PR_SPAWN_TIMEOUT_MS,
           maxBuffer: 256 * 1024,
+          windowsHide: true,
         },
         (error, stdout) => {
           if (error !== null) {

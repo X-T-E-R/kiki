@@ -16,6 +16,7 @@ describe('openUrl', () => {
       expect(execFile).toHaveBeenCalledWith(
         'cmd',
         ['/c', 'start', '', '"https://e.test/a?x=1&calc"'],
+        { windowsHide: true },
         expect.any(Function),
       );
     } finally {

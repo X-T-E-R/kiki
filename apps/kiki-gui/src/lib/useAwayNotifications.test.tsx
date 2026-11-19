@@ -79,14 +79,21 @@ async function mount(route = '/s/a') {
 }
 
 describe('conversation completion and read confirmation', () => {
-  it('keeps B notified/unread through App focus, home and A; only opening B acknowledges B', async () => {
+  it('suppresses OS completion toast while focused on A and notifies when away; only opening B acknowledges B', async () => {
     await mount();
     expect(sessionSeenSnapshot()).toEqual({ a: 10 });
+    completions = [{ session_id: 'b', episode_id: 'episode-b-focused', completed_at: Date.now() }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(notify).not.toHaveBeenCalled();
+    expect(badge).toHaveBeenLastCalledWith(1, 'home-example', 'local', ['b']);
+
+    focused = false;
     completions = [{ session_id: 'b', episode_id: 'episode-b', completed_at: Date.now() }];
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify.mock.calls[0]?.[0]).toMatchObject({ route: '/s/b', homeId: 'home-example', scopeId: 'local' });
     expect(badge).toHaveBeenLastCalledWith(1, 'home-example', 'local', ['b']);
+    focused = true;
     await act(async () => { window.dispatchEvent(new Event('focus')); await navigate('/'); });
     await act(async () => { window.dispatchEvent(new Event('focus')); await navigate('/s/a'); });
     expect(sessionSeenSnapshot()).toEqual({ a: 10 });
@@ -116,9 +123,11 @@ describe('conversation completion and read confirmation', () => {
     let finishSending!: () => void;
     notify.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSending = resolve; }));
     await mount('/s/a');
+    focused = false;
     completions = [{ session_id: 'b', episode_id: 'late-send-b', completed_at: Date.now() }];
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(notify).toHaveBeenCalledTimes(1);
+    focused = true;
     await act(async () => { await navigate('/s/b'); });
     expect(acknowledge.mock.calls.filter(([id]) => id === 'b')).toHaveLength(1);
     await act(async () => { finishSending(); });
@@ -140,9 +149,11 @@ describe('conversation completion and read confirmation', () => {
       }
     });
     await mount('/s/a');
+    focused = false;
     completions = [{ session_id: 'b', episode_id: 'pending-b', completed_at: Date.now() }];
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     const sending = notify.mock.calls[0]![0];
+    focused = true;
     await act(async () => { await navigate('/s/b'); });
     expect(sessionSeenSnapshot()).toMatchObject({ b: 10 });
     await act(async () => { await navigate('/s/a'); });
@@ -175,6 +186,7 @@ describe('conversation completion and read confirmation', () => {
   });
 
   it('reopens with the saved cursor: no duplicate and no swallowed completion during a poll failure', async () => {
+    focused = false;
     await mount();
     connection.client.notifications.listCompletions.mockRejectedValueOnce(new Error('offline'));
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
@@ -204,11 +216,11 @@ describe('conversation completion and read confirmation', () => {
     expect(badge).toHaveBeenLastCalledWith(0, 'home-example', 'local', []);
   });
 
-  it('suppresses the visible conversation completion on a child route, without suppressing other sessions', async () => {
+  it('suppresses OS completion notifications while focused on a child route', async () => {
     await mount('/s/a/agent/child-example');
     completions = ['a', 'b'].map((session_id) => ({ session_id, episode_id: `finished-${session_id}`, completed_at: Date.now() }));
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(notify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ route: '/s/b' }));
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('retains B hollow unread mark, Activity inbox and badge across list refreshes and late point reads while A stays open, clears only B on open, and re-flags B on a later completion', async () => {
@@ -237,7 +249,7 @@ describe('conversation completion and read confirmation', () => {
     await act(async () => { replaceSessions(listData.pages[0]!.items); });
     completions = [{ session_id: 'b', episode_id: 'episode-b-1', completed_at: Date.now() }];
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).not.toHaveBeenCalled();
     expect(badge).toHaveBeenLastCalledWith(2, 'home-example', 'local', ['b', 'c']);
 
     // Simulate the periodic first-page list refresh returning last_seq: 0 (or a stale lower watermark)
@@ -271,7 +283,7 @@ describe('conversation completion and read confirmation', () => {
     expect(sessionRowState(rowC, sessionSeenSnapshot())).toBe('unread');
     expect(buildInboxModel(currentRows, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['b', 'c']);
     expect(badge).toHaveBeenLastCalledWith(2, 'home-example', 'local', ['b', 'c']);
-    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).not.toHaveBeenCalled();
 
     // Opening B acknowledges only B (leaving C unread) and does not re-send the notification.
     await act(async () => { await navigate('/s/b'); });
@@ -282,9 +294,9 @@ describe('conversation completion and read confirmation', () => {
     expect(buildInboxModel(currentRows, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['c']);
     expect(badge).toHaveBeenLastCalledWith(1, 'home-example', 'local', ['c']);
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).not.toHaveBeenCalled();
 
-    // Return to A; B completes a second episode and becomes unread + notified again.
+    // Return to A; B completes a second episode and becomes unread (and notifies when away).
     await act(async () => { await navigate('/s/a'); });
     await flush();
     const secondB: Session = {
@@ -295,13 +307,14 @@ describe('conversation completion and read confirmation', () => {
     };
     listData = mergeSessionActivity(listData, secondB)!;
     await act(async () => { replaceSessions(listData.pages[0]!.items); });
+    focused = false;
     completions = [{ session_id: 'b', episode_id: 'episode-b-2', completed_at: Date.now() }];
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     const rowsAfterSecond = listData.pages[0]!.items;
     expect(sessionRowState(rowsAfterSecond.find((row) => row.id === 'b')!, sessionSeenSnapshot())).toBe('unread');
     expect(buildInboxModel(rowsAfterSecond, sessionSeenSnapshot()).unread.map((item) => item.sessionId)).toEqual(['b', 'c']);
     expect(badge).toHaveBeenLastCalledWith(2, 'home-example', 'local', ['b', 'c']);
-    expect(notify).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 
   it('does not bounce B back to unread when its completion receipt arrives after opening B or Mark all as read', async () => {

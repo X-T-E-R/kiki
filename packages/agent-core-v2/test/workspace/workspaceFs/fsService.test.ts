@@ -498,6 +498,94 @@ describe('WorkspaceFsService.search', () => {
     expect(paths).not.toContain('src/bar.ts');
   });
 
+  it('matches path-qualified queries with forward slashes and Windows backslashes in both fallback and indexed search', async () => {
+    const files = {
+      'packages/session-core/src/composer/drafts.ts': '',
+      'apps/kiki-gui/src/components/Composer.tsx': '',
+      'README.md': '',
+    };
+    const fallbackFs = makeSession(files, emptyHandler);
+    const posixResult = await fallbackFs.search({ query: 'packages/session-core/drafts', limit: 50, follow_gitignore: false });
+    expect(posixResult.items.map((item) => item.path)).toEqual(['packages/session-core/src/composer/drafts.ts']);
+    expect(posixResult.items[0]?.score).toBeGreaterThan(0);
+
+    const winResult = await fallbackFs.search({ query: 'apps\\kiki-gui\\Composer', limit: 50, follow_gitignore: false });
+    expect(winResult.items.map((item) => item.path)).toEqual(['apps/kiki-gui/src/components/Composer.tsx']);
+    expect(winResult.items[0]?.score).toBeGreaterThan(0);
+
+    await host?.dispose();
+    host = createScopedTestHost([
+      stubPair(IHostEnvironment, {
+        _serviceBrand: undefined,
+        osKind: 'Linux',
+        osArch: 'x64',
+        osVersion: 'test',
+        shellName: 'bash',
+        shellPath: '/bin/bash',
+        pathClass: 'posix',
+        homeDir: '/home/test',
+        ready: Promise.resolve(),
+      }),
+    ]);
+    const indexedEntries = [
+      { path: 'packages/session-core/src/composer/drafts.ts', name: 'drafts.ts', kind: 'file' as const, sensitive: false, mtimeMs: 1, size: 1, ino: 1 },
+      { path: 'apps/kiki-gui/src/components/Composer.tsx', name: 'Composer.tsx', kind: 'file' as const, sensitive: false, mtimeMs: 1, size: 1, ino: 2 },
+    ];
+    const fuzzyCalls: Array<{ query: string; pathMode: boolean }> = [];
+    const fakePathIndex = {
+      whenSettled: async () => {},
+      snapshot: () => ({ revision: 1, entries: indexedEntries }),
+      fuzzy: (query: string, pathMode: boolean) => {
+        fuzzyCalls.push({ query, pathMode });
+        return indexedEntries.filter((entry) => {
+          const target = (pathMode ? entry.path : entry.name).toLowerCase();
+          let cursor = 0;
+          for (const ch of query.toLowerCase()) {
+            const idx = target.indexOf(ch, cursor);
+            if (idx < 0) return false;
+            cursor = idx + 1;
+          }
+          return true;
+        });
+      },
+    };
+    const runtime = new FakeRuntime({ workspaceId: 'w', runtimeId: 'local', generation: 'test' }, { capabilities: ['process'] });
+    Object.defineProperty(runtime, 'process', { value: fakeRunner(emptyHandler) });
+    Object.defineProperty(runtime, 'pathIndex', { value: fakePathIndex });
+    host.app.instantiation.provide(IRuntimeResolver, {
+      _serviceBrand: undefined,
+      inspect: () => runtime,
+      acquire: () => ({ runtime, track: (resource) => resource, dispose: () => {} }),
+    });
+    const workspace = host.child('program', 'w1', [
+      stubPair(IWorkspaceContext, stubWorkspaceContext()),
+      stubPair(IWorkspaceDirs, stubWorkspaceDirs()),
+      stubPair(IHostFileSystem, fakeFs(files)),
+      stubPair(IHostProcessService, fakeRunner(emptyHandler)),
+      stubPair(ITelemetryService, telemetryStub([])),
+      stubPair(IWorkspaceGitService, workspaceGitStub(defaultGitStub())),
+      stubPair(IBootstrapService, stubBootstrap()),
+    ]);
+    const indexedFs = workspace.accessor.get(IWorkspaceFsService);
+
+    const indexedPosix = await indexedFs.search({ query: 'packages/session-core/drafts', limit: 50, follow_gitignore: true });
+    expect(indexedPosix.items.map((item) => item.path)).toEqual(['packages/session-core/src/composer/drafts.ts']);
+    expect(indexedPosix.items[0]?.score).toBeGreaterThan(0);
+
+    const indexedWin = await indexedFs.search({ query: 'apps\\kiki-gui\\Composer', limit: 50, follow_gitignore: true });
+    expect(indexedWin.items.map((item) => item.path)).toEqual(['apps/kiki-gui/src/components/Composer.tsx']);
+    expect(indexedWin.items[0]?.score).toBeGreaterThan(0);
+
+    const indexedSuggestWin = await indexedFs.suggest({ query: 'apps\\kiki-gui\\Composer', limit: 50, follow_gitignore: true, show_hidden: false });
+    expect(indexedSuggestWin.items.map((item) => item.path)).toEqual(['apps/kiki-gui/src/components/Composer.tsx']);
+
+    expect(fuzzyCalls).toEqual([
+      { query: 'packages/session-core/drafts', pathMode: true },
+      { query: 'apps/kiki-gui/Composer', pathMode: true },
+      { query: 'apps/kiki-gui/composer', pathMode: true },
+    ]);
+  });
+
   it('reports symlinks as kind symlink and does not recurse into them', async () => {
     const fs = makeSession(
       { 'src/real.ts': '', 'src/target/inside.ts': '' },

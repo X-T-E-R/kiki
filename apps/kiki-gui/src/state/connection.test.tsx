@@ -1264,7 +1264,7 @@ describe('a closed desktop socket', () => {
     expect(recoveryControllers[0]!.close).not.toHaveBeenCalled();
     await act(async () => { discovery.resolve({ config: { url: `${firstPort.url}///`, token: ` ${firstPort.token} ` }, persist: false }); });
     await status('open');
-    expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('connecting');
+    expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
     await act(async () => { verified.resolve(identity); });
     await flush();
     expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
@@ -1274,6 +1274,104 @@ describe('a closed desktop socket', () => {
     expect(recoveryControllers[0]!.open).toHaveBeenCalledTimes(1);
     expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
     expect(mocks.meta).toHaveBeenCalledTimes(2);
+  });
+
+  it('suppresses desktop recovery banner during the 1.5s transient grace window and clears checking without flashing when open returns', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.detectLocalConnection.mockResolvedValue({ config: firstPort, persist: false });
+      const container = await mountRecovery();
+      const status = statusHandler();
+      await status('open');
+      const discovery = deferred<{ config: typeof firstPort; persist: boolean }>();
+      mocks.detectLocalConnection.mockReturnValueOnce(discovery.promise);
+
+      await status('closed');
+      expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('');
+
+      // Sub-second reconnect returns to open without clamping to connecting or surfacing recovery.
+      await status('open');
+      expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
+      expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('');
+
+      // Even when the debounced background discovery fires at 250ms, an already-open socket does not flash connecting.
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
+      expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('');
+      await act(async () => { discovery.resolve({ config: firstPort, persist: false }); });
+      await flush();
+
+      // If a subsequent drop lasts past the 1,500ms grace window while checking, recovery becomes visible.
+      const slowDiscovery = deferred<{ config: typeof firstPort; persist: boolean }>();
+      mocks.detectLocalConnection.mockReturnValueOnce(slowDiscovery.promise);
+      await status('closed');
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_400); });
+      expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('');
+      await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+      expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('retrying');
+      await act(async () => { slowDiscovery.resolve({ config: firstPort, persist: false }); });
+      await flush();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('rediscovers and rebinds a browser local-detection connection when the local server hot-switches port and token', async () => {
+    vi.useFakeTimers();
+    try {
+      const switched = { url: 'http://127.0.0.1:49222', token: 'hot-switched-token' };
+      const customBrowserHost: typeof browserHost = {
+        ...browserHost,
+        connection: {
+          discover: vi.fn<() => Promise<{ config: { url: string; token: string }; persist: boolean } | null>>()
+            .mockResolvedValue({ config: switched, persist: false }),
+        },
+      };
+      mocks.meta.mockResolvedValueOnce(identity).mockResolvedValueOnce({ ...identity, server_id: 'replacement-local' });
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      mounted.push({ container, root });
+
+      function LocalDetectionHarness() {
+        const connection = useConnection();
+        return <>
+          <span data-local-url>{connection.config.url}</span>
+          <span data-local-token>{connection.config.token}</span>
+          <span data-local-source>{connection.connectionSource}</span>
+        </>;
+      }
+
+      // Connect via non-persisted local-detection flow from ConnectScreen.
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <HostProvider host={customBrowserHost}>
+              <ConnectionProvider>
+                <LocalDetectionHarness />
+              </ConnectionProvider>
+            </HostProvider>
+          </I18nProvider>,
+        );
+      });
+      await flush();
+      const detectBtn = container.querySelector<HTMLButtonElement>('[data-connect-detect]');
+      expect(detectBtn).not.toBeNull();
+      vi.mocked(customBrowserHost.connection.discover).mockResolvedValueOnce({ config: firstPort, persist: false });
+      await act(async () => { detectBtn!.click(); });
+      await flush();
+      expect(container.querySelector('[data-local-source]')?.textContent).toBe('local-detection');
+      expect(container.querySelector('[data-local-url]')?.textContent).toBe(firstPort.url);
+      const activeClient = mocks.klients.at(-1)!;
+      const onStatus = activeClient.terminal.onStatus.mock.calls.at(-1)![0] as (status: string) => void;
+      await act(async () => { onStatus('open'); });
+      await act(async () => { onStatus('closed'); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      await flush();
+      expect(customBrowserHost.connection.discover).toHaveBeenCalledTimes(2);
+      expect(mocks.rebindDesktop).toHaveBeenCalledWith(switched);
+      expect(container.querySelector('[data-local-url]')?.textContent).toBe(switched.url);
+      expect(container.querySelector('[data-local-token]')?.textContent).toBe(switched.token);
+      expect(activeClient.close).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   it('revalidates a same-endpoint native ready event without replacing the client or view', async () => {

@@ -104,7 +104,7 @@ async function attachPrint(promptFile: string, emit: (line: string) => void): Pr
   const args = isSea()
     ? ['--prompt-file', promptFile, '--output-format', 'stream-json', '--permission-mode', 'manual']
     : [...process.execArgv, process.argv[1]!, '--prompt-file', promptFile, '--output-format', 'stream-json', '--permission-mode', 'manual'];
-  const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
   let pending = '';
   let summary = '';
   child.stdout.setEncoding('utf8');

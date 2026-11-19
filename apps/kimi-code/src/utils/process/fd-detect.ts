@@ -59,7 +59,7 @@ function detectSystemFdPath(): string | null {
     const commandPath = resolveCommandPath(name);
     if (commandPath === undefined) continue;
     try {
-      const result = spawnSync(commandPath, ['--version'], { stdio: 'ignore' });
+      const result = spawnSync(commandPath, ['--version'], { stdio: 'ignore', windowsHide: true });
       if (result.status === 0) return commandPath;
     } catch {
       // ENOENT, EACCES, etc. — try next candidate.
@@ -72,7 +72,7 @@ function getManagedFdPath(): string | null {
   const binaryPath = getManagedFdBinaryPath();
   if (!existsSync(binaryPath)) return null;
   try {
-    const result = spawnSync(binaryPath, ['--version'], { stdio: 'ignore' });
+    const result = spawnSync(binaryPath, ['--version'], { stdio: 'ignore', windowsHide: true });
     return result.status === 0 ? binaryPath : null;
   } catch {
     return null;
@@ -175,7 +175,7 @@ function extractArchive(archivePath: string, extractDir: string, assetName: stri
 }
 
 function runExtractionCommand(command: string, args: readonly string[]): void {
-  const result = spawnSync(command, [...args], { stdio: 'pipe' });
+  const result = spawnSync(command, [...args], { stdio: 'pipe', windowsHide: true });
   if (!result.error && result.status === 0) return;
   const stderr = result.stderr.toString().trim();
   const detail =

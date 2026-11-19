@@ -33,8 +33,8 @@ import { attachmentName } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 
 const MIN_WIDTH = 320;
-export const DEFAULT_PREVIEW_WIDTH = 420;
-export const MAX_PREVIEW_WIDTH = 760;
+export const DEFAULT_PREVIEW_WIDTH = 480;
+export const MAX_PREVIEW_WIDTH = 1100;
 
 export function conversationCenterFloor(viewport: number): number {
   return viewport >= 1360 ? 480 : 420;
@@ -45,7 +45,7 @@ export function clampPreviewWidth(
   viewport: number,
   maxAvailableWidth?: number,
 ): number {
-  const viewportCap = Math.min(MAX_PREVIEW_WIDTH, Math.floor(viewport * 0.6));
+  const viewportCap = Math.min(MAX_PREVIEW_WIDTH, Math.floor(viewport * 0.7));
   const upper =
     maxAvailableWidth !== undefined && Number.isFinite(maxAvailableWidth)
       ? Math.min(viewportCap, Math.floor(maxAvailableWidth))

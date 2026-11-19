@@ -32,7 +32,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
-import { registerKlientHttp } from '../src/transport/klient/registerKlientHttp';
+import {
+  KLIENT_WS_SILENCE_TIMEOUT_MS,
+  registerKlientHttp,
+} from '../src/transport/klient/registerKlientHttp';
 import { TerminalHttpConnection } from '../src/transport/klient/terminalHttp';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
@@ -892,4 +895,33 @@ it('names the failing procedure in unexpected klient HTTP and stream failure log
     expect(http).toMatchObject({ event_type: 'klient_call_failed', scope: 'core', service: 'workspaceService', method: 'list', error: { name: 'Error', code: 'EXAMPLE_CODE' } });
     expect(JSON.stringify(lines)).not.toContain('example private detail');
   } finally { client.terminate(); await app.close(); }
+});
+
+it('sends protocol WebSocket pings, keeps connection alive on protocol pong frames, and uses 90s default silence timeout', async () => {
+  expect(KLIENT_WS_SILENCE_TIMEOUT_MS).toBe(90_000);
+  const scope = { accessor: { get: <T>() => ({}) as T } } as unknown as Scope;
+  const app = Fastify({ logger: false });
+  const wss = registerKlientHttp(app, scope, { heartbeatIntervalMs: 40, silenceTimeoutMs: 120 });
+  app.server.on('upgrade', (req, socket, head) => { wss.handleUpgrade(req, socket, head, (upgraded) => { wss.emit('connection', upgraded, req); }); });
+  await app.listen({ host: '127.0.0.1', port: 0 });
+  const address = app.server.address();
+  if (typeof address !== 'object' || address === null) throw new Error('missing address');
+  const client = new WebSocket(`ws://127.0.0.1:${address.port}/api/klient/events`);
+  let pingCount = 0;
+  let closed = false;
+  client.on('ping', () => { pingCount += 1; });
+  client.on('close', () => { closed = true; });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      client.once('open', () => { resolve(); });
+      client.once('error', reject);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    expect(pingCount).toBeGreaterThanOrEqual(3);
+    expect(closed).toBe(false);
+    expect(client.readyState).toBe(WebSocket.OPEN);
+  } finally {
+    client.terminate();
+    await app.close();
+  }
 });

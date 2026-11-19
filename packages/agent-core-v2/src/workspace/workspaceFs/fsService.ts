@@ -469,13 +469,16 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       if (cursor.revision !== snapshot.revision || cursor.binding !== binding || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw invalidSearchCursor();
       offset = cursor.offset;
     }
-    const candidates = index.fuzzy(req.query, false)!.filter(entry =>
+    const normalizedQuery = req.query.replaceAll('\\', '/');
+    const queryLower = normalizedQuery.toLowerCase();
+    const pathMode = normalizedQuery.includes('/');
+    const candidates = index.fuzzy(normalizedQuery, pathMode)!.filter(entry =>
       !entry.sensitive &&
       (req.include_globs === undefined || matchesAnyGlob(entry.path, req.include_globs)) &&
       (req.exclude_globs === undefined || !matchesAnyGlob(entry.path, req.exclude_globs)));
     const items = candidates.slice(offset, offset + req.limit).map(entry => ({ path: entry.path, name: entry.name,
-      kind: entry.kind, score: computeFuzzyScore(entry.name, req.query.toLowerCase()),
-      match_positions: computeMatchPositions(entry.path, req.query.toLowerCase()) }));
+      kind: entry.kind, score: computeFuzzyScore(pathMode ? entry.path : entry.name, queryLower),
+      match_positions: computeMatchPositions(entry.path, queryLower) }));
     const next = offset + items.length;
     const next_cursor = next < candidates.length ? `pi1_${Buffer.from(JSON.stringify({ revision: snapshot.revision, binding, offset: next })).toString('base64url')}` : undefined;
     signal?.throwIfAborted();
@@ -486,7 +489,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     signal?.throwIfAborted();
     const indexed = await this.indexedSearch(req, signal);
     if (indexed !== undefined) return indexed;
-    const query = req.query.toLowerCase();
+    const query = req.query.replaceAll('\\', '/').toLowerCase();
+    const pathMode = query.includes('/');
     const rules = req.follow_gitignore ? (await this.readRootGitignore()) ?? '' : '';
     signal?.throwIfAborted();
     const matcher = req.follow_gitignore ? ignore().add('.git/').add(rules) : undefined;
@@ -543,7 +547,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       if (isDir && query !== '') stack.push({ path: relPath, offset: 0 });
       if (req.include_globs && !matchesAnyGlob(relPath, req.include_globs)) continue;
       if (req.exclude_globs && matchesAnyGlob(relPath, req.exclude_globs)) continue;
-      const score = query === '' ? 1 : computeFuzzyScore(entry.name, query);
+      const score = query === '' ? 1 : computeFuzzyScore(pathMode ? relPath : entry.name, query);
       if (score <= 0) continue;
       items.push({
         path: relPath,
@@ -618,7 +622,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       return { items, truncated: listed.truncated || filtered.length > req.limit };
     }
 
-    const queryLower = req.query.toLowerCase();
+    const queryLower = req.query.replaceAll('\\', '/').toLowerCase();
     const pathSegments = queryLower.includes('/')
       ? queryLower.split('/').filter((seg) => seg.length > 0)
       : [];

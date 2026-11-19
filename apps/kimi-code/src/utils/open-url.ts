@@ -10,7 +10,7 @@ export function openUrl(url: string): void {
         // verbatim and everything after `&` would run as a second command.
         ? ['cmd', ['/c', 'start', '', quoteCmdStartTarget(url)]]
         : ['xdg-open', [url]];
-  execFile(command[0], command[1], () => {});
+  execFile(command[0], command[1], { windowsHide: true }, () => {});
 }
 
 function quoteCmdStartTarget(target: string): string {

@@ -74,7 +74,11 @@ export function initializeMainHeap(): boolean {
     : mainHeapEnvironment(process.env, target);
   env['KIKI_HEAP_REEXEC'] = '1';
   const args = isSea() ? legacy.argv.slice(2) : [...process.execArgv, ...legacy.argv.slice(1)];
-  const child = spawn(process.execPath, args, { env, stdio: 'inherit', windowsHide: false });
+  const child = spawn(process.execPath, args, {
+    env,
+    stdio: 'inherit',
+    windowsHide: !process.stdout.isTTY && !process.stdin.isTTY,
+  });
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const;
   const handlers = signals.map(signal => {
     const handler = () => {

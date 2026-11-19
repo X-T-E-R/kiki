@@ -1,6 +1,7 @@
 import { createReadStream, type ReadStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 
 import {
   ErrorCodes,
@@ -82,7 +83,8 @@ export function registerWorkspaceFsRoutes(app: WorkspaceFsRouteHost, core: Scope
     },
     async (req, reply) => {
       try {
-        const data = await core.accessor.get(IHostFolderBrowser).browse(req.query.path);
+        const target = req.query.path === undefined ? undefined : expandHomePath(req.query.path);
+        const data = await core.accessor.get(IHostFolderBrowser).browse(target);
         reply.send(okEnvelope(data, req.id));
       } catch (err) {
         sendMappedError(reply, req.id, err);
@@ -208,13 +210,19 @@ interface FsContentRequest {
   headers: Record<string, unknown>;
 }
 
+function expandHomePath(rawPath: string): string {
+  if (rawPath === '~') return homedir();
+  if (rawPath.startsWith('~/') || rawPath.startsWith('~\\')) return join(homedir(), rawPath.slice(2));
+  return rawPath;
+}
+
 async function handleFsContent(
   core: Scope,
   req: FsContentRequest,
   reply: FsContentReply,
 ): Promise<void> {
   const requestId = req.id;
-  const { path } = req.query;
+  const path = expandHomePath(req.query.path);
   if (!isAbsolute(path)) {
     reply.code(400).send(
       errEnvelope(ErrorCode.VALIDATION_FAILED, `path must be absolute: ${path}`, requestId),

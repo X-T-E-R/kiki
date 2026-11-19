@@ -158,20 +158,26 @@ describe('AppConnectionBanner', () => {
     expect(remoteHarness.activateLocal).toHaveBeenCalledOnce();
   });
 
-  it('renders nothing while connected or during the initial and transient grace windows, and mounts out of normal document flow', async () => {
+  it('renders nothing while connected or during the initial and transient grace windows (including checking recovery), and mounts out of normal document flow', async () => {
     const { container, render } = await mount('open');
     expect(container.querySelector('[data-app-banner]')).toBeNull();
     await render('connecting', undefined, true);
     expect(container.querySelector('[data-app-banner]')).toBeNull();
     await render('closed', undefined, true);
     expect(container.querySelector('[data-app-banner]')).toBeNull();
+    await render('closed', { status: 'retrying', failure: null }, true);
+    expect(container.querySelector('[data-app-banner]')).toBeNull();
+    await render('connecting', { status: 'retrying', failure: null }, true);
+    expect(container.querySelector('[data-app-banner]')).toBeNull();
+    await render('closed', { status: 'retrying', failure: normalizeDesktopFailure({ message: rawDiagnostic }) }, true);
+    expect(container.querySelector('[data-app-banner]')).not.toBeNull();
     await render('connecting', undefined, false);
     const banner = container.querySelector('[data-app-banner]');
     expect(banner).not.toBeNull();
     expect(banner?.parentElement?.className).toContain('fixed');
   });
 
-  it.each(['en', 'zh'])('keeps a short stable %s strip through repeated backoff and preserves the raw diagnostic in details', async (locale) => {
+  it.each(['en', 'zh'])('keeps a short stable %s strip through repeated backoff, keeps reconnect clickable, and preserves the raw diagnostic in details', async (locale) => {
     const failure = normalizeDesktopFailure({ message: rawDiagnostic, stderrTail: ['fixture stderr'], logPath: 'C:/Users/example/.kiki/logs/desktop-backend.log' });
     const { container, render, onReconnect } = await mount('closed', { status: 'retrying', failure }, locale);
     const banner = container.querySelector('[data-app-banner]')!;
@@ -179,19 +185,20 @@ describe('AppConnectionBanner', () => {
     const classes = banner.className;
     expect(text).toContain(locale === 'zh' ? '正在重连' : 'reconnecting');
     expect(text).not.toContain(rawDiagnostic);
-    expect(text).not.toContain(locale === 'zh' ? '立即重连' : 'Reconnect now');
+    expect(text).toContain(locale === 'zh' ? '立即重连' : 'Reconnect now');
     for (const status of ['connecting', 'closed', 'connecting', 'closed'] as const) {
       await render(status, { status: 'retrying', failure });
       expect(container.querySelector('[data-app-banner]')).toBe(banner);
       expect(banner.textContent).toBe(text);
       expect(banner.className).toBe(classes);
     }
-    await click(banner.querySelector('button'));
+    await click(banner.querySelector('[data-banner-reconnect]'));
+    expect(onReconnect).toHaveBeenCalledOnce();
+    await click(banner.querySelector('[data-banner-details]'));
     const details = document.querySelector('[role="dialog"]');
     expect(details?.textContent).toContain(rawDiagnostic);
     expect(details?.textContent).toContain('fixture stderr');
     expect(details?.textContent).toContain('desktop-backend.log');
-    expect(onReconnect).not.toHaveBeenCalled();
   });
 
   it.each(['identity', 'authentication', 'protocol'] as const)('gives a settings action rather than reconnect for a blocked %s', async (kind) => {
