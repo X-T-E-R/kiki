@@ -717,9 +717,17 @@ export async function hasColdStateForRewrite(
   return listed.length > 0;
 }
 
+const ORPHAN_SEGMENT_FILENAME = /^(\d{6})\.(zst|deflate)$/;
+const ORPHAN_SEGMENT_STAGING_FILENAME = /^\d{6}\.(?:zst|deflate)\.(?:tmp|stage)\.\d+\.[0-9a-f]{8}$/i;
+const TRAILING_SEGMENT_STAGING_SUFFIX = /(?:^|\/)\d{6}\.(?:zst|deflate)\.(?:tmp|stage)\.\d+\.[0-9a-f]{8}$/i;
 const TRAILING_SEGMENT_INDEX = /(?:^|\/)(\d+)\.(?:zst|deflate)$/;
 
 function compareSegmentItemsDescending(a: string, b: string): number {
+  const aStaging = TRAILING_SEGMENT_STAGING_SUFFIX.test(a);
+  const bStaging = TRAILING_SEGMENT_STAGING_SUFFIX.test(b);
+  if (aStaging !== bStaging) {
+    return aStaging ? -1 : 1;
+  }
   const ma = TRAILING_SEGMENT_INDEX.exec(a);
   const mb = TRAILING_SEGMENT_INDEX.exec(b);
   if (ma !== null && mb !== null) {
@@ -938,8 +946,6 @@ function untrustedManifestMayRequireSegments(bytes: Uint8Array): boolean {
   return false;
 }
 
-const ORPHAN_SEGMENT_FILENAME = /^(\d{6})\.(zst|deflate)$/;
-
 interface OrphanSegmentEntry {
   readonly index: number;
   readonly codec: ColdSealCodec;
@@ -1023,9 +1029,18 @@ async function verifyJournalCoversOrphanedSegments(
       throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
     }
     const sealId = relPath.slice(0, slash);
+    if (!SEAL_ID.test(sealId)) {
+      throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+    }
     const fileName = relPath.slice(slash + 1);
+    if (ORPHAN_SEGMENT_STAGING_FILENAME.test(fileName)) {
+      if (!grouped.has(sealId)) {
+        grouped.set(sealId, []);
+      }
+      continue;
+    }
     const match = ORPHAN_SEGMENT_FILENAME.exec(fileName);
-    if (!SEAL_ID.test(sealId) || match === null) {
+    if (match === null) {
       throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
     }
     const index = Number(match[1]);
@@ -1039,8 +1054,9 @@ async function verifyJournalCoversOrphanedSegments(
   }
 
   for (const items of grouped.values()) {
+    if (items.length === 0) continue;
     items.sort((a, b) => a.index - b.index);
-    if (items.length === 0 || items.length > MAX_SEGMENTS) {
+    if (items.length > MAX_SEGMENTS) {
       throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
     }
     const expectedCodec = items[0]!.codec;
@@ -1080,7 +1096,7 @@ async function verifyJournalCoversOrphanedSegments(
       for (const item of items) {
         signal?.throwIfAborted();
         const segKey = `${prefix}${item.relPath}`;
-        let compressed = await storage.read(scope, segKey, { signal });
+        let compressed = await storage.read(scope, segKey, { signal, recoverMissing: false });
         if (compressed === undefined && located !== undefined) {
           compressed = await readFile(`${located}.segments/${item.relPath}`, { signal }).catch((error: unknown) => {
             if (signal?.aborted) throw signal.reason;

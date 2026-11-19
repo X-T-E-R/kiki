@@ -3266,4 +3266,218 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it('tolerates and sweeps unpublished atomic-write staging segment files (.tmp/.stage) while still catching truncated journals (Round-9)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-cold-r9-staging-tmp-'));
+    class RecordingFsStorage extends FileStorageService {
+      readonly deleteAttempts: string[] = [];
+
+      override async delete(delScope: string, delKey: string): Promise<void> {
+        if (delKey.includes('.segments/')) {
+          this.deleteAttempts.push(delKey);
+        }
+        return super.delete(delScope, delKey);
+      }
+    }
+    class RecordingMemStorage extends InMemoryStorageService {
+      readonly deleteAttempts: string[] = [];
+
+      override async delete(delScope: string, delKey: string): Promise<void> {
+        if (delKey.includes('.segments/')) {
+          this.deleteAttempts.push(delKey);
+        }
+        return super.delete(delScope, delKey);
+      }
+    }
+
+    const storage = new RecordingFsStorage(root);
+    try {
+      const scope = 'sess-r9-fs';
+      const sessionDir = join(root, scope);
+      await mkdir(sessionDir, { recursive: true });
+      const wirePath = join(sessionDir, KEY);
+
+      const records: Buffer[] = [];
+      for (let i = 0; i < 2; i += 1) {
+        const tag = String(i).padStart(2, '0');
+        const baseLen = Buffer.byteLength(JSON.stringify({ tag, pad: '' }) + '\n');
+        const line = JSON.stringify({ tag, pad: `seg_${tag}_`.padEnd(128 - baseLen, 'z') }) + '\n';
+        expect(Buffer.byteLength(line)).toBe(128);
+        records.push(Buffer.from(line));
+      }
+      const fullBytes = Buffer.concat(records);
+      const truncatedWire = Buffer.from('{"a":"1"}\n');
+
+      await writeFile(wirePath, fullBytes);
+      const baseSeal = await sealRetainedJournal(wirePath, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 128,
+      });
+      expect(baseSeal.segmentCount).toBe(2);
+      const sealDirs = await readdir(`${wirePath}.segments`);
+      const crashedSealId = sealDirs[0]!;
+      const seg0Bytes = await readFile(join(`${wirePath}.segments`, crashedSealId, '000000.zst'));
+      await unsealRetainedJournal(wirePath);
+
+      const stageFsCrash = async (includePublishedSeg0: boolean): Promise<string> => {
+        const dir = join(`${wirePath}.segments`, crashedSealId);
+        await mkdir(dir, { recursive: true });
+        if (includePublishedSeg0) {
+          await writeFile(join(dir, '000000.zst'), seg0Bytes);
+          await writeFile(join(dir, '000001.zst.tmp.12345.deadbeef'), Buffer.from('half-written-zstd-tmp'));
+          await writeFile(join(dir, '000001.zst.stage.12345.cafebabe'), Buffer.from('half-written-zstd-stage'));
+        } else {
+          await writeFile(join(dir, '000000.zst.tmp.12345.deadbeef'), Buffer.from('unpublished-seg0-tmp'));
+        }
+        return dir;
+      };
+
+      await stageFsCrash(true);
+      expect(await readColdManifestSummary(storage, scope, KEY)).toBeUndefined();
+      storage.deleteAttempts.length = 0;
+      await unsealColdSegments(storage, scope, KEY);
+      expect(storage.deleteAttempts.map((k) => k.slice(`${KEY}.segments/${crashedSealId}/`.length))).toEqual([
+        '000001.zst.tmp.12345.deadbeef',
+        '000001.zst.stage.12345.cafebabe',
+        '000000.zst',
+      ]);
+      await expect(stat(`${wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await stageFsCrash(true);
+      const resealedAfterCrash = await sealRetainedJournal(wirePath, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 128,
+      });
+      expect(resealedAfterCrash.segmentCount).toBe(2);
+      const dirsAfterReseal = await readdir(`${wirePath}.segments`);
+      expect(dirsAfterReseal.length).toBe(1);
+      expect(dirsAfterReseal[0]).not.toBe(crashedSealId);
+      await unsealRetainedJournal(wirePath);
+
+      await stageFsCrash(true);
+      const fsLog1 = createTestAppendLogStore(storage);
+      try {
+        await fsLog1.rewrite(scope, KEY, [{ type: 'note', id: 'rewritten-after-seg0-plus-tmp' } as unknown as WireRecord]);
+      } finally {
+        await fsLog1.dispose();
+      }
+      await expect(stat(`${wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await writeFile(wirePath, fullBytes);
+      await stageFsCrash(false);
+      expect(await readColdManifestSummary(storage, scope, KEY)).toBeUndefined();
+      await unsealColdSegments(storage, scope, KEY);
+      await expect(stat(`${wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await stageFsCrash(false);
+      const resealedTmpOnly = await sealRetainedJournal(wirePath, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 128,
+      });
+      expect(resealedTmpOnly.segmentCount).toBe(2);
+      await unsealRetainedJournal(wirePath);
+
+      await stageFsCrash(false);
+      const fsLog2 = createTestAppendLogStore(storage);
+      try {
+        await fsLog2.rewrite(scope, KEY, [{ type: 'note', id: 'rewritten-after-tmp-only' } as unknown as WireRecord]);
+      } finally {
+        await fsLog2.dispose();
+      }
+      await expect(stat(`${wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await writeFile(wirePath, truncatedWire);
+      const truncCrashDir = await stageFsCrash(true);
+      await expect(readColdManifestSummary(storage, scope, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      await expect(
+        sealRetainedJournal(wirePath, { codec: 'zstd', reclaim: false, segmentBytes: 128 }),
+      ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED });
+      await expect(unsealColdSegments(storage, scope, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      const fsLogTrunc = createTestAppendLogStore(storage);
+      try {
+        await expect(
+          fsLogTrunc.rewrite(scope, KEY, [{ type: 'note', id: 'blocked-on-trunc' } as unknown as WireRecord]),
+        ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED });
+      } finally {
+        await fsLogTrunc.dispose();
+      }
+      expect(await readFile(join(truncCrashDir, '000000.zst'))).toEqual(seg0Bytes);
+
+      const mem = new RecordingMemStorage();
+      await mem.write(SCOPE, KEY, fullBytes);
+      const stageMemCrash = async (includePublishedSeg0: boolean): Promise<void> => {
+        if (includePublishedSeg0) {
+          await mem.write(SCOPE, `${KEY}.segments/${crashedSealId}/000000.zst`, seg0Bytes);
+          await mem.write(
+            SCOPE,
+            `${KEY}.segments/${crashedSealId}/000001.zst.tmp.12345.deadbeef`,
+            Buffer.from('half-written-mem-tmp'),
+          );
+        } else {
+          await mem.write(
+            SCOPE,
+            `${KEY}.segments/${crashedSealId}/000000.zst.tmp.12345.deadbeef`,
+            Buffer.from('unpublished-mem-seg0-tmp'),
+          );
+        }
+      };
+
+      await stageMemCrash(true);
+      expect(await readColdManifestSummary(mem, SCOPE, KEY)).toBeUndefined();
+      mem.deleteAttempts.length = 0;
+      await unsealColdSegments(mem, SCOPE, KEY);
+      expect(mem.deleteAttempts.map((k) => k.slice(`${KEY}.segments/${crashedSealId}/`.length))).toEqual([
+        '000001.zst.tmp.12345.deadbeef',
+        '000000.zst',
+      ]);
+      expect(await mem.list(SCOPE, `${KEY}.segments/`)).toEqual([]);
+
+      await stageMemCrash(false);
+      expect(await readColdManifestSummary(mem, SCOPE, KEY)).toBeUndefined();
+      const memReseal = await sealColdSegments(mem, SCOPE, KEY, fullBytes.byteLength, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 128,
+      });
+      expect(memReseal.segmentCount).toBe(2);
+      await unsealColdSegments(mem, SCOPE, KEY);
+
+      await stageMemCrash(true);
+      const memLog = createTestAppendLogStore(mem);
+      try {
+        await memLog.rewrite(SCOPE, KEY, [{ type: 'note', id: 'mem-rewritten' } as unknown as WireRecord]);
+      } finally {
+        await memLog.dispose();
+      }
+      expect(await mem.list(SCOPE, `${KEY}.segments/`)).toEqual([]);
+
+      await mem.write(SCOPE, KEY, truncatedWire);
+      await stageMemCrash(true);
+      await expect(readColdManifestSummary(mem, SCOPE, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      await expect(
+        sealColdSegments(mem, SCOPE, KEY, truncatedWire.byteLength, {
+          codec: 'zstd',
+          reclaim: false,
+          segmentBytes: 128,
+        }),
+      ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED });
+      await expect(unsealColdSegments(mem, SCOPE, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      expect(Buffer.from((await mem.read(SCOPE, `${KEY}.segments/${crashedSealId}/000000.zst`))!)).toEqual(seg0Bytes);
+    } finally {
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
