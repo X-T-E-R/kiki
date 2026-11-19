@@ -144,6 +144,11 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'tools.policy_refreshed',
   'executor.tool.display',
   'plugin.fact_recorded',
+  'branch.base',
+  'permission.set_ceiling',
+  'plan.set_gate',
+  'agent.tool_lock_changed',
+  'agent.branch_sealed',
 ]);
 
 describe('v1 wire vocabulary', () => {
@@ -433,7 +438,6 @@ describe('AgentRecords persistence metadata', () => {
     expect(persistence.records.map((record) => record.type)).toEqual([
       'metadata',
       'context.append_message',
-      'plugin.session_start',
     ]);
     expect(persistence.records[0]).toMatchObject({
       type: 'metadata',

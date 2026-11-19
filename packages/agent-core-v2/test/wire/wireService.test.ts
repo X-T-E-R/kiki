@@ -355,7 +355,7 @@ describe('WireService seal', () => {
     const original = storage.read.bind(storage);
     let segments = 0;
     storage.read = async (...args) => {
-      if (args[1].endsWith('.deflate')) segments++;
+      if (args[1].endsWith('.deflate') || args[1].endsWith('.zst')) segments++;
       return original(...args);
     };
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);

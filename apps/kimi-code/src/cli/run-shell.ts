@@ -128,9 +128,9 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   // If we crash without going through DaemonTUI.stop(), the terminal is left in
   // raw mode with a hidden cursor and XON/XOFF flow control disabled. Restore
   // both before exiting so the user's shell is usable afterwards.
-  const emergencyExit = async (exitCode: number): Promise<void> => {
+  const emergencyExit = (exitCode: number): never => {
     try {
-      await tui.clearProgramStatus();
+      programStatus.clear();
     } catch {
       /* the terminal may already be gone */
     }
@@ -151,7 +151,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
       /* ignore — the terminal may already be gone */
     }
     restoreStty();
-    process.exit(exitCode);
+    return process.exit(exitCode);
   };
   const onUncaughtException = (error: unknown): void => {
     try {
@@ -159,7 +159,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     } catch {
       /* ignore */
     }
-    void emergencyExit(1);
+    emergencyExit(1);
   };
   const onUnhandledRejection = (reason: unknown): void => {
     try {
@@ -167,7 +167,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     } catch {
       /* ignore */
     }
-    void emergencyExit(1);
+    emergencyExit(1);
   };
   let terminating = false;
   const stopAfterSignal = async (exitCode: number): Promise<void> => {
@@ -179,7 +179,12 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
           error: String(error),
         });
       } finally {
-        await emergencyExit(exitCode);
+        try {
+          await tui.clearProgramStatus();
+        } catch {
+          /* the terminal may already be gone */
+        }
+        emergencyExit(exitCode);
       }
     }
   };
@@ -196,7 +201,12 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     } catch (closeError) {
       log.error('TUI close failed after output stream error', { error: String(closeError) });
     } finally {
-      await emergencyExit(129);
+      try {
+        await tui.clearProgramStatus();
+      } catch {
+        /* the terminal may already be gone */
+      }
+      emergencyExit(129);
     }
   };
   const onOutputError = (error: NodeJS.ErrnoException): void => {
