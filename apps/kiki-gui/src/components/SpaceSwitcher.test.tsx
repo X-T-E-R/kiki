@@ -782,7 +782,7 @@ describe('SpaceSwitcher', () => {
         expiresAt: Date.now() + 600_000,
         target: localIdentity,
         tlsFingerprint,
-        suggestedEndpoints: ['http://192.168.31.221:58627', 'http://100.71.207.100:58627'],
+        suggestedEndpoints: ['http://192.168.10.20:58627', 'http://100.64.0.10:58627'],
       };
     });
     list.mockResolvedValue({ items: [TWO.items[0]] });
@@ -816,8 +816,8 @@ describe('SpaceSwitcher', () => {
     expect(document.querySelector('[data-inbound-qr]')).not.toBeNull();
     const pills = [...document.querySelectorAll<HTMLButtonElement>('[data-inbound-code-address]')];
     expect(pills.map((pill) => pill.textContent)).toEqual([
-      'LAN·192.168.31.221:58627',
-      'Tailscale·100.71.207.100:58627',
+      'LAN·192.168.10.20:58627',
+      'Tailscale·100.64.0.10:58627',
     ]);
 
     // Switch back to "Connect to another" and then re-enter "Pair this computer" with inbound ON -> auto-mints immediately!
