@@ -108,9 +108,14 @@ export class RemoteConnectionManager {
   }
   private stopSummary(id: string): void { const lease = this.summaryLeases.get(id); this.summaryLeases.delete(id); lease?.release(); }
   start(): void {
-    this.summaryTimer = setInterval(() => { void this.pollSummaries().catch(() => {}); }, 5000);
+    const poll = (): void => {
+      void this.pollSummaries().catch((error: unknown) => {
+        this.logger?.warn({ err: error }, 'remote connection summary poll failed');
+      });
+    };
+    this.summaryTimer = setInterval(poll, 5000);
     this.summaryTimer.unref();
-    void this.pollSummaries().catch(() => {});
+    poll();
   }
   async pollSummaries(): Promise<void> {
     if (this.stopped || this.summaryPolling) return;
@@ -124,6 +129,7 @@ export class RemoteConnectionManager {
           this.lastSummaryAttempt.set(record.id, Date.now());
           let lease = this.summaryLeases.get(record.id);
           if (lease === undefined || lease.signal.aborted) { lease = this.lease(record.id); this.summaryLeases.set(record.id, lease); }
+          let succeeded = false;
           try {
             const startedAt = performance.now();
             const response = await this.forward(record.id, { operation: 'spaceSummary' }, lease.signal);
@@ -134,16 +140,23 @@ export class RemoteConnectionManager {
             record.rttMs = Math.max(1, Math.round(performance.now() - startedAt));
             record.summary = { value: spaceSummarySchema.parse(envelope.data), lastSeen: Date.now(), stale: false };
             this.notePeerSuccess(record.id, epoch);
-            await this.change(async () => undefined);
+            succeeded = true;
           } catch (error) {
             if (!lease.signal.aborted) this.recordTransportStrike(record.id, error, epoch);
+          }
+          if (succeeded) {
+            try {
+              await this.change(async () => undefined);
+            } catch (error) {
+              this.logger?.warn({ connection_id: record.id, err: error }, 'failed to persist outbound connection summary');
+            }
           }
         }));
       }
     } finally { this.summaryPolling = false; }
   }
   readonly secrets: ConnectionSecretStore;
-  constructor(homeDir: string, readonly identity: ConnectionIdentity, readonly ssh?: ConnectionSshConnector, private readonly resolveLocal?: (localSpaceId: string, target: ConnectionIdentity, signal: AbortSignal) => Promise<Omit<ConnectionTransport, 'id'>>) {
+  constructor(homeDir: string, readonly identity: ConnectionIdentity, readonly ssh?: ConnectionSshConnector, private readonly resolveLocal?: (localSpaceId: string, target: ConnectionIdentity, signal: AbortSignal) => Promise<Omit<ConnectionTransport, 'id'>>, private readonly logger?: { warn(obj: Record<string, unknown>, msg: string): void }) {
     this.path = join(homeDir, 'server', 'outbound-connections.json');
     this.secrets = new ConnectionSecretStore(homeDir);
   }
@@ -340,6 +353,8 @@ export class RemoteConnectionManager {
         } catch (error) { if (error instanceof AdmissionError && error.reason === 'identity_changed') this.failed(id, error, epoch); throw error; }
       })();
       pending.set(key, acquired);
+      const settled = acquired;
+      settled.catch(() => { if (pending.get(key) === settled) pending.delete(key); });
     }
     return acquired;
   }

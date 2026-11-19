@@ -257,8 +257,8 @@ export interface IWorkspaceFsService {
   statMany(req: FsStatManyRequest): Promise<FsStatManyResponse>;
   mkdir(req: FsMkdirRequest): Promise<FsMkdirResponse>;
   search(req: FsSearchRequest, signal?: AbortSignal): Promise<FsSearchResponse>;
-  suggest(req: FsSuggestRequest): Promise<FsSuggestResponse>;
-  grep(req: FsGrepRequest): Promise<FsGrepResponse>;
+  suggest(req: FsSuggestRequest, signal?: AbortSignal): Promise<FsSuggestResponse>;
+  grep(req: FsGrepRequest, signal?: AbortSignal): Promise<FsGrepResponse>;
   gitStatus(req: FsGitStatusRequest): Promise<FsGitStatusResponse>;
   diff(req: FsDiffRequest): Promise<FsDiffResponse>;
   resolvePath(relPath: string): Promise<FsPathResolved>;

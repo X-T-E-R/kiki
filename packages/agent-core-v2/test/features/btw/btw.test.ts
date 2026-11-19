@@ -9,6 +9,7 @@ import { computeUndoCut } from '#/agent/contextMemory/contextOps';
 import { isUndoAnchor, isUndoAnchorOrigin } from '#/agent/contextMemory/conversationTime';
 import { trimToSettledContextMessages } from '#/agent/contextMemory/settledTrim';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
@@ -263,7 +264,7 @@ describe('SessionBtwService', () => {
 describe('SessionBranchService completion metadata', () => {
   let ix: TestInstantiationService;
   beforeEach(() => { ix = new TestInstantiationService(); });
-  afterEach(() => { ix.dispose(); });
+  afterEach(async () => { await ix.dispose(); });
 
   it.each(['native', 'example-external'])('delivers a fold through the %s execution owner even while finalizing', async (executorId) => {
     const harness = createBranchFoldHarness(ix, {}, executorId);
@@ -455,6 +456,90 @@ describe('SessionBranchService completion metadata', () => {
   });
 });
 
+describe('SessionBranchService compact seed cancellation', () => {
+  let disposables: DisposableStore;
+
+  beforeEach(() => {
+    disposables = new DisposableStore();
+  });
+
+  afterEach(async () => {
+    await disposables.dispose();
+  });
+
+  function createCompactHarness() {
+    const ix = disposables.add(new TestInstantiationService());
+    const history: ContextMessage[] = [
+      { id: 'u1', role: 'user', content: [{ type: 'text', text: 'first' }], toolCalls: [] },
+      { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'answer one' }], toolCalls: [] },
+      { id: 'u2', role: 'user', content: [{ type: 'text', text: 'second' }], toolCalls: [] },
+      { id: 'a2', role: 'assistant', content: [{ type: 'text', text: 'answer two' }], toolCalls: [] },
+    ];
+    const summarySignals: AbortSignal[] = [];
+    const prepareModelSwitchSummary = vi.fn((_history: readonly ContextMessage[], signal: AbortSignal) => {
+      summarySignals.push(signal);
+      return new Promise<string | undefined>((_resolve, reject) => {
+        signal.addEventListener('abort', () => { reject(signal.reason); }, { once: true });
+      });
+    });
+    const mainHandle = {
+      id: 'main',
+      accessor: {
+        get: (token: unknown) => {
+          if (token === IAgentProfileService) return { data: () => ({ profileName: 'example' }) };
+          if (token === IAgentContextMemoryService) return { get: () => history };
+          if (token === IAgentStateService) return { get: () => undefined };
+          if (token === IAgentTokenCountingService) return { estimateText: (text: string) => text.length };
+          if (token === IAgentFullCompactionService) return { prepareModelSwitchSummary };
+          return undefined;
+        },
+      },
+    };
+    const disposeListeners = new Set<(id: string) => void>();
+    const fork = vi.fn();
+    ix.stub(IAgentLifecycleService, {
+      get: (id: string) => (id === 'main' ? mainHandle : undefined),
+      fork,
+      onDidDispose: (listener: (id: string) => void) => {
+        disposeListeners.add(listener);
+        return { dispose: () => disposeListeners.delete(listener) };
+      },
+    } as unknown as IAgentLifecycleService);
+    ix.stub(ISessionMetadata, {} as unknown as ISessionMetadata);
+    ix.stub(ISessionContext, { sessionId: 'sess-1', workspaceId: 'ws-1' });
+    ix.stub(IConfigService, { get: <T>() => undefined as T });
+    ix.set(ISessionBranchService, new SyncDescriptor(SessionBranchService));
+    const service = ix.get(ISessionBranchService);
+    const disposeAgent = (id: string): void => {
+      for (const listener of [...disposeListeners]) listener(id);
+    };
+    return { service, summarySignals, fork, disposeAgent, disposeListeners };
+  }
+
+  it('aborts the compact summary and skips the fork when the caller signal aborts', async () => {
+    const harness = createCompactHarness();
+    const controller = new AbortController();
+    const created = harness.service.createBranch({ seed: 'compact', carry: { last: 1 }, signal: controller.signal });
+    await vi.waitFor(() => { expect(harness.summarySignals).toHaveLength(1); });
+    controller.abort(new Error('client disconnected'));
+
+    await expect(created).rejects.toThrow('client disconnected');
+    expect(harness.summarySignals[0]!.aborted).toBe(true);
+    expect(harness.fork).not.toHaveBeenCalled();
+    expect(harness.disposeListeners.size).toBe(0);
+  });
+
+  it('aborts the compact summary when the parent agent closes', async () => {
+    const harness = createCompactHarness();
+    const created = harness.service.createBranch({ seed: 'compact', carry: { last: 1 } });
+    await vi.waitFor(() => { expect(harness.summarySignals).toHaveLength(1); });
+    harness.disposeAgent('main');
+
+    await expect(created).rejects.toThrow('Parent agent "main" closed');
+    expect(harness.fork).not.toHaveBeenCalled();
+  });
+});
+
 describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
   it('trims partial assistant streaming messages and incomplete tool-call batches at the tail', () => {
     const u1 = textMessage('u1', 'user', 'inspect config', { origin: { kind: 'user' } });
@@ -635,7 +720,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
       expect(replayed.agentState.get(branchToolLockKey)).toBe(false);
       expect(replayed.agentState.get(branchSealedKey)).toBe(true);
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -911,6 +996,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         }),
         commitCreate: vi.fn(),
         discard: vi.fn(async () => {}),
+        onDidDispose: () => ({ dispose() {} }),
       } as unknown as IAgentLifecycleService);
       sessionIx.stub(ISessionMetadata, {
         snapshot: () => ({ id: 'sess-1', createdAt: 1, updatedAt: 1, archived: false, agents: agentsMeta }),
@@ -1024,7 +1110,7 @@ describe('Phase 0 + Phase 1 Branch & Merge Foundations', () => {
         },
       ]);
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 });

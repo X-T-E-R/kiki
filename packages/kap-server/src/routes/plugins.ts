@@ -455,8 +455,10 @@ export function registerPluginsRoutes(
           }
         }
         if (req.body.method === 'plugin.call') {
-          const result = await core.accessor.get(IPluginHostService).requestPanel(info.id, req.params.panel_id, req.body.action, req.body.args);
-          reply.send(okEnvelope({ result }, req.id));
+          const { action, args } = req.body;
+          const connection = reply as unknown as Parameters<typeof withReplyCloseSignal>[0];
+          const result = await withReplyCloseSignal(connection, (signal) => core.accessor.get(IPluginHostService).requestPanel(info.id, req.params.panel_id, action, args, signal), req);
+          if (!connection.raw.destroyed) reply.send(okEnvelope({ result }, req.id));
           return;
         }
         if (req.body.method === 'plugin.settings.get') {
@@ -502,7 +504,10 @@ export function registerPluginsRoutes(
           reply.send(okEnvelope({ result: result.data }, req.id));
           return;
         }
-      } catch (error) { reply.send(mapPluginError(error, req.id)); }
+      } catch (error) {
+        const connection = reply as unknown as Parameters<typeof withReplyCloseSignal>[0];
+        if (!connection.raw.destroyed) reply.send(mapPluginError(error, req.id));
+      }
     },
   );
   app.post(panelBridgeRoute.path, panelBridgeRoute.options, panelBridgeRoute.handler as Parameters<PluginsRouteHost['post']>[2]);

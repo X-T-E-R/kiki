@@ -552,6 +552,67 @@ describe('external client transport', () => {
     }
   });
 
+  it('prunes expired OAuth state and idle registered clients on the next write', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-external-client-oauth-prune-'));
+    const scope = 'external-client-oauth';
+    const resource = 'http://127.0.0.1:43124/mcp';
+    const store = new JsonAtomicDocumentStore(new FileStorageService(home));
+    const nowMs = Date.now();
+    const nowSeconds = Math.floor(nowMs / 1000);
+    const token = (clientId: string, expiresAt: number) => ({ clientId, grantId: 'connection_fixture', scopes: ['read'], resource, audience: resource, expiresAt });
+    const client = (clientId: string, issuedAt: number) => ({ client_id: clientId, client_id_issued_at: issuedAt, redirect_uris: ['http://127.0.0.1/callback'] });
+    const consent = (id: string, clientId: string, status: string, expiresAt: number) => ({
+      id, clientId, redirectUri: 'http://127.0.0.1/callback', scopes: ['read'], resource, codeChallenge: 'challenge', createdAt: expiresAt - 1_000, expiresAt, status,
+    });
+    const code = (clientId: string, expiresAt: number) => ({ clientId, grantId: 'connection_fixture', redirectUri: 'http://127.0.0.1/callback', scopes: ['read'], resource, codeChallenge: 'challenge', expiresAt });
+    const staleClients = Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`client_flood_${index}`, client(`client_flood_${index}`, nowSeconds + 60 - index)]));
+    await store.update(scope, 'state.json', () => ({
+      version: 1,
+      clients: {
+        ...staleClients,
+        client_live: client('client_live', nowSeconds - 30 * 24 * 60 * 60),
+        client_abandoned: client('client_abandoned', nowSeconds - 30 * 24 * 60 * 60),
+      },
+      pending: {
+        consent_denied_old: consent('consent_denied_old', 'client_flood_0', 'denied', nowMs - 10 * 60_000),
+        consent_pending_old: consent('consent_pending_old', 'client_flood_1', 'pending', nowMs - 10 * 60_000),
+        consent_denied_recent: consent('consent_denied_recent', 'client_flood_299', 'denied', nowMs - 1_000),
+      },
+      codes: { code_old: code('client_flood_2', nowMs - 1_000) },
+      accessTokens: { access_old: token('client_live', nowSeconds - 1), access_live: token('client_live', nowSeconds + 300) },
+      refreshTokens: { refresh_old: token('client_abandoned', nowSeconds - 1), refresh_live: token('client_live', nowSeconds + 3_600) },
+    }));
+    try {
+      const service = new ExternalClientOAuthService({
+        issuerUrl: new URL('http://127.0.0.1:43124'),
+        resourceServerUrl: new URL(resource),
+        host: { resolveGrant: () => null },
+        store,
+        storeScope: scope,
+      });
+      const registered = await service.clientsStore.registerClient!({ redirect_uris: ['http://127.0.0.1/callback'], token_endpoint_auth_method: 'none' });
+      const document = await store.get<{
+        clients: Record<string, unknown>;
+        pending: Record<string, unknown>;
+        codes: Record<string, unknown>;
+        accessTokens: Record<string, unknown>;
+        refreshTokens: Record<string, unknown>;
+      }>(scope, 'state.json');
+      expect(Object.keys(document!.accessTokens)).toEqual(['access_live']);
+      expect(Object.keys(document!.refreshTokens)).toEqual(['refresh_live']);
+      expect(document!.codes).toEqual({});
+      expect(Object.keys(document!.pending)).toEqual(['consent_denied_recent']);
+      expect(Object.keys(document!.clients)).toHaveLength(259);
+      expect(document!.clients).toHaveProperty('client_live');
+      expect(document!.clients).toHaveProperty(registered.client_id);
+      expect(document!.clients).toHaveProperty('client_flood_299');
+      expect(document!.clients).not.toHaveProperty('client_abandoned');
+      expect(document!.clients).not.toHaveProperty('client_flood_298');
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('completes owner-confirmed OAuth PKCE with resource binding and revocation', async () => {
     const fixture = createFixtureHost();
     const listener = createExternalClientListener({

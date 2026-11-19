@@ -80,4 +80,6 @@ export interface PluginPanelContext {
   readonly kikiHome?: string;
   readonly models: Pick<PluginModelsApi, 'list'>;
   readonly credentials: PluginCredentialsApi;
+  /** Aborted when the caller disconnects, the request times out, or the plugin host stops. */
+  readonly signal: AbortSignal;
 }

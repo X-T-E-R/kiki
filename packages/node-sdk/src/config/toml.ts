@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod } from 'node:fs/promises';
 import { basename, dirname, join } from 'pathe';
+import { isPlainObject } from '@kiki/agent-core-v2/app/config/configPure';
 import { readConfigDocumentSnapshot, writeConfigDocument } from '@kiki/agent-core-v2/app/config/configDocument';
 import { CREDENTIALS_KEY, migrateCredentialsDirectory } from '@kiki/agent-core-v2/app/config/migrations';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
@@ -898,10 +899,6 @@ function oauthToToml(oauth: OAuthRef): Record<string, unknown> {
 /* ------------------------------------------------------------------ */
 /*  Utilities                                                          */
 /* ------------------------------------------------------------------ */
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function cloneRecord(value: unknown): Record<string, unknown> {
   if (!isPlainObject(value)) return {};

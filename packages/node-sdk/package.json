@@ -53,6 +53,10 @@
     "./proxy": {
       "types": "./src/proxy.ts",
       "default": "./src/proxy.ts"
+    },
+    "./logging": {
+      "types": "./src/logging/index.ts",
+      "default": "./src/logging/index.ts"
     }
   },
   "publishConfig": {
@@ -77,6 +81,11 @@
         "types": "./dist/proxy.d.mts",
         "import": "./dist/proxy.mjs",
         "default": "./dist/proxy.mjs"
+      },
+      "./logging": {
+        "types": "./dist/logging.d.mts",
+        "import": "./dist/logging.mjs",
+        "default": "./dist/logging.mjs"
       }
     },
     "provenance": true

@@ -135,7 +135,7 @@ export class EventHub<TPayloadMap extends object = KlientEventPayloads>
         if (set.size === 0) {
           this.listeners.delete(event);
         }
-        this.release(event);
+        this.release(event, sub);
       },
     };
   }
@@ -264,9 +264,14 @@ export class EventHub<TPayloadMap extends object = KlientEventPayloads>
       };
       this.subs.set(key, sub);
       try {
-        sub.disposable = this.subscribe(key, sub);
+        const disposable = this.subscribe(key, sub);
+        if (this.subs.get(key) !== sub) {
+          disposable.dispose();
+        } else {
+          sub.disposable = disposable;
+        }
       } catch (error) {
-        this.subs.delete(key);
+        if (this.subs.get(key) === sub) this.subs.delete(key);
         throw error;
       }
     } else if (sub.attached) {
@@ -278,12 +283,12 @@ export class EventHub<TPayloadMap extends object = KlientEventPayloads>
     return sub;
   }
 
-  private release(event: string): void {
+  private release(event: string, expectedSub?: SharedSub): void {
     const reg = this.registrations[event];
     if (reg === undefined) return;
     const key = keyOf(reg);
     const sub = this.subs.get(key);
-    if (sub === undefined) return;
+    if (sub === undefined || (expectedSub !== undefined && sub !== expectedSub)) return;
     sub.refs -= 1;
     if (sub.refs <= 0) {
       sub.disposable.dispose();
@@ -298,12 +303,17 @@ export class EventHub<TPayloadMap extends object = KlientEventPayloads>
       : { kind: 'stream' as const, name: reg.kind === 'bus' ? 'events' : reg.name };
     return this.channel.listen(this.scope, source, (data) => {
       this.deliver(key, data);
-    }, (error) => {
+    }, (error, terminal) => {
       sub.attached = false;
+      if (terminal === true && this.subs.get(key) === sub) {
+        this.subs.delete(key);
+        sub.disposable.dispose();
+      }
       for (const waiter of sub.waiters) waiter.reject(error);
       sub.waiters.clear();
       this.reportError(error);
     }, () => {
+      if (this.subs.get(key) !== sub) return;
       sub.attached = true;
       for (const waiter of sub.waiters) waiter.resolve();
       sub.waiters.clear();

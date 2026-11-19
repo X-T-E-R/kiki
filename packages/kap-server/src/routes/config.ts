@@ -12,6 +12,7 @@ import {
   Error2,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { isPlainObject } from '@kiki/agent-core-v2/app/config/configPure';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
 import { agentExecutorOverridesFromToml, agentExecutorOverridesToToml } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
 import { agentExecutorsToToml } from '@kiki/agent-core-v2/app/agentExecutor/configSection';
@@ -676,10 +677,6 @@ function nonEmpty(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 const MAP_VALUED_CONFIG_KEYS = new Set(['providers', 'models', 'decision', 'experimental', 'raw', 'agent_executor_overrides', 'env', 'tts_options', 'tool_arg_matches', 'toolArgMatches']);

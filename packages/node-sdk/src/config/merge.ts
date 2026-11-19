@@ -1,3 +1,4 @@
+import { isPlainObject } from '@kiki/agent-core-v2/app/config/configPure';
 import { ErrorCodes, KimiError } from '../errors';
 import {
   KimiConfigPatchSchema,
@@ -77,8 +78,4 @@ function stripUndefinedDeep(value: unknown): unknown {
     }
   }
   return out;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

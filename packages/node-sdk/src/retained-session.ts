@@ -11,7 +11,7 @@ import {
   type RetainedCompactSessionResult,
   type RetainedUnsealSessionResult,
 } from '@kiki/agent-core-v2/persistence/retainedJournal';
-import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
+import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2';
 import { openPinnedLogicalRead, type ColdUnsealOptions } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { readPinnedRange, wireFileAddress } from '@kiki/agent-core-v2/persistence/logicalWireFile';
 

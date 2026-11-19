@@ -35,6 +35,7 @@ const SHUTDOWN_EXIT_GRACE_MS = 2_000;
 const HANDSHAKE_BACKOFF_BASE_MS = 15_000;
 const HANDSHAKE_BACKOFF_MAX_MS = 120_000;
 const MAX_RPC_LINE_CHARS = 16 * 1024 * 1024;
+const PANEL_REQUEST_TIMEOUT_MS = 60_000;
 const MAX_STDERR_TAIL_CHARS = 4_096;
 
 export interface PluginHostUnexpectedExit {
@@ -533,19 +534,38 @@ export class PluginHost {
     }
   }
 
-  async requestPanel(action: string, args: unknown, settings: Record<string, unknown>): Promise<unknown> {
+  async requestPanel(action: string, args: unknown, settings: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
-    await this.start();
+    signal?.throwIfAborted();
+    await (signal === undefined ? this.start() : abortable(this.start(), signal));
+    signal?.throwIfAborted();
     this.clearIdle();
     const requestId = ++this.nextId;
+    const controller = new AbortController();
     return new Promise<unknown>((resolve, reject) => {
+      const finish = (error?: Error, value?: unknown) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
+        this.pending.delete(requestId);
+        this.scheduleIdle();
+        if (error !== undefined) reject(error);
+        else if (JSON.stringify(value)?.length > MAX_RPC_LINE_CHARS - 1024) reject(new Error('Plugin panel response exceeds RPC limit'));
+        else resolve(value);
+      };
+      const interrupt = (reason: Error) => {
+        if (!this.pending.has(requestId)) return;
+        controller.abort(reason);
+        this.send({ method: 'cancel', params: { id: requestId } });
+        finish(reason);
+      };
+      const timer = setTimeout(() => interrupt(new Error('Plugin panel request timed out')), PANEL_REQUEST_TIMEOUT_MS);
+      timer.unref();
+      const cancel = () => interrupt(signal?.reason instanceof Error ? signal.reason : abortError('Plugin panel request cancelled'));
+      signal?.addEventListener('abort', cancel, { once: true });
       this.pending.set(requestId, {
-        resolve: (result) => {
-          this.scheduleIdle();
-          if (JSON.stringify(result)?.length > MAX_RPC_LINE_CHARS - 1024) reject(new Error('Plugin panel response exceeds RPC limit'));
-          else resolve(result);
-        },
-        reject: (error) => { this.scheduleIdle(); reject(error); },
+        resolve: (result) => finish(undefined, result),
+        reject: (error) => finish(error),
+        signal: controller.signal,
       });
       this.send({ id: requestId, method: 'panel-request', params: { action, args, settings, kikiHome: this.kikiHome } });
     });

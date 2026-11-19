@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, isAbsolute } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import { z } from 'zod';
@@ -9,6 +9,7 @@ import {
   type SpaceMutationResponse, type SpacePreferenceImport, type SpacePreferenceImportResponse,
 } from '@kiki/protocol';
 import type { IConfigRegistry, IConfigService } from '@kiki/agent-core-v2';
+import { atomicWrite, replaceFileNonDestructive, syncDir } from '@kiki/agent-core-v2/_base/utils/fs';
 import { readSpaceHome } from '@kiki/agent-core-v2/app/bootstrap/spaceHome';
 import { spacePresetDefaults } from '@kiki/agent-core-v2/app/bootstrap/spacePresets';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
@@ -29,7 +30,11 @@ type Files = Record<string, string | null>;
 interface Snapshot { detail: SpaceDetail; state: State; local: Record<string, unknown>; base: Record<string, unknown>; localResources: SpaceResource[]; baseResources: SpaceResource[] }
 interface Plan { preview: SpacePreview; request: SpacePlanRequest; snapshot: Snapshot; mainSnapshot: Snapshot; versions: Record<string, string>; mainVersions: Record<string, string> }
 interface Undo { id: string; files: Files; after: Record<string, string> }
+const journalSchema = z.object({ id: z.string(), ownerHome: z.string().optional(), files: z.record(z.string(), z.string().nullable()), before: z.record(z.string(), z.string()).optional(), target: z.record(z.string(), z.string()).optional() });
+type Journal = Undo & { ownerHome: string; before: Record<string, string>; target: Record<string, string> };
 const STATE = 'space-preferences.json';
+const JOURNAL = '.space-preferences-transaction.json';
+const UNDO = '.space-preferences-undo.json';
 const GROUPS = spaceDomainSchema.options;
 const prefNames: Record<string, string> = { theme: 'Theme mode', skin: 'Skin selection', tweaks: 'Appearance adjustments', background: 'Background', proseFont: 'Reading font', defaultAppendTiming: 'Append timing', foldSteps: 'Fold tool steps', worktreeSkipConfirm: 'Worktree confirmation' };
 const configNames: Record<string, string> = { default_model: 'Default model', default_permission_mode: 'Default permission mode', default_plan_mode: 'Default plan mode', 'thinking.effort': 'Default thinking effort', 'session_title.model': 'Session title model', 'space_ui.landing_page': 'Landing page' };
@@ -83,6 +88,44 @@ function preferenceDependencies(key: string, value: unknown): string[] {
   return [];
 }
 function same(a: unknown, b: unknown): boolean { return hash(a) === hash(b); }
+async function writeDurable(path: string, data: string | Buffer): Promise<void> {
+  const handle = await open(path, 'wx', 0o600);
+  try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
+}
+async function writeAtomic(path: string, data: string | Buffer): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await atomicWrite(path, data, undefined, 0o600, undefined, true);
+  await syncDir(dirname(path)).catch(() => undefined);
+}
+async function removeDurable(path: string): Promise<void> {
+  await rm(path, { force: true });
+  await syncDir(dirname(path)).catch(() => undefined);
+}
+function stagedPath(path: string, id: string): string { return `${path}.space-${id}`; }
+function parseJournal(contents: string): z.infer<typeof journalSchema> | undefined {
+  try { return journalSchema.parse(JSON.parse(contents)); } catch { return undefined; }
+}
+async function deadLockToken(lock: string): Promise<string | undefined> {
+  const [pid = '', token = pid] = (await text(join(lock, 'owner')).catch(() => undefined) ?? '').trim().split(/\s+/);
+  const owner = Number(pid);
+  if (!Number.isSafeInteger(owner) || owner <= 0 || owner === process.pid || !/^[\w-]+$/.test(token)) return undefined;
+  try { process.kill(owner, 0); return undefined; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? token : undefined; }
+}
+async function reclaimStaleLock(lock: string): Promise<boolean> {
+  const token = await deadLockToken(lock);
+  if (token === undefined) return false;
+  const stalePath = `${lock}.stale-${token}`;
+  try {
+    await rename(lock, stalePath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return true;
+    if (code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'EPERM') return false;
+    throw error;
+  }
+  await rm(stalePath, { recursive: true, force: true }).catch(() => undefined);
+  return true;
+}
 async function fileHash(path: string): Promise<string> { return hash(await readFile(path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; })); }
 
 function secretMcp(value: unknown): boolean { return containsInlineMcpCredentials(value); }
@@ -379,7 +422,7 @@ export class SpacePreferencesStore {
     if (plan.request.action === 'push-to-main' && !allowPush) throw new Error('Updating main space requires main-space management authority');
     if (new Set(selected).size !== selected.length) throw new Error('Duplicate selection');
     if (selected.length === 0) return { detail: await this.detail(home, main), applied: [] };
-    return this.locked(main, async () => {
+    return this.locked(home, main, async () => {
       const current = await this.snapshot(home, main);
       const parent = await this.snapshot(main, main);
       const selectedSet = new Set(selected);
@@ -482,7 +525,7 @@ export class SpacePreferencesStore {
       if (action === 'push-to-main') files[join(main, STATE)] = Buffer.from(JSON.stringify(nextParent)).toString('base64');
       const withinHome = (path: string) => !relative(home, path).startsWith('..') && !isAbsolute(relative(home, path));
       const ordered = Object.fromEntries(Object.entries(files).toSorted(([left], [right]) => Number(withinHome(left)) - Number(withinHome(right)) || Number(left === join(home, STATE)) - Number(right === join(home, STATE))));
-      await this.publish(home, ordered, undoId);
+      await this.publish(home, main, ordered, undoId);
       if (home === this.runningHome) await this.runtimeConfig?.reload();
       this.plans.delete(token);
       return { detail: await this.detail(home, main), applied: selected, undo_id: undoId };
@@ -543,51 +586,94 @@ export class SpacePreferencesStore {
     }
   }
 
-  private async locked<T>(main: string, work: () => Promise<T>): Promise<T> {
+  private async locked<T>(home: string, main: string, work: () => Promise<T>): Promise<T> {
     const lock = join(main, '.space-preferences-lock');
-    try { await mkdir(lock); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('Another space update is in progress; retry after it finishes', { cause: error }); throw error; }
-    try { return await work(); } finally { await rm(lock, { recursive: true, force: true }); }
+    for (let attempt = 0; ; attempt += 1) {
+      try { await mkdir(lock); break; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (attempt > 0 || !await reclaimStaleLock(lock)) throw new Error('Another space update is in progress; retry after it finishes', { cause: error });
+      }
+    }
+    try {
+      await writeDurable(join(lock, 'owner'), `${process.pid} ${randomUUID()}`);
+      await this.recover(home, main);
+      return await work();
+    } finally { await rm(lock, { recursive: true, force: true }); }
   }
 
-  private async publish(home: string, files: Files, undoId: string): Promise<void> {
+  private async recover(home: string, main: string): Promise<void> {
+    const journalPaths = home === main ? [join(main, JOURNAL)] : [join(main, JOURNAL), join(home, JOURNAL)];
+    let reloadRunning = false;
+    for (const path of journalPaths) {
+      const contents = await text(path);
+      if (contents === undefined) continue;
+      const journal = parseJournal(contents);
+      const journalHome = journal?.ownerHome ?? (path === join(main, JOURNAL) ? main : home);
+      let restored = false;
+      for (const [target, snapshot] of Object.entries(journal?.files ?? {}).toReversed()) {
+        if (!allowedUndoPath(target, journalHome, main)) continue;
+        await rm(stagedPath(target, journal!.id), { force: true });
+        const current = await fileHash(target);
+        if (journal!.before !== undefined && (current === journal!.before[target] || journal!.target !== undefined && current !== journal!.target[target])) continue;
+        const value = await restorePublicSnapshot(target, snapshot);
+        if (value === null) await removeDurable(target); else await writeAtomic(target, Buffer.from(value, 'base64'));
+        restored = true;
+      }
+      await removeDurable(path);
+      if (restored && (journalHome === this.runningHome || main === this.runningHome || home === this.runningHome)) {
+        reloadRunning = true;
+      }
+    }
+    if (reloadRunning) await this.runtimeConfig?.reload();
+  }
+
+  private async publish(home: string, main: string, files: Files, undoId: string): Promise<void> {
     const previous: Files = {};
+    const before: Record<string, string> = {};
+    const target = Object.fromEntries(Object.entries(files).map(([path, contents]) => [path, hash(contents === null ? null : Buffer.from(contents, 'base64'))]));
     const staged: Record<string, string> = {};
     const published: string[] = [];
     const after: Record<string, string> = {};
     for (const path of Object.keys(files)) {
       const contents = await readFile(path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
       previous[path] = contents?.toString('base64') ?? null;
+      before[path] = hash(contents);
     }
     const undo: Undo = { id: undoId, files: Object.fromEntries(Object.entries(previous).map(([path, contents]) => [path, publicSnapshot(path, contents)])), after };
-    const journal = join(home, '.space-preferences-transaction.json');
+    const journal = join(main, JOURNAL);
+    await writeAtomic(journal, JSON.stringify({ ...undo, ownerHome: home, before, target } satisfies Journal));
     try {
       for (const [path, contents] of Object.entries(files)) {
         if (contents === null) continue;
         await mkdir(dirname(path), { recursive: true });
-        const temporary = `${path}.space-${undoId}`;
-        await writeFile(temporary, Buffer.from(contents, 'base64'), { flag: 'wx', mode: 0o600 });
+        const temporary = stagedPath(path, undoId);
+        await writeDurable(temporary, Buffer.from(contents, 'base64'));
         staged[path] = temporary;
       }
-      await writeFile(journal, JSON.stringify(undo), { flag: 'wx', mode: 0o600 });
       for (const [path, contents] of Object.entries(files)) {
-        if (contents === null) await rm(path, { force: true }); else await rename(staged[path]!, path);
+        if (contents === null) await rm(path, { force: true }); else await replaceFileNonDestructive(staged[path]!, path);
         published.push(path); after[path] = await fileHash(path);
       }
-      await writeFile(join(home, '.space-preferences-undo.json'), JSON.stringify(undo), { mode: 0o600 });
-      await rm(journal);
+      for (const directory of new Set(published.map((path) => dirname(path)))) await syncDir(directory).catch(() => undefined);
+      await writeAtomic(join(home, UNDO), JSON.stringify(undo));
+      await removeDurable(journal);
     } catch (error) {
-      for (const path of published.toReversed()) {
-        const contents = previous[path];
-        if (contents === null) await rm(path, { force: true }); else await writeFile(path, Buffer.from(contents!, 'base64'), { mode: 0o600 });
+      try {
+        for (const path of published.toReversed()) {
+          const contents = previous[path];
+          if (contents === null) await removeDurable(path); else await writeAtomic(path, Buffer.from(contents!, 'base64'));
+        }
+        await removeDurable(journal);
+      } catch (rollbackError) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; the interrupted change is restored on the next update`, { cause: rollbackError });
       }
-      await rm(journal, { force: true });
       throw error;
     } finally { for (const path of Object.values(staged)) await rm(path, { force: true }); }
   }
 
   async undo(home: string, main: string, undoId: string, allowPush: boolean): Promise<SpaceMutationResponse> {
-    return this.locked(main, async () => {
-      const value = await text(join(home, '.space-preferences-undo.json'));
+    return this.locked(home, main, async () => {
+      const value = await text(join(home, UNDO));
       if (value === undefined) throw new Error('No recent change to undo');
       const undo = JSON.parse(value) as Undo;
       if (undo.id !== undoId || (await state(home)).undo_id !== undoId) throw new Error('Only the most recent change can be undone');
@@ -601,14 +687,14 @@ export class SpacePreferencesStore {
         if (!allowedUndoPath(path, home, main)) throw new Error('Undo target is outside this space operation');
         restored[path] = await restorePublicSnapshot(path, contents);
       }
-      await this.publish(home, restored, randomUUID());
+      await this.publish(home, main, restored, randomUUID());
       if (home === this.runningHome) await this.runtimeConfig?.reload();
       return { detail: await this.detail(home, main), applied: [] };
     });
   }
 
   async importPreferences(home: string, main: string, request: SpacePreferenceImport): Promise<SpacePreferenceImportResponse> {
-    return this.locked(main, async () => {
+    return this.locked(home, main, async () => {
       const current = await state(home);
       if (current.preferences !== undefined) {
         const detail = await this.detail(home, main);
@@ -618,7 +704,7 @@ export class SpacePreferencesStore {
       current.preferences = spacePreferenceValuesSchema.partial().parse(request.values);
       current.imported_from = request.device_id;
       for (const key of Object.keys(DEFAULT_SPACE_PREFERENCES)) current.selections[`pref:${key}`] = { mode: 'fixed', reason: 'migrated' };
-      await this.publish(home, { [join(home, STATE)]: Buffer.from(JSON.stringify(current)).toString('base64') }, randomUUID());
+      await this.publish(home, main, { [join(home, STATE)]: Buffer.from(JSON.stringify(current)).toString('base64') }, randomUUID());
       return { detail: await this.detail(home, main), imported: true, device_conflict: false };
     });
   }

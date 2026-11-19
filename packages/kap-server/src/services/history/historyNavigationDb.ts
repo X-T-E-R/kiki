@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { open, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -15,6 +16,8 @@ import { navigationStatement, navigationScope, clearNavigationScopes, SqliteNavi
 type NavigationStore = Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>;
 const APPLICATION_ID = 0x4b484e31;
 const SCHEMA_VERSION = 4;
+const DEFAULT_MAX_SCOPES = 512;
+const SCOPE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MANIFEST_MAX_BYTES = 16 << 10;
 const CONVERSATION_SEARCH_PARTS = "('prompt','text','output')";
 const SELECT_ROW = 'r.*,s.workspace,s.session,s.agent';
@@ -71,16 +74,18 @@ function decodeRow(row: StoredRow): HistoryNavRow {
 export class HistoryNavigationDb implements NavigationStore {
   private closed = false;
   private readonly transaction: { open: boolean };
-  private constructor(readonly db: DatabaseSync, private readonly projection = '', transaction?: { open: boolean }) {
+  private readonly maxScopes: number;
+  private constructor(readonly db: DatabaseSync, private readonly projection = '', transaction?: { open: boolean }, maxScopes = DEFAULT_MAX_SCOPES) {
     this.transaction = transaction ?? { open: false };
+    this.maxScopes = maxScopes;
   }
   get projectionPrefix(): string { return this.projection === '' ? '' : `directory:${this.projection}\0`; }
   projected(id: string): HistoryNavigationDb {
     if (!/^[0-9a-f]{64}$/u.test(id)) throw new Error('invalid history directory projection');
-    return new HistoryNavigationDb(this.db, id, this.transaction);
+    return new HistoryNavigationDb(this.db, id, this.transaction, this.maxScopes);
   }
 
-  static async open(path: string): Promise<HistoryNavigationDb> {
+  static async open(path: string, opts?: { readonly maxScopes?: number }): Promise<HistoryNavigationDb> {
     const actual = resolve(path);
     await mkdir(dirname(actual), { recursive: true, mode: 0o700 });
     try { const file = await open(actual, 'wx', 0o600); await file.close(); }
@@ -89,29 +94,45 @@ export class HistoryNavigationDb implements NavigationStore {
     try {
       const applicationId = (db.prepare('PRAGMA application_id').get() as { application_id: number }).application_id;
       const version = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-      const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'")
-        .all() as Array<{ name: string }>).map(row => row.name);
-      if (applicationId !== 0 && applicationId !== APPLICATION_ID || applicationId === 0 && tables.length > 0 ||
-        applicationId === APPLICATION_ID && ![1, 2, 3, SCHEMA_VERSION].includes(version)) {
+      const tableRows = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'")
+        .all() as Array<{ name: string; sql: string | null }>;
+      const tables = tableRows.map(row => row.name);
+      if (applicationId !== 0 && applicationId !== APPLICATION_ID || applicationId === 0 && tables.length > 0) {
         throw new Error(`unrecognized history navigation index at ${actual}`);
       }
-      if (tables.some(name => ![...TABLES, 'scopes', 'directory_views', ...SEARCH_TABLES,
-        ...SEARCH_TABLES.flatMap(table => ['data', 'idx', 'config', 'docsize'].map(suffix => `${table}_${suffix}`))].includes(name))) {
+      const allowedTables = [...TABLES, 'scopes', 'directory_views', ...SEARCH_TABLES,
+        ...SEARCH_TABLES.flatMap(table => ['data', 'idx', 'config', 'docsize'].map(suffix => `${table}_${suffix}`))];
+      const versionMismatch = applicationId === APPLICATION_ID && version !== SCHEMA_VERSION;
+      if (!versionMismatch && tables.some(name => !allowedTables.includes(name))) {
         throw new Error(`unrecognized history navigation tables at ${actual}`);
       }
-      db.exec('PRAGMA busy_timeout=1000');
-      const upgrading = applicationId === APPLICATION_ID && version < SCHEMA_VERSION;
+      db.exec('PRAGMA busy_timeout=15000');
+      const fresh = tables.length === 0;
+      const upgrading = versionMismatch;
       db.exec(upgrading ? 'PRAGMA journal_mode=DELETE; PRAGMA secure_delete=OFF' : 'PRAGMA journal_mode=WAL');
+      if (fresh || upgrading) db.exec('PRAGMA auto_vacuum=INCREMENTAL');
       db.exec(`PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8192; PRAGMA mmap_size=0;
-        PRAGMA wal_autocheckpoint=500; PRAGMA journal_size_limit=33554432; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE`);
+        PRAGMA wal_autocheckpoint=500; PRAGMA journal_size_limit=33554432; PRAGMA foreign_keys=${upgrading ? 'OFF' : 'ON'}; BEGIN IMMEDIATE`);
       const current = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-      const rebuilding = applicationId === APPLICATION_ID && current < SCHEMA_VERSION;
+      const rebuilding = applicationId === APPLICATION_ID && current !== SCHEMA_VERSION;
       if (rebuilding) {
-        for (const table of [...SEARCH_TABLES, ...TABLES, 'directory_views', 'scopes']) db.exec(`DROP TABLE IF EXISTS ${table}`);
+        const existing = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'")
+          .all() as Array<{ name: string; sql: string | null }>;
+        for (const row of existing) {
+          if (row.sql?.toUpperCase().includes('CREATE VIRTUAL TABLE')) {
+            db.exec(`DROP TABLE IF EXISTS "${row.name.replaceAll('"', '""')}"`);
+          }
+        }
+        const remaining = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'")
+          .all() as Array<{ name: string }>).map(row => row.name);
+        for (const name of [...remaining.filter(name => name !== 'scopes'), ...remaining.filter(name => name === 'scopes')]) {
+          db.exec(`DROP TABLE IF EXISTS "${name.replaceAll('"', '""')}"`);
+        }
       }
       db.exec(`CREATE TABLE IF NOT EXISTS scopes (
           id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, projection TEXT NOT NULL,
-          workspace TEXT NOT NULL, session TEXT NOT NULL, agent TEXT NOT NULL
+          workspace TEXT NOT NULL, session TEXT NOT NULL, agent TEXT NOT NULL,
+          last_used_at INTEGER NOT NULL DEFAULT 0
         ) STRICT;
         CREATE TABLE IF NOT EXISTS rows (
           scope INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE, key TEXT NOT NULL,
@@ -169,12 +190,17 @@ export class HistoryNavigationDb implements NavigationStore {
         CREATE TRIGGER IF NOT EXISTS nav_search_delete AFTER DELETE ON search_documents BEGIN
           DELETE FROM nav_terms WHERE rowid=old.id;
           DELETE FROM nav_trigrams WHERE rowid=old.id;
-        END;
+        END;`);
+      const scopeColumns = db.prepare('PRAGMA table_info(scopes)').all() as Array<{ name: string }>;
+      if (!scopeColumns.some(col => col.name === 'last_used_at')) {
+        db.exec('ALTER TABLE scopes ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0');
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS nav_scopes_used ON scopes(projection, last_used_at);
         PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION}; COMMIT;`);
       const free = (db.prepare('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count;
       if (rebuilding || free > 0 && db.prepare('SELECT 1 FROM scopes LIMIT 1').get() === undefined) db.exec('VACUUM');
-      db.exec('PRAGMA journal_mode=WAL');
-      return new HistoryNavigationDb(db);
+      db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON');
+      return new HistoryNavigationDb(db, '', undefined, opts?.maxScopes ?? DEFAULT_MAX_SCOPES);
     } catch (error) { if (db.isOpen) db.close(); throw error; }
   }
 
@@ -278,15 +304,54 @@ export class HistoryNavigationDb implements NavigationStore {
     const value = JSON.stringify(manifest);
     if (Buffer.byteLength(value) > MANIFEST_MAX_BYTES) throw new Error('navigation manifest exceeds 16 KiB');
     const id = this.scope(scope, true);
+    const now = Date.now();
+    navigationStatement(this.db, 'UPDATE scopes SET last_used_at=? WHERE id=?').run(now, id);
     const state = new SqliteNavigationMap(this.db, id, 'cursor');
     state.set('adapter', cursor); state.set('canonicalSources', 1);
     navigationStatement(this.db, `INSERT INTO manifest(scope,value) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET value=excluded.value`).run(id, value);
-    this.retainProjection(); this.db.exec('COMMIT'); this.transaction.open = false;
+    this.retainProjection();
+    const evicted = this.retainScopes(id, now);
+    this.db.exec('COMMIT'); this.transaction.open = false;
+    if (evicted > 0) this.incrementalVacuum();
   }
   rollbackSlice(): void {
     if (!this.transaction.open) return;
     try { this.db.exec('ROLLBACK'); }
     finally { this.transaction.open = false; clearNavigationScopes(this.db); }
+  }
+  deleteSession(sessionId: string): number {
+    if (this.closed) return 0;
+    const ownsTx = !this.transaction.open;
+    if (ownsTx) this.db.exec('BEGIN IMMEDIATE');
+    let deleted = 0;
+    try {
+      deleted = Number(navigationStatement(this.db, 'DELETE FROM scopes WHERE session=?').run(sessionId).changes);
+      if (deleted > 0) clearNavigationScopes(this.db);
+      if (ownsTx) this.db.exec('COMMIT');
+    } catch (error) {
+      if (ownsTx) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        clearNavigationScopes(this.db);
+      }
+      throw error;
+    }
+    if (ownsTx && deleted > 0) this.incrementalVacuum();
+    return deleted;
+  }
+  private retainScopes(keepId: number, now: number): number {
+    if (this.projection !== '' || this.maxScopes <= 0) return 0;
+    const cutoff = now - SCOPE_RETENTION_MS;
+    const expired = navigationStatement(this.db, `DELETE FROM scopes WHERE projection='' AND id<>? AND last_used_at>0 AND last_used_at<?`)
+      .run(keepId, cutoff).changes;
+    const overflow = navigationStatement(this.db, `DELETE FROM scopes WHERE id IN (
+      SELECT id FROM scopes WHERE projection='' AND id<>? ORDER BY last_used_at DESC, id DESC LIMIT -1 OFFSET ?)`)
+      .run(keepId, Math.max(0, this.maxScopes - 1)).changes;
+    const total = Number(expired) + Number(overflow);
+    if (total > 0) clearNavigationScopes(this.db);
+    return total;
+  }
+  private incrementalVacuum(): void {
+    try { this.db.exec('PRAGMA incremental_vacuum(64)'); } catch {}
   }
   private retainProjection(): void {
     if (this.projection === '') return;
@@ -495,6 +560,11 @@ export class LazyHistoryNavigationDb implements NavigationStore {
     return new LazyHistoryNavigationDb(async () => (await this.ready()).projected(id));
   }
   async rollbackSlice(): Promise<void> { (await this.opened)?.rollbackSlice(); }
+  async deleteSession(sessionId: string): Promise<number> {
+    if (this.closed) return 0;
+    if (this.opened === undefined && typeof this.openDb === 'string' && !existsSync(this.openDb)) return 0;
+    return (await this.ready()).deleteSession(sessionId);
+  }
   async get<T>(collection: string, key: string): Promise<T | undefined> { return (await this.ready()).get<T>(collection, key); }
   async put<T>(collection: string, key: string, value: T): Promise<void> { return (await this.ready()).put(collection, key, value); }
   async batch(ops: readonly WriteOp[]): Promise<void> { return (await this.ready()).batch(ops); }

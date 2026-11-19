@@ -1,8 +1,11 @@
 import {
+  agentScopeOf,
   IConfigService,
   IModelCatalog,
   IModelService,
   MAIN_AGENT_ID,
+  sessionScopeOf,
+  workspacePersistenceScope,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { ICpuWorkerService } from '@kiki/agent-core-v2/app/cpuWorker/cpuWorkerService';
@@ -10,7 +13,6 @@ import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/
 import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { logicalByteSize, readLogicalBytes } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { AGENT_WIRE_RECORD_KEY, isWireRecord } from '@kiki/agent-core-v2/wire/record';
-import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { readPersistedAgentCheckpoint } from '@kiki/agent-core-v2/session/persistedAgentCheckpoint';
 import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { modelWithUsage } from '@kiki/agent-core-v2/kosong/model/parameters';

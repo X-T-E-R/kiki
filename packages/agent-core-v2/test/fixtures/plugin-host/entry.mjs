@@ -45,7 +45,11 @@ export async function installPrerequisite({ consent, destination }) {
   return destination;
 }
 
+let panelAborted = false;
+
 export function handlePanelRequest(action, args, context) {
+  if (action === 'wait') return new Promise((resolve) => context.signal.addEventListener('abort', () => { panelAborted = true; resolve(null); }, { once: true }));
+  if (action === 'aborted') return panelAborted;
   if (action !== 'echo') throw new Error('Unsupported panel action');
   return { args, settings: context.settings };
 }

@@ -3,7 +3,7 @@ import type { TranscriptService } from '../../transcript/transcriptService';
 
 export type NavigationMethod = 'scan' | 'list' | 'lookupDirectory' | 'readBlocks' | 'row' | 'read' |
   'lookupToolCall' | 'readCanonicalEntity' | 'readDurableTurn' | 'readCanonicalTurnHeader' |
-  'readCanonicalTurnHeaders' | 'indexedTurnByte' | 'invalidateCanonical' | 'prepareResidentProof' | 'proveResident' | 'checkResidentFailure';
+  'readCanonicalTurnHeaders' | 'indexedTurnByte' | 'invalidateCanonical' | 'deleteSession' | 'prepareResidentProof' | 'proveResident' | 'checkResidentFailure';
 export type TranscriptCallback = 'readRetainedColdTurn' | 'readColdWindowTurn';
 export interface NavigationRequest {
   readonly id: number;

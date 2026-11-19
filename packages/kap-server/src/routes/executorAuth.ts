@@ -1,7 +1,6 @@
-import { IAgentLifecycleService, IAgentProfileService, IAtomicDocumentStore, ISessionIndex, ISessionManager, ISessionMetadata, type Scope } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService, IAgentProfileService, IAtomicDocumentStore, ISessionIndex, ISessionManager, ISessionMetadata, sessionScopeOf, workspacePersistenceScope, type Scope } from '@kiki/agent-core-v2';
 import { agentExecutorBindingFingerprint } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import type { SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
-import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { executorAuthObservationSchema, type ExecutorAuthObservation } from '@kiki/protocol';
 
 export async function readExecutorAuth(core: Scope, sessionId: string, agentId: string): Promise<ExecutorAuthObservation | undefined> {

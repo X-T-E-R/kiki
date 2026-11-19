@@ -13,6 +13,7 @@ import {
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import { retainUntilStdioClientEnds } from '../stdioLifetime';
+import { asRecord, normalizeToolResult } from './mcpServer';
 
 export interface ExternalClientLocalCredential {
   readonly mcpUrl: URL | string;
@@ -87,7 +88,7 @@ export async function createExternalClientStdioBridge(
       undefined,
       { signal: extra.signal },
     );
-    return normalizeResult(result);
+    return normalizeToolResult(result);
   });
   const stdio = new StdioServerTransport();
   await server.connect(stdio);
@@ -133,26 +134,4 @@ async function refreshCredential(
   const nextEndpoint = parseExternalClientEndpoint(credential.mcpUrl);
   if (nextEndpoint.href !== endpoint.href) throw new Error('External client MCP endpoint changed; restart the stdio bridge.');
   return credential.token;
-}
-
-function normalizeResult(value: unknown): CallToolResult {
-  if (isRecord(value) && Array.isArray(value['content'])) return value as unknown as CallToolResult;
-  return { content: [{ type: 'text', text: safeJson(value) }] };
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function safeJson(value: unknown): string {
-  try {
-    const encoded = JSON.stringify(value);
-    return encoded ?? String(value);
-  } catch {
-    return '[unserializable MCP result]';
-  }
 }

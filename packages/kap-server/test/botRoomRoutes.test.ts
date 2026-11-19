@@ -19,6 +19,21 @@ function setup() {
     delete: vi.fn(async (id: string) => {
       if (id !== room.id) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Room not found');
     }),
+    log: vi.fn(async (_id: string, options?: { afterId?: string; limit?: number }) => {
+      const all = Array.from({ length: 5 }, (_, index) => ({
+        id: `m-${index + 1}`,
+        at: `2026-01-01T00:00:0${index}Z`,
+        kind: 'message' as const,
+        from: 'user' as const,
+        text: `msg-${index + 1}`,
+        mentions: [] as string[],
+      }));
+      const start = options?.afterId === undefined ? 0 : all.findIndex((entry) => entry.id === options.afterId) + 1;
+      const limit = options?.limit ?? 500;
+      const page = all.slice(start, start + limit);
+      const hasMore = start + limit < all.length;
+      return { entries: page, nextCursor: hasMore ? page.at(-1)?.id : undefined, lastSeq: start + page.length };
+    }),
   };
   const scope = { accessor: { get: (token: unknown) => { expect(token).toBe(IRoomService); return service; } } } as unknown as Scope;
   const app = Fastify();
@@ -47,5 +62,16 @@ describe('room list and lifecycle routes', () => {
     expect(service.update).not.toHaveBeenCalled();
     expect((await app.inject({ method: 'PATCH', url: '/rooms/missing', payload: { pinned: true } })).json().code).toBe(40001);
     expect((await app.inject({ method: 'DELETE', url: '/rooms/missing' })).json().code).toBe(40001);
+  });
+
+  it('serves the newest tail entries in chronological order when tail=true is requested on /rooms/{id}/log', async () => {
+    const { app, service } = setup();
+    const res = await app.inject({ method: 'GET', url: '/rooms/example/log?tail=true&limit=2' });
+    const body = res.json();
+    expect(body.code).toBe(0);
+    expect(body.data.entries.map((entry: { id: string }) => entry.id)).toEqual(['m-4', 'm-5']);
+    expect(body.data.nextCursor).toBeUndefined();
+    expect(body.data.lastSeq).toBe(5);
+    expect(service.log).toHaveBeenCalledWith('example', { afterId: undefined, limit: 500 });
   });
 });

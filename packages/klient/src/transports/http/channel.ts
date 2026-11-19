@@ -94,7 +94,7 @@ interface ActiveCall {
 interface ActiveListen {
   readonly frame: KlientFrame;
   readonly handler: (data: unknown) => void;
-  readonly onError?: (error: Error) => void;
+  readonly onError?: (error: Error, terminal?: boolean) => void;
   readonly onReady?: () => void;
 }
 
@@ -501,7 +501,7 @@ export class HttpChannel implements KlientChannel {
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
-    onError?: (error: Error) => void,
+    onError?: (error: Error, terminal?: boolean) => void,
     onReady?: () => void,
   ): IDisposable {
     if (this.closed) throw new Error('http closed');
@@ -738,7 +738,7 @@ class HttpEventSocket {
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
-    onError?: (error: Error) => void,
+    onError?: (error: Error, terminal?: boolean) => void,
     onReady?: () => void,
   ): IDisposable {
     this.requireWebSocket();
@@ -1018,7 +1018,7 @@ class HttpEventSocket {
         const listen = this.listens.get(id);
         if (listen === undefined) return;
         this.listens.delete(id);
-        listen.onError?.(frameError(frame));
+        listen.onError?.(frameError(frame), true);
         return;
       }
       case 'stream_data':
@@ -1050,7 +1050,7 @@ class HttpEventSocket {
 
   private notifyDisconnect(error: Error): void {
     clearTimeout(this.establishmentTimer);
-    for (const listen of this.listens.values()) listen.onError?.(error);
+    for (const listen of this.listens.values()) listen.onError?.(error, false);
     this.sessionViews.disconnected(error);
     this.terminals.disconnected(error);
   }

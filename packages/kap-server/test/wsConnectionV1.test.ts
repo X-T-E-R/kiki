@@ -1020,15 +1020,15 @@ describe('WsConnectionV1 heartbeat', () => {
     conn.close();
   });
 
-  it('supports the legacy heartbeatMs option and zero disables the heartbeat', () => {
+  it('supports heartbeatIntervalMs overrides and zero disables the heartbeat', () => {
     const socket = new FakeSocket();
-    const conn = makeConn(socket, { heartbeatMs: 25 });
+    const conn = makeConn(socket, { heartbeatIntervalMs: 25 });
     const hello = socket.frames()[0] as { payload: { heartbeat_ms?: number } };
     expect(hello.payload.heartbeat_ms).toBe(25);
     conn.close();
 
     const disabledSocket = new FakeSocket();
-    const disabled = makeConn(disabledSocket, { heartbeatMs: 0 });
+    const disabled = makeConn(disabledSocket, { heartbeatIntervalMs: 0 });
     const disabledHello = disabledSocket.frames()[0] as { payload: { heartbeat_ms?: number } };
     expect(disabledHello.payload.heartbeat_ms).toBeUndefined();
     disabledSocket.sent = [];
@@ -1427,5 +1427,156 @@ describe('WsConnectionV1 cursor replay ordering', () => {
     expect(replayBooks(conn).outbound).toEqual([]);
     expect(gate.unsubscribe).toHaveBeenCalledWith('s1', conn);
     gate.release({ events: [], resyncRequired: false, currentSeq: 0, epoch: 'e1' });
+  });
+
+  it('acks with resync_required on attachSession error and preserves pre-existing valid subscriptions', async () => {
+    const socket = new FakeSocket();
+    const warn = vi.fn();
+    const unsubscribe = vi.fn();
+    const unsubscribeTranscript = vi.fn();
+    let callCount = 0;
+    const broadcaster = {
+      subscribe: vi.fn(async (sid: string) => {
+        callCount += 1;
+        if (sid === 's1' && callCount === 2) {
+          throw new Error('transcript seed boom');
+        }
+        return true;
+      }),
+      unsubscribe,
+      unsubscribeTranscript,
+      flushTranscriptSeed: async () => {},
+      addGlobalTarget: () => {},
+      removeGlobalTarget: () => {},
+      getCursor: async () => ({ seq: 1, epoch: 'e1' }),
+      getBufferedSince: async () => ({ events: [], resyncRequired: false, currentSeq: 1, epoch: 'e1' }),
+    } as unknown as SessionEventBroadcaster;
+    const conn = makeConn(socket, { broadcaster, logger: { warn } });
+
+    socket.emit('message', JSON.stringify({ type: 'subscribe', id: 'sub-1', payload: { session_ids: ['s1'] } }));
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'sub-1')).toBe(true);
+    });
+    expect(unsubscribe).not.toHaveBeenCalled();
+
+    socket.emit('message', JSON.stringify({
+      type: 'subscribe_v2',
+      id: 'sub-v2-fail',
+      payload: { session_id: 's1', transcript: { main: 'delta' }, transcript_coverage_version: 2 },
+    }));
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'sub-v2-fail')).toBe(true);
+    });
+    const ack = socket.frames().find((frame) => (frame as { id?: string }).id === 'sub-v2-fail') as {
+      code: number;
+      payload: { accepted: string[]; resync_required: string[] };
+    };
+    expect(ack.code).toBe(0);
+    expect(ack.payload).toMatchObject({ accepted: [], resync_required: ['s1'] });
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(unsubscribeTranscript).toHaveBeenCalledWith('s1', conn);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: 's1' }),
+      'ws session attach failed',
+    );
+    conn.close();
+  });
+
+  it('logs control-queue errors and replies with INTERNAL_ERROR ack when frame.id is present', async () => {
+    const socket = new FakeSocket();
+    const warn = vi.fn();
+    const broadcaster = {
+      subscribe: async () => true,
+      unsubscribe: () => {
+        throw new Error('unexpected unsubscribe failure');
+      },
+      flushTranscriptSeed: async () => {},
+      addGlobalTarget: () => {},
+      removeGlobalTarget: () => {},
+      getCursor: async () => ({ seq: 0, epoch: 'e1' }),
+      getBufferedSince: async () => ({ events: [], resyncRequired: false, currentSeq: 0, epoch: 'e1' }),
+    } as unknown as SessionEventBroadcaster;
+    const conn = makeConn(socket, { broadcaster, logger: { warn } });
+
+    socket.emit('message', JSON.stringify({ type: 'unsubscribe', id: 'unsub-boom', payload: { session_ids: ['s1'] } }));
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'unsub-boom')).toBe(true);
+    });
+    const ack = socket.frames().find((frame) => (frame as { id?: string }).id === 'unsub-boom') as {
+      code: number;
+      msg: string;
+    };
+    expect(ack.code).toBe(50001);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ frame_type: 'unsubscribe', frame_id: 'unsub-boom' }),
+      'ws control frame failed',
+    );
+    conn.close();
+  });
+
+  it('calls broadcaster.restoreSubscription when post-subscribe replay/flushTranscriptSeed or getCursor fails', async () => {
+    const socket = new FakeSocket();
+    const warn = vi.fn();
+    const restoreSubscription = vi.fn();
+    const unsubscribe = vi.fn();
+    let subCalls = 0;
+    const broadcaster = {
+      subscribe: vi.fn(async () => {
+        subCalls += 1;
+        return true;
+      }),
+      unsubscribe,
+      unsubscribeTranscript: vi.fn(),
+      restoreSubscription,
+      flushTranscriptSeed: vi.fn(async () => {
+        if (subCalls === 2) throw new Error('deferred seed failed');
+      }),
+      addGlobalTarget: () => {},
+      removeGlobalTarget: () => {},
+      getCursor: vi.fn(async () => {
+        if (subCalls === 3) throw new Error('cursor read failed');
+        return { seq: 1, epoch: 'e1' };
+      }),
+      getBufferedSince: async () => ({ events: [], resyncRequired: false, currentSeq: 1, epoch: 'e1' }),
+    } as unknown as SessionEventBroadcaster;
+    const conn = makeConn(socket, { broadcaster, logger: { warn } });
+
+    socket.emit('message', JSON.stringify({
+      type: 'subscribe_v2',
+      id: 'sub-initial',
+      payload: { session_id: 's1', transcript: { main: 'turn' }, transcript_coverage_version: 2 },
+    }));
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'sub-initial')).toBe(true);
+    });
+
+    socket.emit('message', JSON.stringify({
+      type: 'subscribe',
+      id: 'sub-flush-fail',
+      payload: { session_ids: ['s1'], agent_filter: ['child-1'], cursors: { s1: { seq: 1, epoch: 'e1' } } },
+    }));
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'sub-flush-fail')).toBe(true);
+    });
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(restoreSubscription).toHaveBeenNthCalledWith(1, 's1', conn, {
+      agentFilter: undefined,
+      transcriptGrades: { main: 'turn' },
+    });
+
+    socket.emit('message', JSON.stringify({
+      type: 'subscribe_v2',
+      id: 'sub-cursor-fail',
+      payload: { session_id: 's1', transcript: { main: 'delta' }, transcript_coverage_version: 2 },
+    }));
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'sub-cursor-fail')).toBe(true);
+    });
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(restoreSubscription).toHaveBeenNthCalledWith(2, 's1', conn, {
+      agentFilter: undefined,
+      transcriptGrades: { main: 'turn' },
+    });
+    conn.close();
   });
 });

@@ -3,10 +3,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { FastifyReply } from 'fastify';
 
 import {
+  agentScopeOf,
   IBootstrapService,
   ISessionContext,
   ISessionMetadata,
   IWorkspaceService,
+  sessionScopeOf,
+  workspacePersistenceScope,
   type SessionSummary,
 } from '@kiki/agent-core-v2';
 import {
@@ -23,11 +26,6 @@ import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionM
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
 import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
-import {
-  agentScopeOf,
-  sessionScopeOf,
-  workspacePersistenceScope,
-} from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import type { Scope } from '@kiki/agent-core-v2/_base/di/scope';
 import { parseMediaBlobRef } from '@kiki/transcript';
 import { z } from 'zod';

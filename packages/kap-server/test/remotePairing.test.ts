@@ -278,6 +278,23 @@ describe('pairing rotation and zero-token preflight', () => {
       for (const seen of headers) { expect(seen['authorization']).toBeUndefined(); expect(seen['x-kiki-connection-grant']).toBeUndefined(); }
     } finally { await manager.close(); rogue.closeAllConnections(); await new Promise<void>((resolve) => rogue.close(() => resolve())); }
   });
+  it('retries a transient transport failure on the same long-lived lease', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-transport-retry-')); homes.push(home);
+    const target = identity('target'); let calls = 0;
+    const manager = new RemoteConnectionManager(home, identity('source'), undefined, async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('tunnel exited');
+      return { endpoint: 'http://127.0.0.1:9', target };
+    });
+    const id = randomUUID();
+    await manager.storePeer({ id, credentialRef: id, label: 'Local', endpoint: 'space://local', transport: { kind: 'local_space', localSpaceId: 'space' }, target, enabled: true, purposes: ['gui'], backgroundSummary: true, state: 'online', activeLeases: 0 }, { ownerToken: 'owner', grant: 'grant', grantId: randomUUID(), revision: 1 });
+    const lease = manager.lease(id);
+    try {
+      await expect(manager.acquireTransport(id, lease.signal)).rejects.toThrow('tunnel exited');
+      await expect(manager.acquireTransport(id, lease.signal)).resolves.toMatchObject({ endpoint: 'http://127.0.0.1:9' });
+      expect(calls).toBe(2);
+    } finally { lease.release(); await manager.close(); }
+  });
 });
 
 
@@ -865,7 +882,7 @@ describe('paired peer surface parity and host boundaries', () => {
     };
     const seq = (...parts: Buffer[]) => der(0x30, ...parts);
     const oid = (hex: string) => der(0x06, Buffer.from(hex, 'hex'));
-    const badTime = (date: Date) => der(0x18, Buffer.from(date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')));
+    const badTime = (date: Date) => der(0x18, Buffer.from(date.toISOString().replaceAll(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')));
     const alg = seq(oid('2a8648ce3d040302'));
     const name = seq(der(0x31, seq(oid('550403'), der(0x0c, Buffer.from('Kiki Peer')))));
     const serial = randomBytes(16); serial[0] = (serial[0]! & 0x7f) | 1;

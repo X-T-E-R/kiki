@@ -117,6 +117,7 @@ const DIGEST_RECEIPTS = `CREATE TABLE plugin_digest_receipts (
   state TEXT NOT NULL,
   diagnostic_code TEXT,
   error_kind TEXT,
+  created_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (plugin_id, account_ref, idempotency_key)
 )`;
 const CURRENT_RECEIPT_COLUMNS = [
@@ -125,10 +126,13 @@ const CURRENT_RECEIPT_COLUMNS = [
 ];
 const LEGACY_RECEIPT_COLUMNS = ['account_ref', 'idempotency_key', 'state'];
 const UNSCOPED_RECEIPTS = 'plugin_digest_receipts_unscoped';
+const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const RECEIPT_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 interface ReceiptDb {
+  readonly isTransaction?: boolean;
   exec(sql: string): void;
-  prepare(sql: string): { all(): unknown[] };
+  prepare(sql: string): { all(...args: unknown[]): unknown[]; get?(...args: unknown[]): unknown; run?(...args: unknown[]): { changes: number | bigint } };
 }
 
 function columnNames(db: ReceiptDb, table: string): string[] {
@@ -140,24 +144,38 @@ function columnNames(db: ReceiptDb, table: string): string[] {
 }
 
 export function ensurePluginDigestReceipts(db: ReceiptDb): 'ready' | 'unavailable' {
-  const present = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_digest_receipts'`).all();
-  if (present.length === 0) {
-    db.exec(DIGEST_RECEIPTS);
-    return 'ready';
-  }
-  const names = columnNames(db, 'plugin_digest_receipts');
-  if (CURRENT_RECEIPT_COLUMNS.every((name) => names.includes(name))) return 'ready';
-  const legacy = !names.includes('plugin_id') && LEGACY_RECEIPT_COLUMNS.every((name) => names.includes(name));
-  if (!legacy || db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${UNSCOPED_RECEIPTS}'`).all().length > 0) {
-    return 'unavailable';
-  }
+  const ownsTx = db.isTransaction !== true;
   let started = false;
   try {
-    db.exec('BEGIN IMMEDIATE');
-    started = true;
+    if (ownsTx) {
+      db.exec('BEGIN IMMEDIATE');
+      started = true;
+    }
+    const present = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_digest_receipts'`).all();
+    if (present.length === 0) {
+      db.exec(DIGEST_RECEIPTS);
+      db.exec('CREATE INDEX IF NOT EXISTS plugin_digest_receipts_created_idx ON plugin_digest_receipts (created_at)');
+      if (started) db.exec('COMMIT');
+      return 'ready';
+    }
+    const names = columnNames(db, 'plugin_digest_receipts');
+    if (CURRENT_RECEIPT_COLUMNS.every((name) => names.includes(name))) {
+      if (!names.includes('created_at')) {
+        db.exec('ALTER TABLE plugin_digest_receipts ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0');
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS plugin_digest_receipts_created_idx ON plugin_digest_receipts (created_at)');
+      if (started) db.exec('COMMIT');
+      return 'ready';
+    }
+    const legacy = !names.includes('plugin_id') && LEGACY_RECEIPT_COLUMNS.every((name) => names.includes(name));
+    if (!legacy || db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${UNSCOPED_RECEIPTS}'`).all().length > 0) {
+      if (started) db.exec('ROLLBACK');
+      return 'unavailable';
+    }
     db.exec(`ALTER TABLE plugin_digest_receipts RENAME TO ${UNSCOPED_RECEIPTS}`);
     db.exec(DIGEST_RECEIPTS);
-    db.exec('COMMIT');
+    db.exec('CREATE INDEX IF NOT EXISTS plugin_digest_receipts_created_idx ON plugin_digest_receipts (created_at)');
+    if (started) db.exec('COMMIT');
     return 'ready';
   } catch {
     if (started) {
@@ -165,6 +183,19 @@ export function ensurePluginDigestReceipts(db: ReceiptDb): 'ready' | 'unavailabl
     }
     return 'unavailable';
   }
+}
+
+export function prunePluginDigestReceipts(db: ReceiptDb, now = Date.now(), retentionMs = RECEIPT_RETENTION_MS): number {
+  const cutoff = now - retentionMs;
+  const result = db.prepare(
+    `DELETE FROM plugin_digest_receipts WHERE state <> 'armed' AND created_at > 0 AND created_at < ?`,
+  ).run?.(cutoff);
+  const legacyTables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${UNSCOPED_RECEIPTS}'`).all();
+  if (legacyTables.length > 0) {
+    const remaining = db.prepare(`SELECT 1 FROM ${UNSCOPED_RECEIPTS} LIMIT 1`).all();
+    if (remaining.length === 0) db.exec(`DROP TABLE IF EXISTS ${UNSCOPED_RECEIPTS}`);
+  }
+  return Number(result?.changes ?? 0);
 }
 
 function legacyKey(runtime: Runtime, account: string, key: string): boolean {
@@ -210,6 +241,7 @@ function failed(diagnosticCode: string, errorKind: PluginImErrorKind, retryable 
 
 export class PluginDigestDelivery {
   private readonly inflight = new Map<string, Flight>();
+  private lastPrunedAt = 0;
   constructor(private readonly deps: {
     settings: () => NotificationsConfig;
     runtime: () => Runtime | undefined;
@@ -285,6 +317,11 @@ export class PluginDigestDelivery {
     const routeRevision = fingerprint(settings, runtime, request.channelId);
     if (routeRevision === undefined || routeRevision !== request.routeRevision) return failed('route_changed', 'configuration');
     if (ensurePluginDigestReceipts(runtime.outbox.db) !== 'ready') return failed('im_unsupported', 'dependency_missing');
+    const now = Date.now();
+    if (now - this.lastPrunedAt >= RECEIPT_PRUNE_INTERVAL_MS) {
+      this.lastPrunedAt = now;
+      try { prunePluginDigestReceipts(runtime.outbox.db, now); } catch {}
+    }
     const existing = readReceipt(runtime, pluginId, request.accountRef, request.idempotencyKey);
     if (existing !== undefined) {
       if (existing.fingerprint !== routeRevision || existing.channel_id !== request.channelId || existing.text_hash !== textHash) {
@@ -297,8 +334,8 @@ export class PluginDigestDelivery {
     }
     runtime.outbox.db.prepare(
       `INSERT INTO plugin_digest_receipts
-       (plugin_id, account_ref, idempotency_key, fingerprint, channel_id, text_hash, state, diagnostic_code)
-       VALUES (?, ?, ?, ?, ?, ?, 'armed', NULL)`).run(pluginId, request.accountRef, request.idempotencyKey, routeRevision, request.channelId, textHash);
+       (plugin_id, account_ref, idempotency_key, fingerprint, channel_id, text_hash, state, diagnostic_code, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'armed', NULL, ?)`).run(pluginId, request.accountRef, request.idempotencyKey, routeRevision, request.channelId, textHash, now);
     const clearArmed = () => {
       runtime.outbox.db.prepare(
         `DELETE FROM plugin_digest_receipts WHERE plugin_id = ? AND account_ref = ? AND idempotency_key = ? AND state = 'armed'`)

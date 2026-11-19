@@ -9,6 +9,7 @@
  * "credentials win" overlay) so a `config.toml`/`credentials.toml` pair stays
  * consistent whether it is read by the SDK or by the engine.
  */
+import { isPlainObject } from '@kiki/agent-core-v2/app/config/configPure';
 import { dirname, join } from 'pathe';
 
 export const CREDENTIALS_RELATIVE_PATH = 'credentials/credentials.toml';
@@ -32,10 +33,6 @@ export function isSecretKey(key: string): boolean {
     normalized.endsWith('authorization') ||
     normalized === 'privatekey'
   );
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** The credentials file under the data root that contains `config.toml`. */

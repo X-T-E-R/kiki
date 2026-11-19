@@ -1,6 +1,6 @@
 import { Error2, ErrorCodes, type Scope } from '@kiki/agent-core-v2';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
-import { IRoomService } from '@kiki/agent-core-v2/app/room/room';
+import { IRoomService, type RoomLogEntry, type RoomLogResult } from '@kiki/agent-core-v2/app/room/room';
 import { z } from 'zod';
 import {
   botIdParamsSchema, botSummarySchema, botStateSchema, botUpdateInputSchema,
@@ -8,6 +8,7 @@ import {
   postRoomMessageInputSchema, roomMessageSchema, roomLogOptionsSchema, roomLogResultSchema,
   roomUsageSchema, deleteRoomResponseSchema, createThreadRoomInputSchema, roomMemberInputSchema,
   roomMemberParamsSchema, searchRoomThreadsInputSchema, searchRoomThreadsResultSchema,
+  type RoomLogOptions,
 } from '@kiki/protocol';
 import { okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
@@ -19,6 +20,29 @@ interface BotRoomRouteHost {
   post(path: string, options: Route['options'], handler: Route['handler']): unknown;
   patch(path: string, options: Route['options'], handler: Route['handler']): unknown;
   delete(path: string, options: Route['options'], handler: Route['handler']): unknown;
+}
+
+const ROOM_LOG_PAGE_LIMIT = 500;
+
+async function readRoomLog(service: IRoomService, roomId: string, query: RoomLogOptions): Promise<RoomLogResult> {
+  if (query.tail !== true || query.afterId !== undefined) {
+    return service.log(roomId, { afterId: query.afterId, limit: query.limit });
+  }
+  const targetLimit = Math.min(Math.max(query.limit ?? ROOM_LOG_PAGE_LIMIT, 1), ROOM_LOG_PAGE_LIMIT);
+  let tailEntries: RoomLogEntry[] = [];
+  let afterId: string | undefined;
+  let lastSeq: number | undefined;
+  for (;;) {
+    const page = await service.log(roomId, { afterId, limit: ROOM_LOG_PAGE_LIMIT });
+    lastSeq = page.lastSeq;
+    if (page.entries.length > 0) {
+      tailEntries.push(...page.entries);
+      if (tailEntries.length > targetLimit) tailEntries = tailEntries.slice(-targetLimit);
+      afterId = page.entries.at(-1)?.id;
+    }
+    if (page.nextCursor === undefined || page.entries.length === 0) break;
+  }
+  return { entries: tailEntries, nextCursor: undefined, lastSeq };
 }
 
 export function registerBotRoomRoutes(app: BotRoomRouteHost, core: Scope): void {
@@ -68,7 +92,7 @@ export function registerBotRoomRoutes(app: BotRoomRouteHost, core: Scope): void 
       (req, reply) => handle(req.id, reply, () => rooms()[action](req.params.id))));
   }
   add('get', defineRoute({ method: 'GET', path: '/rooms/{id}/log', params: roomIdParamsSchema, querystring: roomLogOptionsSchema, success: { data: roomLogResultSchema }, tags: ['rooms'] },
-    (req, reply) => handle(req.id, reply, () => rooms().log(req.params.id, req.query))));
+    (req, reply) => handle(req.id, reply, () => readRoomLog(rooms(), req.params.id, req.query))));
   add('get', defineRoute({ method: 'GET', path: '/rooms/{id}/usage', params: roomIdParamsSchema, success: { data: roomUsageSchema }, tags: ['rooms'] },
     (req, reply) => handle(req.id, reply, () => rooms().usage(req.params.id))));
 }

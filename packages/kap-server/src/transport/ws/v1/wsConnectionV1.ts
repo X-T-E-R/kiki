@@ -109,8 +109,6 @@ export interface WsConnectionV1Options {
   readonly maxBackpressureRounds?: number;
   /** Heartbeat ping cadence; `0` disables it and omits `heartbeat_ms`. */
   readonly heartbeatIntervalMs?: number;
-  /** @deprecated Use `heartbeatIntervalMs`; retained for kiki host compatibility. */
-  readonly heartbeatMs?: number;
 }
 
 export class WsConnectionV1 implements BroadcastTarget {
@@ -191,7 +189,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.maxBackpressureRounds =
       opts.maxBackpressureRounds ?? DEFAULT_MAX_BACKPRESSURE_ROUNDS;
     this.heartbeatIntervalMs =
-      opts.heartbeatIntervalMs ?? opts.heartbeatMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+      opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.lastInboundAt = Date.now();
 
     this.socket.on('message', (data: RawData) => this.onMessage(data));
@@ -367,7 +365,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         return;
       }
     }
-    this.enqueueControl(() => this.handleFrame(frame));
+    this.enqueueControl(() => this.handleFrame(frame), frame);
   }
 
   private async handleFrame(frame: InboundFrame): Promise<void> {
@@ -392,8 +390,15 @@ export class WsConnectionV1 implements BroadcastTarget {
     }
   }
 
-  private enqueueControl(task: () => Promise<void>): void {
-    this.controlQueue = this.controlQueue.then(task).catch(() => {
+  private enqueueControl(task: () => Promise<void>, frame?: InboundFrame): void {
+    this.controlQueue = this.controlQueue.then(task).catch((error: unknown) => {
+      this.logger?.warn(
+        { err: error, frame_type: frame?.type, frame_id: frame?.id },
+        'ws control frame failed',
+      );
+      if (!this.closed && typeof frame?.id === 'string' && frame.id.length > 0) {
+        this.sendImmediateFrame(buildAck(frame.id, ErrorCode.INTERNAL_ERROR, 'internal error', {}));
+      }
     });
   }
 
@@ -818,9 +823,12 @@ export class WsConnectionV1 implements BroadcastTarget {
   ): Promise<void> {
     if (this.closed) return;
     const { accepted, resyncRequired, serverCursors, notFound } = collectors;
+    const prior = this.subscriptions.get(sid);
     this.pendingAttaches.add(sid);
     if (cursor !== undefined) this.replayHolds.add(sid);
     let attached = false;
+    let notFoundSession = false;
+    let subscribedInBroadcaster = false;
     try {
       const ok = await this.broadcaster.subscribe(sid, this, filter, transcriptGrades, {
         deferTranscriptReset: cursor !== undefined,
@@ -828,10 +836,12 @@ export class WsConnectionV1 implements BroadcastTarget {
       });
       if (this.closed) return;
       if (!ok) {
+        notFoundSession = true;
         if (notFound !== undefined) notFound.push(sid);
         else resyncRequired.push(sid);
         return;
       }
+      subscribedInBroadcaster = true;
       if (cursor !== undefined) {
         await this.replay(sid, cursor, filter, transcriptGrades, resyncRequired, serverCursors);
         await this.broadcaster.flushTranscriptSeed(sid, this);
@@ -842,13 +852,28 @@ export class WsConnectionV1 implements BroadcastTarget {
       this.subscriptions.set(sid, { agentFilter: filter, transcriptGrades });
       accepted.push(sid);
       attached = true;
+    } catch (error) {
+      if (this.closed && error instanceof Error && error.name === 'AbortError') return;
+      this.logger?.warn({ err: error, session_id: sid }, 'ws session attach failed');
+      if (!this.closed && !resyncRequired.includes(sid)) {
+        resyncRequired.push(sid);
+      }
     } finally {
       this.pendingAttaches.delete(sid);
       this.replayHolds.delete(sid);
       this.discardReplayHeld(sid);
       if (!attached) {
-        this.broadcaster.unsubscribe(sid, this);
-        this.subscriptions.delete(sid);
+        if (this.closed || notFoundSession || prior === undefined) {
+          this.broadcaster.unsubscribe(sid, this);
+          this.subscriptions.delete(sid);
+        } else {
+          if (subscribedInBroadcaster && typeof this.broadcaster.restoreSubscription === 'function') {
+            this.broadcaster.restoreSubscription(sid, this, prior);
+          } else if (prior.transcriptGrades === undefined && transcriptGrades !== undefined) {
+            this.broadcaster.unsubscribeTranscript(sid, this);
+          }
+          this.subscriptions.set(sid, prior);
+        }
       }
     }
   }

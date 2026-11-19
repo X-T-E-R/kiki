@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1495,5 +1495,61 @@ describe('history lexical candidate lookup', () => {
         .toEqual({ status: 'stale_ref' });
       expect((await db.ready()).readBoundaryManifest('ws\0s\0main')).toBeUndefined();
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('detects concurrent manifest advances inside BEGIN IMMEDIATE and retries without double-folding', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-concurrent-slice-'));
+    const dbPath = join(dir, 'navigation.sqlite');
+    const wirePath = join(dir, 'wire.jsonl');
+    const lazyEmpty = HistoryNavigationDb.lazy(dbPath);
+    expect(await lazyEmpty.deleteSession('s')).toBe(0);
+    await expect(stat(dbPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const dbA = HistoryNavigationDb.lazy(dbPath);
+    const dbB = HistoryNavigationDb.lazy(dbPath);
+    try {
+      await writeFile(wirePath, [
+        line({ type: 'turn.prompt', turnId: 0, time: 1000, input: [{ type: 'text', text: 'first prompt alpha' }], origin: { kind: 'user' } }),
+        line({ type: 'turn.ended', turnId: 0, reason: 'completed', time: 1001 }),
+      ].join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const navA = new HistoryLocatorStore(dbA, transcript);
+      await navA.scan('s', 'main');
+
+      await appendFile(wirePath, [
+        line({ type: 'turn.prompt', turnId: 1, time: 2000, input: [{ type: 'text', text: 'second prompt beta' }], origin: { kind: 'user' } }),
+        line({ type: 'turn.ended', turnId: 1, reason: 'completed', time: 2001 }),
+      ].join(''));
+
+      const rawA = await dbA.ready();
+      const rawB = await dbB.ready();
+      const origBegin = rawA.beginSlice.bind(rawA);
+      let injected = false;
+      const spy = vi.spyOn(rawA, 'beginSlice').mockImplementation(() => {
+        if (!injected) {
+          injected = true;
+          const manifestB = rawB.readManifest('ws\0s\0main');
+          if (manifestB !== undefined) {
+            rawB.beginSlice();
+            rawB.commitSlice('ws\0s\0main', { ...manifestB, generation: 'concurrent-gen' }, { ordinal: manifestB.ordinal, legacyTurn: 0 });
+          }
+        }
+        origBegin();
+      });
+      try {
+        const result = await navA.scan('s', 'main');
+        expect(injected).toBe(true);
+        expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(result?.complete).toBe(true);
+        const search = await navA.scan('s', 'main', undefined, { query: 'beta', mode: 'auto', sort: 'newest', pageSize: 10 });
+        expect(search?.hits?.map((hit) => hit.turn)).toEqual([1]);
+      } finally {
+        spy.mockRestore();
+      }
+    } finally {
+      await dbA.close();
+      await dbB.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

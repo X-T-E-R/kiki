@@ -82,6 +82,7 @@ const SEARCH_HARD_CAP = 500;
 const GREP_TIMEOUT_MS = 30_000;
 const SUGGEST_TIMEOUT_MS = 10_000;
 const SUGGEST_WALK_ABORTED = new Error('suggest walk aborted');
+const GREP_WALK_ABORTED = new Error('grep walk aborted');
 const WALK_MAX_DEPTH = 64;
 
 const FS_READ_MAX_BYTES = 10 * 1024 * 1024;
@@ -142,8 +143,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     let topStat: HostFileStat;
     try {
       topStat = await this.hostFs.stat(abs);
-    } catch (err) {
-      throw mapFsError(err, req.path);
+    } catch (error) {
+      throw mapFsError(error, req.path);
     }
     if (!topStat.isDirectory) {
       throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `path not found: ${req.path}`, {
@@ -176,9 +177,9 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       let names: readonly string[];
       try {
         names = (await this.hostFs.readdir(this.absOf(entry.relPath))).map((e) => e.name);
-      } catch (err) {
+      } catch (error) {
         if (entry.relPath === (rel === '.' ? '' : rel)) {
-          throw mapFsError(err, req.path);
+          throw mapFsError(error, req.path);
         }
         continue;
       }
@@ -234,8 +235,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     let st: HostFileStat;
     try {
       st = await this.hostFs.stat(abs);
-    } catch (err) {
-      throw mapFsError(err, req.path);
+    } catch (error) {
+      throw mapFsError(error, req.path);
     }
     if (st.isDirectory) {
       throw new Error2(ErrorCodes.FS_IS_DIRECTORY, `path is a directory: ${req.path}`, {
@@ -333,9 +334,9 @@ export class WorkspaceFsService implements IWorkspaceFsService {
           });
           results[p] = sub.items;
           if (sub.truncated) truncatedPaths.push(p);
-        } catch (err) {
-          if (err instanceof Error2 && err.code === ErrorCodes.FS_PATH_ESCAPES) throw err;
-          partialErrors[p] = toWireError(err);
+        } catch (error) {
+          if (error instanceof Error2 && error.code === ErrorCodes.FS_PATH_ESCAPES) throw error;
+          partialErrors[p] = toWireError(error);
         }
       }),
     );
@@ -352,8 +353,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     let st: HostFileStat;
     try {
       st = await this.hostFs.lstat(abs);
-    } catch (err) {
-      throw mapFsError(err, req.path);
+    } catch (error) {
+      throw mapFsError(error, req.path);
     }
     const name = rel === '.' ? this.path.basename(this.workDir) : this.path.basename(abs);
     return buildFsEntry(rel, name, st, true);
@@ -387,8 +388,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const rel = this.toRel(abs);
     try {
       await this.hostFs.mkdir(abs, { recursive: req.recursive });
-    } catch (err) {
-      const code = errnoCode(err);
+    } catch (error) {
+      const code = errnoCode(error);
       if (code === 'EEXIST') {
         throw new Error2(ErrorCodes.FS_ALREADY_EXISTS, `path already exists: ${req.path}`, {
           details: { path: req.path },
@@ -399,7 +400,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
           details: { path: req.path },
         });
       }
-      throw err;
+      throw error;
     }
     const st = await this.hostFs.lstat(abs);
     return buildFsEntry(rel, this.path.basename(abs), st, false);
@@ -411,8 +412,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     let st: HostFileStat;
     try {
       st = await this.hostFs.lstat(abs);
-    } catch (err) {
-      throw mapFsError(err, relPath);
+    } catch (error) {
+      throw mapFsError(error, relPath);
     }
     return { absolute: abs, relative: rel, isDirectory: st.isDirectory };
   }
@@ -423,8 +424,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     let st: HostFileStat;
     try {
       st = await this.hostFs.stat(abs);
-    } catch (err) {
-      throw mapFsError(err, relPath);
+    } catch (error) {
+      throw mapFsError(error, relPath);
     }
     if (st.isDirectory) {
       throw new Error2(ErrorCodes.FS_IS_DIRECTORY, `path is a directory: ${relPath}`, {
@@ -510,7 +511,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const loaded = new Map<string, readonly HostDirEntry[]>();
     while (stack.length > 0 && visited < 256 && directories < 32 && items.length < req.limit) {
       signal?.throwIfAborted();
-      const frame = stack[stack.length - 1]!;
+      const frame = stack.at(-1)!;
       let entries = loaded.get(frame.path);
       if (entries === undefined) {
         const { abs, stat } = await this.searchDirectory(frame.path, req.cursor !== undefined, signal);
@@ -530,7 +531,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
           continue;
         }
         signal?.throwIfAborted();
-        entries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+        entries = [...entries].toSorted((a, b) => a.name.localeCompare(b.name));
         loaded.set(frame.path, entries);
         directories += 1;
       }
@@ -558,7 +559,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       });
     }
     while (stack.length > 0) {
-      const frame = stack[stack.length - 1]!;
+      const frame = stack.at(-1)!;
       const entries = loaded.get(frame.path);
       if (entries === undefined || frame.offset < entries.length) break;
       stack.pop();
@@ -594,7 +595,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     }
   }
 
-  async suggest(req: FsSuggestRequest): Promise<FsSuggestResponse> {
+  async suggest(req: FsSuggestRequest, signal?: AbortSignal): Promise<FsSuggestResponse> {
+    signal?.throwIfAborted();
     if (req.query === '') {
       const listed = await this.list({
         path: '.',
@@ -606,6 +608,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
         sort: 'type_first',
         include_git_status: false,
       });
+      signal?.throwIfAborted();
       const filtered = listed.items
         .filter((entry) => !VCS_METADATA_DIRS.has(entry.name) && (entry.kind === 'directory' || !isSensitiveFile(entry.path)))
         .filter(
@@ -640,6 +643,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const cap = req.limit;
     const index = req.follow_gitignore ? this.pathIndex() : undefined;
     await index?.whenSettled();
+    signal?.throwIfAborted();
     const revision = index?.snapshot()?.revision;
     const cacheKey = JSON.stringify(req);
     const cached = this.indexedSuggestCache.get(cacheKey);
@@ -664,6 +668,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SUGGEST_TIMEOUT_MS);
     timer.unref?.();
+    const combined = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
     try {
       let resolution: RgResolution | null = null;
       try {
@@ -671,17 +676,23 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       } catch {
         resolution = null;
       }
+      signal?.throwIfAborted();
+      let response: FsSuggestResponse;
       if (resolution !== null) {
         try {
-          return await this.suggestWithRg(query, cap, controller.signal, resolution.path);
-        } catch (err) {
-          if (controller.signal.aborted) throw err;
+          response = await this.suggestWithRg(query, cap, combined, resolution.path);
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (combined.aborted) throw error;
           this.telemetry.track2('fs_suggest_node_fallback', { reason: 'rg_error' });
-          return await this.suggestWithNode(query, cap, controller.signal);
+          response = await this.suggestWithNode(query, cap, combined);
         }
+      } else {
+        this.telemetry.track2('fs_suggest_node_fallback', { reason: 'rg_missing' });
+        response = await this.suggestWithNode(query, cap, combined);
       }
-      this.telemetry.track2('fs_suggest_node_fallback', { reason: 'rg_missing' });
-      return await this.suggestWithNode(query, cap, controller.signal);
+      signal?.throwIfAborted();
+      return response;
     } finally {
       clearTimeout(timer);
     }
@@ -715,7 +726,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const kill = (): void => {
       if (killed) return;
       killed = true;
-      void proc.kill('SIGKILL');
+      proc.kill('SIGKILL').catch(() => undefined);
     };
     const onAbort = (): void => kill();
     if (signal.aborted) kill();
@@ -812,8 +823,8 @@ export class WorkspaceFsService implements IWorkspaceFsService {
         matched += 1;
         top.push(candidate);
       });
-    } catch (err) {
-      if (err !== SUGGEST_WALK_ABORTED) throw err;
+    } catch (error) {
+      if (error !== SUGGEST_WALK_ABORTED) throw error;
     }
     const items = top.drain().map((candidate) => ({
       path: candidate.path,
@@ -825,18 +836,28 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     return { items, truncated: matched > cap || signal.aborted };
   }
 
-  async grep(req: FsGrepRequest): Promise<FsGrepResponse> {
+  async grep(req: FsGrepRequest, signal?: AbortSignal): Promise<FsGrepResponse> {
+    signal?.throwIfAborted();
     const startedAt = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), GREP_TIMEOUT_MS);
     timer.unref?.();
+    const combined = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
     try {
       const resolution = await this.resolveRg();
+      signal?.throwIfAborted();
+      let response: FsGrepResponse;
       if (resolution !== null) {
-        return await this.grepWithRg(req, controller.signal, startedAt, resolution.path);
+        response = await this.grepWithRg(req, combined, startedAt, resolution.path, signal);
+      } else {
+        this.telemetry.track2('fs_grep_node_fallback', { reason: 'rg_missing' });
+        response = await this.grepWithNode(req, combined, startedAt);
       }
-      this.telemetry.track2('fs_grep_node_fallback', { reason: 'rg_missing' });
-      return await this.grepWithNode(req, controller.signal, startedAt);
+      signal?.throwIfAborted();
+      return response;
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -864,6 +885,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     signal: AbortSignal,
     startedAt: number,
     rgPath: string,
+    cancel?: AbortSignal,
   ): Promise<FsGrepResponse> {
     const args = ['--json'];
     if (req.context_lines > 0) {
@@ -885,9 +907,11 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     args.push('--max-count', String(req.max_matches_per_file));
     const index = this.pathIndex();
     await index?.whenSettled();
+    cancel?.throwIfAborted();
     const snapshot = index?.snapshot();
     let candidates = req.follow_gitignore && req.include_globs === undefined && req.exclude_globs === undefined && snapshot !== undefined
       ? await index?.trigram?.candidates(snapshot, req.pattern, !req.regex, !req.case_sensitive) : undefined;
+    cancel?.throwIfAborted();
     candidates = candidates?.filter(path => !path.split('/').some(segment => segment.startsWith('.')));
     if (candidates !== undefined && candidates.reduce((length, path) => length + path.length + 3, 0) > 16_000) candidates = undefined;
     if (candidates?.length === 0) return { files: [], files_scanned: 0, truncated: false, elapsed_ms: Date.now() - startedAt };
@@ -901,7 +925,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const kill = (): void => {
       if (killed) return;
       killed = true;
-      void proc.kill('SIGKILL');
+      proc.kill('SIGKILL').catch(() => undefined);
     };
     const onAbort = (): void => kill();
     if (signal.aborted) kill();
@@ -958,12 +982,20 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     let truncated = false;
 
     const filePaths: string[] = [];
-    await this.walk('', matcher, async (rel, _name, kind) => {
-      if (kind !== 'file') return;
-      if (req.include_globs && !matchesAnyGlob(rel, req.include_globs)) return;
-      if (req.exclude_globs && matchesAnyGlob(rel, req.exclude_globs)) return;
-      filePaths.push(rel);
-    });
+    try {
+      await this.walk('', matcher, async (rel, _name, kind) => {
+        if (signal.aborted) throw GREP_WALK_ABORTED;
+        if (kind !== 'file') return;
+        if (req.include_globs && !matchesAnyGlob(rel, req.include_globs)) return;
+        if (req.exclude_globs && matchesAnyGlob(rel, req.exclude_globs)) return;
+        filePaths.push(rel);
+      });
+    } catch (error) {
+      if (error !== GREP_WALK_ABORTED) throw error;
+      if (filePaths.length === 0) {
+        throw new Error2(ErrorCodes.FS_GREP_TIMEOUT, `grep timed out after ${Date.now() - startedAt}ms`);
+      }
+    }
 
     for (const rel of filePaths) {
       if (signal.aborted) {
@@ -1125,9 +1157,9 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     for (let i = 0; i < 256; i++) {
       try {
         const real = await this.hostFs.realpath(current);
-        return tail.length === 0 ? real : this.path.join(real, ...tail.reverse());
-      } catch (err) {
-        if (!isMissingPathError(err)) throw err;
+        return tail.length === 0 ? real : this.path.join(real, ...tail.toReversed());
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
         const parent = this.path.dirname(current);
         if (parent === current) return abs;
         tail.push(this.path.basename(current));
@@ -1262,7 +1294,7 @@ class RgJsonAccumulator {
     const buf = this.fileBuf.get(p);
     if (buf === undefined) return;
     if (buf.matches.length > 0 && buf.pending.length > 0) {
-      const last = buf.matches[buf.matches.length - 1]!;
+      const last = buf.matches.at(-1)!;
       last.after = buf.pending.slice(0, this.req.context_lines);
     }
     if (buf.matches.length > 0) {

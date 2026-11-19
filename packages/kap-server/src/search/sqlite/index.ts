@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { open, readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
 import { matchSingleMediaPathTag } from '@kiki/agent-core-v2/agent/media/mediaRef';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
@@ -151,6 +151,7 @@ async function wireFiles(dir: string, indexSubagents: boolean): Promise<{ path: 
 
 export class SqliteSearchIndex {
   private readonly pendingSessions = new Map<string, SqliteSessionInput>();
+  private readonly stmts = new Map<string, StatementSync>();
   private syncQueue: Promise<unknown> = Promise.resolve();
   private retryTimer?: NodeJS.Timeout;
   private idleTimer?: NodeJS.Timeout;
@@ -159,10 +160,28 @@ export class SqliteSearchIndex {
   private readBytes = 0;
   private peakWal = 0;
   private readFiles = new Set<string>();
+  private cachedSessions = 0;
+  private cachedDocuments = 0;
+  private countsDirty = true;
+
+  private stmt(sql: string): StatementSync {
+    let cached = this.stmts.get(sql);
+    if (cached === undefined) {
+      cached = this.db.prepare(sql);
+      this.stmts.set(sql, cached);
+    }
+    return cached;
+  }
+
+  private refreshCounts(): void {
+    this.cachedSessions = (this.stmt('SELECT count(*) AS n FROM sessions').get() as { n: number }).n;
+    this.cachedDocuments = (this.stmt('SELECT count(*) AS n FROM docs').get() as { n: number }).n;
+    this.countsDirty = false;
+  }
 
   private constructor(readonly db: DatabaseSync, readonly indexSubagents: boolean,
     private readonly path: string, private readonly options: SqliteIndexOptions,
-    readOnly = false, private readonly bootSalt: string = randomUUID()) {
+    private readonly readOnly = false, private readonly bootSalt: string = randomUUID()) {
     if (readOnly) return;
     const inflight = db.prepare("SELECT v FROM meta WHERE k='inflight'").get() as { v: string } | undefined;
     if (inflight) {
@@ -176,6 +195,7 @@ export class SqliteSearchIndex {
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     }
+    this.refreshCounts();
   }
 
   static async open(path: string, options: SqliteIndexOptions = {}): Promise<SqliteSearchIndex> {
@@ -193,18 +213,20 @@ export class SqliteSearchIndex {
   }
 
   clearInflightOnBudgetExit(): void {
-    if (this.db.isTransaction) this.db.exec('ROLLBACK');
-    this.db.prepare("DELETE FROM meta WHERE k='inflight'").run();
+    if (this.db.isTransaction) {
+      this.db.exec('ROLLBACK');
+      this.countsDirty = true;
+    }
+    this.stmt("DELETE FROM meta WHERE k='inflight'").run();
   }
 
   get syncStatus(): SqliteSyncStatus {
     const walBytes = this.walBytes;
     this.peakWal = Math.max(this.peakWal, walBytes);
-    const indexedSessions = (this.db.prepare('SELECT count(*) AS n FROM sessions').get() as { n: number }).n;
-    const documents = (this.db.prepare('SELECT count(*) AS n FROM docs').get() as { n: number }).n;
+    if (this.readOnly || this.countsDirty) this.refreshCounts();
     return { state: this.walStuck ? 'wal_stuck' : 'ready', walBytes,
       peakWalBytes: this.peakWal, wireBytesRead: this.readBytes, wireFilesRead: this.readFiles.size,
-      indexedSessions, documents };
+      indexedSessions: this.cachedSessions, documents: this.cachedDocuments };
   }
 
   resetReadCounters(): void { this.readBytes = 0; this.readFiles.clear(); }
@@ -265,54 +287,58 @@ export class SqliteSearchIndex {
     this.closed = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.stmts.clear();
     this.db.close();
   }
 
   async reindex(): Promise<void> {
     await this.syncQueue;
     if (this.closed) throw new Error('search index is closed');
-    const sessions = this.db.prepare('SELECT id FROM sessions').all() as { id: string }[];
+    const sessions = this.stmt('SELECT id FROM sessions').all() as { id: string }[];
     for (const { id } of sessions) {
       this.db.exec('BEGIN');
       try {
         this.deleteDocs('session_id', id);
-        this.db.prepare('DELETE FROM sessions WHERE id=?').run(id);
+        const removed = Number(this.stmt('DELETE FROM sessions WHERE id=?').run(id).changes);
+        this.cachedSessions = Math.max(0, this.cachedSessions - removed);
         this.bumpGeneration();
         this.db.exec('COMMIT');
-      } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      } catch (error) { this.db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
       this.afterCommit();
     }
-    this.db.prepare('DELETE FROM file_failures').run();
+    this.stmt('DELETE FROM file_failures').run();
   }
 
   private get generation(): string {
-    return `${this.bootSalt}:${(this.db.prepare("SELECT v FROM meta WHERE k='generation'").get() as { v: string }).v}`;
+    return `${this.bootSalt}:${(this.stmt("SELECT v FROM meta WHERE k='generation'").get() as { v: string }).v}`;
   }
 
   private bumpGeneration(): void {
-    this.db.prepare("UPDATE meta SET v=CAST(v AS INTEGER)+1 WHERE k='generation'").run();
+    this.stmt("UPDATE meta SET v=CAST(v AS INTEGER)+1 WHERE k='generation'").run();
   }
 
   private insertDoc(fileId: number | null, sessionId: string, lineOffset: number, ord: number,
     role: string, time: number, turn: number | undefined, stepId: string | undefined, text: string): void {
-    const db = this.db;
-    const info = db.prepare('INSERT INTO docs(file_id,session_id,line_offset,ord,role,time,turn,step_id,text) VALUES(?,?,?,?,?,?,?,?,?)')
+    const info = this.stmt('INSERT INTO docs(file_id,session_id,line_offset,ord,role,time,turn,step_id,text) VALUES(?,?,?,?,?,?,?,?,?)')
       .run(fileId, sessionId, lineOffset, ord, role, time, turn ?? null, stepId ?? null, text);
     const id = Number(info.lastInsertRowid);
-    db.prepare('INSERT INTO docs_terms(rowid,terms) VALUES(?,?)').run(id, encodeTerms(text));
-    db.prepare('INSERT INTO docs_tri(rowid,text) VALUES(?,?)').run(id, normalizeLiteral(text));
+    this.stmt('INSERT INTO docs_terms(rowid,terms) VALUES(?,?)').run(id, encodeTerms(text));
+    this.stmt('INSERT INTO docs_tri(rowid,text) VALUES(?,?)').run(id, normalizeLiteral(text));
+    this.cachedDocuments += 1;
   }
 
   private deleteDocs(where: 'id' | 'file_id' | 'session_id', key: string | number): void {
-    const db = this.db;
-    const rows = db.prepare(`SELECT id,text FROM docs WHERE ${where}=?`).iterate(key) as Iterable<{ id: number; text: string }>;
+    const selectStmt = this.stmt(`SELECT id,text FROM docs WHERE ${where}=?`);
+    const deleteTermsStmt = this.stmt("INSERT INTO docs_terms(docs_terms,rowid,terms) VALUES('delete',?,?)");
+    const deleteTriStmt = this.stmt("INSERT INTO docs_tri(docs_tri,rowid,text) VALUES('delete',?,?)");
+    const deleteDocStmt = this.stmt('DELETE FROM docs WHERE id=?');
+    const rows = selectStmt.all(key) as { id: number; text: string }[];
     for (const row of rows) {
-      db.prepare("INSERT INTO docs_terms(docs_terms,rowid,terms) VALUES('delete',?,?)")
-        .run(row.id, encodeTerms(row.text));
-      db.prepare("INSERT INTO docs_tri(docs_tri,rowid,text) VALUES('delete',?,?)")
-        .run(row.id, normalizeLiteral(row.text));
-      db.prepare('DELETE FROM docs WHERE id=?').run(row.id);
+      deleteTermsStmt.run(row.id, encodeTerms(row.text));
+      deleteTriStmt.run(row.id, normalizeLiteral(row.text));
+      deleteDocStmt.run(row.id);
     }
+    this.cachedDocuments = Math.max(0, this.cachedDocuments - rows.length);
   }
 
   private async tailHash(path: string, offset: number, pinned?: PinnedLogicalRead): Promise<string> {
@@ -371,10 +397,13 @@ export class SqliteSearchIndex {
             db.prepare('DELETE FROM file_failures WHERE path=?').run(file.path);
             db.prepare('DELETE FROM files WHERE id=?').run(file.id);
           }
-        } else if (!docs.length) db.prepare('DELETE FROM sessions WHERE id=?').run(id);
+        } else if (!docs.length) {
+          const removed = Number(this.stmt('DELETE FROM sessions WHERE id=?').run(id).changes);
+          this.cachedSessions = Math.max(0, this.cachedSessions - removed);
+        }
         this.bumpGeneration();
         db.exec('COMMIT');
-      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
       this.afterCommit();
       if (!docs.length && !file) { this.pendingSessions.delete(id); return true; }
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -413,18 +442,21 @@ export class SqliteSearchIndex {
       db.exec('BEGIN');
       try {
         this.deleteDocs('session_id', session.id);
-        db.prepare('DELETE FROM sessions WHERE id=?').run(session.id);
+        const removed = Number(this.stmt('DELETE FROM sessions WHERE id=?').run(session.id).changes);
+        this.cachedSessions = Math.max(0, this.cachedSessions - removed);
         this.bumpGeneration();
         db.exec('COMMIT');
-      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
     }
     db.exec('BEGIN');
     try {
-      db.prepare('INSERT INTO sessions(id,workspace_id,title,dir,identity,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,title=excluded.title,dir=excluded.dir,identity=excluded.identity,updated_at=excluded.updated_at')
+      const inserted = existing === undefined || existing.identity !== id || existing.dir !== session.dir;
+      this.stmt('INSERT INTO sessions(id,workspace_id,title,dir,identity,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,title=excluded.title,dir=excluded.dir,identity=excluded.identity,updated_at=excluded.updated_at')
         .run(session.id, session.workspaceId, title, session.dir, id, session.updatedAt);
+      if (inserted) this.cachedSessions += 1;
       if (existing === undefined || existing.title !== title || existing.identity !== id) {
         if (existing !== undefined && existing.identity === id) {
-          const oldTitle = db.prepare("SELECT id FROM docs WHERE session_id=? AND role='title'")
+          const oldTitle = this.stmt("SELECT id FROM docs WHERE session_id=? AND role='title'")
             .get(session.id) as { id: number } | undefined;
           if (oldTitle) this.deleteDocs('id', oldTitle.id);
           this.bumpGeneration();
@@ -432,7 +464,7 @@ export class SqliteSearchIndex {
         if (title) this.insertDoc(null, session.id, -1, 0, 'title', session.updatedAt, undefined, undefined, title);
       }
       db.exec('COMMIT');
-    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
     const files = await wireFiles(session.dir, this.indexSubagents);
     for (const file of files) {
       if (this.options.isStopped?.()) return false;
@@ -452,7 +484,7 @@ export class SqliteSearchIndex {
           if (db.prepare('SELECT 1 FROM docs WHERE file_id=? LIMIT 1').get(file.id)) {
             db.exec('BEGIN');
             try { this.deleteDocs('file_id', file.id); this.bumpGeneration(); db.exec('COMMIT'); }
-            catch (error) { db.exec('ROLLBACK'); throw error; }
+            catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
           }
           continue;
         }
@@ -474,7 +506,7 @@ export class SqliteSearchIndex {
       db.prepare('DELETE FROM files WHERE id=?').run(fileId);
       this.bumpGeneration();
       db.exec('COMMIT');
-    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    } catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
   }
 
   private async syncFile(session: SqliteSessionInput, path: string, agentId: string, isBranch = false): Promise<void> {
@@ -487,7 +519,7 @@ export class SqliteSearchIndex {
         if (db.prepare('SELECT 1 FROM docs WHERE file_id=? LIMIT 1').get(file.id)) {
           db.exec('BEGIN');
           try { this.deleteDocs('file_id', file.id); this.bumpGeneration(); db.exec('COMMIT'); }
-          catch (error) { db.exec('ROLLBACK'); throw error; }
+          catch (error) { db.exec('ROLLBACK'); this.countsDirty = true; throw error; }
         }
       } else if (file?.policy !== 'skip') {
         if (file) this.removeFile(file.id);
@@ -675,7 +707,7 @@ export class SqliteSearchIndex {
           db.exec('COMMIT');
         } catch (error) { db.exec('ROLLBACK'); throw error; }
       } catch (error) {
-        if (db.isTransaction) db.exec('ROLLBACK');
+        if (db.isTransaction) { db.exec('ROLLBACK'); this.countsDirty = true; }
         db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
         throw error;
       }
@@ -758,14 +790,23 @@ export class SqliteSearchIndex {
     if (matchedIds.length > cap) { matchedIds.length = cap; incomplete = 'candidate_cap'; }
     budget.candidatesLeft -= matchedIds.length;
     const rows: { key: string; value: MessageDoc | TitleDoc; score: number }[] = [];
-    const N = q.mode === 'terms' && !ranked ? (db.prepare(`SELECT count(*) AS n FROM docs d
-      JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id
-      WHERE 1=1${scopedWhere}`).get(...filterValues) as { n: number }).n : 0;
+    const DF_COUNT_CAP = 10_000;
+    let N = 0;
+    if (q.mode === 'terms' && !ranked) {
+      if (Date.now() > deadlineAt - 25) {
+        incomplete ??= 'deadline';
+      } else {
+        N = (db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM docs d
+          JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id
+          WHERE 1=1${scopedWhere} LIMIT ?)`).get(...filterValues, DF_COUNT_CAP) as { n: number }).n;
+      }
+    }
     const dfs = new Map<string, number>();
-    if (q.mode === 'terms' && !ranked) for (const term of terms) {
-      dfs.set(term, (db.prepare(`SELECT count(*) AS n FROM docs_terms ${joins('docs_terms')}
-        WHERE docs_terms MATCH ?${scopedWhere}`)
-        .get(quoteTerm(encodeTerm(term)), ...filterValues) as { n: number }).n);
+    if (q.mode === 'terms' && !ranked && N > 0) for (const term of terms) {
+      if (Date.now() > deadlineAt - 25) { incomplete ??= 'deadline'; break; }
+      dfs.set(term, (db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM docs_terms ${joins('docs_terms')}
+        WHERE docs_terms MATCH ?${scopedWhere} LIMIT ?)`)
+        .get(quoteTerm(encodeTerm(term)), ...filterValues, DF_COUNT_CAP) as { n: number }).n);
     }
     const candidate = db.prepare('SELECT d.*,s.workspace_id,s.title,s.identity,s.dir,f.agent_id,f.path FROM docs d JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id WHERE d.id=?');
     for (const { rowid, rank } of matchedIds) {

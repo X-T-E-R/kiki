@@ -157,6 +157,7 @@ export interface TargetSubscription {
   readonly transcriptGrades?: TranscriptGradeSpec;
   readonly transcriptGeneration?: number;
   readonly residencyLease?: SessionLease;
+  readonly prevTranscriptSeeded?: boolean;
 }
 
 export type TranscriptSince = Record<string, TranscriptCursor | number>;
@@ -527,7 +528,7 @@ export class SessionEventBroadcaster {
       signal: opts?.timing?.signal === undefined ? token.signal : AbortSignal.any([token.signal, opts.timing.signal]) };
     const fields = { sessionId, generation: timing.generation, viewId: timing.viewId };
     let acquiredLease: SessionLease | undefined;
-    let attached: { state: SessionState; generation: number } | undefined;
+    let attached: { state: SessionState; generation: number; prev: TargetSubscription | undefined; prevSeeded: boolean } | undefined;
     try {
       const pinnedState = this.sessions.get(sessionId);
       const existingLease = pinnedState?.targets.get(target)?.residencyLease;
@@ -543,6 +544,7 @@ export class SessionEventBroadcaster {
           this.sessions.get(sessionId) !== state ||
           (existingLease !== undefined && state !== pinnedState)) return false;
       const prev = state.targets.get(target);
+      const prevSeeded = state.transcriptSeeded.has(target);
       const residencyLease = prev?.residencyLease ?? acquiredLease;
       if (residencyLease !== undefined &&
           (state.sessionHandle !== residencyLease.handle ||
@@ -560,8 +562,9 @@ export class SessionEventBroadcaster {
         transcriptGrades,
         transcriptGeneration: generation,
         residencyLease,
+        prevTranscriptSeeded: prevSeeded,
       });
-      attached = { state, generation };
+      attached = { state, generation, prev, prevSeeded };
       if (transcriptGrades === undefined) {
         state.transcriptSeeded.delete(target);
         return true;
@@ -599,7 +602,19 @@ export class SessionEventBroadcaster {
       if (attached !== undefined && pending.get(target) === token &&
           this.sessions.get(sessionId) === attached.state &&
           attached.state.targets.get(target)?.transcriptGeneration === attached.generation) {
-        this.unsubscribe(sessionId, target);
+        if (attached.prev === undefined) {
+          this.unsubscribe(sessionId, target);
+        } else {
+          const restoredGeneration = this.nextTranscriptGeneration(attached.state, target);
+          attached.state.targets.set(target, {
+            agentFilter: attached.prev.agentFilter,
+            transcriptGrades: attached.prev.transcriptGrades,
+            transcriptGeneration: restoredGeneration,
+            residencyLease: attached.prev.residencyLease,
+          });
+          if (attached.prevSeeded) attached.state.transcriptSeeded.add(target);
+          else attached.state.transcriptSeeded.delete(target);
+        }
       }
       throw error;
     } finally {
@@ -674,6 +689,32 @@ export class SessionEventBroadcaster {
     const seed = state.pendingTranscriptSeeds.get(target);
     if (seed === undefined || !seed.deferred) return;
     await this.runTranscriptSeed(state, target, seed);
+  }
+
+  restoreSubscription(
+    sessionId: string,
+    target: BroadcastTarget,
+    prior: { readonly agentFilter?: AgentFilter; readonly transcriptGrades?: TranscriptGradeSpec } | undefined,
+  ): void {
+    if (prior === undefined) {
+      this.unsubscribe(sessionId, target);
+      return;
+    }
+    const state = this.sessions.get(sessionId);
+    const current = state?.targets.get(target);
+    if (state === undefined || current === undefined) return;
+    const restoredGeneration = this.nextTranscriptGeneration(state, target);
+    state.targets.set(target, {
+      agentFilter: prior.agentFilter,
+      transcriptGrades: prior.transcriptGrades,
+      transcriptGeneration: restoredGeneration,
+      residencyLease: current.residencyLease,
+    });
+    if (prior.transcriptGrades !== undefined && current.prevTranscriptSeeded === true) {
+      state.transcriptSeeded.add(target);
+    } else {
+      state.transcriptSeeded.delete(target);
+    }
   }
 
   unsubscribe(sessionId: string, target: BroadcastTarget): void {

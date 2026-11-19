@@ -1416,7 +1416,7 @@ describe('TranscriptService live integration', () => {
     } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 
-  it.runIf(process.env['KIKI_TRANSCRIPT_GC_FIXTURE'] === '1')('collects released payloads across fixed multi-agent rounds and rereads every completed turn', async () => {
+  it.runIf(typeof globalThis.gc === 'function' || process.env['KIKI_TRANSCRIPT_GC_FIXTURE'] === '1')('collects released payloads across fixed multi-agent rounds and rereads every completed turn', async () => {
     expect(globalThis.gc).toBeTypeOf('function');
     const home = await seedWireHome(undefined, true);
     const agents = new FakeAgents();

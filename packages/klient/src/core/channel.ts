@@ -117,7 +117,7 @@ export interface KlientChannel {
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
-    onError?: (error: Error) => void,
+    onError?: (error: Error, terminal?: boolean) => void,
     onReady?: () => void,
   ): IDisposable;
   /** Tear the transport down (sockets, lazy bridges). Rejects in-flight calls. */

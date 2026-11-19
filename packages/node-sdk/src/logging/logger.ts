@@ -1,4 +1,5 @@
-import { redactCtx, type ILogService } from '@kiki/agent-core-v2';
+import { redactCtx } from '@kiki/agent-core-v2/_base/log/formatter';
+import type { ILogService } from '@kiki/agent-core-v2/_base/log/log';
 
 import type {
   DiagnosticLogHost,

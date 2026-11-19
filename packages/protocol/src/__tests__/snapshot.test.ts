@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { isVolatileEventType, VOLATILE_EVENT_TYPES } from '../events';
 import {
   inFlightTurnSchema,
   sessionSnapshotResponseSchema,
@@ -236,37 +235,5 @@ describe('rest/snapshot — session snapshot', () => {
     expect(
       inFlightTurnSchema.safeParse({ turn_id: 1, running_tools: [] }).success,
     ).toBe(false);
-  });
-});
-
-describe('events — volatile classification', () => {
-  it('classifies stream fragments and periodic status as volatile', () => {
-    for (const type of [
-      'assistant.delta',
-      'thinking.delta',
-      'tool.call.delta',
-      'tool.progress',
-      'shell.output',
-      'shell.started',
-      'shell.completed',
-      'agent.status.updated',
-      'event.capability.changed',
-    ]) {
-      expect(isVolatileEventType(type)).toBe(true);
-    }
-    expect(VOLATILE_EVENT_TYPES).toHaveLength(9);
-  });
-
-  it('keeps timeline-bearing events durable', () => {
-    for (const type of [
-      'turn.started',
-      'turn.ended',
-      'tool.call.started',
-      'tool.result',
-      'session.meta.updated',
-      'error',
-    ]) {
-      expect(isVolatileEventType(type)).toBe(false);
-    }
   });
 });

@@ -22,7 +22,7 @@ import { makeSnippet } from '../../search/snippet';
 import { searchSortedHistory, type HistorySortedCursor } from './historySortedSearch';
 import type { TranscriptService } from '../transcript/transcriptService';
 import { HistoryCanonicalReader, type CanonicalToolLookup, type CanonicalEntityLookup } from './historyCanonicalReader';
-import type { ContentSource } from '@kiki/transcript';
+import type { ContentSource, TranscriptWireRecord } from '@kiki/transcript';
 import { discoverHistoryDirectoryTail, historyDirectoryWindowGuard, historyDirectoryWindowStore,
   validateHistoryDirectoryWindow, type HistoryDirectoryWindow } from './historyDirectoryWindow';
 
@@ -33,6 +33,12 @@ const HISTORY_NAV_CHUNK_BYTES = 1 << 20;
 const HISTORY_NAV_MAX_LINE_BYTES = 32 << 20;
 const MAX_SCANNERS = 2;
 const MAX_QUEUED_SCANS = 8;
+const MAX_SLICE_CONFLICT_RETRIES = 2;
+
+function sameNavManifest(a: HistoryNavManifest | undefined, b: HistoryNavManifest | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.generation === b.generation && a.incarnation === b.incarnation && a.offset === b.offset && a.ordinal === b.ordinal;
+}
 
 export interface HistoryNavRow {
   readonly workspace: string;
@@ -297,6 +303,15 @@ export class HistoryLocatorEngine {
 
   invalidateCanonical(): void { this.canonicalReader?.invalidate(); }
 
+  async deleteSession(sessionId: string): Promise<number> {
+    for (const key of [...this.scanners.keys()]) {
+      if (key.includes(`\0${sessionId}\0`)) this.scanners.delete(key);
+    }
+    this.canonicalReader?.invalidate();
+    if (!('ready' in this.store)) return 0;
+    return (this.store as LazyHistoryNavigationDb).deleteSession(sessionId);
+  }
+
   canonicalReadReport(): ReturnType<HistoryCanonicalReader['report']> {
     return this.canonical().report();
   }
@@ -501,6 +516,7 @@ export class HistoryLocatorEngine {
     const guard = tailWindow ? historyDirectoryWindowGuard() : undefined;
     const stateDb = 'ready' in this.store
       ? await (this.store as LazyHistoryNavigationDb).ready() : undefined;
+    for (let attempt = 0; ; attempt += 1) {
     let scanner = this.scanners.get(input.key);
     const saved = stateDb?.readManifest(input.key);
     const cursor = saved === undefined ? undefined : stateDb?.readAdapterCursor(input.key);
@@ -515,24 +531,18 @@ export class HistoryLocatorEngine {
     const rebuild = stateDb === undefined
       ? freshSearch || scanner === undefined || scanner.incarnation !== input.incarnation
       : !sourceMatches;
-    stateDb?.beginSlice();
-    if (rebuild) {
-      stateDb?.clearProjection(input.key, input.workspace, input.session, input.agent);
-      scanner = undefined;
-    }
-    if (scanner === undefined || scanner.incarnation !== input.incarnation) {
-      const adapter = new NavigationWireAdapter(input.agent, stateDb?.scalarState(input.key));
-      if (!rebuild && cursor !== undefined) adapter.restore(cursor);
-      scanner = { adapter, incarnation: input.incarnation,
-        generation: !rebuild && saved !== undefined ? saved.generation : randomUUID(),
-        offset: !rebuild && saved !== undefined ? saved.offset : input.startAt ?? 0,
-        ordinal: !rebuild && saved !== undefined ? saved.ordinal : 0 };
-      this.scanners.delete(input.key);
-      if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
-      this.scanners.set(input.key, scanner);
-    }
-    if (input.search?.cursor !== undefined && (scanner.offset !== input.search.cursor.offset ||
-        scanner.incarnation !== input.search.cursor.incarnation)) throw new Error('stale_scan_cursor');
+    const startOffset = !rebuild && saved !== undefined
+      ? saved.offset
+      : !rebuild && scanner !== undefined && scanner.incarnation === input.incarnation
+        ? scanner.offset
+        : input.startAt ?? 0;
+    const startOrdinal = !rebuild && saved !== undefined
+      ? saved.ordinal
+      : !rebuild && scanner !== undefined && scanner.incarnation === input.incarnation
+        ? scanner.ordinal
+        : 0;
+    if (input.search?.cursor !== undefined && (startOffset !== input.search.cursor.offset ||
+        (scanner !== undefined && scanner.incarnation !== input.search.cursor.incarnation))) throw new Error('stale_scan_cursor');
     const pending: PendingRecord[] = [];
     const store = this.store;
     const plan = input.search === undefined ? undefined : planHistoryQuery(input.search.query, input.search.mode);
@@ -562,8 +572,84 @@ export class HistoryLocatorEngine {
       return row;
     };
     let pendingBytes = 0;
+    const foldRecord = async (record: TranscriptWireRecord, span: WireRecordSpan, recordDigest: string): Promise<boolean> => {
+      const activeScanner = scanner!;
+      const before = activeScanner.adapter.checkpoint();
+      const projected = activeScanner.adapter.add(record);
+      if (record.type === 'context.clear' || record.type === 'branch.base') stateDb?.clearUnlocatedCanonicalCalls(input.key);
+      if (stateDb !== undefined && record.type !== 'context.undo' && record.type !== 'context.clear' && record.type !== 'branch.base') {
+        const event = record['event'] as Record<string, unknown> | undefined;
+        const scalar = stateDb.scalarState(input.key);
+        const rootCallId = record['toolCallId'] ?? record['parentToolCallId'];
+        const callId = typeof event?.['toolCallId'] === 'string' ? event['toolCallId'] :
+          typeof rootCallId === 'string' ? rootCallId : undefined;
+        const message = record['message'] as Record<string, unknown> | undefined;
+        const legacyCallId = typeof message?.['toolCallId'] === 'string' ? message['toolCallId'] : undefined;
+        const stepId = typeof event?.['stepUuid'] === 'string' ? event['stepUuid'] : undefined;
+        const explicitTurn = record['turnId'] ?? event?.['turnId'];
+        const explicitTurnText = typeof explicitTurn === 'number' || typeof explicitTurn === 'string'
+          ? String(explicitTurn)
+          : undefined;
+        const effect = projected.find((op) => op.op === 'turn.upsert' || op.op === 'step.upsert' || op.op === 'frame.upsert');
+        const turnId = callId !== undefined || legacyCallId !== undefined
+          ? scalar.tools.get(callId ?? legacyCallId!)?.turnId ??
+            (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? activeScanner.adapter.checkpoint().currentTurn
+          : explicitTurnText !== undefined && /^\d+$/u.test(explicitTurnText) ? `t${explicitTurnText}`
+            : effect?.op === 'turn.upsert' ? effect.turn.turnId
+              : effect?.op === 'step.upsert' || effect?.op === 'frame.upsert' ? effect.turnId
+                : (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? activeScanner.adapter.checkpoint().currentTurn;
+        const sourceCallId = callId ?? legacyCallId;
+        if (sourceCallId !== undefined) stateDb.markCanonicalCall(input.key, sourceCallId,
+          scalar.tools.has(sourceCallId), turnId, span.ordinal);
+        if (turnId !== undefined) stateDb.addCanonicalSource(input.key,
+          { turnId, start: span.startByteOffset, end: span.endByteOffset, ordinal: span.ordinal, digest: recordDigest },
+          { legacyTurn: before.legacyTurn, ordinal: before.ordinal });
+      }
+      pending.push({ operations: projected, span,
+        digest: recordDigest, recordTime: typeof record['time'] === 'number' ? record['time'] : undefined });
+      pendingBytes += span.endByteOffset - span.startByteOffset;
+      if (plan !== undefined) {
+        const hasMatch = projected.some((op) => {
+          const time = typeof record['time'] === 'number' ? record['time'] : undefined;
+          if (input.search?.after !== undefined && (time === undefined || time < input.search.after) ||
+              input.search?.before !== undefined && (time === undefined || time >= input.search.before)) return false;
+          if (op.op === 'turn.upsert' &&
+              (input.search?.role === undefined || input.search.role === 'user')) {
+            return op.turn.prompt !== undefined && matchHistoryText(op.turn.prompt, plan) !== undefined;
+          }
+          if (op.op !== 'frame.upsert') return false;
+          const frame = op.frame;
+          if (frame.kind === 'text' && frame.role === 'assistant' && frame.text !== undefined &&
+              (input.search?.role === undefined || input.search.role === 'assistant')) {
+            return matchHistoryText(frame.text, plan) !== undefined;
+          }
+          if (frame.kind === 'tool' && includeToolOutput &&
+              (input.search?.role === undefined || input.search.role === 'tool')) {
+            return frame.output !== undefined && matchHistoryText(outputText(frame.output), plan) !== undefined;
+          }
+          if (frame.kind === 'record' && input.search?.role === 'record') return frame.text !== undefined && matchHistoryText(frame.text, plan) !== undefined;
+          return false;
+        });
+        if (hasMatch) matchedRecords += 1;
+      }
+      const pageFull = input.search !== undefined && matchedRecords >= input.search.pageSize;
+      if (pageFull || pending.length >= 128 || pendingBytes >= (1 << 20)) await flushPending();
+      return !pageFull && (input.stopAt === undefined || span.endByteOffset < input.stopAt);
+    };
+    const buffered: Array<{ record: TranscriptWireRecord; span: WireRecordSpan; digest: string }> = [];
+    if (stateDb === undefined) {
+      if (rebuild) scanner = undefined;
+      if (scanner === undefined || scanner.incarnation !== input.incarnation) {
+        const adapter = new NavigationWireAdapter(input.agent);
+        scanner = { adapter, incarnation: input.incarnation,
+          generation: randomUUID(), offset: startOffset, ordinal: startOrdinal };
+        this.scanners.delete(input.key);
+        if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
+        this.scanners.set(input.key, scanner);
+      }
+    }
     const readOptions: AwaitedWireRecordsStreamOptions = {
-      startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
+      startByteOffset: startOffset, startRecordOrdinal: startOrdinal,
       maxBytes: input.limits?.maxBytes ?? (tailWindow ? HISTORY_NAV_SCAN_BYTES / 2 : HISTORY_NAV_SCAN_BYTES),
       endByteOffset: through,
       maxRecords: input.limits?.maxRecords ?? HISTORY_NAV_SCAN_RECORDS,
@@ -575,73 +661,17 @@ export class HistoryLocatorEngine {
       onRecord: async (record, span, raw) => {
         if (input.stopAt !== undefined && span.endByteOffset > input.stopAt) throw new Error('stale_scan_cursor');
         guard?.(record);
-        const before = scanner.adapter.checkpoint();
-        const projected = scanner.adapter.add(record);
         const recordDigest = hashHistoryRecord(raw!);
-        if (record.type === 'context.clear' || record.type === 'branch.base') stateDb?.clearUnlocatedCanonicalCalls(input.key);
-        if (stateDb !== undefined && record.type !== 'context.undo' && record.type !== 'context.clear' && record.type !== 'branch.base') {
-          const event = record['event'] as Record<string, unknown> | undefined;
-          const scalar = stateDb.scalarState(input.key);
-          const rootCallId = record['toolCallId'] ?? record['parentToolCallId'];
-          const callId = typeof event?.['toolCallId'] === 'string' ? event['toolCallId'] :
-            typeof rootCallId === 'string' ? rootCallId : undefined;
-          const message = record['message'] as Record<string, unknown> | undefined;
-          const legacyCallId = typeof message?.['toolCallId'] === 'string' ? message['toolCallId'] : undefined;
-          const stepId = typeof event?.['stepUuid'] === 'string' ? event['stepUuid'] : undefined;
-          const explicitTurn = record['turnId'] ?? event?.['turnId'];
-          const explicitTurnText = typeof explicitTurn === 'number' || typeof explicitTurn === 'string'
-            ? String(explicitTurn)
-            : undefined;
-          const effect = projected.find((op) => op.op === 'turn.upsert' || op.op === 'step.upsert' || op.op === 'frame.upsert');
-          const turnId = callId !== undefined || legacyCallId !== undefined
-            ? scalar.tools.get(callId ?? legacyCallId!)?.turnId ??
-              (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? scanner.adapter.checkpoint().currentTurn
-            : explicitTurnText !== undefined && /^\d+$/u.test(explicitTurnText) ? `t${explicitTurnText}`
-              : effect?.op === 'turn.upsert' ? effect.turn.turnId
-                : effect?.op === 'step.upsert' || effect?.op === 'frame.upsert' ? effect.turnId
-                  : (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? scanner.adapter.checkpoint().currentTurn;
-          const sourceCallId = callId ?? legacyCallId;
-          if (sourceCallId !== undefined) stateDb.markCanonicalCall(input.key, sourceCallId,
-            scalar.tools.has(sourceCallId), turnId, span.ordinal);
-          if (turnId !== undefined) stateDb.addCanonicalSource(input.key,
-            { turnId, start: span.startByteOffset, end: span.endByteOffset, ordinal: span.ordinal, digest: recordDigest },
-            { legacyTurn: before.legacyTurn, ordinal: before.ordinal });
+        if (stateDb !== undefined) {
+          buffered.push({ record, span, digest: recordDigest });
+          return input.stopAt === undefined || span.endByteOffset < input.stopAt;
         }
-        pending.push({ operations: projected, span,
-          digest: recordDigest, recordTime: typeof record['time'] === 'number' ? record['time'] : undefined });
-        pendingBytes += span.endByteOffset - span.startByteOffset;
-        if (plan !== undefined) {
-          const hasMatch = projected.some((op) => {
-            const time = typeof record['time'] === 'number' ? record['time'] : undefined;
-            if (input.search?.after !== undefined && (time === undefined || time < input.search.after) ||
-                input.search?.before !== undefined && (time === undefined || time >= input.search.before)) return false;
-            if (op.op === 'turn.upsert' &&
-                (input.search?.role === undefined || input.search.role === 'user')) {
-              return op.turn.prompt !== undefined && matchHistoryText(op.turn.prompt, plan) !== undefined;
-            }
-            if (op.op !== 'frame.upsert') return false;
-            const frame = op.frame;
-            if (frame.kind === 'text' && frame.role === 'assistant' && frame.text !== undefined &&
-                (input.search?.role === undefined || input.search.role === 'assistant')) {
-              return matchHistoryText(frame.text, plan) !== undefined;
-            }
-            if (frame.kind === 'tool' && includeToolOutput &&
-                (input.search?.role === undefined || input.search.role === 'tool')) {
-              return frame.output !== undefined && matchHistoryText(outputText(frame.output), plan) !== undefined;
-            }
-            if(frame.kind==='record' && input.search?.role==='record') return frame.text!==undefined && matchHistoryText(frame.text,plan)!==undefined;
-            return false;
-          });
-          if (hasMatch) matchedRecords += 1;
-        }
-        const pageFull = input.search !== undefined && matchedRecords >= input.search.pageSize;
-        if (pageFull || pending.length >= 128 || pendingBytes >= (1 << 20)) await flushPending();
-        return !pageFull && (input.stopAt === undefined || span.endByteOffset < input.stopAt);
+        return foldRecord(record, span, recordDigest);
       },
     };
     let read = await streamLogicalWireRecordsAwaited(input.wirePath, readOptions);
     if (input.limits?.allowOversize !== false && input.search === undefined && !tailWindow && read.recordCount === 0 &&
-        (read.incompleteReason === 'byte_budget' || read.incompleteReason === 'line_budget') && read.nextByteOffset === scanner.offset) {
+        (read.incompleteReason === 'byte_budget' || read.incompleteReason === 'line_budget') && read.nextByteOffset === startOffset) {
       const attemptedBytes = read.bytesRead;
       read = await streamLogicalWireRecordsAwaited(input.wirePath, {
         ...readOptions, maxBytes: undefined, maxLineBytes: undefined, maxRecords: 1,
@@ -812,25 +842,57 @@ export class HistoryLocatorEngine {
       pending.length = 0;
       pendingBytes = 0;
     }
-    await flushPending();
-    const nextOrdinal = scanner.ordinal + read.recordCount;
+    const nextOrdinal = startOrdinal + read.recordCount;
     const currentSource = await historyNavigationProof(input.wirePath, through, input.signal);
     if (!matchesNavigationProof(source, currentSource)) throw new Error('history_source_changed');
     if (stateDb !== undefined) {
       const proof = read.nextByteOffset === through ? currentSource : await historyNavigationProof(input.wirePath, read.nextByteOffset, input.signal);
       input.signal?.throwIfAborted();
       if (proof.identity !== input.incarnation) throw new Error('history_source_changed');
-      stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,
-        incarnation: input.incarnation, offset: read.nextByteOffset, ordinal: nextOrdinal,
-        complete: read.complete, source: proof }, scanner.adapter.checkpoint());
+      stateDb.beginSlice();
+      try {
+        const latest = stateDb.readManifest(input.key);
+        if (!sameNavManifest(saved, latest)) {
+          stateDb.rollbackSlice();
+          this.scanners.delete(input.key);
+          if (attempt < MAX_SLICE_CONFLICT_RETRIES && input.search?.cursor === undefined) continue;
+          throw new Error('history_navigation_conflict');
+        }
+        if (rebuild) {
+          stateDb.clearProjection(input.key, input.workspace, input.session, input.agent);
+          scanner = undefined;
+        }
+        if (scanner === undefined || scanner.incarnation !== input.incarnation) {
+          const adapter = new NavigationWireAdapter(input.agent, stateDb.scalarState(input.key));
+          if (!rebuild && cursor !== undefined) adapter.restore(cursor);
+          scanner = { adapter, incarnation: input.incarnation,
+            generation: !rebuild && saved !== undefined ? saved.generation : randomUUID(),
+            offset: startOffset, ordinal: startOrdinal };
+          this.scanners.delete(input.key);
+          if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
+          this.scanners.set(input.key, scanner);
+        }
+        for (const entry of buffered) {
+          const cont = await foldRecord(entry.record, entry.span, entry.digest);
+          if (!cont) break;
+        }
+        await flushPending();
+        stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,
+          incarnation: input.incarnation, offset: read.nextByteOffset, ordinal: nextOrdinal,
+          complete: read.complete, source: proof }, scanner.adapter.checkpoint());
+      } catch (error) {
+        stateDb.rollbackSlice();
+        throw error;
+      }
     } else {
+      await flushPending();
       await this.store.put(HISTORY_NAV_COLLECTION, `${input.key}\0checkpoint`, {
         v: 1, incarnation: input.incarnation, offset: read.nextByteOffset, ordinal: nextOrdinal,
         complete: read.complete,
       });
     }
-    scanner.offset = read.nextByteOffset;
-    scanner.ordinal = nextOrdinal;
+    scanner!.offset = read.nextByteOffset;
+    scanner!.ordinal = nextOrdinal;
     const activeHits: HistoryHit[] = [];
     for (const hit of hits) {
       const parent = await load(rowKey({ workspace: input.workspace, session: input.session, agent: input.agent,
@@ -845,9 +907,10 @@ export class HistoryLocatorEngine {
     }
     const watermark = input.stopAt ?? input.search?.asOf;
     const throughWatermark = watermark !== undefined && read.nextByteOffset >= watermark;
-    return { complete: read.complete || throughWatermark, nextByteOffset: read.nextByteOffset, ordinal: scanner.ordinal,
+    return { complete: read.complete || throughWatermark, nextByteOffset: read.nextByteOffset, ordinal: scanner!.ordinal,
       bytesRead: read.bytesRead, recordsRead: read.recordCount, incarnation: input.incarnation,
       incompleteReason: throughWatermark ? undefined : read.incompleteReason, hits: activeHits };
+    }
   }
 
   private prefixNavigation(anchor: Pick<HistorySourceAnchor, 'workspace' | 'session' | 'agent' | 'incarnation' | 'window'>): HistoryLocatorEngine | undefined {

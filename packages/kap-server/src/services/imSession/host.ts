@@ -8,6 +8,7 @@ import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
 import {
+  agentScopeOf,
   ErrorCodes,
   IAgentLifecycleService,
   IAgentLoopService,
@@ -23,6 +24,8 @@ import {
   IHostProcessService,
   ISessionActivityView,
   ISessionApprovalService,
+  sessionScopeOf,
+  workspacePersistenceScope,
   ISessionContext,
   ISessionIndex,
   ISessionInteractionService,
@@ -63,7 +66,6 @@ import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/
 import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import { PluginImAdapterBridge } from './pluginAdapter';
 import { parseMediaBlobRef } from '@kiki/transcript';
-import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
 import { audioWavAttachmentPath, convertAudioToWav } from '../../lib/ffmpegAudio';
 import { contentToCoreParts, resolvePromptMediaFiles, sanitizeAttachmentName } from '../../lib/promptMedia';

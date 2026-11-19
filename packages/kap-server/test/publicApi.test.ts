@@ -4,8 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { classify } from '../src/security/bindClassify';
-import { rotateServerToken, serverTokenPath } from '../src/services/auth/persistentToken';
+import { classify, rotateServerToken, serverTokenPath } from '../src/index';
 
 let tmpDir: string | undefined;
 

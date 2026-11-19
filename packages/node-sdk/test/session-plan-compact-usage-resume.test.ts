@@ -157,44 +157,6 @@ describe('Session plan, compact, usage, and resume APIs', () => {
     }
   });
 
-  it.todo('marks resumed plan mode active when the restored plan has no plan data', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-legacy-plan-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-legacy-plan-work-');
-    await writeTestConfig(homeDir);
-    const createdHarness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
-    let sessionId = '';
-    let sessionDir = '';
-
-    try {
-      const created = await createdHarness.createSession({
-        id: 'ses_resume_legacy_plan_runtime',
-        workDir,
-        model: 'test-model',
-      });
-      await created.setPlanMode(true);
-      const summary = created.summary;
-      expect(summary).toBeDefined();
-      sessionId = created.id;
-      sessionDir = summary!.sessionDir;
-    } finally {
-      await createdHarness.close();
-    }
-
-    await removeManualPlanIds(sessionDir);
-
-    const resumedHarness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
-    try {
-      const resumed = await resumedHarness.resumeSession({ id: sessionId });
-
-      await expect(resumed.getStatus()).resolves.toMatchObject({
-        planMode: true,
-      });
-      await expect(resumed.getPlan()).resolves.toBeNull();
-    } finally {
-      await resumedHarness.close();
-    }
-  });
-
   it('forks a session, drops goal state, and returns an active fork session', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-fork-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-fork-work-');
@@ -311,21 +273,6 @@ describe('Session plan, compact, usage, and resume APIs', () => {
     }
   });
 });
-
-async function removeManualPlanIds(sessionDir: string): Promise<void> {
-  const wirePath = join(sessionDir, 'agents', 'main', 'wire.jsonl');
-  const raw = await readFile(wirePath, 'utf-8');
-  const lines = raw
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .flatMap((line) => {
-      const record = JSON.parse(line) as Record<string, unknown>;
-      if (record['type'] === 'plan.enter') return [];
-      if (record['type'] === 'plan.manual_enter') delete record['id'];
-      return [JSON.stringify(record)];
-    });
-  await writeFile(wirePath, `${lines.join('\n')}\n`, 'utf-8');
-}
 
 async function waitForSessionEvent(
   session: { onEvent(listener: (event: Event) => void): () => void },
