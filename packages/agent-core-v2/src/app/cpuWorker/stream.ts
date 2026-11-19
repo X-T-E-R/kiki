@@ -27,9 +27,11 @@ export async function runCpuStream<T>(execute: CpuExecutor, operation: object, s
         for (;;) {
           await pull();
           const next = await iterator.next();
+          controller.signal.throwIfAborted();
           if (next.done) { channel.port1.postMessage({ end: true }); break; }
           for (let offset = 0; offset < next.value.byteLength; offset += 1024 * 1024) {
             if (offset > 0) await pull();
+            controller.signal.throwIfAborted();
             const bytes = Uint8Array.from(next.value.subarray(offset, offset + 1024 * 1024)).buffer;
             channel.port1.postMessage({ bytes }, [bytes]);
           }
@@ -38,12 +40,17 @@ export async function runCpuStream<T>(execute: CpuExecutor, operation: object, s
       } finally { await iterator.return?.(); }
     } catch (error) { controller.abort(error); throw error; }
   })();
+  let completed = false;
   try {
     const [result] = await Promise.all([request, produce]);
+    completed = true;
     return result;
   } finally {
     controller.abort(new Error('CPU stream finished'));
     wake();
+    if (!completed) {
+      try { channel.port1.postMessage({ abort: true }); } catch {}
+    }
     channel.port1.close();
     channel.port2.close();
     signal?.removeEventListener('abort', abort);

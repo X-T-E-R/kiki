@@ -29,7 +29,7 @@ import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ConfigTarget, IConfigService, type ConfigDiagnostic } from '#/app/config/config';
-import { deepEqual } from '#/app/config/sectionDiff';
+import { deepEqual } from '#/_base/utils/recordDiff';
 import { withoutUndefined } from '#/app/config/configPure';
 import { camelToSnake, transformPlainObject } from '#/app/config/toml';
 import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';

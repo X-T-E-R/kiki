@@ -34,6 +34,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./exec-env": {
+      "types": "./src/exec-env.ts",
+      "default": "./src/exec-env.ts"
+    },
     "./ssh": {
       "types": "./src/ssh.ts",
       "default": "./src/ssh.ts"

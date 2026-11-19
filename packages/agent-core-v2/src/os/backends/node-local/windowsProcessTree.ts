@@ -6,7 +6,7 @@ import { connect, type Socket } from 'node:net';
 import { resolve } from 'node:path';
 import { Writable, type Readable } from 'node:stream';
 
-import { BufferedReadable } from '#/_base/execEnv/bufferedReadable';
+import { BufferedReadable } from '@kiki/kaos/exec-env';
 import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/interface/hostProcess';
 
 import { quoteWindowsArgument } from './windowsCommandLine';

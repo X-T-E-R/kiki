@@ -12,7 +12,7 @@ import {
 } from 'node:fs/promises';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/decodeText';
+import { decodeTextWithErrors, type TextDecodeErrors } from '@kiki/kaos/exec-env';
 
 import { type HostDirEntry, type HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { toHostFsError } from '#/os/interface/hostFsErrors';

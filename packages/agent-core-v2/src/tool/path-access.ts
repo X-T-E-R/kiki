@@ -8,7 +8,7 @@ import {
   getShellPathBridge,
   translateShellDrivePath,
   type ShellPathBridge,
-} from '#/_base/execEnv/shellPathBridge';
+} from '@kiki/kaos/exec-env';
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
 
 export interface WorkspaceConfig {

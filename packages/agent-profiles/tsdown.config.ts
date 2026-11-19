@@ -10,7 +10,7 @@ export default defineConfig({
   clean: true,
   plugins: [rawTextPlugin()],
   deps: {
-    alwaysBundle: [/^(js-yaml|pathe|picomatch)$/],
+    alwaysBundle: [/^(js-yaml|yaml|pathe|picomatch)$/],
     neverBundle: [],
   },
 });

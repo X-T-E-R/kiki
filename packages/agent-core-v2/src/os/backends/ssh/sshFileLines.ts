@@ -1,7 +1,7 @@
 import type { SSHKaos } from '@kiki/kaos/ssh';
 import type { KaosProcess } from '@kiki/kaos';
 import { StringDecoder } from 'node:string_decoder';
-import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/decodeText';
+import { decodeTextWithErrors, type TextDecodeErrors } from '@kiki/kaos/exec-env';
 import { abortable, createDeadlineAbortSignal } from '#/_base/utils/abort';
 
 const CHUNK_SIZE = 64 * 1024;

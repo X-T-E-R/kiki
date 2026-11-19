@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { mergeChildEnv } from '#/_base/execEnv/childEnv';
+import { mergeChildEnv } from '@kiki/kaos/exec-env';
 
 describe('mergeChildEnv', () => {
   it('replaces Windows keys case-insensitively and keeps the latest spelling', () => {

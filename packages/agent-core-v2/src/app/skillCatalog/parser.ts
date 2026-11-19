@@ -1,7 +1,7 @@
 import path from 'pathe';
 
 import { Error2 } from '#/_base/errors/errors';
-import { FrontmatterError, parseFrontmatter } from '#/_base/text/frontmatter';
+import { FrontmatterError, parseFrontmatter } from '@kiki/agent-profiles/frontmatter';
 import { sliceUtf16 } from '#/_base/text/utf16';
 
 import { SkillErrors } from './errors';

@@ -3,7 +3,7 @@ import { setImmediate as defer } from 'node:timers/promises';
 
 import { describe, expect, it } from 'vitest';
 
-import { BufferedReadable } from '#/_base/execEnv/bufferedReadable';
+import { BufferedReadable } from '@kiki/kaos/exec-env';
 
 async function collectText(readable: AsyncIterable<Uint8Array | string>): Promise<string> {
   const chunks: Buffer[] = [];

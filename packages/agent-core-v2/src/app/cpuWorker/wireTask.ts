@@ -5,26 +5,37 @@ import { createWireContextProjection } from '#/agent/contextMemory/wireContextPr
 import { AppendLogCorruptedError } from '#/persistence/interface/appendLogStore';
 import type { WireRecord } from '#/wire/record';
 
-export async function* decodeWireInput(input: MessagePort): AsyncIterable<string> {
+export async function* decodeWireInput(input: MessagePort, signal?: AbortSignal): AsyncIterable<string> {
   const decoder = new TextDecoder();
   try {
     for (;;) {
-      const incoming = once(input, 'message');
+      signal?.throwIfAborted();
+      const incoming = once(input, 'message', signal === undefined ? undefined : { signal });
       input.postMessage({ pull: true }, []);
-      const [message] = await incoming as [{ bytes?: ArrayBuffer; end?: boolean }];
+      const [message] = await incoming as [{ bytes?: ArrayBuffer; end?: boolean; abort?: boolean }];
+      if (message.abort) throw signal?.reason ?? new DOMException('CPU stream cancelled', 'AbortError');
       if (message.end) break;
+      signal?.throwIfAborted();
       yield decoder.decode(message.bytes, { stream: true });
     }
+    signal?.throwIfAborted();
     yield decoder.decode();
   } finally { input.close(); }
 }
 
-export async function projectWireInput(input: MessagePort, scope: string, key: string, omitTranscript = false): Promise<ArrayBuffer> {
+export async function projectWireInput(
+  input: MessagePort,
+  scope: string,
+  key: string,
+  omitTranscript = false,
+  signal?: AbortSignal,
+): Promise<ArrayBuffer> {
   const projection = createWireContextProjection();
   let pending = '';
   let lineNumber = 0;
   const parse = (raw: string, final: boolean): void => {
     lineNumber++;
+    if ((lineNumber & 63) === 0) signal?.throwIfAborted();
     const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
     if (line.length === 0) return;
     let record: WireRecord;
@@ -35,7 +46,8 @@ export async function projectWireInput(input: MessagePort, scope: string, key: s
     }
     projection.add(record);
   };
-  for await (const text of decodeWireInput(input)) {
+  for await (const text of decodeWireInput(input, signal)) {
+    signal?.throwIfAborted();
     pending += text;
     let newline = pending.indexOf('\n');
     while (newline !== -1) {
@@ -44,7 +56,9 @@ export async function projectWireInput(input: MessagePort, scope: string, key: s
       newline = pending.indexOf('\n');
     }
   }
+  signal?.throwIfAborted();
   if (pending.length > 0) parse(pending, true);
+  signal?.throwIfAborted();
   const resolved = projection.result();
   if (omitTranscript) {
     const { transcript: _transcript, ...statusOnly } = resolved;

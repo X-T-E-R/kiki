@@ -73,7 +73,6 @@
     "@fontsource/space-grotesk": "^5.2.5",
     "@kiki/agent-profiles": "workspace:^",
     "@kiki/klient": "workspace:^",
-    "@kiki/plugin-sdk": "workspace:*",
     "@kiki/protocol": "workspace:^",
     "@kiki/session-core": "workspace:^",
     "@kiki/transcript": "workspace:^",

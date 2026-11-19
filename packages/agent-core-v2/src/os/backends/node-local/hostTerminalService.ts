@@ -1,7 +1,7 @@
 import type { IPty } from 'node-pty';
 
 import { Service } from '#/_base/di/service';
-import { mergeChildEnv } from '#/_base/execEnv/childEnv';
+import { mergeChildEnv } from '@kiki/kaos/exec-env';
 
 import { IHostTerminalService, type TerminalProcess, type TerminalSpawnOptions } from '#/os/interface/terminal';
 

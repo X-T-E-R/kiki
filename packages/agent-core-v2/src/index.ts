@@ -704,7 +704,7 @@ export * from '#/workspace/workspaceFs/fsWatch';
 export * from '#/workspace/workspaceFs/fsWatchService';
 export * from '#/session/agentLifecycle/profile/gitContext';
 export * from '#/workspace/workspaceFs/internal/rgLocator';
-export * from '#/workspace/workspaceFs/internal/runRg';
+export * from '#/os/backends/node-local/tools/runRg';
 export * from '#/workspace/workspaceGit/workspaceGit';
 export * from '#/workspace/workspaceGit/workspaceGitService';
 export * from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';

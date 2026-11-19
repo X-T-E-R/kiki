@@ -6,7 +6,7 @@ import { retryBackoffDelays, sleepForRetry } from '#/_base/utils/retry';
 
 import { type ConfigSectionChangedEvent, IConfigService } from '#/app/config/config';
 import { describeUnknownError } from '#/app/config/configPure';
-import { deepEqual } from '#/app/config/sectionDiff';
+import { deepEqual } from '#/_base/utils/recordDiff';
 import { IModelService, type ModelsSection } from '#/kosong/model/model';
 import { IProviderService, type ProvidersSection } from '#/kosong/provider/provider';
 

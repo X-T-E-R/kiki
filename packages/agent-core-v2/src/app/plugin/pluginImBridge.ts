@@ -1,52 +1,23 @@
 import { Buffer } from 'node:buffer';
+import {
+  PLUGIN_IM_DIGEST_MAX_UTF8_BYTES,
+  type PluginImCapabilities,
+  type PluginImErrorKind,
+  type PluginImRoute,
+  type PluginImSendReceipt,
+  type PluginImSendRequest,
+  type PluginImSendStatus,
+} from '@kiki/plugin-sdk';
 
-export interface PluginImCapabilities {
-  readonly outbound: boolean;
-  readonly inbound: false;
-}
-
-export interface PluginImRoute {
-  readonly channelId: string;
-  readonly providerId: string;
-  readonly label?: string;
-  readonly routeRevision: string;
-}
-
-export type PluginImSendStatus =
-  | 'queued'
-  | 'accepted'
-  | 'failed'
-  | 'unknown'
-  | 'suppressed'
-  | 'cancelled';
-
-export type PluginImErrorKind =
-  | 'auth'
-  | 'forbidden'
-  | 'not_found'
-  | 'rate_limited'
-  | 'transient'
-  | 'too_long'
-  | 'bad_format'
-  | 'dependency_missing'
-  | 'configuration'
-  | 'protocol'
-  | 'unknown';
-
-export interface PluginImSendRequest {
-  readonly channelId: string;
-  readonly routeRevision: string;
-  readonly idempotencyKey: string;
-  readonly accountRef: string;
-  readonly text: string;
-}
-
-export interface PluginImSendReceipt {
-  readonly status: PluginImSendStatus;
-  readonly retryable: boolean;
-  readonly diagnosticCode?: string;
-  readonly errorKind?: PluginImErrorKind;
-}
+export {
+  PLUGIN_IM_DIGEST_MAX_UTF8_BYTES,
+  type PluginImCapabilities,
+  type PluginImErrorKind,
+  type PluginImRoute,
+  type PluginImSendReceipt,
+  type PluginImSendRequest,
+  type PluginImSendStatus,
+};
 
 export interface PluginImCaller {
   readonly pluginId: string;
@@ -67,7 +38,6 @@ const CODE = /^[a-z][a-z0-9_]{0,63}$/u;
 const ID = /^[A-Za-z0-9_.:-]{1,120}$/u;
 const KEY = /^[A-Za-z0-9_.:-]{1,200}$/u;
 const REVISION = /^[a-f0-9]{64}$/u;
-export const PLUGIN_IM_DIGEST_MAX_UTF8_BYTES = 16 * 1024;
 
 export function pluginImCaller(pluginId: string): boolean {
   return ID.test(pluginId);

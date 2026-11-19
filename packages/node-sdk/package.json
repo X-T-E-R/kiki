@@ -93,7 +93,6 @@
     "@antfu/utils": "^9.3.0",
     "@kiki/agent-core-v2": "workspace:^",
     "@kiki/auth-native": "workspace:*",
-    "@kiki/plugin-sdk": "workspace:*",
     "@kiki/transcript": "workspace:^",
     "@kiki/transcript-live": "workspace:^",
     "@nb-corp/nb-search": "^0.5.2",
@@ -107,6 +106,7 @@
     "@kiki/kaos": "workspace:^",
     "@kiki/klient": "workspace:^",
     "@kiki/oauth": "workspace:^",
+    "@kiki/plugin-sdk": "workspace:*",
     "@kiki/protocol": "workspace:^",
     "@types/yazl": "^2.4.6",
     "jimp": "^1.6.1"

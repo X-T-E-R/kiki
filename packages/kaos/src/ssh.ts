@@ -500,6 +500,7 @@ export class SSHKaos implements Kaos {
   private _environmentProbe?: Promise<Environment>;
   private _osEnv: Environment & { defaultShellName?: string; codePage?: number; tempDir?: string } = {
     osKind: 'POSIX', osArch: 'unknown', osVersion: 'unknown', shellName: 'sh', shellPath: '/bin/sh',
+    pathClass: 'posix', homeDir: '',
   };
 
   get osEnv(): Environment & { defaultShellName?: string; codePage?: number; tempDir?: string } {
@@ -540,6 +541,7 @@ export class SSHKaos implements Kaos {
           osKind: kind === 'Darwin' ? 'macOS' : kind === 'Linux' ? 'Linux' : kind,
           osArch: arch, osVersion: version,
           shellName: shellPath.endsWith('/bash') ? 'bash' : 'sh', shellPath,
+          pathClass: 'posix', homeDir: this._home,
         };
         return this._osEnv;
       }
@@ -548,9 +550,10 @@ export class SSHKaos implements Kaos {
     const output = await this._probe(powershellCommand(script));
     const [marker, arch, version, shell, defaultShellName, codePage, tempDir] = output?.split(/\r?\n/) ?? [];
     if (marker !== 'KIKI_SSH_WINDOWS' || !arch || !version || !shell || !tempDir) throw new KaosSSHError('Could not probe the remote SSH platform; neither POSIX nor Windows returned valid environment data');
-    this._osEnv = { osKind: 'Windows', osArch: arch, osVersion: version, shellName: 'powershell', shellPath: shell.replaceAll('\\', '/'), defaultShellName, codePage: Number(codePage) || 936, tempDir: tempDir.replaceAll('\\', '/') };
+    this._osEnv = { osKind: 'Windows', osArch: arch, osVersion: version, shellName: 'powershell', shellPath: shell.replaceAll('\\', '/'), pathClass: 'win32', homeDir: this._home, defaultShellName, codePage: Number(codePage) || 936, tempDir: tempDir.replaceAll('\\', '/') };
     this._home = this._nativePath(this._home);
     this._cwd = this._nativePath(this._cwd);
+    this._osEnv = { ...this._osEnv, homeDir: this._home };
     return this._osEnv;
   }
 

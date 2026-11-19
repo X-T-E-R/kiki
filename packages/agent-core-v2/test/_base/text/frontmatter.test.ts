@@ -5,7 +5,7 @@ import {
   parseFrontmatter,
   replaceFrontmatterBody,
   updateFrontmatterField,
-} from '#/_base/text/frontmatter';
+} from '@kiki/agent-profiles/frontmatter';
 
 describe('parseFrontmatter', () => {
   it('parses yaml frontmatter and body', () => {

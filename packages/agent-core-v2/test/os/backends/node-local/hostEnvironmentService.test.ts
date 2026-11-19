@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ProbeShellNotFoundError } from '#/_base/execEnv/environmentProbe';
+import { ProbeShellNotFoundError } from '@kiki/kaos/exec-env';
 import { HostEnvironmentService } from '#/os/backends/node-local/hostEnvironmentService';
 import { HostProcessError, OsProcessErrors } from '#/os/interface/hostProcess';
 
-vi.mock('#/_base/execEnv/environmentProbe', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#/_base/execEnv/environmentProbe')>();
+vi.mock('@kiki/kaos/exec-env', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@kiki/kaos/exec-env')>();
   return {
     ...actual,
     probeHostEnvironmentFromNode: () =>
@@ -14,12 +14,9 @@ vi.mock('#/_base/execEnv/environmentProbe', async (importOriginal) => {
           'C:\\Program Files\\Git\\bin\\bash.exe',
         ]),
       ),
+    applyLoginShellPathFromNode: () => Promise.resolve(),
   };
 });
-
-vi.mock('#/_base/execEnv/loginShellPath', () => ({
-  applyLoginShellPathFromNode: () => Promise.resolve(),
-}));
 
 vi.mock('#/os/backends/node-local/kikiCliPath', () => ({
   applyKikiCliShimFromNode: () => Promise.resolve(),

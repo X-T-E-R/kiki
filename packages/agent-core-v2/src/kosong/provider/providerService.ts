@@ -3,7 +3,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
 
-import { deepEqual, diffRecords, isEmptyDiff } from '../recordDiff';
+import { deepEqual, diffRecords, isEmptyDiff } from '#/_base/utils/recordDiff';
 import type { ProviderTransportDefaults } from '#/kosong/provider/requestCompression';
 
 import {

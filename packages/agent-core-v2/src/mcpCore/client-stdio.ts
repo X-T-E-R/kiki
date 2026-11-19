@@ -7,7 +7,7 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/interface/hostProcess';
 import type { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { proxyEnvForChild, reconcileChildNoProxy } from '#/_base/utils/proxy';
-import { mergeChildEnv } from '#/_base/execEnv/childEnv';
+import { mergeChildEnv } from '@kiki/kaos/exec-env';
 import { abortable } from '#/_base/utils/abort';
 import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
 import {

@@ -9,7 +9,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { translateShellDrivePath } from '#/_base/execEnv/shellPathBridge';
+import { translateShellDrivePath } from '@kiki/kaos/exec-env';
 import { profileKey } from '#/agent/profile/profileOps';
 import { dynamicPromptKey } from '#/agent/profile/dynamicPrompt';
 import { IAgentStateService } from '#/agent/state/agentState';

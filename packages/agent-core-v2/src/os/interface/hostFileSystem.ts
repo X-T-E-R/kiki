@@ -1,5 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
-import type { TextDecodeErrors } from '#/_base/execEnv/decodeText';
+import type { TextDecodeErrors } from '@kiki/kaos/exec-env';
 
 export interface HostFileStat {
   readonly isFile: boolean;

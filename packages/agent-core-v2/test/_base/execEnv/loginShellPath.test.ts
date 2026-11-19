@@ -7,7 +7,7 @@ import {
   type LoginShellPathDeps,
   mergeLoginShellPath,
   probeLoginShellPath,
-} from '#/_base/execEnv/loginShellPath';
+} from '@kiki/kaos/exec-env';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 interface StubOpts {
@@ -168,7 +168,7 @@ describe.skipIf(process.platform === 'win32')('applyLoginShellPathFromNode', () 
     process.env['SHELL'] = stubShell;
 
     vi.resetModules();
-    const { applyLoginShellPathFromNode } = await import('#/_base/execEnv/loginShellPath');
+    const { applyLoginShellPathFromNode } = await import('@kiki/kaos/exec-env');
     await applyLoginShellPathFromNode();
 
     const entries = (process.env['PATH'] ?? '').split(':');

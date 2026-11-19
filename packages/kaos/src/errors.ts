@@ -34,8 +34,11 @@ export class KaosFileExistsError extends KaosError {
  * them in install hints.
  */
 export class KaosShellNotFoundError extends KaosError {
-  constructor(message: string) {
+  readonly checked: readonly string[];
+
+  constructor(message: string, checked: readonly string[] = []) {
     super(message);
     this.name = 'KaosShellNotFoundError';
+    this.checked = checked;
   }
 }

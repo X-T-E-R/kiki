@@ -11,6 +11,7 @@ export * from './bindingAdvisory';
 export * from './agentRouteFile';
 export * from './contribution';
 export * from './agentSourceGraph';
+export * from './frontmatter';
 export * from './hostFs';
 export * from './modelProfileOverlay';
 export * from './paths';

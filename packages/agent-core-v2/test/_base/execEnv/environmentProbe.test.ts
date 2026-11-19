@@ -4,7 +4,7 @@ import {
   probeHostEnvironment,
   ProbeShellNotFoundError,
   type HostEnvironmentProbeDeps,
-} from '#/_base/execEnv/environmentProbe';
+} from '@kiki/kaos/exec-env';
 
 interface StubOpts {
   readonly platform: string;

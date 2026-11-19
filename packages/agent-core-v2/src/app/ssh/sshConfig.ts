@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { dirname, isAbsolute, join, resolve } from 'pathe';
 
-import { translateShellDrivePath } from '#/_base/execEnv/shellPathBridge';
+import { translateShellDrivePath } from '@kiki/kaos/exec-env';
 
 const execFileAsync = promisify(execFile);
 const SAFE_ALIAS = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;

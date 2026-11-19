@@ -5,7 +5,7 @@ import type {
   OsKind,
   PathClass,
   ShellName,
-} from '#/_base/execEnv/environmentProbe';
+} from '@kiki/kaos/exec-env';
 
 export type { HostEnvironmentInfo, OsKind, PathClass, ShellName };
 

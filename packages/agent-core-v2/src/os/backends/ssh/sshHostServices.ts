@@ -1,7 +1,7 @@
 import type { SSHKaos } from '@kiki/kaos/ssh';
 import { KaosFileNotFoundError, KaosPermissionError } from '@kiki/kaos/ssh';
 
-import { decodeTextWithErrors } from '#/_base/execEnv/decodeText';
+import { decodeTextWithErrors } from '@kiki/kaos/exec-env';
 import { abortable } from '#/_base/utils/abort';
 import { locateSshTail, readSshLineRange, type SshLineOptions } from './sshFileLines';
 import type { HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';

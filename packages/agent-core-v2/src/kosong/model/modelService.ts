@@ -3,7 +3,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { AsyncEmitter, type Event, type IWaitUntil } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 
-import { deepEqual, diffRecords, isEmptyDiff } from '../recordDiff';
+import { deepEqual, diffRecords, isEmptyDiff } from '#/_base/utils/recordDiff';
 
 import {
   type DefaultModelChangedEvent,

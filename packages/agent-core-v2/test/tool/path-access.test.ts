@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
-import type { ShellPathBridge } from '#/_base/execEnv/shellPathBridge';
+import type { ShellPathBridge } from '@kiki/kaos/exec-env';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { ExternalLinkAccessAskPermissionPolicyService } from '#/agent/permissionPolicy/policies/external-link-access-ask';

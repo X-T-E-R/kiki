@@ -25,6 +25,7 @@ import { KaosShellNotFoundError } from './errors';
 // 'freebsd'). Typed as `string` so the union isn't inhabited-by-string.
 export type OsKind = string;
 export type ShellName = 'bash' | 'sh' | 'powershell' | 'cmd';
+export type PathClass = 'posix' | 'win32';
 
 export interface Environment {
   readonly osKind: OsKind;
@@ -32,7 +33,11 @@ export interface Environment {
   readonly osVersion: string;
   readonly shellName: ShellName;
   readonly shellPath: string;
+  readonly pathClass: PathClass;
+  readonly homeDir: string;
 }
+
+export type HostEnvironmentInfo = Environment;
 
 export interface EnvironmentDeps {
   // Accepts the full Node `Platform` enum plus arbitrary strings for
@@ -40,6 +45,7 @@ export interface EnvironmentDeps {
   readonly platform: string;
   readonly arch: string;
   readonly release: string;
+  readonly homeDir?: string;
   readonly env: Record<string, string | undefined>;
   readonly isFile: (path: string) => Promise<boolean>;
   readonly execFileText: (
@@ -48,6 +54,8 @@ export interface EnvironmentDeps {
     timeoutMs: number,
   ) => Promise<string | undefined>;
 }
+
+export type HostEnvironmentProbeDeps = EnvironmentDeps & { readonly homeDir: string };
 
 const GIT_EXEC_PATH_TIMEOUT_MS = 5_000;
 
@@ -59,12 +67,22 @@ const MINGW_PREFIX_SET: ReadonlySet<string> = new Set([
   'clangarm64',
 ]);
 
-function resolveOsKind(platform: string): OsKind {
+function resolveOsKind(
+  platform: string,
+  env: Readonly<Record<string, string | undefined>>,
+): OsKind {
+  const configured = env['KIKI_PLATFORM']?.trim().toLowerCase();
+  if (configured === 'android') return 'Android';
+  if (configured === 'ios') return 'iOS';
   switch (platform) {
     case 'darwin':
       return 'macOS';
     case 'linux':
       return 'Linux';
+    case 'android':
+      return 'Android';
+    case 'ios':
+      return 'iOS';
     case 'win32':
       return 'Windows';
     default:
@@ -72,14 +90,37 @@ function resolveOsKind(platform: string): OsKind {
   }
 }
 
-export async function detectEnvironment(deps: EnvironmentDeps): Promise<Environment> {
-  const osKind = resolveOsKind(deps.platform);
+function inferPosixShellName(shellPath: string): 'bash' | 'sh' {
+  const base = nodePath.posix.basename(shellPath).toLowerCase();
+  return base === 'bash' || base.endsWith('-bash') ? 'bash' : 'sh';
+}
+
+async function runEnvironmentProbe(
+  deps: EnvironmentDeps,
+  includeCheckedInMessage: boolean,
+): Promise<Environment> {
+  const osKind = resolveOsKind(deps.platform, deps.env);
   const osArch = deps.arch;
   const osVersion = deps.release;
+  const pathClass: PathClass = deps.platform === 'win32' ? 'win32' : 'posix';
+  const homeDir = deps.homeDir ?? '';
 
   if (deps.platform === 'win32') {
-    const shellPath = await locateWindowsGitBash(deps);
-    return { osKind, osArch, osVersion, shellName: 'bash', shellPath };
+    const shellPath = await locateWindowsGitBash(deps, includeCheckedInMessage);
+    return { osKind, osArch, osVersion, shellName: 'bash', shellPath, pathClass, homeDir };
+  }
+
+  const override = deps.env['KIKI_SHELL_PATH']?.trim();
+  if (override !== undefined && override.length > 0 && await deps.isFile(override)) {
+    return {
+      osKind,
+      osArch,
+      osVersion,
+      shellName: inferPosixShellName(override),
+      shellPath: override,
+      pathClass,
+      homeDir,
+    };
   }
 
   const candidates: readonly string[] = ['/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash'];
@@ -91,12 +132,50 @@ export async function detectEnvironment(deps: EnvironmentDeps): Promise<Environm
     }
   }
   if (found !== undefined) {
-    return { osKind, osArch, osVersion, shellName: 'bash', shellPath: found };
+    return { osKind, osArch, osVersion, shellName: 'bash', shellPath: found, pathClass, homeDir };
   }
-  return { osKind, osArch, osVersion, shellName: 'sh', shellPath: '/bin/sh' };
+
+  const isAndroid =
+    deps.platform === 'android' || deps.env['KIKI_PLATFORM']?.trim().toLowerCase() === 'android';
+  if (!isAndroid && await deps.isFile('/bin/sh')) {
+    return { osKind, osArch, osVersion, shellName: 'sh', shellPath: '/bin/sh', pathClass, homeDir };
+  }
+  if (await deps.isFile('/system/bin/sh')) {
+    return {
+      osKind,
+      osArch,
+      osVersion,
+      shellName: 'sh',
+      shellPath: '/system/bin/sh',
+      pathClass,
+      homeDir,
+    };
+  }
+  return {
+    osKind,
+    osArch,
+    osVersion,
+    shellName: 'sh',
+    shellPath: isAndroid ? '/system/bin/sh' : '/bin/sh',
+    pathClass,
+    homeDir,
+  };
 }
 
-async function locateWindowsGitBash(deps: EnvironmentDeps): Promise<string> {
+export async function detectEnvironment(deps: EnvironmentDeps): Promise<Environment> {
+  return runEnvironmentProbe(deps, true);
+}
+
+export async function probeHostEnvironment(
+  deps: HostEnvironmentProbeDeps,
+): Promise<HostEnvironmentInfo> {
+  return runEnvironmentProbe(deps, false);
+}
+
+async function locateWindowsGitBash(
+  deps: EnvironmentDeps,
+  includeCheckedInMessage: boolean,
+): Promise<string> {
   const checked: string[] = [];
 
   const override = deps.env['KIKI_SHELL_PATH']?.trim();
@@ -155,8 +234,11 @@ async function locateWindowsGitBash(deps: EnvironmentDeps): Promise<string> {
     }
   }
 
+  const baseMessage =
+    'Git Bash was not found on this Windows host. Install Git for Windows from https://gitforwindows.org/ or set KIKI_SHELL_PATH to a bash.exe.';
   throw new KaosShellNotFoundError(
-    `Git Bash was not found on this Windows host. Install Git for Windows from https://gitforwindows.org/ or set KIKI_SHELL_PATH to a bash.exe. Checked: ${checked.join(', ')}.`,
+    includeCheckedInMessage ? `${baseMessage} Checked: ${checked.join(', ')}.` : baseMessage,
+    checked,
   );
 }
 
@@ -246,9 +328,9 @@ function dedupeWindowsPaths(paths: readonly string[]): readonly string[] {
  * with an injected deps bag.
  */
 let detectedEnvironment: Promise<Environment> | undefined;
+let probedHostEnvironment: Promise<HostEnvironmentInfo> | undefined;
 
-export function detectEnvironmentFromNode(): Promise<Environment> {
-  if (detectedEnvironment !== undefined) return detectedEnvironment;
+function createNodeProbeDeps(): HostEnvironmentProbeDeps {
   const platform = process.platform;
   const env = process.env as Record<string, string | undefined>;
   const isFile = async (path: string): Promise<boolean> => {
@@ -259,15 +341,27 @@ export function detectEnvironmentFromNode(): Promise<Environment> {
       return false;
     }
   };
-  detectedEnvironment = detectEnvironment({
+  return {
     platform,
     arch: process.arch,
     release: nodeOs.release(),
+    homeDir: nodeOs.homedir(),
     env,
     isFile,
     execFileText,
-  });
+  };
+}
+
+export function detectEnvironmentFromNode(): Promise<Environment> {
+  if (detectedEnvironment !== undefined) return detectedEnvironment;
+  detectedEnvironment = detectEnvironment(createNodeProbeDeps());
   return detectedEnvironment;
+}
+
+export function probeHostEnvironmentFromNode(): Promise<HostEnvironmentInfo> {
+  if (probedHostEnvironment !== undefined) return probedHostEnvironment;
+  probedHostEnvironment = probeHostEnvironment(createNodeProbeDeps());
+  return probedHostEnvironment;
 }
 
 async function findExecutablesOnPath(

@@ -1,5 +1,5 @@
 import { ErrorCodes, Error2 } from '#/errors';
-import { createShellPathBridge, getShellPathBridge, type ShellPathBridge } from '#/_base/execEnv/shellPathBridge';
+import { createShellPathBridge, getShellPathBridge, type ShellPathBridge } from '@kiki/kaos/exec-env';
 
 import type { Runtime, RuntimeBinding, RuntimeWorkspaceRoots } from './runtime';
 

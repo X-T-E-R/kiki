@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mergeChildEnv } from '#/_base/execEnv/childEnv';
+import { mergeChildEnv } from '@kiki/kaos/exec-env';
 import { abortable, abortError } from '#/_base/utils/abort';
 import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 

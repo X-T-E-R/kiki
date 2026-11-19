@@ -43,6 +43,7 @@
     "@types/picomatch": "^4.0.3",
     "js-yaml": "^4.3.2",
     "pathe": "^2.0.3",
-    "picomatch": "^4.0.4"
+    "picomatch": "^4.0.4",
+    "yaml": "^2.8.3"
   }
 }

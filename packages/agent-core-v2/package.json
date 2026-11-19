@@ -71,6 +71,7 @@
     "@kiki/kaos": "workspace:^",
     "@kiki/lexical": "workspace:^",
     "@kiki/oauth": "workspace:^",
+    "@kiki/plugin-sdk": "workspace:*",
     "@kiki/protocol": "workspace:^",
     "@kiki/tree-sitter-bash": "workspace:^",
     "@modelcontextprotocol/sdk": "1.32.0",

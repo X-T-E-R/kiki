@@ -30,7 +30,7 @@ import {
   replaceFrontmatterBody,
   updateFrontmatterField,
   type FrontmatterFieldValue,
-} from '#/_base/text/frontmatter';
+} from '@kiki/agent-profiles/frontmatter';
 import { parseAgentFileText } from './internal/agentFile';
 import { projectAgentRoots, userAgentRoots, projectAgentRootCandidates } from './internal/agentRoots';
 import { parseAgentRouteFileText } from './internal/agentRouteFile';

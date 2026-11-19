@@ -125,6 +125,7 @@ export const BOUNDARY_RULES = [
       '@kiki/kaos',
       '@kiki/lexical',
       '@kiki/oauth',
+      '@kiki/plugin-sdk',
       '@kiki/protocol',
       '@kiki/tree-sitter-bash',
     ]),

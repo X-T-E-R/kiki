@@ -19,9 +19,9 @@ export interface RunRgResult {
 
 export type RunRgOutcome = RunRgResult | { readonly kind: 'aborted' };
 
-function disposeProcess(proc: IHostProcess): void {
+async function disposeProcess(proc: IHostProcess): Promise<void> {
   try {
-    void proc.dispose();
+    await proc.dispose();
   } catch {
   }
 }
@@ -76,7 +76,7 @@ export async function runRgOnce(
       } catch {
       }
     }
-    disposeProcess(proc);
+    await disposeProcess(proc);
   };
 
   const onAbort = (): void => {
@@ -116,7 +116,7 @@ export async function runRgOnce(
   } finally {
     clearTimeout(timeoutHandle);
     signal.removeEventListener('abort', onAbort);
-    disposeProcess(proc);
+    await disposeProcess(proc);
   }
 
   if (aborted) {

@@ -12,7 +12,7 @@ import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots }
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
-import { getShellPathBridge } from '#/_base/execEnv/shellPathBridge';
+import { getShellPathBridge } from '@kiki/kaos/exec-env';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import {
   DEFAULT_TOOL_RESULT_MAX_CHARS,

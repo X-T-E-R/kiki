@@ -448,4 +448,57 @@ describe('detectEnvironment', () => {
     );
     expect(env.osVersion).toBe('6.1.0-test');
   });
+
+  it('recognizes Android and iOS via KIKI_PLATFORM or platform, populates pathClass and homeDir, and honors POSIX KIKI_SHELL_PATH and /system/bin/sh', async () => {
+    const androidEnv = await detectEnvironment({
+      ...stubDeps({
+        platform: 'linux',
+        env: { KIKI_PLATFORM: 'android', KIKI_SHELL_PATH: '/data/local/bin/bash' },
+        existingPaths: ['/data/local/bin/bash', '/system/bin/sh'],
+      }),
+      homeDir: '/data/user/0/kiki',
+    });
+    expect(androidEnv.osKind).toBe('Android');
+    expect(androidEnv.pathClass).toBe('posix');
+    expect(androidEnv.homeDir).toBe('/data/user/0/kiki');
+    expect(androidEnv.shellName).toBe('bash');
+    expect(androidEnv.shellPath).toBe('/data/local/bin/bash');
+
+    const androidFallback = await detectEnvironment(
+      stubDeps({
+        platform: 'android' as NodeJS.Platform,
+        existingPaths: ['/system/bin/sh'],
+      }),
+    );
+    expect(androidFallback.osKind).toBe('Android');
+    expect(androidFallback.shellName).toBe('sh');
+    expect(androidFallback.shellPath).toBe('/system/bin/sh');
+
+    const iosEnv = await detectEnvironment(
+      stubDeps({
+        platform: 'linux',
+        env: { KIKI_PLATFORM: 'ios' },
+        existingPaths: ['/bin/sh'],
+      }),
+    );
+    expect(iosEnv.osKind).toBe('iOS');
+  });
+
+  it('populates structured checked paths on KaosShellNotFoundError', async () => {
+    const error = await detectEnvironment(
+      stubDeps({
+        platform: 'win32',
+        env: { KIKI_SHELL_PATH: 'D:\\custom\\bash.exe' },
+        existingPaths: [],
+      }),
+    ).then(
+      () => {
+        throw new Error('expected throw');
+      },
+      (err: unknown) => err as KaosShellNotFoundError,
+    );
+    expect(error).toBeInstanceOf(KaosShellNotFoundError);
+    expect(error.checked).toContain('D:\\custom\\bash.exe');
+    expect(error.checked).toContain('C:\\Program Files\\Git\\bin\\bash.exe');
+  });
 });

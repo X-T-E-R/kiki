@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,6 +15,7 @@ import { readWireContextProjection } from '#/persistence/wireContextRead';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import type { WireRecord } from '#/wire/record';
 import type { FileLineRangeOperation } from '#/app/cpuWorker/tasks';
+import type { WorkspacePathInventory } from '#/os/backends/node-local/workspacePathInventory';
 
 const pools: CpuWorkerPool[] = [];
 const dirs: string[] = [];
@@ -28,9 +29,20 @@ async function pool(options: ConstructorParameters<typeof CpuWorkerPool>[1] = {}
   dirs.push(dir);
   const entry = join(dir, 'entry.mjs');
   await writeFile(entry, `import {parentPort,threadId} from 'node:worker_threads';
-parentPort.on('message',({id,operation})=>{
+parentPort.on('message',({id,operation,cancellation})=>{
   if(operation.type==='crash')process.exit(17);
   if(operation.type==='spin')while(true){}
+  if(operation.type==='coop'){
+    const view=new Int32Array(cancellation);
+    const deadline=Date.now()+operation.ms;
+    const tick=()=>{
+      if(Atomics.load(view,0)!==0){parentPort.postMessage({id,cancelled:true});return;}
+      if(Date.now()>=deadline){parentPort.postMessage({id,result:threadId});return;}
+      setTimeout(tick,2);
+    };
+    tick();
+    return;
+  }
   if(operation.type==='delay')setTimeout(()=>parentPort.postMessage({id,result:threadId}),operation.ms);
   else parentPort.postMessage({id,result:operation.bytes??operation});
 });`);
@@ -69,8 +81,8 @@ describe('CPU worker pool', () => {
     await expect(workers.request('after')).resolves.toBe('after');
   });
 
-  it('terminates uncooperative timeout work and restarts for the queued task', async () => {
-    const workers = await pool({ maxWorkers: 1 });
+  it('terminates uncooperative timeout work after grace watchdog and restarts for the queued task', async () => {
+    const workers = await pool({ maxWorkers: 1, cancelGraceMs: 120 });
     const active = workers.request({type:'spin'}, {timeoutMs:100});
     const failure = expect(active).rejects.toMatchObject({code:'CPU_TIMEOUT'});
     const waiting = workers.request('survives timeout');
@@ -78,8 +90,22 @@ describe('CPU worker pool', () => {
     await expect(waiting).resolves.toBe('survives timeout');
   });
 
+  it('reuses the same warm worker on cooperative cancellation without terminating it', async () => {
+    const workers = await pool({ maxWorkers: 1, cancelGraceMs: 5_000 });
+    const firstThreadId = await workers.request<number>({ type: 'delay', ms: 5 });
+    const controller = new AbortController();
+    const active = workers.request<number>({ type: 'coop', ms: 2_000 }, { signal: controller.signal });
+    const failure = expect(active).rejects.toThrow('cooperative cancel');
+    const startedAt = Date.now();
+    controller.abort(new Error('cooperative cancel'));
+    await failure;
+    expect(Date.now() - startedAt).toBeLessThan(200);
+    const secondThreadId = await workers.request<number>({ type: 'delay', ms: 5 });
+    expect(secondThreadId).toBe(firstThreadId);
+  });
+
   it('recovers from worker death and running cancellation without replaying failed work', async () => {
-    const workers = await pool({ maxWorkers: 1 });
+    const workers = await pool({ maxWorkers: 1, cancelGraceMs: 120 });
     await expect(workers.request({type:'crash'})).rejects.toMatchObject({code:'CPU_WORKER_EXIT'});
     await expect(workers.request('after crash')).resolves.toBe('after crash');
     const controller = new AbortController();
@@ -279,4 +305,85 @@ describe('CPU file line ranges', () => {
     expect(await read(workers, path, operation.options)).toEqual(['second\n']);
     expect(operation.options).not.toHaveProperty('signal');
   }, 15_000);
+});
+
+describe('CPU cooperative abort stress regression', () => {
+  it('survives 90 rapid concurrent abort cycles across workspacePathInventory and workspaceTrigramStore without crashing or locking SQLite', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cpu-abort-stress-'));
+    dirs.push(root);
+    const repo = join(root, 'repo');
+    const dbPath = join(root, 'cache', 'trigram.sqlite');
+    await mkdir(repo, { recursive: true });
+    for (let dirIdx = 0; dirIdx < 20; dirIdx += 1) {
+      const sub = join(repo, `dir-${dirIdx}`);
+      await mkdir(sub, { recursive: true });
+      await Promise.all(
+        Array.from({ length: 20 }, (_, fileIdx) =>
+          writeFile(
+            join(sub, `file-${fileIdx}.ts`),
+            dirIdx === 7 && fileIdx === 13
+              ? 'export const goldenStressNeedle = "ok";\n'
+              : `export const item_${dirIdx}_${fileIdx} = "${'payload-'.repeat(32)}";\n`,
+          )),
+      );
+    }
+
+    const workers = new CpuWorkerPool(new URL('../../src/app/cpuWorker/bootstrap.mjs', import.meta.url), {
+      maxWorkers: Math.min(2, Math.max(1, availableParallelism() - 1)),
+    });
+    pools.push(workers);
+
+    const baseline = await workers.request<WorkspacePathInventory>({ type: 'workspace.paths', root: repo, limit: 10_000 });
+    expect(baseline.overflow).toBe(false);
+    const fileEntries = baseline.entries.filter((entry) => entry.kind === 'file');
+    expect(fileEntries.length).toBe(400);
+
+    await workers.request({ type: 'workspace.trigram.begin', path: dbPath, epoch: 'stress-epoch' });
+
+    const iterations = 90;
+    for (let i = 0; i < iterations; i += 1) {
+      const invController = new AbortController();
+      const triController = new AbortController();
+      const invDelayMs = 1 + (i % 10);
+      const triDelayMs = 1 + ((i * 7) % 10);
+      const invTimer = setTimeout(() => { invController.abort(new Error(`abort-inv-${i}`)); }, invDelayMs);
+      const triTimer = setTimeout(() => { triController.abort(new Error(`abort-tri-${i}`)); }, triDelayMs);
+      const invPromise = workers.request<WorkspacePathInventory>(
+        { type: 'workspace.paths', root: repo, limit: 10_000 },
+        { signal: invController.signal },
+      );
+      const triPromise = workers.request<boolean | undefined>(
+        { type: 'workspace.trigram.update', path: dbPath, epoch: 'stress-epoch', root: repo, entries: fileEntries },
+        { signal: triController.signal },
+      );
+      await Promise.allSettled([invPromise, triPromise]);
+      clearTimeout(invTimer);
+      clearTimeout(triTimer);
+    }
+
+    const afterInventory = await workers.request<WorkspacePathInventory>({ type: 'workspace.paths', root: repo, limit: 10_000 });
+    expect(afterInventory.overflow).toBe(false);
+    expect(afterInventory.entries.filter((entry) => entry.kind === 'file').length).toBe(400);
+
+    await workers.request({ type: 'workspace.trigram.begin', path: dbPath, epoch: 'final-epoch' });
+    expect(await workers.request<boolean | undefined>({
+      type: 'workspace.trigram.update',
+      path: dbPath,
+      epoch: 'final-epoch',
+      root: repo,
+      entries: fileEntries,
+    })).toBe(true);
+    expect(await workers.request<boolean | undefined>({ type: 'workspace.trigram.finish', path: dbPath, epoch: 'final-epoch' })).toBe(true);
+    const candidates = await workers.request<readonly string[] | undefined>({
+      type: 'workspace.trigram.query',
+      path: dbPath,
+      epoch: 'final-epoch',
+      literal: 'goldenStressNeedle',
+      insensitive: false,
+      limit: 50,
+    });
+    expect(candidates).toContain('dir-7/file-13.ts');
+
+    await workers.close();
+  }, 60_000);
 });

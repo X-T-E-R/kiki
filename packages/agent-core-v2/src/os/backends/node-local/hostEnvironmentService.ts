@@ -3,10 +3,10 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import {
+  applyLoginShellPathFromNode,
   probeHostEnvironmentFromNode,
   ProbeShellNotFoundError,
-} from '#/_base/execEnv/environmentProbe';
-import { applyLoginShellPathFromNode } from '#/_base/execEnv/loginShellPath';
+} from '@kiki/kaos/exec-env';
 import { applyKikiCliShimFromNode } from '#/os/backends/node-local/kikiCliPath';
 
 import {

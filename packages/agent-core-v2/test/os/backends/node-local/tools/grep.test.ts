@@ -29,7 +29,7 @@ import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryServi
 import { IEventBus } from '#/app/event/eventBus';
 import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
-import type { PathClass } from '#/_base/execEnv/environmentProbe';
+import type { PathClass } from '@kiki/kaos/exec-env';
 import {
   PathSecurityError,
   SENSITIVE_DOT_VARIANT_SUFFIXES,

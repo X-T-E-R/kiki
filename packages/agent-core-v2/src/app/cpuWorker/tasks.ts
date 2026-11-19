@@ -50,8 +50,11 @@ const utf8Decoder = new TextDecoder();
 async function readCheckpointStatesFromFile(
   filePath: string,
   names: readonly string[],
+  signal?: AbortSignal,
 ): Promise<{ readonly wire: ReplayCheckpointWire; readonly states: Map<string, unknown> } | undefined> {
+  signal?.throwIfAborted();
   const bytes = await new FileStorageService(dirname(filePath)).read('', basename(filePath));
+  signal?.throwIfAborted();
   if (bytes === undefined) return undefined;
   let parsed: unknown;
   try {
@@ -59,6 +62,7 @@ async function readCheckpointStatesFromFile(
   } catch {
     return undefined;
   }
+  signal?.throwIfAborted();
   if (parsed === null || typeof parsed !== 'object') return undefined;
   const checkpoint = parsed as {
     readonly format?: unknown;
@@ -84,47 +88,60 @@ async function readCheckpointStatesFromFile(
   }
 }
 
-export async function executeCpuOperation(operation: CpuOperation): Promise<unknown> {
+export async function executeCpuOperation(operation: CpuOperation, signal?: AbortSignal): Promise<unknown> {
+  signal?.throwIfAborted();
   switch (operation.type) {
-    case 'workspace.pathFilter': return workspacePathFilter(operation.root, operation.paths);
-    case 'workspace.path': return workspacePathEntry(operation.root, operation.path);
-    case 'workspace.paths': return workspacePathInventory(operation.root, operation.limit);
+    case 'workspace.pathFilter': return workspacePathFilter(operation.root, operation.paths, signal);
+    case 'workspace.path': return workspacePathEntry(operation.root, operation.path, signal);
+    case 'workspace.paths': return workspacePathInventory(operation.root, operation.limit, signal);
     case 'workspace.trigram.begin':
     case 'workspace.trigram.update':
     case 'workspace.trigram.finish':
-    case 'workspace.trigram.query': return executeWorkspaceTrigram(operation);
+    case 'workspace.trigram.query': return executeWorkspaceTrigram(operation, signal);
     case 'image.decode': return decodeImageVerdict(new Uint8Array(operation.bytes), operation.mimeType);
     case 'image.compress': {
       const { executeImageCompress } = await import('#/agent/media/image-compress');
+      signal?.throwIfAborted();
       return executeImageCompress(operation);
     }
     case 'image.crop': {
       const { executeImageCrop } = await import('#/agent/media/image-compress');
+      signal?.throwIfAborted();
       return executeImageCrop(operation);
     }
     case 'image.normalizeAvatar': {
       const { executeAvatarNormalize } = await import('#/agent/media/image-compress');
+      signal?.throwIfAborted();
       return executeAvatarNormalize(operation);
     }
     case 'image.dimensions': {
       const { executeImageDimensions } = await import('#/agent/media/image-compress');
+      signal?.throwIfAborted();
       return executeImageDimensions(operation);
     }
     case 'image.toPng': {
       const { executeImageToPng } = await import('#/agent/media/image-compress');
+      signal?.throwIfAborted();
       return executeImageToPng(operation);
     }
-    case 'wire.context': return projectWireInput(operation.input, operation.scope, operation.key, operation.omitTranscript === true);
-    case 'checkpoint.read': return readCheckpointStatesFromFile(operation.path, operation.names);
+    case 'wire.context': return projectWireInput(operation.input, operation.scope, operation.key, operation.omitTranscript === true, signal);
+    case 'checkpoint.read': return readCheckpointStatesFromFile(operation.path, operation.names, signal);
     case 'wire.threadTurnRecord': {
       const chunks: string[] = [];
-      for await (const chunk of decodeWireInput(operation.input)) chunks.push(chunk);
+      for await (const chunk of decodeWireInput(operation.input, signal)) {
+        signal?.throwIfAborted();
+        chunks.push(chunk);
+      }
+      signal?.throwIfAborted();
       return parseThreadTurnRecord(chunks.join(''));
     }
-    case 'file.tailRange': return lineReader.readTailPage(operation.path, operation.options);
+    case 'file.tailRange': return lineReader.readTailPage(operation.path, { ...operation.options, signal });
     case 'file.lineRange': {
       const lines: string[] = [];
-      for await (const line of lineReader.readLineRange(operation.path, operation.options)) lines.push(line);
+      for await (const line of lineReader.readLineRange(operation.path, { ...operation.options, signal })) {
+        signal?.throwIfAborted();
+        lines.push(line);
+      }
       return lines;
     }
     default: throw new TypeError('Unknown CPU operation');

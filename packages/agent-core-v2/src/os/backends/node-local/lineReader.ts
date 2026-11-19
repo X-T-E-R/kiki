@@ -1,7 +1,7 @@
 import { open, readFile, stat as nodeStat, type FileHandle } from 'node:fs/promises';
 import { isUtf8 } from 'node:buffer';
 import type { Stats } from 'node:fs';
-import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/decodeText';
+import { decodeTextWithErrors, type TextDecodeErrors } from '@kiki/kaos/exec-env';
 import { HostFsError, OsFsErrors, toHostFsError } from '#/os/interface/hostFsErrors';
 
 const READ_CHUNK_SIZE = 256 * 1024;
@@ -145,7 +145,9 @@ export class LocalLineReader {
     signal?.throwIfAborted();
     const fh = await open(path, 'r');
     try {
+      signal?.throwIfAborted();
       const stat = await fh.stat();
+      signal?.throwIfAborted();
       const index = this.lineIndex(path, stat);
       const tailLines = Math.max(0, options.tailLines);
       const buffer = Buffer.allocUnsafe(READ_CHUNK_SIZE);
@@ -163,7 +165,9 @@ export class LocalLineReader {
         offset -= length;
         let received = 0;
         while (received < length) {
+          signal?.throwIfAborted();
           const { bytesRead } = await fh.read(buffer, received, length - received, offset + received);
+          signal?.throwIfAborted();
           if (bytesRead === 0) throw new Error('File changed while reading its tail; retry the read.');
           received += bytesRead;
         }

@@ -5,6 +5,7 @@ export type {
   Environment,
   EnvironmentDeps,
   OsKind,
+  PathClass,
   ShellName,
 } from './environment';
 export { detectEnvironment, detectEnvironmentFromNode } from './environment';

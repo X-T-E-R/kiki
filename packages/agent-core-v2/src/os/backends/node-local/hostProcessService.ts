@@ -1,8 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 
-import { BufferedReadable } from '#/_base/execEnv/bufferedReadable';
-import { mergeChildEnv } from '#/_base/execEnv/childEnv';
+import { BufferedReadable, mergeChildEnv } from '@kiki/kaos/exec-env';
 
 import {
   HostProcessError,

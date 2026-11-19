@@ -575,7 +575,7 @@ describe('LocalKaos', () => {
       const ring = join(tempDir, 'ring');
       await mkdir(ring);
       await writeFile(join(ring, 'leaf.txt'), 'real');
-      await symlink(ring, join(ring, 'self'));
+      await symlink(ring, join(ring, 'self'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const matches: string[] = [];
       for await (const m of kaos.glob(tempDir, '**/*.txt')) {
@@ -599,8 +599,8 @@ describe('LocalKaos', () => {
       await mkdir(b);
       await writeFile(join(a, 'aleaf.txt'), 'a');
       await writeFile(join(b, 'bleaf.txt'), 'b');
-      await symlink(b, join(a, 'to_b'));
-      await symlink(a, join(b, 'to_a'));
+      await symlink(b, join(a, 'to_b'), process.platform === 'win32' ? 'junction' : 'dir');
+      await symlink(a, join(b, 'to_a'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const matches: string[] = [];
       for await (const m of kaos.glob(tempDir, '**/*.txt')) {
@@ -629,7 +629,7 @@ describe('LocalKaos', () => {
       await mkdir(root);
       await mkdir(target);
       await writeFile(join(target, 'reachable.txt'), 'hi');
-      await symlink(target, join(root, 'shortcut'));
+      await symlink(target, join(root, 'shortcut'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const matches: string[] = [];
       for await (const m of kaos.glob(root, '**/*.txt')) {
@@ -646,7 +646,7 @@ describe('LocalKaos', () => {
       await mkdir(root);
       await writeFile(join(root, 'real.txt'), 'r');
       // Points at a path that doesn't exist.
-      await symlink(join(tempDir, 'does-not-exist'), join(root, 'dangling'));
+      await symlink(join(tempDir, 'does-not-exist'), join(root, 'dangling'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const matches: string[] = [];
       // Pattern must not match "dangling" (no .txt); we want the real
@@ -683,8 +683,8 @@ describe('LocalKaos', () => {
       await mkdir(root);
       await mkdir(target);
       await writeFile(join(target, 'shared.txt'), 'x');
-      await symlink(target, join(root, 'a'));
-      await symlink(target, join(root, 'b'));
+      await symlink(target, join(root, 'a'), process.platform === 'win32' ? 'junction' : 'dir');
+      await symlink(target, join(root, 'b'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const matches: string[] = [];
       for await (const m of kaos.glob(root, '**/*.txt')) {

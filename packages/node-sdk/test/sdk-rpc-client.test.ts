@@ -62,9 +62,9 @@ import { recordingTelemetry, type TelemetryRecord } from './telemetry';
 
 const hostEnvProbe = vi.hoisted(() => ({ failWithMissingShell: false }));
 
-vi.mock('@kiki/agent-core-v2/_base/execEnv/environmentProbe', async (importOriginal) => {
+vi.mock('@kiki/kaos/exec-env', async (importOriginal) => {
   const actual = await importOriginal<
-    typeof import('@kiki/agent-core-v2/_base/execEnv/environmentProbe')
+    typeof import('@kiki/kaos/exec-env')
   >();
   return {
     ...actual,

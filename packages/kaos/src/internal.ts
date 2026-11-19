@@ -120,6 +120,8 @@ function decodeUtf16LeIgnore(data: Buffer): string {
   return output;
 }
 
+export type TextDecodeErrors = 'strict' | 'replace' | 'ignore';
+
 /**
  * Decode a Buffer into a string with Python-compatible `errors` handling.
  *
@@ -135,7 +137,7 @@ function decodeUtf16LeIgnore(data: Buffer): string {
 export function decodeTextWithErrors(
   data: Buffer,
   encoding: BufferEncoding,
-  errors: 'strict' | 'replace' | 'ignore' = 'strict',
+  errors: TextDecodeErrors = 'strict',
   ignoreBOM: boolean = false,
 ): string {
   // Map Node's BufferEncoding names to Web TextDecoder labels where the two
@@ -251,10 +253,28 @@ export class BufferedReadable extends Readable {
     // common small/medium outputs without draining unboundedly.
     super({ highWaterMark: 128 * 1024 });
     this._source = source;
+    const pendingError = source.errored;
+    if (source.destroyed && source.readableLength > 0) {
+      let chunk: string | Buffer | null = source.read();
+      while (chunk !== null) {
+        this.push(chunk);
+        chunk = source.read();
+      }
+    }
     this._source.on('data', this._onData);
     this._source.on('end', this._onEnd);
     this._source.on('close', this._onClose);
     this._source.on('error', this._onError);
+    if (pendingError) {
+      queueMicrotask(() => {
+        if (!this.destroyed) this.destroy(pendingError);
+      });
+      return;
+    }
+    if ((source.readableEnded || source.destroyed) && source.readableLength === 0) {
+      this._ended = true;
+      this.push(null);
+    }
   }
 
   override _read(): void {

@@ -4,7 +4,7 @@ import {
   createShellPathBridge,
   type ShellPathBridgeDeps,
   type ShellPathBridgeEnv,
-} from '#/_base/execEnv/shellPathBridge';
+} from '@kiki/kaos/exec-env';
 
 const WINDOWS_ENV: ShellPathBridgeEnv = {
   osKind: 'Windows',

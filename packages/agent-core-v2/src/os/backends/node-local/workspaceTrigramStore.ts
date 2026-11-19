@@ -20,38 +20,50 @@ function openStore(path: string): DatabaseSync {
   return db;
 }
 
-export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation): boolean | readonly string[] | undefined {
+export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation, signal?: AbortSignal): boolean | readonly string[] | undefined {
+  signal?.throwIfAborted();
   const db = openStore(operation.path);
+  let inTransaction = false;
   try {
+    signal?.throwIfAborted();
     db.exec('BEGIN IMMEDIATE');
+    inTransaction = true;
     const epoch = (db.prepare("SELECT value FROM meta WHERE key='epoch'").get() as { value: string } | undefined)?.value;
     if (operation.type === 'workspace.trigram.begin') {
+      signal?.throwIfAborted();
       db.prepare("INSERT INTO meta(key,value) VALUES('epoch',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(operation.epoch);
       db.prepare("DELETE FROM meta WHERE key='complete'").run();
       db.exec('COMMIT');
+      inTransaction = false;
       return true;
     }
-    if (epoch !== operation.epoch) { db.exec('ROLLBACK'); return undefined; }
+    if (epoch !== operation.epoch) { db.exec('ROLLBACK'); inTransaction = false; return undefined; }
     if (operation.type === 'workspace.trigram.query') {
+      signal?.throwIfAborted();
       const complete = db.prepare("SELECT 1 FROM meta WHERE key='complete'").get();
-      if (complete === undefined) { db.exec('ROLLBACK'); return undefined; }
+      if (complete === undefined) { db.exec('ROLLBACK'); inTransaction = false; return undefined; }
       const chars = Array.from(operation.literal);
       const grams = new Set<string>();
       for (let index = 0; index + 2 < chars.length; index++) grams.add(chars.slice(index, index + 3).join(''));
       const query = [...grams].map(gram => `"${gram.replaceAll('"', '""')}"`).join(' AND ');
+      signal?.throwIfAborted();
       const rows = db.prepare(`SELECT path FROM files WHERE unindexed=1 OR (?=1 AND non_ascii=1)
         UNION SELECT f.path FROM content JOIN files f ON f.id=content.rowid WHERE content MATCH ? LIMIT ?`)
         .all(Number(operation.insensitive), query, operation.limit + 1) as Array<{ path: string }>;
       db.exec('COMMIT');
+      inTransaction = false;
       return rows.length > operation.limit ? undefined : rows.map(row => row.path);
     }
     if (operation.type === 'workspace.trigram.finish') {
+      signal?.throwIfAborted();
       db.exec('DELETE FROM content WHERE rowid IN (SELECT id FROM files WHERE epoch<>(SELECT value FROM meta WHERE key=\'epoch\')); DELETE FROM files WHERE epoch<>(SELECT value FROM meta WHERE key=\'epoch\')');
       db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('complete','1')").run();
       db.exec('COMMIT');
+      inTransaction = false;
       return true;
     }
     for (const path of operation.removed ?? []) {
+      signal?.throwIfAborted();
       db.prepare('DELETE FROM content WHERE rowid IN (SELECT id FROM files WHERE path=?)').run(path);
       db.prepare('DELETE FROM files WHERE path=?').run(path);
     }
@@ -63,6 +75,7 @@ export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation): b
       epoch=excluded.epoch,unindexed=excluded.unindexed,non_ascii=excluded.non_ascii RETURNING id`);
     const insert = db.prepare('INSERT INTO content(rowid,body) VALUES(?,?)');
     for (const entry of operation.entries) {
+      signal?.throwIfAborted();
       const old = find.get(entry.path) as { id: number; mtime: number; ctime: number; size: number; ino: number } | undefined;
       if (old !== undefined && old.mtime === entry.mtimeMs && old.ctime === entry.ctimeMs && old.size === entry.size && old.ino === entry.ino) {
         touch.run(operation.epoch, old.id);
@@ -70,6 +83,7 @@ export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation): b
       }
       let text: string | undefined;
       if (entry.size <= (1 << 20)) {
+        signal?.throwIfAborted();
         try {
           const path = join(operation.root, entry.path);
           const bytes = readFileSync(path);
@@ -80,12 +94,20 @@ export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation): b
           if (!['ENOENT', 'EACCES', 'EPERM', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
         }
       }
+      signal?.throwIfAborted();
       const row = upsert.get(entry.path, entry.mtimeMs, entry.ctimeMs, entry.size, entry.ino, operation.epoch,
         Number(text === undefined), Number(text !== undefined && /[^\x00-\x7f]/u.test(text))) as { id: number };
       remove.run(row.id);
       if (text !== undefined) insert.run(row.id, text);
     }
+    signal?.throwIfAborted();
     db.exec('COMMIT');
+    inTransaction = false;
     return true;
+  } catch (error) {
+    if (inTransaction) {
+      try { db.exec('ROLLBACK'); } catch {}
+    }
+    throw error;
   } finally { db.close(); }
 }
