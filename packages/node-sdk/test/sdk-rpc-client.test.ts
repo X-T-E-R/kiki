@@ -1485,6 +1485,25 @@ describe('foldAgentWireReplay', () => {
       toolStore: {},
       skippedRecords: [{ offset: 60, reason: 'invalid JSON wire record' }],
     });
+    const invalidUtf8 = join(dir, 'invalid-utf8.jsonl');
+    const metadataLine = Buffer.from('{"type":"metadata","protocol_version":"1.5","created_at":1}\n');
+    const invalidUtf8Line = Buffer.concat([
+      Buffer.from('{"type":"permission.set_mode","mode":"auto","note":"'),
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from('"}\n'),
+    ]);
+    await writeFile(
+      invalidUtf8,
+      Buffer.concat([metadataLine, invalidUtf8Line, Buffer.from('{not json\n')]),
+    );
+    await expect(foldAgentWireReplay(invalidUtf8)).resolves.toMatchObject({
+      skippedRecords: [
+        {
+          offset: metadataLine.byteLength + invalidUtf8Line.byteLength,
+          reason: 'invalid JSON wire record',
+        },
+      ],
+    });
     const headless = join(dir, 'headless.jsonl');
     await writeFile(headless, '{"type":"permission.set_mode","mode":"auto"}\n', 'utf-8');
     await expect(foldAgentWireReplay(headless)).resolves.toEqual({

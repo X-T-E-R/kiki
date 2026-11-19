@@ -70,6 +70,13 @@ class MalformedWireRecordError extends Error {
   }
 }
 
+function concatBytes(head: Uint8Array, tail: Uint8Array): Uint8Array {
+  const joined = new Uint8Array(head.byteLength + tail.byteLength);
+  joined.set(head);
+  joined.set(tail, head.byteLength);
+  return joined;
+}
+
 function withSkipped(
   folded: FoldedAgentReplay,
   skipped: readonly SkippedWireRecord[],
@@ -79,9 +86,10 @@ function withSkipped(
 
 /**
  * Fold one agent's `wire.jsonl` into replay records and a tool-store snapshot
- * by streaming bounded UTF-8 chunks without materializing a single whole-file
- * string. Missing or empty journals yield an empty fold and a truncated
- * trailing line is tolerated silently. A corrupt complete line (invalid JSON or
+ * by streaming bounded chunks without materializing a single whole-file
+ * string. Lines are split on raw bytes so reported offsets match the file even
+ * around invalid UTF-8. Missing or empty journals yield an empty fold and a
+ * truncated trailing line is tolerated silently. A corrupt complete line (invalid JSON or
  * a non-object record) is skipped and reported in `skippedRecords` with its
  * byte offset while the rest of the journal still folds; a journal whose first
  * record is not `metadata` cannot be migrated and yields an empty fold that
@@ -91,37 +99,35 @@ function withSkipped(
 export async function foldAgentWireReplay(wirePath: string): Promise<FoldedAgentReplay> {
   let journal: Awaited<ReturnType<typeof openPersistedJournal>>;
   const skipped: SkippedWireRecord[] = [];
-  let lineOffset = 0;
   try {
     journal = await openPersistedJournal(wirePath);
     if (journal === undefined || journal.size === 0) return EMPTY_FOLD;
     const decoder = new TextDecoder('utf-8');
     const fold = new ReplayFold();
-    let carry = '';
+    let carry: Uint8Array = new Uint8Array(0);
+    let carryOffset = 0;
     let offset = 0;
     while (offset < journal.size) {
       const length = Math.min(STREAM_CHUNK_BYTES, journal.size - offset);
       const chunk = await journal.readAt(offset, length);
       if (chunk.byteLength === 0) break;
       offset += chunk.byteLength;
-      carry += decoder.decode(chunk, { stream: true });
+      const bytes = carry.byteLength === 0 ? chunk : concatBytes(carry, chunk);
       let lineStart = 0;
       for (;;) {
-        const nl = carry.indexOf('\n', lineStart);
+        const nl = bytes.indexOf(0x0a, lineStart);
         if (nl === -1) break;
-        const rawLine = carry.slice(lineStart, nl);
+        const lineOffset = carryOffset + lineStart;
+        const rawLine = decoder.decode(bytes.subarray(lineStart, nl));
         lineStart = nl + 1;
         const reason = consumeCompleteWireLine(fold, rawLine, lineOffset);
         if (reason !== undefined) skipped.push({ offset: lineOffset, reason });
-        lineOffset += Buffer.byteLength(rawLine, 'utf8') + 1;
       }
-      if (lineStart > 0) {
-        carry = carry.slice(lineStart);
-      }
+      carry = new Uint8Array(bytes.subarray(lineStart));
+      carryOffset += lineStart;
     }
-    carry += decoder.decode();
-    if (carry.length > 0) {
-      consumeTrailingWireLine(fold, carry, lineOffset);
+    if (carry.byteLength > 0) {
+      consumeTrailingWireLine(fold, decoder.decode(carry), carryOffset);
     }
     return withSkipped(fold.finish(), skipped);
   } catch (error) {
