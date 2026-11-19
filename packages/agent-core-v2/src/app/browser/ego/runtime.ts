@@ -165,10 +165,22 @@ function parseSpaces(text: string): Record<string, EgoSpaceBinding> | undefined 
   }
 }
 
+function atomicReplace(files: IHostFileSystem): (path: string, data: string) => Promise<void> {
+  if (files.replaceText === undefined) {
+    throw new BrowserError('browser.execution_failed', 'Ego Lite space bindings need a host filesystem with atomic replace');
+  }
+  return files.replaceText.bind(files);
+}
+
 async function preserveCorruptSpaces(files: IHostFileSystem, file: string, text: string, log: Pick<ILogger, 'warn'> | undefined): Promise<void> {
   const digest = createHash('sha256').update(text).digest('hex').slice(0, 16);
   const backup = `${file}.corrupt-${digest}`;
-  if (!await files.createExclusive(backup, new TextEncoder().encode(text))) return;
+  try {
+    if (await files.readText(backup) === text) return;
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
+  await atomicReplace(files)(backup, text);
   log?.warn('Ego Lite space bindings file is corrupt; preserved a backup before rewriting it', { path: file, backup });
 }
 
@@ -188,11 +200,9 @@ async function readSpaces(files: IHostFileSystem, sessionDir: string, log: Pick<
 }
 
 async function writeSpaces(files: IHostFileSystem, sessionDir: string, value: Record<string, EgoSpaceBinding>): Promise<void> {
-  if (files.replaceText === undefined) {
-    throw new BrowserError('browser.execution_failed', 'Ego Lite space bindings need a host filesystem with atomic replace');
-  }
+  const replace = atomicReplace(files);
   await files.mkdir(sessionDir, { recursive: true });
-  await files.replaceText(spaceFile(sessionDir), `${JSON.stringify(value)}\n`);
+  await replace(spaceFile(sessionDir), `${JSON.stringify(value)}\n`);
 }
 
 function sameLease(current: EgoSpaceBinding | undefined, started: EgoSpaceBinding): current is EgoSpaceBinding {

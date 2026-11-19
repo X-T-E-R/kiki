@@ -60,7 +60,7 @@ export class HostFileSystem implements IHostFileSystem {
 
   async replaceText(path: string, data: string): Promise<void> {
     try {
-      await atomicWrite(path, data);
+      await atomicWrite(path, data, undefined, undefined, undefined, true);
       await syncDir(dirname(path));
     } catch (error) {
       throw toHostFsError(error, { path, op: 'write' });

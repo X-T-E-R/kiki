@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { join } from 'pathe';
@@ -388,13 +389,15 @@ describe('Ego Lite runtime', () => {
     const spaceFile = join(sessionDir, 'browser-ego-spaces.json');
     const truncated = '{"other":{"connectionId":"ego-lite","name":"kiki-other","spaceId":"9"';
     files.set(spaceFile, truncated);
+    const backup = `${spaceFile}.corrupt-${createHash('sha256').update(truncated).digest('hex').slice(0, 16)}`;
+    files.set(backup, truncated.slice(0, 10));
     const warn = vi.fn();
     const proc = scripted(() => ({ code: 0, stdout: marked('space-1') }));
     const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: '' }, 'linux', { warn });
     await runtime.runAgent({ connection, sessionDir, sessionId: 's', agentId: 'a', body: 'x' });
     const backups = [...files.keys()].filter((path) => path.startsWith(`${spaceFile}.corrupt-`));
-    expect(backups).toHaveLength(1);
-    expect(files.get(backups[0]!)).toBe(truncated);
+    expect(backups).toEqual([backup]);
+    expect(files.get(backup)).toBe(truncated);
     expect(warn).toHaveBeenCalledOnce();
     expect(JSON.parse(files.get(spaceFile) ?? '{}')).toMatchObject({ a: { spaceId: 'space-1' } });
 
