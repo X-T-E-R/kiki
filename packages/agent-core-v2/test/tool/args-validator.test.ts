@@ -36,6 +36,21 @@ describe('args-validator (Ajv, format support)', () => {
     expect(validateToolArgs(firstValidator, { a: 1 })).toBeNull();
   });
 
+  it('rejects a schema claiming a metaschema $id without unregistering the metaschema', () => {
+    expect(() => compileToolArgsValidator({ $id: 'http://json-schema.org/draft-07/schema#', type: 'object' })).toThrow('already exists');
+    expect(validate({ $schema: 'http://json-schema.org/draft-07/schema#', type: 'string' }, 'ok')).toBeNull();
+  });
+
+  it('does not retain nested $id registrations between compilations', () => {
+    const nested = () => ({
+      type: 'object',
+      properties: { item: { $id: 'https://example.test/item', type: 'string' } },
+      required: ['item'],
+    });
+    expect(validate(nested(), { item: 'x' })).toBeNull();
+    expect(validate(nested(), { item: 1 })).toContain('must be string');
+  });
+
   it('format is ignored on non-strings', () => {
     const schema = { type: 'number', format: 'email' };
     expect(validate(schema, 42)).toBeNull();
