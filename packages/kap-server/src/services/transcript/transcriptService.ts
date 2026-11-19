@@ -565,28 +565,35 @@ function wireTurnId(record: ContextRecord): string | undefined {
 }
 
 function hasImplicitTurnRecords(records: readonly ColdWireRecord[]): boolean {
+  let activeExplicitTurnId: string | undefined;
   let explicitTurnSlotOpen = false;
   const steeredPromptIds = new Set<string>();
   for (const { record } of records) {
     if (record.type === 'turn_begin') return true;
     if (record.type === 'turn.started' || record.type === 'turn.prompt') {
-      if (wireTurnId(record) === undefined) return true;
+      const tid = wireTurnId(record);
+      if (tid === undefined) return true;
+      if (tid !== activeExplicitTurnId) steeredPromptIds.clear();
+      activeExplicitTurnId = tid;
       explicitTurnSlotOpen = true;
       continue;
     }
     if (record.type === 'turn.steer') {
-      if (wireTurnId(record) !== undefined) {
+      const tid = wireTurnId(record);
+      if ((record as { managed?: unknown }).managed !== true && tid !== undefined && tid === activeExplicitTurnId) {
         const promptId = (record as { promptId?: unknown }).promptId;
         if (typeof promptId === 'string' && promptId.length > 0) steeredPromptIds.add(promptId);
       }
       continue;
     }
     if (record.type === 'turn.ended' || record.type === 'context.clear' || record.type === 'branch.base') {
+      activeExplicitTurnId = undefined;
       explicitTurnSlotOpen = false;
       steeredPromptIds.clear();
       continue;
     }
     if (record.type === 'context.undo') {
+      activeExplicitTurnId = undefined;
       explicitTurnSlotOpen = false;
       steeredPromptIds.clear();
       if ((record as { replacementPrompt?: unknown }).replacementPrompt !== undefined) return true;

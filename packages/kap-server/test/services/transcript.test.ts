@@ -7405,3 +7405,127 @@ it('preserves canonical turn ordinals for hybrid wires with legacy user append t
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
+
+it('falls back to canonical replay when an older cold window boundary starts at turn.steer without its owning turn.prompt', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-mid-turn-steer-boundary-'));
+  const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+  await mkdir(wireDir, { recursive: true });
+  const wirePath = join(wireDir, 'wire.jsonl');
+  const records: Record<string, unknown>[] = [];
+  for (let id = 0; id < 8; id += 1) {
+    records.push(
+      {
+        type: 'turn.prompt',
+        turnId: id,
+        promptId: `p-${id}`,
+        input: [{ type: 'text', text: `open-${id}` }],
+        origin: { kind: 'user' },
+        time: 1_000 + id,
+      },
+      { type: 'fixture.padding', padding: 'a'.repeat(75 << 10) },
+      { type: 'turn.ended', turnId: id, reason: 'completed', time: 1_050 + id },
+    );
+  }
+  records.push(
+    {
+      type: 'turn.prompt',
+      turnId: 8,
+      promptId: 'p-8',
+      input: [{ type: 'text', text: 'open-8' }],
+      origin: { kind: 'user' },
+      time: 1_100,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 8, step: 1, uuid: 't8-step-1' },
+      time: 1_101,
+    },
+    { type: 'fixture.padding', padding: 'b'.repeat(420 << 10) },
+    {
+      type: 'turn.steer',
+      turnId: 8,
+      promptId: 'steer-8',
+      input: [{ type: 'text', text: 'steered words' }],
+      origin: { kind: 'user' },
+      time: 1_102,
+    },
+    {
+      type: 'context.append_message',
+      message: {
+        id: 'steer-8',
+        role: 'user',
+        origin: { kind: 'user' },
+        content: [{ type: 'text', text: 'steered words' }],
+      },
+      time: 1_103,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 8, step: 2, uuid: 't8-step-2' },
+      time: 1_104,
+    },
+    { type: 'turn.ended', turnId: 8, reason: 'completed', time: 1_105 },
+    {
+      type: 'turn.prompt',
+      turnId: 9,
+      promptId: 'p-9',
+      input: [{ type: 'text', text: 'open-9' }],
+      origin: { kind: 'user' },
+      time: 1_200,
+    },
+    { type: 'fixture.padding', padding: 'c'.repeat(500 << 10) },
+    { type: 'turn.ended', turnId: 9, reason: 'completed', time: 1_205 },
+  );
+  for (let id = 10; id < 30; id += 1) {
+    records.push(
+      {
+        type: 'turn.prompt',
+        turnId: id,
+        promptId: `p-${id}`,
+        input: [{ type: 'text', text: `open-${id}` }],
+        origin: { kind: 'user' },
+        time: 2_000 + id,
+      },
+      { type: 'fixture.padding', padding: 'd'.repeat(60 << 10) },
+      { type: 'turn.ended', turnId: id, reason: 'completed', time: 2_050 + id },
+    );
+  }
+  await writeFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const initial = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 20 });
+    expect(initial?.has_more).toBe(true);
+    const collected = [...(initial?.items ?? []).filter((item) => item.kind === 'turn')];
+
+    let beforeTurn = collected[0]?.turnId;
+    let hasMore = initial?.has_more ?? false;
+    let pages = 0;
+    while (hasMore && beforeTurn !== undefined && pages < 10) {
+      pages += 1;
+      const older = await readSessionViewTranscriptPage(service, 's1', {
+        agentId: 'main',
+        beforeTurn,
+        pageSize: 20,
+      });
+      const olderTurns = (older?.items ?? []).filter((item) => item.kind === 'turn');
+      collected.unshift(...olderTurns);
+      hasMore = older?.has_more ?? false;
+      beforeTurn = olderTurns[0]?.turnId;
+    }
+
+    expect(hasMore).toBe(false);
+    expect(collected.map((turn) => turn.turnId)).toEqual(
+      Array.from({ length: 30 }, (_, index) => `t${index}`),
+    );
+    expect(collected.find((turn) => turn.turnId === 't0')).toMatchObject({ prompt: 'open-0' });
+    expect(collected.filter((turn) => turn.prompt === 'steered words')).toEqual([]);
+    const t8 = collected.find((turn) => turn.turnId === 't8');
+    expect(t8).toMatchObject({ prompt: 'open-8' });
+    const full = await service.readColdSnapshot('s1', 'main');
+    const fullT8 = full?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't8');
+    expect(t8?.steps.flatMap((step) => step.frames)).toEqual(fullT8?.steps.flatMap((step) => step.frames));
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
