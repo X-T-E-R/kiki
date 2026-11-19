@@ -45,16 +45,22 @@ export async function readSessionViewTranscriptContent(
 ): Promise<ContentSegment | undefined> {
   const pageBytes = input.ref.kind === 'array' && input.ref.source.kind === 'turn' && input.ref.path[0] === 'steps'
     ? HISTORY_PAGE_BYTES : DETAIL_PAGE_BYTES;
-  const resident = residentTimelineEntity(service, sessionId, input.agentId, input.ref.source);
+  const source = input.ref.source;
+  let authoritativeMismatch: ContentChangedError | undefined;
+  const resident = residentTimelineEntity(service, sessionId, input.agentId, source);
   if (resident !== undefined) {
     input.signal?.throwIfAborted();
     try {
       return readContentSegment(await planReadableEntity(service, sessionId, input.agentId, resident, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes);
     } catch (error) {
       if (!(error instanceof ContentChangedError)) throw error;
+      if (source.kind === 'task') {
+        authoritativeMismatch = error;
+      } else if (source.kind !== 'todo' && source.kind !== 'interaction' && source.kind !== 'turn' && source.kind !== 'frame') {
+        throw error;
+      }
     }
   }
-  const source = input.ref.source;
   if ((source.kind === 'turn' || source.kind === 'frame') && typeof service.readColdWindowTurn === 'function') {
     const turn = await service.readColdWindowTurn(sessionId, input.agentId, source.kind === 'turn' ? source.id : source.turnId ?? '', input.signal);
     const current = source.kind === 'turn' ? turn : turn?.steps.find(step => step.stepId === source.stepId)?.frames.find(frame => frame.frameId === source.id);
@@ -62,7 +68,29 @@ export async function readSessionViewTranscriptContent(
       try { return readContentSegment(await planReadableEntity(service, sessionId, input.agentId, current, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes); }
       catch (error) { if (!(error instanceof ContentChangedError)) throw error; }
     }
+  } else if (source.kind !== 'turn' && source.kind !== 'frame' && source.kind !== 'roster' && source.kind !== 'snapshot' && typeof service.readColdWindowEntity === 'function') {
+    const cached = await service.readColdWindowEntity(sessionId, input.agentId, source, input.signal);
+    if (cached !== undefined) {
+      input.signal?.throwIfAborted();
+      try { return readContentSegment(cached, input.ref, input.range, input.agentId, pageBytes); }
+      catch (error) {
+        if (!(error instanceof ContentChangedError)) throw error;
+        if (source.kind === 'task') {
+          authoritativeMismatch ??= error;
+        } else if (source.kind !== 'todo' && source.kind !== 'interaction') {
+          throw error;
+        }
+      }
+    }
   }
+  if (source.kind === 'task' && typeof service.readPersistedTask === 'function') {
+    const persisted = await service.readPersistedTask(sessionId, input.agentId, source.id, input.signal);
+    if (persisted !== undefined) {
+      input.signal?.throwIfAborted();
+      return readContentSegment(persisted, input.ref, input.range, input.agentId, pageBytes);
+    }
+  }
+  if (authoritativeMismatch !== undefined) throw authoritativeMismatch;
   const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
   return entity === undefined ? undefined : readContentSegment(await planReadableEntity(service, sessionId, input.agentId, entity, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes);
 }
@@ -92,7 +120,7 @@ function planField(info: object, path: ContentRef['path']): unknown {
 }
 
 function liveInteractions(service: TranscriptService, sessionId: string, agentId: string): TranscriptInteraction[] {
-  const values = service.forSessionLive(sessionId)?.getAgent(agentId)?.getInteractions();
+  const values = service.forSessionLive(sessionId, { tailFirst: true })?.getAgent(agentId)?.getInteractions();
   return values === undefined ? [] : [...values.values()];
 }
 
@@ -113,12 +141,44 @@ export async function readPlanInteractions(service: TranscriptService, sessionId
 }
 
 function residentTimelineEntity(service: TranscriptService, sessionId: string, agentId: string, source: ContentRef['source']): object | undefined {
-  if (source.kind !== 'turn' && source.kind !== 'frame') return undefined;
   if (typeof service.forSessionLive !== 'function') return undefined;
-  const turn = service.forSessionLive(sessionId)?.getAgent(agentId)?.getTurn(source.kind === 'turn' ? source.id : source.turnId ?? '');
-  if (turn === undefined) return undefined;
-  if (source.kind === 'turn') return turn.stepsPartial === true || isOrphanTurn(turn) ? undefined : turn;
-  return turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
+  const store = service.forSessionLive(sessionId, { tailFirst: true });
+  if (store === undefined) return undefined;
+  if (source.kind === 'roster') {
+    return typeof store.agents === 'function' ? store.agents().find((entry) => entry.agentId === source.id) : undefined;
+  }
+  const agent = typeof store.getAgent === 'function' ? store.getAgent(agentId) : undefined;
+  if (agent === undefined) return undefined;
+  switch (source.kind) {
+    case 'turn': {
+      const turn = agent.getTurn(source.id);
+      return turn === undefined || turn.stepsPartial === true || isOrphanTurn(turn) ? undefined : turn;
+    }
+    case 'frame': {
+      const turn = agent.getTurn(source.turnId ?? '');
+      return turn?.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
+    }
+    case 'task': return typeof agent.getTask === 'function' ? agent.getTask(source.id) : undefined;
+    case 'attachment': return typeof agent.getAttachment === 'function' ? agent.getAttachment(source.id) : undefined;
+    case 'prompt': return typeof agent.getPrompt === 'function' ? agent.getPrompt(source.id) : undefined;
+    case 'interaction': return typeof agent.getInteractions === 'function' ? agent.getInteractions().get(source.id) : undefined;
+    case 'todo': return typeof agent.getTodo === 'function' ? agent.getTodo(source.id) : undefined;
+    case 'meta': return typeof agent.getMeta === 'function' ? agent.getMeta() : undefined;
+    case 'marker': return typeof agent.getItems === 'function' ? agent.getItems().find((item) => item.kind === 'marker' && item.markerId === source.id) : undefined;
+    default: return undefined;
+  }
+}
+
+function mergeTaskMetadata(persisted: TranscriptTask, resident: TranscriptTask): TranscriptTask {
+  return {
+    ...persisted,
+    ...Object.fromEntries(Object.entries(resident).filter(([, value]) => value !== undefined)),
+    startedAt: persisted.startedAt ?? resident.startedAt,
+    outputTail: resident.outputTail.length > 0 ? resident.outputTail : persisted.outputTail,
+    resultSummary: resident.resultSummary !== undefined && resident.resultSummary.length > 0
+      ? resident.resultSummary
+      : (persisted.resultSummary ?? resident.resultSummary),
+  } as TranscriptTask;
 }
 
 function mergeColdAndLiveTodos(
@@ -155,34 +215,65 @@ export async function readSessionViewCanonicalEntity(
   input: { readonly agentId: string; readonly ref: Pick<ContentRef, 'source'>; readonly signal?: AbortSignal },
 ): Promise<object | undefined> {
   input.signal?.throwIfAborted();
-  if (input.ref.source.kind === 'turn' || input.ref.source.kind === 'frame') {
-    return service.readCanonicalEntity(sessionId, input.agentId, input.ref.source, input.signal);
+  const source = input.ref.source;
+  if (source.kind === 'turn' || source.kind === 'frame') {
+    return service.readCanonicalEntity(sessionId, input.agentId, source, input.signal);
   }
-  if (input.ref.source.kind === 'todo' && typeof service.readColdTodos === 'function') {
+  if (source.kind === 'roster') {
+    const liveStore = service.forSessionLive(sessionId, { tailFirst: true });
+    const roster = liveStore !== undefined && typeof liveStore.agents === 'function'
+      ? liveStore.agents()
+      : await service.readColdRoster(sessionId, input.signal);
+    input.signal?.throwIfAborted();
+    return roster?.find((agent) => agent.agentId === source.id);
+  }
+  if (source.kind === 'todo' && typeof service.readColdTodos === 'function') {
     const store = service.forSessionLive(sessionId, { tailFirst: true });
     if (store === undefined) {
       const cold = await service.readColdTodos(sessionId, input.agentId, input.signal);
       input.signal?.throwIfAborted();
-      return cold?.todos.find((todo) => todo.todoId === input.ref.source.id);
+      return cold?.todos.find((todo) => todo.todoId === source.id);
     }
     const transcript = await service.ensureAgentHistory(sessionId, input.agentId, { tailFirst: true, signal: input.signal });
     if (transcript === undefined) return undefined;
     if (!transcript.hasMoreOlder) {
-      const found = transcript.getTodo(input.ref.source.id);
+      const found = transcript.getTodo(source.id);
       if (found !== undefined) return found;
     }
     const cold = await service.readColdTodos(sessionId, input.agentId, input.signal);
     input.signal?.throwIfAborted();
     const todos = cold === undefined ? [...transcript.getTodos().values()] : mergeColdAndLiveTodos(cold.todos, [...transcript.getTodos().values()]);
-    return todos.find((todo) => todo.todoId === input.ref.source.id);
+    return todos.find((todo) => todo.todoId === source.id);
   }
-  const store = service.forSessionLive(sessionId);
-  const transcript = store === undefined ? undefined : await service.ensureAgentHistory(sessionId, input.agentId);
-  const snapshot = transcript?.hasMoreOlder && input.ref.source.kind === 'task'
+  const store = service.forSessionLive(sessionId, { tailFirst: true });
+  const transcript = store === undefined ? undefined : await service.ensureAgentHistory(sessionId, input.agentId, { tailFirst: true, signal: input.signal });
+  if (source.kind === 'task') {
+    const liveTask = transcript?.getTask(source.id);
+    if (liveTask !== undefined && transcript?.hasMoreOlder !== true) return liveTask;
+    const windowTask = store === undefined && typeof service.readColdWindowEntity === 'function'
+      ? await service.readColdWindowEntity(sessionId, input.agentId, source, input.signal) as TranscriptTask | undefined
+      : undefined;
+    const persisted = typeof service.readPersistedTask === 'function'
+      ? await service.readPersistedTask(sessionId, input.agentId, source.id, input.signal)
+      : undefined;
+    const baseResident = liveTask ?? windowTask;
+    if (persisted !== undefined) {
+      return baseResident === undefined ? persisted : mergeTaskMetadata(persisted, baseResident);
+    }
+    if (baseResident !== undefined) return baseResident;
+  } else if (transcript !== undefined) {
+    const resident = selectTranscriptEntity(service, sessionId, transcript, source);
+    if (resident !== undefined) return resident;
+  } else if (typeof service.readColdWindowEntity === 'function') {
+    const cached = await service.readColdWindowEntity(sessionId, input.agentId, source, input.signal);
+    if (cached !== undefined) return cached;
+  }
+  const snapshot = transcript?.hasMoreOlder && source.kind === 'task'
     ? await service.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal)
-    : transcript?.snapshot() ?? await service.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
+    : transcript !== undefined
+      ? transcript.snapshot()
+      : await service.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
   if (snapshot === undefined) return undefined;
-  const source = input.ref.source;
   const select = (value: typeof snapshot): object | undefined => {
     switch (source.kind) {
       case 'turn': return value.items.find((item) => item.kind === 'turn' && item.turnId === source.id);
@@ -200,13 +291,31 @@ export async function readSessionViewCanonicalEntity(
       default: return undefined;
     }
   };
-  let entity = source.kind === 'roster' ? (store?.agents() ?? await service.readColdRoster(sessionId))?.find((agent) => agent.agentId === source.id) : select(snapshot);
-  if (entity === undefined && transcript !== undefined && source.kind !== 'roster') {
+  let entity = select(snapshot);
+  if (entity === undefined && transcript !== undefined) {
     const cold = await service.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
     if (cold !== undefined) entity = select(cold);
   }
   input.signal?.throwIfAborted();
   return entity;
+}
+
+function selectTranscriptEntity(
+  service: TranscriptService,
+  sessionId: string,
+  transcript: AgentTranscript,
+  source: ContentRef['source'],
+): object | undefined {
+  switch (source.kind) {
+    case 'task': return transcript.getTask(source.id);
+    case 'attachment': return transcript.getAttachment(source.id);
+    case 'prompt': return transcript.getPrompt(source.id);
+    case 'interaction': return service.reconcileQuestionSnapshot(sessionId, transcript.snapshot()).interactions.find((interaction) => interaction.interactionId === source.id);
+    case 'todo': return transcript.getTodo(source.id);
+    case 'meta': return transcript.getMeta();
+    case 'marker': return transcript.getItems().find((item) => item.kind === 'marker' && item.markerId === source.id);
+    default: return undefined;
+  }
 }
 
 export const TRANSCRIPT_PAGE_TIMEOUT_MS = 5_000;
@@ -589,31 +698,72 @@ async function readSessionViewTranscriptDetailRaw(
       session_id: sessionId, agent_id: input.agentId, kind: 'tool', lookup,
       read: lookup.status === 'preparing'
         ? { source: 'derived', readiness: 'preparing' }
-        : { source: transcriptService.forSessionLive(sessionId) === undefined ? 'cold' : 'live', readiness: 'ready' },
+        : { source: transcriptService.forSessionLive(sessionId, { tailFirst: true }) === undefined ? 'cold' : 'live', readiness: 'ready' },
     };
   }
-  const store = transcriptService.forSessionLive(sessionId);
+  const store = transcriptService.forSessionLive(sessionId, { tailFirst: true });
   let task: TranscriptTask | undefined;
   let attachment: TranscriptAttachment | undefined;
   let prompt: TranscriptPrompt | undefined;
   if (store !== undefined) {
-    const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId);
+    const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { tailFirst: true, signal: input.signal });
     if (transcript === undefined) return undefined;
-    if (input.kind === 'task') task = transcript.getTask(input.id);
-    else if (input.kind === 'attachment') attachment = transcript.getAttachment(input.id);
-    else prompt = transcript.getPrompt(input.id);
-    if (transcript.hasMoreOlder && (input.kind === 'task' || (attachment ?? prompt) === undefined)) {
-      const snapshot = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal);
-      if (input.kind === 'task') task = snapshot?.tasks.find((entry) => entry.taskId === input.id);
-      else if (input.kind === 'attachment') attachment = snapshot?.attachments.find((entry) => entry.attachmentId === input.id);
-      else prompt = snapshot?.prompts.find((entry) => entry.promptId === input.id);
+    if (input.kind === 'task') {
+      task = transcript.getTask(input.id);
+      if ((task === undefined || transcript.hasMoreOlder) && typeof transcriptService.readPersistedTask === 'function') {
+        const persisted = await transcriptService.readPersistedTask(sessionId, input.agentId, input.id, input.signal);
+        if (persisted !== undefined) task = task === undefined ? persisted : mergeTaskMetadata(persisted, task);
+      }
+      if (task === undefined && transcript.hasMoreOlder) {
+        const snapshot = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal);
+        task = snapshot?.tasks.find((entry) => entry.taskId === input.id);
+      }
+    } else if (input.kind === 'attachment') {
+      attachment = transcript.getAttachment(input.id);
+      if (attachment === undefined && transcript.hasMoreOlder) {
+        const cached = typeof transcriptService.readColdWindowEntity === 'function'
+          ? await transcriptService.readColdWindowEntity(sessionId, input.agentId, { kind: 'attachment', id: input.id }, input.signal) as TranscriptAttachment | undefined
+          : undefined;
+        attachment = cached ?? (await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal))?.attachments.find((entry) => entry.attachmentId === input.id);
+      }
+    } else {
+      prompt = transcript.getPrompt(input.id);
+      if (prompt === undefined && transcript.hasMoreOlder) {
+        const cached = typeof transcriptService.readColdWindowEntity === 'function'
+          ? await transcriptService.readColdWindowEntity(sessionId, input.agentId, { kind: 'prompt', id: input.id }, input.signal) as TranscriptPrompt | undefined
+          : undefined;
+        prompt = cached ?? (await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal))?.prompts.find((entry) => entry.promptId === input.id);
+      }
+    }
+  } else if (input.kind === 'task') {
+    const windowTask = typeof transcriptService.readColdWindowEntity === 'function'
+      ? await transcriptService.readColdWindowEntity(sessionId, input.agentId, { kind: 'task', id: input.id }, input.signal) as TranscriptTask | undefined
+      : undefined;
+    const persisted = typeof transcriptService.readPersistedTask === 'function'
+      ? await transcriptService.readPersistedTask(sessionId, input.agentId, input.id, input.signal)
+      : undefined;
+    if (persisted !== undefined) {
+      task = windowTask === undefined ? persisted : mergeTaskMetadata(persisted, windowTask);
+    } else if (windowTask !== undefined) {
+      task = windowTask;
+    } else {
+      const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
+      if (snapshot === undefined) return undefined;
+      task = snapshot.tasks.find((entry) => entry.taskId === input.id);
     }
   } else {
-    const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
-    if (snapshot === undefined) return undefined;
-    if (input.kind === 'task') task = snapshot.tasks.find((entry) => entry.taskId === input.id);
-    else if (input.kind === 'attachment') attachment = snapshot.attachments.find((entry) => entry.attachmentId === input.id);
-    else prompt = snapshot.prompts.find((entry) => entry.promptId === input.id);
+    const cached = typeof transcriptService.readColdWindowEntity === 'function'
+      ? await transcriptService.readColdWindowEntity(sessionId, input.agentId, { kind: input.kind, id: input.id }, input.signal)
+      : undefined;
+    if (cached !== undefined) {
+      if (input.kind === 'attachment') attachment = cached as TranscriptAttachment;
+      else prompt = cached as TranscriptPrompt;
+    } else {
+      const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
+      if (snapshot === undefined) return undefined;
+      if (input.kind === 'attachment') attachment = snapshot.attachments.find((entry) => entry.attachmentId === input.id);
+      else prompt = snapshot.prompts.find((entry) => entry.promptId === input.id);
+    }
   }
   if (input.kind === 'task') {
     return task === undefined
@@ -769,7 +919,7 @@ export async function readSessionViewTranscriptCatchUp(
     };
   }
   const grade = input.grade ?? 'delta';
-  const transcript = transcriptService.forSessionLive(sessionId)?.getAgent(input.agentId);
+  const transcript = transcriptService.forSessionLive(sessionId, { tailFirst: true })?.getAgent(input.agentId);
   const batches: TranscriptOpsCatchupResponse['batches'] = [];
   let bytes = 2048;
   let through = input.since.seq;

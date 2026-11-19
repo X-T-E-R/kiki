@@ -159,7 +159,11 @@ const USER_FRAME_PRESERVE_WINDOW = 32;
 
 function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number, agentId?: string, structureDirection: StructureDirection = 'head'): { value: unknown; refs: ContentRef[] } {
   const media = agentId === undefined ? undefined : { source, entity, agentId };
-  let textBytes = source.kind === 'turn' || source.kind === 'frame' ? 16 * 1024 : CONTENT_PREVIEW_BYTES;
+  let textBytes = source.kind === 'turn' || source.kind === 'frame'
+    ? 16 * 1024
+    : source.kind === 'task'
+      ? Math.max(CONTENT_PREVIEW_BYTES, Math.min(8 * 1024, maxBytes))
+      : CONTENT_PREVIEW_BYTES;
   let arrayWindow = ARRAY_WINDOW;
   let rosterWindow = ROSTER_WINDOW;
   let structureWindow = 8;
@@ -278,7 +282,7 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
   }
   if (typeof value === 'string') {
     const key = path.at(-1);
-    const prose = (path.length === 1 && (key === 'prompt' || key === 'text')) ||
+    const prose = (path.length === 1 && (key === 'prompt' || key === 'text' || key === 'resultSummary' || key === 'outputTail')) ||
       (path.length === 5 && path[0] === 'steps' && path[2] === 'frames' && key === 'text');
     if (typeof key === 'string' && ID_KEYS.test(key) || key === 'url' && path.at(-2) === 'source') return value;
     const limit = prose ? textBytes : Math.min(textBytes, CONTENT_PREVIEW_BYTES);

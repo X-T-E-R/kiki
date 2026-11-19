@@ -158,7 +158,23 @@ export function effectiveSubagentStatus(
 ): AgentStatus | SubagentBlock['status'] {
   const isLatestRun = latestCardIdByAgent === undefined || latestCardIdByAgent.get(block.subagentId) === block.id;
   if (!isLatestRun) return block.status;
-  return forest?.byId[block.subagentId]?.status ?? block.status;
+  const node = forest?.byId[block.subagentId];
+  if (node === undefined) return block.status;
+  if (isLiveSubagentStatus(block.status)) {
+    if (node.status === 'unknown') return block.status;
+    if (
+      node.status === 'idle' &&
+      (node.toolCallCount ?? 0) === 0 &&
+      node.error === undefined &&
+      node.summary === undefined &&
+      node.turnOutcome === undefined &&
+      node.endedAt === undefined &&
+      node.startedAt === undefined
+    ) {
+      return block.status;
+    }
+  }
+  return node.status;
 }
 
 /** A subagent whose run is still going (it needs watching, so it stays out). */

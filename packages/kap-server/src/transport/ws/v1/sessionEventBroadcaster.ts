@@ -2021,7 +2021,9 @@ export class SessionEventBroadcaster {
         try {
           if (suppressedByTranscript(envelope, sub.transcriptGrades)) {
             if (target.sendRosterHint !== undefined && (
-              (event.type === 'agent.status.updated' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed') && event.agentId !== MAIN_AGENT_ID ||
+              (event.type === 'agent.status.updated' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed' ||
+                event.type === 'turn.started' || event.type === 'turn.ended') && event.agentId !== MAIN_AGENT_ID ||
+              (event.type === 'task.started' || event.type === 'task.terminated') && (event.info as { kind?: unknown } | undefined)?.kind === 'agent' ||
               event.type === 'subagent.spawned' || event.type === 'subagent.started' || event.type === 'subagent.suspended' ||
               event.type === 'subagent.completed' || event.type === 'subagent.failed'
             )) target.sendRosterHint(envelope);

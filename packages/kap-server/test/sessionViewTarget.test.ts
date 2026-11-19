@@ -84,6 +84,27 @@ describe('SessionViewTarget', () => {
     ]);
   });
 
+  it('emits rosterAgentId hints for child turn.started/turn.ended and agent task.started/task.terminated without main or shell churn', () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    target.begin(1, false);
+    target.finish({ seq: 10, epoch: 'session-epoch' }, true);
+    target.send({ ...durable(11), type: 'turn.started', payload: { type: 'turn.started', agentId: 'child-7', turnId: 1 } });
+    target.send({ ...durable(12), type: 'turn.ended', payload: { type: 'turn.ended', agentId: 'child-7', turnId: 1, reason: 'completed' } });
+    target.send({ ...durable(13), type: 'turn.started', payload: { type: 'turn.started', agentId: 'main', turnId: 2 } });
+    target.send({ ...durable(14), type: 'task.started', payload: { type: 'task.started', agentId: 'main', info: { kind: 'agent', agentId: 'child-7', taskId: 'agent-00000007' } } });
+    target.send({ ...durable(15), type: 'task.terminated', payload: { type: 'task.terminated', agentId: 'main', info: { kind: 'agent', agentId: 'child-7', taskId: 'agent-00000007' } } });
+    target.send({ ...durable(16), type: 'task.started', payload: { type: 'task.started', agentId: 'main', info: { kind: 'process', taskId: 'bash-00000001' } } });
+    expect(signals.slice(1)).toEqual([
+      { type: 'sessionCursorAdvanced', cursor: { seq: 11, epoch: 'session-epoch' }, generation: 1, rosterAgentId: 'child-7' },
+      { type: 'sessionCursorAdvanced', cursor: { seq: 12, epoch: 'session-epoch' }, generation: 1, rosterAgentId: 'child-7' },
+      { type: 'sessionCursorAdvanced', cursor: { seq: 13, epoch: 'session-epoch' }, generation: 1 },
+      { type: 'sessionCursorAdvanced', cursor: { seq: 14, epoch: 'session-epoch' }, generation: 1, rosterAgentId: 'child-7' },
+      { type: 'sessionCursorAdvanced', cursor: { seq: 15, epoch: 'session-epoch' }, generation: 1, rosterAgentId: 'child-7' },
+      { type: 'sessionCursorAdvanced', cursor: { seq: 16, epoch: 'session-epoch' }, generation: 1 },
+    ]);
+  });
+
   it('requires recovery when a bootstrap shell belongs to another durable epoch', async () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));

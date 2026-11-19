@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildAgentForest } from './agentTree';
 import {
+  effectiveSubagentStatus,
   foldHistory,
   groupBlocks,
   groupHasError,
@@ -12,6 +13,7 @@ import {
   latestTurnId,
   readSubagentEndings,
   stepObject,
+  subagentLive,
   type HistoryFold,
   type MediaRun,
   type SubagentEnding,
@@ -692,6 +694,35 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     const resumedNodes = foldHistory(resumedBlocks, 't2', { forest: resumedForest });
     expect(resumedNodes.map((node) => node.kind)).toEqual(['user', 'history-fold', 'assistant', 'user', 'subagent']);
     expect((resumedNodes[1] as HistoryFold).agents).toBe(1);
+  });
+
+  it('keeps a live subagent active and unfolded when forest transiently reports unstarted idle or unknown', () => {
+    const runningCard: SubagentBlock = { ...agent('child-queued', 'running', 't1'), id: 'sub-queued' };
+    const unknownCard: SubagentBlock = { ...agent('child-unknown', 'running', 't1'), id: 'sub-unknown' };
+    const settledCard: SubagentBlock = { ...agent('child-settled', 'running', 't1'), id: 'sub-settled' };
+    const forest = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'child-queued', parentAgentId: 'main', status: 'idle', toolCallCount: 0 },
+      { agentId: 'child-unknown', parentAgentId: 'main', status: 'unknown', toolCallCount: 0 },
+      { agentId: 'child-settled', parentAgentId: 'main', status: 'idle', toolCallCount: 2 },
+    ]);
+
+    expect(effectiveSubagentStatus(runningCard, forest)).toBe('running');
+    expect(effectiveSubagentStatus(unknownCard, forest)).toBe('running');
+    expect(effectiveSubagentStatus(settledCard, forest)).toBe('idle');
+    expect(subagentLive(runningCard, forest)).toBe(true);
+    expect(subagentLive(unknownCard, forest)).toBe(true);
+    expect(subagentLive(settledCard, forest)).toBe(false);
+
+    const blocks: Block[] = [
+      inTurn(text('user'), 't1'),
+      inTurn(read('/w/spec.ts'), 't1'),
+      runningCard,
+      inTurn(text('assistant'), 't1'),
+      inTurn(text('user'), 't2'),
+    ];
+    const nodes = foldHistory(blocks, 't2', { forest });
+    expect(nodes.some((node) => node.kind === 'subagent' && node.id === 'sub-queued')).toBe(true);
   });
 
   it('folds single settled process blocks and completed thinking immediately when foldSingleProcess is enabled', () => {

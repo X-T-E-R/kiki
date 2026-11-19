@@ -243,11 +243,24 @@ export function useInvocationDetails(
   const [attempt, setAttempt] = useState(0);
   const current = !hasToolCall ? undefined : controller?.getToolCallDetail(caller, toolCallId) ?? (lookup?.key === lookupKey ? lookup.value : undefined);
   const fallback = caller === context?.callerAgentId ? context?.tools.get(toolCallId ?? '') : undefined;
+  const fallbackSource = fallback === undefined ? undefined : frameContentSource(fallback);
+  const fallbackRefs = controller === undefined || caller === undefined || fallbackSource === undefined
+    ? []
+    : controller.contentRefsFor(caller, fallbackSource);
+  const fallbackHasRange = (field: string) => fallbackRefs.some(
+    (ref) => ref.path.length === 1 && ref.path[0] === field && controller!.isContentRange(caller!, ref),
+  );
+  const fallbackComplete = fallback !== undefined &&
+    fallback.output !== undefined &&
+    !fallbackHasRange('input') &&
+    !fallbackHasRange('inputText') &&
+    !fallbackHasRange('output') &&
+    !fallbackHasRange('error');
   const tool = current?.status === 'found' ? invocationTool(current) : fallback;
   useEffect(() => {
     setLookup(undefined);
     setError(undefined);
-    if (!open || controller === undefined || !hasToolCall) return;
+    if (!open || controller === undefined || !hasToolCall || fallbackComplete) return;
     const abort = new AbortController();
     void (async () => {
       try {
@@ -263,7 +276,7 @@ export function useInvocationDetails(
       }
     })();
     return () => { abort.abort(); };
-  }, [open, controller, hasToolCall, caller, toolCallId, lookupKey, attempt]);
+  }, [open, controller, hasToolCall, fallbackComplete, caller, toolCallId, lookupKey, attempt]);
   // The control is the icon, never the word: on the compact card it once shared
   // a white pill with the jump arrow at the row's right edge, which read as a
   // second label rather than a control. The tooltip carries the name, the aria
