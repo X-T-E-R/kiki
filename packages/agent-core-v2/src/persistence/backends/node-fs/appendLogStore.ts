@@ -16,6 +16,7 @@ import {
   withColdExclusive,
 } from '#/persistence/coldSegmentLog';
 import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
+import { removeSparseMarker } from '#/persistence/backends/node-fs/sparseFile';
 import { encodeJsonLines } from '#/persistence/jsonLines';
 import {
   AppendLogCorruptedError,
@@ -332,6 +333,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       try {
         let committed: { generation: string; offset: number; boundary: Uint8Array } | undefined;
         await withColdExclusive(this.storage, scope, key, async () => {
+          const located = this.storage.pathFor(scope, key);
           const replace = async (): Promise<void> => {
             if (await hasColdStateForRewrite(this.storage, scope, key)) {
               await discardColdUnlocked(this.storage, scope, key);
@@ -362,9 +364,11 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
               atomic: true,
               preserveDestinationOnError: true,
             });
+            if (located !== undefined && located.length > 0) {
+              await removeSparseMarker(located);
+            }
             committed = { generation, offset, boundary };
           };
-          const located = this.storage.pathFor(scope, key);
           if (located === undefined || located.length === 0) await replace();
           else await withColdReaderGate(located, replace);
         });

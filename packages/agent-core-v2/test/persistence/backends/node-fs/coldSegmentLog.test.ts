@@ -34,6 +34,8 @@ import {
   allocatedFileBytes,
   clearSparseAttributeCache,
   closeSparseFileWorker,
+  detectOrphanedSparseJournal,
+  punchSparseRanges,
   queryWin32SparseAttribute,
 } from '#/persistence/backends/node-fs/sparseFile';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
@@ -2239,7 +2241,6 @@ describe('cold segment journal', () => {
       } else {
         expect(spawned).toEqual([]);
       }
-      closeSparseFileWorker();
       spawned.length = 0;
       expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(densePayload);
       const densePin = await openPinnedLogicalRead(storage, SCOPE, KEY);
@@ -2514,10 +2515,119 @@ describe('cold segment journal', () => {
       await expect(stat(`${caseUnseal.wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(stat(`${caseUnseal.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readFile(caseUnseal.wirePath)).toEqual(Buffer.concat([part1, part2]));
+
+      const caseInterruptedUnseal = await runPreemptedReseal('agents/sweep-after-interrupted-unseal');
+      class CrashAfterManifestDeleteStorage extends FileStorageService {
+        override async delete(scope: string, key: string): Promise<void> {
+          if (key === coldManifestKey(KEY)) {
+            await expect(stat(join(root, scope, `${KEY}.sparse`))).rejects.toMatchObject({
+              code: 'ENOENT',
+            });
+            await super.delete(scope, key);
+            throw new Error('interrupted right after manifest delete');
+          }
+          return super.delete(scope, key);
+        }
+      }
+      const crashStorage = new CrashAfterManifestDeleteStorage(root);
+      try {
+        await expect(
+          unsealColdSegments(crashStorage, 'agents/sweep-after-interrupted-unseal', KEY),
+        ).rejects.toThrow('interrupted right after manifest delete');
+      } finally {
+        await crashStorage.close();
+      }
+      expect((await readdir(`${caseInterruptedUnseal.wirePath}.segments`)).length).toBe(2);
+      expect(await concatBytes(readLogicalBytes(storage, 'agents/sweep-after-interrupted-unseal', KEY))).toEqual(
+        Buffer.concat([part1, part2]),
+      );
+      await unsealRetainedJournal(caseInterruptedUnseal.wirePath);
+      await expect(stat(`${caseInterruptedUnseal.wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const caseInterruptedDiscard = await runPreemptedReseal('agents/sweep-after-interrupted-discard');
+      const crashStorage2 = new CrashAfterManifestDeleteStorage(root);
+      try {
+        await expect(
+          unsealColdSegments(crashStorage2, 'agents/sweep-after-interrupted-discard', KEY),
+        ).rejects.toThrow('interrupted right after manifest delete');
+      } finally {
+        await crashStorage2.close();
+      }
+      await discardRetainedJournal(caseInterruptedDiscard.wirePath);
+      await expect(stat(`${caseInterruptedDiscard.wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       closeSparseFileWorker();
       await storage.close();
       await rm(root, { recursive: true, force: true });
     }
-  }, 40_000);
+  }, 45_000);
+
+  it('detects out-of-band sparse punches after a warm false check and catches keepHeadBytes:0 98KiB sparse journals (Round-4 #3, #4)', async () => {
+    if (process.platform !== 'win32') return;
+    const root = await mkdtemp(join(tmpdir(), 'cold-r4-sparse-edge-'));
+    const storage = new FileStorageService(root);
+    try {
+      const scopeWarm = 'agents/warm-false-then-punch';
+      await mkdir(join(root, scopeWarm), { recursive: true });
+      const wireWarm = join(root, scopeWarm, KEY);
+      const bigPayload = Buffer.from(
+        Array.from({ length: 340 }, (_, i) => `${JSON.stringify({
+          type: 'note',
+          id: `warm-${i}`,
+          text: `WARM_PAYLOAD_${i}_${'W'.repeat(1_550)}`,
+        })}\n`).join(''),
+      );
+      expect(bigPayload.byteLength).toBeGreaterThan(520_000);
+      await writeFile(wireWarm, bigPayload);
+
+      expect(await detectOrphanedSparseJournal(wireWarm)).toBe(false);
+      expect(await concatBytes(readLogicalBytes(storage, scopeWarm, KEY))).toEqual(bigPayload);
+
+      const statBefore = await stat(wireWarm, { bigint: true });
+      const punched = await punchSparseRanges(wireWarm, [{ start: 327_680, end: 393_216 }]);
+      expect(punched.status).toBe('punched');
+      const statAfter = await stat(wireWarm, { bigint: true });
+      expect(statAfter.size).toBe(statBefore.size);
+      expect(statAfter.mtimeNs).toBe(statBefore.mtimeNs);
+
+      expect(await detectOrphanedSparseJournal(wireWarm)).toBe(true);
+      await expect(concatBytes(readLogicalBytes(storage, scopeWarm, KEY))).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+
+      const scopeSmall = 'agents/keep-head-zero-98k';
+      await mkdir(join(root, scopeSmall), { recursive: true });
+      const wireSmall = join(root, scopeSmall, KEY);
+      const firstHalf = Buffer.alloc(65_536, 0x41);
+      firstHalf[65_535] = 0x0a;
+      const secondHalf = Buffer.alloc(32_768, 0x42);
+      secondHalf[32_767] = 0x0a;
+      const payload98k = Buffer.concat([firstHalf, secondHalf]);
+      expect(payload98k.byteLength).toBe(98_304);
+      await writeFile(wireSmall, payload98k);
+
+      const sealSmall = await sealColdSegments(storage, scopeSmall, KEY, 65_536, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 65_536,
+        keepHeadBytes: 0,
+      });
+      expect(sealSmall.originalRetained).toBe(false);
+      expect(sealSmall.sparseRanges).toEqual([{ start: 0, end: 65_536 }]);
+      await rm(`${wireSmall}.segments.json`);
+      await rm(`${wireSmall}.sparse`);
+
+      expect(await detectOrphanedSparseJournal(wireSmall)).toBe(true);
+      await expect(concatBytes(readLogicalBytes(storage, scopeSmall, KEY))).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      await expect(openPinnedLogicalRead(storage, scopeSmall, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+    } finally {
+      closeSparseFileWorker();
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

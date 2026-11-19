@@ -525,15 +525,69 @@ describe('FileStorageService — transient access denial during acquisition', ()
         trackedWorker!.once('error', rej);
       });
       trackReaderWorkerThread(trackedWorker, wirePath);
+      const readersDir = sharedReadDirectory(wirePath);
+      await mkdir(readersDir, { recursive: true });
+      const trackedReaderFile = join(readersDir, `tracked-${tid2}.reader`);
+      const trackedWatchFile = `${coldLockPath}.watch-${process.pid}-tracked-${tid2}`;
+      await writeFile(
+        trackedReaderFile,
+        JSON.stringify({ ...basePayload, threadId: tid2, token: `reader-tracked-${tid2}` }),
+      );
+      await writeFile(
+        trackedWatchFile,
+        JSON.stringify({ ...basePayload, threadId: tid2, token: `gate-tracked-${tid2}` }),
+      );
       await writeFile(
         coldLockPath,
         JSON.stringify({ ...basePayload, threadId: tid2, token: `gate-tracked-${tid2}` }),
       );
+
+      let releaseExitReap: () => void = () => {};
+      const exitReapGate = new Promise<void>((res) => {
+        releaseExitReap = res;
+      });
+      let notifyPausedInReap: () => void = () => {};
+      const pausedInReap = new Promise<void>((res) => {
+        notifyPausedInReap = res;
+      });
+      let pausedOnce = false;
+      schedule.beforeUnlink = async (targetPath) => {
+        if (!pausedOnce && (targetPath === trackedReaderFile || targetPath === trackedWatchFile)) {
+          pausedOnce = true;
+          notifyPausedInReap();
+          await exitReapGate;
+        }
+      };
+
       await trackedWorker.terminate();
       trackedWorker = undefined;
-      await vi.waitFor(async () => {
-        await expect(stat(coldLockPath)).rejects.toMatchObject({ code: 'ENOENT' });
-      }, { timeout: 2_000 });
+      await pausedInReap;
+
+      const successorLock = await acquireFileLock(coldLockPath, {
+        waitForMs: 2_000,
+        owner: { contender: 'successor' },
+      });
+      try {
+        releaseExitReap();
+        schedule.beforeUnlink = undefined;
+        await vi.waitFor(async () => {
+          await expect(stat(trackedReaderFile)).rejects.toMatchObject({ code: 'ENOENT' });
+          await expect(stat(trackedWatchFile)).rejects.toMatchObject({ code: 'ENOENT' });
+        }, { timeout: 2_000 });
+
+        const livePayload = JSON.parse(await readFile(coldLockPath, 'utf8')) as {
+          owner?: Record<string, unknown>;
+        };
+        expect(livePayload.owner).toEqual({ contender: 'successor' });
+        await expect(acquireFileLock(coldLockPath, { waitForMs: 50 })).rejects.toMatchObject({
+          code: 'storage.locked',
+        });
+      } finally {
+        releaseExitReap();
+        schedule.beforeUnlink = undefined;
+        await successorLock.release();
+      }
+      await expect(stat(coldLockPath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await untrackedWorker?.terminate();
       await trackedWorker?.terminate();

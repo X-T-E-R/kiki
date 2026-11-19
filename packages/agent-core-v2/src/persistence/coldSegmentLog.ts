@@ -1115,6 +1115,7 @@ export async function discardColdUnlocked(
       if (located !== undefined) {
         await removeSparseMarker(located);
       }
+      await sweepStaleSegmentDirectories(storage, scope, key, new Set(), options.signal);
       return;
     }
     let parsedManifest: ColdManifest | undefined;
@@ -1187,14 +1188,14 @@ export async function discardColdUnlocked(
       };
     }
 
+    if (located !== undefined) {
+      await removeSparseMarker(located);
+    }
     await storage.delete(scope, coldManifestKey(key));
     const sealId = sealIdOf(bytes);
     if (sealId !== undefined) await waitUnpinned(storage, scope, key, sealId, options.signal);
     await removeSegments(storage, scope, key, listedSegmentKeys(bytes, key), sealId);
     await sweepStaleSegmentDirectories(storage, scope, key, new Set(), options.signal);
-    if (located !== undefined) {
-      await removeSparseMarker(located);
-    }
   };
   if (located === undefined) await drop();
   else await withColdReaderGate(located, drop, options.signal);

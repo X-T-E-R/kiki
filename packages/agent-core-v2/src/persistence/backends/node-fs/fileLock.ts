@@ -319,7 +319,6 @@ async function reapDeadThreadLeases(deadThreadId: number): Promise<void> {
       await reapDeadThreadFileIfOwned(join(directory, name), deadThreadId, true);
     }
     const coldLockPath = `${resolvedJournal}.cold.lock`;
-    await reapDeadThreadFileIfOwned(coldLockPath, deadThreadId, false);
     const parentDir = dirname(coldLockPath);
     const watchPrefix = `${basename(coldLockPath)}.watch-`;
     const parentEntries = await readdir(parentDir).catch(() => [] as string[]);
