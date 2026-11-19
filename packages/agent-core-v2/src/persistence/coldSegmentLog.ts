@@ -678,7 +678,16 @@ export async function readColdManifestSummary(
 ): Promise<ColdManifestSummary | undefined> {
   return withColdExclusive(storage, scope, key, async () => {
     const manifest = await loadMatchedManifest(storage, scope, key, undefined, signal);
-    if (manifest === undefined) return undefined;
+    if (manifest === undefined) {
+      await verifyJournalCoversOrphanedSegments(
+        storage,
+        scope,
+        key,
+        locatedJournal(storage, scope, key),
+        signal,
+      );
+      return undefined;
+    }
     return {
       format: manifest.format,
       codec: manifest.codec,
@@ -700,9 +709,48 @@ export async function hasColdStateForRewrite(
   if (manifestSize !== undefined) return true;
   const located = locatedJournal(storage, scope, key);
   if (located !== undefined) {
-    return detectOrphanedSparseJournal(located, signal);
+    if (await detectOrphanedSparseJournal(located, signal)) return true;
+    const entries = await readDirWithTypesOrEmpty(`${located}.segments`);
+    return entries.length > 0;
   }
-  return false;
+  const listed = await listStoragePrefixStrict(storage, scope, `${key}.segments/`);
+  return listed.length > 0;
+}
+
+const TRAILING_SEGMENT_INDEX = /(?:^|\/)(\d+)\.(?:zst|deflate)$/;
+
+function compareSegmentItemsDescending(a: string, b: string): number {
+  const ma = TRAILING_SEGMENT_INDEX.exec(a);
+  const mb = TRAILING_SEGMENT_INDEX.exec(b);
+  if (ma !== null && mb !== null) {
+    const diff = Number(mb[1]) - Number(ma[1]);
+    if (diff !== 0) return diff;
+  }
+  return a < b ? 1 : a > b ? -1 : 0;
+}
+
+function sortSegmentItemsDescending(items: readonly string[]): string[] {
+  return [...items].toSorted(compareSegmentItemsDescending);
+}
+
+async function deleteStorageKeyStrict(
+  storage: IFileSystemStorageService,
+  scope: string,
+  targetKey: string,
+): Promise<void> {
+  try {
+    await storage.delete(scope, targetKey);
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+}
+
+async function unlinkFileStrict(filePath: string): Promise<void> {
+  try {
+    await unlink(filePath);
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
 }
 
 async function removeSegments(
@@ -712,14 +760,17 @@ async function removeSegments(
   keys: readonly string[],
   sealId?: string,
 ): Promise<void> {
-  for (const segmentKey of keys) await storage.delete(scope, segmentKey);
+  const orderedKeys = sortSegmentItemsDescending(keys);
+  for (const segmentKey of orderedKeys) {
+    await deleteStorageKeyStrict(storage, scope, segmentKey);
+  }
   const located = locatedJournal(storage, scope, key);
   if (located === undefined) return;
   if (sealId !== undefined && SEAL_ID.test(sealId)) {
     await rmdir(`${located}.segments/${sealId}`).catch(() => undefined);
   } else {
     const dirs = new Set<string>();
-    for (const segmentKey of keys) {
+    for (const segmentKey of orderedKeys) {
       const segPath = storage.pathFor(scope, segmentKey);
       if (segPath !== undefined && segPath.length > 0) dirs.add(dirname(segPath));
     }
@@ -795,7 +846,7 @@ async function sweepStaleSegmentDirectories(
   }
 
   const located = locatedJournal(storage, scope, key);
-  const looseFiles: string[] = [];
+  const looseFileNames: string[] = [];
   if (located !== undefined) {
     const entries = await readDirWithTypesOrEmpty(`${located}.segments`);
     for (const entry of entries) {
@@ -804,7 +855,7 @@ async function sweepStaleSegmentDirectories(
           keysBySealId.set(entry.name, []);
         }
       } else if (keepSealIds.size === 0) {
-        looseFiles.push(`${located}.segments/${entry.name}`);
+        looseFileNames.push(entry.name);
       }
     }
   }
@@ -815,8 +866,10 @@ async function sweepStaleSegmentDirectories(
       await waitUnpinned(storage, scope, key, staleSealId, signal);
     }
     signal?.throwIfAborted();
-    for (const segKey of segKeys) {
-      await storage.delete(scope, segKey).catch(() => undefined);
+    const deletedViaStorage = new Set<string>();
+    for (const segKey of sortSegmentItemsDescending(segKeys)) {
+      await deleteStorageKeyStrict(storage, scope, segKey);
+      deletedViaStorage.add(segKey);
     }
     if (located !== undefined) {
       const dirPath = `${located}.segments/${staleSealId}`;
@@ -826,19 +879,31 @@ async function sweepStaleSegmentDirectories(
       } catch (error) {
         if (!isMissingPathError(error)) throw error;
       }
-      for (const subName of subEntries) {
-        await unlink(`${dirPath}/${subName}`).catch(() => undefined);
+      for (const subName of sortSegmentItemsDescending(subEntries)) {
+        const segKey = `${prefix}${staleSealId}/${subName}`;
+        if (!deletedViaStorage.has(segKey)) {
+          await deleteStorageKeyStrict(storage, scope, segKey);
+        }
+        await unlinkFileStrict(`${dirPath}/${subName}`);
       }
       await rmdir(dirPath).catch(() => undefined);
     }
   }
 
   if (keepSealIds.size === 0) {
-    for (const segKey of looseKeys) {
-      await storage.delete(scope, segKey).catch(() => undefined);
+    const deletedLoose = new Set<string>();
+    for (const segKey of sortSegmentItemsDescending(looseKeys)) {
+      await deleteStorageKeyStrict(storage, scope, segKey);
+      deletedLoose.add(segKey);
     }
-    for (const filePath of looseFiles) {
-      await unlink(filePath).catch(() => undefined);
+    if (located !== undefined) {
+      for (const fileName of sortSegmentItemsDescending(looseFileNames)) {
+        const segKey = `${prefix}${fileName}`;
+        if (!deletedLoose.has(segKey)) {
+          await deleteStorageKeyStrict(storage, scope, segKey);
+        }
+        await unlinkFileStrict(`${located}.segments/${fileName}`);
+      }
     }
   }
   if (located !== undefined) {
@@ -1500,6 +1565,9 @@ async function sealUnlocked(
   const generation = await generationOf(storage, scope, key);
   const previousManifest = await loadMatchedManifest(storage, scope, key, generation, options.signal);
   const located = locatedJournal(storage, scope, key);
+  if (previousManifest === undefined) {
+    await verifyJournalCoversOrphanedSegments(storage, scope, key, located, options.signal);
+  }
 
   if (sealedCut > 0) {
     const marker = await readSourceExact(storage, scope, key, previousManifest, sealedCut - 1, sealedCut - 1, {
@@ -1710,7 +1778,7 @@ async function sealUnlocked(
           key,
           listedSegmentKeys(previous, key).filter((segmentKey) => !fresh.has(segmentKey)),
           previousId !== sealId ? previousId : undefined,
-        ).catch(() => undefined);
+        );
       }
       await sweepStaleSegmentDirectories(storage, scope, key, new Set([sealId]), options.signal);
       if (willAttemptPunch && located !== undefined && !options.signal?.aborted) {

@@ -3037,4 +3037,233 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it('refuses to reseal or compact and preserves all orphaned .zst segments when segments.json is missing on a truncated journal (Round-8 #1)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-cold-r8-reseal-orphan-'));
+    const storage = new FileStorageService(root);
+    try {
+      const scope = 'sess-r8-reseal-orphan';
+      const sessionDir = join(root, scope);
+      await mkdir(sessionDir, { recursive: true });
+      const wirePath = join(sessionDir, KEY);
+
+      const records: Buffer[] = [];
+      for (let i = 0; i < 16; i += 1) {
+        const tag = String(i).padStart(2, '0');
+        const baseLen = Buffer.byteLength(JSON.stringify({ tag, pad: '' }) + '\n');
+        const line = JSON.stringify({ tag, pad: `seg_${tag}_`.padEnd(128 - baseLen, 'x') }) + '\n';
+        expect(Buffer.byteLength(line)).toBe(128);
+        records.push(Buffer.from(line));
+      }
+      const fullBytes = Buffer.concat(records);
+      const truncatedWire = Buffer.from('{"a":"1"}\n');
+
+      await writeFile(wirePath, fullBytes);
+      const initialSeal = await sealRetainedJournal(wirePath, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 128,
+      });
+      expect(initialSeal.segmentCount).toBe(16);
+
+      const listZstSnapshots = async (segRoot: string): Promise<Map<string, Buffer>> => {
+        const entries = await readdir(segRoot, { recursive: true, withFileTypes: true });
+        const out = new Map<string, Buffer>();
+        const rels = entries
+          .filter((entry) => entry.isFile() && entry.name.endsWith('.zst'))
+          .map((entry) => `${entry.parentPath.replaceAll('\\', '/')}/${entry.name}`.slice(
+            `${segRoot.replaceAll('\\', '/')}/`.length,
+          ))
+          .toSorted();
+        for (const rel of rels) {
+          out.set(rel, await readFile(join(segRoot, rel)));
+        }
+        return out;
+      };
+
+      const savedFsSegments = await listZstSnapshots(`${wirePath}.segments`);
+      expect(savedFsSegments.size).toBe(16);
+
+      await writeFile(wirePath, truncatedWire);
+      await rm(`${wirePath}.segments.json`);
+
+      await expect(
+        sealRetainedJournal(wirePath, { codec: 'zstd', reclaim: false, segmentBytes: 128 }),
+      ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED });
+
+      await expect(
+        compactRetainedJournal(wirePath, { codec: 'zstd', reclaim: true, segmentBytes: 128 }),
+      ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED });
+
+      await expect(stat(`${wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+      const afterFailedReseal = await listZstSnapshots(`${wirePath}.segments`);
+      expect([...afterFailedReseal.keys()]).toEqual([...savedFsSegments.keys()]);
+      for (const [rel, expectedBuf] of savedFsSegments) {
+        expect(afterFailedReseal.get(rel)).toEqual(expectedBuf);
+      }
+
+      await writeFile(wirePath, fullBytes);
+      const validReseal = await sealRetainedJournal(wirePath, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 256,
+      });
+      expect(validReseal.segmentCount).toBe(8);
+      const afterValidReseal = await listZstSnapshots(`${wirePath}.segments`);
+      expect(afterValidReseal.size).toBe(8);
+
+      const mem = new InMemoryStorageService();
+      await mem.write(SCOPE, KEY, fullBytes);
+      const memSeal = await sealColdSegments(mem, SCOPE, KEY, fullBytes.byteLength, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 128,
+      });
+      expect(memSeal.segmentCount).toBe(16);
+      const memSegKeysBefore = (await mem.list(SCOPE, `${KEY}.segments/`)).toSorted();
+      expect(memSegKeysBefore.length).toBe(16);
+      const memSnapshots = new Map<string, Uint8Array>();
+      for (const segKey of memSegKeysBefore) {
+        memSnapshots.set(segKey, Buffer.from((await mem.read(SCOPE, segKey))!));
+      }
+
+      await mem.write(SCOPE, KEY, truncatedWire);
+      await mem.delete(SCOPE, coldManifestKey(KEY));
+
+      await expect(
+        sealColdSegments(mem, SCOPE, KEY, truncatedWire.byteLength, {
+          codec: 'zstd',
+          reclaim: false,
+          segmentBytes: 128,
+        }),
+      ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED });
+
+      expect(await mem.read(SCOPE, coldManifestKey(KEY))).toBeUndefined();
+      const memSegKeysAfter = (await mem.list(SCOPE, `${KEY}.segments/`)).toSorted();
+      expect(memSegKeysAfter).toEqual(memSegKeysBefore);
+      for (const [segKey, expectedBytes] of memSnapshots) {
+        expect(Buffer.from((await mem.read(SCOPE, segKey))!)).toEqual(expectedBytes);
+      }
+    } finally {
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('deletes segments highest-index-first and stops on EIO so retry unseal verifies remaining 0..k prefix and finishes cleanup (Round-8 #2)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-cold-r8-desc-delete-'));
+    class FailDeleteSeg1FsStorage extends FileStorageService {
+      failSeg1 = false;
+      readonly deleteAttempts: string[] = [];
+
+      override async delete(delScope: string, delKey: string): Promise<void> {
+        if (delKey.includes('.segments/')) {
+          this.deleteAttempts.push(delKey);
+        }
+        if (this.failSeg1 && delKey.endsWith('/000001.zst')) {
+          throw Object.assign(new Error('EIO: simulated delete failure on 000001.zst'), { code: 'EIO' });
+        }
+        return super.delete(delScope, delKey);
+      }
+    }
+
+    class FailDeleteSeg1MemStorage extends InMemoryStorageService {
+      failSeg1 = false;
+      readonly deleteAttempts: string[] = [];
+
+      override async delete(delScope: string, delKey: string): Promise<void> {
+        if (delKey.includes('.segments/')) {
+          this.deleteAttempts.push(delKey);
+        }
+        if (this.failSeg1 && delKey.endsWith('/000001.zst')) {
+          throw Object.assign(new Error('EIO: simulated mem delete failure on 000001.zst'), { code: 'EIO' });
+        }
+        return super.delete(delScope, delKey);
+      }
+    }
+
+    const storage = new FailDeleteSeg1FsStorage(root);
+    try {
+      const scope = 'sess-r8-desc-fs';
+      const sessionDir = join(root, scope);
+      await mkdir(sessionDir, { recursive: true });
+      const wirePath = join(sessionDir, KEY);
+
+      const records: Buffer[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        const tag = String(i).padStart(2, '0');
+        const baseLen = Buffer.byteLength(JSON.stringify({ tag, pad: '' }) + '\n');
+        const line = JSON.stringify({ tag, pad: `seg_${tag}_`.padEnd(128 - baseLen, 'y') }) + '\n';
+        expect(Buffer.byteLength(line)).toBe(128);
+        records.push(Buffer.from(line));
+      }
+      const fullBytes = Buffer.concat(records);
+      await writeFile(wirePath, fullBytes);
+
+      const sealed = await sealColdSegments(storage, scope, KEY, fullBytes.byteLength, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 128,
+      });
+      expect(sealed.segmentCount).toBe(3);
+
+      const sealDirs = await readdir(`${wirePath}.segments`);
+      expect(sealDirs.length).toBe(1);
+      const sealDir = join(`${wirePath}.segments`, sealDirs[0]!);
+      expect((await readdir(sealDir)).toSorted()).toEqual(['000000.zst', '000001.zst', '000002.zst']);
+
+      storage.failSeg1 = true;
+      await expect(unsealColdSegments(storage, scope, KEY)).rejects.toThrow(
+        'EIO: simulated delete failure on 000001.zst',
+      );
+      expect(storage.deleteAttempts.map((k) => k.slice(-10))).toEqual(['000002.zst', '000001.zst']);
+      expect((await readdir(sealDir)).toSorted()).toEqual(['000000.zst', '000001.zst']);
+
+      storage.deleteAttempts.length = 0;
+      await expect(unsealColdSegments(storage, scope, KEY)).rejects.toThrow(
+        'EIO: simulated delete failure on 000001.zst',
+      );
+      expect(storage.deleteAttempts.map((k) => k.slice(-10))).toEqual(['000001.zst']);
+      expect((await readdir(sealDir)).toSorted()).toEqual(['000000.zst', '000001.zst']);
+
+      storage.failSeg1 = false;
+      storage.deleteAttempts.length = 0;
+      const retryResult = await unsealColdSegments(storage, scope, KEY);
+      expect(retryResult.hadManifest).toBe(false);
+      expect(storage.deleteAttempts.map((k) => k.slice(-10))).toEqual(['000001.zst', '000000.zst']);
+      await expect(stat(`${wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(wirePath)).toEqual(fullBytes);
+
+      const mem = new FailDeleteSeg1MemStorage();
+      await mem.write(SCOPE, KEY, fullBytes);
+      const memSealed = await sealColdSegments(mem, SCOPE, KEY, fullBytes.byteLength, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 128,
+      });
+      expect(memSealed.segmentCount).toBe(3);
+
+      mem.failSeg1 = true;
+      await expect(unsealColdSegments(mem, SCOPE, KEY)).rejects.toThrow(
+        'EIO: simulated mem delete failure on 000001.zst',
+      );
+      expect(mem.deleteAttempts.map((k) => k.slice(-10))).toEqual(['000002.zst', '000001.zst']);
+      expect((await mem.list(SCOPE, `${KEY}.segments/`)).map((k) => k.slice(-10)).toSorted()).toEqual([
+        '000000.zst',
+        '000001.zst',
+      ]);
+
+      mem.failSeg1 = false;
+      mem.deleteAttempts.length = 0;
+      await unsealColdSegments(mem, SCOPE, KEY);
+      expect(mem.deleteAttempts.map((k) => k.slice(-10))).toEqual(['000001.zst', '000000.zst']);
+      expect(await mem.list(SCOPE, `${KEY}.segments/`)).toEqual([]);
+      expect(Buffer.from((await mem.read(SCOPE, KEY))!)).toEqual(fullBytes);
+    } finally {
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
