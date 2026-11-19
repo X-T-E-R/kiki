@@ -2582,13 +2582,13 @@ export class TranscriptService {
     const next = await this.tailRecordStart(wirePath, window.start, signal, spanBytes);
     if (next >= window.start) return window;
     const read = await this.readWireRange(wirePath, next, window.start, signal, !resolveHeaders);
-    if (next > 0 && read.records[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(read.records)) {
+    const merged = [...read.records, ...window.records];
+    if (next > 0 && merged[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(merged)) {
       this.forgetColdWindow(wirePath);
       this.retainedColdTurns.delete(wirePath);
       this.deleteColdSnapshotCache(wirePath);
       return undefined;
     }
-    const merged = [...read.records, ...window.records];
     const entire = next === 0 && read.complete && window.droppedTail !== true && !(window.skippedTurnIds?.length);
     const snapshot = await this.projectColdRecords(agentId, merged, entire, preserveOpenTurnIds, captureReplayState, entire ? undefined : window, signal);
     const bytes = this.coldWindowBytes(snapshot, merged);
@@ -2612,6 +2612,12 @@ export class TranscriptService {
       const fitted = await this.fitOlderColdWindow(agentId, read.records, window, signal, preserveOpenTurnIds, captureReplayState);
       const startAt = read.recordStarts[fitted.keepFrom];
       if (startAt === undefined || startAt >= window.start) return window;
+      if (startAt > 0 && fitted.records[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(fitted.records)) {
+        this.forgetColdWindow(wirePath);
+        this.retainedColdTurns.delete(wirePath);
+        this.deleteColdSnapshotCache(wirePath);
+        return undefined;
+      }
       const retainedTurnIds = new Set(fitted.snapshot.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
       const skippedTurnIds = (window.skippedTurnIds ?? []).filter(turnId => turnId === '*' || retainedTurnIds.has(turnId));
       extended = { ...window, start: startAt, entire: false, records: fitted.records,

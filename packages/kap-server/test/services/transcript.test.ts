@@ -7529,3 +7529,122 @@ it('falls back to canonical replay when an older cold window boundary starts at 
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
+
+it('falls back to canonical replay when fitOlderColdWindow trims a 5 MiB turn.prompt opening before turn.steer', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-fit-trims-steer-opening-'));
+  const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+  await mkdir(wireDir, { recursive: true });
+  const wirePath = join(wireDir, 'wire.jsonl');
+  const records: Record<string, unknown>[] = [];
+  records.push(
+    {
+      type: 'turn.prompt',
+      turnId: 0,
+      promptId: 'p-0',
+      input: [{ type: 'text', text: 'open-0' }],
+      origin: { kind: 'user' },
+      time: 1_000,
+    },
+    { type: 'fixture.padding', padding: 'a'.repeat(2 << 20) },
+    { type: 'turn.ended', turnId: 0, reason: 'completed', time: 1_010 },
+  );
+  for (let id = 1; id < 8; id += 1) {
+    records.push(
+      {
+        type: 'turn.prompt',
+        turnId: id,
+        promptId: `p-${id}`,
+        input: [{ type: 'text', text: `open-${id}` }],
+        origin: { kind: 'user' },
+        time: 1_000 + id,
+      },
+      { type: 'turn.ended', turnId: id, reason: 'completed', time: 1_050 + id },
+    );
+  }
+  const hugeOpening = `open-8:${'x'.repeat(5 << 20)}`;
+  records.push(
+    {
+      type: 'turn.prompt',
+      turnId: 8,
+      promptId: 'p-8',
+      input: [{ type: 'text', text: hugeOpening }],
+      origin: { kind: 'user' },
+      time: 1_100,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 8, step: 1, uuid: 't8-step-1' },
+      time: 1_101,
+    },
+    {
+      type: 'turn.steer',
+      turnId: 8,
+      promptId: 'steer-8',
+      input: [{ type: 'text', text: 'steered words' }],
+      origin: { kind: 'user' },
+      time: 1_102,
+    },
+    {
+      type: 'context.append_message',
+      message: {
+        id: 'steer-8',
+        role: 'user',
+        origin: { kind: 'user' },
+        content: [{ type: 'text', text: 'steered words' }],
+      },
+      time: 1_103,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 8, step: 2, uuid: 't8-step-2' },
+      time: 1_104,
+    },
+    { type: 'turn.ended', turnId: 8, reason: 'completed', time: 1_105 },
+  );
+  for (let id = 9; id < 30; id += 1) {
+    records.push(
+      {
+        type: 'turn.prompt',
+        turnId: id,
+        promptId: `p-${id}`,
+        input: [{ type: 'text', text: `open-${id}` }],
+        origin: { kind: 'user' },
+        time: 2_000 + id,
+      },
+      { type: 'fixture.padding', padding: 'd'.repeat(60 << 10) },
+      { type: 'turn.ended', turnId: id, reason: 'completed', time: 2_050 + id },
+    );
+  }
+  await writeFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const initial = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 20 });
+    expect(initial?.has_more).toBe(true);
+
+    const extended = await service.readColdPageSnapshot(
+      's1',
+      'main',
+      (snapshot) => snapshot,
+      undefined,
+      true,
+      Math.floor(5.5 * (1 << 20)),
+      false,
+      false,
+      true,
+    );
+    const turns = (extended?.items ?? []).filter((item): item is TranscriptTurn => item.kind === 'turn');
+    expect(turns.map((turn) => turn.turnId)).toEqual(
+      Array.from({ length: 30 }, (_, index) => `t${index}`),
+    );
+    expect(turns.find((turn) => turn.turnId === 't0')).toMatchObject({ prompt: 'open-0' });
+    expect(turns.filter((turn) => turn.prompt === 'steered words')).toEqual([]);
+    const t8 = turns.find((turn) => turn.turnId === 't8');
+    expect(t8?.prompt).toBe(hugeOpening);
+    const full = await service.readColdSnapshot('s1', 'main');
+    const fullT8 = full?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't8');
+    expect(t8?.steps.flatMap((step) => step.frames)).toEqual(fullT8?.steps.flatMap((step) => step.frames));
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
