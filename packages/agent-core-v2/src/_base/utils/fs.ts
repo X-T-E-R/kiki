@@ -116,6 +116,15 @@ function syncFd(fd: number): Promise<void> {
   });
 }
 
+/** Suffix appended to an atomic-write temp file once its bytes are durably synced; only such temps are complete. */
+export const ATOMIC_TEMP_READY_SUFFIX = '.ready';
+
+async function markTempReady(tmpPath: string): Promise<string> {
+  const readyPath = `${tmpPath}${ATOMIC_TEMP_READY_SUFFIX}`;
+  await rename(tmpPath, readyPath);
+  return readyPath;
+}
+
 export async function atomicWrite(
   filePath: string,
   content: string | Uint8Array,
@@ -127,7 +136,8 @@ export async function atomicWrite(
   signal?.throwIfAborted();
   const hex = randomBytes(4).toString('hex');
   const tag = preserveDestinationOnError ? 'stage' : 'tmp';
-  const tmpPath = `${filePath}.${tag}.${process.pid}.${hex}`;
+  const stagingPath = `${filePath}.${tag}.${process.pid}.${hex}`;
+  let tmpPath = stagingPath;
   let renamed = false;
   try {
     const fh = await open(tmpPath, 'w', mode);
@@ -139,6 +149,7 @@ export async function atomicWrite(
     } finally {
       await fh.close();
     }
+    if (!preserveDestinationOnError) tmpPath = await markTempReady(stagingPath);
     if (preserveDestinationOnError) {
       await replaceFileNonDestructive(tmpPath, filePath, signal);
       renamed = true;
@@ -242,7 +253,8 @@ export async function atomicWriteStream(
   signal?.throwIfAborted();
   const hex = randomBytes(4).toString('hex');
   const tag = preserveDestinationOnError ? 'stage' : 'tmp';
-  const tmpPath = `${filePath}.${tag}.${process.pid}.${hex}`;
+  const stagingPath = `${filePath}.${tag}.${process.pid}.${hex}`;
+  let tmpPath = stagingPath;
   let renamed = false;
   const destroyable = source as AsyncIterable<Uint8Array> & {
     destroy?(error?: Error): void;
@@ -266,6 +278,7 @@ export async function atomicWriteStream(
     } finally {
       await fh.close();
     }
+    if (!preserveDestinationOnError) tmpPath = await markTempReady(stagingPath);
     if (preserveDestinationOnError) {
       await replaceFileNonDestructive(tmpPath, filePath, signal);
       renamed = true;

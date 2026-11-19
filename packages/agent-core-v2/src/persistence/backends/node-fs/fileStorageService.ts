@@ -8,7 +8,7 @@ import * as portablePath from 'pathe';
 import { DisposableStore, combinedDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
-import { atomicWrite, atomicWriteStream, syncDir } from '#/_base/utils/fs';
+import { ATOMIC_TEMP_READY_SUFFIX, atomicWrite, atomicWriteStream, syncDir } from '#/_base/utils/fs';
 
 import type {
   IFileSystemStorageService,
@@ -68,45 +68,89 @@ function isEnoent(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-async function recoverOrphanedTempFile(filePath: string): Promise<boolean> {
+interface OrphanedTempFiles {
+  readonly writerAlive: boolean;
+  readonly ready: readonly string[];
+  readonly incomplete: readonly string[];
+}
+
+const TEMP_SUFFIX_PATTERN = /^(\d+)\.[0-9a-f]+(\.ready)?$/;
+
+async function scanOrphanedTempFiles(filePath: string): Promise<OrphanedTempFiles> {
   const dir = dirname(filePath);
+  const prefix = `${basename(filePath)}.tmp.`;
+  const ready: string[] = [];
+  const incomplete: string[] = [];
   let entries: string[];
   try {
     entries = await readdir(dir);
+  } catch (error) {
+    if (isEnoent(error)) return { writerAlive: false, ready, incomplete };
+    throw error;
+  }
+  let writerAlive = false;
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    const match = TEMP_SUFFIX_PATTERN.exec(entry.slice(prefix.length));
+    if (match === null) continue;
+    if (isPidAlive(Number(match[1]))) {
+      writerAlive = true;
+      continue;
+    }
+    const path = join(dir, entry);
+    if (match[2] === ATOMIC_TEMP_READY_SUFFIX) ready.push(path);
+    else incomplete.push(path);
+  }
+  return { writerAlive, ready, incomplete };
+}
+
+async function unlinkIfPresent(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+}
+
+async function recoverOrphanedTempFile(filePath: string): Promise<boolean> {
+  let orphans: OrphanedTempFiles;
+  try {
+    orphans = await scanOrphanedTempFiles(filePath);
   } catch {
     return false;
   }
-  const prefix = `${basename(filePath)}.tmp.`;
-  let newestOrphanedTemp: string | undefined;
-  let newestOrphanedTempMtimeMs = -Infinity;
-  for (const entry of entries) {
-    if (!entry.startsWith(prefix)) continue;
-    const pid = parseTempPid(entry, prefix);
-    if (pid !== undefined && isPidAlive(pid)) return false;
-    const path = join(dir, entry);
+  if (orphans.writerAlive) return false;
+  for (const path of orphans.incomplete) {
+    await unlinkIfPresent(path).catch(() => undefined);
+  }
+  let newestReady: string | undefined;
+  let newestReadyMtimeMs = -Infinity;
+  for (const path of orphans.ready) {
     let mtimeMs: number;
     try {
       mtimeMs = (await stat(path)).mtimeMs;
     } catch {
       continue;
     }
-    if (mtimeMs > newestOrphanedTempMtimeMs) {
-      newestOrphanedTemp = path;
-      newestOrphanedTempMtimeMs = mtimeMs;
+    if (mtimeMs > newestReadyMtimeMs) {
+      newestReady = path;
+      newestReadyMtimeMs = mtimeMs;
     }
   }
-  if (newestOrphanedTemp === undefined) return false;
+  if (newestReady === undefined) return false;
   try {
-    await rename(newestOrphanedTemp, filePath);
+    await rename(newestReady, filePath);
     return true;
   } catch {
     return false;
   }
 }
 
-function parseTempPid(entry: string, prefix: string): number | undefined {
-  const pid = Number.parseInt(entry.slice(prefix.length, entry.indexOf('.', prefix.length)), 10);
-  return Number.isInteger(pid) ? pid : undefined;
+async function removeOrphanedTempFiles(filePath: string): Promise<void> {
+  const orphans = await scanOrphanedTempFiles(filePath);
+  for (const path of [...orphans.ready, ...orphans.incomplete]) {
+    await unlinkIfPresent(path);
+  }
 }
 
 function isPidAlive(pid: number): boolean {
@@ -287,6 +331,7 @@ export class FileStorageService implements IFileSystemStorageService {
   async delete(scope: string, key: string): Promise<void> {
     const filePath = this.pathFor(scope, key);
     try {
+      await removeOrphanedTempFiles(filePath);
       await unlink(filePath);
     } catch (error) {
       if (isEnoent(error)) return;
