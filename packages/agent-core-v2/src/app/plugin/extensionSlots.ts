@@ -292,7 +292,7 @@ export interface PluginHttpRouteResult {
   readonly errorMessage?: string;
 }
 
-/** Central App-scoped port registry where built-in Features, Tier 1 Cordis plugins, Tier 2 proxies, and `dsh-compat` register E1-E12 handlers. */
+/** Central App-scoped port registry where built-in Features, Tier 1 Cordis plugins, and Tier 2 proxies register E1-E12 handlers. */
 export interface IPluginExtensionPortRegistry {
   readonly _serviceBrand: undefined;
 

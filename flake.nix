@@ -135,7 +135,6 @@
         ./packages/auth-native
         ./packages/codex-client
         ./packages/cordis-runtime
-        ./packages/dsh-compat
         ./packages/kap-server
         ./packages/kaos
         ./packages/klient
@@ -163,7 +162,6 @@
         "@kiki/auth-native"
         "@kiki/codex-client"
         "@kiki/cordis-runtime"
-        "@kiki/dsh-compat"
         "@kiki/kap-server"
         "@kiki/kaos"
         "@kiki/node-sdk"
