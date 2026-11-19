@@ -29,7 +29,8 @@ export class UsageDatabase {
       if ((app !== 0 && app !== APPLICATION_ID) || version > 2) throw new Error('Unsupported Usage read-model schema; upgrade this writer');
       if (app === 0 && this.db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get() !== undefined) throw new Error('Unrecognized Usage database');
       if (writable) {
-        this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN IMMEDIATE;
+        if (app === 0) this.db.exec('PRAGMA auto_vacuum=INCREMENTAL');
+        this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA journal_size_limit=67108864; BEGIN IMMEDIATE;
           CREATE TABLE IF NOT EXISTS private_session(workspace TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(workspace,id)) WITHOUT ROWID;
           CREATE TABLE IF NOT EXISTS meta(id INTEGER PRIMARY KEY CHECK(id=1),epoch TEXT NOT NULL,revision INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS session(workspace TEXT NOT NULL,id TEXT NOT NULL,title TEXT,created REAL NOT NULL,updated REAL NOT NULL,archived INTEGER NOT NULL,deleted INTEGER NOT NULL,ephemeral INTEGER NOT NULL DEFAULT 0,present INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(workspace,id)) WITHOUT ROWID;
@@ -66,20 +67,32 @@ export class UsageDatabase {
         try { return this.transaction(() => { for (const page of operation.pages) if (!this.apply(page)) throw IMPORT_CHANGED; return true; }); }
         catch (error) { if (error === IMPORT_CHANGED) return false; throw error; }
       }
-      case 'maintain': return this.transaction(() => this.backfillHourTotals());
+      case 'maintain': {
+        const hasMore = this.transaction(() => {
+          const more = this.backfillHourTotals();
+          this.collectRetired();
+          return more;
+        });
+        this.reclaimFreelist();
+        return hasMore;
+      }
       case 'abandon': return this.transaction(() => { this.db.prepare('DELETE FROM stage WHERE source=?').run(operation.source); this.db.prepare('DELETE FROM import WHERE source=?').run(operation.source); });
-      case 'invalidate': return this.transaction(() => {
-        const row = this.db.prepare('SELECT generation,building_generation FROM source WHERE id=?').get(operation.source);
-        if (row !== undefined) {
-          this.db.prepare('INSERT OR IGNORE INTO retired_generation VALUES(?,?)').run(operation.source, String(row['generation']));
-          if (row['building_generation'] !== null) this.db.prepare('INSERT OR IGNORE INTO retired_generation VALUES(?,?)').run(operation.source, String(row['building_generation']));
-          this.db.prepare('UPDATE source SET generation=?,checkpoint=NULL,journal_offset=0,journal_size=0,ordinal=0,building_generation=NULL,building_checkpoint=NULL,building_ordinal=0,revision=revision+1 WHERE id=?').run(randomUUID(), operation.source);
-          this.db.exec('UPDATE meta SET revision=revision+1 WHERE id=1');
-        }
-        this.db.prepare('DELETE FROM stage WHERE source=?').run(operation.source);
-        this.db.prepare('DELETE FROM import WHERE source=?').run(operation.source);
-        this.collectRetired();
-      });
+      case 'invalidate': {
+        this.transaction(() => {
+          const row = this.db.prepare('SELECT generation,building_generation FROM source WHERE id=?').get(operation.source);
+          if (row !== undefined) {
+            this.db.prepare('INSERT OR IGNORE INTO retired_generation VALUES(?,?)').run(operation.source, String(row['generation']));
+            if (row['building_generation'] !== null) this.db.prepare('INSERT OR IGNORE INTO retired_generation VALUES(?,?)').run(operation.source, String(row['building_generation']));
+            this.db.prepare('UPDATE source SET generation=?,checkpoint=NULL,journal_offset=0,journal_size=0,ordinal=0,building_generation=NULL,building_checkpoint=NULL,building_ordinal=0,revision=revision+1 WHERE id=?').run(randomUUID(), operation.source);
+            this.db.exec('UPDATE meta SET revision=revision+1 WHERE id=1');
+          }
+          this.db.prepare('DELETE FROM stage WHERE source=?').run(operation.source);
+          this.db.prepare('DELETE FROM import WHERE source=?').run(operation.source);
+          this.collectRetired();
+        });
+        this.reclaimFreelist();
+        return undefined;
+      }
       case 'read': return this.snapshot(() => {
         const head = this.source(operation.source);
         if (head?.checkpoint === undefined) return { head, records: [] };
@@ -103,7 +116,11 @@ export class UsageDatabase {
       });
       case 'privateSessions': return this.db.prepare('SELECT workspace,id FROM private_session').all().map((row) => ({ workspaceId: String(row['workspace']), id: String(row['id']) }));
       case 'isPrivateSession': return this.db.prepare('SELECT 1 FROM private_session WHERE workspace=? AND id=?').get(operation.workspaceId, operation.sessionId) !== undefined;
-      case 'catalog': return this.transaction(() => this.catalog(operation.sessions, operation.sources, operation.inventory));
+      case 'catalog': {
+        this.transaction(() => this.catalog(operation.sessions, operation.sources, operation.inventory));
+        this.reclaimFreelist();
+        return undefined;
+      }
       case 'models': return this.db.prepare('SELECT DISTINCT t.model FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.present=1 AND NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=s.workspace AND p.id=s.session_id)').all().map((row) => String(row['model']));
       case 'retained': return this.db.prepare("SELECT id,retained_meta FROM source WHERE kind='retained' AND present=1 AND retained_meta IS NOT NULL AND NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=source.workspace AND p.id=source.session_id)").all().map((row) => ({ source: String(row['id']), session: JSON.parse(String(row['retained_meta'])) as UsageReadModelSession })).filter((row) => operation.workspaceIds === undefined || operation.workspaceIds.includes(row.session.workspaceId));
       case 'settleRetained': return this.transaction(() => {
@@ -119,14 +136,25 @@ export class UsageDatabase {
     }
   }
 
+  private rollbackQuietly(): void {
+    if (!this.db.isTransaction) return;
+    try { this.db.exec('ROLLBACK'); } catch {}
+  }
+  private reclaimFreelist(): void {
+    if (!this.writable) return;
+    if (Number(this.db.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum']) !== 2) return;
+    if (Number(this.db.prepare('PRAGMA freelist_count').get()!['freelist_count']) >= 256) {
+      this.db.exec('PRAGMA incremental_vacuum(256)');
+    }
+  }
   private transaction<T>(work: () => T): T {
     if (!this.writable) throw Object.assign(new Error('Usage writer is owned by another process'), { code: 'usage.read_only', committed: false });
     this.db.exec('BEGIN IMMEDIATE');
-    try { const value = work(); this.db.exec('COMMIT'); return value; } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    try { const value = work(); this.db.exec('COMMIT'); return value; } catch (error) { this.rollbackQuietly(); throw error; }
   }
   private snapshot<T>(work: () => T): T {
     this.db.exec('BEGIN');
-    try { const value = work(); this.db.exec('COMMIT'); return value; } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    try { const value = work(); this.db.exec('COMMIT'); return value; } catch (error) { this.rollbackQuietly(); throw error; }
   }
   private source(source: string): UsageSourceHead | undefined {
     const row = this.db.prepare('SELECT * FROM source s WHERE id=? AND NOT EXISTS(SELECT 1 FROM private_session p WHERE p.workspace=s.workspace AND p.id=s.session_id)').get(source);

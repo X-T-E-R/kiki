@@ -34,6 +34,7 @@ export type MailboxOperation =
   | { readonly type: 'checkpoint'; readonly source: string }
   | { readonly type: 'legacy_deliveries'; readonly source: string; readonly after?: LegacyDeliveryCursor; readonly limit: number }
   | { readonly type: 'discard_archive'; readonly completedMigrationId?: string }
+  | { readonly type: 'purge_expired'; readonly owner?: MailboxOwner; readonly limit?: number }
   | { readonly type: 'verify' }
   | { readonly type: 'backup'; readonly destination: string }
   | { readonly type: 'metadata'; readonly key: string; readonly value?: unknown }

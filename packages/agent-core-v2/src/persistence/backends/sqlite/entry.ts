@@ -7,7 +7,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import type { IndexDef, StagedWrite, WriteCondition, WriteOp } from '../../interface/queryStore.ts';
 import type { ReadQuery, StoreOperation, StoreRequest, StoreResponse } from './protocol.ts';
 // oxlint-disable-next-line import/extensions
-import { getPath, matches, scalarKey, sortValue } from './querySemantics.ts';
+import { getPath, matches, scalarKey, sortValue, totalSortKey } from './querySemantics.ts';
 
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
@@ -27,6 +27,23 @@ interface QueryConnection {
 }
 let db: QueryConnection | undefined;
 let cancellation: Int32Array | undefined;
+const sortKindCache = new Map<string, boolean>();
+
+function invalidateSortKindCache(collection?: string): void {
+  if (collection === undefined) {
+    sortKindCache.clear();
+    return;
+  }
+  const prefix = `${collection}\0`;
+  for (const key of sortKindCache.keys()) {
+    if (key.startsWith(prefix)) sortKindCache.delete(key);
+  }
+}
+
+function rollbackQuietly(connection: DatabaseSync): void {
+  if (!connection.isTransaction) return;
+  try { connection.exec('ROLLBACK'); } catch {}
+}
 
 function check(): void { if (cancellation !== undefined && Atomics.load(cancellation, 0) !== 0) throw new DOMException('Query store read cancelled', 'AbortError'); }
 function quote(value: string): string { return `'${value.replaceAll("'", "''")}'`; }
@@ -42,12 +59,13 @@ function open(): DatabaseSync {
     if (application === 0 && connection.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get() !== undefined) throw new Error('Unrecognized query-store SQLite database');
     connection.function('kiki_value', { deterministic: true }, (json, path) => { check(); return scalarKey(getPath(JSON.parse(String(json)), String(path))); });
     connection.function('kiki_order', { deterministic: true }, (json, path) => { check(); return sortValue(getPath(JSON.parse(String(json)), String(path))); });
+    connection.function('kiki_order_key', { deterministic: true }, (json, path) => { check(); return totalSortKey(getPath(JSON.parse(String(json)), String(path))); });
     connection.exec(`CREATE TABLE IF NOT EXISTS rows(collection TEXT NOT NULL, key BLOB NOT NULL, json TEXT NOT NULL CHECK(json_valid(json)), PRIMARY KEY(collection,key)) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS columns(collection TEXT NOT NULL, name TEXT NOT NULL, value REAL NOT NULL, key BLOB NOT NULL, PRIMARY KEY(collection,name,value,key), FOREIGN KEY(collection,key) REFERENCES rows(collection,key) ON DELETE CASCADE) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS columns_by_key ON columns(collection,key);
       CREATE TABLE IF NOT EXISTS definitions(id INTEGER PRIMARY KEY, collection TEXT NOT NULL, name TEXT NOT NULL, json TEXT NOT NULL, UNIQUE(collection,name));
       PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=1; COMMIT;`);
-    connection.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE');
+    connection.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE; PRAGMA journal_size_limit=67108864');
     db = {
       connection,
       get: connection.prepare('SELECT json FROM rows WHERE collection=? AND key=?'),
@@ -64,7 +82,7 @@ function transaction<T>(work: (connection: DatabaseSync) => T): T {
   const connection = open();
   connection.exec('BEGIN IMMEDIATE');
   try { const result = work(connection); connection.exec('COMMIT'); return result; }
-  catch (error) { if (connection.isTransaction) connection.exec('ROLLBACK'); throw error; }
+  catch (error) { rollbackQuietly(connection); throw error; }
 }
 
 function batch(ops: readonly WriteOp[], conditions?: readonly WriteCondition[], staged?: StagedWrite): boolean {
@@ -83,8 +101,11 @@ function batch(ops: readonly WriteOp[], conditions?: readonly WriteCondition[], 
       connection.prepare('INSERT INTO rows SELECT ?,key,json FROM rows WHERE collection=? ON CONFLICT(collection,key) DO UPDATE SET json=excluded.json').run(staged.collection, staged.source);
       connection.prepare('INSERT INTO columns SELECT ?,name,value,key FROM columns WHERE collection=?').run(staged.collection, staged.source);
       connection.prepare('DELETE FROM rows WHERE collection=?').run(staged.source);
+      invalidateSortKindCache(staged.collection);
+      invalidateSortKindCache(staged.source);
     }
     for (const op of ops) {
+      invalidateSortKindCache(op.collection);
       const key = Buffer.from(op.key);
       if (op.kind === 'delete') { remove.run(op.collection, key); continue; }
       const json = JSON.stringify(op.value);
@@ -159,18 +180,23 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
     if (input.columnOrder !== undefined) orderedValue = 'c.value';
   }
   for (const [field, value] of indexedEqualities(input.filter)) { clauses.push(`kiki_value(r.json,${quote(field)}) IS ?`); parameters.push(scalarKey(value)); }
-  let fallbackSort = false;
   if (input.sort !== undefined) {
-    connection.function('kiki_sort_kind', (json) => { check(); return typeof getPath(JSON.parse(String(json)), input.sort!.field); });
-    const kinds = connection.prepare(`SELECT DISTINCT kiki_sort_kind(r.json) AS kind FROM ${from} WHERE ${clauses.join(' AND ')}`).all(...parameters);
-    fallbackSort = kinds.some((row) => row['kind'] !== 'number' && row['kind'] !== 'string') || new Set(kinds.map((row) => row['kind'])).size > 1;
-    if (!fallbackSort) { orderedValue = `kiki_order(r.json,${quote(input.sort.field)})`; descending = input.sort.dir === 'desc'; }
+    const cacheKey = `${input.collection}\0${input.sort.field}`;
+    let mixed = sortKindCache.get(cacheKey);
+    if (mixed === undefined) {
+      connection.function('kiki_sort_kind', (json) => { check(); return typeof getPath(JSON.parse(String(json)), input.sort!.field); });
+      const kinds = connection.prepare('SELECT DISTINCT kiki_sort_kind(r.json) AS kind FROM rows r WHERE r.collection=?').all(input.collection);
+      mixed = kinds.some((row) => row['kind'] !== 'number' && row['kind'] !== 'string') || new Set(kinds.map((row) => row['kind'])).size > 1;
+      sortKindCache.set(cacheKey, mixed);
+    }
+    orderedValue = mixed ? `kiki_order_key(r.json,${quote(input.sort.field)})` : `kiki_order(r.json,${quote(input.sort.field)})`;
+    descending = input.sort.dir === 'desc';
   }
-  if (!fallbackSort && position !== undefined) {
+  if (position !== undefined) {
     if (orderedValue !== undefined) { clauses.push(`(${orderedValue} ${descending ? '<' : '>'} ? OR (${orderedValue}=? AND r.key ${input.columnOrder === 'desc' && input.sort === undefined ? '<' : '>'} ?))`); parameters.push(position.value!, position.value!, Buffer.from(position.key, 'base64')); }
     else { clauses.push('r.key>?'); parameters.push(Buffer.from(position.key, 'base64')); }
   }
-  if (orderedValue !== undefined && !fallbackSort) { order = `${orderedValue} ${descending ? 'DESC' : 'ASC'},r.key ${input.columnOrder === 'desc' && input.sort === undefined ? 'DESC' : 'ASC'}`; selected += `,${orderedValue} AS value`; }
+  if (orderedValue !== undefined) { order = `${orderedValue} ${descending ? 'DESC' : 'ASC'},r.key ${input.columnOrder === 'desc' && input.sort === undefined ? 'DESC' : 'ASC'}`; selected += `,${orderedValue} AS value`; }
   const iterator = connection.prepare(`SELECT ${selected} FROM ${from} WHERE ${clauses.join(' AND ')} ORDER BY ${order}`).iterate(...parameters);
   const rows: Array<{ key: Uint8Array; value?: number | string; doc: unknown }> = [];
   let visits = 0;
@@ -179,35 +205,26 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
       check();
       const doc: unknown = JSON.parse(String(row['json']));
       if (matches(doc, input.filter ?? {})) rows.push({ key: row['key'] as Uint8Array, value: row['value'] as number | string | undefined, doc });
-      if (!fallbackSort && limit !== undefined && rows.length > limit) break;
+      if (limit !== undefined && rows.length > limit) break;
       if (++visits % 256 === 0) await yieldToEventLoop();
     }
   } finally { iterator.return?.(); }
   check();
-  if (fallbackSort && input.sort !== undefined) {
-    const sort = input.sort;
-    rows.sort((left, right) => {
-      const a = getPath(left.doc, sort.field) as number;
-      const b = getPath(right.doc, sort.field) as number;
-      return (a < b ? -1 : a > b ? 1 : 0) * (sort.dir === 'desc' ? -1 : 1);
-    });
-  }
-  const offset = fallbackSort ? position?.offset ?? 0 : 0;
-  const page = limit === undefined ? rows.slice(offset) : rows.slice(offset, offset + limit);
+  const page = limit === undefined ? rows : rows.slice(0, limit);
   const last = page.at(-1);
-  const nextCursor = limit !== undefined && rows.length > offset + limit && last !== undefined ? Buffer.from(JSON.stringify({ v: 1, signature, position: { key: Buffer.from(last.key).toString('base64'), value: last.value, offset: fallbackSort ? offset + limit : undefined } })).toString('base64url') : undefined;
+  const nextCursor = limit !== undefined && rows.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ v: 1, signature, position: { key: Buffer.from(last.key).toString('base64'), value: last.value } })).toString('base64url') : undefined;
   return { items: page.map((row) => row.doc), nextCursor };
 }
 
 async function execute(operation: StoreOperation): Promise<unknown> {
   check();
-  if (operation.type === 'close') { try { db?.connection.exec('PRAGMA wal_checkpoint(PASSIVE)'); } finally { try { db?.connection.close(); } finally { db = undefined; } } return undefined; }
+  if (operation.type === 'close') { invalidateSortKindCache(); try { db?.connection.exec('PRAGMA wal_checkpoint(PASSIVE)'); } finally { try { db?.connection.close(); } finally { db = undefined; } } return undefined; }
   if (operation.type === 'batch') return batch(operation.ops, operation.conditions, operation.staged);
   if (operation.type === 'query') {
     const connection = open();
     connection.exec('BEGIN');
     try { const page = await query(operation.query); connection.exec('COMMIT'); return page; }
-    catch (error) { if (connection.isTransaction) connection.exec('ROLLBACK'); throw error; }
+    catch (error) { rollbackQuietly(connection); throw error; }
   }
   if (operation.type === 'index') return ensureIndex(operation.collection, operation.definition);
   if (operation.type === 'drop') return transaction((connection) => {
@@ -215,6 +232,7 @@ async function execute(operation: StoreOperation): Promise<unknown> {
     for (const row of definitions) connection.exec(`DROP INDEX query_value_${Number(row['id'])}`);
     connection.prepare('DELETE FROM definitions WHERE collection=?').run(operation.collection);
     connection.prepare('DELETE FROM rows WHERE collection=?').run(operation.collection);
+    invalidateSortKindCache(operation.collection);
   });
   const connection = open();
   if (operation.type === 'get') {
@@ -224,7 +242,7 @@ async function execute(operation: StoreOperation): Promise<unknown> {
     try {
       for (const key of operation.keys) { check(); const row = get.get(operation.collection, Buffer.from(key)); if (row !== undefined) rows.push([key, JSON.parse(String(row['json']))]); }
       connection.exec('COMMIT');
-    } catch (error) { if (connection.isTransaction) connection.exec('ROLLBACK'); throw error; }
+    } catch (error) { rollbackQuietly(connection); throw error; }
     return rows;
   }
   const keys: string[] = [];
