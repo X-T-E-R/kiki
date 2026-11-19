@@ -16,6 +16,7 @@ import {
 import { posix } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { isMainThread, postMessageToThread, threadId, type Worker } from 'node:worker_threads';
 import * as portablePath from 'pathe';
 
 import {
@@ -36,6 +37,7 @@ const resolve = (...parts: string[]): string => storagePath.resolve(...parts);
 interface FileLockPayload {
   readonly version: 1;
   readonly pid: number;
+  readonly threadId?: number;
   readonly processStartedAt: number;
   readonly token: string;
   readonly acquiredAt: number;
@@ -70,9 +72,15 @@ const TRANSIENT_DENIAL_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const execFileAsync = promisify(execFile);
 const HELD = new Set<FileLock>();
 const READER_HELD = new Set<ReaderLeaseHandle>();
+const ACTIVE_THREAD_READER_TOKENS = new Set<string>();
+const PENDING_READER_UNLINKS = new Set<string>();
+const DEAD_LOCAL_THREAD_IDS = new Set<number>();
+const TRACKED_WORKER_LEASE_DIRS = new Map<number, Set<string>>();
+const HOOKED_READER_WORKERS = new WeakSet<Worker>();
 const readerGateDepth = new Map<string, number>();
 const READER_GATE_WAIT_MS = 60_000;
 let exitHooked = false;
+let workerProbeHooked = false;
 
 interface ReaderLeaseHandle {
   releaseSync(): void;
@@ -128,6 +136,12 @@ async function ownerProcessAlive(payload: FileLockPayload, signal?: AbortSignal,
 function isPayload(value: unknown): value is FileLockPayload {
   if (value === null || typeof value !== 'object') return false;
   const payload = value as Partial<FileLockPayload>;
+  if (
+    payload.threadId !== undefined &&
+    (typeof payload.threadId !== 'number' || !Number.isSafeInteger(payload.threadId) || payload.threadId < 0)
+  ) {
+    return false;
+  }
   return (
     payload.version === 1 &&
     typeof payload.pid === 'number' &&
@@ -152,15 +166,102 @@ function isTransientAccessDenial(error: unknown): boolean {
   return typeof errno === 'string' && TRANSIENT_DENIAL_CODES.has(errno);
 }
 
+function tryUnlinkSyncComplete(filePath: string): boolean {
+  try {
+    fsSync.unlinkSync(filePath);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+}
+
+async function flushPendingReaderUnlinks(): Promise<void> {
+  if (PENDING_READER_UNLINKS.size === 0) return;
+  for (const leasePath of [...PENDING_READER_UNLINKS]) {
+    try {
+      await unlink(leasePath);
+      PENDING_READER_UNLINKS.delete(leasePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        PENDING_READER_UNLINKS.delete(leasePath);
+      }
+    }
+  }
+}
+
 function hookExit(): void {
+  if (!isMainThread && !workerProbeHooked) {
+    workerProbeHooked = true;
+    process.on('workerMessage', () => {});
+  }
   if (exitHooked) return;
   exitHooked = true;
   const releaseHeld = (): void => {
     for (const lock of HELD) lock.releaseSync();
-    for (const lease of READER_HELD) lease.releaseSync();
+    for (const lease of [...READER_HELD]) lease.releaseSync();
+    for (const leasePath of [...PENDING_READER_UNLINKS]) {
+      if (tryUnlinkSyncComplete(leasePath)) PENDING_READER_UNLINKS.delete(leasePath);
+    }
   };
   process.on('beforeExit', releaseHeld);
   process.on('exit', releaseHeld);
+}
+
+async function reapDeadThreadLeases(deadThreadId: number): Promise<void> {
+  const dirs = TRACKED_WORKER_LEASE_DIRS.get(deadThreadId);
+  TRACKED_WORKER_LEASE_DIRS.delete(deadThreadId);
+  if (dirs === undefined) return;
+  for (const directory of dirs) {
+    let names: string[];
+    try {
+      names = await readdir(directory);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.endsWith('.reader')) continue;
+      const leasePath = join(directory, name);
+      let raw: string;
+      try {
+        raw = await readFile(leasePath, 'utf8');
+      } catch {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (
+          isPayload(parsed) &&
+          parsed.pid === process.pid &&
+          parsed.threadId === deadThreadId
+        ) {
+          await unlink(leasePath).catch((error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+              PENDING_READER_UNLINKS.add(leasePath);
+            }
+          });
+        }
+      } catch {}
+    }
+  }
+}
+
+export function trackReaderWorkerThread(worker: Worker, journalPath?: string): void {
+  const tid = worker.threadId;
+  if (tid < 0) return;
+  if (journalPath !== undefined && journalPath.length > 0) {
+    let dirs = TRACKED_WORKER_LEASE_DIRS.get(tid);
+    if (dirs === undefined) {
+      dirs = new Set();
+      TRACKED_WORKER_LEASE_DIRS.set(tid, dirs);
+    }
+    dirs.add(sharedReadDirectory(journalPath));
+  }
+  if (HOOKED_READER_WORKERS.has(worker)) return;
+  HOOKED_READER_WORKERS.add(worker);
+  worker.once('exit', () => {
+    DEAD_LOCAL_THREAD_IDS.add(tid);
+    void reapDeadThreadLeases(tid);
+  });
 }
 
 /** Removes dead or corrupted session locks only when no live watch protects them. */
@@ -193,13 +294,15 @@ export function sharedReadDirectory(journalPath: string): string {
 
 export async function acquireSharedReadLease(journalPath: string): Promise<{ release(): Promise<void> }> {
   hookExit();
+  await flushPendingReaderUnlinks();
   const directory = sharedReadDirectory(journalPath);
   await mkdir(directory, { recursive: true });
-  const token = `${process.pid}:${randomUUID()}`;
+  const token = `${process.pid}:${threadId}:${randomUUID()}`;
   const leasePath = join(directory, `${createHash('sha256').update(token).digest('hex')}.reader`);
   const payload: FileLockPayload = {
     version: 1,
     pid: process.pid,
+    threadId,
     processStartedAt: PROCESS_STARTED_AT,
     token,
     acquiredAt: Date.now(),
@@ -213,24 +316,63 @@ export async function acquireSharedReadLease(journalPath: string): Promise<{ rel
     await unlink(tempPath).catch(() => undefined);
     throw error;
   }
-  let released = false;
+  ACTIVE_THREAD_READER_TOKENS.add(token);
+  let unlinked = false;
   const handle: ReaderLeaseHandle = {
     releaseSync: () => {
-      if (released) return;
-      released = true;
-      try { fsSync.unlinkSync(leasePath); } catch { }
-      READER_HELD.delete(handle);
+      ACTIVE_THREAD_READER_TOKENS.delete(token);
+      if (unlinked) {
+        READER_HELD.delete(handle);
+        return;
+      }
+      if (tryUnlinkSyncComplete(leasePath)) {
+        unlinked = true;
+        PENDING_READER_UNLINKS.delete(leasePath);
+        READER_HELD.delete(handle);
+      } else {
+        PENDING_READER_UNLINKS.add(leasePath);
+      }
     },
   };
   READER_HELD.add(handle);
-  return { release: async () => handle.releaseSync() };
+  const release = async (): Promise<void> => {
+    ACTIVE_THREAD_READER_TOKENS.delete(token);
+    if (unlinked) {
+      READER_HELD.delete(handle);
+      return;
+    }
+    for (let attempt = 0; attempt <= TRANSIENT_DENIAL_RETRIES; attempt += 1) {
+      try {
+        await unlink(leasePath);
+        unlinked = true;
+        PENDING_READER_UNLINKS.delete(leasePath);
+        READER_HELD.delete(handle);
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          unlinked = true;
+          PENDING_READER_UNLINKS.delete(leasePath);
+          READER_HELD.delete(handle);
+          return;
+        }
+        if (!isTransientAccessDenial(error) || attempt === TRANSIENT_DENIAL_RETRIES) {
+          PENDING_READER_UNLINKS.add(leasePath);
+          return;
+        }
+      }
+      await delay(TRANSIENT_DENIAL_DELAY_MS * (attempt + 1));
+    }
+  };
+  return { release };
 }
 
-export async function waitSharedReadIdle(journalPath: string): Promise<void> {
+export async function waitSharedReadIdle(journalPath: string, signal?: AbortSignal): Promise<void> {
   const directory = sharedReadDirectory(journalPath);
   const provedAt = new Map<string, number>();
   let delayMs = LOCK_WAIT_BASE_MS;
   for (;;) {
+    signal?.throwIfAborted();
+    await flushPendingReaderUnlinks();
     let names: string[];
     try {
       names = await readdir(directory);
@@ -241,9 +383,10 @@ export async function waitSharedReadIdle(journalPath: string): Promise<void> {
     let live = false;
     let pending = false;
     for (const name of names) {
+      signal?.throwIfAborted();
       if (!name.endsWith('.reader')) continue;
       const leasePath = join(directory, name);
-      const alive = await sharedReaderAlive(leasePath, provedAt);
+      const alive = await sharedReaderAlive(leasePath, provedAt, signal);
       if (alive === undefined) {
         pending = true;
         continue;
@@ -253,16 +396,42 @@ export async function waitSharedReadIdle(journalPath: string): Promise<void> {
         continue;
       }
       await unlink(leasePath).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') return;
+        if (isTransientAccessDenial(error)) {
+          PENDING_READER_UNLINKS.add(leasePath);
+          pending = true;
+          return;
+        }
+        throw error;
       });
     }
     if (!live && !pending) return;
-    await new Promise((resolveIdle) => setTimeout(resolveIdle, delayMs));
+    await delay(delayMs, undefined, { signal });
     delayMs = Math.min(LOCK_WAIT_MAX_MS, delayMs * 2);
   }
 }
 
-async function sharedReaderAlive(leasePath: string, provedAt: Map<string, number>): Promise<boolean | undefined> {
+async function localWorkerThreadAlive(targetThreadId: number): Promise<boolean> {
+  if (DEAD_LOCAL_THREAD_IDS.has(targetThreadId)) return false;
+  try {
+    await postMessageToThread(targetThreadId, { kikiReaderProbe: 1 }, 500);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ERR_WORKER_MESSAGING_FAILED' || code === 'ERR_WORKER_NOT_RUNNING') {
+      DEAD_LOCAL_THREAD_IDS.add(targetThreadId);
+      return false;
+    }
+    return true;
+  }
+}
+
+async function sharedReaderAlive(
+  leasePath: string,
+  provedAt: Map<string, number>,
+  signal?: AbortSignal,
+): Promise<boolean | undefined> {
   let raw: string;
   try {
     raw = await readFile(leasePath, 'utf8');
@@ -286,11 +455,19 @@ async function sharedReaderAlive(leasePath: string, provedAt: Map<string, number
     return Date.now() - info.mtimeMs < 2_000 ? undefined : false;
   }
   if (!pidAlive(payload.pid)) return false;
-  if (payload.pid === process.pid) return Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) <= 2_000;
+  if (payload.pid === process.pid) {
+    if (Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) > 2_000) return false;
+    const leaseThreadId = payload.threadId ?? 0;
+    if (leaseThreadId === threadId) {
+      return ACTIVE_THREAD_READER_TOKENS.has(payload.token);
+    }
+    if (leaseThreadId === 0) return true;
+    return localWorkerThreadAlive(leaseThreadId);
+  }
   if (process.platform !== 'win32') return true;
   const proved = provedAt.get(payload.token);
   if (proved !== undefined && Date.now() - proved < 5_000) return true;
-  const alive = await ownerProcessAlive(payload);
+  const alive = await ownerProcessAlive(payload, signal, provedAt);
   if (alive) provedAt.set(payload.token, Date.now());
   return alive;
 }

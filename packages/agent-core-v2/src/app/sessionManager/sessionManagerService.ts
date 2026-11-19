@@ -1,5 +1,5 @@
 
-import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
+import { DisposableStore, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { abortable } from '#/_base/utils/abort';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -96,6 +96,7 @@ export class SessionManager implements ISessionManager {
   private readonly unloadRefusals = new Map<string, number>();
   private readonly willAccessEmitter = new Emitter<string>();
   readonly onWillAccessSession: Event<string> = this.willAccessEmitter.event;
+  private readonly maintenanceBarriers = new Set<(sessionId: string) => Promise<void> | void>();
   private readonly willCreateEmitter = new Emitter<SessionWillCreateEvent>();
   readonly onWillCreateSession: Event<SessionWillCreateEvent> = this.willCreateEmitter.event;
   private readonly didCreateEmitter = new Emitter<SessionCreatedEvent & IWaitUntil>();
@@ -122,6 +123,20 @@ export class SessionManager implements ISessionManager {
       if (event.domain === SESSION_RESIDENCY_SECTION) this.wakeRestoreQueue();
     });
     void this.startEvictionScheduler();
+  }
+
+  registerMaintenanceBarrier(barrier: (sessionId: string) => Promise<void> | void): IDisposable {
+    this.maintenanceBarriers.add(barrier);
+    return toDisposable(() => {
+      this.maintenanceBarriers.delete(barrier);
+    });
+  }
+
+  private async awaitSessionMaintenanceRelease(sessionId: string): Promise<void> {
+    this.willAccessEmitter.fire(sessionId);
+    if (this.maintenanceBarriers.size === 0) return;
+    const barriers = [...this.maintenanceBarriers];
+    await Promise.all(barriers.map((barrier) => Promise.resolve(barrier(sessionId))));
   }
 
   async create(options: CreateManagedSessionOptions): Promise<ISessionScopeHandle> {
@@ -168,6 +183,7 @@ export class SessionManager implements ISessionManager {
       if (!lifetime.ownerManaged) this.startResidencyReclaim(sessionId);
       const releaseRestore = await phase('restore_queue', () => this.reserveRestoreSlot(sessionId));
       try {
+        await this.awaitSessionMaintenanceRelease(sessionId);
         const target = await phase('restore_workspace', () => this.controllerForSession(sessionId));
         if (target === undefined) return undefined;
         return await phase('session_resume', () => this.runWorkspaceOperation(
@@ -458,6 +474,7 @@ export class SessionManager implements ISessionManager {
   }
 
   private async archiveInner(sessionId: string): Promise<void> {
+    await this.awaitSessionMaintenanceRelease(sessionId);
     if (this.isEphemeral(sessionId)) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'temporary sessions cannot be archived');
     }
@@ -483,6 +500,7 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     options?: ResumeSessionOptions,
   ): Promise<ISessionScopeHandle | undefined> {
+    await this.awaitSessionMaintenanceRelease(sessionId);
     const target = await this.controllerForSession(sessionId);
     if (target === undefined) return undefined;
     return this.runWorkspaceOperation(
@@ -503,6 +521,7 @@ export class SessionManager implements ISessionManager {
   }
 
   private async deleteInner(sessionId: string): Promise<void> {
+    await this.awaitSessionMaintenanceRelease(sessionId);
     const temporary = this.ephemeral.get(sessionId);
     const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
     if (target === undefined) {
@@ -523,6 +542,7 @@ export class SessionManager implements ISessionManager {
     return this.serializeLifecycleForKeys(
       this.lifecycleKeys(options.sourceSessionId, options.newSessionId),
       async () => {
+        await this.awaitSessionMaintenanceRelease(options.sourceSessionId);
         const target = await this.controllerForSession(options.sourceSessionId);
         if (target === undefined) {
           throw new Error2(
@@ -544,6 +564,7 @@ export class SessionManager implements ISessionManager {
     return this.serializeLifecycleForKeys(
       this.lifecycleKeys(options.sourceSessionId, options.newSessionId),
       async () => {
+        await this.awaitSessionMaintenanceRelease(options.sourceSessionId);
         const target = await this.controllerForSession(options.sourceSessionId);
         if (target === undefined) {
           throw new Error2(
@@ -562,6 +583,7 @@ export class SessionManager implements ISessionManager {
 
   async promoteAgent(options: PromoteAgentOptions): Promise<ISessionScopeHandle> {
     this.willAccessEmitter.fire(options.sourceSessionId);
+    await this.awaitSessionMaintenanceRelease(options.sourceSessionId);
     const source = await this.controllerForSession(options.sourceSessionId);
     if (source === undefined) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${options.sourceSessionId} does not exist`);

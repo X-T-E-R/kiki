@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, rmdir } from 'node:fs/promises';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, open, readdir, rmdir, unlink, type FileHandle } from 'node:fs/promises';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
@@ -14,6 +14,7 @@ import { dirname, resolve } from 'pathe';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { abortable } from '#/_base/utils/abort';
+import { replaceFileNonDestructive } from '#/_base/utils/fs';
 import { acquireSharedReadLease, waitSharedReadIdle, withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import {
@@ -21,13 +22,16 @@ import {
   captureFileBasicTimes,
   clipSparseRanges,
   DEFAULT_KEEP_HEAD_BYTES,
-  isSparseFile,
+  detectOrphanedSparseJournal,
   mergeSparseRanges,
   planSparseRanges,
   punchSparseRanges,
+  queryWin32SparseAttribute,
+  removeSparseMarker,
   restoreFileBasicTimes,
   subtractSparseRanges,
   writeFileAtomicNoUnlink,
+  writeSparseMarker,
 } from '#/persistence/backends/node-fs/sparseFile';
 import type {
   ColdSealCodec,
@@ -38,6 +42,7 @@ import type {
 import {
   StorageError,
   StorageErrors,
+  toStorageIoError,
   type IFileSystemStorageService,
   type StorageReadOptions,
   type StorageReadRange,
@@ -49,6 +54,7 @@ export const COLD_DEFLATE_LEVEL = 6;
 export const COLD_ZSTD_LEVEL = 3;
 const MAX_SEGMENTS = 16384;
 const YIELD_BYTES = 64 * 1024;
+const DEFAULT_DENSE_READ_CHUNK_BYTES = 1024 * 1024;
 const SEAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UNSEALED_PIN_ID = '__unsealed__';
 
@@ -141,7 +147,13 @@ function locatedJournal(storage: IFileSystemStorageService, scope: string, key: 
   return located;
 }
 
-async function pinSeal(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<() => void> {
+async function pinSeal(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  sealId: string,
+  onRelease?: () => Promise<void>,
+): Promise<() => void> {
   const located = locatedJournal(storage, scope, key);
   const lease = located === undefined ? undefined : await acquireSharedReadLease(located);
   try {
@@ -153,55 +165,90 @@ async function pinSeal(storage: IFileSystemStorageService, scope: string, key: s
     return () => {
       if (released) return;
       released = true;
-      void lease?.release();
-      entry.count -= 1;
-      if (entry.count > 0) return;
-      sealPins.delete(id);
-      const waiters = entry.waiters.splice(0);
-      for (const wake of waiters) wake();
+      void (async () => {
+        try {
+          await onRelease?.();
+        } catch {}
+        try {
+          await lease?.release();
+        } catch {}
+        entry.count -= 1;
+        if (entry.count > 0) return;
+        sealPins.delete(id);
+        const waiters = entry.waiters.splice(0);
+        for (const wake of waiters) wake();
+      })();
     };
   } catch (error) {
-    void lease?.release();
+    await onRelease?.().catch(() => undefined);
+    await lease?.release().catch(() => undefined);
     throw error;
   }
 }
 
-async function waitInProcessPin(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<void> {
+function waitPinEntry(entry: SealPin, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  if (entry.count <= 0) return Promise.resolve();
+  return new Promise<void>((resolvePromise, rejectPromise) => {
+    const onWake = (): void => {
+      signal?.removeEventListener('abort', onAbort);
+      resolvePromise();
+    };
+    const onAbort = (): void => {
+      const idx = entry.waiters.indexOf(onWake);
+      if (idx >= 0) entry.waiters.splice(idx, 1);
+      rejectPromise(signal!.reason);
+    };
+    entry.waiters.push(onWake);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function waitInProcessPin(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  sealId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
   const entry = sealPins.get(pinId(storage, scope, key, sealId));
   if (entry !== undefined && entry.count > 0) {
-    await new Promise<void>((resolvePromise) => {
-      entry.waiters.push(resolvePromise);
-    });
+    await waitPinEntry(entry, signal);
   }
 }
 
-async function waitUnpinned(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<void> {
-  await waitInProcessPin(storage, scope, key, sealId);
+async function waitUnpinned(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  sealId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await waitInProcessPin(storage, scope, key, sealId, signal);
   const located = locatedJournal(storage, scope, key);
-  if (located !== undefined) await waitSharedReadIdle(located);
+  if (located !== undefined) await waitSharedReadIdle(located, signal);
 }
 
 export async function waitActiveReadersIdle(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const prefix = `${resourceId(storage, scope, key)}\0`;
   for (;;) {
+    signal?.throwIfAborted();
     const pending: Promise<void>[] = [];
     for (const [id, entry] of sealPins) {
       if (!id.startsWith(prefix) || entry.count <= 0) continue;
-      pending.push(
-        new Promise<void>((resolvePromise) => {
-          entry.waiters.push(resolvePromise);
-        }),
-      );
+      pending.push(waitPinEntry(entry, signal));
     }
     if (pending.length === 0) break;
     await Promise.all(pending);
   }
   const located = locatedJournal(storage, scope, key);
-  if (located !== undefined) await waitSharedReadIdle(located);
+  if (located !== undefined) await waitSharedReadIdle(located, signal);
 }
 
 function takeTurn(storage: IFileSystemStorageService, scope: string, key: string): ColdTurn {
@@ -333,11 +380,20 @@ async function writeManifestAtomic(
     located.length > 0 &&
     storage.write === FileStorageService.prototype.write
   ) {
-    await mkdir(dirname(located), { recursive: true });
-    await writeFileAtomicNoUnlink(located, encoded, signal);
+    try {
+      await mkdir(dirname(located), { recursive: true });
+      await writeFileAtomicNoUnlink(located, encoded, signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw toStorageIoError(error, { path: located, op: 'write' });
+    }
     return;
   }
-  await storage.write(scope, manifestKey, encoded, { atomic: true, signal });
+  await storage.write(scope, manifestKey, encoded, {
+    atomic: true,
+    preserveDestinationOnError: true,
+    signal,
+  });
 }
 
 async function readRawExact(
@@ -598,7 +654,7 @@ async function loadMatchedManifest(
   const manifest = await loadManifest(storage, scope, key);
   if (manifest === undefined) {
     const located = locatedJournal(storage, scope, key);
-    if (located !== undefined && await isSparseFile(located)) {
+    if (located !== undefined && await detectOrphanedSparseJournal(located)) {
       throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
     }
     return undefined;
@@ -627,32 +683,18 @@ export async function readColdManifestSummary(
   }, signal);
 }
 
-export async function requiresProtectedColdReplace(
+export async function hasColdStateForRewrite(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
 ): Promise<boolean> {
+  const manifestSize = await storage.size(scope, coldManifestKey(key));
+  if (manifestSize !== undefined) return true;
   const located = locatedJournal(storage, scope, key);
   if (located !== undefined) {
-    try {
-      if (await isSparseFile(located)) return true;
-    } catch {
-      return true;
-    }
+    return detectOrphanedSparseJournal(located);
   }
-  let bytes: Uint8Array | undefined;
-  try {
-    bytes = await storage.read(scope, coldManifestKey(key));
-  } catch {
-    return true;
-  }
-  if (bytes === undefined) return false;
-  try {
-    const parsed = isManifest(JSON.parse(new TextDecoder().decode(bytes)), key);
-    return parsed === undefined || parsed.originalRetained !== true;
-  } catch {
-    return true;
-  }
+  return false;
 }
 
 async function removeSegments(
@@ -762,6 +804,107 @@ async function readAndVerifySegment(
   return { compressed, plain };
 }
 
+async function writeHandleExact(handle: FileHandle, data: Uint8Array, scope: string, key: string, position?: number): Promise<void> {
+  let written = 0;
+  while (written < data.byteLength) {
+    const { bytesWritten } = position === undefined
+      ? await handle.write(data, written, data.byteLength - written)
+      : await handle.write(data, written, data.byteLength - written, position + written);
+    if (bytesWritten <= 0) throw corrupted(scope, key, 'short-write');
+    written += bytesWritten;
+  }
+}
+
+async function hashFilePath(filePath: string, signal?: AbortSignal): Promise<{ readonly size: number; readonly sha256: string }> {
+  const hash = createHash('sha256');
+  let size = 0;
+  const handle = await open(filePath, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(DEFAULT_DENSE_READ_CHUNK_BYTES);
+    for (;;) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await handle.read(buf, 0, buf.byteLength, size);
+      if (bytesRead <= 0) break;
+      hash.update(buf.subarray(0, bytesRead));
+      size += bytesRead;
+      await yieldToEventLoop();
+    }
+  } finally {
+    await handle.close();
+  }
+  return { size, sha256: hash.digest('hex') };
+}
+
+async function stageAndReplaceFullDenseJournal(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  located: string,
+  manifest: ColdManifest,
+  totalSize: number,
+  signal?: AbortSignal,
+): Promise<{ readonly restoredBytes: number; readonly verifiedSegments: number }> {
+  signal?.throwIfAborted();
+  const savedTimes = await captureFileBasicTimes(located);
+  const hex = randomBytes(6).toString('hex');
+  const stagePath = `${located}.unseal.${process.pid}.${hex}`;
+  let replaced = false;
+  try {
+    const expectedHash = createHash('sha256');
+    const stageHandle = await open(stagePath, 'w', 0o600);
+    try {
+      for (const segment of manifest.segments) {
+        signal?.throwIfAborted();
+        const { plain } = await readAndVerifySegment(storage, scope, key, manifest, segment, { signal });
+        await writeHandleExact(stageHandle, plain, scope, key);
+        expectedHash.update(plain);
+        await yieldToEventLoop();
+      }
+      if (totalSize > manifest.sealedCut) {
+        let tailWritten = 0;
+        for await (const chunk of storage.readStream(scope, key, { start: manifest.sealedCut, end: totalSize - 1 }, { signal })) {
+          signal?.throwIfAborted();
+          if (chunk.byteLength === 0) continue;
+          await writeHandleExact(stageHandle, chunk, scope, key);
+          expectedHash.update(chunk);
+          tailWritten += chunk.byteLength;
+        }
+        if (tailWritten !== totalSize - manifest.sealedCut) {
+          throw corrupted(scope, key, 'short-read');
+        }
+      }
+      signal?.throwIfAborted();
+      await stageHandle.sync();
+    } finally {
+      await stageHandle.close();
+    }
+
+    await restoreFileBasicTimes(stagePath, savedTimes);
+    const verifiedFile = await hashFilePath(stagePath, signal);
+    const expectedDigest = expectedHash.digest('hex');
+    if (verifiedFile.size !== totalSize || verifiedFile.sha256 !== expectedDigest) {
+      throw corrupted(scope, key, 'restore-verification-failed');
+    }
+    if (await queryWin32SparseAttribute(stagePath, signal)) {
+      throw corrupted(scope, key, 'staged-unseal-remained-sparse');
+    }
+
+    signal?.throwIfAborted();
+    try {
+      await replaceFileNonDestructive(stagePath, located, signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw toStorageIoError(error, { path: located, op: 'write' });
+    }
+    replaced = true;
+    return { restoredBytes: manifest.sealedCut, verifiedSegments: manifest.segments.length };
+  } finally {
+    if (!replaced) {
+      await unlink(stagePath).catch(() => undefined);
+    }
+  }
+}
+
 async function restoreRangeFromManifest(
   storage: IFileSystemStorageService,
   scope: string,
@@ -781,6 +924,12 @@ async function restoreRangeFromManifest(
   }
   const start = Math.max(0, fromOffset);
   const end = Math.min(manifest.sealedCut, toOffset);
+  const located = locatedJournal(storage, scope, key);
+
+  if (located !== undefined && start === 0 && end === manifest.sealedCut) {
+    return stageAndReplaceFullDenseJournal(storage, scope, key, located, manifest, size, signal);
+  }
+
   if (end <= start) {
     return { restoredBytes: 0, verifiedSegments: 0 };
   }
@@ -790,7 +939,6 @@ async function restoreRangeFromManifest(
     await readAndVerifySegment(storage, scope, key, manifest, segment, { signal });
     await yieldToEventLoop();
   }
-  const located = locatedJournal(storage, scope, key);
   if (located !== undefined) {
     const savedTimes = await captureFileBasicTimes(located);
     const handle = await open(located, 'r+');
@@ -802,12 +950,7 @@ async function restoreRangeFromManifest(
         const writeStart = Math.max(start, segment.logicalStart);
         const writeEnd = Math.min(end, segment.logicalEnd);
         const slice = plain.subarray(writeStart - segment.logicalStart, writeEnd - segment.logicalStart);
-        let written = 0;
-        while (written < slice.byteLength) {
-          const { bytesWritten } = await handle.write(slice, written, slice.byteLength - written, writeStart + written);
-          if (bytesWritten <= 0) throw corrupted(scope, key, 'short-write');
-          written += bytesWritten;
-        }
+        await writeHandleExact(handle, slice, scope, key, writeStart);
         await yieldToEventLoop();
       }
       await handle.sync();
@@ -832,7 +975,11 @@ async function restoreRangeFromManifest(
     full.set(head, 0);
     full.set(middle, head.byteLength);
     full.set(tail, head.byteLength + middle.byteLength);
-    await storage.write(scope, key, full, { atomic: true, signal });
+    await storage.write(scope, key, full, {
+      atomic: true,
+      preserveDestinationOnError: true,
+      signal,
+    });
   }
   for (const segment of targets) {
     signal?.throwIfAborted();
@@ -874,8 +1021,11 @@ export async function discardColdUnlocked(
     options.signal?.throwIfAborted();
     const bytes = await storage.read(scope, coldManifestKey(key));
     if (bytes === undefined) {
-      if (options.skipRestoreOriginal !== true && located !== undefined && await isSparseFile(located)) {
+      if (options.skipRestoreOriginal !== true && located !== undefined && await detectOrphanedSparseJournal(located)) {
         throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+      }
+      if (located !== undefined) {
+        await removeSparseMarker(located);
       }
       return;
     }
@@ -886,13 +1036,16 @@ export async function discardColdUnlocked(
       parsedManifest = undefined;
     }
 
+    const orphanedSparse = located !== undefined && await detectOrphanedSparseJournal(located);
+
     if (options.skipRestoreOriginal !== true) {
       if (parsedManifest === undefined) {
         const unsafeDiscard =
           options.requireValidManifest === true ||
           options.forceRestoreOriginal === true ||
           untrustedManifestMayRequireSegments(bytes) ||
-          (located !== undefined && (await isSparseFile(located) || await hasZstdSegmentFiles(located)));
+          orphanedSparse ||
+          (located !== undefined && await hasZstdSegmentFiles(located));
         if (unsafeDiscard) {
           throw corrupted(scope, key, 'manifest');
         }
@@ -903,17 +1056,16 @@ export async function discardColdUnlocked(
           (options.requireValidManifest === true ||
             options.forceRestoreOriginal === true ||
             parsedManifest.originalRetained === false ||
-            (located !== undefined && await isSparseFile(located)))
+            orphanedSparse)
         ) {
           throw corrupted(scope, key, 'generation');
         }
         const mustRestore =
           options.forceRestoreOriginal === true ||
           parsedManifest.originalRetained === false ||
-          (located !== undefined && await isSparseFile(located));
+          orphanedSparse;
         if (mustRestore) {
-          await waitUnpinned(storage, scope, key, UNSEALED_PIN_ID);
-          await waitUnpinned(storage, scope, key, parsedManifest.sealId);
+          await waitActiveReadersIdle(storage, scope, key, options.signal);
           const restored = await restoreRangeFromManifest(
             storage,
             scope,
@@ -949,8 +1101,11 @@ export async function discardColdUnlocked(
 
     await storage.delete(scope, coldManifestKey(key));
     const sealId = sealIdOf(bytes);
-    if (sealId !== undefined) await waitUnpinned(storage, scope, key, sealId);
+    if (sealId !== undefined) await waitUnpinned(storage, scope, key, sealId, options.signal);
     await removeSegments(storage, scope, key, listedSegmentKeys(bytes, key), sealId);
+    if (located !== undefined) {
+      await removeSparseMarker(located);
+    }
   };
   if (located === undefined) await drop();
   else await withColdReaderGate(located, drop, options.signal);
@@ -1038,7 +1193,12 @@ async function sealUnlocked(
 
   const retentionSatisfied = previousManifest !== undefined && (
     reclaim
-      ? (previousManifest.originalRetained === false || candidateSparse.length === 0 || process.platform !== 'win32')
+      ? (
+          (previousManifest.originalRetained === false &&
+            subtractSparseRanges(candidateSparse, previousManifest.sparseRanges).length === 0) ||
+          candidateSparse.length === 0 ||
+          process.platform !== 'win32'
+        )
       : previousManifest.originalRetained === true
   );
 
@@ -1053,7 +1213,7 @@ async function sealUnlocked(
     retentionSatisfied
   ) {
     const compressedBytes = await sumSegmentBytes(storage, scope, key, previousManifest.segments);
-    const allocated = located === undefined ? undefined : await allocatedFileBytes(located);
+    const allocated = located === undefined ? undefined : await allocatedFileBytes(located, options.signal);
     return {
       format: previousManifest.format,
       codec: previousManifest.codec,
@@ -1074,12 +1234,12 @@ async function sealUnlocked(
 
   let priorRemainingSparse: readonly ColdSparseRange[] =
     reclaim && previousManifest !== undefined ? previousManifest.sparseRanges : [];
+  let clearedFullDenseOnNoReclaim = false;
 
   if (previousManifest?.originalRetained === false && (!reclaim || sealedCut < previousManifest.sealedCut)) {
     const restoreFrom = reclaim ? sealedCut : 0;
     const applyGate = async (): Promise<void> => {
-      await waitUnpinned(storage, scope, key, UNSEALED_PIN_ID);
-      await waitUnpinned(storage, scope, key, previousManifest.sealId);
+      await waitActiveReadersIdle(storage, scope, key, options.signal);
       await restoreRangeFromManifest(
         storage,
         scope,
@@ -1095,6 +1255,7 @@ async function sealUnlocked(
     priorRemainingSparse = reclaim
       ? subtractSparseRanges(priorRemainingSparse, [{ start: restoreFrom, end: previousManifest.sealedCut }])
       : [];
+    if (!reclaim) clearedFullDenseOnNoReclaim = true;
   }
 
   const sealId = randomUUID();
@@ -1145,7 +1306,10 @@ async function sealUnlocked(
       await yieldToEventLoop();
     }
 
-    const rawVerifyFloor = previousManifest?.originalRetained === false ? Math.min(sealedCut, previousManifest.sealedCut) : 0;
+    const rawVerifyFloor =
+      previousManifest?.originalRetained === false && !clearedFullDenseOnNoReclaim
+        ? Math.min(sealedCut, previousManifest.sealedCut)
+        : 0;
     for (const segment of written) {
       if (segment.logicalEnd <= rawVerifyFloor) continue;
       options.signal?.throwIfAborted();
@@ -1163,10 +1327,14 @@ async function sealUnlocked(
 
     const willAttemptPunch = reclaim && located !== undefined && candidateSparse.length > 0 && process.platform === 'win32';
     const priorSparseStillActive = reclaim && priorRemainingSparse.length > 0 && previousManifest?.originalRetained === false;
-    const tentativeOriginalRetained = !(willAttemptPunch || priorSparseStillActive);
-    const tentativeSparseRanges = tentativeOriginalRetained
+    const initialOriginalRetained = !priorSparseStillActive;
+    const initialSparseRanges = initialOriginalRetained
       ? []
-      : clipSparseRanges(mergeSparseRanges([...priorRemainingSparse, ...candidateSparse]), sealedCut);
+      : clipSparseRanges(mergeSparseRanges(priorRemainingSparse), sealedCut);
+    const punchedSparseRanges = clipSparseRanges(
+      mergeSparseRanges([...priorRemainingSparse, ...candidateSparse]),
+      sealedCut,
+    );
 
     let manifest: ColdManifest = {
       format,
@@ -1177,8 +1345,8 @@ async function sealUnlocked(
       logicalSize: size,
       generation,
       sealId,
-      originalRetained: tentativeOriginalRetained,
-      sparseRanges: tentativeSparseRanges,
+      originalRetained: initialOriginalRetained,
+      sparseRanges: initialSparseRanges,
       segments: written,
     };
     const encodedManifest = serializeValidatedManifest(manifest, key);
@@ -1195,9 +1363,14 @@ async function sealUnlocked(
     let allocatedBytesAfter: number | undefined;
 
     const finalizePostCommit = async (): Promise<void> => {
+      if (clearedFullDenseOnNoReclaim && located !== undefined) {
+        await removeSparseMarker(located);
+      }
       if (previous !== undefined) {
         const previousId = sealIdOf(previous);
-        if (previousId !== undefined && previousId !== sealId) await waitUnpinned(storage, scope, key, previousId);
+        if (previousId !== undefined && previousId !== sealId) {
+          await waitUnpinned(storage, scope, key, previousId, options.signal);
+        }
         await removeSegments(
           storage,
           scope,
@@ -1207,12 +1380,18 @@ async function sealUnlocked(
         ).catch(() => undefined);
       }
       if (willAttemptPunch && located !== undefined && !options.signal?.aborted) {
-        await (
-          options.signal === undefined
-            ? waitActiveReadersIdle(storage, scope, key)
-            : abortable(waitActiveReadersIdle(storage, scope, key), options.signal)
-        );
+        await waitActiveReadersIdle(storage, scope, key, options.signal);
         if (!options.signal?.aborted) {
+          const firstHole = punchedSparseRanges[0]?.start ?? candidateSparse[0]!.start;
+          const sparseManifest: ColdManifest = {
+            ...manifest,
+            originalRetained: false,
+            sparseRanges: punchedSparseRanges,
+          };
+          const encodedSparseManifest = serializeValidatedManifest(sparseManifest, key);
+          await writeSparseMarker(located, firstHole, options.signal);
+          await writeManifestAtomic(storage, scope, manifestKey, encodedSparseManifest, options.signal);
+          manifest = sparseManifest;
           const punched = await punchSparseRanges(located, candidateSparse);
           allocatedBytesBefore = punched.allocatedBytesBefore;
           allocatedBytesAfter = punched.allocatedBytesAfter;
@@ -1220,6 +1399,7 @@ async function sealUnlocked(
             manifest = { ...manifest, originalRetained: true, sparseRanges: [] };
             const fallbackEncoded = serializeValidatedManifest(manifest, key);
             await writeManifestAtomic(storage, scope, manifestKey, fallbackEncoded);
+            await removeSparseMarker(located);
           } else if (punched.status === 'mutated_or_unknown') {
             throw new StorageError(
               StorageErrors.codes.STORAGE_IO_FAILED,
@@ -1236,7 +1416,7 @@ async function sealUnlocked(
     };
 
     if (located === undefined) await finalizePostCommit();
-    else await withColdReaderGate(located, finalizePostCommit);
+    else await withColdReaderGate(located, finalizePostCommit, options.signal);
 
     return {
       format: manifest.format,
@@ -1303,6 +1483,65 @@ function slices(bytes: Uint8Array, start: number, end: number): Uint8Array[] {
   return parts;
 }
 
+async function* readFromPinnedDenseHandle(
+  handle: FileHandle,
+  filePath: string,
+  range: StorageReadRange | undefined,
+  options: StorageReadOptions | undefined,
+): AsyncIterable<Uint8Array> {
+  options?.signal?.throwIfAborted();
+  let currentSize: number;
+  try {
+    currentSize = (await handle.stat()).size;
+  } catch (error) {
+    throw toStorageIoError(error, { path: filePath, op: 'read' });
+  }
+  const start = range?.start ?? 0;
+  const requestedEnd = range?.end ?? (currentSize === 0 ? -1 : currentSize - 1);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0) {
+    throw new BugIndicatingError('logical journal range is not a byte offset');
+  }
+  if (currentSize === 0 || requestedEnd < start || start >= currentSize) return;
+  const end = Math.min(requestedEnd, currentSize - 1);
+  const chunkSize = Math.max(1024, options?.chunkBytes ?? DEFAULT_DENSE_READ_CHUNK_BYTES);
+  let position = start;
+  while (position <= end) {
+    options?.signal?.throwIfAborted();
+    const toRead = Math.min(chunkSize, end - position + 1);
+    const buf = Buffer.allocUnsafe(toRead);
+    let bytesRead: number;
+    try {
+      ({ bytesRead } = await handle.read(buf, 0, toRead, position));
+    } catch (error) {
+      options?.signal?.throwIfAborted();
+      throw toStorageIoError(error, { path: filePath, op: 'read' });
+    }
+    if (bytesRead <= 0) break;
+    position += bytesRead;
+    yield buf.subarray(0, bytesRead);
+  }
+}
+
+async function* readUnsealedWithGenerationGuard(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+  expectedGeneration: string,
+  range: StorageReadRange | undefined,
+  options: StorageReadOptions | undefined,
+): AsyncIterable<Uint8Array> {
+  options?.signal?.throwIfAborted();
+  if (await generationOf(storage, scope, key) !== expectedGeneration) {
+    throw corrupted(scope, key, 'generation');
+  }
+  for await (const chunk of storage.readStream(scope, key, range, options)) {
+    yield chunk;
+  }
+  if (await generationOf(storage, scope, key) !== expectedGeneration) {
+    throw corrupted(scope, key, 'generation');
+  }
+}
+
 async function* readPinned(
   storage: IFileSystemStorageService,
   scope: string,
@@ -1357,9 +1596,13 @@ export async function openPinnedLogicalRead(
 ): Promise<PinnedLogicalRead> {
   let manifest: ColdManifest | undefined;
   let size: number | undefined;
+  let denseHandle: FileHandle | undefined;
+  let densePath: string | undefined;
+  let pinnedGeneration = 'legacy';
   let release = (): void => {};
   try {
     await withColdExclusive(storage, scope, key, async () => {
+      const located = locatedJournal(storage, scope, key);
       const openPinned = async (): Promise<void> => {
         signal?.throwIfAborted();
         manifest = await loadMatchedManifest(storage, scope, key);
@@ -1369,16 +1612,30 @@ export async function openPinnedLogicalRead(
           if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
           release = await pinSeal(storage, scope, key, manifest.sealId);
         } else if (size !== undefined) {
-          release = await pinSeal(storage, scope, key, UNSEALED_PIN_ID);
+          pinnedGeneration = await generationOf(storage, scope, key);
+          if (located !== undefined && storage.readStream === FileStorageService.prototype.readStream) {
+            denseHandle = await open(located, 'r');
+            densePath = located;
+          }
+          const capturedHandle = denseHandle;
+          release = await pinSeal(
+            storage,
+            scope,
+            key,
+            UNSEALED_PIN_ID,
+            capturedHandle === undefined ? undefined : () => capturedHandle.close(),
+          );
         }
         signal?.throwIfAborted();
       };
-      const located = locatedJournal(storage, scope, key);
       if (located === undefined) await openPinned();
       else await withColdReaderGate(located, openPinned, signal);
     }, signal);
   } catch (error) {
     release();
+    if (denseHandle !== undefined) {
+      await denseHandle.close().catch(() => undefined);
+    }
     throw error;
   }
   let closed = false;
@@ -1386,8 +1643,13 @@ export async function openPinnedLogicalRead(
     size,
     sealed: manifest !== undefined,
     read(range, options) {
-      if (manifest === undefined) return storage.readStream(scope, key, range, options);
-      return readPinned(storage, scope, key, manifest, range, options);
+      if (manifest !== undefined) {
+        return readPinned(storage, scope, key, manifest, range, options);
+      }
+      if (denseHandle !== undefined && densePath !== undefined) {
+        return readFromPinnedDenseHandle(denseHandle, densePath, range, options);
+      }
+      return readUnsealedWithGenerationGuard(storage, scope, key, pinnedGeneration, range, options);
     },
     close() {
       if (closed) return;

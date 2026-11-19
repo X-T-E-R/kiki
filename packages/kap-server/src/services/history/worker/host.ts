@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
+import { trackReaderWorkerThread } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileLock';
 import type { TranscriptService } from '../../transcript/transcriptService';
 import { navigationError, type NavigationCallbackResult, type NavigationMethod, type NavigationReport, type NavigationRequest, type NavigationResponse } from './protocol';
 
@@ -80,6 +81,7 @@ export class HistoryNavigationWorker {
     const entry = configured === undefined ? resolveEntry() : pathToFileURL(configured);
     const worker = new Worker(entry, { name: 'kiki-history-navigation', workerData: { database: this.database },
       execArgv: [], resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb } });
+    trackReaderWorkerThread(worker);
     this.worker = worker;
     this.exited = new Promise(resolve => worker.once('exit', () => resolve()));
     worker.on('message', (response: NavigationResponse) => {
@@ -133,6 +135,7 @@ export class HistoryNavigationWorker {
         await abortable(this.transcript.historyWireLocation(session, agent), signal);
       signal.throwIfAborted();
       const worker = this.start();
+      trackReaderWorkerThread(worker, location?.wirePath);
       worker.ref();
       worker.postMessage({ ...request, location });
     } catch (error) {

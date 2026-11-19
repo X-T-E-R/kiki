@@ -33,12 +33,18 @@ class ForegroundSessionPreemptionError extends Error {
   }
 }
 
+interface ActiveColdSessionRun {
+  readonly preemptible: boolean;
+  readonly controller: AbortController;
+  readonly released: Promise<void>;
+}
+
 export class ColdCompactionService extends Disposable implements IColdCompactionService {
   declare readonly _serviceBrand: undefined;
 
   private readonly checkedUpdatedAt = new Map<string, number>();
   private readonly recentForegroundAccess = new Map<string, number>();
-  private readonly activePreemptible = new Map<string, Set<AbortController>>();
+  private readonly activeSessionRuns = new Map<string, Set<ActiveColdSessionRun>>();
   private readonly disposalAbort = new AbortController();
   private sweepCursor: { readonly updatedAt: number; readonly id: string } | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -63,6 +69,11 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
         this.sessions.onWillAccessSession((sessionId) => {
           this.noteForegroundAccess(sessionId);
         }),
+      );
+    }
+    if (this.sessions.registerMaintenanceBarrier !== undefined) {
+      this._register(
+        this.sessions.registerMaintenanceBarrier((sessionId) => this.preemptAndWaitSessionRelease(sessionId)),
       );
     }
     if (this.isFileBacked()) {
@@ -135,11 +146,18 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
     this.disposed = true;
     this.clearTimer();
     this.disposalAbort.abort();
-    for (const controllers of this.activePreemptible.values()) {
-      for (const controller of controllers) controller.abort();
+    const releases: Promise<void>[] = [];
+    for (const runs of this.activeSessionRuns.values()) {
+      for (const run of runs) {
+        run.controller.abort();
+        releases.push(run.released);
+      }
     }
     if (this.activeSweep !== undefined) {
       await this.activeSweep.catch(() => undefined);
+    }
+    if (releases.length > 0) {
+      await Promise.all(releases);
     }
     super.dispose();
   }
@@ -156,11 +174,28 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
       }
     }
     this.recentForegroundAccess.set(sessionId, now);
-    const controllers = this.activePreemptible.get(sessionId);
-    if (controllers === undefined) return;
+    const runs = this.activeSessionRuns.get(sessionId);
+    if (runs === undefined) return;
     const reason = new ForegroundSessionPreemptionError(sessionId);
-    for (const controller of controllers) {
-      controller.abort(reason);
+    for (const run of runs) {
+      if (run.preemptible) run.controller.abort(reason);
+    }
+  }
+
+  private async preemptAndWaitSessionRelease(sessionId: string): Promise<void> {
+    this.noteForegroundAccess(sessionId);
+    for (;;) {
+      const runs = this.activeSessionRuns.get(sessionId);
+      if (runs === undefined || runs.size === 0) return;
+      const reason = new ForegroundSessionPreemptionError(sessionId);
+      const pending: Promise<void>[] = [];
+      for (const run of runs) {
+        if (run.preemptible && !run.controller.signal.aborted) {
+          run.controller.abort(reason);
+        }
+        pending.push(run.released);
+      }
+      await Promise.all(pending);
     }
   }
 
@@ -336,14 +371,22 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
     if (preemptible && this.hasRecentForegroundAccess(sessionId)) return undefined;
 
     const preemptionController = new AbortController();
-    let bucket = this.activePreemptible.get(sessionId);
-    if (preemptible) {
-      if (bucket === undefined) {
-        bucket = new Set();
-        this.activePreemptible.set(sessionId, bucket);
-      }
-      bucket.add(preemptionController);
+    let resolveReleased!: () => void;
+    const released = new Promise<void>((done) => {
+      resolveReleased = done;
+    });
+    const activeEntry: ActiveColdSessionRun = {
+      preemptible,
+      controller: preemptionController,
+      released,
+    };
+    let bucket = this.activeSessionRuns.get(sessionId);
+    if (bucket === undefined) {
+      bucket = new Set();
+      this.activeSessionRuns.set(sessionId, bucket);
     }
+    bucket.add(activeEntry);
+
     const effectiveSignal = preemptible
       ? AbortSignal.any([baseSignal, preemptionController.signal])
       : baseSignal;
@@ -361,6 +404,7 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
       if (this.sessions.get(sessionId) !== undefined) return undefined;
       if (preemptible && this.hasRecentForegroundAccess(sessionId)) return undefined;
       effectiveSignal.throwIfAborted();
+
       let lock: { release(): Promise<void> } | undefined;
       try {
         lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, sessionLockKey(scope), {
@@ -384,10 +428,9 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
         await lock.release();
       }
     } finally {
-      if (preemptible && bucket !== undefined) {
-        bucket.delete(preemptionController);
-        if (bucket.size === 0) this.activePreemptible.delete(sessionId);
-      }
+      bucket.delete(activeEntry);
+      if (bucket.size === 0) this.activeSessionRuns.delete(sessionId);
+      resolveReleased();
     }
   }
 }

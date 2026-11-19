@@ -2,9 +2,52 @@ import { randomBytes } from 'node:crypto';
 import { closeSync, fsyncSync, openSync } from 'node:fs';
 import * as nodeFs from 'node:fs';
 import { chmod, link, open, rename, unlink } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { dirname } from 'pathe';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
+
+export type Win32MoveFileReplace = (
+  srcPath: string,
+  destPath: string,
+  signal?: AbortSignal,
+) => Promise<void>;
+
+let win32MoveFileReplace: Win32MoveFileReplace | undefined;
+
+export function registerWin32MoveFileReplace(fn: Win32MoveFileReplace | undefined): void {
+  win32MoveFileReplace = fn;
+}
+
+export async function replaceFileNonDestructive(
+  tmpPath: string,
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  if (process.platform !== 'win32') {
+    await rename(tmpPath, filePath);
+    return;
+  }
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    signal?.throwIfAborted();
+    try {
+      await rename(tmpPath, filePath);
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY') throw error;
+    }
+    await delay(10 * (attempt + 1), undefined, { signal });
+  }
+  if (win32MoveFileReplace !== undefined) {
+    await win32MoveFileReplace(tmpPath, filePath, signal);
+    return;
+  }
+  throw lastError;
+}
 
 export async function syncDir(dirPath: string): Promise<void> {
   if (process.platform === 'win32') return;
@@ -79,10 +122,12 @@ export async function atomicWrite(
   _syncOverride?: (fd: number) => Promise<void>,
   mode?: number,
   signal?: AbortSignal,
+  preserveDestinationOnError = false,
 ): Promise<void> {
   signal?.throwIfAborted();
   const hex = randomBytes(4).toString('hex');
-  const tmpPath = `${filePath}.tmp.${process.pid}.${hex}`;
+  const tag = preserveDestinationOnError ? 'stage' : 'tmp';
+  const tmpPath = `${filePath}.${tag}.${process.pid}.${hex}`;
   let renamed = false;
   try {
     const fh = await open(tmpPath, 'w', mode);
@@ -94,28 +139,33 @@ export async function atomicWrite(
     } finally {
       await fh.close();
     }
-    if (process.platform === 'win32') {
-      try {
-        await rename(tmpPath, filePath);
-        renamed = true;
-      } catch (error) {
-        const isWindowsRenameContention =
-          (error as NodeJS.ErrnoException).code === 'EPERM';
-        if (!isWindowsRenameContention) throw error;
-      }
-    }
-    if (!renamed) {
+    if (preserveDestinationOnError) {
+      await replaceFileNonDestructive(tmpPath, filePath, signal);
+      renamed = true;
+    } else {
       if (process.platform === 'win32') {
         try {
-          await unlink(filePath);
+          await rename(tmpPath, filePath);
+          renamed = true;
         } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== 'ENOENT') throw error;
+          const isWindowsRenameContention =
+            (error as NodeJS.ErrnoException).code === 'EPERM';
+          if (!isWindowsRenameContention) throw error;
         }
       }
-      signal?.throwIfAborted();
-      await rename(tmpPath, filePath);
-      renamed = true;
+      if (!renamed) {
+        if (process.platform === 'win32') {
+          try {
+            await unlink(filePath);
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== 'ENOENT') throw error;
+          }
+        }
+        signal?.throwIfAborted();
+        await rename(tmpPath, filePath);
+        renamed = true;
+      }
     }
     if (mode !== undefined) {
       try {
@@ -160,10 +210,12 @@ export async function atomicWriteStream(
   source: AsyncIterable<Uint8Array>,
   mode?: number,
   signal?: AbortSignal,
+  preserveDestinationOnError = false,
 ): Promise<void> {
   signal?.throwIfAborted();
   const hex = randomBytes(4).toString('hex');
-  const tmpPath = `${filePath}.tmp.${process.pid}.${hex}`;
+  const tag = preserveDestinationOnError ? 'stage' : 'tmp';
+  const tmpPath = `${filePath}.${tag}.${process.pid}.${hex}`;
   let renamed = false;
   const destroyable = source as AsyncIterable<Uint8Array> & {
     destroy?(error?: Error): void;
@@ -187,28 +239,33 @@ export async function atomicWriteStream(
     } finally {
       await fh.close();
     }
-    if (process.platform === 'win32') {
-      try {
-        await rename(tmpPath, filePath);
-        renamed = true;
-      } catch (error) {
-        const isWindowsRenameContention =
-          (error as NodeJS.ErrnoException).code === 'EPERM';
-        if (!isWindowsRenameContention) throw error;
-      }
-    }
-    if (!renamed) {
+    if (preserveDestinationOnError) {
+      await replaceFileNonDestructive(tmpPath, filePath, signal);
+      renamed = true;
+    } else {
       if (process.platform === 'win32') {
         try {
-          await unlink(filePath);
+          await rename(tmpPath, filePath);
+          renamed = true;
         } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== 'ENOENT') throw error;
+          const isWindowsRenameContention =
+            (error as NodeJS.ErrnoException).code === 'EPERM';
+          if (!isWindowsRenameContention) throw error;
         }
       }
-      signal?.throwIfAborted();
-      await rename(tmpPath, filePath);
-      renamed = true;
+      if (!renamed) {
+        if (process.platform === 'win32') {
+          try {
+            await unlink(filePath);
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== 'ENOENT') throw error;
+          }
+        }
+        signal?.throwIfAborted();
+        await rename(tmpPath, filePath);
+        renamed = true;
+      }
     }
     if (mode !== undefined) {
       try {

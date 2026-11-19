@@ -51,6 +51,7 @@ export interface SessionResidencyReport {
 export interface ISessionManager {
   readonly _serviceBrand: undefined;
   readonly onWillAccessSession?: Event<string>;
+  registerMaintenanceBarrier?(barrier: (sessionId: string) => Promise<void> | void): IDisposable;
   readonly onWillCreateSession?: Event<SessionWillCreateEvent>;
   readonly onDidCreateSession?: Event<SessionCreatedEvent & IWaitUntil>;
   readonly onWillCloseSession?: Event<SessionWillCloseEvent & IWaitUntil>;

@@ -1,26 +1,39 @@
+import { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
+import { Worker } from 'node:worker_threads';
 import { deflateRawSync } from 'node:zlib';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { join, resolve } from 'pathe';
 import { open as openZip } from 'yauzl';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
-import { Emitter } from '#/_base/event';
-import { TestInstantiationService } from '#/_base/di/test';
+import { Emitter, Event } from '#/_base/event';
+import type { ISessionScopeHandle } from '#/_base/di/scope';
+import { createServices, TestInstantiationService } from '#/_base/di/test';
+import { atomicWrite } from '#/_base/utils/fs';
 import { noopTelemetryService } from '#/app/telemetry/telemetry';
 import { exportSessionDirectory } from '#/app/sessionExport/sessionExportService';
 import { scanSessionWire } from '#/app/sessionExport/wire-scan';
 import { type AppendLogStore, coldManifestKey } from '#/persistence/backends/node-fs/appendLogStore';
 import { createTestAppendLogStore } from '../../interface/stubs';
-import { SESSION_LOCK_SCOPE, sessionLockKey } from '#/persistence/backends/node-fs/fileLock';
+import {
+  acquireSharedReadLease,
+  SESSION_LOCK_SCOPE,
+  sessionLockKey,
+  sharedReadDirectory,
+  trackReaderWorkerThread,
+  waitSharedReadIdle,
+} from '#/persistence/backends/node-fs/fileLock';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import {
   _setSparsePunchOverrideForTests,
   allocatedFileBytes,
   closeSparseFileWorker,
+  queryWin32SparseAttribute,
 } from '#/persistence/backends/node-fs/sparseFile';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import {
@@ -38,16 +51,23 @@ import {
   unsealRetainedJournal,
 } from '#/persistence/retainedJournal';
 import { ColdCompactionService } from '#/app/coldCompaction/coldCompactionService';
-import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import type { ISessionIndex, SessionSummary } from '#/app/sessionIndex/sessionIndex';
-import type { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
+import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { SessionManager } from '#/app/sessionManager/sessionManagerService';
 import {
+  IFileSystemStorageService,
   StorageError,
   StorageErrors,
   type StorageReadOptions,
   type StorageReadRange,
   type StorageWriteOptions,
 } from '#/persistence/interface/storage';
+import type { ISessionLifecycleService, SessionCreatedEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
+import type { WorkspaceInstance } from '#/workspace/workspaceInstance/workspaceInstance';
+import { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 import { repairWireJournal, wireJournalBackupKey } from '#/wire/repair';
 
@@ -1553,4 +1573,724 @@ describe('cold segment journal', () => {
       await rm(homeDir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('keeps AppendLogStore.rewrite() crash-atomic across every fault-injection boundary and clears FILE_ATTRIBUTE_SPARSE_FILE on unseal (Round-2 #2, #3, #5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-r2-rewrite-'));
+    const oldRecords: WireRecord[] = Array.from({ length: 180 }, (_, idx) => ({
+      type: 'note',
+      id: `old-${idx}`,
+      body: `OLD_PAYLOAD_${idx}_${'A'.repeat(1_850)}`,
+    }));
+    const newRecords: WireRecord[] = Array.from({ length: 75 }, (_, idx) => ({
+      type: 'note',
+      id: `new-${idx}`,
+      body: `NEW_PAYLOAD_${idx}_${'B'.repeat(1_250)}`,
+    }));
+    const oldBytes = Buffer.from(oldRecords.map((rec) => `${JSON.stringify(rec)}\n`).join(''));
+    const newBytes = Buffer.from(newRecords.map((rec) => `${JSON.stringify(rec)}\n`).join(''));
+
+    const createSealedCase = async (subName: string): Promise<{ dir: string; wirePath: string }> => {
+      const dir = join(root, subName);
+      await mkdir(join(dir, SCOPE), { recursive: true });
+      const wirePath = join(dir, SCOPE, KEY);
+      await writeFile(wirePath, oldBytes);
+      const compacted = await compactRetainedJournal(wirePath, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 64 * 1024,
+        hotTailBytes: 32 * 1024,
+      });
+      expect(compacted.skipped).toBe(false);
+      expect(compacted.seal).toBeDefined();
+      if (process.platform === 'win32') {
+        expect(compacted.seal?.originalRetained).toBe(false);
+        expect(await queryWin32SparseAttribute(wirePath)).toBe(true);
+        expect((await stat(`${wirePath}.sparse`)).isFile()).toBe(true);
+      }
+      return { dir, wirePath };
+    };
+
+    const verifyReopenedJournal = async (dir: string): Promise<'old' | 'new'> => {
+      const checkStorage = new FileStorageService(dir);
+      const checkLog = createTestAppendLogStore(checkStorage);
+      try {
+        const reopenedRecords = await collect(checkLog);
+        const logical = await concatBytes(readLogicalBytes(checkStorage, SCOPE, KEY));
+        if (Buffer.compare(logical, oldBytes) === 0) {
+          expect(reopenedRecords).toEqual(oldRecords);
+          return 'old';
+        }
+        expect(Buffer.compare(logical, newBytes)).toBe(0);
+        expect(reopenedRecords).toEqual(newRecords);
+        return 'new';
+      } finally {
+        await checkLog.dispose();
+        await checkStorage.close();
+      }
+    };
+
+    try {
+      const unsealCase = await createSealedCase('unseal-dense');
+      const beforeMtime = (await stat(unsealCase.wirePath)).mtimeMs;
+      await unsealRetainedJournal(unsealCase.wirePath);
+      if (process.platform === 'win32') {
+        expect(await queryWin32SparseAttribute(unsealCase.wirePath)).toBe(false);
+      }
+      await expect(stat(`${unsealCase.wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(`${unsealCase.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(`${unsealCase.wirePath}.segments`)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(Math.abs((await stat(unsealCase.wirePath)).mtimeMs - beforeMtime)).toBeLessThan(5);
+      expect(await readFile(unsealCase.wirePath)).toEqual(oldBytes);
+
+      {
+        const caseA = await createSealedCase('fault-before-unseal');
+        class FailSegmentReadStorage extends FileStorageService {
+          override async read(scope: string, key: string, options?: StorageReadOptions): Promise<Uint8Array | undefined> {
+            if (key.includes('.segments/') && key.endsWith('.zst')) {
+              throw new Error('simulated crash reading segment during unseal');
+            }
+            return super.read(scope, key, options);
+          }
+        }
+        const st = new FailSegmentReadStorage(caseA.dir);
+        const lg = createTestAppendLogStore(st);
+        await expect(lg.rewrite(SCOPE, KEY, newRecords)).rejects.toThrow('simulated crash reading segment');
+        await lg.dispose();
+        await st.close();
+        expect(await verifyReopenedJournal(caseA.dir)).toBe('old');
+      }
+
+      {
+        const caseB = await createSealedCase('fault-after-unseal-before-writestream');
+        class FailBeforeWriteStreamStorage extends FileStorageService {
+          override async writeStream(
+            scope: string,
+            key: string,
+            chunks: AsyncIterable<Uint8Array>,
+            options?: StorageWriteOptions,
+          ): Promise<void> {
+            if (key === KEY) {
+              expect(options?.preserveDestinationOnError).toBe(true);
+              throw new Error('simulated crash after unseal before replacement stream');
+            }
+            return super.writeStream(scope, key, chunks, options);
+          }
+        }
+        const st = new FailBeforeWriteStreamStorage(caseB.dir);
+        const lg = createTestAppendLogStore(st);
+        await expect(lg.rewrite(SCOPE, KEY, newRecords)).rejects.toThrow('simulated crash after unseal');
+        await lg.dispose();
+        await st.close();
+        if (process.platform === 'win32') {
+          expect(await queryWin32SparseAttribute(caseB.wirePath)).toBe(false);
+        }
+        await expect(stat(`${caseB.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(stat(`${caseB.wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await verifyReopenedJournal(caseB.dir)).toBe('old');
+      }
+
+      {
+        const caseC = await createSealedCase('fault-mid-staging');
+        class FailMidStreamStorage extends FileStorageService {
+          override async writeStream(
+            scope: string,
+            key: string,
+            chunks: AsyncIterable<Uint8Array>,
+            options?: StorageWriteOptions,
+          ): Promise<void> {
+            if (key === KEY) {
+              async function* partial(): AsyncGenerator<Uint8Array> {
+                let emitted = 0;
+                for await (const chunk of chunks) {
+                  yield chunk;
+                  emitted += chunk.byteLength;
+                  if (emitted > 8_192) throw new Error('simulated mid-staging crash');
+                }
+              }
+              return super.writeStream(scope, key, partial(), options);
+            }
+            return super.writeStream(scope, key, chunks, options);
+          }
+        }
+        const st = new FailMidStreamStorage(caseC.dir);
+        const lg = createTestAppendLogStore(st);
+        await expect(lg.rewrite(SCOPE, KEY, newRecords)).rejects.toMatchObject({
+          code: StorageErrors.codes.STORAGE_IO_FAILED,
+        });
+        await lg.dispose();
+        await st.close();
+        const leftovers = (await readdir(join(caseC.dir, SCOPE))).filter((name) => name.includes('.stage.'));
+        expect(leftovers).toEqual([]);
+        expect(await verifyReopenedJournal(caseC.dir)).toBe('old');
+      }
+
+      if (process.platform === 'win32') {
+        const caseD = await createSealedCase('fault-sharing-violation');
+        const shareBlockerSealed = new DatabaseSync(caseD.wirePath, { readOnly: true });
+        try {
+          const st = new FileStorageService(caseD.dir);
+          const lg = createTestAppendLogStore(st);
+          await expect(lg.rewrite(SCOPE, KEY, newRecords)).rejects.toThrow();
+          await lg.dispose();
+          await st.close();
+        } finally {
+          shareBlockerSealed.close();
+        }
+        expect(await verifyReopenedJournal(caseD.dir)).toBe('old');
+
+        await unsealRetainedJournal(caseD.wirePath);
+        const shareBlockerDense = new DatabaseSync(caseD.wirePath, { readOnly: true });
+        try {
+          await expect(
+            atomicWrite(caseD.wirePath, newBytes, undefined, undefined, undefined, true),
+          ).rejects.toThrow();
+          const st = new FileStorageService(caseD.dir);
+          const lg = createTestAppendLogStore(st);
+          await expect(lg.rewrite(SCOPE, KEY, newRecords)).rejects.toThrow();
+          await lg.dispose();
+          await st.close();
+        } finally {
+          shareBlockerDense.close();
+        }
+        expect((await stat(caseD.wirePath)).isFile()).toBe(true);
+        expect(await verifyReopenedJournal(caseD.dir)).toBe('old');
+      }
+
+      {
+        const caseE = await createSealedCase('fault-during-generation-write');
+        class FailGenerationWriteStorage extends FileStorageService {
+          override async write(
+            scope: string,
+            key: string,
+            data: Uint8Array,
+            options?: StorageWriteOptions,
+          ): Promise<void> {
+            if (key === `${KEY}.generation`) {
+              expect(options?.preserveDestinationOnError).toBe(true);
+              throw new Error('simulated crash during .generation commit');
+            }
+            return super.write(scope, key, data, options);
+          }
+        }
+        const st = new FailGenerationWriteStorage(caseE.dir);
+        const lg = createTestAppendLogStore(st);
+        await expect(lg.rewrite(SCOPE, KEY, newRecords)).rejects.toThrow('simulated crash during .generation commit');
+        await lg.dispose();
+        await st.close();
+        await expect(stat(`${caseE.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(stat(`${caseE.wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await verifyReopenedJournal(caseE.dir)).toBe('old');
+      }
+
+      {
+        const caseF = await createSealedCase('fault-after-generation-before-writestream');
+        let genWritten = false;
+        class FailAfterGenerationStorage extends FileStorageService {
+          override async write(
+            scope: string,
+            key: string,
+            data: Uint8Array,
+            options?: StorageWriteOptions,
+          ): Promise<void> {
+            await super.write(scope, key, data, options);
+            if (key === `${KEY}.generation`) genWritten = true;
+          }
+
+          override async writeStream(
+            scope: string,
+            key: string,
+            chunks: AsyncIterable<Uint8Array>,
+            options?: StorageWriteOptions,
+          ): Promise<void> {
+            if (key === KEY) {
+              expect(genWritten).toBe(true);
+              throw new Error('simulated crash after .generation write before wire replace');
+            }
+            return super.writeStream(scope, key, chunks, options);
+          }
+        }
+        const st = new FailAfterGenerationStorage(caseF.dir);
+        const lg = createTestAppendLogStore(st);
+        await expect(lg.rewrite(SCOPE, KEY, newRecords)).rejects.toThrow(
+          'simulated crash after .generation write before wire replace',
+        );
+        await lg.dispose();
+        await st.close();
+        await expect(stat(`${caseF.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(stat(`${caseF.wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await verifyReopenedJournal(caseF.dir)).toBe('old');
+      }
+
+      {
+        const caseG = await createSealedCase('rewrite-complete');
+        const st = new FileStorageService(caseG.dir);
+        const lg = createTestAppendLogStore(st);
+        await lg.rewrite(SCOPE, KEY, newRecords);
+        await lg.dispose();
+        await st.close();
+        await expect(stat(`${caseG.wirePath}.segments.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(stat(`${caseG.wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await verifyReopenedJournal(caseG.dir)).toBe('new');
+      }
+    } finally {
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45_000);
+
+  it('drains active dense pinned readers before rewrite() and keeps dense FileHandle pins revision-consistent (Round-2 #4)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-r2-dense-pin-'));
+    const storage = new FileStorageService(root);
+    const log = createTestAppendLogStore(storage);
+    try {
+      const oldRecords: WireRecord[] = Array.from({ length: 120 }, (_, idx) => ({
+        type: 'note',
+        id: `dense-old-${idx}`,
+        body: `DENSE_OLD_${idx}_${'X'.repeat(1_500)}`,
+      }));
+      const newRecords: WireRecord[] = Array.from({ length: 80 }, (_, idx) => ({
+        type: 'note',
+        id: `dense-new-${idx}`,
+        body: `DENSE_NEW_${idx}_${'Y'.repeat(1_100)}`,
+      }));
+      await log.append(SCOPE, KEY, oldRecords);
+      await log.flush(SCOPE, KEY);
+
+      const wirePath = join(root, SCOPE, KEY);
+      const oldBytes = await readFile(wirePath);
+      const half = Math.floor(oldBytes.byteLength / 2);
+
+      const pinned = await openPinnedLogicalRead(storage, SCOPE, KEY);
+      expect(pinned.size).toBe(oldBytes.byteLength);
+      const page1 = await concatBytes(pinned.read({ start: 0, end: half - 1 }));
+      expect(page1).toEqual(oldBytes.subarray(0, half));
+
+      let rewriteDone = false;
+      const rewritePromise = log.rewrite(SCOPE, KEY, newRecords).then(() => {
+        rewriteDone = true;
+      });
+      await new Promise((r) => setTimeout(r, 40));
+      expect(rewriteDone).toBe(false);
+
+      const page2 = await concatBytes(pinned.read({ start: half, end: oldBytes.byteLength - 1 }));
+      expect(page2).toEqual(oldBytes.subarray(half));
+
+      await pinned.close();
+      await rewritePromise;
+      expect(rewriteDone).toBe(true);
+
+      const newBytes = await readFile(wirePath);
+      const pinnedAfter = await openPinnedLogicalRead(storage, SCOPE, KEY);
+      try {
+        expect(await concatBytes(pinnedAfter.read())).toEqual(newBytes);
+      } finally {
+        await pinnedAfter.close();
+      }
+    } finally {
+      await log.dispose();
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('reaps .reader leases from terminated worker_threads workers via threadId liveness and retries failed unlinks (Round-2 #6)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-r2-worker-lease-'));
+    const wirePath = join(root, KEY);
+    const payload = Buffer.from(
+      Array.from({ length: 180 }, (_, i) => `${JSON.stringify({
+        type: 'note',
+        id: `wl-${i}`,
+        text: `WORKER_LEASE_${i}_${'Z'.repeat(1_600)}`,
+      })}\n`).join(''),
+    );
+    await writeFile(wirePath, payload);
+
+    let worker1: Worker | undefined;
+    let worker2: Worker | undefined;
+    try {
+      const probeLease = await acquireSharedReadLease(wirePath);
+      const readersDir = sharedReadDirectory(wirePath);
+      const probeFiles = await readdir(readersDir);
+      expect(probeFiles.length).toBe(1);
+      const templatePayload = JSON.parse(await readFile(join(readersDir, probeFiles[0]!), 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      await probeLease.release();
+
+      worker1 = new Worker(
+        `
+        const { threadId, parentPort } = require('node:worker_threads');
+        process.on('workerMessage', () => {});
+        parentPort.postMessage({ threadId });
+        setInterval(() => {}, 10000);
+        `,
+        { eval: true },
+      );
+      const { threadId: tid1 } = await new Promise<{ threadId: number }>((resolveMsg, rejectMsg) => {
+        worker1!.once('message', resolveMsg);
+        worker1!.once('error', rejectMsg);
+      });
+      const orphanLeaseFile = join(readersDir, `${process.pid}-untracked-${tid1}.reader`);
+      await mkdir(readersDir, { recursive: true });
+      await writeFile(
+        orphanLeaseFile,
+        JSON.stringify({
+          ...templatePayload,
+          threadId: tid1,
+          token: `untracked-${tid1}`,
+        }),
+        'utf8',
+      );
+
+      await expect(waitSharedReadIdle(wirePath, AbortSignal.timeout(80))).rejects.toThrow();
+
+      await worker1.terminate();
+      worker1 = undefined;
+
+      await waitSharedReadIdle(wirePath, AbortSignal.timeout(2_000));
+      await expect(stat(orphanLeaseFile)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      worker2 = new Worker(
+        `
+        const { threadId, parentPort } = require('node:worker_threads');
+        process.on('workerMessage', () => {});
+        parentPort.postMessage({ threadId });
+        setInterval(() => {}, 10000);
+        `,
+        { eval: true },
+      );
+      const { threadId: tid2 } = await new Promise<{ threadId: number }>((resolveMsg, rejectMsg) => {
+        worker2!.once('message', resolveMsg);
+        worker2!.once('error', rejectMsg);
+      });
+      trackReaderWorkerThread(worker2, wirePath);
+      const trackedLeaseFile = join(readersDir, `${process.pid}-tracked-${tid2}.reader`);
+      await mkdir(readersDir, { recursive: true });
+      await writeFile(
+        trackedLeaseFile,
+        JSON.stringify({
+          ...templatePayload,
+          threadId: tid2,
+          token: `tracked-${tid2}`,
+        }),
+        'utf8',
+      );
+      await worker2.terminate();
+      worker2 = undefined;
+      await vi.waitFor(async () => {
+        await expect(stat(trackedLeaseFile)).rejects.toMatchObject({ code: 'ENOENT' });
+      }, { timeout: 2_000 });
+
+      if (process.platform === 'win32') {
+        const retryLease = await acquireSharedReadLease(wirePath);
+        const activeFiles = (await readdir(readersDir)).filter((name) => name.endsWith('.reader'));
+        expect(activeFiles.length).toBe(1);
+        const heldLeasePath = join(readersDir, activeFiles[0]!);
+        const leaseBlocker = new DatabaseSync(heldLeasePath, { readOnly: true });
+        try {
+          await retryLease.release();
+          expect((await stat(heldLeasePath)).isFile()).toBe(true);
+        } finally {
+          leaseBlocker.close();
+        }
+        await waitSharedReadIdle(wirePath, AbortSignal.timeout(2_000));
+        await expect(stat(heldLeasePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+
+      const compacted = await compactRetainedJournal(wirePath, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 64 * 1024,
+        hotTailBytes: 32 * 1024,
+      });
+      expect(compacted.skipped).toBe(false);
+      expect(compacted.seal).toBeDefined();
+    } finally {
+      await worker1?.terminate();
+      await worker2?.terminate();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('hands off SESSION_LOCK_SCOPE to real SessionManager.resume(waitForMs=0) when ColdCompactionService is parked on a held reader (Round-2 #7)', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'cold-r2-handoff-'));
+    const wsId = 'wd_handoff';
+    const sessionId = 'session_11111111-2222-4333-8444-555555555555';
+    const sessionScope = `sessions/${wsId}/${sessionId}`;
+    const agentScope = `${sessionScope}/agents/main`;
+    const agentDir = join(homeDir, 'sessions', wsId, sessionId, 'agents', 'main');
+    await mkdir(agentDir, { recursive: true });
+
+    const initialBytes = Buffer.from(
+      Array.from({ length: 180 }, (_, i) => `${JSON.stringify({
+        type: 'note',
+        id: `init-${i}`,
+        text: `INIT_SEAL1_${i}_${'M'.repeat(1_750)}`,
+      })}\n`).join(''),
+    );
+    const appendedBytes = Buffer.from(
+      Array.from({ length: 120 }, (_, i) => `${JSON.stringify({
+        type: 'note',
+        id: `app-${i}`,
+        text: `APPEND_SEAL2_${i}_${'N'.repeat(1_750)}`,
+      })}\n`).join(''),
+    );
+    const wirePath = join(agentDir, KEY);
+    await writeFile(wirePath, initialBytes);
+
+    const storage = new FileStorageService(homeDir);
+    const disposables = new DisposableStore();
+    let coldService: ColdCompactionService | undefined;
+    let heldSessionLock: { release(): Promise<void> } | undefined;
+    let pinnedOldSeal: Awaited<ReturnType<typeof openPinnedLogicalRead>> | undefined;
+    try {
+      const now = Date.now();
+      let summary: SessionSummary = {
+        id: sessionId,
+        workspaceId: wsId,
+        createdAt: now - 9_000_000,
+        updatedAt: now - 5_000_000,
+        archived: false,
+      };
+      const didCreate = new Emitter<SessionCreatedEvent>();
+      disposables.add(didCreate);
+      const fakeController = {
+        onWillCreateSession: Event.None,
+        onDidCreateSession: didCreate.event,
+        onWillCloseSession: Event.None,
+        onDidCloseSession: Event.None,
+        onDidArchiveSession: Event.None,
+        onDidForkSession: Event.None,
+        create: async () => ({ id: sessionId }) as ISessionScopeHandle,
+        get: () => undefined,
+        list: () => [],
+        resume: async (id: string) => {
+          heldSessionLock = await storage.acquireLock(SESSION_LOCK_SCOPE, sessionLockKey(sessionScope), {
+            waitForMs: 0,
+          });
+          const handle = { id } as ISessionScopeHandle;
+          didCreate.fire({ sessionId: id, handle, source: 'resume' });
+          return handle;
+        },
+        close: async () => {},
+        unload: async () => true,
+        archive: async () => {},
+        restore: async () => ({ id: sessionId }) as ISessionScopeHandle,
+        delete: async () => {},
+        fork: async () => ({ id: sessionId }) as ISessionScopeHandle,
+        createChild: async () => ({ id: sessionId }) as ISessionScopeHandle,
+        dispose: () => {},
+      } as unknown as ISessionLifecycleService;
+
+      const workspace = {
+        id: wsId,
+        program: {
+          sessionControllerGeneration: 'gen-1',
+          createSessionController: () => fakeController,
+        },
+      } as unknown as WorkspaceInstance;
+
+      const services = createServices(disposables, {
+        strict: false,
+        additionalServices: (reg) => {
+          reg.definePartialInstance(IBootstrapService, { scope: (name: string) => name });
+          reg.definePartialInstance(IFileSystemStorageService, storage);
+          reg.definePartialInstance(IWorkspaceInstanceManager, {
+            acquire: async () => ({ instance: workspace, dispose: () => {} }),
+            get: () => workspace,
+          });
+          reg.definePartialInstance(ISessionIndex, {
+            get: async (id: string) => (id === sessionId ? summary : undefined),
+            listRecent: async () => ({ items: [summary], nextCursor: undefined }),
+          });
+          reg.definePartialInstance(IConfigService, {
+            ready: Promise.resolve(),
+            get: ((domain: string) => {
+              if (domain === 'cold_compaction') {
+                return { enabled: false, minIdleAgeMs: 1_800_000, maxSessionsPerSweep: 1, reclaimSparse: true };
+              }
+              return {};
+            }) as IConfigService['get'],
+          });
+          reg.definePartialInstance(IFlagService, { enabled: () => false });
+          reg.define(ISessionManager, SessionManager);
+        },
+      });
+      const manager = services.get(ISessionManager);
+      coldService = new ColdCompactionService(
+        services.get(IBootstrapService),
+        storage,
+        services.get(ISessionIndex),
+        manager,
+        services.get(IConfigService),
+      );
+
+      const firstSeal = await coldService.compactSession(sessionId, {
+        workspaceId: wsId,
+        segmentBytes: 64 * 1024,
+        hotTailBytes: 32 * 1024,
+        reclaim: true,
+      });
+      expect(firstSeal?.compactedJournals).toBe(1);
+      const manifest1 = JSON.parse(await readFile(`${wirePath}.segments.json`, 'utf8')) as { sealId: string };
+
+      const appendHandle = await open(wirePath, 'a');
+      try {
+        await appendHandle.writeFile(appendedBytes);
+        await appendHandle.sync();
+      } finally {
+        await appendHandle.close();
+      }
+
+      summary = { ...summary, updatedAt: now - 4_000_000 };
+      const fullExpectedBytes = Buffer.concat([initialBytes, appendedBytes]);
+      pinnedOldSeal = await openPinnedLogicalRead(storage, agentScope, KEY);
+      expect(pinnedOldSeal.size).toBe(fullExpectedBytes.byteLength);
+
+      const idleSweep = coldService.runIdlePass(1);
+      await vi.waitFor(async () => {
+        const current = JSON.parse(await readFile(`${wirePath}.segments.json`, 'utf8')) as { sealId: string };
+        expect(current.sealId).not.toBe(manifest1.sealId);
+      }, { timeout: 10_000 });
+
+      const t0 = performance.now();
+      const resumed = await manager.resume(sessionId);
+      const elapsedMs = performance.now() - t0;
+      expect(resumed).toMatchObject({ id: sessionId });
+      expect(heldSessionLock).toBeDefined();
+      expect(elapsedMs).toBeLessThan(500);
+      expect(await idleSweep).toBe(0);
+
+      expect(await concatBytes(pinnedOldSeal.read())).toEqual(fullExpectedBytes);
+      await pinnedOldSeal.close();
+      pinnedOldSeal = undefined;
+
+      await heldSessionLock?.release();
+      heldSessionLock = undefined;
+
+      const fullLogical = await concatBytes(readLogicalBytes(storage, agentScope, KEY));
+      expect(fullLogical).toEqual(fullExpectedBytes);
+    } finally {
+      if (pinnedOldSeal !== undefined) await Promise.resolve(pinnedOldSeal.close()).catch(() => undefined);
+      if (heldSessionLock !== undefined) await Promise.resolve(heldSessionLock.release()).catch(() => undefined);
+      await coldService?.dispose();
+      await disposables.dispose();
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('spawns zero subprocesses on dense/sealed/orphaned reads, never invokes powershell/csc, and degrades cleanly on legacy 1-arg helper (Round-2 #1)', async () => {
+    const sparseSource = await readFile(
+      resolve(import.meta.dirname, '../../../../src/persistence/backends/node-fs/sparseFile.ts'),
+      'utf8',
+    );
+    expect(sparseSource.toLowerCase()).not.toContain('powershell');
+    expect(sparseSource.toLowerCase()).not.toContain('add-type');
+    expect(sparseSource.toLowerCase()).not.toContain('csc.exe');
+
+    const root = await mkdtemp(join(tmpdir(), 'cold-r2-no-ps-'));
+    const storage = new FileStorageService(root);
+    const spawned: Array<{ file: string; args: string[] }> = [];
+    closeSparseFileWorker();
+    const childProto = ChildProcess.prototype as unknown as {
+      spawn(options: { file: string; args: string[] }): number;
+    };
+    const origImpl = childProto.spawn;
+    const spawnSpy = vi.spyOn(childProto, 'spawn');
+    spawnSpy.mockImplementation(function (this: ChildProcess, options: { file: string; args: string[] }) {
+      spawned.push({ file: options.file, args: [...options.args] });
+      return origImpl.call(this, options);
+    });
+    const prevHelperEnv = process.env['KIKI_WINDOWS_PROCESS_HELPER'];
+    try {
+      const denseDir = join(root, SCOPE);
+      await mkdir(denseDir, { recursive: true });
+      const wirePath = join(denseDir, KEY);
+      const densePayload = Buffer.from(
+        Array.from({ length: 160 }, (_, i) => `${JSON.stringify({
+          type: 'note',
+          id: `nops-${i}`,
+          text: `NO_POWERSHELL_${i}_${'Q'.repeat(1_550)}`,
+        })}\n`).join(''),
+      );
+      expect(densePayload.byteLength).toBeGreaterThan(131_072);
+      await writeFile(wirePath, densePayload);
+
+      expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(densePayload);
+      const densePin = await openPinnedLogicalRead(storage, SCOPE, KEY);
+      expect(await concatBytes(densePin.read())).toEqual(densePayload);
+      await densePin.close();
+      expect(spawned).toEqual([]);
+
+      await compactRetainedJournal(wirePath, {
+        codec: 'zstd',
+        reclaim: true,
+        segmentBytes: 64 * 1024,
+        hotTailBytes: 32 * 1024,
+      });
+      for (const call of spawned) {
+        expect(call.file.toLowerCase()).toContain('windows-process-helper.exe');
+        expect(call.file.toLowerCase()).not.toContain('powershell');
+        expect(call.file.toLowerCase()).not.toContain('pwsh');
+        expect(call.file.toLowerCase()).not.toContain('csc');
+      }
+
+      spawned.length = 0;
+      expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(densePayload);
+      const sealedPin = await openPinnedLogicalRead(storage, SCOPE, KEY);
+      expect(await concatBytes(sealedPin.read())).toEqual(densePayload);
+      await sealedPin.close();
+      expect(spawned).toEqual([]);
+
+      if (process.platform === 'win32') {
+        const orphanDir = join(root, OTHER);
+        await mkdir(orphanDir, { recursive: true });
+        const orphanWire = join(orphanDir, KEY);
+        await writeFile(orphanWire, densePayload);
+        await compactRetainedJournal(orphanWire, {
+          codec: 'zstd',
+          reclaim: true,
+          segmentBytes: 64 * 1024,
+          hotTailBytes: 32 * 1024,
+        });
+        await rm(`${orphanWire}.segments.json`);
+        spawned.length = 0;
+        await expect(concatBytes(readLogicalBytes(storage, OTHER, KEY))).rejects.toMatchObject({
+          code: StorageErrors.codes.STORAGE_CORRUPTED,
+        });
+        expect(spawned).toEqual([]);
+      }
+
+      await unsealRetainedJournal(wirePath);
+      for (const call of spawned) {
+        expect(call.file.toLowerCase()).toContain('windows-process-helper.exe');
+      }
+
+      if (process.platform === 'win32') {
+        closeSparseFileWorker();
+        process.env['KIKI_WINDOWS_PROCESS_HELPER'] = 'C:\\Windows\\System32\\whoami.exe';
+        const fallbackCompacted = await compactRetainedJournal(wirePath, {
+          codec: 'zstd',
+          reclaim: true,
+          segmentBytes: 64 * 1024,
+          hotTailBytes: 32 * 1024,
+        });
+        expect(fallbackCompacted.seal?.originalRetained).toBe(true);
+        expect(fallbackCompacted.seal?.sparseRanges).toEqual([]);
+        await expect(stat(`${wirePath}.sparse`)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(densePayload);
+      }
+    } finally {
+      if (prevHelperEnv === undefined) delete process.env['KIKI_WINDOWS_PROCESS_HELPER'];
+      else process.env['KIKI_WINDOWS_PROCESS_HELPER'] = prevHelperEnv;
+      closeSparseFileWorker();
+      spawnSpy.mockRestore();
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 35_000);
 });
