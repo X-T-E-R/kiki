@@ -5,6 +5,7 @@ import { IBootstrapService, ISessionManager, ISessionMetadata, IAgentLifecycleSe
   IAgentToolRegistryService, IAgentToolPolicyService, IAgentToolExecutorService, IAgentPermissionModeService,
   ISessionContext, ISessionInteractionService, IWorkAdmissionService, WorkAdmissionErrors, isError2, ensureMainAgent, type Scope, type IAgentScopeHandle,
 } from '@kiki/agent-core-v2';
+import { DisposableStore } from '@kiki/agent-core-v2/_base/di/lifecycle';
 import { IAgentTaskService } from '@kiki/agent-core-v2/agent/task/task';
 import { IAgentToolDedupeService } from '@kiki/agent-core-v2/agent/toolDedupe/toolDedupe';
 import { ExternalClientRecorder } from '@kiki/agent-core-v2/agent/execution/externalClientRecorder';
@@ -25,6 +26,7 @@ export class ExternalClientHost {
   private readonly queues = new Map<string,Promise<unknown>>();
   private readonly running = new Map<string,Running>();
   private readonly disposables: {dispose():void}[] = [];
+  private readonly sessionScopes = new Map<string,DisposableStore>();
   private readonly catalogListeners = new Set<(grantId: string) => void>();
   constructor(readonly core: Scope) { this.store = new ExternalClientStore(core); }
   onCatalogChanged(listener: (grantId: string) => void): { dispose(): void } {
@@ -38,6 +40,8 @@ export class ExternalClientHost {
     if(manager.onWillCreateSession !== undefined) this.disposables.push(manager.onWillCreateSession(event=>{
       const pending=this.sessionBindings.get(event.sessionId);
       if(pending===undefined) return;
+      const scope=this.openSessionScope(event.sessionId);
+      event.onSessionDispose(()=>{this.releaseSessionScope(event.sessionId,scope);});
       const record={...pending,workspaceId:event.readSeed(ISessionContext).workspaceId};
       this.sessionBindings.set(event.sessionId,record);
       const access=new ExternalClientAccess(this.store,record);
@@ -49,13 +53,26 @@ export class ExternalClientHost {
     if(manager.onDidCreateSession !== undefined) this.disposables.push(manager.onDidCreateSession(event=>{
       const record=this.sessionBindings.get(event.sessionId);
       if(record===undefined) return;
-      event.waitUntil(this.attachSession(event.handle,record));
+      event.waitUntil(this.attachSession(event.handle,record,this.sessionScopes.get(event.sessionId)??this.openSessionScope(event.sessionId)));
     }));
   }
-  private async attachSession(session: Awaited<ReturnType<ISessionManager['create']>>, record: ExternalClientSession): Promise<void> {
+  private openSessionScope(sessionId: string): DisposableStore {
+    void this.sessionScopes.get(sessionId)?.dispose();
+    const scope=new DisposableStore();
+    this.sessionScopes.set(sessionId,scope);
+    return scope;
+  }
+  private releaseSessionScope(sessionId: string, scope: DisposableStore): void {
+    void scope.dispose();
+    if(this.sessionScopes.get(sessionId)===scope) this.sessionScopes.delete(sessionId);
+  }
+  private async attachSession(session: Awaited<ReturnType<ISessionManager['create']>>, record: ExternalClientSession, scope: DisposableStore): Promise<void> {
     const lifecycle=session.accessor.get(IAgentLifecycleService);
-    this.disposables.push(lifecycle.onWillCreate(agent=>{this.attachAgent(agent,record);}));
-    for(const agent of lifecycle.list()) this.attachAgent(agent,record);
+    const agents=new Map<string,DisposableStore>();
+    scope.add({dispose:()=>{for(const agent of agents.values()) void agent.dispose();agents.clear();}});
+    scope.add(lifecycle.onWillCreate(agent=>{this.attachAgent(agent,record,agents);}));
+    scope.add(lifecycle.onDidDispose(agentId=>{void agents.get(agentId)?.dispose();agents.delete(agentId);}));
+    for(const agent of lifecycle.list()) this.attachAgent(agent,record,agents);
     const metadata=session.accessor.get(ISessionMetadata);
     await metadata.ready;
     const current=await metadata.read();
@@ -77,9 +94,12 @@ export class ExternalClientHost {
   cancelPreparedSession(sessionId: string): void {
     this.sessionBindings.delete(sessionId);
   }
-  private attachAgent(agent: IAgentScopeHandle, record: ExternalClientSession): void {
+  private attachAgent(agent: IAgentScopeHandle, record: ExternalClientSession, agents: Map<string,DisposableStore>): void {
+    void agents.get(agent.id)?.dispose();
+    const hooks=new DisposableStore();
+    agents.set(agent.id,hooks);
     const executor=agent.accessor.get(IAgentToolExecutorService);
-    this.disposables.push(executor.registerBeforeResolveTool(async context=>{
+    hooks.add(executor.registerBeforeResolveTool(async context=>{
       const grant=await this.store.active(record.connectionId).catch(()=>undefined);
       if(grant===undefined) return 'External connection is paused or revoked.';
       if(!grant.tools.includes(context.toolCall.name) || context.toolCall.name==='Bash' && !grant.allowCommands) return 'Tool is outside the external connection grant.';
@@ -87,7 +107,7 @@ export class ExternalClientHost {
       mode.setModeCeiling(grant.mode);
       return undefined;
     }));
-    this.disposables.push(executor.onBeforeExecuteTool(event=>{
+    hooks.add(executor.onBeforeExecuteTool(event=>{
       event.waitUntil(async()=>{
         const grant=await this.store.active(record.connectionId).catch(()=>undefined);
         if(grant===undefined) return {veto:{isError:true,output:'External connection is paused or revoked.'}};
@@ -284,7 +304,7 @@ export class ExternalClientHost {
     const admission=this.core.accessor.get(IWorkAdmissionService).acquire('mcp-tool');
     const prior=this.queues.get(session.sessionId)??Promise.resolve();
     const done=admission.run(()=>prior.catch(()=>undefined).then(()=>this.execute(session,operation,controller.signal)))
-      .finally(()=>{admission.dispose();this.running.delete(operation.id);});
+      .finally(()=>{admission.dispose();this.running.delete(operation.id);if(this.queues.get(session.sessionId)===done) this.queues.delete(session.sessionId);});
     this.running.set(operation.id,{controller,done});this.queues.set(session.sessionId,done);
     void done.catch(()=>undefined);
   }
@@ -372,6 +392,8 @@ export class ExternalClientHost {
     await metadata.update({custom:{...custom,externalSource:{sessionId:id,sessionRef:record.sessionRef}}});return {sessionId:fork.id};}
   async close():Promise<void>{for(const running of this.running.values())running.controller.abort();await Promise.allSettled([...this.running.values()].map(r=>r.done));
     for(const disposable of this.disposables)disposable.dispose();
+    for(const scope of this.sessionScopes.values())void scope.dispose();
+    this.sessionScopes.clear();
     this.catalogListeners.clear();}
 }
 function policyFingerprint(connection:ExternalClientConnection):string {

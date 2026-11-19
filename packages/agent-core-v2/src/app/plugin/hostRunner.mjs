@@ -787,13 +787,15 @@ for await (const line of input) {
     continue;
   }
   if (message.method === 'panel-request') {
+    const controller = new AbortController();
+    pending.set(message.id, controller);
     Promise.resolve().then(() => {
       if (typeof handlePanelRequest !== 'function') throw new Error('Plugin has no panel backend');
-      return handlePanelRequest(message.params.action, message.params.args, { settings: message.params.settings ?? {}, kikiHome: message.params.kikiHome, workspaceId: message.params.workspaceId, ...modelContext(message.id, lifetime.signal, false) });
+      return handlePanelRequest(message.params.action, message.params.args, { settings: message.params.settings ?? {}, kikiHome: message.params.kikiHome, workspaceId: message.params.workspaceId, ...modelContext(message.id, controller.signal, false), signal: controller.signal });
     }).then(
       (result) => send({ id: message.id, result }),
       (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
-    );
+    ).finally(() => pending.delete(message.id));
     continue;
   }
   if (message.method === 'source-request') {

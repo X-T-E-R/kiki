@@ -39,6 +39,7 @@ export interface CreateSessionBranchInput {
   readonly executor?: string;
   readonly cwd?: string;
   readonly toolsLocked?: boolean;
+  readonly signal?: AbortSignal;
 }
 
 export interface CreateSessionBranchResult {

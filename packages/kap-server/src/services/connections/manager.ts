@@ -340,6 +340,8 @@ export class RemoteConnectionManager {
         } catch (error) { if (error instanceof AdmissionError && error.reason === 'identity_changed') this.failed(id, error, epoch); throw error; }
       })();
       pending.set(key, acquired);
+      const settled = acquired;
+      settled.catch(() => { if (pending.get(key) === settled) pending.delete(key); });
     }
     return acquired;
   }

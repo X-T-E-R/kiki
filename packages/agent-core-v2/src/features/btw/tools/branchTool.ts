@@ -98,7 +98,7 @@ export class BranchTool implements AgentTool<BranchInput> {
       description: input.title === undefined ? 'Opening session branch' : `Opening branch: ${input.title}`,
       approvalRule: this.name,
       accesses: this.resolveExternalCwdAccesses(input.cwd),
-      execute: async () => {
+      execute: async (ctx) => {
         if (this.scope.isBranch === true || this.scope.agentId !== MAIN_AGENT_ID) {
           return {
             isError: true,
@@ -119,6 +119,7 @@ export class BranchTool implements AgentTool<BranchInput> {
           executor: input.executor,
           cwd: input.cwd,
           toolsLocked: false,
+          signal: ctx.signal,
         });
         return {
           allowsTurnEndWithSendMessage: true,

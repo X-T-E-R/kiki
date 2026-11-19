@@ -30,6 +30,9 @@ const ACCESS_TOKEN_TTL_SECONDS = 300;
 const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 const AUTHORIZATION_CODE_TTL_MS = 120_000;
 const CONSENT_TTL_MS = 120_000;
+const SETTLED_CONSENT_RETENTION_MS = 60_000;
+const IDLE_CLIENT_TTL_SECONDS = REFRESH_TOKEN_TTL_SECONDS;
+const MAX_IDLE_CLIENTS = 256;
 
 type OAuthResponse = Parameters<OAuthServerProvider['authorize']>[2];
 type ClientRegistration = Omit<OAuthClientInformationFull, 'client_id' | 'client_id_issued_at'> & {
@@ -350,7 +353,7 @@ export class ExternalClientOAuthService implements OAuthServerProvider {
       client_id: clientId,
       client_id_issued_at: client.client_id_issued_at ?? Math.floor(Date.now() / 1000),
     } as OAuthClientInformationFull;
-    await this.mutate((document) => ({ ...document, clients: { ...document.clients, [clientId]: full } }));
+    await this.mutate((document) => ({ ...document, clients: { ...document.clients, [clientId]: full } }), clientId);
     return full;
   }
 
@@ -422,13 +425,13 @@ export class ExternalClientOAuthService implements OAuthServerProvider {
     return normalizeDocument(value);
   }
 
-  private async mutate(work: (document: OAuthDocument) => OAuthDocument): Promise<void> {
+  private async mutate(work: (document: OAuthDocument) => OAuthDocument, retainClientId?: string): Promise<void> {
     const operation = this.mutation.then(async () => {
       if (this.store === undefined) {
-        this.memoryDocument = work(this.memoryDocument);
+        this.memoryDocument = pruneDocument(work(this.memoryDocument), Date.now(), retainClientId);
         return;
       }
-      await this.store.update<OAuthDocument>(this.storeScope, DOCUMENT_KEY, (current) => work(current === undefined ? emptyDocument() : normalizeDocument(current)));
+      await this.store.update<OAuthDocument>(this.storeScope, DOCUMENT_KEY, (current) => pruneDocument(work(current === undefined ? emptyDocument() : normalizeDocument(current)), Date.now(), retainClientId));
     });
     this.mutation = operation.then(() => undefined, () => undefined);
     await operation;
@@ -449,6 +452,30 @@ function normalizeDocument(value: OAuthDocument): OAuthDocument {
     accessTokens: value.accessTokens ?? {},
     refreshTokens: value.refreshTokens ?? {},
   };
+}
+
+function pruneDocument(document: OAuthDocument, nowMs: number, retainClientId?: string): OAuthDocument {
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const accessTokens = filterRecords(document.accessTokens, (record) => record.expiresAt > nowSeconds);
+  const refreshTokens = filterRecords(document.refreshTokens, (record) => record.expiresAt > nowSeconds);
+  const codes = filterRecords(document.codes, (record) => record.expiresAt > nowMs);
+  const pending = filterRecords(document.pending, (record) => record.expiresAt + SETTLED_CONSENT_RETENTION_MS > nowMs);
+  const referenced = new Set<string>(retainClientId === undefined ? [] : [retainClientId]);
+  for (const records of [accessTokens, refreshTokens, codes, pending]) {
+    for (const record of Object.values(records)) referenced.add(record.clientId);
+  }
+  const idle = Object.values(document.clients)
+    .filter((client) => !referenced.has(client.client_id))
+    .filter((client) => (client.client_id_issued_at ?? 0) + IDLE_CLIENT_TTL_SECONDS > nowSeconds)
+    .toSorted((left, right) => (right.client_id_issued_at ?? 0) - (left.client_id_issued_at ?? 0))
+    .slice(0, MAX_IDLE_CLIENTS);
+  const retained = new Set([...referenced, ...idle.map((client) => client.client_id)]);
+  const clients = filterRecords(document.clients, (client) => retained.has(client.client_id));
+  return { ...document, clients, pending, codes, accessTokens, refreshTokens };
+}
+
+function filterRecords<T>(records: Record<string, T>, keep: (record: T) => boolean): Record<string, T> {
+  return Object.fromEntries(Object.entries(records).filter(([, record]) => keep(record)));
 }
 
 function randomId(prefix: string): string {

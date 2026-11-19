@@ -133,7 +133,7 @@ export interface IPluginHostService {
   requestMediaProvider(provider: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, context: PluginMediaCallContext, expected?: PluginMediaProviderRegistration): Promise<unknown>;
   execute(pluginId: string, tool: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, scope?: PluginExecutionScope, expectedDefinition?: PluginTool): Promise<ExecutableToolResult>;
   installPrerequisite(pluginId: string, prerequisiteId: string, consent: boolean): Promise<string>;
-  requestPanel(pluginId: string, panelId: string, action: string, args: unknown): Promise<unknown>;
+  requestPanel(pluginId: string, panelId: string, action: string, args: unknown, signal?: AbortSignal): Promise<unknown>;
   openPanelStream(pluginId: string, panelId: string, stream: string, args: unknown, context: { sessionId?: string; workspaceId?: string; signal?: AbortSignal }): Promise<PluginPanelStream>;
   requestSource(pluginId: string, sourceId: string, action: 'discover' | 'probe' | 'parse', args: unknown, signal: AbortSignal): Promise<unknown>;
   running(pluginId: string): boolean;
@@ -1256,14 +1256,14 @@ export class PluginHostService extends Service implements IPluginHostService {
     }, context.signal);
   }
 
-  requestPanel(pluginId: string, panelId: string, action: string, args: unknown): Promise<unknown> {
+  requestPanel(pluginId: string, panelId: string, action: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
     return this.runRequest(pluginId, (info, settings) => {
       if (!info.enabled || info.state !== 'ok' || info.manifest?.kiki?.entry === undefined ||
         !info.manifest?.kiki?.panels?.some((panel) => panel.id === panelId)) {
         throw new Error2(PluginErrors.codes.PLUGIN_LOAD_FAILED, `Plugin ${pluginId} panel ${panelId} has no enabled backend`);
       }
-      return this.getHost(info).requestPanel(action, args, settings);
-    });
+      return this.getHost(info).requestPanel(action, args, settings, signal);
+    }, signal);
   }
 
   requestSource(pluginId: string, sourceId: string, action: 'discover' | 'probe' | 'parse', args: unknown, signal: AbortSignal): Promise<unknown> {
