@@ -118,7 +118,23 @@ function liveStatus(
 ): string {
   const latestCard = childBlocks?.get(block.subagentId);
   const isLatestRun = latestCard === undefined || latestCard.id === block.id;
-  return isLatestRun ? (forest?.byId[block.subagentId]?.status ?? block.status) : block.status;
+  const node = isLatestRun ? forest?.byId[block.subagentId] : undefined;
+  if (node === undefined) return block.status;
+  if (isLiveSubagentStatus(block.status)) {
+    if (node.status === 'unknown') return block.status;
+    if (
+      node.status === 'idle' &&
+      (node.toolCallCount ?? 0) === 0 &&
+      node.error === undefined &&
+      node.summary === undefined &&
+      node.turnOutcome === undefined &&
+      node.endedAt === undefined &&
+      node.startedAt === undefined
+    ) {
+      return block.status;
+    }
+  }
+  return node.status;
 }
 
 function settled(status: string): boolean {

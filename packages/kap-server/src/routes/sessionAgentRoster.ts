@@ -60,7 +60,7 @@ export function sessionAgentRoster(
     const current = activity?.lifecycle === 'ready';
     const phaseOpen = row?.subagent_phase === 'working' || row?.subagent_phase === 'queued' || row?.subagent_phase === 'suspended';
     const taskOpen = row?.status === 'running';
-    const trackedActive = row?.live === true && row?.refreshing !== true && terminalOutcome === undefined && (phaseOpen || taskOpen);
+    const trackedActive = (row?.live === true || (current && row !== undefined && row.live !== false)) && row?.refreshing !== true && terminalOutcome === undefined && (phaseOpen || taskOpen);
     const loopOpen = activity?.turn !== undefined || (activity?.background.length ?? 0) > 0;
     const status = terminalOutcome ?? row?.status ?? 'running';
     const persistenceFailure = current ? activity.persistenceFailure : undefined;

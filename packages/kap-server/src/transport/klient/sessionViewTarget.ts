@@ -172,13 +172,20 @@ export class SessionViewTarget implements BroadcastTarget {
     if (this.latestSessionCursor === undefined || this.latestSessionCursor.epoch !== cursor.epoch || cursor.seq > this.latestSessionCursor.seq) this.latestSessionCursor = cursor;
     const payload = envelope.payload;
     if (payload !== null && typeof payload === 'object') {
-      const event = payload as { type?: unknown; agentId?: unknown; subagentId?: unknown; reason?: unknown; target_message_id?: unknown; title?: unknown; patch?: { title?: unknown } };
+      const event = payload as { type?: unknown; agentId?: unknown; subagentId?: unknown; info?: unknown; reason?: unknown; target_message_id?: unknown; title?: unknown; patch?: { title?: unknown } };
       if (event.type === 'session.meta.updated') {
         const title = event.patch?.title ?? event.title;
         if (typeof title === 'string') return { type: 'sessionCursorAdvanced', cursor, title, generation: this.generation };
       }
-      if ((event.type === 'agent.created' || event.type === 'agent.disposed' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed') && typeof event.agentId === 'string' && event.agentId !== '') {
+      if ((event.type === 'agent.created' || event.type === 'agent.disposed' || event.type === 'agent.branch_sealed' || event.type === 'agent.tool_lock_changed' ||
+          ((event.type === 'turn.started' || event.type === 'turn.ended') && event.agentId !== 'main')) && typeof event.agentId === 'string' && event.agentId !== '') {
         return { type: 'sessionCursorAdvanced', cursor, generation: this.generation, rosterAgentId: event.agentId };
+      }
+      if ((event.type === 'task.started' || event.type === 'task.terminated') && event.info !== null && typeof event.info === 'object') {
+        const info = event.info as { kind?: unknown; agentId?: unknown };
+        if (info.kind === 'agent' && typeof info.agentId === 'string' && info.agentId !== '' && info.agentId !== 'main') {
+          return { type: 'sessionCursorAdvanced', cursor, generation: this.generation, rosterAgentId: info.agentId };
+        }
       }
       if ((event.type === 'subagent.spawned' || event.type === 'subagent.started' || event.type === 'subagent.suspended' ||
           event.type === 'subagent.completed' || event.type === 'subagent.failed') && typeof event.subagentId === 'string' && event.subagentId !== '') {

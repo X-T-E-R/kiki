@@ -6,7 +6,10 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
 import {
+  AgentTaskPersistence,
   IAgentActivityView,
+  IAtomicDocumentStore,
+  IFileSystemStorageService,
   isError2,
   ErrorCodes,
   IAgentLifecycleService,
@@ -18,8 +21,13 @@ import {
   ISessionInteractionService,
   ISessionMetadata,
   IWireService,
+  agentScopeOf,
   followSessionLifecycles,
   getLiveSessionById,
+  sessionScopeOf,
+  workspacePersistenceScope,
+  type AgentMeta,
+  type AgentTaskInfo,
   type IAgentScopeHandle,
   type IDisposable,
   type Scope,
@@ -50,7 +58,9 @@ import {
   type TranscriptResidentLimits,
   type TranscriptWireAdapterCheckpoint,
   type TranscriptWireRecordPosition,
+  type ToolCallFrame,
   type ToolCountSetOp,
+  type TranscriptTask,
   type TranscriptTaskRef,
   type TranscriptTodo,
   type TranscriptTurn,
@@ -127,6 +137,10 @@ const UNVERIFIED_RESIDENT_MAX_AGENTS = 16;
 const TURN_START_INDEX_MAX_WIRES = 64;
 const ANCHOR_OPENING_MAX_RECORDS = 8;
 const COLD_TODOS_CACHE_MAX_ENTRIES = 64;
+const VALID_PERSISTED_TASK_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{8}$/;
+const VALID_OUTCOME_REF = /^agent-outcomes\/[a-f0-9-]+\.json$/;
+const PERSISTED_TASK_SUMMARY_MAX_BYTES = 4 << 20;
+const PERSISTED_TASK_OUTPUT_TAIL_BYTES = 4 * 1024;
 const WINDOW_OPAQUE_RECORDS = [
   'llm.request',
   'profile.dynamic_snapshot',
@@ -3199,16 +3213,259 @@ export class TranscriptService {
     return this.detailHistoryLocator ??= this.historyLocatorReader();
   }
 
+  async readColdWindowEntity(sessionId: string, agentId: string, source: ContentSource, signal?: AbortSignal): Promise<object | undefined> {
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    if (source.kind === 'turn' || source.kind === 'frame' || source.kind === 'roster' || source.kind === 'snapshot') return undefined;
+    const location = await this.historyWireLocation(sessionId, agentId);
+    if (location === undefined) return undefined;
+    const window = this.coldWireWindows.get(location.wirePath);
+    const cached = this.coldSnapshotCache.get(location.wirePath);
+    const hasWindow = window !== undefined && window.payloadEvicted !== true;
+    const hasCached = cached !== undefined && cached.expiresAt > Date.now();
+    if (!hasWindow && !hasCached) return undefined;
+    const info = await stat(location.wirePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    signal?.throwIfAborted();
+    if (info === undefined) return undefined;
+    const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
+    const snapshot = hasWindow && window.fingerprint === fingerprint
+      ? window.snapshot
+      : hasCached && cached.fingerprint === fingerprint
+        ? cached.snapshot
+        : undefined;
+    if (snapshot === undefined) return undefined;
+    switch (source.kind) {
+      case 'task': return snapshot.tasks.find((task) => task.taskId === source.id);
+      case 'attachment': return snapshot.attachments.find((attachment) => attachment.attachmentId === source.id);
+      case 'prompt': return snapshot.prompts.find((prompt) => prompt.promptId === source.id);
+      case 'interaction': return this.reconcileQuestionSnapshot(sessionId, snapshot).interactions.find((interaction) => interaction.interactionId === source.id);
+      case 'marker': return snapshot.items.find((item) => item.kind === 'marker' && item.markerId === source.id);
+      case 'todo': return snapshot.todos.find((todo) => todo.todoId === source.id);
+      case 'meta': return snapshot.meta;
+      default: return undefined;
+    }
+  }
+
+  async readPersistedTask(sessionId: string, agentId: string, taskId: string, signal?: AbortSignal): Promise<TranscriptTask | undefined> {
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    if (!isPlainAgentId(agentId) || taskId.length === 0 || taskId === '.' || taskId === '..' || /[/\\\0]/.test(taskId)) return undefined;
+    const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
+    signal?.throwIfAborted();
+    if (summary === undefined) return undefined;
+    const sessionScope = sessionScopeOf(workspacePersistenceScope(SESSIONS_ROOT, summary.workspaceId), sessionId);
+    const ownerScope = agentScopeOf(sessionScope, agentId);
+    const sessionDir = join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId);
+    const agentDir = join(sessionDir, AGENTS_DIR, agentId);
+    const docs = this.optionalCoreService<IAtomicDocumentStore>(IAtomicDocumentStore);
+    const storage = this.optionalCoreService<IFileSystemStorageService>(IFileSystemStorageService);
+    let info: AgentTaskInfo | undefined;
+    let outputText: string | undefined;
+    if (VALID_PERSISTED_TASK_ID.test(taskId)) {
+      if (docs !== undefined && storage !== undefined) {
+        const fallback = agentId === MAIN_AGENT_ID ? { dir: sessionDir, scope: sessionScope } : undefined;
+        const persistence = new AgentTaskPersistence(agentDir, ownerScope, docs, storage, fallback);
+        const raw = await persistence.readTask(taskId).catch(() => undefined);
+        signal?.throwIfAborted();
+        if (raw !== undefined && (raw.ownerAgentId === undefined || raw.ownerAgentId === agentId)) {
+          info = raw;
+          if (info.kind === 'agent' && info.receipt?.contentState !== 'unavailable') {
+            outputText = await persistence.readTaskOutputBytes(taskId, 0, PERSISTED_TASK_SUMMARY_MAX_BYTES).catch(() => undefined);
+          } else if (info.kind === 'process') {
+            const snap = await persistence.readTaskOutputSnapshot(taskId, PERSISTED_TASK_OUTPUT_TAIL_BYTES).catch(() => undefined);
+            outputText = snap?.preview;
+          }
+          signal?.throwIfAborted();
+        }
+      } else {
+        const roots = agentId === MAIN_AGENT_ID ? [agentDir, sessionDir] : [agentDir];
+        for (const rootDir of roots) {
+          const rawText = await readFile(join(rootDir, 'tasks', `${taskId}.json`), 'utf8').catch(() => undefined);
+          signal?.throwIfAborted();
+          if (rawText === undefined) continue;
+          const parsed = parseDirectPersistedTask(rawText, taskId);
+          if (parsed === undefined || (parsed.ownerAgentId !== undefined && parsed.ownerAgentId !== agentId)) continue;
+          info = parsed;
+          const outPath = join(rootDir, 'tasks', taskId, 'output.log');
+          if (info.kind === 'agent' && info.receipt?.contentState !== 'unavailable') {
+            outputText = await readBoundedFileHead(outPath, PERSISTED_TASK_SUMMARY_MAX_BYTES, signal);
+          } else if (info.kind === 'process') {
+            outputText = await readBoundedFileTail(outPath, PERSISTED_TASK_OUTPUT_TAIL_BYTES, signal);
+          }
+          break;
+        }
+      }
+    }
+    const targetSubagentId = info?.kind === 'agent' ? info.agentId : (info === undefined && isPlainAgentId(taskId) ? taskId : undefined);
+    let agentMeta: AgentMeta | undefined;
+    if (targetSubagentId !== undefined && targetSubagentId !== '') {
+      const meta = await this.readSessionMetaDocument(sessionDir, sessionScope, docs, signal);
+      const rawAgent = meta?.agents?.[targetSubagentId];
+      if (rawAgent !== undefined && (rawAgent.taskId === undefined || rawAgent.taskId === taskId)) {
+        agentMeta = await this.hydrateAgentOutcome(sessionDir, sessionScope, docs, rawAgent, signal);
+      }
+    }
+    if (info !== undefined) {
+      return persistedTaskToTranscriptTask(info, outputText, agentMeta);
+    }
+    if (agentMeta === undefined || (agentMeta.resultSummary === undefined && agentMeta.error === undefined && agentMeta.status === undefined)) {
+      return undefined;
+    }
+    const state = agentMeta.status === 'cancelled'
+      ? 'killed'
+      : agentMeta.status === 'failed'
+        ? 'failed'
+        : agentMeta.status === 'completed'
+          ? 'completed'
+          : 'running';
+    return {
+      taskId,
+      kind: 'subagent',
+      state,
+      detached: true,
+      agentId: taskId,
+      name: agentMeta.userLabel,
+      subagentName: agentMeta.displayName,
+      model: agentMeta.model,
+      thinkingEffort: agentMeta.thinkingEffort,
+      executorId: agentMeta.executor,
+      executorProtocol: agentMeta.executorProtocol,
+      outputTail: '',
+      endedAt: agentMeta.completedAt === undefined ? undefined : new Date(agentMeta.completedAt).toISOString(),
+      resultSummary: agentMeta.resultSummary,
+      error: state === 'failed' ? agentMeta.error : undefined,
+      usage: agentMeta.usage,
+    };
+  }
+
+  private optionalCoreService<T>(token: unknown): T | undefined {
+    try {
+      return this.deps.core.accessor.get(token as never) as T | undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async readSessionMetaDocument(
+    sessionDir: string,
+    sessionScope: string,
+    docs: IAtomicDocumentStore | undefined,
+    signal?: AbortSignal,
+  ): Promise<SessionMeta | undefined> {
+    signal?.throwIfAborted();
+    if (docs !== undefined) {
+      const direct = await docs.get<SessionMeta>(sessionScope, STATE_FILE).catch(() => undefined);
+      if (direct !== undefined) return direct;
+      return docs.get<SessionMeta>(`${sessionScope}/session-meta`, STATE_FILE).catch(() => undefined);
+    }
+    for (const candidate of [join(sessionDir, STATE_FILE), join(sessionDir, 'session-meta', STATE_FILE)]) {
+      const raw = await readFile(candidate, 'utf8').catch(() => undefined);
+      signal?.throwIfAborted();
+      if (raw === undefined) continue;
+      try {
+        return JSON.parse(raw) as SessionMeta;
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  }
+
+  private async hydrateAgentOutcome(
+    sessionDir: string,
+    sessionScope: string,
+    docs: IAtomicDocumentStore | undefined,
+    agent: AgentMeta,
+    signal?: AbortSignal,
+  ): Promise<AgentMeta> {
+    const stored = agent as AgentMeta & { readonly outcomeRef?: unknown };
+    if (typeof stored.outcomeRef !== 'string' || !VALID_OUTCOME_REF.test(stored.outcomeRef)) return agent;
+    signal?.throwIfAborted();
+    let outcome: { version?: unknown; resultSummary?: unknown; error?: unknown } | undefined;
+    if (docs !== undefined) {
+      outcome = await docs.get<{ version?: unknown; resultSummary?: unknown; error?: unknown }>(sessionScope, stored.outcomeRef).catch(() => undefined);
+    } else {
+      const raw = await readFile(join(sessionDir, stored.outcomeRef), 'utf8').catch(() => undefined);
+      signal?.throwIfAborted();
+      if (raw !== undefined) {
+        try { outcome = JSON.parse(raw) as { version?: unknown; resultSummary?: unknown; error?: unknown }; }
+        catch { outcome = undefined; }
+      }
+    }
+    if (
+      outcome?.version !== 1 ||
+      (outcome.resultSummary !== undefined && typeof outcome.resultSummary !== 'string') ||
+      (outcome.error !== undefined && typeof outcome.error !== 'string')
+    ) {
+      return agent;
+    }
+    return {
+      ...agent,
+      resultSummary: outcome.resultSummary as string | undefined,
+      error: outcome.error as string | undefined,
+    };
+  }
+
+  private async readWarmColdToolCall(
+    sessionId: string,
+    agentId: string,
+    toolCallId: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly turnId: string; readonly stepId: string; readonly frame: ToolCallFrame } | undefined> {
+    signal?.throwIfAborted();
+    const location = await this.historyWireLocation(sessionId, agentId);
+    if (location === undefined) return undefined;
+    const retained = this.retainedColdTurns.get(location.wirePath);
+    const window = this.coldWireWindows.get(location.wirePath);
+    const cached = this.coldSnapshotCache.get(location.wirePath);
+    const hasRetained = retained !== undefined && retained.turns.size > 0;
+    const hasWindow = window !== undefined && window.payloadEvicted !== true;
+    const hasCached = cached !== undefined && cached.expiresAt > Date.now();
+    if (!hasRetained && !hasWindow && !hasCached) return undefined;
+    const info = await stat(location.wirePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    signal?.throwIfAborted();
+    if (info === undefined) return undefined;
+    const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
+    if (hasRetained && retained.fingerprint === fingerprint) {
+      const hit = findToolCallInTurns(retained.turns.values(), toolCallId);
+      if (hit !== undefined) return hit;
+    }
+    if (hasWindow && window.fingerprint === fingerprint) {
+      const completeTurns = window.snapshot.items.flatMap((item) => {
+        if (item.kind !== 'turn') return [];
+        const complete = completeColdWindowTurn(window, item.turnId);
+        return complete === undefined ? [] : [complete];
+      });
+      const hit = findToolCallInTurns(completeTurns, toolCallId);
+      if (hit !== undefined) return hit;
+    }
+    if (hasCached && cached.fingerprint === fingerprint) {
+      const completeTurns = cached.snapshot.items.filter(
+        (item): item is TranscriptTurn => item.kind === 'turn' && item.stepsPartial !== true,
+      );
+      const hit = findToolCallInTurns(completeTurns, toolCallId);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+
   async lookupToolCall(sessionId: string, agentId: string, toolCallId: string,
     signal?: AbortSignal): Promise<CanonicalToolLookup> {
     signal?.throwIfAborted();
     this.assertReadableAgent(sessionId, agentId);
     const transcript = this.live.get(sessionId)?.store.getAgent(agentId);
-    if (transcript !== undefined && await this.verifyTranscriptLiveCoverage(sessionId, agentId)) {
-      signal?.throwIfAborted();
+    if (transcript !== undefined) {
       const hit = transcript.getToolCall(toolCallId);
       if (hit !== undefined) return { status: 'found', ...hit };
     }
+    const warmCold = await this.readWarmColdToolCall(sessionId, agentId, toolCallId, signal);
+    if (warmCold !== undefined) return { status: 'found', ...warmCold };
     return this.detailLocator().lookupToolCall(sessionId, agentId, toolCallId, signal);
   }
 
@@ -4840,4 +5097,189 @@ function estimateOpsJournalBatchBytes(ops: readonly TranscriptOperation[], cap: 
     if (bytes > cap) return bytes;
   }
   return bytes;
+}
+
+function findToolCallInTurns(
+  turns: Iterable<TranscriptTurn>,
+  toolCallId: string,
+): { readonly turnId: string; readonly stepId: string; readonly frame: ToolCallFrame } | undefined {
+  for (const turn of turns) {
+    for (const step of turn.steps) {
+      for (const frame of step.frames) {
+        if (frame.kind === 'tool' && frame.toolCallId === toolCallId) {
+          return { turnId: turn.turnId, stepId: step.stepId, frame };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function parseDirectPersistedTask(rawText: string, expectedTaskId: string): AgentTaskInfo | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const record = parsed as Record<string, unknown>;
+  if (typeof record['task_id'] === 'string' && record['task_id'] === expectedTaskId) {
+    const statusRaw = record['status'];
+    const status: AgentTaskInfo['status'] =
+      statusRaw === 'awaiting_approval'
+        ? 'running'
+        : statusRaw === 'failed' && record['timed_out'] === true
+          ? 'timed_out'
+          : statusRaw === 'running' || statusRaw === 'completed' || statusRaw === 'failed' || statusRaw === 'killed' || statusRaw === 'lost'
+            ? statusRaw
+            : 'lost';
+    const base = {
+      taskId: expectedTaskId,
+      description: typeof record['description'] === 'string' ? record['description'] : '',
+      status,
+      detached: true,
+      startedAt: typeof record['started_at'] === 'number' ? record['started_at'] : 0,
+      endedAt: typeof record['ended_at'] === 'number' ? record['ended_at'] : null,
+      stopReason: typeof record['stop_reason'] === 'string' ? record['stop_reason'] : undefined,
+    };
+    if (expectedTaskId.startsWith('agent-')) {
+      return {
+        ...base,
+        kind: 'agent',
+        agentId: typeof record['agent_id'] === 'string' ? record['agent_id'] : undefined,
+        profile: typeof record['subagent_type'] === 'string' ? record['subagent_type'] : undefined,
+      };
+    }
+    return {
+      ...base,
+      kind: 'process',
+      command: typeof record['command'] === 'string' ? record['command'] : '',
+      pid: typeof record['pid'] === 'number' ? record['pid'] : 0,
+      exitCode: typeof record['exit_code'] === 'number' ? record['exit_code'] : null,
+    };
+  }
+  if (record['taskId'] !== expectedTaskId || typeof record['kind'] !== 'string') return undefined;
+  return {
+    ...(record as unknown as AgentTaskInfo),
+    detached: typeof record['detached'] === 'boolean' ? record['detached'] : true,
+  };
+}
+
+async function readBoundedFileHead(filePath: string, maxBytes: number, signal?: AbortSignal): Promise<string | undefined> {
+  signal?.throwIfAborted();
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(filePath, 'r');
+    const fileStat = await handle.stat();
+    signal?.throwIfAborted();
+    const length = Math.min(fileStat.size, maxBytes);
+    if (length === 0) return '';
+    const buffer = Buffer.allocUnsafe(length);
+    let offset = 0;
+    while (offset < length) {
+      const { bytesRead } = await handle.read(buffer, offset, length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return buffer.subarray(0, offset).toString('utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return undefined;
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function readBoundedFileTail(filePath: string, maxBytes: number, signal?: AbortSignal): Promise<string | undefined> {
+  signal?.throwIfAborted();
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(filePath, 'r');
+    const fileStat = await handle.stat();
+    signal?.throwIfAborted();
+    const length = Math.min(fileStat.size, maxBytes);
+    if (length === 0) return '';
+    const startPos = fileStat.size - length;
+    const buffer = Buffer.allocUnsafe(length);
+    let offset = 0;
+    while (offset < length) {
+      const { bytesRead } = await handle.read(buffer, offset, length - offset, startPos + offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    let trim = 0;
+    if (startPos > 0) {
+      while (trim < offset && (buffer[trim]! & 0xc0) === 0x80) trim += 1;
+    }
+    return buffer.subarray(trim, offset).toString('utf8');
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function persistedTaskToTranscriptTask(
+  info: AgentTaskInfo,
+  outputText: string | undefined,
+  agentMeta: AgentMeta | undefined,
+): TranscriptTask {
+  const kind: TranscriptTask['kind'] =
+    info.kind === 'process'
+      ? 'shell'
+      : info.kind === 'agent'
+        ? 'subagent'
+        : info.kind === 'question' || info.kind === 'media'
+          ? 'tool'
+          : 'other';
+  const state = info.status;
+  const subagentInfo = info.kind === 'agent' ? info : undefined;
+  const processInfo = info.kind === 'process' ? info : undefined;
+  const questionInfo = info.kind === 'question' ? info : undefined;
+  const resultSummary =
+    info.kind === 'agent'
+      ? (outputText !== undefined && outputText.length > 0 ? outputText : agentMeta?.resultSummary)
+      : undefined;
+  const outputTail =
+    info.kind === 'process'
+      ? (outputText ?? '')
+      : info.kind === 'agent' && outputText !== undefined && outputText.length > 0
+        ? Buffer.from(outputText, 'utf8').subarray(-PERSISTED_TASK_OUTPUT_TAIL_BYTES).toString('utf8')
+        : '';
+  return {
+    taskId: info.taskId,
+    kind,
+    state,
+    detached: info.detached ?? true,
+    lifetime: info.lifetime,
+    ownerAgentId: info.ownerAgentId,
+    ownerTurnId: info.ownerTurnId,
+    goalId: info.goalId,
+    receipt: info.receiptVerification === 'invalid' ? undefined : info.receipt,
+    receiptVerification: info.receiptVerification,
+    name: subagentInfo?.collaborationTaskName ?? agentMeta?.userLabel,
+    subagentName: subagentInfo?.profile ?? agentMeta?.displayName,
+    model: subagentInfo?.model ?? agentMeta?.model,
+    thinkingEffort: subagentInfo?.thinkingEffort ?? agentMeta?.thinkingEffort,
+    thinkingEffortExplicit: subagentInfo?.thinkingEffortExplicit,
+    executorId: subagentInfo?.executorId ?? agentMeta?.executor,
+    executorProtocol: subagentInfo?.executorProtocol ?? agentMeta?.executorProtocol,
+    sourceRef: subagentInfo?.sourceRef,
+    parentToolCallId: subagentInfo?.parentToolCallId,
+    toolCallId: questionInfo?.toolCallId,
+    questionCount: questionInfo?.questionCount,
+    exitCode: processInfo?.exitCode,
+    taskKind: info.kind,
+    description: info.description,
+    command: processInfo?.command,
+    agentId: subagentInfo?.agentId,
+    outputTail,
+    startedAt: Number.isFinite(info.startedAt) ? new Date(info.startedAt).toISOString() : undefined,
+    endedAt: info.endedAt !== null && Number.isFinite(info.endedAt) ? new Date(info.endedAt).toISOString() : undefined,
+    resultSummary,
+    usage: agentMeta?.usage,
+    error: state === 'failed' || state === 'timed_out' || state === 'lost' ? (info.stopReason ?? agentMeta?.error) : undefined,
+    stateReason: info.stopReason,
+  };
 }

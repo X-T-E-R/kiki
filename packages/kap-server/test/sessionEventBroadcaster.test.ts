@@ -4638,6 +4638,56 @@ describe('SessionEventBroadcaster', () => {
       expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toHaveLength(2);
     });
 
+    it('emits child roster hints for suppressed child turn and agent task transitions', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      const child = lc.addAgent('child');
+      sessions.set('s1', lc);
+      bc = makeBroadcasterWithTranscript();
+      const signals: SessionViewSignal[] = [];
+      const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+      target.begin(1);
+      await bc.subscribe('s1', target, undefined, { main: 'delta', child: 'turn', '*': 'off' });
+      target.finish(await bc.getCursor('s1'), false);
+      signals.length = 0;
+
+      child.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'system' } }));
+      await bc.getCursor('s1');
+      expect(signals.some((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toBe(true);
+
+      signals.length = 0;
+      child.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
+      await bc.getCursor('s1');
+      expect(signals.some((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toBe(true);
+
+      signals.length = 0;
+      main.bus.emit(agentEvent('task.started', {
+        taskId: 'task-child-1',
+        info: { id: 'task-child-1', kind: 'agent', agentId: 'child', status: 'running', description: 'audit' },
+      }));
+      await bc.getCursor('s1');
+      expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toHaveLength(1);
+
+      signals.length = 0;
+      main.bus.emit(agentEvent('task.terminated', {
+        taskId: 'task-child-1',
+        info: { id: 'task-child-1', kind: 'agent', agentId: 'child', status: 'completed', description: 'audit' },
+      }));
+      await bc.getCursor('s1');
+      expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toHaveLength(1);
+
+      signals.length = 0;
+      main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      main.bus.emit(agentEvent('task.started', {
+        taskId: 'task-proc-1',
+        info: { id: 'task-proc-1', kind: 'process', status: 'running', description: 'build' },
+      }));
+      await bc.getCursor('s1');
+      expect(
+        signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId !== undefined),
+      ).toHaveLength(0);
+    });
+
     it('suppresses transcript-projected session_events on graded connections only', async () => {
       const lc = new FakeLifecycle();
       const main = lc.addAgent('main');

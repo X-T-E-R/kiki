@@ -1,6 +1,9 @@
 import type { Event } from '../src/transport/ws/v1/events';
+import type { AgentActivityState, SessionMeta } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
+import { sessionAgentCounts } from '../src/routes/sessionAgentCounts';
+import { sessionAgentRoster } from '../src/routes/sessionAgentRoster';
 import { SubagentRosterTracker } from '../src/transport/ws/v1/subagentRosterTracker';
 
 const SID = 'sess_1';
@@ -545,7 +548,7 @@ describe('SubagentRosterTracker', () => {
         started_at: new Date(300).toISOString(),
         tool_call_count: type === 'tool.call.started' ? 1 : 0,
       });
-      expect(t.get(SID)[0]?.live).toBeUndefined();
+      expect(t.get(SID)[0]?.live).toBe(true);
       expect(t.get(SID)[0]?.completed_at).toBeUndefined();
     },
   );
@@ -1298,6 +1301,91 @@ describe('SubagentRosterTracker', () => {
     t.apply(SID, ev({ type: 'subagent.started', subagentId: 'ghost' }));
     t.apply(SID, ev({ type: 'subagent.completed', subagentId: 'ghost', resultSummary: 'x' }));
     expect(t.get(SID)).toEqual([]);
+  });
+
+  it('keeps 7 concurrent governance-queued subagents running with started_at across spawned -> scope ready -> turn started -> turn ended -> task completed without flashing idle', () => {
+    const tracker = new SubagentRosterTracker();
+    const agentIds = Array.from({ length: 7 }, (_, index) => `rev_sub_${index + 1}`);
+    const metaAgents: Record<string, NonNullable<SessionMeta['agents']>[string]> = { main: {} };
+    for (const [index, id] of agentIds.entries()) {
+      metaAgents[id] = { type: 'sub', parentAgentId: 'main', displayName: 'reviewer', userLabel: id, createdAt: 1000 + index };
+      tracker.apply(SID, spawn(id, { time: 2000 + index, taskId: `agent-0000000${index}`, runInBackground: true, userLabel: id }));
+    }
+    const meta: SessionMeta = { id: SID, createdAt: 1, updatedAt: 2010, archived: false, agents: metaAgents };
+
+    const stage1 = sessionAgentRoster(SID, meta, tracker.get(SID), new Map());
+    expect(stage1).toHaveLength(7);
+    for (const [index, id] of agentIds.entries()) {
+      expect(stage1.find((entry) => entry.id === id)).toMatchObject({
+        status: 'running',
+        activity_status: 'running',
+        live: true,
+        started_at: new Date(2000 + index).toISOString(),
+      });
+    }
+    expect(sessionAgentCounts(meta.agents, stage1)).toMatchObject({ active: 7, idle: 0, completed: 0, unknown: 0 });
+
+    const runtime = new Map<string, AgentActivityState & { readonly model?: string }>(
+      agentIds.map((id) => [id, { lifecycle: 'ready', background: [] }]),
+    );
+    const stage2 = sessionAgentRoster(SID, meta, tracker.get(SID), runtime);
+    for (const [index, id] of agentIds.entries()) {
+      expect(stage2.find((entry) => entry.id === id)).toMatchObject({
+        status: 'running',
+        activity_status: 'running',
+        live: true,
+        started_at: new Date(2000 + index).toISOString(),
+      });
+    }
+    expect(sessionAgentCounts(meta.agents, stage2)).toMatchObject({ active: 7, idle: 0, completed: 0, unknown: 0 });
+
+    const seventh = agentIds[6]!;
+    runtime.set(seventh, {
+      lifecycle: 'ready',
+      background: [],
+      turn: { turnId: 1, origin: { kind: 'user' }, phase: 'running', step: 1, ending: false, pendingApprovals: [], activeToolCalls: [], since: 2500 },
+    });
+    const stage3 = sessionAgentRoster(SID, meta, tracker.get(SID), runtime);
+    expect(stage3.find((entry) => entry.id === seventh)).toMatchObject({
+      status: 'running',
+      activity_status: 'running',
+      live: true,
+    });
+    expect(sessionAgentCounts(meta.agents, stage3)).toMatchObject({ active: 7, idle: 0, completed: 0 });
+
+    runtime.set(seventh, {
+      lifecycle: 'ready',
+      background: [],
+      lastTurn: { turnId: 1, reason: 'completed', at: 3000 },
+    });
+    const stage4 = sessionAgentRoster(SID, meta, tracker.get(SID), runtime);
+    expect(stage4.find((entry) => entry.id === seventh)).toMatchObject({
+      status: 'completed',
+      activity_status: 'completed',
+      completed_at: new Date(3000).toISOString(),
+    });
+    expect(sessionAgentCounts(meta.agents, stage4)).toMatchObject({ active: 6, idle: 0, completed: 1 });
+
+    tracker.apply(SID, ev({
+      type: 'task.terminated',
+      time: 3010,
+      info: {
+        taskId: 'agent-00000006',
+        kind: 'agent',
+        agentId: seventh,
+        detached: true,
+        description: seventh,
+        status: 'completed',
+        startedAt: 2006,
+        endedAt: 3010,
+      },
+    }));
+    const stage5 = sessionAgentRoster(SID, meta, tracker.get(SID), runtime);
+    expect(stage5.find((entry) => entry.id === seventh)).toMatchObject({
+      status: 'completed',
+      activity_status: 'completed',
+    });
+    expect(sessionAgentCounts(meta.agents, stage5)).toMatchObject({ active: 6, idle: 0, completed: 1 });
   });
 
   it('clears disposal boundaries with the session state', () => {

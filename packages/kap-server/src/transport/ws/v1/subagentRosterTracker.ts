@@ -110,10 +110,12 @@ export class SubagentRosterTracker {
           existing !== undefined &&
           !isTerminalStatus(existing.status) &&
           existing.status !== 'unknown' &&
+          existing.live !== false &&
           distinctTaskId &&
           eventAt !== undefined &&
           existingStartedAt !== undefined &&
-          eventAt > existingStartedAt;
+          eventAt > existingStartedAt &&
+          afterDisposal;
         const restartsUnknown =
           existing?.status === 'unknown' &&
           mayStartGeneration &&
@@ -147,7 +149,7 @@ export class SubagentRosterTracker {
             event.subagentName,
             event.subagentId,
           ),
-          live: acceptedRun ? undefined : existing?.live,
+          live: acceptedRun ? true : existing?.live,
           status: acceptedRun
             ? restarted
               ? 'running'
@@ -199,7 +201,7 @@ export class SubagentRosterTracker {
           started_at: acceptedRun
             ? restarted
               ? isoTime(eventAt)
-              : existing?.started_at
+              : (existing?.started_at ?? isoTime(eventAt))
             : existing!.started_at,
           completed_at: acceptedRun
             ? restarted
@@ -239,7 +241,7 @@ export class SubagentRosterTracker {
             entry,
             this.resetGeneration(sessionId, event.subagentId, eventAt),
             {
-              live: undefined,
+              live: true,
               refreshing: undefined,
               refreshing_until: undefined,
               status: 'running',
@@ -255,7 +257,7 @@ export class SubagentRosterTracker {
             entry,
             this.resetGeneration(sessionId, event.subagentId, eventAt),
             {
-              live: undefined,
+              live: true,
               refreshing: undefined,
               refreshing_until: undefined,
               status: 'running',
@@ -271,7 +273,7 @@ export class SubagentRosterTracker {
         ) {
           return;
         }
-        entry.live = undefined;
+        entry.live = true;
         clearRefreshing(entry);
         entry.status = 'running';
         entry.subagent_phase = 'working';
@@ -292,7 +294,7 @@ export class SubagentRosterTracker {
             entry,
             this.resetGeneration(sessionId, event.subagentId, eventAt),
             {
-              live: undefined,
+              live: true,
               refreshing: undefined,
               refreshing_until: undefined,
               status: 'running',
@@ -309,7 +311,7 @@ export class SubagentRosterTracker {
         ) {
           return;
         }
-        entry.live = undefined;
+        entry.live = true;
         clearRefreshing(entry);
         entry.status = 'running';
         entry.subagent_phase = 'suspended';
@@ -369,7 +371,7 @@ export class SubagentRosterTracker {
             entry,
             this.resetGeneration(sessionId, event.agentId, eventAt),
             {
-              live: undefined,
+              live: true,
               refreshing: undefined,
               refreshing_until: undefined,
               status: 'running',
@@ -560,7 +562,7 @@ export class SubagentRosterTracker {
       session_id: sessionId,
       kind: 'subagent',
       description: existing?.description ?? info.description,
-      live: undefined,
+      live: true,
       status: 'running',
       subagent_phase: keepsSuspended ? 'suspended' : 'working',
       profile: info.profile ?? existing?.profile,

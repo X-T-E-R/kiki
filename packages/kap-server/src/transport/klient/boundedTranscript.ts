@@ -20,7 +20,9 @@ export function boundedAttachment(attachment: TranscriptAttachment, agentId: str
 
 export const TRANSCRIPT_WINDOW_BYTES = 1024 * 1024;
 const GLOBAL_COLLECTION_BYTES = 4 * 1024;
-const TASK_COLLECTION_BYTES = 16 * 1024;
+const TASK_COLLECTION_BYTES = 96 * 1024;
+const TASK_ENTITY_MAX_BYTES = 6 * 1024;
+const TASK_PAGE_SOURCE_BYTES = 4 * 1024;
 
 export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail', windowBytes = TRANSCRIPT_WINDOW_BYTES): AgentTranscriptSnapshot {
   const interactions = boundedCollection(snapshot.interactions, 'interaction', (interaction) => interaction.interactionId);
@@ -58,8 +60,17 @@ export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, age
     }
   }
   const referencedTaskIds = new Set(referencedTaskOrder.keys());
+  const priorityTaskCount = Math.max(
+    1,
+    Math.min(
+      32,
+      referencedTaskIds.size + snapshot.tasks.filter((task) => task.state === 'running' && !referencedTaskIds.has(task.taskId)).length,
+    ),
+  );
+  const referencedTaskBytes = Math.max(1024, Math.min(TASK_ENTITY_MAX_BYTES, Math.floor((taskBudget - 2) / priorityTaskCount)));
+  const unreferencedTaskBytes = Math.min(2048, referencedTaskBytes);
   const tasks = boundedCollection(snapshot.tasks, 'task', (task) => task.taskId,
-    (task) => boundedEntity(task, { kind: 'task', id: task.taskId }, 1024),
+    (task) => boundedEntity(task, { kind: 'task', id: task.taskId }, referencedTaskIds.has(task.taskId) || task.state === 'running' ? referencedTaskBytes : unreferencedTaskBytes),
     referencedTaskIds,
     (task) => task.state === 'running',
     32,
@@ -196,7 +207,7 @@ export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, a
   return {
     ...snapshot,
     items: snapshot.items.map((item) => boundedItem(item, agentId, direction)),
-    tasks: snapshot.tasks.map((value) => boundedEntity(value, { kind: 'task', id: value.taskId })),
+    tasks: snapshot.tasks.map((value) => boundedEntity(value, { kind: 'task', id: value.taskId }, TASK_PAGE_SOURCE_BYTES)),
     attachments: snapshot.attachments.map((value) => boundedAttachment(value, agentId)),
     prompts: snapshot.prompts.map((value) => boundedEntity(value, { kind: 'prompt', id: value.promptId }, undefined, agentId)),
     interactions: snapshot.interactions.map((value) => boundedEntity(value, { kind: 'interaction', id: value.interactionId })),
