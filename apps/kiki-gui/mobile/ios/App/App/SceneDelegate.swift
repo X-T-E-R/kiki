@@ -45,6 +45,14 @@ class KikiBridgeViewController: CAPBridgeViewController {
         shellPlugin = plugin
         bridge?.registerPluginInstance(plugin)
         webView?.allowsBackForwardNavigationGestures = true
+        let paper = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.106, green: 0.133, blue: 0.149, alpha: 1)
+                : UIColor(red: 0.984, green: 0.980, blue: 0.965, alpha: 1)
+        }
+        view.backgroundColor = paper
+        webView?.backgroundColor = paper
+        webView?.scrollView.backgroundColor = paper
     }
 
     func navigateToPendingPair() {
@@ -65,29 +73,20 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancelOpen", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "scanQr", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "readClipboard", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "consumePendingPair", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "probe", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "claimPair", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "forgetServer", returnType: CAPPluginReturnPromise)
     ]
 
-    private final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
-        func urlSession(
-            _ session: URLSession,
-            task: URLSessionTask,
-            willPerformHTTPRedirection response: HTTPURLResponse,
-            newRequest request: URLRequest,
-            completionHandler: @escaping (URLRequest?) -> Void
-        ) {
-            completionHandler(nil)
-        }
-    }
+    private static let pinnedSessionDelegate = KikiPinnedSessionDelegate()
 
     private static let noRedirectSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 5.0
         config.timeoutIntervalForResource = 6.0
-        return URLSession(configuration: config, delegate: NoRedirectSessionDelegate(), delegateQueue: nil)
+        return URLSession(configuration: config, delegate: pinnedSessionDelegate, delegateQueue: nil)
     }()
 
     private static let trustedOriginKey = "kiki.shell.trustedOrigin"
@@ -155,16 +154,28 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func scanQr(_ call: CAPPluginCall) {
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        switch status {
-        case .authorized:
-            call.resolve(["status": "granted"])
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                call.resolve(["status": granted ? "granted" : "denied"])
+        DispatchQueue.main.async { [weak self] in
+            guard let presenter = self?.bridge?.viewController else {
+                call.resolve(["status": "cancelled"])
+                return
             }
-        default:
-            call.resolve(["status": "denied"])
+            let scanner = KikiQrScannerViewController { result in
+                switch result {
+                case .scanned(let payload):
+                    call.resolve(["status": "scanned", "value": payload])
+                case .cancelled:
+                    call.resolve(["status": "cancelled"])
+                case .denied:
+                    call.resolve(["status": "denied"])
+                }
+            }
+            presenter.present(scanner, animated: true)
+        }
+    }
+
+    @objc func readClipboard(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            call.resolve(["text": UIPasteboard.general.string ?? ""])
         }
     }
 
@@ -181,6 +192,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func probe(_ call: CAPPluginCall) {
         let serverId = call.getString("serverId")
         let grantId = call.getString("grantId")
+        let fingerprint = KikiTlsPinning.normalizeFingerprint(call.getString("fingerprint"))
         guard let origin = call.getString("origin"),
               let originURL = URL(string: origin),
               let normalized = Self.origin(of: originURL) else {
@@ -193,7 +205,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         } else {
             pairedProbe = false
         }
-        Self.fetchHandshake(origin: normalized, serverId: serverId, explicitGrantId: grantId) { ok, redirected, statusCode, homeId, hostId, label, mutualVerified, mutualRevoked, mutualDisabled, inboundEnabled in
+        let handleResult: (_ ok: Bool, _ redirected: Bool, _ statusCode: Int, _ homeId: String?, _ hostId: String?, _ label: String?, _ mutualVerified: Bool, _ mutualRevoked: Bool, _ mutualDisabled: Bool, _ inboundEnabled: Bool) -> Void = { ok, redirected, statusCode, homeId, hostId, label, mutualVerified, mutualRevoked, mutualDisabled, inboundEnabled in
             if redirected {
                 call.resolve(["ok": false])
                 return
@@ -271,11 +283,22 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             var metaReq = URLRequest(url: metaURL)
             metaReq.timeoutInterval = 3.5
-            Self.noRedirectSession.dataTask(with: metaReq) { _, metaRes, _ in
+            let metaTask = Self.noRedirectSession.dataTask(with: metaReq) { _, metaRes, _ in
                 let status = (metaRes as? HTTPURLResponse)?.statusCode ?? 0
                 let metaOk = (200..<300).contains(status) || status == 401 || status == 403
                 call.resolve(["ok": metaOk])
-            }.resume()
+            }
+            Self.pinnedSessionDelegate.register(taskId: metaTask.taskIdentifier, fingerprint: fingerprint, serverId: serverId)
+            metaTask.resume()
+        }
+        if let fingerprint {
+            Self.fetchHandshake(origin: normalized, serverId: serverId, explicitGrantId: grantId, explicitFingerprint: fingerprint) {
+                handleResult($0, $1, $2, $3, $4, $5, $6, $7, $8, $9)
+            }
+        } else {
+            Self.fetchHandshake(origin: normalized, serverId: serverId, explicitGrantId: grantId) {
+                handleResult($0, $1, $2, $3, $4, $5, $6, $7, $8, $9)
+            }
         }
     }
 
@@ -291,6 +314,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let sourceLabel = call.getString("sourceLabel") ?? "Kiki iOS"
+        let fingerprint = KikiTlsPinning.normalizeFingerprint(call.getString("fingerprint"))
         let body: [String: Any] = [
             "code": code,
             "source": [
@@ -311,7 +335,8 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         req.httpBody = payload
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        Self.noRedirectSession.dataTask(with: req) { data, response, _ in
+        req.setValue("1", forHTTPHeaderField: "x-kiki-pairing-rotation")
+        let task = Self.noRedirectSession.dataTask(with: req) { data, response, _ in
             guard let http = response as? HTTPURLResponse else {
                 call.resolve(["ok": false, "reason": "unreachable"])
                 return
@@ -341,7 +366,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.resolve(["ok": false, "reason": "unreachable"])
                 return
             }
-            Self.recordVerifiedOrigin(origin: base, for: targetHomeId, hostId: targetHostId, grantId: grantId)
+            Self.recordVerifiedOrigin(origin: base, for: targetHomeId, hostId: targetHostId, grantId: grantId, fingerprint: fingerprint)
             call.resolve([
                 "ok": true,
                 "serverId": targetHomeId,
@@ -351,7 +376,9 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 "grantId": grantId,
                 "revision": (inner["revision"] as? Int) ?? 0
             ])
-        }.resume()
+        }
+        Self.pinnedSessionDelegate.register(taskId: task.taskIdentifier, fingerprint: fingerprint, serverId: nil)
+        task.resume()
     }
 
     @objc func open(_ call: CAPPluginCall) {
@@ -386,7 +413,11 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let grantId = call.getString("grantId")
+        let fingerprint = KikiTlsPinning.normalizeFingerprint(call.getString("fingerprint"))
         let opId = call.getString("opId")
+        if let fingerprint {
+            KikiTlsPinning.saveFingerprint(fingerprint, for: serverId, origin: origin)
+        }
         let cleanString = Self.stripTokenFromEntry(origin: origin, entry: entry)
         guard let cleanURL = URL(string: cleanString) else {
             call.reject("invalid_origin")
@@ -431,7 +462,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                         return
                     }
                     self.pendingOpenCommitted = true
-                    Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId, grantId: grantId)
+                    Self.recordVerifiedOrigin(origin: origin, for: serverId, hostId: hostId, grantId: grantId, fingerprint: fingerprint)
                     UserDefaults.standard.set(origin, forKey: Self.trustedOriginKey)
                     self.pendingAuthOrigin = origin
                     self.pendingAuthServerId = serverId
@@ -758,6 +789,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         origin: String,
         serverId: String? = nil,
         explicitGrantId: String? = nil,
+        explicitFingerprint: String? = nil,
         completion: @escaping (_ ok: Bool, _ redirected: Bool, _ statusCode: Int, _ targetHomeId: String?, _ targetHostId: String?, _ targetLabel: String?, _ mutualProofVerified: Bool, _ mutualRevokedVerified: Bool, _ mutualDisabledVerified: Bool, _ inboundEnabled: Bool) -> Void
     ) {
         guard let handshakeURL = URL(string: "\(origin)/api/remote-connections/handshake") else {
@@ -781,7 +813,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 }
             }
         }
-        noRedirectSession.dataTask(with: req) { data, response, _ in
+        let task = noRedirectSession.dataTask(with: req) { data, response, _ in
             guard let http = response as? HTTPURLResponse else {
                 completion(false, false, 0, nil, nil, nil, false, false, false, true)
                 return
@@ -857,7 +889,9 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 }
             }
             completion(true, false, http.statusCode, homeId, hostId, label, mutualVerified, mutualRevoked, mutualDisabled, inboundEnabled)
-        }.resume()
+        }
+        pinnedSessionDelegate.register(taskId: task.taskIdentifier, fingerprint: explicitFingerprint, serverId: serverId)
+        task.resume()
     }
 
     private static func scopedTokenAccount(serverId: String, origin: String?) -> String {
@@ -971,7 +1005,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         return list.contains(origin)
     }
 
-    private static func recordVerifiedOrigin(origin: String, for serverId: String, hostId: String?, grantId: String? = nil) {
+    private static func recordVerifiedOrigin(origin: String, for serverId: String, hostId: String?, grantId: String? = nil, fingerprint: String? = nil) {
         guard !serverId.isEmpty, !origin.isEmpty else { return }
         var list = UserDefaults.standard.stringArray(forKey: verifiedOriginsPrefix + serverId) ?? []
         if !list.contains(origin) {
@@ -984,6 +1018,9 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         if let grantId, !grantId.isEmpty {
             UserDefaults.standard.set(grantId, forKey: grantIdPrefix + serverId)
             UserDefaults.standard.set(grantId, forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: origin))
+        }
+        if let fingerprint, !fingerprint.isEmpty {
+            KikiTlsPinning.saveFingerprint(fingerprint, for: serverId, origin: origin)
         }
     }
 
@@ -1001,6 +1038,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         let trusted = defaults.string(forKey: trustedOriginKey)
         if let serverId, !serverId.isEmpty {
             let verified = defaults.stringArray(forKey: verifiedOriginsPrefix + serverId) ?? []
+            KikiTlsPinning.removeFingerprints(serverId: serverId, origin: origin, verifiedOrigins: verified)
             for vOrigin in verified {
                 deleteKeychainToken(account: scopedTokenAccount(serverId: serverId, origin: vOrigin))
                 defaults.removeObject(forKey: grantIdPrefix + scopedTokenAccount(serverId: serverId, origin: vOrigin))
@@ -1021,6 +1059,41 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         if let origin, !origin.isEmpty, origin == trusted {
             defaults.removeObject(forKey: trustedOriginKey)
         }
+        if serverId == nil || serverId?.isEmpty == true {
+            KikiTlsPinning.removeFingerprints(serverId: nil, origin: origin, verifiedOrigins: [])
+        }
+    }
+
+    public override func handleWKWebViewURLAuthenticationChallenge(
+        _ challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) -> Bool {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            return false
+        }
+        let origin = KikiTlsPinning.origin(from: challenge.protectionSpace)
+        let trusted = UserDefaults.standard.string(forKey: Self.trustedOriginKey)
+        let isAuthorizedOrigin = (origin == pendingAuthOrigin) || (origin == activeAuthOrigin) || (origin == trusted)
+        let boundServerId: String?
+        if origin == pendingAuthOrigin {
+            boundServerId = pendingAuthServerId
+        } else if origin == activeAuthOrigin {
+            boundServerId = activeAuthServerId
+        } else {
+            boundServerId = nil
+        }
+        if isAuthorizedOrigin,
+           let expected = KikiTlsPinning.storedFingerprint(forOrigin: origin, serverId: boundServerId) {
+            if KikiTlsPinning.serverTrustMatchesFingerprint(trust, expectedFingerprint: expected) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+            }
+            return true
+        }
+        completionHandler(.performDefaultHandling, nil)
+        return true
     }
 
     public override func shouldOverrideLoad(_ navigationAction: WKNavigationAction) -> NSNumber? {

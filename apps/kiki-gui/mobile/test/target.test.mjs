@@ -20,8 +20,10 @@ import {
   createMutualHandshakeChallenge,
   deliverCommittedServerCredential,
   displayOrigin,
+  editableOrigin,
   formatPairingCodeInput,
   formatPairingUri,
+  getServerFingerprint,
   isServerOriginVerified,
   isValidTargetHostname,
   normalizePairingCode,
@@ -30,6 +32,7 @@ import {
   probeOriginHandshake,
   readConnectInput,
   readDeviceIdentity,
+  readPastePayload,
   readSavedServers,
   readScanPayload,
   readTarget,
@@ -163,25 +166,133 @@ await test('kiki://pair URI round-trips endpoint and short code', () => {
 
   const fingerprint = '0123456789abcdef'.repeat(4);
   const fingerprintUri = formatPairingUri({
-    endpoint: 'http://192.168.1.5:5494',
+    endpoint: 'https://192.168.1.5:5494',
     code: '2345-6789',
     fingerprint,
   });
   assert.equal(new URL(fingerprintUri).searchParams.get('fp'), fingerprint);
   assert.deepEqual(parsePairingUri(fingerprintUri), {
-    endpoint: 'http://192.168.1.5:5494',
+    endpoint: 'https://192.168.1.5:5494',
     code: '2345-6789',
+    fingerprint,
   });
   assert.deepEqual(readScanPayload(fingerprintUri), {
     ok: true,
     kind: 'pair',
-    origin: 'http://192.168.1.5:5494',
-    endpoint: 'http://192.168.1.5:5494',
+    origin: 'https://192.168.1.5:5494',
+    endpoint: 'https://192.168.1.5:5494',
     code: '2345-6789',
-    entry: 'http://192.168.1.5:5494/',
+    entry: 'https://192.168.1.5:5494/',
+    fingerprint,
+  });
+  assert.deepEqual(readConnectInput(fingerprintUri, '9876-5432'), {
+    ok: true,
+    kind: 'pair',
+    origin: 'https://192.168.1.5:5494',
+    endpoint: 'https://192.168.1.5:5494',
+    code: '9876-5432',
+    entry: 'https://192.168.1.5:5494/',
+    fingerprint,
   });
   assert.equal(parsePairingUri(`${uri}&fp=${'A'.repeat(64)}`), null);
   assert.throws(() => formatPairingUri({ endpoint: 'http://192.168.1.5:5494', code: '2345-6789', fingerprint: 'A'.repeat(64) }));
+});
+
+await test('readPastePayload, editableOrigin, and pinnedFingerprints round-trip self-signed HTTPS pairing cleanly', async () => {
+  const fp = 'fedcba9876543210'.repeat(4);
+  const httpsPairUri = formatPairingUri({
+    endpoint: 'https://100.90.1.8:5494',
+    code: 'ABCD-2345',
+    fingerprint: fp,
+  });
+
+  // Direct URI, embedded inside IM message, address+code, and bare address
+  assert.deepEqual(readPastePayload(httpsPairUri), {
+    ok: true,
+    kind: 'pair',
+    origin: 'https://100.90.1.8:5494',
+    endpoint: 'https://100.90.1.8:5494',
+    code: 'ABCD-2345',
+    entry: 'https://100.90.1.8:5494/',
+    fingerprint: fp,
+  });
+  assert.deepEqual(readPastePayload(`Connect to my computer: ${httpsPairUri}.`), {
+    ok: true,
+    kind: 'pair',
+    origin: 'https://100.90.1.8:5494',
+    endpoint: 'https://100.90.1.8:5494',
+    code: 'ABCD-2345',
+    entry: 'https://100.90.1.8:5494/',
+    fingerprint: fp,
+  });
+  assert.deepEqual(readPastePayload('192.168.1.9:5494 ABCD-2345'), {
+    ok: true,
+    kind: 'pair',
+    origin: 'http://192.168.1.9:5494',
+    endpoint: 'http://192.168.1.9:5494',
+    code: 'ABCD-2345',
+    entry: 'http://192.168.1.9:5494/',
+  });
+  assert.deepEqual(readPastePayload('   '), { ok: false, reason: 'empty' });
+  assert.deepEqual(readPastePayload('hello world not a link'), { ok: false, reason: 'invalid' });
+
+  // editableOrigin keeps https:// for LAN/VPN hosts so they do not downgrade to http://
+  assert.equal(editableOrigin('https://192.168.1.5:5494'), 'https://192.168.1.5:5494');
+  assert.equal(editableOrigin('http://192.168.1.5:5494'), '192.168.1.5:5494');
+  assert.equal(editableOrigin('https://kiki.example.test'), 'kiki.example.test');
+
+  // claimPairingOrigin forwards fingerprint to nativeClaim and persists pinnedFingerprints
+  const storage = createMemoryStorage();
+  let capturedNativeParams = null;
+  const claim = await claimPairingOrigin(storage, {
+    endpoint: httpsPairUri,
+    platform: 'ios',
+    nativeClaim: async (params) => {
+      capturedNativeParams = params;
+      return {
+        ok: true,
+        serverId: '33333333-3333-4333-8333-333333333333',
+        targetHomeId: '33333333-3333-4333-8333-333333333333',
+        targetHostId: 'studio-mac',
+        targetLabel: 'Studio Mac',
+        grantId: 'grant-tls-1',
+      };
+    },
+  });
+  assert.equal(claim.ok, true);
+  assert.equal(claim.fingerprint, fp);
+  assert.equal(capturedNativeParams.fingerprint, fp);
+  assert.equal(capturedNativeParams.endpoint, 'https://100.90.1.8:5494');
+  assert.equal(getServerFingerprint(claim.server, 'https://100.90.1.8:5494'), fp);
+  const reloaded = readSavedServers(storage);
+  assert.equal(getServerFingerprint(reloaded[0], 'https://100.90.1.8:5494'), fp);
+
+  // Web fetch path sends x-kiki-pairing-rotation: 1
+  let capturedHeaders = null;
+  const webClaim = await claimPairingOrigin(createMemoryStorage(), {
+    endpoint: 'https://100.90.1.8:5494',
+    code: 'ABCD-2345',
+    fingerprint: fp,
+    fetchImpl: async (_url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        url: 'https://100.90.1.8:5494/api/remote-connections/pair/claim',
+        json: async () => ({
+          code: 0,
+          data: {
+            peerToken: 'tok-123',
+            grantId: 'grant-tls-2',
+            targetLabel: 'Studio Mac',
+            target: { homeId: '33333333-3333-4333-8333-333333333333', hostId: 'studio-mac' },
+          },
+        }),
+      };
+    },
+  });
+  assert.equal(webClaim.ok, true);
+  assert.equal(capturedHeaders['x-kiki-pairing-rotation'], '1');
 });
 
 await test('scan payload accepts kiki://pair and explicit http(s) links while rejecting stray text', () => {
@@ -1117,6 +1228,23 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.match(iosInfoPlist, /<string>kiki<\/string>/);
     assert.match(iosPluginSource, /navigateToPendingPair\(\)/);
     assert.match(iosPluginSource, /\/index\.html#pair/);
+    assert.match(iosPluginSource, /handleWKWebViewURLAuthenticationChallenge/);
+    assert.match(iosPluginSource, /KikiQrScannerViewController/);
+    assert.match(iosPluginSource, /x-kiki-pairing-rotation/);
+    assert.match(androidPluginSource, /configurePinnedTls/);
+    assert.match(androidPluginSource, /handleSslError/);
+    assert.match(androidPluginSource, /x-kiki-pairing-rotation/);
+    const androidMainActivitySource = readFileSync(
+      join(mobileRoot, 'android/app/src/main/java/ai/easyagent/kiki/MainActivity.java'),
+      'utf8',
+    );
+    assert.match(androidMainActivitySource, /onReceivedSslError/);
+    const iosPinningSource = readFileSync(
+      join(mobileRoot, 'ios/App/App/KikiTlsPinning.swift'),
+      'utf8',
+    );
+    assert.match(iosPinningSource, /extractSpkiDer/);
+    assert.match(iosPinningSource, /serverTrustMatchesFingerprint/);
 
     // 6. R1 regression: already-verified same origin reassigned to Home B (LAN DHCP / port reuse)
     // leaks zero old peer token to Home B across both pre-open and post-navigation commit checks,
@@ -1689,10 +1817,15 @@ ${origin}
     private boolean isOriginVerified(String id, String origin) { return id.equals("home-a") && origin.equals(ORIGIN); }
     private boolean hasStoredToken(String id, String origin) { return isOriginVerified(id, origin); }
     private void recordVerifiedOrigin(String id, String origin, String hostId, String grantId) {}
+    private void savePinnedFingerprint(String id, String origin, String fingerprint) {}
+    private void configurePinnedTls(HttpURLConnection conn, String origin, String serverId, String fp) {}
     private boolean matchesStoredHostId(String id, String host) {
         return id.equals("home-a") && (host == null || host.isEmpty() || host.equals("host-a"));
     }
     private String readPeerToken(String id, String origin) { return "fixture-peer-a"; }
+    private HandshakeResult fetchHandshake(String origin, String serverId, String grantId, String fp) {
+        return fetchHandshake(origin);
+    }
     private HandshakeResult fetchHandshake(String origin, String serverId, String grantId) {
         return fetchHandshake(origin);
     }
@@ -3194,6 +3327,26 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       assert.match(afterPendingPair.problemText, /expired|already used/i);
       assert.equal(afterPendingPair.claimPayload?.endpoint, 'http://192.168.1.40:5494');
       assert.equal(afterPendingPair.claimPayload?.code, '2345-6789');
+
+      // 1-tap Paste pairing link preserves self-signed HTTPS origin and SPKI fingerprint
+      const testFp = '0123456789abcdef'.repeat(4);
+      await page.evaluate((fp) => {
+        window.__lastClaimPayload = null;
+        window.__kikiTestReadClipboard = async () =>
+          `kiki://pair?endpoint=${encodeURIComponent('https://192.168.1.41:5494')}&code=4567-89AB&fp=${fp}`;
+      }, testFp);
+      await page.click('#paste-link');
+      await page.waitForFunction(() => window.__lastClaimPayload !== null);
+      const afterPastePair = await page.evaluate(() => ({
+        serverValue: document.querySelector('#server').value,
+        codeValue: document.querySelector('#pair-code').value,
+        claimPayload: window.__lastClaimPayload,
+      }));
+      assert.equal(afterPastePair.serverValue, 'https://192.168.1.41:5494');
+      assert.equal(afterPastePair.codeValue, '4567-89AB');
+      assert.equal(afterPastePair.claimPayload?.endpoint, 'https://192.168.1.41:5494');
+      assert.equal(afterPastePair.claimPayload?.code, '4567-89AB');
+      assert.equal(afterPastePair.claimPayload?.fingerprint, testFp);
 
       if (proofDir) {
         await page.screenshot({ path: join(proofDir, 'connect-expanded-en-dark-360x780.png') });

@@ -74,9 +74,9 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Kiki connects to the Kiki running on your computer.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Take a photo to attach to a message.</string>
+	<string>Scan QR codes to pair with Kiki on your computer, or take a photo to attach to a message.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Choose photos to attach to a message.</string>
+	<string>Choose a QR code image to pair or photos to attach to a message.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

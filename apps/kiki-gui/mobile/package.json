@@ -9,6 +9,9 @@
     "android:debug": "node scripts/build-android.mjs debug",
     "android:release": "node scripts/build-android.mjs release",
     "android:version": "node scripts/android-version.mjs",
+    "ios:sync": "node scripts/build-ios.mjs sync",
+    "ios:simulator": "node scripts/build-ios.mjs simulator",
+    "ios:device": "node scripts/build-ios.mjs device",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {

@@ -230,7 +230,7 @@ export function formatPairingUri(input) {
   return `${PAIRING_URI_PREFIX}?${params.toString()}`;
 }
 
-/** Parses a pairing URI or returns null; the device path intentionally keeps its legacy result shape. */
+/** Parses a pairing URI or returns null, preserving optional `fp` SPKI fingerprint. */
 export function parsePairingUri(raw) {
   const trimmed = String(raw ?? '').trim();
   if (!/^kiki:\/\/\/?pair(?:\?|$)/i.test(trimmed)) return null;
@@ -258,10 +258,14 @@ export function parsePairingUri(raw) {
   const code = normalizePairingCode(parsed.searchParams.get('code') ?? '');
   const fingerprint = parsed.searchParams.get('fp');
   if (!endpoint || !code || (fingerprint !== null && !TLS_FINGERPRINT_PATTERN.test(fingerprint))) return null;
-  return {
+  const result = {
     endpoint,
     code,
   };
+  if (fingerprint !== null) {
+    result.fingerprint = fingerprint;
+  }
+  return result;
 }
 
 /**
@@ -275,7 +279,7 @@ export function readScanPayload(raw) {
   if (pair !== null) {
     const target = readTarget(pair.endpoint);
     if (!target.ok) return { ok: false, reason: 'invalid_qr' };
-    return {
+    const result = {
       ok: true,
       kind: 'pair',
       origin: target.origin,
@@ -283,6 +287,10 @@ export function readScanPayload(raw) {
       code: pair.code,
       entry: `${target.origin}/`,
     };
+    if (pair.fingerprint) {
+      result.fingerprint = pair.fingerprint;
+    }
+    return result;
   }
   if (!/^https?:\/\//i.test(text)) {
     return { ok: false, reason: 'invalid_qr' };
@@ -294,7 +302,8 @@ export function readScanPayload(raw) {
     const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''));
     const embeddedCode = normalizePairingCode(url.searchParams.get('code') ?? hashParams.get('code') ?? '');
     if (embeddedCode !== null) {
-      return {
+      const embeddedFp = url.searchParams.get('fp') ?? hashParams.get('fp');
+      const result = {
         ok: true,
         kind: 'pair',
         origin: target.origin,
@@ -302,6 +311,10 @@ export function readScanPayload(raw) {
         code: embeddedCode,
         entry: `${target.origin}/`,
       };
+      if (embeddedFp !== null && TLS_FINGERPRINT_PATTERN.test(embeddedFp)) {
+        result.fingerprint = embeddedFp;
+      }
+      return result;
     }
   } catch {
     /* already validated by readTarget */
@@ -312,6 +325,52 @@ export function readScanPayload(raw) {
     origin: target.origin,
     entry: target.entry,
   };
+}
+
+/**
+ * Parses clipboard text from a 1-tap paste action: accepts a `kiki://pair?...` URI
+ * (even embedded inside a copied message), an `http(s)://` link, an `address code`
+ * pair separated by whitespace, or a bare server address.
+ */
+export function readPastePayload(raw) {
+  const text = String(raw ?? '').trim();
+  if (text === '') return { ok: false, reason: 'empty' };
+  const directScan = readScanPayload(text);
+  if (directScan.ok) return directScan;
+  const embeddedPair = text.match(/kiki:\/\/\/?pair\?[^\s"'<>]+/i);
+  if (embeddedPair) {
+    const cleaned = embeddedPair[0].replace(/[),.;!?]+$/, '');
+    const scanned = readScanPayload(cleaned);
+    if (scanned.ok) return scanned;
+  }
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (tokens.length === 2) {
+    const combined = readConnectInput(tokens[0], tokens[1]);
+    if (combined.ok && combined.kind === 'pair') return combined;
+  }
+  const bare = readTarget(text);
+  if (bare.ok) {
+    return {
+      ok: true,
+      kind: 'target',
+      origin: bare.origin,
+      entry: bare.entry,
+    };
+  }
+  return { ok: false, reason: 'invalid' };
+}
+
+/** Formats an origin for an editable address input without downgrading local HTTPS to HTTP. */
+export function editableOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    if (url.protocol === 'https:' && isLocalDefaultHost(url.hostname)) {
+      return url.origin;
+    }
+    return url.host;
+  } catch {
+    return origin;
+  }
 }
 
 /**
@@ -327,7 +386,7 @@ export function readConnectInput(rawAddress, rawCode = '') {
     if (codeText !== '') {
       const overrideCode = normalizePairingCode(codeText);
       if (overrideCode === null) return { ok: false, reason: 'invalid_code' };
-      return {
+      const result = {
         ok: true,
         kind: 'pair',
         origin: scanned.origin,
@@ -335,6 +394,10 @@ export function readConnectInput(rawAddress, rawCode = '') {
         code: overrideCode,
         entry: `${scanned.origin}/`,
       };
+      if (scanned.fingerprint) {
+        result.fingerprint = scanned.fingerprint;
+      }
+      return result;
     }
     return scanned;
   }
@@ -481,6 +544,33 @@ function defaultLabelForOrigin(origin) {
   }
 }
 
+function sanitizePinnedFingerprints(rawMap) {
+  if (!rawMap || typeof rawMap !== 'object' || Array.isArray(rawMap)) return undefined;
+  const clean = {};
+  let count = 0;
+  for (const [rawOrigin, rawFp] of Object.entries(rawMap)) {
+    if (count >= 6) break;
+    const parsed = readTarget(rawOrigin);
+    if (!parsed.ok) continue;
+    const fp = typeof rawFp === 'string' ? rawFp.trim() : '';
+    if (!TLS_FINGERPRINT_PATTERN.test(fp)) continue;
+    clean[parsed.origin] = fp;
+    count += 1;
+  }
+  return count > 0 ? clean : undefined;
+}
+
+/** Returns the pinned SPKI SHA-256 fingerprint for `rawOrOrigin` on `server`, if any. */
+export function getServerFingerprint(server, rawOrOrigin) {
+  if (!server || !server.pinnedFingerprints || typeof server.pinnedFingerprints !== 'object') {
+    return undefined;
+  }
+  const target = readTarget(rawOrOrigin ?? server.origin ?? '');
+  if (!target.ok) return undefined;
+  const fp = server.pinnedFingerprints[target.origin];
+  return typeof fp === 'string' && TLS_FINGERPRINT_PATTERN.test(fp) ? fp : undefined;
+}
+
 function sanitizeServerRecord(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const target = readTarget(raw.origin ?? '');
@@ -506,9 +596,10 @@ function sanitizeServerRecord(raw) {
       origins.push(parsed.origin);
     }
   }
+  const pinnedFingerprints = sanitizePinnedFingerprints(raw.pinnedFingerprints);
   const id = typeof raw.id === 'string' && raw.id.trim() !== '' ? raw.id.trim() : (targetHomeId ?? `origin:${origin}`);
   const label = typeof raw.label === 'string' && raw.label.trim() !== '' ? raw.label.trim() : defaultLabelForOrigin(origin);
-  return {
+  const record = {
     id,
     label,
     origin,
@@ -520,6 +611,10 @@ function sanitizeServerRecord(raw) {
     grantId,
     updatedAt: typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0,
   };
+  if (pinnedFingerprints !== undefined) {
+    record.pinnedFingerprints = pinnedFingerprints;
+  }
+  return record;
 }
 
 function writeServers(storage, servers) {
@@ -666,12 +761,21 @@ export function upsertSavedServer(storage, input) {
         ? existing.label
         : defaultLabelForOrigin(origin);
 
+  const mergedFingerprints = {
+    ...(existing?.pinnedFingerprints ?? {}),
+    ...(input?.pinnedFingerprints ?? {}),
+  };
+  if (typeof input?.fingerprint === 'string' && TLS_FINGERPRINT_PATTERN.test(input.fingerprint.trim())) {
+    mergedFingerprints[origin] = input.fingerprint.trim();
+  }
+
   const updated = sanitizeServerRecord({
     id: resolvedId,
     label,
     origin,
     origins,
     verifiedOrigins,
+    pinnedFingerprints: mergedFingerprints,
     paired: isPaired,
     targetHomeId: resolvedHomeId,
     targetHostId: input?.targetHostId ?? existing?.targetHostId,
@@ -1278,31 +1382,36 @@ export async function probeOriginHandshake(origin, options = {}) {
 export async function claimPairingOrigin(storage, input) {
   let rawEndpoint = input?.endpoint ?? input?.origin ?? '';
   let rawCode = input?.code ?? '';
+  let rawFingerprint = typeof input?.fingerprint === 'string' ? input.fingerprint.trim() : '';
   if (/^kiki:\/\//i.test(String(rawEndpoint).trim())) {
     const parsedUri = parsePairingUri(rawEndpoint);
     if (!parsedUri) return { ok: false, reason: 'invalid_code' };
     rawEndpoint = parsedUri.endpoint;
     if (!rawCode) rawCode = parsedUri.code;
+    if (!rawFingerprint && parsedUri.fingerprint) rawFingerprint = parsedUri.fingerprint;
   }
   const normalizedEndpoint = normalizePairingEndpoint(rawEndpoint);
   const target = readTarget(normalizedEndpoint ?? rawEndpoint);
   const code = normalizePairingCode(rawCode);
   if (!target.ok) return { ok: false, reason: target.reason };
   if (!code) return { ok: false, reason: 'invalid_code' };
+  const fingerprint = TLS_FINGERPRINT_PATTERN.test(rawFingerprint) ? rawFingerprint : undefined;
 
   const origin = target.origin;
   const endpointBase = normalizedEndpoint ?? origin;
   const identity = input?.identity ?? readDeviceIdentity(storage, input?.platform);
 
   if (typeof input?.nativeClaim === 'function') {
-    const res = await input.nativeClaim({
+    const nativeParams = {
       endpoint: endpointBase,
       origin,
       code,
       homeId: identity.homeId,
       hostId: identity.hostId,
       sourceLabel: identity.label,
-    });
+      fingerprint,
+    };
+    const res = await input.nativeClaim(nativeParams);
     if (res?.ok && res.targetHomeId) {
       const server = upsertSavedServer(storage, {
         id: res.serverId ?? res.targetHomeId,
@@ -1312,6 +1421,7 @@ export async function claimPairingOrigin(storage, input) {
         targetHomeId: res.targetHomeId,
         targetHostId: res.targetHostId,
         grantId: res.grantId,
+        fingerprint,
         verified: true,
       });
       return {
@@ -1322,6 +1432,7 @@ export async function claimPairingOrigin(storage, input) {
         targetHostId: res.targetHostId,
         targetLabel: res.targetLabel,
         grantId: res.grantId,
+        fingerprint,
         server,
       };
     }
@@ -1341,6 +1452,7 @@ export async function claimPairingOrigin(storage, input) {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
+        'x-kiki-pairing-rotation': '1',
       },
       redirect: 'manual',
       body: JSON.stringify({
@@ -1386,6 +1498,7 @@ export async function claimPairingOrigin(storage, input) {
       targetHomeId: data.target.homeId,
       targetHostId: data.target.hostId,
       grantId: data.grantId,
+      fingerprint,
       verified: true,
     });
     return {
@@ -1398,6 +1511,7 @@ export async function claimPairingOrigin(storage, input) {
       grantId: data.grantId,
       revision: data.revision,
       peerToken: data.peerToken,
+      fingerprint,
       server,
     };
   } catch {
@@ -1881,6 +1995,7 @@ export async function resolveVerifiedServerOpen(storage, input) {
       endpoint: input.endpoint ?? origin,
       origin,
       code: input.code,
+      fingerprint: input.fingerprint,
       platform: input.platform,
       identity: input.identity,
       fetchImpl: input.fetchImpl,
@@ -1932,6 +2047,7 @@ export async function resolveVerifiedServerOpen(storage, input) {
       );
       const expectedHomeId = existing?.targetHomeId ?? input.targetHomeId;
       const expectedHostId = existing?.targetHostId ?? input.targetHostId;
+      const resolvedFingerprint = input.fingerprint ?? getServerFingerprint(existing, origin);
       const probeFn =
         input.probe ??
         ((targetOrigin, probeOptions) =>
@@ -1953,12 +2069,13 @@ export async function resolveVerifiedServerOpen(storage, input) {
               targetHomeId: expectedHomeId,
               targetHostId: expectedHostId,
               grantId,
+              fingerprint: resolvedFingerprint,
               handshakeKey,
               handshakeProof: handshakeKey,
               requireMutualProof,
               signal,
             }
-          : { signal },
+          : { fingerprint: resolvedFingerprint, signal },
       );
       if (isStale() || probe?.aborted === true || probe?.reason === 'aborted') {
         return { ok: false, stale: true, reason: 'aborted' };
@@ -2006,6 +2123,7 @@ export async function resolveVerifiedServerOpen(storage, input) {
     targetHomeId: existing?.targetHomeId ?? input.targetHomeId,
     targetHostId: existing?.targetHostId ?? input.targetHostId,
     grantId: existing?.grantId ?? input.grantId,
+    fingerprint: input.fingerprint ?? getServerFingerprint(existing, origin),
     verified: isPairedTarget,
   });
   const serverId = saved?.id ?? targetServerId;

@@ -18,18 +18,28 @@
           <div id="connect-stage" class="connect-stage">
             <div class="connect-head">
               <h1 id="connect-title" class="connect-title" data-i18n="connectTitle">Connect a computer</h1>
-              <p class="connect-lede" data-i18n="lede">On your computer, open Settings → Access → Other spaces → Pairing code.</p>
+              <p class="connect-lede" data-i18n="lede">Click the top-left Space menu on your computer → Pair device.</p>
             </div>
-            <button id="scan-qr" type="button" class="primary scan-button">
-              <svg class="scan-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path d="M3.5 6.5V4.75C3.5 4.06 4.06 3.5 4.75 3.5H6.5M13.5 3.5H15.25C15.94 3.5 16.5 4.06 16.5 4.75V6.5M16.5 13.5V15.25C16.5 15.94 15.94 16.5 15.25 16.5H13.5M6.5 16.5H4.75C4.06 16.5 3.5 15.94 3.5 15.25V13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                <rect x="6.5" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-                <rect x="10.9" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-                <rect x="6.5" y="10.9" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
-                <path d="M11 11H13.5V13.5H11z" fill="currentColor" />
-              </svg>
-              <span data-i18n="scanQr">Scan QR code</span>
-            </button>
+            <div class="connect-primary-actions">
+              <button id="scan-qr" type="button" class="primary scan-button">
+                <svg class="scan-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M3.5 6.5V4.75C3.5 4.06 4.06 3.5 4.75 3.5H6.5M13.5 3.5H15.25C15.94 3.5 16.5 4.06 16.5 4.75V6.5M16.5 13.5V15.25C16.5 15.94 15.94 16.5 15.25 16.5H13.5M6.5 16.5H4.75C4.06 16.5 3.5 15.94 3.5 15.25V13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                  <rect x="6.5" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+                  <rect x="10.9" y="6.5" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+                  <rect x="6.5" y="10.9" width="2.6" height="2.6" rx="0.5" fill="currentColor" />
+                  <path d="M11 11H13.5V13.5H11z" fill="currentColor" />
+                </svg>
+                <span data-i18n="scanQr">Scan QR code</span>
+              </button>
+
+              <button id="paste-link" type="button" class="secondary paste-button">
+                <svg class="scan-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path d="M7.5 4.5H6a1.5 1.5 0 0 0-1.5 1.5v9.5A1.5 1.5 0 0 0 6 17h8a1.5 1.5 0 0 0 1.5-1.5V6A1.5 1.5 0 0 0 14 4.5h-1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  <rect x="7.5" y="3" width="5" height="3" rx="0.8" stroke="currentColor" stroke-width="1.5" />
+                </svg>
+                <span data-i18n="pasteLink">Paste pairing link</span>
+              </button>
+            </div>
 
             <button id="manual-toggle" type="button" class="manual-toggle" aria-expanded="false" aria-controls="connect" data-i18n="manualToggle">Enter manually</button>
           </div>
@@ -65,7 +75,7 @@
                 autocorrect="off" spellcheck="false" enterkeyhint="go" maxlength="9" placeholder="XXXX-XXXX" />
             </div>
 
-            <p id="hint" class="hint" data-i18n="hint">Find the address and pairing code on your computer under Settings → Access → Other spaces → Pairing code.</p>
+            <p id="hint" class="hint" data-i18n="hint">Click the top-left Space menu on your computer → Pair device to view the address and pairing code.</p>
             <p id="problem" class="problem" role="alert" hidden></p>
 
             <div class="connect-actions">

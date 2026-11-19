@@ -5,11 +5,14 @@ import {
   claimPairingOrigin,
   classifyOrigin,
   displayOrigin,
+  editableOrigin,
   formatPairingCodeInput,
+  getServerFingerprint,
   isServerOriginVerified,
   probeOriginHandshake,
   readConnectInput,
   readDeviceIdentity,
+  readPastePayload,
   readSavedServers,
   readScanPayload,
   readTarget,
@@ -216,11 +219,14 @@ async function deleteWebPeerToken(serverId, origins = []) {
 const COPY = {
   en: {
     connectTitle: 'Connect a computer',
-    lede: 'On your computer, open Settings → Access → Other spaces → Pairing code.',
+    lede: 'Click the top-left Space menu on your computer → Pair device.',
     tabConnect: 'Connect',
     tabComputers: 'Computers',
     tabNetwork: 'Network',
     scanQr: 'Scan QR code',
+    pasteLink: 'Paste pairing link',
+    pasteEmpty: 'No pairing link or server address found in the clipboard. Copy it on your computer or enter manually below.',
+    pasteDenied: 'Could not read the clipboard. Paste directly into the address field below.',
     scanning: 'Scanning…',
     scannerPrompt: 'Point at the QR code',
     scanCancel: 'Enter manually',
@@ -230,7 +236,7 @@ const COPY = {
     label: 'Server address or entry link',
     codeLabel: 'Pairing code',
     codeOptional: '8 chars · for new pairing',
-    hint: 'Find the address and pairing code on your computer under Settings → Access → Other spaces → Pairing code.',
+    hint: 'Click the top-left Space menu on your computer → Pair device to view the address and pairing code.',
     open: 'Open Kiki',
     reconnect: 'Reconnect',
     switchComputer: 'Switch computer',
@@ -287,11 +293,14 @@ const COPY = {
   },
   zh: {
     connectTitle: '连接电脑',
-    lede: '在电脑上打开 设置 → 接入 → 其他空间 → 配对码。',
+    lede: '点击电脑左上角空间菜单 → 配对设备。',
     tabConnect: '连接',
     tabComputers: '电脑',
     tabNetwork: '网络',
     scanQr: '扫码连接',
+    pasteLink: '粘贴配对链接',
+    pasteEmpty: '剪贴板里没有配对链接或服务器地址，请先在电脑上复制或在下方手动输入。',
+    pasteDenied: '无法读取剪贴板，请直接粘贴到下方输入框。',
     scanning: '正在扫码…',
     scannerPrompt: '对准电脑上的二维码',
     scanCancel: '手动输入',
@@ -301,7 +310,7 @@ const COPY = {
     label: '服务器地址或访问链接',
     codeLabel: '配对码',
     codeOptional: '8 位 · 新设备配对',
-    hint: '在电脑上打开 设置 → 接入 → 其他空间 → 配对码，查看地址与配对码。',
+    hint: '点击电脑左上角空间菜单 → 配对设备，查看地址与配对码。',
     open: '打开 Kiki',
     reconnect: '重新连接',
     switchComputer: '切换电脑',
@@ -376,6 +385,7 @@ const switchComputerBtn = document.querySelector('#switch-computer');
 const hint = document.querySelector('#hint');
 const problem = document.querySelector('#problem');
 const scanButton = document.querySelector('#scan-qr');
+const pasteButton = document.querySelector('#paste-link');
 const manualToggle = document.querySelector('#manual-toggle');
 const scanFeedback = document.querySelector('#scan-feedback');
 const scannerPanel = document.querySelector('#scanner-panel');
@@ -410,6 +420,7 @@ let autoReconnectAttempt = 0;
 let openFlightEpoch = 0;
 let openFlightOpId = null;
 let openFlightAbortController = null;
+let pendingManualFingerprint = null;
 const addressStatus = new Map();
 
 function isNativeShell() {
@@ -700,6 +711,7 @@ async function probeServer(origin, probeOptions = {}) {
         origin,
         serverId: probeOptions?.serverId ?? undefined,
         grantId: probeOptions?.grantId ?? undefined,
+        fingerprint: probeOptions?.fingerprint ?? undefined,
       });
       if (signal?.aborted === true) {
         return { ok: false, aborted: true, reason: 'aborted' };
@@ -727,24 +739,29 @@ async function probeServer(origin, probeOptions = {}) {
   return probeOriginHandshake(origin, probeOptions);
 }
 
-async function claimPairing(endpoint, code) {
+async function claimPairing(endpoint, code, fingerprint) {
   const platform = /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'ios' : 'android';
   const nativeIdentity = readDeviceIdentity(window.localStorage, platform);
   if (isNativeShell()) {
     return claimPairingOrigin(window.localStorage, {
       endpoint,
       code,
+      fingerprint,
       platform,
       identity: nativeIdentity,
       nativeClaim: async (params) => {
         try {
-          const res = await window.Capacitor.nativePromise('KikiShell', 'claimPair', {
+          const payload = {
             endpoint: params.endpoint,
             code: params.code,
             homeId: params.homeId,
             hostId: params.hostId,
             sourceLabel: params.sourceLabel,
-          });
+          };
+          if (params.fingerprint) {
+            payload.fingerprint = params.fingerprint;
+          }
+          const res = await window.Capacitor.nativePromise('KikiShell', 'claimPair', payload);
           if (res && typeof res.ok === 'boolean') return res;
         } catch {
           /* native bridge call failed: never fall back to browser token route */
@@ -756,6 +773,7 @@ async function claimPairing(endpoint, code) {
   return claimPairingOrigin(window.localStorage, {
     endpoint,
     code,
+    fingerprint,
     platform,
     identity: nativeIdentity,
     saveToken: saveWebPeerToken,
@@ -765,7 +783,7 @@ async function claimPairing(endpoint, code) {
 function promptForPairing(origin, message) {
   stopAutoReconnect(true);
   setTab('connect');
-  input.value = hostOf(origin);
+  input.value = editableOrigin(origin);
   updateInputAffordances();
   showProblem(message);
   codeInput.focus();
@@ -800,7 +818,7 @@ function reportUnreachable(origin, context = {}) {
   }
   setTab('connect');
   if (input.value.trim() === '' || isVerifiedPaired) {
-    input.value = hostOf(origin);
+    input.value = editableOrigin(origin);
   }
   updateInputAffordances();
   const message =
@@ -883,7 +901,7 @@ async function openServer(origin, entry, options = {}) {
     } else if (resolved.reason === 'pairing_required') {
       promptForPairing(origin, pairingRequiredMessageFor(origin, resolved.server?.label ?? options.label));
     } else {
-      input.value = hostOf(origin);
+      input.value = editableOrigin(origin);
       reportUnreachable(origin, {
         serverId: resolved.server?.id ?? targetServerId,
         label: resolved.server?.label ?? options.label,
@@ -908,7 +926,7 @@ async function openServer(origin, entry, options = {}) {
 
   if (isNativeShell()) {
     try {
-      const res = await window.Capacitor.nativePromise('KikiShell', 'open', {
+      const openPayload = {
         opId: callOpId,
         origin,
         entry: resolved.finalEntry,
@@ -916,7 +934,12 @@ async function openServer(origin, entry, options = {}) {
         grantId: isPairedTarget ? (resolved.server?.grantId ?? options.grantId ?? undefined) : undefined,
         targetHomeId: options.targetHomeId ?? undefined,
         targetHostId: options.targetHostId ?? undefined,
-      });
+      };
+      const resolvedFp = options.fingerprint ?? getServerFingerprint(resolved.server, origin);
+      if (resolvedFp) {
+        openPayload.fingerprint = resolvedFp;
+      }
+      const res = await window.Capacitor.nativePromise('KikiShell', 'open', openPayload);
       if (isStaleOpen() || res?.reason === 'aborted') {
         return;
       }
@@ -996,6 +1019,7 @@ function openSavedServer(server) {
     targetHomeId: server.targetHomeId,
     targetHostId: server.targetHostId,
     grantId: server.grantId,
+    fingerprint: getServerFingerprint(server, server.origin),
   });
 }
 
@@ -1005,13 +1029,14 @@ async function submitConnect(parsed) {
   if (parsed.kind === 'pair') {
     button.disabled = true;
     button.textContent = copy.pairing;
-    const claim = await claimPairing(parsed.endpoint ?? parsed.origin, parsed.code);
+    const claim = await claimPairing(parsed.endpoint ?? parsed.origin, parsed.code, parsed.fingerprint);
     if (!claim.ok) {
       button.disabled = false;
       updateInputAffordances();
       showProblem(claim.reason === 'rejected' ? copy.pairRejected : unreachableMessageFor(parsed.origin));
       return;
     }
+    pendingManualFingerprint = null;
     codeInput.value = '';
     await openServer(parsed.origin, `${parsed.origin}/`, {
       serverId: claim.serverId,
@@ -1020,6 +1045,7 @@ async function submitConnect(parsed) {
       targetHomeId: claim.targetHomeId,
       targetHostId: claim.targetHostId,
       grantId: claim.grantId,
+      fingerprint: claim.fingerprint ?? parsed.fingerprint,
     });
     return;
   }
@@ -1036,6 +1062,7 @@ async function submitConnect(parsed) {
     targetHomeId: existing?.targetHomeId,
     targetHostId: existing?.targetHostId,
     grantId: existing?.grantId,
+    fingerprint: getServerFingerprint(existing, parsed.origin),
   });
 }
 
@@ -1069,13 +1096,79 @@ async function handleScannedPayload(rawValue) {
     return;
   }
   showScanFeedback('');
-  input.value = hostOf(parsed.origin);
+  input.value = editableOrigin(parsed.origin);
+  pendingManualFingerprint = parsed.fingerprint ? { origin: parsed.origin, fingerprint: parsed.fingerprint } : null;
   if (parsed.kind === 'pair') {
     codeInput.value = parsed.code;
   }
   setManualExpanded(true);
   updateInputAffordances();
   await submitConnect(parsed);
+}
+
+async function readClipboardText() {
+  if (typeof window.__kikiTestReadClipboard === 'function') {
+    const val = await window.__kikiTestReadClipboard();
+    return { ok: true, text: typeof val === 'string' ? val : '' };
+  }
+  if (isNativeShell()) {
+    try {
+      const res = await window.Capacitor.nativePromise('KikiShell', 'readClipboard', {});
+      if (res && typeof res.text === 'string') {
+        return { ok: true, text: res.text };
+      }
+    } catch {
+      /* fall through to navigator.clipboard */
+    }
+  }
+  if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+    try {
+      const text = await navigator.clipboard.readText();
+      return { ok: true, text: typeof text === 'string' ? text : '' };
+    } catch {
+      return { ok: false, text: '' };
+    }
+  }
+  return { ok: false, text: '' };
+}
+
+async function startPasteLink() {
+  showProblem('');
+  showScanFeedback('');
+  const clip = await readClipboardText();
+  if (!clip.ok) {
+    showScanFeedback(copy.pasteDenied);
+    focusManualConnectInput();
+    return;
+  }
+  const parsed = readPastePayload(clip.text);
+  if (!parsed.ok) {
+    showScanFeedback(copy.pasteEmpty);
+    focusManualConnectInput();
+    return;
+  }
+  if (parsed.kind === 'pair') {
+    input.value = editableOrigin(parsed.origin);
+    codeInput.value = parsed.code;
+    pendingManualFingerprint = parsed.fingerprint ? { origin: parsed.origin, fingerprint: parsed.fingerprint } : null;
+    setManualExpanded(true);
+    updateInputAffordances();
+    await submitConnect(parsed);
+    return;
+  }
+  input.value = editableOrigin(parsed.origin);
+  pendingManualFingerprint = null;
+  setManualExpanded(true);
+  updateInputAffordances();
+  const hasEntryToken = parsed.entry !== `${parsed.origin}/`;
+  const existing = readSavedServers(window.localStorage).find(
+    (s) => isServerOriginVerified(s, parsed.origin),
+  );
+  if (hasEntryToken || existing) {
+    await submitConnect(parsed);
+  } else {
+    codeInput.focus();
+  }
 }
 
 function focusManualConnectInput() {
@@ -1370,8 +1463,11 @@ async function testServerAddress(server, rawAddress, trigger) {
           targetHomeId: server.targetHomeId,
           targetHostId: server.targetHostId,
           grantId: server.grantId,
+          fingerprint: getServerFingerprint(server, parsed.origin),
         }
-      : undefined,
+      : {
+          fingerprint: getServerFingerprint(server, parsed.origin),
+        },
   );
   trigger.disabled = false;
   trigger.textContent = original;
@@ -1545,6 +1641,10 @@ scanButton.addEventListener('click', () => {
   void startQrScan();
 });
 
+pasteButton?.addEventListener('click', () => {
+  void startPasteLink();
+});
+
 manualToggle?.addEventListener('click', () => {
   const nextExpanded = form.hidden;
   setManualExpanded(nextExpanded);
@@ -1591,8 +1691,16 @@ input.addEventListener('input', () => {
   if (!scanFeedback.hidden) showScanFeedback('');
   const maybePair = readScanPayload(input.value);
   if (maybePair.ok && maybePair.kind === 'pair' && /^kiki:\/\/pair/i.test(input.value.trim())) {
-    input.value = hostOf(maybePair.origin);
+    input.value = editableOrigin(maybePair.origin);
     codeInput.value = maybePair.code;
+    pendingManualFingerprint = maybePair.fingerprint
+      ? { origin: maybePair.origin, fingerprint: maybePair.fingerprint }
+      : null;
+  } else if (pendingManualFingerprint) {
+    const currentTarget = readTarget(input.value);
+    if (!currentTarget.ok || currentTarget.origin !== pendingManualFingerprint.origin) {
+      pendingManualFingerprint = null;
+    }
   }
   updateInputAffordances();
 });
@@ -1645,6 +1753,7 @@ async function runAddressTest() {
   const probe = await probeServer(target.origin, {
     serverId: exactSaved?.id,
     grantId: exactSaved?.grantId,
+    fingerprint: getServerFingerprint(exactSaved, target.origin),
   });
   testButton.disabled = false;
   testButton.textContent = copy.testAddress;
@@ -1693,6 +1802,14 @@ form.addEventListener('submit', (event) => {
       input.focus();
     }
     return;
+  }
+  if (
+    parsed.kind === 'pair' &&
+    !parsed.fingerprint &&
+    pendingManualFingerprint &&
+    pendingManualFingerprint.origin === parsed.origin
+  ) {
+    parsed.fingerprint = pendingManualFingerprint.fingerprint;
   }
   void submitConnect(parsed);
 });

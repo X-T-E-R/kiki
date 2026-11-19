@@ -172,6 +172,24 @@ body {
   text-wrap: balance;
 }
 
+.connect-primary-actions {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.paste-button {
+  display: inline-flex;
+  width: 100%;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 500;
+}
+
 #view-connect[data-manual-open='true'] .connect-stage {
   max-width: none;
   margin-top: 4px;
@@ -181,14 +199,24 @@ body {
 
 #view-connect[data-manual-open='true'] .connect-head { display: none; }
 
-#view-connect[data-manual-open='true'] .scan-button {
-  height: 48px;
+#view-connect[data-manual-open='true'] .connect-primary-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+#view-connect[data-manual-open='true'] .scan-button,
+#view-connect[data-manual-open='true'] .paste-button {
+  height: 46px;
+  padding: 0 12px;
   border: 1px solid var(--hairline-strong);
   background: var(--panel);
   color: var(--ink);
-  font-size: 15px;
+  font-size: 14px;
+  font-weight: 500;
 }
-#view-connect[data-manual-open='true'] .scan-button:active { background: var(--panel-subtle); }
+#view-connect[data-manual-open='true'] .scan-button:active,
+#view-connect[data-manual-open='true'] .paste-button:active { background: var(--panel-subtle); }
 
 .manual-toggle {
   display: inline-flex;

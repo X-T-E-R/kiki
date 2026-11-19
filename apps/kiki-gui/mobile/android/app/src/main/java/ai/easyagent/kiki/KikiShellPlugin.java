@@ -1,14 +1,21 @@
 package ai.easyagent.kiki;
 
 import android.Manifest;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.net.http.SslCertificate;
+import android.net.http.SslError;
+import android.os.Build;
+import android.os.Bundle;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import android.webkit.CookieManager;
+import android.webkit.SslErrorHandler;
 import android.webkit.WebBackForwardList;
 import android.webkit.WebView;
 import androidx.activity.OnBackPressedCallback;
@@ -22,6 +29,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -31,6 +39,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -41,6 +53,10 @@ import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import org.json.JSONObject;
 
 /**
@@ -68,6 +84,8 @@ public class KikiShellPlugin extends Plugin {
     private static final String LEGACY_TOKEN_PREFIX = "peerToken.";
     private static final String HOST_ID_PREFIX = "peerHostId.";
     private static final String GRANT_ID_PREFIX = "peerGrantId.";
+    private static final String TLS_FP_PREFIX = "peerTlsFp.";
+    private static final String ORIGIN_TLS_FP_PREFIX = "originTlsFp.";
     private static final String VERIFIED_ORIGINS_PREFIX = "verifiedOrigins.";
     static final String ACTION_CHANGE_SERVER = "ai.easyagent.kiki.CHANGE_SERVER";
     private static final SecureRandom NONCE_RANDOM = new SecureRandom();
@@ -256,6 +274,26 @@ public class KikiShellPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void readClipboard(PluginCall call) {
+        JSObject result = new JSObject();
+        String text = "";
+        try {
+            ClipboardManager cm = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null && cm.hasPrimaryClip()) {
+                ClipData clip = cm.getPrimaryClip();
+                if (clip != null && clip.getItemCount() > 0) {
+                    CharSequence raw = clip.getItemAt(0).coerceToText(getContext());
+                    if (raw != null) text = raw.toString();
+                }
+            }
+        } catch (Exception ignored) {
+            /* clipboard unavailable */
+        }
+        result.put("text", text);
+        call.resolve(result);
+    }
+
+    @PluginMethod
     public void consumePendingPair(PluginCall call) {
         String uri = pendingPairUri;
         pendingPairUri = null;
@@ -271,6 +309,7 @@ public class KikiShellPlugin extends Plugin {
         String origin = call.getString("origin");
         String serverId = call.getString("serverId");
         String grantId = call.getString("grantId");
+        String fingerprint = call.getString("fingerprint");
         Uri originUri = origin == null ? null : Uri.parse(origin);
         if (!isWebOrigin(originUri)) {
             JSObject invalid = new JSObject();
@@ -286,7 +325,9 @@ public class KikiShellPlugin extends Plugin {
             hasStoredToken(serverId, normalizedOrigin);
         new Thread(() -> {
             JSObject result = new JSObject();
-            HandshakeResult hs = fetchHandshake(normalizedOrigin, serverId, grantId);
+            HandshakeResult hs = (fingerprint != null && !fingerprint.isEmpty())
+                ? fetchHandshake(normalizedOrigin, serverId, grantId, fingerprint)
+                : fetchHandshake(normalizedOrigin, serverId, grantId);
             if (hs.redirected) {
                 result.put("ok", false);
                 call.resolve(result);
@@ -369,6 +410,7 @@ public class KikiShellPlugin extends Plugin {
             try {
                 URL metaUrl = new URL(normalizedOrigin + "/api/meta");
                 metaConn = (HttpURLConnection) metaUrl.openConnection();
+                configurePinnedTls(metaConn, normalizedOrigin, serverId, fingerprint);
                 metaConn.setInstanceFollowRedirects(false);
                 metaConn.setRequestMethod("GET");
                 metaConn.setConnectTimeout(3500);
@@ -391,6 +433,7 @@ public class KikiShellPlugin extends Plugin {
         String homeId = call.getString("homeId");
         String hostId = call.getString("hostId");
         String sourceLabel = call.getString("sourceLabel", "Kiki Android");
+        String fingerprint = normalizeFingerprint(call.getString("fingerprint"));
         Uri endpointUri = endpoint == null ? null : Uri.parse(endpoint);
         if (!isWebOrigin(endpointUri) || code == null || code.isEmpty() || homeId == null || hostId == null) {
             JSObject invalid = new JSObject();
@@ -418,6 +461,7 @@ public class KikiShellPlugin extends Plugin {
                 byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);
                 URL url = new URL(base + "/api/remote-connections/pair/claim");
                 conn = (HttpURLConnection) url.openConnection();
+                configurePinnedTls(conn, base, null, fingerprint);
                 conn.setInstanceFollowRedirects(false);
                 conn.setRequestMethod("POST");
                 conn.setConnectTimeout(5000);
@@ -425,6 +469,7 @@ public class KikiShellPlugin extends Plugin {
                 conn.setDoOutput(true);
                 conn.setRequestProperty("Content-Type", "application/json");
                 conn.setRequestProperty("Accept", "application/json");
+                conn.setRequestProperty("x-kiki-pairing-rotation", "1");
                 try (OutputStream os = conn.getOutputStream()) {
                     os.write(bytes);
                 }
@@ -459,6 +504,7 @@ public class KikiShellPlugin extends Plugin {
                 String grantId = data == null ? "" : data.optString("grantId", "");
                 storePeerToken(targetHomeId, base, peerToken);
                 recordVerifiedOrigin(targetHomeId, base, targetHostId, grantId);
+                savePinnedFingerprint(targetHomeId, base, fingerprint);
 
                 result.put("ok", true);
                 result.put("serverId", targetHomeId);
@@ -510,7 +556,11 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         String grantId = call.getString("grantId");
+        String fingerprint = call.getString("fingerprint");
         String opId = call.getString("opId");
+        if (fingerprint != null && !fingerprint.isEmpty()) {
+            savePinnedFingerprint(serverId, origin, fingerprint);
+        }
         String cleanEntry = stripTokenFromEntry(origin, entry);
         final long callEpoch;
         synchronized (this) {
@@ -948,10 +998,20 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private HandshakeResult fetchHandshake(String normalizedOrigin, String serverId, String explicitGrantId) {
+        return fetchHandshake(normalizedOrigin, serverId, explicitGrantId, null);
+    }
+
+    private HandshakeResult fetchHandshake(
+        String normalizedOrigin,
+        String serverId,
+        String explicitGrantId,
+        String explicitFingerprint
+    ) {
         HttpURLConnection conn = null;
         try {
             URL handshakeUrl = new URL(normalizedOrigin + "/api/remote-connections/handshake");
             conn = (HttpURLConnection) handshakeUrl.openConnection();
+            configurePinnedTls(conn, normalizedOrigin, serverId, explicitFingerprint);
             conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(3500);
@@ -1115,6 +1175,8 @@ public class KikiShellPlugin extends Plugin {
                 for (String vOrigin : verified) {
                     editor.remove(TOKEN_PREFIX + scopedTokenId(serverId, vOrigin));
                     editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, vOrigin));
+                    editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, vOrigin));
+                    editor.remove(ORIGIN_TLS_FP_PREFIX + vOrigin);
                 }
                 if (trusted != null && verified.contains(trusted)) {
                     editor.remove(TRUSTED_ORIGIN);
@@ -1123,6 +1185,8 @@ public class KikiShellPlugin extends Plugin {
             if (origin != null && !origin.isEmpty()) {
                 editor.remove(TOKEN_PREFIX + scopedTokenId(serverId, origin));
                 editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, origin));
+                editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, origin));
+                editor.remove(ORIGIN_TLS_FP_PREFIX + origin);
             }
             editor
                 .remove(TOKEN_PREFIX + serverId)
@@ -1134,7 +1198,152 @@ public class KikiShellPlugin extends Plugin {
         if (origin != null && !origin.isEmpty() && origin.equals(trusted)) {
             editor.remove(TRUSTED_ORIGIN);
         }
+        if ((serverId == null || serverId.isEmpty()) && origin != null && !origin.isEmpty()) {
+            editor.remove(ORIGIN_TLS_FP_PREFIX + origin);
+        }
         editor.apply();
+    }
+
+    static String normalizeFingerprint(String raw) {
+        if (raw == null) return null;
+        String clean = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        if (clean.length() != 64) return null;
+        for (int i = 0; i < 64; i++) {
+            char c = clean.charAt(i);
+            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            if (!hex) return null;
+        }
+        return clean;
+    }
+
+    static String certificateSpkiSha256Hex(Certificate cert) {
+        if (cert == null || cert.getPublicKey() == null) return null;
+        byte[] encoded = cert.getPublicKey().getEncoded();
+        if (encoded == null || encoded.length == 0) return null;
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(encoded);
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b & 0xff));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void savePinnedFingerprint(String serverId, String origin, String rawFingerprint) {
+        String fp = normalizeFingerprint(rawFingerprint);
+        if (fp == null || serverId == null || serverId.isEmpty() || origin == null || origin.isEmpty()) return;
+        prefs()
+            .edit()
+            .putString(TLS_FP_PREFIX + scopedTokenId(serverId, origin), fp)
+            .putString(ORIGIN_TLS_FP_PREFIX + origin, fp)
+            .apply();
+    }
+
+    private String resolvePinnedFingerprint(String serverId, String origin) {
+        if (origin == null || origin.isEmpty()) return null;
+        SharedPreferences sp = prefs();
+        if (serverId != null && !serverId.isEmpty()) {
+            String scoped = normalizeFingerprint(sp.getString(TLS_FP_PREFIX + scopedTokenId(serverId, origin), null));
+            if (scoped != null) return scoped;
+        }
+        return normalizeFingerprint(sp.getString(ORIGIN_TLS_FP_PREFIX + origin, null));
+    }
+
+    private void configurePinnedTls(HttpURLConnection conn, String origin, String serverId, String explicitFingerprint) {
+        if (!(conn instanceof HttpsURLConnection)) return;
+        String expected = normalizeFingerprint(explicitFingerprint);
+        if (expected == null) {
+            expected = resolvePinnedFingerprint(serverId, origin);
+        }
+        if (expected == null) return;
+        final String pinnedFp = expected;
+        try {
+            X509TrustManager tm = new X509TrustManager() {
+                @Override
+                public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                    throw new CertificateException("Client certificates are not supported");
+                }
+
+                @Override
+                public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                    if (chain == null || chain.length == 0) {
+                        throw new CertificateException("Empty server certificate chain");
+                    }
+                    String actual = certificateSpkiSha256Hex(chain[0]);
+                    if (!constantTimeEquals(actual, pinnedFp)) {
+                        throw new CertificateException("SPKI fingerprint mismatch");
+                    }
+                }
+
+                @Override
+                public X509Certificate[] getAcceptedIssuers() {
+                    return new X509Certificate[0];
+                }
+            };
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(null, new TrustManager[] { tm }, null);
+            HttpsURLConnection httpsConn = (HttpsURLConnection) conn;
+            httpsConn.setSSLSocketFactory(ctx.getSocketFactory());
+            httpsConn.setHostnameVerifier((hostname, session) -> {
+                try {
+                    Certificate[] certs = session.getPeerCertificates();
+                    if (certs == null || certs.length == 0) return false;
+                    return constantTimeEquals(certificateSpkiSha256Hex(certs[0]), pinnedFp);
+                } catch (Exception e) {
+                    return false;
+                }
+            });
+        } catch (Exception ignored) {
+            /* keep default TLS context on failure */
+        }
+    }
+
+    private static X509Certificate extractX509Certificate(SslCertificate sslCert) {
+        if (sslCert == null) return null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            X509Certificate direct = sslCert.getX509Certificate();
+            if (direct != null) return direct;
+        }
+        try {
+            Bundle bundle = SslCertificate.saveState(sslCert);
+            byte[] bytes = bundle == null ? null : bundle.getByteArray("x509-certificate");
+            if (bytes == null || bytes.length == 0) return null;
+            CertificateFactory factory = CertificateFactory.getInstance("X.509");
+            Certificate parsed = factory.generateCertificate(new ByteArrayInputStream(bytes));
+            return parsed instanceof X509Certificate ? (X509Certificate) parsed : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    boolean handleSslError(WebView view, SslErrorHandler handler, SslError error) {
+        if (handler == null || error == null) return false;
+        String url = error.getUrl();
+        String origin = url == null ? null : originOf(Uri.parse(url));
+        String trusted = prefs().getString(TRUSTED_ORIGIN, null);
+        boolean authorizedOrigin =
+            origin != null &&
+            (origin.equals(pendingAuthOrigin) || origin.equals(activeAuthOrigin) || origin.equals(trusted));
+        if (authorizedOrigin) {
+            String boundServerId = origin.equals(pendingAuthOrigin)
+                ? pendingAuthServerId
+                : (origin.equals(activeAuthOrigin) ? activeAuthServerId : null);
+            String expected = resolvePinnedFingerprint(boundServerId, origin);
+            if (expected != null) {
+                X509Certificate leaf = extractX509Certificate(error.getCertificate());
+                String actual = certificateSpkiSha256Hex(leaf);
+                if (constantTimeEquals(actual, expected)) {
+                    handler.proceed();
+                    return true;
+                }
+            }
+        }
+        handler.cancel();
+        return true;
     }
 
     private SecretKey getOrCreateSecretKey() throws Exception {
