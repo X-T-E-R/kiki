@@ -726,7 +726,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const kill = (): void => {
       if (killed) return;
       killed = true;
-      void proc.kill('SIGKILL');
+      proc.kill('SIGKILL').catch(() => undefined);
     };
     const onAbort = (): void => kill();
     if (signal.aborted) kill();
@@ -925,7 +925,7 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     const kill = (): void => {
       if (killed) return;
       killed = true;
-      void proc.kill('SIGKILL');
+      proc.kill('SIGKILL').catch(() => undefined);
     };
     const onAbort = (): void => kill();
     if (signal.aborted) kill();
@@ -992,6 +992,9 @@ export class WorkspaceFsService implements IWorkspaceFsService {
       });
     } catch (error) {
       if (error !== GREP_WALK_ABORTED) throw error;
+      if (filePaths.length === 0) {
+        throw new Error2(ErrorCodes.FS_GREP_TIMEOUT, `grep timed out after ${Date.now() - startedAt}ms`);
+      }
     }
 
     for (const rel of filePaths) {
