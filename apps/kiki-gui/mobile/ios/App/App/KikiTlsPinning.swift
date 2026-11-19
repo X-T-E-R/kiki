@@ -57,6 +57,22 @@ enum KikiTlsPinning {
         return constantTimeEqual(actual, expected)
     }
 
+    static func legacyHttpOriginForHttps(_ origin: String) -> String? {
+        guard !origin.isEmpty,
+              let url = URL(string: origin),
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(), !host.isEmpty,
+              url.user == nil, url.password == nil else {
+            return nil
+        }
+        let shownHost = host.contains(":") ? "[\(host)]" : host
+        let port = url.port ?? 443
+        if port == 80 {
+            return "http://\(shownHost)"
+        }
+        return "http://\(shownHost):\(port)"
+    }
+
     static func saveFingerprint(_ rawFingerprint: String?, for serverId: String, origin: String) {
         guard !serverId.isEmpty, !origin.isEmpty,
               let fp = normalizeFingerprint(rawFingerprint) else { return }
@@ -74,9 +90,28 @@ enum KikiTlsPinning {
            let scoped = normalizeFingerprint(defaults.string(forKey: scopedPrefix + "\(serverId)@\(origin)")) {
             return scoped
         }
-        if let map = defaults.dictionary(forKey: originMapKey) as? [String: String],
-           let mapped = normalizeFingerprint(map[origin]) {
+        let map = (defaults.dictionary(forKey: originMapKey) as? [String: String]) ?? [:]
+        if let mapped = normalizeFingerprint(map[origin]) {
             return mapped
+        }
+        if let legacyHttp = legacyHttpOriginForHttps(origin) {
+            var migrated: String?
+            if let serverId, !serverId.isEmpty {
+                migrated = normalizeFingerprint(defaults.string(forKey: scopedPrefix + "\(serverId)@\(legacyHttp)"))
+            }
+            if migrated == nil {
+                migrated = normalizeFingerprint(map[legacyHttp])
+            }
+            if let migrated {
+                if let serverId, !serverId.isEmpty {
+                    saveFingerprint(migrated, for: serverId, origin: origin)
+                } else {
+                    var updated = map
+                    updated[origin] = migrated
+                    defaults.set(updated, forKey: originMapKey)
+                }
+                return migrated
+            }
         }
         return nil
     }
@@ -85,17 +120,24 @@ enum KikiTlsPinning {
         let defaults = UserDefaults.standard
         var map = (defaults.dictionary(forKey: originMapKey) as? [String: String]) ?? [:]
         var originsToClean = Set<String>()
+        func enqueue(_ candidate: String) {
+            originsToClean.insert(candidate)
+            if let legacy = legacyHttpOriginForHttps(candidate) {
+                originsToClean.insert(legacy)
+            }
+        }
         if let serverId, !serverId.isEmpty {
             for vOrigin in verifiedOrigins {
-                defaults.removeObject(forKey: scopedPrefix + "\(serverId)@\(vOrigin)")
-                originsToClean.insert(vOrigin)
+                enqueue(vOrigin)
             }
             if let origin, !origin.isEmpty {
-                defaults.removeObject(forKey: scopedPrefix + "\(serverId)@\(origin)")
-                originsToClean.insert(origin)
+                enqueue(origin)
+            }
+            for item in originsToClean {
+                defaults.removeObject(forKey: scopedPrefix + "\(serverId)@\(item)")
             }
         } else if let origin, !origin.isEmpty {
-            originsToClean.insert(origin)
+            enqueue(origin)
         }
         if !originsToClean.isEmpty {
             for item in originsToClean {

@@ -99,7 +99,7 @@ function isUsableEndpointUrl(rawUrl: string): boolean {
     return false;
   }
 }
-export function directAddresses(interfaces = networkInterfaces()): string[] {
+function rankedDirectAddresses(interfaces = networkInterfaces()): readonly { address: string; rank: number }[] {
   const candidates = new Map<string, { rank: number; order: number }>();
   let order = 0;
   for (const [name, entries] of Object.entries(interfaces)) {
@@ -117,12 +117,25 @@ export function directAddresses(interfaces = networkInterfaces()): string[] {
   }
   return [...candidates.entries()]
     .sort((left, right) => left[1].rank - right[1].rank || left[1].order - right[1].order)
-    .map(([address]) => address);
+    .map(([address, meta]) => ({ address, rank: meta.rank }));
+}
+export function directAddresses(interfaces = networkInterfaces()): string[] {
+  return rankedDirectAddresses(interfaces).map(({ address }) => address);
 }
 export function directEndpoints(bound: { host: string; port: number } | number, extras: readonly string[] = [], interfaces = networkInterfaces()): string[] {
+  const ranked = rankedDirectAddresses(interfaces);
+  const interfaceRanks = new Map(ranked.map(({ address, rank }) => [address, rank]));
+  const rankForUrl = (url: string): number => {
+    try {
+      const host = new URL(url).hostname.replaceAll(/^\[|\]$/g, '');
+      const known = interfaceRanks.get(host);
+      if (known !== undefined) return known;
+    } catch {}
+    return endpointRank(url);
+  };
   const urls = new Map<string, { rank: number; order: number }>();
   let order = 0;
-  const add = (url: string, rank = endpointRank(url)): void => {
+  const add = (url: string, rank = rankForUrl(url)): void => {
     if (url === '' || !isUsableEndpointUrl(url)) return;
     const existing = urls.get(url);
     if (existing === undefined || rank < existing.rank) {
@@ -133,21 +146,21 @@ export function directEndpoints(bound: { host: string; port: number } | number, 
   const host = target.host.replace(/^::ffff:/i, '');
   if (target.port > 0) {
     if (host === '0.0.0.0' || host === '::' || host === '') {
-      for (const [index, address] of directAddresses(interfaces).entries()) {
-        add(`http://${address}:${target.port}`, directHostRank(address));
+      for (const [index, { address, rank }] of ranked.entries()) {
+        add(`http://${address}:${target.port}`, rank);
         order = Math.max(order, index + 1);
       }
     } else if (!isUnusableDirectHost(host) && isDirectConnectionHost(host)) {
-      add(`http://${host.includes(':') ? `[${host}]` : host}:${target.port}`);
+      add(`http://${host.includes(':') ? `[${host}]` : host}:${target.port}`, interfaceRanks.get(host) ?? endpointRank(`http://${host.includes(':') ? `[${host}]` : host}:${target.port}`));
     }
   }
-  for (const extra of extras) add(extra);
+  for (const extra of extras) add(extra, rankForUrl(extra));
   return [...urls.entries()]
     .sort((left, right) => left[1].rank - right[1].rank || left[1].order - right[1].order)
     .map(([url]) => url);
 }
 export class PeerListeners {
-  private readonly servers = new Map<string, { url: string; close: () => Promise<void> }>();
+  private readonly servers = new Map<string, { url: string; rank: number; order: number; close: () => Promise<void> }>();
   private flight: Promise<void> = Promise.resolve();
   private closed = false;
   private refreshTimer?: ReturnType<typeof setInterval>;
@@ -159,20 +172,23 @@ export class PeerListeners {
       this.refreshTimer.unref();
     }
     const run = this.flight.then(async () => {
-      const hosts = directAddresses();
-      for (const [host, listener] of this.servers) if (!hosts.includes(host)) { this.servers.delete(host); await listener.close(); }
-      for (const host of hosts) {
-        if (this.closed || this.servers.has(host)) continue;
+      const ranked = rankedDirectAddresses();
+      const hosts = new Set(ranked.map(({ address }) => address));
+      for (const [host, listener] of this.servers) if (!hosts.has(host)) { this.servers.delete(host); await listener.close(); }
+      for (const [order, { address: host, rank }] of ranked.entries()) {
+        if (this.closed) continue;
+        const existing = this.servers.get(host);
+        if (existing !== undefined) { existing.rank = rank; existing.order = order; continue; }
         const bound = await this.listen(host, this.port).catch(() => this.listen(host, 0).catch(() => undefined));
         if (bound === undefined) continue;
         if (this.closed) { await bound.close().catch(() => undefined); continue; }
-        this.servers.set(host, bound);
+        this.servers.set(host, { ...bound, rank, order });
       }
     });
     this.flight = run.catch(() => undefined);
     return run.then(() => this.urls());
   }
-  urls(): string[] { return [...this.servers.values()].map((entry) => entry.url).sort((left, right) => endpointRank(left) - endpointRank(right)); }
+  urls(): string[] { return [...this.servers.values()].sort((left, right) => left.rank - right.rank || left.order - right.order).map((entry) => entry.url); }
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.refreshTimer);

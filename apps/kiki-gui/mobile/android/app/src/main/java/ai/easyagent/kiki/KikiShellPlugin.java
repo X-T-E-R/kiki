@@ -6,6 +6,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.net.http.SslCertificate;
 import android.net.http.SslError;
@@ -15,10 +16,12 @@ import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import android.webkit.CookieManager;
+import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
 import android.webkit.WebBackForwardList;
 import android.webkit.WebView;
 import androidx.activity.OnBackPressedCallback;
+import androidx.core.content.ContextCompat;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -113,7 +116,34 @@ public class KikiShellPlugin extends Plugin {
         final boolean mutualProofVerified;
         final boolean mutualRevokedVerified;
         final boolean mutualDisabledVerified;
+        final boolean mutualInvitedVerified;
         final boolean inboundEnabled;
+
+        HandshakeResult(
+            boolean ok,
+            boolean redirected,
+            int statusCode,
+            String targetHomeId,
+            String targetHostId,
+            String targetLabel,
+            boolean mutualProofVerified,
+            boolean mutualRevokedVerified,
+            boolean mutualDisabledVerified,
+            boolean mutualInvitedVerified,
+            boolean inboundEnabled
+        ) {
+            this.ok = ok;
+            this.redirected = redirected;
+            this.statusCode = statusCode;
+            this.targetHomeId = targetHomeId;
+            this.targetHostId = targetHostId;
+            this.targetLabel = targetLabel;
+            this.mutualProofVerified = mutualProofVerified;
+            this.mutualRevokedVerified = mutualRevokedVerified;
+            this.mutualDisabledVerified = mutualDisabledVerified;
+            this.mutualInvitedVerified = mutualInvitedVerified;
+            this.inboundEnabled = inboundEnabled;
+        }
 
         HandshakeResult(
             boolean ok,
@@ -127,16 +157,19 @@ public class KikiShellPlugin extends Plugin {
             boolean mutualDisabledVerified,
             boolean inboundEnabled
         ) {
-            this.ok = ok;
-            this.redirected = redirected;
-            this.statusCode = statusCode;
-            this.targetHomeId = targetHomeId;
-            this.targetHostId = targetHostId;
-            this.targetLabel = targetLabel;
-            this.mutualProofVerified = mutualProofVerified;
-            this.mutualRevokedVerified = mutualRevokedVerified;
-            this.mutualDisabledVerified = mutualDisabledVerified;
-            this.inboundEnabled = inboundEnabled;
+            this(
+                ok,
+                redirected,
+                statusCode,
+                targetHomeId,
+                targetHostId,
+                targetLabel,
+                mutualProofVerified,
+                mutualRevokedVerified,
+                mutualDisabledVerified,
+                false,
+                inboundEnabled
+            );
         }
 
         HandshakeResult(
@@ -160,6 +193,7 @@ public class KikiShellPlugin extends Plugin {
                 mutualProofVerified,
                 mutualRevokedVerified,
                 mutualDisabledVerified,
+                false,
                 true
             );
         }
@@ -173,7 +207,7 @@ public class KikiShellPlugin extends Plugin {
             String targetLabel,
             boolean mutualProofVerified
         ) {
-            this(ok, redirected, statusCode, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false, true);
+            this(ok, redirected, statusCode, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false, false, true);
         }
 
         HandshakeResult(
@@ -184,11 +218,19 @@ public class KikiShellPlugin extends Plugin {
             String targetLabel,
             boolean mutualProofVerified
         ) {
-            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false, true);
+            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, mutualProofVerified, false, false, false, true);
         }
 
         HandshakeResult(boolean ok, boolean redirected, String targetHomeId, String targetHostId, String targetLabel) {
-            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, false, false, false, true);
+            this(ok, redirected, ok ? 200 : 0, targetHomeId, targetHostId, targetLabel, false, false, false, false, true);
+        }
+
+        String handshakeStatus() {
+            if (mutualProofVerified) return "approved";
+            if (mutualRevokedVerified) return "revoked";
+            if (mutualDisabledVerified) return "inbound_disabled";
+            if (mutualInvitedVerified) return "invited";
+            return null;
         }
     }
 
@@ -251,6 +293,40 @@ public class KikiShellPlugin extends Plugin {
         return url != null && url.startsWith(local) && current != null && !current.startsWith(local);
     }
 
+    boolean handleWebPermissionRequest(PermissionRequest request) {
+        if (request == null) {
+            return false;
+        }
+        String localUrl = getBridge() == null ? null : getBridge().getLocalUrl();
+        if (localUrl == null || localUrl.isEmpty() || request.getOrigin() == null) {
+            request.deny();
+            return true;
+        }
+        String localOrigin = originOf(Uri.parse(localUrl));
+        String requestOrigin = originOf(request.getOrigin());
+        if (localOrigin == null || !localOrigin.equals(requestOrigin)) {
+            request.deny();
+            return true;
+        }
+        if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            request.deny();
+            return true;
+        }
+        String[] resources = request.getResources();
+        if (resources == null || resources.length == 0) {
+            request.deny();
+            return true;
+        }
+        for (String resource : resources) {
+            if (!PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+                request.deny();
+                return true;
+            }
+        }
+        request.grant(new String[] { PermissionRequest.RESOURCE_VIDEO_CAPTURE });
+        return true;
+    }
+
     @PluginMethod
     public void scanQr(PluginCall call) {
         if (getPermissionState("camera") != PermissionState.GRANTED) {
@@ -309,7 +385,9 @@ public class KikiShellPlugin extends Plugin {
         String origin = call.getString("origin");
         String serverId = call.getString("serverId");
         String grantId = call.getString("grantId");
-        String fingerprint = call.getString("fingerprint");
+        String fingerprint = normalizeFingerprint(call.getString("fingerprint"));
+        String expectedStatus = call.getString("expectedStatus");
+        boolean expectInvited = "invited".equalsIgnoreCase(expectedStatus);
         Uri originUri = origin == null ? null : Uri.parse(origin);
         if (!isWebOrigin(originUri)) {
             JSObject invalid = new JSObject();
@@ -317,7 +395,9 @@ public class KikiShellPlugin extends Plugin {
             call.resolve(invalid);
             return;
         }
-        String normalizedOrigin = originOf(originUri);
+        String parsedOrigin = originOf(originUri);
+        String resolvedFp = fingerprint != null ? fingerprint : resolvePinnedFingerprint(serverId, parsedOrigin);
+        String normalizedOrigin = upgradeOriginForTlsPin(parsedOrigin, resolvedFp);
         boolean pairedProbe =
             serverId != null &&
             !serverId.isEmpty() &&
@@ -325,8 +405,8 @@ public class KikiShellPlugin extends Plugin {
             hasStoredToken(serverId, normalizedOrigin);
         new Thread(() -> {
             JSObject result = new JSObject();
-            HandshakeResult hs = (fingerprint != null && !fingerprint.isEmpty())
-                ? fetchHandshake(normalizedOrigin, serverId, grantId, fingerprint)
+            HandshakeResult hs = (resolvedFp != null && !resolvedFp.isEmpty())
+                ? fetchHandshake(normalizedOrigin, serverId, grantId, resolvedFp)
                 : fetchHandshake(normalizedOrigin, serverId, grantId);
             if (hs.redirected) {
                 result.put("ok", false);
@@ -344,8 +424,10 @@ public class KikiShellPlugin extends Plugin {
                     result.put("status", hs.statusCode);
                     result.put("reason", "pairing_revoked");
                     result.put("authRejected", true);
+                    result.put("handshakeStatus", "revoked");
                     result.put("mutualProofVerified", false);
                     result.put("mutualRevokedVerified", true);
+                    result.put("mutualInvitedVerified", false);
                     if (hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
                         result.put("targetHomeId", hs.targetHomeId);
                     }
@@ -360,8 +442,60 @@ public class KikiShellPlugin extends Plugin {
                     result.put("status", hs.statusCode);
                     result.put("reason", "unreachable");
                     result.put("inboundEnabled", hs.inboundEnabled);
+                    if (hs.mutualDisabledVerified) {
+                        result.put("handshakeStatus", "inbound_disabled");
+                    }
                     result.put("mutualProofVerified", false);
                     result.put("mutualDisabledVerified", hs.mutualDisabledVerified);
+                    result.put("mutualInvitedVerified", false);
+                    if (hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
+                        result.put("targetHomeId", hs.targetHomeId);
+                    }
+                    if (hs.targetHostId != null && !hs.targetHostId.isEmpty()) {
+                        result.put("targetHostId", hs.targetHostId);
+                    }
+                    call.resolve(result);
+                    return;
+                }
+                if (pairedProbe && identityMatches && hs.mutualInvitedVerified) {
+                    result.put("ok", expectInvited);
+                    result.put("status", hs.statusCode);
+                    if (!expectInvited) {
+                        result.put("reason", "pairing_required");
+                    }
+                    result.put("inboundEnabled", hs.inboundEnabled);
+                    result.put("handshakeStatus", "invited");
+                    result.put("mutualProofVerified", false);
+                    result.put("mutualRevokedVerified", false);
+                    result.put("mutualDisabledVerified", false);
+                    result.put("mutualInvitedVerified", true);
+                    if (hs.targetLabel != null && !hs.targetLabel.isEmpty()) {
+                        result.put("targetLabel", hs.targetLabel);
+                    }
+                    if (hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
+                        result.put("targetHomeId", hs.targetHomeId);
+                    }
+                    if (hs.targetHostId != null && !hs.targetHostId.isEmpty()) {
+                        result.put("targetHostId", hs.targetHostId);
+                    }
+                    call.resolve(result);
+                    return;
+                }
+                if (pairedProbe && expectInvited) {
+                    result.put("ok", false);
+                    result.put("status", hs.statusCode);
+                    result.put("reason", "pairing_required");
+                    result.put("inboundEnabled", hs.inboundEnabled);
+                    if (hs.handshakeStatus() != null) {
+                        result.put("handshakeStatus", hs.handshakeStatus());
+                    }
+                    result.put("mutualProofVerified", hs.mutualProofVerified);
+                    result.put("mutualRevokedVerified", false);
+                    result.put("mutualDisabledVerified", false);
+                    result.put("mutualInvitedVerified", false);
+                    if (hs.targetLabel != null && !hs.targetLabel.isEmpty()) {
+                        result.put("targetLabel", hs.targetLabel);
+                    }
                     if (hs.targetHomeId != null && !hs.targetHomeId.isEmpty()) {
                         result.put("targetHomeId", hs.targetHomeId);
                     }
@@ -374,8 +508,12 @@ public class KikiShellPlugin extends Plugin {
                 result.put("ok", true);
                 result.put("status", hs.statusCode);
                 result.put("inboundEnabled", hs.inboundEnabled);
+                if (hs.handshakeStatus() != null) {
+                    result.put("handshakeStatus", hs.handshakeStatus());
+                }
                 result.put("mutualProofVerified", hs.mutualProofVerified);
                 result.put("mutualDisabledVerified", hs.mutualDisabledVerified);
+                result.put("mutualInvitedVerified", hs.mutualInvitedVerified);
                 if (hs.targetLabel != null && !hs.targetLabel.isEmpty()) {
                     result.put("targetLabel", hs.targetLabel);
                 }
@@ -389,16 +527,33 @@ public class KikiShellPlugin extends Plugin {
                 return;
             }
             if (pairedProbe && (hs.statusCode == 401 || hs.statusCode == 403)) {
+                if (hs.mutualInvitedVerified && expectInvited) {
+                    result.put("ok", true);
+                    result.put("status", hs.statusCode);
+                    result.put("handshakeStatus", "invited");
+                    result.put("mutualProofVerified", false);
+                    result.put("mutualRevokedVerified", false);
+                    result.put("mutualDisabledVerified", false);
+                    result.put("mutualInvitedVerified", true);
+                    call.resolve(result);
+                    return;
+                }
                 result.put("ok", false);
                 result.put("status", hs.statusCode);
                 String reason = hs.mutualRevokedVerified
                     ? "pairing_revoked"
-                    : (hs.mutualDisabledVerified ? "unreachable" : "unverified_handshake_proof");
+                    : (hs.mutualInvitedVerified
+                        ? "pairing_required"
+                        : (hs.mutualDisabledVerified ? "unreachable" : "unverified_handshake_proof"));
                 result.put("reason", reason);
                 result.put("authRejected", hs.mutualRevokedVerified);
+                if (hs.handshakeStatus() != null) {
+                    result.put("handshakeStatus", hs.handshakeStatus());
+                }
                 result.put("mutualProofVerified", false);
                 result.put("mutualRevokedVerified", hs.mutualRevokedVerified);
                 result.put("mutualDisabledVerified", hs.mutualDisabledVerified);
+                result.put("mutualInvitedVerified", hs.mutualInvitedVerified);
                 if (hs.mutualDisabledVerified) {
                     result.put("inboundEnabled", false);
                 }
@@ -442,7 +597,7 @@ public class KikiShellPlugin extends Plugin {
             call.resolve(invalid);
             return;
         }
-        String base = originOf(endpointUri);
+        String base = upgradeOriginForTlsPin(originOf(endpointUri), fingerprint);
         new Thread(() -> {
             JSObject result = new JSObject();
             HttpURLConnection conn = null;
@@ -507,6 +662,7 @@ public class KikiShellPlugin extends Plugin {
                 savePinnedFingerprint(targetHomeId, base, fingerprint);
 
                 result.put("ok", true);
+                result.put("origin", base);
                 result.put("serverId", targetHomeId);
                 result.put("targetHomeId", targetHomeId);
                 result.put("targetHostId", targetHostId);
@@ -526,15 +682,19 @@ public class KikiShellPlugin extends Plugin {
 
     @PluginMethod
     public void open(PluginCall call) {
-        String origin = call.getString("origin");
-        String entry = call.getString("entry");
+        String rawOrigin = call.getString("origin");
+        String rawEntry = call.getString("entry");
         String serverId = call.getString("serverId");
-        Uri originUri = origin == null ? null : Uri.parse(origin);
-        Uri entryUri = entry == null ? null : Uri.parse(entry);
-        if (!isWebOrigin(originUri) || entryUri == null || !origin.equals(originOf(entryUri))) {
+        String fingerprint = normalizeFingerprint(call.getString("fingerprint"));
+        Uri originUri = rawOrigin == null ? null : Uri.parse(rawOrigin);
+        Uri entryUri = rawEntry == null ? null : Uri.parse(rawEntry);
+        if (!isWebOrigin(originUri) || entryUri == null || !rawOrigin.equals(originOf(entryUri))) {
             call.reject("invalid_origin");
             return;
         }
+        String resolvedFp = fingerprint != null ? fingerprint : resolvePinnedFingerprint(serverId, rawOrigin);
+        String origin = upgradeOriginForTlsPin(rawOrigin, resolvedFp);
+        String entry = upgradeEntryForTlsPin(rawOrigin, rawEntry, resolvedFp);
         if (serverId == null || serverId.isEmpty()) {
             clearPendingAuth();
             clearActiveAuth();
@@ -556,10 +716,9 @@ public class KikiShellPlugin extends Plugin {
             return;
         }
         String grantId = call.getString("grantId");
-        String fingerprint = call.getString("fingerprint");
         String opId = call.getString("opId");
-        if (fingerprint != null && !fingerprint.isEmpty()) {
-            savePinnedFingerprint(serverId, origin, fingerprint);
+        if (resolvedFp != null && !resolvedFp.isEmpty()) {
+            savePinnedFingerprint(serverId, origin, resolvedFp);
         }
         String cleanEntry = stripTokenFromEntry(origin, entry);
         final long callEpoch;
@@ -569,7 +728,9 @@ public class KikiShellPlugin extends Plugin {
             pendingOpenCommitted = false;
         }
         new Thread(() -> {
-            HandshakeResult hs = fetchHandshake(origin, serverId, grantId);
+            HandshakeResult hs = (resolvedFp != null && !resolvedFp.isEmpty())
+                ? fetchHandshake(origin, serverId, grantId, resolvedFp)
+                : fetchHandshake(origin, serverId, grantId);
             String failureReason = classifyPairedHandshakeFailure(
                 hs,
                 serverId,
@@ -952,6 +1113,41 @@ public class KikiShellPlugin extends Plugin {
         return sb.toString();
     }
 
+    static String verifyHandshakeDomain(String statusHeader, String resProof, String handshakeKey, String suffix) {
+        if (resProof == null || resProof.isEmpty() || handshakeKey == null || handshakeKey.isEmpty() || suffix == null) {
+            return null;
+        }
+        if (statusHeader != null && !statusHeader.trim().isEmpty()) {
+            String normalizedStatus = statusHeader.trim().toLowerCase(java.util.Locale.ROOT);
+            String prefix;
+            if ("approved".equals(normalizedStatus)) {
+                prefix = "kiki-handshake-res-v1:";
+            } else if ("revoked".equals(normalizedStatus)) {
+                prefix = "kiki-handshake-revoked-v1:";
+            } else if ("inbound_disabled".equals(normalizedStatus)) {
+                prefix = "kiki-handshake-disabled-v1:";
+            } else if ("invited".equals(normalizedStatus)) {
+                prefix = "kiki-handshake-invited-v1:";
+            } else {
+                return null;
+            }
+            return constantTimeEquals(resProof, hmacSha256Hex(handshakeKey, prefix + suffix)) ? normalizedStatus : null;
+        }
+        if (constantTimeEquals(resProof, hmacSha256Hex(handshakeKey, "kiki-handshake-res-v1:" + suffix))) {
+            return "approved";
+        }
+        if (constantTimeEquals(resProof, hmacSha256Hex(handshakeKey, "kiki-handshake-revoked-v1:" + suffix))) {
+            return "revoked";
+        }
+        if (constantTimeEquals(resProof, hmacSha256Hex(handshakeKey, "kiki-handshake-disabled-v1:" + suffix))) {
+            return "inbound_disabled";
+        }
+        if (constantTimeEquals(resProof, hmacSha256Hex(handshakeKey, "kiki-handshake-invited-v1:" + suffix))) {
+            return "invited";
+        }
+        return null;
+    }
+
     static String classifyPairedHandshakeFailure(HandshakeResult hs, String expectedServerId, boolean hostMatches) {
         if (hs == null || hs.redirected) return "unreachable";
         if (hs.ok) {
@@ -960,12 +1156,14 @@ public class KikiShellPlugin extends Plugin {
                 return "identity_mismatch";
             }
             if (hs.mutualRevokedVerified) return "pairing_revoked";
+            if (hs.mutualInvitedVerified) return "pairing_required";
             if (hs.mutualDisabledVerified || !hs.inboundEnabled) return "unreachable";
             if (!hs.mutualProofVerified) return "unverified_handshake_proof";
             return null;
         }
         if (hs.statusCode == 401 || hs.statusCode == 403) {
             if (hs.mutualRevokedVerified) return "pairing_revoked";
+            if (hs.mutualInvitedVerified) return "pairing_required";
             if (hs.mutualDisabledVerified) return "unreachable";
             return "unverified_handshake_proof";
         }
@@ -993,6 +1191,11 @@ public class KikiShellPlugin extends Plugin {
         if (normalizedOrigin != null && !normalizedOrigin.isEmpty()) {
             String scoped = sp.getString(GRANT_ID_PREFIX + scopedTokenId(serverId, normalizedOrigin), null);
             if (scoped != null && !scoped.isEmpty()) return scoped;
+            String legacyHttp = legacyHttpOriginForHttps(normalizedOrigin);
+            if (legacyHttp != null && resolvePinnedFingerprint(serverId, normalizedOrigin) != null) {
+                String legacyScoped = sp.getString(GRANT_ID_PREFIX + scopedTokenId(serverId, legacyHttp), null);
+                if (legacyScoped != null && !legacyScoped.isEmpty()) return legacyScoped;
+            }
         }
         return sp.getString(GRANT_ID_PREFIX + serverId, null);
     }
@@ -1002,16 +1205,21 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private HandshakeResult fetchHandshake(
-        String normalizedOrigin,
+        String rawNormalizedOrigin,
         String serverId,
         String explicitGrantId,
         String explicitFingerprint
     ) {
+        String effectiveFp = normalizeFingerprint(explicitFingerprint);
+        if (effectiveFp == null) {
+            effectiveFp = resolvePinnedFingerprint(serverId, rawNormalizedOrigin);
+        }
+        String normalizedOrigin = upgradeOriginForTlsPin(rawNormalizedOrigin, effectiveFp);
         HttpURLConnection conn = null;
         try {
             URL handshakeUrl = new URL(normalizedOrigin + "/api/remote-connections/handshake");
             conn = (HttpURLConnection) handshakeUrl.openConnection();
-            configurePinnedTls(conn, normalizedOrigin, serverId, explicitFingerprint);
+            configurePinnedTls(conn, normalizedOrigin, serverId, effectiveFp);
             conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(3500);
@@ -1033,9 +1241,10 @@ public class KikiShellPlugin extends Plugin {
             }
             int code = conn.getResponseCode();
             if (code >= 300 && code < 400) {
-                return new HandshakeResult(false, true, code, "", "", "", false, false, false);
+                return new HandshakeResult(false, true, code, "", "", "", false, false, false, false, true);
             }
             String resProof = conn.getHeaderField("x-kiki-handshake-proof");
+            String resStatus = conn.getHeaderField("x-kiki-handshake-status");
             if (code >= 200 && code < 300) {
                 JSONObject body = readJson(conn.getInputStream());
                 JSONObject data = body == null ? null : body.optJSONObject("data");
@@ -1045,27 +1254,10 @@ public class KikiShellPlugin extends Plugin {
                 String homeId = target == null ? "" : target.optString("homeId", "");
                 String hostId = target == null ? "" : target.optString("hostId", "");
                 boolean inboundEnabled = data == null || data.optBoolean("inboundEnabled", true);
-                boolean mutualVerified = false;
-                boolean mutualRevoked = false;
-                boolean mutualDisabled = false;
+                String verifiedStatus = null;
                 if (handshakeKey != null && nonce != null && !homeId.isEmpty()) {
                     String suffix = nonce + ":" + homeId + ":" + hostId;
-                    mutualVerified = constantTimeEquals(
-                        resProof,
-                        hmacSha256Hex(handshakeKey, "kiki-handshake-res-v1:" + suffix)
-                    );
-                    if (!mutualVerified) {
-                        mutualRevoked = constantTimeEquals(
-                            resProof,
-                            hmacSha256Hex(handshakeKey, "kiki-handshake-revoked-v1:" + suffix)
-                        );
-                        if (!mutualRevoked) {
-                            mutualDisabled = constantTimeEquals(
-                                resProof,
-                                hmacSha256Hex(handshakeKey, "kiki-handshake-disabled-v1:" + suffix)
-                            );
-                        }
-                    }
+                    verifiedStatus = verifyHandshakeDomain(resStatus, resProof, handshakeKey, suffix);
                 }
                 return new HandshakeResult(
                     true,
@@ -1074,35 +1266,44 @@ public class KikiShellPlugin extends Plugin {
                     homeId,
                     hostId,
                     label,
-                    mutualVerified,
-                    mutualRevoked,
-                    mutualDisabled,
+                    "approved".equals(verifiedStatus),
+                    "revoked".equals(verifiedStatus),
+                    "inbound_disabled".equals(verifiedStatus),
+                    "invited".equals(verifiedStatus),
                     inboundEnabled
                 );
             }
-            boolean mutualRevoked = false;
-            boolean mutualDisabled = false;
+            String verifiedStatus = null;
             if ((code == 401 || code == 403) && handshakeKey != null && nonce != null && serverId != null && !serverId.isEmpty()) {
                 String storedHostId = resolveStoredHostId(serverId);
                 String suffix = nonce + ":" + serverId + ":" + storedHostId;
-                mutualRevoked = constantTimeEquals(
-                    resProof,
-                    hmacSha256Hex(handshakeKey, "kiki-handshake-revoked-v1:" + suffix)
-                );
-                if (!mutualRevoked) {
-                    mutualDisabled = constantTimeEquals(
-                        resProof,
-                        hmacSha256Hex(handshakeKey, "kiki-handshake-disabled-v1:" + suffix)
-                    );
+                verifiedStatus = verifyHandshakeDomain(resStatus, resProof, handshakeKey, suffix);
+                if (verifiedStatus == null && !storedHostId.isEmpty()) {
+                    verifiedStatus = verifyHandshakeDomain(resStatus, resProof, handshakeKey, nonce + ":" + serverId + ":");
                 }
             }
-            return new HandshakeResult(false, false, code, "", "", "", false, mutualRevoked, mutualDisabled, !mutualDisabled);
+            boolean mutualRevoked = "revoked".equals(verifiedStatus);
+            boolean mutualDisabled = "inbound_disabled".equals(verifiedStatus);
+            boolean mutualInvited = "invited".equals(verifiedStatus);
+            return new HandshakeResult(
+                false,
+                false,
+                code,
+                "",
+                "",
+                "",
+                false,
+                mutualRevoked,
+                mutualDisabled,
+                mutualInvited,
+                !mutualDisabled
+            );
         } catch (Exception ignored) {
             /* unreachable or non-JSON */
         } finally {
             if (conn != null) conn.disconnect();
         }
-        return new HandshakeResult(false, false, 0, "", "", "", false, false, false);
+        return new HandshakeResult(false, false, 0, "", "", "", false, false, false, false, true);
     }
 
     private static String scopedTokenId(String serverId, String origin) {
@@ -1113,11 +1314,12 @@ public class KikiShellPlugin extends Plugin {
         if (serverId == null || serverId.isEmpty()) return false;
         SharedPreferences sp = prefs();
         String scoped = scopedTokenId(serverId, origin);
-        return (
-            sp.contains(TOKEN_PREFIX + scoped) ||
-            sp.contains(TOKEN_PREFIX + serverId) ||
-            sp.contains(LEGACY_TOKEN_PREFIX + serverId)
-        );
+        if (sp.contains(TOKEN_PREFIX + scoped)) return true;
+        String legacyHttp = legacyHttpOriginForHttps(origin);
+        if (legacyHttp != null && resolvePinnedFingerprint(serverId, origin) != null) {
+            if (sp.contains(TOKEN_PREFIX + scopedTokenId(serverId, legacyHttp))) return true;
+        }
+        return sp.contains(TOKEN_PREFIX + serverId) || sp.contains(LEGACY_TOKEN_PREFIX + serverId);
     }
 
     private boolean matchesStoredHostId(String serverId, String candidateHostId) {
@@ -1128,8 +1330,19 @@ public class KikiShellPlugin extends Plugin {
     }
 
     private boolean isOriginVerified(String serverId, String origin) {
-        Set<String> set = prefs().getStringSet(VERIFIED_ORIGINS_PREFIX + serverId, null);
-        return set != null && set.contains(origin);
+        SharedPreferences sp = prefs();
+        Set<String> set = sp.getStringSet(VERIFIED_ORIGINS_PREFIX + serverId, null);
+        if (set == null) return false;
+        if (set.contains(origin)) return true;
+        String legacyHttp = legacyHttpOriginForHttps(origin);
+        if (legacyHttp != null && set.contains(legacyHttp) && resolvePinnedFingerprint(serverId, origin) != null) {
+            Set<String> migrated = new HashSet<>(set);
+            migrated.remove(legacyHttp);
+            migrated.add(origin);
+            sp.edit().putStringSet(VERIFIED_ORIGINS_PREFIX + serverId, migrated).apply();
+            return true;
+        }
+        return false;
     }
 
     private void recordVerifiedOrigin(String serverId, String origin, String hostId) {
@@ -1177,6 +1390,16 @@ public class KikiShellPlugin extends Plugin {
                     editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, vOrigin));
                     editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, vOrigin));
                     editor.remove(ORIGIN_TLS_FP_PREFIX + vOrigin);
+                    String legacyV = legacyHttpOriginForHttps(vOrigin);
+                    if (legacyV != null) {
+                        editor.remove(TOKEN_PREFIX + scopedTokenId(serverId, legacyV));
+                        editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, legacyV));
+                        editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, legacyV));
+                        editor.remove(ORIGIN_TLS_FP_PREFIX + legacyV);
+                        if (legacyV.equals(trusted)) {
+                            editor.remove(TRUSTED_ORIGIN);
+                        }
+                    }
                 }
                 if (trusted != null && verified.contains(trusted)) {
                     editor.remove(TRUSTED_ORIGIN);
@@ -1187,6 +1410,16 @@ public class KikiShellPlugin extends Plugin {
                 editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, origin));
                 editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, origin));
                 editor.remove(ORIGIN_TLS_FP_PREFIX + origin);
+                String legacyO = legacyHttpOriginForHttps(origin);
+                if (legacyO != null) {
+                    editor.remove(TOKEN_PREFIX + scopedTokenId(serverId, legacyO));
+                    editor.remove(GRANT_ID_PREFIX + scopedTokenId(serverId, legacyO));
+                    editor.remove(TLS_FP_PREFIX + scopedTokenId(serverId, legacyO));
+                    editor.remove(ORIGIN_TLS_FP_PREFIX + legacyO);
+                    if (legacyO.equals(trusted)) {
+                        editor.remove(TRUSTED_ORIGIN);
+                    }
+                }
             }
             editor
                 .remove(TOKEN_PREFIX + serverId)
@@ -1195,11 +1428,18 @@ public class KikiShellPlugin extends Plugin {
                 .remove(GRANT_ID_PREFIX + serverId)
                 .remove(VERIFIED_ORIGINS_PREFIX + serverId);
         }
-        if (origin != null && !origin.isEmpty() && origin.equals(trusted)) {
-            editor.remove(TRUSTED_ORIGIN);
+        if (origin != null && !origin.isEmpty()) {
+            String legacyO = legacyHttpOriginForHttps(origin);
+            if (origin.equals(trusted) || (legacyO != null && legacyO.equals(trusted))) {
+                editor.remove(TRUSTED_ORIGIN);
+            }
         }
         if ((serverId == null || serverId.isEmpty()) && origin != null && !origin.isEmpty()) {
             editor.remove(ORIGIN_TLS_FP_PREFIX + origin);
+            String legacyO = legacyHttpOriginForHttps(origin);
+            if (legacyO != null) {
+                editor.remove(ORIGIN_TLS_FP_PREFIX + legacyO);
+            }
         }
         editor.apply();
     }
@@ -1214,6 +1454,38 @@ public class KikiShellPlugin extends Plugin {
             if (!hex) return null;
         }
         return clean;
+    }
+
+    static String upgradeOriginForTlsPin(String origin, String rawFingerprint) {
+        if (origin == null || normalizeFingerprint(rawFingerprint) == null) return origin;
+        Uri uri = Uri.parse(origin);
+        if (!isWebOrigin(uri) || !"http".equalsIgnoreCase(uri.getScheme())) return origin;
+        String host = uri.getHost();
+        if (host.contains(":")) host = "[" + host + "]";
+        int port = uri.getPort() > 0 ? uri.getPort() : 80;
+        String lowerHost = host.toLowerCase(java.util.Locale.ROOT);
+        return port == 443 ? ("https://" + lowerHost) : ("https://" + lowerHost + ":" + port);
+    }
+
+    static String legacyHttpOriginForHttps(String origin) {
+        if (origin == null || origin.isEmpty()) return null;
+        Uri uri = Uri.parse(origin);
+        if (!isWebOrigin(uri) || !"https".equalsIgnoreCase(uri.getScheme())) return null;
+        String host = uri.getHost();
+        if (host.contains(":")) host = "[" + host + "]";
+        String lowerHost = host.toLowerCase(java.util.Locale.ROOT);
+        int port = uri.getPort() > 0 ? uri.getPort() : 443;
+        return port == 80 ? ("http://" + lowerHost) : ("http://" + lowerHost + ":" + port);
+    }
+
+    static String upgradeEntryForTlsPin(String rawOrigin, String rawEntry, String rawFingerprint) {
+        if (rawOrigin == null || normalizeFingerprint(rawFingerprint) == null) return rawEntry;
+        String upgradedOrigin = upgradeOriginForTlsPin(rawOrigin, rawFingerprint);
+        if (upgradedOrigin.equals(rawOrigin)) return rawEntry;
+        if (rawEntry != null && rawEntry.startsWith(rawOrigin)) {
+            return upgradedOrigin + rawEntry.substring(rawOrigin.length());
+        }
+        return upgradedOrigin + "/";
     }
 
     static String certificateSpkiSha256Hex(Certificate cert) {
@@ -1250,7 +1522,27 @@ public class KikiShellPlugin extends Plugin {
             String scoped = normalizeFingerprint(sp.getString(TLS_FP_PREFIX + scopedTokenId(serverId, origin), null));
             if (scoped != null) return scoped;
         }
-        return normalizeFingerprint(sp.getString(ORIGIN_TLS_FP_PREFIX + origin, null));
+        String direct = normalizeFingerprint(sp.getString(ORIGIN_TLS_FP_PREFIX + origin, null));
+        if (direct != null) return direct;
+        String legacyHttp = legacyHttpOriginForHttps(origin);
+        if (legacyHttp != null) {
+            String migrated = null;
+            if (serverId != null && !serverId.isEmpty()) {
+                migrated = normalizeFingerprint(sp.getString(TLS_FP_PREFIX + scopedTokenId(serverId, legacyHttp), null));
+            }
+            if (migrated == null) {
+                migrated = normalizeFingerprint(sp.getString(ORIGIN_TLS_FP_PREFIX + legacyHttp, null));
+            }
+            if (migrated != null) {
+                if (serverId != null && !serverId.isEmpty()) {
+                    savePinnedFingerprint(serverId, origin, migrated);
+                } else {
+                    sp.edit().putString(ORIGIN_TLS_FP_PREFIX + origin, migrated).apply();
+                }
+                return migrated;
+            }
+        }
+        return null;
     }
 
     private void configurePinnedTls(HttpURLConnection conn, String origin, String serverId, String explicitFingerprint) {
@@ -1420,6 +1712,16 @@ public class KikiShellPlugin extends Plugin {
                     key = getOrCreateSecretKey();
                     String plain = decryptTokenValue(key, scoped, storedScoped);
                     if (plain != null && !plain.isEmpty()) return plain;
+                }
+                String legacyHttp = legacyHttpOriginForHttps(origin);
+                if (legacyHttp != null && resolvePinnedFingerprint(serverId, origin) != null) {
+                    String legacyScoped = scopedTokenId(serverId, legacyHttp);
+                    String storedLegacyScoped = sp.getString(TOKEN_PREFIX + legacyScoped, null);
+                    if (storedLegacyScoped != null && !storedLegacyScoped.isEmpty()) {
+                        if (key == null) key = getOrCreateSecretKey();
+                        String plain = decryptTokenValue(key, legacyScoped, storedLegacyScoped);
+                        if (plain != null && !plain.isEmpty()) return plain;
+                    }
                 }
             }
             String stored = sp.getString(TOKEN_PREFIX + serverId, null);

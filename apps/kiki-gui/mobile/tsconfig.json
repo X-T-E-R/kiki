@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "paths": {
+      "@kiki/protocol": ["../../../packages/protocol/src/index.ts"],
+      "@kiki/protocol/pairing": ["../../../packages/protocol/src/pairing.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "tsdown.config.ts", "vitest.config.ts"]
+}

@@ -27,6 +27,11 @@
       "types": "./src/agentName.ts",
       "import": "./src/agentName.ts",
       "default": "./src/agentName.ts"
+    },
+    "./pairing": {
+      "types": "./src/pairing.ts",
+      "import": "./src/pairing.ts",
+      "default": "./src/pairing.ts"
     }
   },
   "scripts": {

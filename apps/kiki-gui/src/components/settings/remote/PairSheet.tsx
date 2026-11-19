@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
-import { formatPairingUri, type BridgeOperation, type PairCodeCreateOutput, type RemoteConnection, type SshHost } from '@kiki/protocol';
+import { formatPairingUri, upgradeEndpointForTlsPin, type BridgeOperation, type PairCodeCreateOutput, type RemoteConnection, type SshHost } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
 import type { KikiClient } from '../../../lib/client';
@@ -739,8 +739,11 @@ function InboundPairSheet({
   const activeEndpoint = issued.suggestedEndpoints.includes(selectedEndpoint)
     ? selectedEndpoint
     : issued.suggestedEndpoints[0];
-  const qrUri = !expired && newlyPairedGrant === undefined && activeEndpoint !== undefined
-    ? formatPairingUri({ endpoint: activeEndpoint, code: issued.code, fingerprint: issued.tlsFingerprint })
+  const qrEndpoint = activeEndpoint === undefined
+    ? undefined
+    : upgradeEndpointForTlsPin(activeEndpoint, issued.tlsFingerprint);
+  const qrUri = !expired && newlyPairedGrant === undefined && qrEndpoint !== undefined
+    ? formatPairingUri({ endpoint: qrEndpoint, code: issued.code, fingerprint: issued.tlsFingerprint })
     : undefined;
   const qrImage = qrUri === undefined ? undefined : wechatQrImage(qrUri);
 
