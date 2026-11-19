@@ -1,4 +1,5 @@
 import { produce } from 'immer';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
@@ -60,6 +61,12 @@ export async function readPersistedAgentRuntimeFacts(
   signal?.throwIfAborted();
   const storage = 'accessor' in host ? host.accessor.get(IFileSystemStorageService) : host.storage;
   const docs = 'accessor' in host ? host.accessor.get(IAtomicDocumentStore) : host.docs;
+  let workers: ICpuWorkerService | undefined;
+  if ('accessor' in host) {
+    try { workers = host.accessor.get(ICpuWorkerService); } catch { workers = undefined; }
+  } else {
+    workers = host.workers;
+  }
   const scope = agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId), agentId);
   const [size, mtime] = await Promise.all([
     logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
@@ -74,7 +81,7 @@ export async function readPersistedAgentRuntimeFacts(
   if (cached?.size === size && cached.mtime === mtime && cached.contextTokens === metadata?.contextTokens) return wait(cached.promise);
   const read = async (): Promise<PersistedAgentRuntimeFacts> => {
     const keys = options?.includeStatus === true ? [...KEYS, ...STATUS_KEYS] : KEYS;
-    const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, new Set(keys.map(key => key.name)));
+    const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, new Set(keys.map(key => key.name)), workers);
     const usable = checkpoint !== undefined && KEYS.every(key => checkpoint.states.has(key.name));
     const start = usable ? checkpoint.offset : 0;
     if (size - start > BYTE_BUDGET) return fallback;

@@ -7,6 +7,8 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IUsageFactStore, UsageFactStore, type UsageFactCheckpoint } from '#/app/usageFacts/usageFactStore';
 import { normalizeUsageFact } from '#/agent/usage/usageFact';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -431,5 +433,47 @@ describe('UsageFactStore', () => {
     const summaries = await Promise.all(agentScopes.slice(0, 8).map((agentScope) => facts.summary(agentScope)));
     expect(summaries.every((entry) => entry.totals === undefined)).toBe(true);
     expect(getSpy).toHaveBeenCalledTimes(2);
+
+    await documents.set('sessions/example/cold-public', 'state.json', { id: 'cold-public', private: false, agents: {} });
+    logs.append('sessions/example/cold-public/agents/main', KEY, fact(2));
+    await logs.flush();
+    expect((await facts.summary('sessions/example/cold-public/agents/main')).totals).toBeDefined();
+    const readsBeforeOtherFlip = getSpy.mock.calls.length;
+    await facts.setSessionPrivacy({ ...session, id: 'other-session', private: true });
+    await facts.summary('sessions/example/cold-public/agents/main');
+    expect(getSpy.mock.calls.length).toBe(readsBeforeOtherFlip);
+  });
+
+  it('reads live session privacy from ISessionManager without touching state.json on disk', async () => {
+    const liveDocs = new JsonAtomicDocumentStore(storage);
+    const getSpy = vi.spyOn(liveDocs, 'get');
+    const sessionManager = {
+      get: (sessionId: string) =>
+        sessionId === 'live-private'
+          ? ({
+              accessor: {
+                get: (token: unknown) => {
+                  if (token === ISessionContext) return { workspaceId: 'example', isPrivate: () => true };
+                  throw new Error('unexpected token');
+                },
+              },
+            } as never)
+          : undefined,
+    };
+    const liveFacts = new UsageFactStore(
+      logs,
+      storage,
+      model,
+      stubLog(),
+      liveDocs,
+      { current: sessionManager as unknown as ISessionManager, onDidChange: () => ({ dispose: () => {} }) } as never,
+    );
+    try {
+      await liveFacts.commit('sessions/example/live-private/agents/main', 0, checkpoint(1), [normalizeUsageFact(fact(), 'main')!]);
+      expect(await liveFacts.summary('sessions/example/live-private/agents/main')).toEqual({});
+      expect(getSpy).not.toHaveBeenCalled();
+    } finally {
+      liveFacts.dispose();
+    }
   });
 });

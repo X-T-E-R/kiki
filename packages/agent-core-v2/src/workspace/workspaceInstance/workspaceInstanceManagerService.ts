@@ -166,7 +166,13 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
       let workspace: Workspace | undefined;
       if ('workspaceId' in ref) {
         workspace = await this.workspaces.get(ref.workspaceId);
-        if (workspace === undefined && ref.root !== undefined) workspace = await this.workspaces.createOrTouch(ref.root);
+        if (
+          workspace === undefined &&
+          ref.root !== undefined &&
+          !(await this.workspaces.isDeleted?.(ref.workspaceId, ref.root))
+        ) {
+          workspace = await this.workspaces.createOrTouch(ref.root);
+        }
       } else {
         workspace = await this.workspaces.createOrTouch(ref.root);
       }

@@ -1,6 +1,6 @@
 /** Per-session composer drafts: in-memory for this app run, optionally mirrored to `kiki.drafts`. */
 
-import type { ModelSwitchMode, PermissionMode, PromptPlanGate } from '@kiki/protocol';
+import type { DeferredAppendTiming, ModelSwitchMode, PermissionMode, PromptPlanGate, PromptSkillActivation } from '@kiki/protocol';
 
 import { parseExecutionChoice, type ExecutionChoice } from './executionSelection';
 import type { ComposerAttachment } from './attachments';
@@ -378,6 +378,7 @@ export function writeComposerState(sessionId: string, state: ComposerSessionStat
 
 export function clearComposerState(sessionId: string): void {
   composerMemory.delete(sessionId);
+  pendingSubmissionMemory.delete(sessionId);
   if (draftsEnabled()) {
     persistComposerScalars(sessionId, {});
   }
@@ -386,6 +387,73 @@ export function clearComposerState(sessionId: string): void {
 /** Test-only: forget every session's captured composer chrome. */
 export function resetComposerMemoryForTests(): void {
   composerMemory.clear();
+  pendingSubmissionMemory.clear();
+}
+
+export interface PendingComposerSubmission {
+  readonly scope: string;
+  readonly connectionScopeId: string;
+  readonly payload: string;
+  readonly key: string;
+  readonly draftText: string;
+  readonly afterModelSwitch?: string;
+  readonly appendTiming?: DeferredAppendTiming;
+  readonly skills?: readonly PromptSkillActivation[];
+}
+
+const pendingSubmissionMemory = new Map<string, PendingComposerSubmission>();
+
+export function readPendingSubmission(sessionId: string): PendingComposerSubmission | undefined {
+  return pendingSubmissionMemory.get(sessionId);
+}
+
+export function writePendingSubmission(sessionId: string, submission: PendingComposerSubmission | undefined): void {
+  if (submission === undefined) {
+    pendingSubmissionMemory.delete(sessionId);
+    return;
+  }
+  pendingSubmissionMemory.set(sessionId, submission);
+}
+
+export function clearPendingSubmissionsForConnection(connectionScopeId: string): void {
+  for (const [key, entry] of pendingSubmissionMemory) {
+    if (entry.connectionScopeId === connectionScopeId) {
+      pendingSubmissionMemory.delete(key);
+    }
+  }
+}
+
+export function settlePendingSubmission(
+  sessionId: string,
+  submissionKey: string,
+  sentAnnotationIds?: ReadonlySet<string>,
+): boolean {
+  const current = pendingSubmissionMemory.get(sessionId);
+  if (current === undefined || current.key !== submissionKey) return false;
+  if (readDraft(sessionId) !== current.draftText) {
+    pendingSubmissionMemory.delete(sessionId);
+    return false;
+  }
+  pendingSubmissionMemory.delete(sessionId);
+  writeDraft(sessionId, '');
+  const chrome = readComposerState(sessionId);
+  const nextAnnotations = sentAnnotationIds !== undefined && sentAnnotationIds.size > 0
+    ? (chrome.annotations ?? []).filter((item) => !sentAnnotationIds.has(item.id))
+    : (chrome.annotations ?? []);
+  writeComposerState(sessionId, {
+    ...chrome,
+    attachments: [],
+    quotes: [],
+    annotations: nextAnnotations,
+    permissionMode: chrome.permissionMode,
+    planMode: chrome.planMode,
+    planGate: chrome.planGate,
+    goalObjective: chrome.goalObjective,
+    modelOverride: chrome.modelOverride,
+    effortOverride: chrome.effortOverride,
+  });
+  for (const listener of appendListeners) listener(sessionId, []);
+  return true;
 }
 
 // ---- per-session input history (memory-only) ----
@@ -436,6 +504,7 @@ export function resetInputHistoryForTests(): void {
  */
 export function appendToDraft(sessionId: string, text: string): void {
   if (text === '') return;
+  pendingSubmissionMemory.delete(sessionId);
   const current = readDraft(sessionId);
   const separator = current !== '' && !/[\s]$/.test(current) ? ' ' : '';
   writeDraft(sessionId, `${current}${separator}${text}`);
@@ -457,6 +526,7 @@ export function recoverSubmittedDraft(key: string, text: string, attachments: re
 }
 
 export function restorePromptToDraft(sessionId: string, content: readonly import('@kiki/protocol').MessageContent[]): void {
+  pendingSubmissionMemory.delete(sessionId);
   const text = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
   const restored: ComposerAttachment[] = content.flatMap((part): ComposerAttachment[] => {
     if (part.type !== 'image' && part.type !== 'video' && part.type !== 'file') return [];

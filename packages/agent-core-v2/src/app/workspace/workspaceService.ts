@@ -59,6 +59,14 @@ export class WorkspaceService implements IWorkspaceService {
       .find((workspace) => workspaceRootKey(workspace.root) === rootKey);
   }
 
+  async isDeleted(id: string, root?: string): Promise<boolean> {
+    const catalog = await this.loadCatalog();
+    if (catalog.deletedIds.length === 0) return false;
+    const deleted = new Set(catalog.deletedIds);
+    if (deleted.has(id)) return true;
+    return root !== undefined && workDirKeyAliases(root).some((alias) => deleted.has(alias));
+  }
+
   createOrTouch(root: string, name?: string): Promise<Workspace> {
     return this.runExclusive(async () => {
       let stat;

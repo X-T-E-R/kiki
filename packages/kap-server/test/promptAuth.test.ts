@@ -1,8 +1,13 @@
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   IAgentProfileService,
   IAuthSummaryService,
+  IBootstrapService,
   IConfigService,
   IModelService,
+  IProviderService,
   ISessionAgentProfileCatalog,
   type IAgentScopeHandle,
   type ISessionScopeHandle,
@@ -209,5 +214,106 @@ describe('ensurePromptAuthReady with bound ad-hoc endpoints', () => {
       .rejects.toMatchObject({ message: expect.stringContaining('credential_unavailable') });
 
     expect(harness.authSummary.ensureReady).not.toHaveBeenCalled();
+  });
+
+  it('honors model.providerId for OAuth models and invalidates static auth cache when credentials/credentials.toml changes', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'prompt-auth-creds-'));
+    try {
+      const credsDir = join(homeDir, 'credentials');
+      await mkdir(credsDir, { recursive: true });
+      const credsPath = join(credsDir, 'credentials.toml');
+      await writeFile(credsPath, 'version = 1\n', 'utf8');
+
+      const config = {
+        reload: vi.fn(async () => undefined),
+        get: vi.fn(() => undefined),
+        onDidChangeConfiguration: vi.fn(() => ({ dispose: () => {} })),
+      };
+      const authSummary = { ensureReady: vi.fn(async () => undefined) };
+      const models = {
+        getDefaultModel: () => 'static-model',
+        resolveId: (id: string) => id,
+        get: (id: string) => {
+          if (id === 'oauth-via-provider-id') {
+            return { providerId: 'oauth-provider', model: 'gpt-oauth' };
+          }
+          if (id === 'static-model') {
+            return { providerId: 'static-provider', model: 'gpt-static' };
+          }
+          return undefined;
+        },
+      };
+      const providers = {
+        getDefaultProvider: () => 'static-provider',
+        get: (id: string) => {
+          if (id === 'oauth-provider') {
+            return { oauth: { provider: 'codex' } };
+          }
+          if (id === 'static-provider') {
+            return { apiKey: 'synthetic-static-key' };
+          }
+          return undefined;
+        },
+      };
+      const bootstrap = {
+        configPath: join(homeDir, 'config.toml'),
+        homeDir,
+        credentialsHomeDir: homeDir,
+        baseHomeDir: undefined,
+      };
+      const profile = {
+        data: () => ({
+          endpoint: undefined,
+          profileName: CURRENT_PROFILE,
+          modelAlias: 'static-model',
+          executorId: 'native',
+          driver: undefined,
+          execution: undefined,
+        }),
+        getModel: () => 'static-model',
+        resolveFile: vi.fn(async () => undefined),
+      } as unknown as IAgentProfileService;
+      const accessor = {
+        get: (token: unknown) => {
+          if (token === IAgentProfileService) return profile;
+          if (token === IAuthSummaryService) return authSummary;
+          if (token === IConfigService) return config;
+          if (token === IModelService) return models;
+          if (token === IProviderService) return providers;
+          if (token === IBootstrapService) return bootstrap;
+          throw new Error('Unexpected service token');
+        },
+      } as unknown as IAgentScopeHandle['accessor'];
+      const session = {
+        accessor: {
+          get: (token: unknown) => {
+            if (token === IAdhocEndpointVault) return new AdhocEndpointVault();
+            if (token === ISessionAgentProfileCatalog) {
+              return { ready: Promise.resolve(), get: () => undefined, getDefault: () => undefined };
+            }
+            throw new Error('Unexpected session token');
+          },
+        },
+      } as unknown as ISessionScopeHandle;
+
+      await ensurePromptAuthReady(session, accessor, { model: 'oauth-via-provider-id' });
+      expect(authSummary.ensureReady).toHaveBeenCalledWith('oauth-via-provider-id');
+      authSummary.ensureReady.mockClear();
+
+      await ensurePromptAuthReady(session, accessor, { model: 'static-model' });
+      expect(authSummary.ensureReady).toHaveBeenCalledWith('static-model');
+      authSummary.ensureReady.mockClear();
+      config.reload.mockClear();
+
+      await ensurePromptAuthReady(session, accessor, { model: 'static-model' });
+      expect(authSummary.ensureReady).not.toHaveBeenCalled();
+      expect(config.reload).not.toHaveBeenCalled();
+
+      await writeFile(credsPath, 'version = 2\nextra = "changed"\n', 'utf8');
+      await ensurePromptAuthReady(session, accessor, { model: 'static-model' });
+      expect(authSummary.ensureReady).toHaveBeenCalledWith('static-model');
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
   });
 });

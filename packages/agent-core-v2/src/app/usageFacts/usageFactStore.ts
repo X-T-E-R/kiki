@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
-import { createDecorator } from '#/_base/di/instantiation';
+import { createDecorator, ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { normalizeUsageFact, type UsageFact, type UsageFactTotals } from '#/agent/usage/usageFact';
 import { UsageJsonStream, type UsageFactJsonObserver } from '#/agent/usage/usageJson';
@@ -49,13 +51,15 @@ const LOG = 'facts.jsonl';
 class FactBudgetReached extends Error {}
 export class UsageFactCursorChangedError extends Error { constructor() { super('Usage fact cursor changed'); } }
 
+const PRIVACY_CACHE_MAX_ENTRIES = 2048;
+
 export class UsageFactStore extends Disposable implements IUsageFactStore {
   declare readonly _serviceBrand: undefined;
   private readonly operations = new Map<string, Promise<unknown>>();
   private readonly damaged = new Set<string>();
-  private privacyEpoch = 0;
+  private readonly privacyEpochs = new Map<string, number>();
   private readonly privateSessions = new Map<string, Promise<string | undefined>>();
-  private readonly privacyCache = new Map<string, { fingerprint: string; epoch: number; value: boolean }>();
+  private readonly privacyCache = new Map<string, { fingerprint: string; epoch: number; private: boolean; agentIds: ReadonlySet<string> }>();
   private readonly privacyFlights = new Map<string, { fingerprint: string; epoch: number; result: Promise<boolean | undefined> }>();
   constructor(
     @IAppendLogStore private readonly logs: IAppendLogStore,
@@ -63,6 +67,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     @IUsageReadModel private readonly model: IUsageReadModel,
     @ILogService private readonly log: ILogService,
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
+    @ref(ISessionManager) private readonly sessions?: LiveRef<ISessionManager>,
   ) {
     super();
     this._register(logs.registerProjection({
@@ -95,14 +100,19 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     this.privacyCache.clear();
     this.privacyFlights.clear();
     this.privateSessions.clear();
+    this.privacyEpochs.clear();
   }
   async setSessionPrivacy(summary: SessionSummary): Promise<void> {
-    this.privacyEpoch++;
     const key = `${summary.workspaceId}/${summary.id}`;
-    const fingerprint = summary.private === true ? this.stateFingerprint(`sessions/${key}`) : undefined;
+    const session = `sessions/${key}`;
+    this.privacyEpochs.set(session, (this.privacyEpochs.get(session) ?? 0) + 1);
+    const fingerprint = summary.private === true ? this.stateFingerprint(session) : undefined;
     if (fingerprint !== undefined) this.privateSessions.set(key, fingerprint);
     else this.privateSessions.delete(key);
     await Promise.all([fingerprint, this.model.setSessionPrivacy(summary.workspaceId, summary.id, summary.private === true)]);
+  }
+  private sessionEpoch(session: string): number {
+    return this.privacyEpochs.get(session) ?? 0;
   }
   private async stateFingerprint(session: string): Promise<string | undefined> {
     if (this.storage.stat !== undefined) {
@@ -115,19 +125,35 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     ]);
     return size === undefined && mtime === undefined ? undefined : `${size ?? -1}:${mtime ?? -1}`;
   }
+  private async readLivePrivacy(workspaceId: string, sessionId: string): Promise<boolean | undefined> {
+    const live = this.sessions?.current?.get(sessionId);
+    if (live === undefined) return undefined;
+    try {
+      const ctx = live.accessor.get(ISessionContext);
+      if (ctx.workspaceId !== workspaceId) return undefined;
+      if (typeof ctx.isPrivate === 'function') return ctx.isPrivate();
+      return (await live.accessor.get(ISessionMetadata).read()).private === true;
+    } catch {
+      return undefined;
+    }
+  }
   private async isPrivate(scope: string): Promise<boolean> {
     const index = scope.lastIndexOf('/agents/');
     const session = index >= 0 ? scope.slice(0, index) : scope;
     const [workspaceId, sessionId] = session.split('/').slice(-2) as [string, string];
     const key = `${workspaceId}/${sessionId}`;
+    const livePrivate = await this.readLivePrivacy(workspaceId, sessionId);
+    if (livePrivate === true || (livePrivate === false && !this.privateSessions.has(key))) {
+      return livePrivate;
+    }
     while (true) {
-      const epoch = this.privacyEpoch;
+      const epoch = this.sessionEpoch(session);
       const fingerprint = await this.stateFingerprint(session);
-      if (epoch !== this.privacyEpoch) continue;
+      if (epoch !== this.sessionEpoch(session)) continue;
       const fence = this.privateSessions.get(key);
       if (fence !== undefined) {
         const before = await fence;
-        if (epoch !== this.privacyEpoch) continue;
+        if (epoch !== this.sessionEpoch(session)) continue;
         if (fingerprint === before) return true;
       }
       if (fingerprint === undefined) {
@@ -135,19 +161,33 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
         return false;
       }
       const cached = this.privacyCache.get(session);
-      if (cached?.fingerprint === fingerprint && cached.epoch === epoch) return cached.value;
+      if (cached?.fingerprint === fingerprint && cached.epoch === epoch) {
+        this.privacyCache.delete(session);
+        this.privacyCache.set(session, cached);
+        return cached.private;
+      }
       let flight = this.privacyFlights.get(session);
       if (flight?.fingerprint !== fingerprint || flight.epoch !== epoch) {
         const result = (async () => {
-          const value = (await this.documents.get<SessionMeta>(session, 'state.json'))?.private === true;
+          const doc = await this.documents.get<SessionMeta>(session, 'state.json');
+          const value = doc?.private === true;
           const after = await this.stateFingerprint(session);
-          if (after !== fingerprint || epoch !== this.privacyEpoch) return undefined;
+          if (after !== fingerprint || epoch !== this.sessionEpoch(session)) return undefined;
           if (!value && fence !== undefined) {
             await this.model.setSessionPrivacy(workspaceId, sessionId, false);
-            if (epoch !== this.privacyEpoch) return undefined;
+            if (epoch !== this.sessionEpoch(session)) return undefined;
             this.privateSessions.delete(key);
           }
-          this.privacyCache.set(session, { fingerprint, epoch, value });
+          this.privacyCache.delete(session);
+          this.privacyCache.set(session, {
+            fingerprint,
+            epoch,
+            private: value,
+            agentIds: new Set(Object.keys(doc?.agents ?? {})),
+          });
+          if (this.privacyCache.size > PRIVACY_CACHE_MAX_ENTRIES) {
+            this.privacyCache.delete(this.privacyCache.keys().next().value!);
+          }
           return value;
         })().finally(() => {
           if (this.privacyFlights.get(session)?.result === result) this.privacyFlights.delete(session);
@@ -156,7 +196,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
         this.privacyFlights.set(session, flight);
       }
       const value = await flight.result;
-      if (value !== undefined && epoch === this.privacyEpoch) return value;
+      if (value !== undefined && epoch === this.sessionEpoch(session)) return value;
     }
   }
   private async commitWritten(position: AppendLogCommit, records: readonly UsageFact[], valid: boolean): Promise<void> {

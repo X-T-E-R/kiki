@@ -23,7 +23,7 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { stubExecutionControl } from '../../session/executionControl/stubs';
 import { ExecutorHintDelivery } from '#/agent/execution/externalExecutorOps';
-import { IAgentPromptService, PROMPT_EDIT_HOLD_TTL_MS, reservePrompt } from '#/agent/prompt/prompt';
+import { IAgentPromptService, PROMPT_EDIT_HOLD_TTL_MS, promptRetryFor, reservePrompt } from '#/agent/prompt/prompt';
 import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentPlanService } from '#/features/plan/plan';
@@ -3717,5 +3717,33 @@ describe('AgentPromptService', () => {
     await vi.waitFor(() => expect(loop.launches).toEqual([0]));
     expect(seeds).toEqual(['recovered']);
     expect(prompt.list().active?.id).toBe('recovered');
+  });
+
+  it('tracks managed inject promptIds in unflushedPromptIds so retry recovers cleanly without dropping or duplicating steer', async () => {
+    const { prompt, target } = harness();
+    const wire = target.accessor.get(IWireService);
+    let failFlush = true;
+    const originalFlush = wire.flush.bind(wire);
+    const flushSpy = vi.spyOn(wire, 'flush').mockImplementation(async () => {
+      if (failFlush) {
+        failFlush = false;
+        throw new Error('simulated transient wire flush failure');
+      }
+      await originalFlush();
+    });
+    const injected = message('steer-managed');
+    await expect(
+      prompt.inject(injected, { promptId: 'managed-inject-1', retryFingerprint: 'fp-1' }),
+    ).rejects.toThrow('simulated transient wire flush failure');
+    expect(flushSpy).toHaveBeenCalledTimes(1);
+
+    await expect(promptRetryFor(prompt).lookup('managed-inject-1', 'fp-1')).resolves.toBeUndefined();
+    await expect(
+      prompt.inject(injected, { promptId: 'managed-inject-1', retryFingerprint: 'fp-1' }),
+    ).resolves.toBeDefined();
+    await expect(promptRetryFor(prompt).lookup('managed-inject-1', 'fp-1')).resolves.toMatchObject({
+      status: 'running',
+      userMessageId: 'managed-inject-1',
+    });
   });
 });

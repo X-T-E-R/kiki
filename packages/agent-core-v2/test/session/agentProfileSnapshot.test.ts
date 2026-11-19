@@ -7,6 +7,12 @@ import { createWireContextProjection } from '#/agent/contextMemory/wireContextPr
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { WireRecord } from '#/wire/record';
 import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { executeCpuOperation } from '#/app/cpuWorker/tasks';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { profileKey, profileActiveToolsKey } from '#/agent/profile/profileOps';
 import { tokenCountingKey } from '#/agent/tokenCounting/tokenCountingOps';
 import { turnKey } from '#/agent/loop/turnOps';
@@ -285,4 +291,59 @@ it.each([false, true])('keeps mirrored context through a direct model switch, wi
     read: async () => undefined, readStream: async function* () { yield bytes; } }, appendLog: { flush: async () => {} } };
   expect(await readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main', { contextTokens: 321 } as never))
     .toMatchObject({ contextTokens: counted ? 0 : 321, complete: true });
+});
+
+it('decodes node-fs checkpoints via checkpoint.read and coalesces concurrent profile and runtime reads', async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), 'checkpoint-worker-test-'));
+  const storage = new FileStorageService(baseDir);
+  const docs = new JsonAtomicDocumentStore(storage);
+  try {
+    const { host: fixtureHost, checkpoint } = checkpointFixture();
+    const totalSize = await fixtureHost.storage.size();
+    const wireChunks: Buffer[] = [];
+    for await (const chunk of fixtureHost.storage.readStream('', '', { start: 0, end: totalSize - 1 })) {
+      wireChunks.push(Buffer.from(chunk));
+    }
+    const agentScope = 'sessions/workspace/session/agents/main';
+    await storage.append(agentScope, 'wire.jsonl', Buffer.concat(wireChunks));
+    await storage.write(agentScope, 'wire.jsonl.generation', Buffer.from('fixture-generation'));
+    await docs.set(`${agentScope}/replay-checkpoints`, 'engine-v1', checkpoint);
+
+    const workerCalls: Array<{ readonly type: string; readonly path?: string }> = [];
+    const workers = {
+      request: vi.fn(async (operation: Parameters<typeof executeCpuOperation>[0]) => {
+        workerCalls.push({ type: operation.type, path: 'path' in operation ? operation.path : undefined });
+        return executeCpuOperation(operation);
+      }),
+    };
+    const host = {
+      storage,
+      docs,
+      workers,
+      appendLog: { flush: async () => {} },
+    };
+
+    const [profileA, profileB, runtimeFacts] = await Promise.all([
+      readPersistedAgentProfileSnapshot(host as never, 'workspace', 'session', 'main', undefined, undefined, {
+        inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+      }),
+      readPersistedAgentProfileSnapshot(host as never, 'workspace', 'session', 'main', undefined, undefined, {
+        inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+      }),
+      readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main'),
+    ]);
+
+    expect(profileA).toMatchObject({ source: 'wire', profileName: 'research', activeToolNames: ['Read', 'Grep'] });
+    expect(profileB).toEqual(profileA);
+    expect(runtimeFacts).toMatchObject({ contextTokens: 1234, turnCount: 8, complete: true });
+    expect(workerCalls).toEqual([
+      {
+        type: 'checkpoint.read',
+        path: storage.pathFor(`${agentScope}/replay-checkpoints`, 'engine-v1'),
+      },
+    ]);
+  } finally {
+    await storage.close();
+    await rm(baseDir, { recursive: true, force: true });
+  }
 });

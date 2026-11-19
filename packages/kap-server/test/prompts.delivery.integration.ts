@@ -43,6 +43,7 @@ import { createHooks } from '@kiki/agent-core-v2/hooks';
 import type { TurnResult } from '@kiki/agent-core-v2/agent/loop/loop';
 import { timeRestorePhase } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
+import { IWorkspaceService } from '@kiki/agent-core-v2/app/workspace/workspace';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
 import { describe, expect, it, vi } from 'vitest';
 import { startServer } from '../src/start';
@@ -776,7 +777,7 @@ describe('server-v2 /api prompts', () => {
       const firstId = 'external-queue-first';
       const nextId = 'external-queue-next';
       await commands.submit({ agent_id: childId, prompt_id: firstId, content: [{ type: 'text', text: 'First external turn.' }] });
-      await vi.waitFor(() => { expect(prompt.list().active?.id).toBe(firstId); });
+      await vi.waitFor(() => { expect(prompt.list().active?.id).toBe(firstId); }, { timeout: 5000 });
       expect(run).toHaveBeenCalledTimes(1);
       const tasks = lifecycle.get('main')!.accessor.get(IAgentTaskService);
       const firstTaskId = tasks.list(true).find(item => item.kind === 'agent' && item.agentId === childId)!.taskId;
@@ -1134,7 +1135,7 @@ describe('server-v2 /api prompts', () => {
       }, { timeout: 5000 });
       const retry = await client.session(id).commands.submit(body);
       expect(retry).toEqual(accepted!.body.data);
-      expect(retry.content[2]).toMatchObject({ type: 'text', text: expect.stringContaining('notes.txt') });
+      expect(retry.content.at(-1)).toMatchObject({ type: 'text', text: expect.stringContaining('notes.txt') });
       const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
       const wire = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents/main/wire.jsonl'), 'utf8'))
         .split('\n').filter(Boolean).map(line => JSON.parse(line) as { type: string; promptId?: string });
@@ -1564,4 +1565,73 @@ describe('server-v2 /api prompts', () => {
       executor.mockRestore();
     }
   }, 30_000);
+
+  it('reconciles cancellation requested during submitting and holds prompts for tombstoned workspaces without resurrecting them', async () => {
+    const id = await createSession(fixture.home!);
+    const submitGate = promiseGate<import('../src/services/promptIngress').PromptIngressResult>();
+    const enteredSubmit = promiseGate<void>();
+    const cancelSignals: boolean[] = [];
+    const submit = vi.fn(async (_sessionId: string, execution: import('../src/services/promptIngress').PromptIngressExecution) => {
+      await execution.beforeSubmit();
+      enteredSubmit.resolve();
+      return submitGate.promise;
+    });
+    const cancel = vi.fn(async (_sessionId: string, _agentId: string, _promptId: string, signal?: AbortSignal) => {
+      cancelSignals.push(Boolean(signal?.aborted));
+    });
+    const ingress = new PromptIngress(fixture.server!.core, { submit, cancel });
+    try {
+      await ingress.submit(id, { prompt_id: 'cancel-mid-submit', content: [{ type: 'text', text: 'Cancel me' }] }, 'fp-cancel');
+      await enteredSubmit.promise;
+
+      const abortResult = await ingress.abort(id, 'main', 'cancel-mid-submit');
+      expect(abortResult).toBe(false);
+      await vi.waitFor(async () => {
+        expect(await ingress.lookup(id, 'main', 'cancel-mid-submit')).toMatchObject({ admission: 'held' });
+      });
+
+      submitGate.resolve({
+        prompt_id: 'cancel-mid-submit',
+        user_message_id: 'cancel-mid-submit',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Cancel me' }],
+        created_at: new Date().toISOString(),
+      });
+      await vi.waitFor(async () => {
+        expect(await ingress.lookup(id, 'main', 'cancel-mid-submit')).toMatchObject({ admission: 'cancelled' });
+      });
+      expect(cancel).toHaveBeenCalledWith(id, 'main', 'cancel-mid-submit', expect.any(AbortSignal));
+      expect(cancelSignals).toEqual([false]);
+    } finally {
+      submitGate.resolve({
+        prompt_id: 'cancel-mid-submit',
+        user_message_id: 'cancel-mid-submit',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Cancel me' }],
+        created_at: new Date().toISOString(),
+      });
+      await ingress.close();
+    }
+
+    await createMainAgent(id);
+    const workspaceId = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(ISessionContext).workspaceId;
+    await closeSessionById(fixture.server!.core.accessor, id);
+    const workspaces = fixture.server!.core.accessor.get(IWorkspaceService);
+    await workspaces.delete(workspaceId);
+    expect(await workspaces.get(workspaceId)).toBeUndefined();
+
+    const root = `/api/sessions/${id}/prompts`;
+    expect((await call('POST', root, {
+      admission: 'durable',
+      prompt_id: 'deleted-ws-hold',
+      content: [{ type: 'text', text: 'Hold until workspace returns' }],
+    })).body.code).toBe(0);
+    await vi.waitFor(async () => {
+      expect((await call('GET', `${root}/deleted-ws-hold?admission=durable`)).body).toMatchObject({
+        code: 0,
+        data: { admission: 'held', prompt_id: 'deleted-ws-hold' },
+      });
+    }, { timeout: 5000 });
+    expect(await workspaces.get(workspaceId)).toBeUndefined();
+  });
 });

@@ -131,6 +131,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private reconcileRequest = 0;
   private forcedReconcileRequest = 0;
   private reuseReconcileFingerprints = true;
+  private activeReconcileRequest = 0;
+  private activeReconcileReuseFingerprints = true;
   private nextReconcileRetryAt = 0;
   private reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
   private readonly reconcileRetryTimer = this._register(new TimeoutTimer());
@@ -500,14 +502,27 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   reconcileNow(options?: { reuseFingerprints?: boolean }): Promise<void> {
     if (this._store.isDisposed) return Promise.reject(new SessionIndexReconcilePendingError('disposed', 0));
     if (!this.readModelEnabled()) return Promise.resolve();
+    const wantsForced = options?.reuseFingerprints !== true;
+    if (this.reconcileFlight !== undefined) {
+      const covered = !wantsForced ||
+        !this.activeReconcileReuseFingerprints ||
+        this.forcedReconcileRequest > this.activeReconcileRequest;
+      if (!covered) {
+        this.reconcileRequest += 1;
+        this.forcedReconcileRequest = this.reconcileRequest;
+        this.reuseReconcileFingerprints = false;
+      }
+      return this.reconcileFlight;
+    }
     const retryAfterMs = this.nextReconcileRetryAt - Date.now();
-    if (this.reconcileFlight === undefined && retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
+    if (retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
     this.reconcileRequest += 1;
-    if (options?.reuseFingerprints !== true) {
+    if (wantsForced) {
       this.forcedReconcileRequest = this.reconcileRequest;
     }
-    this.reuseReconcileFingerprints &&= options?.reuseFingerprints === true;
-    if (this.reconcileFlight !== undefined) return this.reconcileFlight;
+    this.reuseReconcileFingerprints &&= !wantsForced;
+    this.activeReconcileRequest = this.reconcileRequest;
+    this.activeReconcileReuseFingerprints = this.reuseReconcileFingerprints;
     this.reconcileRetryTimer.cancel();
     this.reconcileFlight = this.runReconcile().finally(() => {
       this.reconcileFlight = undefined;
@@ -526,6 +541,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       this.checkReconcileActive(attempt);
       const request = this.reconcileRequest;
       const reuseFingerprints = reuseAttemptFingerprints;
+      this.activeReconcileRequest = request;
+      this.activeReconcileReuseFingerprints = reuseFingerprints;
       const mutated = new Map<string, string | undefined>();
       const subscription = this.mirror.onDidChange(({ id, workspaceId }) => mutated.set(id, workspaceId));
       let committed = false;
@@ -674,6 +691,20 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       name: PARENT_INDEX_NAME,
       field: `custom.${PARENT_SESSION_ID_KEY}`,
     });
+  }
+
+  hasIndexed(id: string, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted();
+    return this.withPointReadModel(
+      async (generation) => {
+        signal?.throwIfAborted();
+        if (this.mirror.pending().some((summary) => summary.id === id)) return true;
+        const cached: unknown = await this.queryStore.get(sessionCollection(generation), id, signal, { priority: true });
+        return isSessionSummaryShape(cached);
+      },
+      async () => (await abortable(this.getLegacy(id), signal)) !== undefined,
+      signal,
+    );
   }
 
   async get(id: string, workspaceId?: string, signal?: AbortSignal): Promise<SessionSummary | undefined> {

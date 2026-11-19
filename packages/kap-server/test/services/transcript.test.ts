@@ -5424,6 +5424,94 @@ describe('TranscriptService live integration', () => {
       }
     });
   });
+
+  it('keeps coldSnapshotCache unprojected across readPlanInteractions, drops droppedTail on live attach, and preserves legacy implicit turn ordinals', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-cold-cache-and-legacy-'));
+    const mainWireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+    const legacyWireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'legacy-sub');
+    await mkdir(mainWireDir, { recursive: true });
+    await mkdir(legacyWireDir, { recursive: true });
+    const mainWirePath = join(mainWireDir, 'wire.jsonl');
+    const legacyWirePath = join(legacyWireDir, 'wire.jsonl');
+
+    const mainRecords: Record<string, unknown>[] = [];
+    for (let id = 0; id < 28; id += 1) {
+      mainRecords.push(
+        {
+          type: 'turn.prompt',
+          turnId: id,
+          promptId: `p-${id}`,
+          input: [{ type: 'text', text: `turn-body-${id}` }],
+          origin: { kind: 'user' },
+          time: 1_000 + id,
+        },
+        { type: 'fixture.padding', padding: 'x'.repeat(96 << 10) },
+        { type: 'turn.ended', turnId: id, reason: 'completed', time: 2_000 + id },
+      );
+    }
+    await writeFile(mainWirePath, `${mainRecords.map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+    const legacyRecords: Record<string, unknown>[] = [];
+    for (let id = 0; id < 25; id += 1) {
+      legacyRecords.push(
+        {
+          type: 'turn.prompt',
+          promptId: `legacy-${id}`,
+          input: [{ type: 'text', text: `legacy-open-${id}` }],
+          origin: { kind: 'user' },
+          time: 3_000 + id,
+        },
+        { type: 'fixture.padding', padding: 'y'.repeat(64 << 10) },
+        { type: 'turn.ended', reason: 'completed', time: 4_000 + id },
+      );
+    }
+    await writeFile(legacyWirePath, `${legacyRecords.map((record) => JSON.stringify(record)).join('\n')}\n`);
+
+    const agents = new FakeAgents();
+    agents.add('main');
+    const liveCore = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents);
+    let live = false;
+    const cold = coldCore();
+    const promotableCore: Scope = {
+      accessor: {
+        get: (token: unknown) => (live ? liveCore.accessor.get(token as never) : cold.accessor.get(token as never)),
+      },
+    } as unknown as Scope;
+
+    const service = new TranscriptService({ homeDir: home, core: promotableCore });
+    try {
+      const stripped = await service.readColdPageSnapshot(
+        's1',
+        'main',
+        (snapshot) => ({ ...snapshot, items: [], tasks: [], prompts: [], todos: [], attachments: [] }),
+        undefined,
+        false,
+        undefined,
+        false,
+        true,
+      );
+      expect(stripped?.items).toEqual([]);
+
+      const coldTail = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 20 });
+      const coldTurns = (coldTail?.items ?? []).filter((item) => item.kind === 'turn');
+      expect(coldTurns.length).toBeGreaterThan(0);
+      expect(coldTurns.at(-1)).toMatchObject({ turnId: 't27' });
+
+      const legacyTail = await readSessionViewTranscriptPage(service, 's1', { agentId: 'legacy-sub', pageSize: 20 });
+      const legacyTurns = (legacyTail?.items ?? []).filter((item) => item.kind === 'turn');
+      expect(legacyTurns.at(-1)).toMatchObject({ turnId: 't24', prompt: 'legacy-open-24' });
+
+      await service.readProjectedColdTurn('s1', 'main', 't2');
+      live = true;
+      service.forSessionLive('s1', { tailFirst: true });
+      const liveAttached = await service.ensureAgentHistory('s1', 'main', { tailFirst: true });
+      const liveTurns = (liveAttached?.snapshot().items ?? []).filter((item) => item.kind === 'turn');
+      expect(liveTurns.at(-1)).toMatchObject({ turnId: 't27' });
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  }, 60_000);
 });
 
 

@@ -28,10 +28,12 @@ import type { PartsTransformer } from '#/wire/record';
 import { IEventDispatcher } from './eventDispatcher';
 import { StateError, StateErrors } from './errors';
 import {
+  REPLAY_ABI_VERSION,
   decodeReplayCheckpointGraphAsync,
   encodeReplayCheckpointGraphAsync,
   matchesPluginCheckpointInterpretation,
   type ReplayCheckpointGraph,
+  type ReplayCheckpointWire,
 } from './replayCheckpointCodec';
 import {
   conversationAppendIsAnchor,
@@ -54,16 +56,7 @@ const REPLAY_CHECKPOINT_SCOPE = 'replay-checkpoints';
 const REPLAY_CHECKPOINT_KEY = 'engine-v1';
 export const REPLAY_CHECKPOINT_GROWTH_BYTES = 8 * 1024 * 1024;
 const REPLAY_CHECKPOINT_GROWTH_DELAY_MS = 1_000;
-export const REPLAY_ABI_VERSION = 2;
-
-export interface ReplayCheckpointWire {
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly headHash?: string;
-  readonly prefixSha256?: string;
-  readonly boundarySha256?: string;
-  readonly storeGeneration?: string;
-}
+export { REPLAY_ABI_VERSION, type ReplayCheckpointWire };
 
 interface ReplayCheckpointEnvelope {
   readonly format: 1;

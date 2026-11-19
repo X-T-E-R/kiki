@@ -1337,6 +1337,9 @@ export class AgentPromptService implements IAgentPromptService {
       if (committed.fingerprint !== fingerprint) {
         throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
       }
+      if (this.unlaunchedInjectedIds.has(promptId)) {
+        return undefined;
+      }
       if (this.unflushedPromptIds.has(promptId)) {
         await this.flushPendingWireIds();
       }
@@ -1453,6 +1456,7 @@ export class AgentPromptService implements IAgentPromptService {
   private readonly promptHandles = new Map<string, PromptHandle>();
   private readonly synchronousAdmissions = new WeakSet<PromptHandle>();
   private readonly unflushedPromptIds = new Set<string>();
+  private readonly unlaunchedInjectedIds = new Set<string>();
 
   private async flushPendingWireIds(): Promise<void> {
     const snapshot = [...this.unflushedPromptIds];
@@ -2864,31 +2868,49 @@ export class AgentPromptService implements IAgentPromptService {
     const userMessageId = options?.userMessageId ?? options?.promptId;
     const managedMessage = managed && userMessageId !== undefined ? { ...rerouted, id: userMessageId } : rerouted;
     if (managed && options !== undefined && userMessageId !== undefined) {
+      const promptId = options.promptId!;
+      const existingReceipt = this.states.get(promptRetryReceiptKey).get(promptId);
+      if (existingReceipt !== undefined && existingReceipt.fingerprint !== options.retryFingerprint) {
+        throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+      }
+      const existingIdentity = this.states.get(promptIdentityKey).get(promptId);
+      if (existingIdentity !== undefined && !this.unlaunchedInjectedIds.has(promptId)) {
+        if (this.unflushedPromptIds.has(promptId)) await this.flushPendingWireIds();
+        return this.active?.turn;
+      }
+      this.unlaunchedInjectedIds.add(promptId);
       if (this.executionControl.isHeld()) await this.executionControl.retainAgent(this.scopeContext.agentId);
-      await this.dispatcher.dispatch(new PromptEnqueued({
-        schemaVersion: 1,
-        promptId: options.promptId!,
-        userMessageId,
-        createdAt: new Date().toISOString(),
-        message: managedMessage,
-        execution: undefined,
-        goalId: undefined,
-        deferredDisabledTools: undefined,
-        alreadyMaterialized: false,
-        appendTiming: 'agent_idle',
-        revision: 0,
-        queueIndex: this.queueOrder.length,
-        retryFingerprint: options.retryFingerprint,
-        retryStatus: 'running',
-      }));
-      await this.wire.flush();
-      await this.dispatcher.dispatch(new PromptLaunchCommitted({
-        launchId: randomUUID(),
-        promptId: options.promptId!,
-        revision: 0,
-        committedAt: new Date().toISOString(),
-      }));
-      await this.wire.flush();
+      if (existingIdentity === undefined) {
+        this.unflushedPromptIds.add(promptId);
+        await this.dispatcher.dispatch(new PromptEnqueued({
+          schemaVersion: 1,
+          promptId,
+          userMessageId,
+          createdAt: new Date().toISOString(),
+          message: managedMessage,
+          execution: undefined,
+          goalId: undefined,
+          deferredDisabledTools: undefined,
+          alreadyMaterialized: false,
+          appendTiming: 'agent_idle',
+          revision: 0,
+          queueIndex: this.queueOrder.length,
+          retryFingerprint: options.retryFingerprint,
+          retryStatus: 'running',
+        }));
+      }
+      if (this.unflushedPromptIds.has(promptId)) await this.flushPendingWireIds();
+      if (this.states.get(promptIdentityKey).get(promptId)?.phase !== 'launched') {
+        this.unflushedPromptIds.add(promptId);
+        await this.dispatcher.dispatch(new PromptLaunchCommitted({
+          launchId: randomUUID(),
+          promptId,
+          revision: 0,
+          committedAt: new Date().toISOString(),
+        }));
+      }
+      if (this.unflushedPromptIds.has(promptId)) await this.flushPendingWireIds();
+      this.unlaunchedInjectedIds.delete(promptId);
     }
     const request = new SteerStepRequest(managedMessage, captions, this.reminders, this.providerType(), (materialized) => {
       void this.dispatcher.dispatch(

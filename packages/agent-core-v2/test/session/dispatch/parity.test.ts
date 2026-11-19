@@ -3531,4 +3531,37 @@ describe('AgentRun and dispatch parity golden', () => {
       message: 'continue',
     })).rejects.toThrow();
   });
+
+  it('detaches pre-registration caller abort once SubagentTask is registered even while recordRun awaits', async () => {
+    const internal = createLane(disposables, 'internal');
+    const dispatch = internal.ix.get(ISessionDispatchService);
+    const originalRecordRun = dispatch.recordRun.bind(dispatch);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.spyOn(dispatch, 'recordRun').mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return originalRecordRun(...args);
+    });
+    const callerAbort = new AbortController();
+    const execution = executeTool(internal.ix.get(ISubagentTool), {
+      turnId: 1,
+      toolCallId: 'tc_bg_abort_race',
+      args: SubagentToolInputSchema.parse({
+        prompt: 'background slice',
+        description: 'Background slice',
+        profile: 'coder',
+        background: true,
+      }),
+      signal: callerAbort.signal,
+    });
+    await entered.promise;
+    callerAbort.abort();
+    release.resolve();
+    const result = await execution;
+    expect(result.isError).not.toBe(true);
+    expect(internal.subagentRun).toHaveBeenCalledTimes(1);
+    const childSignal = internal.subagentRun.mock.calls[0]?.[2]?.signal;
+    expect(childSignal?.aborted).toBe(false);
+  });
 });

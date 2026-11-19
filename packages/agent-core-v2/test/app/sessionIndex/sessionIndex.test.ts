@@ -3036,7 +3036,7 @@ describe('FileSessionIndex (read model)', () => {
     }
   });
 
-  it.each(['writer', 'requests'] as const)('bounds repeated reconciliation invalidation from continuous %s and retains a scheduled repair', async (activity) => {
+  it('bounds repeated reconciliation invalidation from continuous writer and retains a scheduled repair', async () => {
     await Promise.all(Array.from({ length: 452 }, (_, i) => seedSession(`s${i}`, { createdAt: 1, updatedAt: i + 1 })));
     const store = build();
     await store.prepare();
@@ -3050,8 +3050,6 @@ describe('FileSessionIndex (read model)', () => {
     const original = SessionIndexProjector.prototype.planReconcile;
     let continuous = true;
     let scans = 0;
-    const waiters: Promise<unknown>[] = [];
-    const batchWrites = vi.spyOn(queryStore, 'batch');
     const scan = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
       if (++scans > 2 && continuous) throw new Error('reconciliation exceeded the scan budget');
       const commit = await original.apply(this, args);
@@ -3064,14 +3062,10 @@ describe('FileSessionIndex (read model)', () => {
           read,
           new Promise<string>((resolve) => setTimeout(() => resolve('read blocked'), 1_000)),
         ])).toEqual([expect.objectContaining({ items: expect.any(Array) }), 452]);
-        if (activity === 'writer') {
-          const value = { title: `managed ${scans}`, createdAt: 1, updatedAt: 500 + scans };
-          await seedSession('s451', value);
-          mirror.record(summary('s451', value));
-          await mirror.drain();
-        } else {
-          waiters.push(store.reconcileNow().catch((error: unknown) => error));
-        }
+        const value = { title: `managed ${scans}`, createdAt: 1, updatedAt: 500 + scans };
+        await seedSession('s451', value);
+        mirror.record(summary('s451', value));
+        await mirror.drain();
       }
       return commit;
     });
@@ -3080,12 +3074,10 @@ describe('FileSessionIndex (read model)', () => {
       const outcome = await store.reconcileNow().catch((error: unknown) => error);
       expect(outcome).toMatchObject({ code: 'session.index_building', details: { operation: 'reconcile', reason: 'concurrent_changes', attempts: 2 } });
       expect(scans).toBe(2);
-      if (activity === 'requests') expect(batchWrites).not.toHaveBeenCalled();
       expect(scheduled).toBeTypeOf('function');
       expect(delay).toBeGreaterThanOrEqual(5_000);
       await expect(store.reconcileNow()).rejects.toMatchObject({ code: 'session.index_building' });
       expect(scans).toBe(2);
-      await Promise.all(waiters);
       continuous = false;
       clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + delay);
       const retry = vi.spyOn(store, 'reconcileNow');
@@ -3100,8 +3092,49 @@ describe('FileSessionIndex (read model)', () => {
       expect(await store.count({ workspaceIds: [workspaceId] })).toBe(452);
     } finally {
       continuous = false;
-      await Promise.all(waiters);
       clock?.mockRestore();
+      scan.mockRestore();
+      schedule.mockRestore();
+    }
+  }, 30_000);
+
+  it('coalesces equivalent concurrent reconcileNow callers onto the active flight and commits in one scan', async () => {
+    await Promise.all(Array.from({ length: 64 }, (_, i) => seedSession(`s${i}`, { createdAt: 1, updatedAt: i + 1 })));
+    const store = build();
+    await store.prepare();
+    await seedSession('s0', { title: 'external drift', createdAt: 1, updatedAt: 1 });
+    let scheduled: (() => void) | undefined;
+    const schedule = vi.spyOn(TimeoutTimer.prototype, 'cancelAndSet').mockImplementation((runner) => {
+      scheduled = runner;
+    });
+    const original = SessionIndexProjector.prototype.planReconcile;
+    let scans = 0;
+    const waiters: Promise<void>[] = [];
+    const batchWrites = vi.spyOn(queryStore, 'batch');
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'planReconcile').mockImplementation(async function (this: SessionIndexProjector, ...args) {
+      scans += 1;
+      const commit = await original.apply(this, args);
+      if (scans === 1) {
+        waiters.push(store.reconcileNow(), store.reconcileNow());
+      }
+      return commit;
+    });
+    try {
+      await store.reconcileNow();
+      await Promise.all(waiters);
+      expect(scans).toBe(1);
+      expect(batchWrites).toHaveBeenCalledTimes(1);
+      expect(scheduled).toBeUndefined();
+      expect(await store.get('s0', workspaceId)).toMatchObject({ title: 'external drift' });
+      const readdirSpy = vi.spyOn(fsp, 'readdir');
+      try {
+        expect(await store.hasIndexed?.('s0')).toBe(true);
+        expect(await store.hasIndexed?.('brand-new-session-id')).toBe(false);
+        expect(readdirSpy).not.toHaveBeenCalled();
+      } finally {
+        readdirSpy.mockRestore();
+      }
+    } finally {
       scan.mockRestore();
       batchWrites.mockRestore();
       schedule.mockRestore();

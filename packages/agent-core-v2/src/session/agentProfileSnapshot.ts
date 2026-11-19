@@ -1,4 +1,5 @@
 import type { ServicesAccessor } from '#/_base/di/instantiation';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -55,6 +56,7 @@ export type AgentProfileSnapshotHost = { readonly accessor: ServicesAccessor } |
   readonly storage: IFileSystemStorageService;
   readonly appendLog: IAppendLogStore;
   readonly docs?: IAtomicDocumentStore;
+  readonly workers?: ICpuWorkerService;
 };
 
 interface PersistedAgentProfileCacheEntry {
@@ -142,30 +144,36 @@ export async function readPersistedAgentProfileSnapshot(
     return cached.snapshot;
   }
   const inlineByteBudget = options?.inlineByteBudget;
-  const checkpoint = inlineByteBudget !== undefined && size > inlineByteBudget
-    ? await readPersistedAgentCheckpoint('accessor' in core ? core.accessor.get(IAtomicDocumentStore) : core.docs,
-      storage, scope, size, mtimeMs, new Set([profileKey.name, profileActiveToolsKey.name]))
-    : undefined;
-  if (inlineByteBudget !== undefined && size > inlineByteBudget &&
-    (checkpoint === undefined || !checkpoint.states.has(profileKey.name) || !checkpoint.states.has(profileActiveToolsKey.name) || size - checkpoint.offset > inlineByteBudget)) {
-    const fallback = metadataSnapshot(metadata);
-    return fallback === undefined ? undefined : { ...fallback, wireCoverage: 'unscanned' };
-  }
+  const flightKey = inlineByteBudget !== undefined && size > inlineByteBudget ? `${scope}:budget:${inlineByteBudget}` : scope;
   const flights = persistedAgentProfileFlightMap(core);
-  let flight = flights.get(scope);
+  let flight = flights.get(flightKey);
   if (flight === undefined || flight.size !== size || flight.mtimeMs !== mtimeMs || flight.metadataKey !== metadataKey) {
-    const promise = scanPersistedAgentProfileSnapshot(appendLog, storage, scope, checkpoint, size)
-      .then((snapshot) => snapshot ?? metadataSnapshot(metadata))
-      .catch(() => metadataSnapshot(metadata))
-      .then((snapshot) => {
-        cachePersistedAgentProfile(cache, scope, { size, mtimeMs, metadataKey, snapshot });
-        return snapshot;
-      })
-      .finally(() => {
-        if (flights.get(scope)?.promise === promise) flights.delete(scope);
-      });
+    const docs = 'accessor' in core ? core.accessor.get(IAtomicDocumentStore) : core.docs;
+    let workers: ICpuWorkerService | undefined;
+    if ('accessor' in core) {
+      try { workers = core.accessor.get(ICpuWorkerService); } catch { workers = undefined; }
+    } else {
+      workers = core.workers;
+    }
+    const promise = (async (): Promise<PersistedAgentProfileSnapshot | undefined> => {
+      const checkpoint = inlineByteBudget !== undefined && size > inlineByteBudget
+        ? await readPersistedAgentCheckpoint(docs, storage, scope, size, mtimeMs, new Set([profileKey.name, profileActiveToolsKey.name]), workers)
+        : undefined;
+      if (inlineByteBudget !== undefined && size > inlineByteBudget &&
+        (checkpoint === undefined || !checkpoint.states.has(profileKey.name) || !checkpoint.states.has(profileActiveToolsKey.name) || size - checkpoint.offset > inlineByteBudget)) {
+        const fallback = metadataSnapshot(metadata);
+        return fallback === undefined ? undefined : { ...fallback, wireCoverage: 'unscanned' };
+      }
+      const snapshot = await scanPersistedAgentProfileSnapshot(appendLog, storage, scope, checkpoint, size)
+        .then((value) => value ?? metadataSnapshot(metadata))
+        .catch(() => metadataSnapshot(metadata));
+      cachePersistedAgentProfile(cache, scope, { size, mtimeMs, metadataKey, snapshot });
+      return snapshot;
+    })().finally(() => {
+      if (flights.get(flightKey)?.promise === promise) flights.delete(flightKey);
+    });
     flight = { size, mtimeMs, metadataKey, promise };
-    flights.set(scope, flight);
+    flights.set(flightKey, flight);
   }
   return waitForPersistedAgentProfile(flight.promise, signal);
 }

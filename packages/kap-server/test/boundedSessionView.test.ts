@@ -10,7 +10,7 @@ import { registerSessionViewHttp } from '../src/transport/klient/sessionViewHttp
 import { registerTranscriptRoutes } from '../src/routes/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
-import { readColdSessionViewBaseline, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
+import { readColdSessionViewBaseline, readPlanInteractions, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
 
 function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService {
   const transcript = new AgentTranscript('main');
@@ -1744,5 +1744,26 @@ describe('bounded session-view canonical reads', () => {
       expect.objectContaining({ todoId: 'secondary', items: [{ title: 'Keep cold', status: 'done' }] }),
       expect.objectContaining({ todoId: 'todo', items: [{ title: 'Live item', status: 'done' }], notes: { goal: 'Live goal', next: 'Ship' }, notesMeta: liveMeta }),
     ]);
+  });
+
+  it('distinguishes ENOENT from real IO errors and cancellation in readPlanInteractions', async () => {
+    const enoentService = {
+      forSessionLive: () => undefined,
+      readColdPageSnapshot: vi.fn().mockRejectedValue(Object.assign(new Error('missing wire'), { code: 'ENOENT' })),
+    } as unknown as TranscriptService;
+    await expect(readPlanInteractions(enoentService, 'fixture-session', 'main')).resolves.toEqual([]);
+
+    const ioError = Object.assign(new Error('disk read error'), { code: 'EIO' });
+    const ioService = {
+      forSessionLive: () => undefined,
+      readColdPageSnapshot: vi.fn().mockRejectedValue(ioError),
+    } as unknown as TranscriptService;
+    await expect(readPlanInteractions(ioService, 'fixture-session', 'main')).rejects.toThrow('disk read error');
+
+    const controller = new AbortController();
+    controller.abort(new DOMException('Cancelled', 'AbortError'));
+    await expect(readPlanInteractions(enoentService, 'fixture-session', 'main', controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
   });
 });

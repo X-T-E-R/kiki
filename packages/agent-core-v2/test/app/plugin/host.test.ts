@@ -1055,5 +1055,72 @@ describe('PluginHostService extension port bridge', () => {
       await harness.dispose();
     }
   });
+
+  it('applies a generation-scoped timeout cooldown to E5:prompt-context and resets it on plugin reload', async () => {
+    const harness = await createExtensionBridgeHarness();
+    try {
+      await harness.hosts.ready;
+      const counterFile = join(harness.root, 'e5-timeout-calls.txt');
+      const modeFile = join(harness.root, 'e5-mode.txt');
+      await writeFile(modeFile, 'stall', 'utf8');
+      const source = join(harness.root, 'slow-e5-plugin');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(source, 'entry.mjs'), `
+        import { appendFileSync, readFileSync } from 'node:fs';
+        export const slots = {
+          'E5:prompt-context': async () => {
+            appendFileSync(${JSON.stringify(counterFile)}, '1\\n');
+            const mode = readFileSync(${JSON.stringify(modeFile)}, 'utf8').trim();
+            if (mode === 'stall') {
+              await new Promise(() => {});
+            }
+            return { sections: [{ title: 'Fast Context', content: 'ready' }] };
+          },
+        };
+      `);
+      await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({
+        name: 'slow-e5-plugin',
+        version: '1.0.0',
+        'x-kiki': {
+          engines: { kiki: '^0.4.3' },
+          entry: './entry.mjs',
+          promptContext: true,
+        },
+      }));
+      const plan = await harness.plugins.previewPlugin({ source });
+      await harness.plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+      await harness.usage.set({ workspaceId: 'ws-e5', pluginId: 'slow-e5-plugin', override: 'on' });
+
+      const first = await harness.registry.renderPromptSections({
+        sessionId: 'sess-e5',
+        agentId: 'main',
+        workspaceId: 'ws-e5',
+      });
+      expect(first.text).toBe('');
+      expect((await readFile(counterFile, 'utf8')).trim().split('\n')).toHaveLength(1);
+
+      const startedCooldown = performance.now();
+      const skipped = await harness.registry.renderPromptSections({
+        sessionId: 'sess-e5',
+        agentId: 'main',
+        workspaceId: 'ws-e5',
+      });
+      expect(skipped.text).toBe('');
+      expect(performance.now() - startedCooldown).toBeLessThan(200);
+      expect((await readFile(counterFile, 'utf8')).trim().split('\n')).toHaveLength(1);
+
+      await writeFile(modeFile, 'fast', 'utf8');
+      await harness.plugins.reloadPlugins();
+      const recovered = await harness.registry.renderPromptSections({
+        sessionId: 'sess-e5',
+        agentId: 'main',
+        workspaceId: 'ws-e5',
+      });
+      expect(recovered.text).toContain('Fast Context');
+      expect((await readFile(counterFile, 'utf8')).trim().split('\n')).toHaveLength(2);
+    } finally {
+      await harness.dispose();
+    }
+  }, 15_000);
 });
 

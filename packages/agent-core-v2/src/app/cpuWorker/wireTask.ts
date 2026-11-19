@@ -19,7 +19,7 @@ export async function* decodeWireInput(input: MessagePort): AsyncIterable<string
   } finally { input.close(); }
 }
 
-export async function projectWireInput(input: MessagePort, scope: string, key: string): Promise<ArrayBuffer> {
+export async function projectWireInput(input: MessagePort, scope: string, key: string, omitTranscript = false): Promise<ArrayBuffer> {
   const projection = createWireContextProjection();
   let pending = '';
   let lineNumber = 0;
@@ -45,5 +45,10 @@ export async function projectWireInput(input: MessagePort, scope: string, key: s
     }
   }
   if (pending.length > 0) parse(pending, true);
-  return Uint8Array.from(serialize(projection.result())).buffer;
+  const resolved = projection.result();
+  if (omitTranscript) {
+    const { transcript: _transcript, ...statusOnly } = resolved;
+    return Uint8Array.from(serialize(statusOnly)).buffer;
+  }
+  return Uint8Array.from(serialize(resolved)).buffer;
 }
