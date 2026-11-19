@@ -15,16 +15,24 @@
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal as XTerm } from '@xterm/xterm';
 
-import { clampTerminalPanelHeight, normalizeCodeFontSize, readSettings, subscribeSettings } from '@kiki/session-core/settings';
+import {
+  clampTerminalPanelHeight,
+  normalizeCodeFontSize,
+  readSettings,
+  subscribeSettings,
+  TERMINAL_PANEL_DEFAULT_HEIGHT,
+  TERMINAL_PANEL_MAX_HEIGHT,
+  TERMINAL_PANEL_MIN_HEIGHT,
+} from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { openExternalUrl } from '../host/external';
 import { useI18n } from '../i18n';
+import { usePaneResize } from '../lib/layoutHooks';
 import { Icon } from './icons';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { matchesShortcutAction } from '../lib/shortcuts';
@@ -295,7 +303,6 @@ export function TerminalPanel({
   const [confirmKillId, setConfirmKillId] = useState<string | undefined>(undefined);
   const [mirror, setMirror] = useState('');
   const [dragging, setDragging] = useState(false);
-  const dragRef = useRef<{ startY: number; startHeight: number; lastHeight: number } | null>(null);
 
   // The store publishes on tab/status changes; output itself bypasses React
   // via bindOutput, so panel renders stay cheap during a stream.
@@ -323,61 +330,20 @@ export function TerminalPanel({
     return () => { clearTimeout(timer); };
   }, [confirmKillId]);
 
-  useEffect(() => {
-    const onWindowBlur = () => {
-      const drag = dragRef.current;
-      if (drag === null) return;
-      dragRef.current = null;
-      setDragging(false);
-      delete document.body.dataset['paneResizing'];
-      delete document.body.dataset['paneResizeAxis'];
-      onHeightChange(drag.lastHeight, true);
-    };
-    window.addEventListener('blur', onWindowBlur);
-    return () => {
-      window.removeEventListener('blur', onWindowBlur);
-      if (dragRef.current !== null) {
-        dragRef.current = null;
-        delete document.body.dataset['paneResizing'];
-        delete document.body.dataset['paneResizeAxis'];
-      }
-    };
-  }, [onHeightChange]);
-
-  const onDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    dragRef.current = { startY: event.clientY, startHeight: height, lastHeight: height };
-    setDragging(true);
-    document.body.dataset['paneResizing'] = 'true';
-    document.body.dataset['paneResizeAxis'] = 'row';
-    const target = event.currentTarget;
-    target.setPointerCapture(event.pointerId);
-  };
-  const onDragMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (drag === null) return;
-    drag.lastHeight = clampTerminalPanelHeight(drag.startHeight + (drag.startY - event.clientY));
-    onHeightChange(drag.lastHeight, false);
-  };
-  const onDragEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (drag === null) return;
-    dragRef.current = null;
-    setDragging(false);
-    delete document.body.dataset['paneResizing'];
-    delete document.body.dataset['paneResizeAxis'];
-    onHeightChange(clampTerminalPanelHeight(drag.startHeight + (drag.startY - event.clientY)), true);
-  };
-  const onDragCancel = () => {
-    const drag = dragRef.current;
-    if (drag === null) return;
-    dragRef.current = null;
-    setDragging(false);
-    delete document.body.dataset['paneResizing'];
-    delete document.body.dataset['paneResizeAxis'];
-    onHeightChange(drag.lastHeight, true);
-  };
+  const { startResize, onKeyDown: onResizerKeyDown, reset: resetHeight } = usePaneResize({
+    value: height,
+    min: TERMINAL_PANEL_MIN_HEIGHT,
+    max: TERMINAL_PANEL_MAX_HEIGHT,
+    direction: -1,
+    axis: 'vertical',
+    onDraggingChange: setDragging,
+    onChange: (nextHeight, final) => {
+      onHeightChange(clampTerminalPanelHeight(nextHeight), final);
+    },
+    onReset: () => {
+      onHeightChange(TERMINAL_PANEL_DEFAULT_HEIGHT, true);
+    },
+  });
 
   const killTab = (id: string) => {
     if (confirmKillId !== id) {
@@ -400,12 +366,11 @@ export function TerminalPanel({
         role="separator"
         aria-orientation="horizontal"
         aria-label={t('term.resizeAria')}
-        className="group h-1.5 shrink-0 cursor-row-resize"
-        onPointerDown={onDragStart}
-        onPointerMove={onDragMove}
-        onPointerUp={onDragEnd}
-        onPointerCancel={onDragCancel}
-        onLostPointerCapture={onDragCancel}
+        tabIndex={0}
+        className="group h-1.5 shrink-0 cursor-row-resize focus-visible:outline-2 focus-visible:outline-selected-ink"
+        onPointerDown={startResize}
+        onKeyDown={onResizerKeyDown}
+        onDoubleClick={resetHeight}
       >
         <div className="mx-auto mt-0.5 h-0.5 w-10 rounded-full bg-shell-hover transition-colors group-hover:bg-accent" />
       </div>

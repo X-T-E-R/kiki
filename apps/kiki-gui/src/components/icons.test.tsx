@@ -34,14 +34,19 @@ async function render(node: React.ReactNode): Promise<HTMLDivElement> {
 const LABELS = { running: 'Running', failed: 'Failed', stopped: 'Stopped', done: 'Done' };
 
 describe('icon family', () => {
-  it('draws every icon to the shared spec: 16px viewBox, 1.35 stroke, decorative', async () => {
+  it('draws standard icons via lucide-react and custom marks to the 16px spec', async () => {
     const container = await render(<Icon name="read" />);
     const svg = container.querySelector('svg');
-    expect(svg?.getAttribute('viewBox')).toBe('0 0 16 16');
-    expect(svg?.getAttribute('stroke-width')).toBe('1.35');
+    expect(svg?.getAttribute('viewBox')).toBe('0 0 24 24');
     expect(svg?.getAttribute('aria-hidden')).toBe('true');
     expect(svg?.getAttribute('data-icon')).toBe('read');
     expect(svg?.getAttribute('class')).toContain('h-3.5 w-3.5');
+
+    const partial = await render(<Icon name="partial" />);
+    const partialSvg = partial.querySelector('svg');
+    expect(partialSvg?.getAttribute('viewBox')).toBe('0 0 16 16');
+    expect(partialSvg?.getAttribute('stroke-width')).toBe('1.35');
+    expect(partialSvg?.getAttribute('data-icon')).toBe('partial');
   });
 
   it('maps the three family sizes and lets an explicit box override them', async () => {

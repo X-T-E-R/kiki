@@ -726,6 +726,7 @@ export function Sidebar({
   className,
   id,
   inert,
+  dockedInPanelGroup = false,
   onClose,
   nowMs,
 }: {
@@ -763,6 +764,8 @@ export function Sidebar({
   className?: string;
   id?: string;
   inert?: boolean;
+  /** True when `App` hosts this sidebar inside a `react-resizable-panels` `<Panel>`. */
+  dockedInPanelGroup?: boolean;
   /** Phone-drawer exit (a ✕ in the wordmark row); absent where the sidebar is docked. */
   onClose?: () => void;
   /** Current time reference for time grouping and the recency projection;
@@ -1723,18 +1726,20 @@ export function Sidebar({
       id={id}
       inert={inert}
       className={className ?? 'app-sidebar'}
-      style={{ '--kiki-sidebar-width': `${sidebarWidthValue}px` } as React.CSSProperties}
+      style={dockedInPanelGroup ? undefined : ({ '--kiki-sidebar-width': `${sidebarWidthValue}px` } as React.CSSProperties)}
       data-session-sidebar
       aria-label={t('sidebar.navAria')}
     >
-      <div
-        data-sidebar-resizer
-        className="app-sidebar__resizer hidden md:block"
-        aria-hidden
-        title={t('sidebar.resizeAria')}
-        onPointerDown={startResize}
-        onDoubleClick={reset}
-      />
+      {dockedInPanelGroup ? null : (
+        <div
+          data-sidebar-resizer
+          className="app-sidebar__resizer hidden md:block"
+          aria-hidden
+          title={t('sidebar.resizeAria')}
+          onPointerDown={startResize}
+          onDoubleClick={reset}
+        />
+      )}
       {/* Wordmark row doubles as the utility row: search and activity are two
           quiet icons, so the vertical space a permanent search field used to
           take belongs to the session list. The wordmark itself is the space

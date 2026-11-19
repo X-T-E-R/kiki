@@ -1,21 +1,24 @@
 /**
- * Toasts — the bottom-right stack fed by `lib/toasts.ts`: inside the content
- * column when a <ToastAnchor/> is mounted, else fixed to the viewport. Success/info
- * entries self-dismiss after TOAST_AUTO_DISMISS_MS; errors stay until the ×
- * (or an optional retry) settles them. Mounted once at the app root.
+ * Toasts — the bottom-right stack fed by `lib/toasts.ts` and rendered through
+ * `@base-ui/react/toast`: inside the content column when a `<ToastAnchor/>` is
+ * mounted, else fixed to the viewport. Success/info entries self-dismiss after
+ * `TOAST_AUTO_DISMISS_MS`; errors stay sticky (`timeout: 0`) until dismissed or
+ * retried. Mounted once at the app root.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
+import { Toast } from '@base-ui/react/toast';
 
 import { useI18n } from '../i18n';
 import { Icon, type IconName } from './icons';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
+  addItemToManager,
   dismissToast,
   getToasts,
-  subscribeToasts,
+  MAX_TOASTS,
   TOAST_AUTO_DISMISS_MS,
+  toastManager,
   type ToastItem,
 } from '../lib/toasts';
 
@@ -33,22 +36,19 @@ const TONE_ICON: Record<ToastItem['tone'], IconName | null> = {
   error: 'cross',
 };
 
-function ToastCard({ toast }: { toast: ToastItem }) {
+function ToastCard({
+  toastObj,
+  toast,
+  paused,
+}: {
+  readonly toastObj: Toast.Root.ToastObject<ToastItem>;
+  readonly toast: ToastItem;
+  readonly paused: boolean;
+}) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
-
-  // Sticky errors have no timer; success/info self-dismiss. Pointer or focus
-  // inside pauses the clock, so an undo is never pulled from under a reader.
   const duration = toast.durationMs ?? TOAST_AUTO_DISMISS_MS;
-  const [paused, setPaused] = useState(false);
-  const remaining = useRef(duration);
-  useEffect(() => {
-    if (toast.tone === 'error' || paused) return;
-    const started = Date.now();
-    const timer = setTimeout(() => { dismissToast(toast.id); }, remaining.current);
-    return () => { clearTimeout(timer); remaining.current = Math.max(0, remaining.current - (Date.now() - started)); };
-  }, [toast.id, toast.tone, paused]);
 
   const metaLine = [
     toast.code !== undefined ? `code ${toast.code}` : undefined,
@@ -73,21 +73,18 @@ function ToastCard({ toast }: { toast: ToastItem }) {
   };
 
   return (
-    <div
+    <Toast.Root
+      toast={toastObj}
       role="status"
       data-toast={toast.undo !== undefined ? 'undo' : toast.tone}
-      onPointerEnter={() => { setPaused(true); }}
-      onPointerLeave={() => { setPaused(false); }}
-      onFocus={() => { setPaused(true); }}
-      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaused(false); }}
-      className={`anim-enter relative flex w-88 max-w-full flex-col overflow-hidden rounded-xl border bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${toast.undo !== undefined ? TONE_CLASS.info : TONE_CLASS[toast.tone]}`}
+      className={`anim-enter pointer-events-auto relative flex w-88 max-w-full flex-col overflow-hidden rounded-xl border bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${toast.undo !== undefined ? TONE_CLASS.info : TONE_CLASS[toast.tone]}`}
     >
       <div className="flex items-start gap-2">
         <span aria-hidden className="mt-[2px] flex w-3.5 shrink-0 justify-center">
           {toast.undo !== undefined ? null : TONE_ICON[toast.tone] === null ? null : <Icon name={TONE_ICON[toast.tone]!} />}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[12px] leading-snug break-words">{toast.text}</p>
+          <Toast.Title className="text-[12px] leading-snug break-words">{toast.text}</Toast.Title>
           {metaLine !== '' ? (
             <p className="mt-0.5 font-mono text-[10px] opacity-75">{metaLine}</p>
           ) : null}
@@ -131,14 +128,13 @@ function ToastCard({ toast }: { toast: ToastItem }) {
             </button>
           ) : null}
           {toast.undo !== undefined ? (
-            <button
-              type="button"
+            <Toast.Close
               aria-label={t('toast.dismissAria')}
               onClick={() => { dismissToast(toast.id); }}
               className="flex h-6 w-6 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9"
             >
               <Icon name="close" size={12} />
-            </button>
+            </Toast.Close>
           ) : null}
           {toast.retry !== undefined ? (
             <button
@@ -153,14 +149,13 @@ function ToastCard({ toast }: { toast: ToastItem }) {
             </button>
           ) : null}
           {toast.tone === 'error' ? (
-            <button
-              type="button"
+            <Toast.Close
               aria-label={t('toast.dismissAria')}
               onClick={() => { dismissToast(toast.id); }}
               className="flex h-5 w-5 items-center justify-center rounded-md transition-opacity hover:opacity-70"
             >
               <Icon name="close" size={12} />
-            </button>
+            </Toast.Close>
           ) : null}
         </div>
       </div>
@@ -186,7 +181,7 @@ function ToastCard({ toast }: { toast: ToastItem }) {
           ) : null}
         </div>
       ) : null}
-    </div>
+    </Toast.Root>
   );
 }
 
@@ -225,23 +220,64 @@ export function ToastAnchor({ className }: { className?: string }) {
   return <div ref={setNode} data-toast-anchor="" className={className} />;
 }
 
-export function Toasts() {
-  const toasts = useSyncExternalStore(subscribeToasts, getToasts);
-  const anchor = useSyncExternalStore(subscribeAnchors, getAnchor, getAnchor);
+function ToastStack({ anchor }: { readonly anchor: HTMLElement | null }) {
+  const { toasts } = Toast.useToastManager<ToastItem>();
+  const [paused, setPaused] = useState(false);
+
+  // Sync any toasts pushed before `<Toasts />` mounted into the Base UI manager.
+  useEffect(() => {
+    const queued = getToasts();
+    if (queued.length === 0) return;
+    const present = new Set(toasts.map((entry) => entry.id));
+    for (const item of queued) {
+      if (!present.has(String(item.id))) {
+        addItemToManager(item);
+      }
+    }
+    // Mount-time hydration only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if (toasts.length === 0) return null;
-  const stack = (
-    <div
+
+  const viewport = (
+    <Toast.Viewport
       data-toast-stack={anchor === null ? 'viewport' : 'anchored'}
+      onPointerEnter={() => { setPaused(true); }}
+      onPointerLeave={() => { setPaused(false); }}
+      onFocusCapture={() => { setPaused(true); }}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setPaused(false);
+        }
+      }}
       className={`pointer-events-none flex flex-col items-end gap-2 ${
         anchor === null ? 'fixed right-4 bottom-[max(1rem,var(--kiki-safe-bottom-inset))] z-[60]' : 'absolute right-0 bottom-0 max-w-full'
       }`}
     >
-      {toasts.map((toast) => (
-        <div key={toast.id} className="pointer-events-auto max-w-full">
-          <ToastCard toast={toast} />
-        </div>
-      ))}
-    </div>
+      {toasts.map((toastObj) => {
+        const item = toastObj.data;
+        if (item === undefined) return null;
+        return (
+          <ToastCard
+            key={toastObj.id}
+            toastObj={toastObj}
+            toast={item}
+            paused={paused}
+          />
+        );
+      })}
+    </Toast.Viewport>
   );
-  return anchor === null ? stack : createPortal(stack, anchor);
+
+  return anchor === null ? viewport : <Toast.Portal container={anchor}>{viewport}</Toast.Portal>;
+}
+
+export function Toasts() {
+  const anchor = useSyncExternalStore(subscribeAnchors, getAnchor, getAnchor);
+  return (
+    <Toast.Provider toastManager={toastManager} timeout={TOAST_AUTO_DISMISS_MS} limit={MAX_TOASTS}>
+      <ToastStack anchor={anchor} />
+    </Toast.Provider>
+  );
 }

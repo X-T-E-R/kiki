@@ -124,8 +124,13 @@ export function useVisualViewportHeightVar(): void {
   }, []);
 }
 
-function setDragging(active: boolean) {
+function setDragging(active: boolean, axis: 'horizontal' | 'vertical' = 'horizontal') {
   document.body.dataset['paneResizing'] = active ? 'true' : 'false';
+  if (active && axis === 'vertical') {
+    document.body.dataset['paneResizeAxis'] = 'row';
+  } else {
+    delete document.body.dataset['paneResizeAxis'];
+  }
 }
 
 function clearDragging() {
@@ -146,9 +151,21 @@ export function usePaneResize(options: {
   onChange: (value: number, final: boolean) => void;
   onReset?: () => void;
   direction?: 1 | -1;
+  axis?: 'horizontal' | 'vertical';
+  onDraggingChange?: (dragging: boolean) => void;
   resolveBounds?: (handle: HTMLElement) => PaneResizeDynamicBounds | undefined;
 }) {
-  const { value, min, max, onChange, onReset, direction = 1, resolveBounds } = options;
+  const {
+    value,
+    min,
+    max,
+    onChange,
+    onReset,
+    direction = 1,
+    axis = 'horizontal',
+    onDraggingChange,
+    resolveBounds,
+  } = options;
   const activeCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -163,7 +180,7 @@ export function usePaneResize(options: {
       event.preventDefault();
       activeCleanupRef.current?.();
       const handle = event.currentTarget;
-      const startX = event.clientX;
+      const startCoord = axis === 'vertical' ? event.clientY : event.clientX;
       const resolved = resolveBounds?.(handle);
       const activeMin = resolved?.min ?? min;
       const activeMax = Math.max(activeMin, resolved?.max ?? max);
@@ -172,29 +189,33 @@ export function usePaneResize(options: {
       let ended = false;
       handle.setPointerCapture(event.pointerId);
       handle.dataset['dragging'] = 'true';
-      setDragging(true);
+      setDragging(true, axis);
+      onDraggingChange?.(true);
 
       const detachListeners = () => {
         clearDragging();
         handle.dataset['dragging'] = 'false';
+        onDraggingChange?.(false);
         handle.removeEventListener('pointermove', trackedMove);
         handle.removeEventListener('pointerup', up);
         handle.removeEventListener('pointercancel', cancel);
         handle.removeEventListener('lostpointercapture', cancel);
         window.removeEventListener('blur', cancel);
       };
+      const coordOf = (pointerEvent: Event) =>
+        axis === 'vertical' ? (pointerEvent as PointerEvent).clientY : (pointerEvent as PointerEvent).clientX;
       const trackedMove = (moveEvent: Event) => {
         if (ended) return;
-        const clientX = (moveEvent as PointerEvent).clientX;
-        valueRef = clamp(startValue + ((clientX - startX) / cssZoomFactor()) * direction, activeMin, activeMax);
+        const coord = coordOf(moveEvent);
+        valueRef = clamp(startValue + ((coord - startCoord) / cssZoomFactor()) * direction, activeMin, activeMax);
         onChange(valueRef, false);
       };
       const up = (upEvent: Event) => {
         if (ended) return;
         ended = true;
         activeCleanupRef.current = null;
-        const clientX = (upEvent as PointerEvent).clientX;
-        valueRef = clamp(startValue + ((clientX - startX) / cssZoomFactor()) * direction, activeMin, activeMax);
+        const coord = coordOf(upEvent);
+        valueRef = clamp(startValue + ((coord - startCoord) / cssZoomFactor()) * direction, activeMin, activeMax);
         detachListeners();
         onChange(valueRef, true);
       };
@@ -217,12 +238,33 @@ export function usePaneResize(options: {
       handle.addEventListener('lostpointercapture', cancel);
       window.addEventListener('blur', cancel);
     },
-    [value, min, max, onChange, direction, resolveBounds],
+    [value, min, max, onChange, direction, axis, onDraggingChange, resolveBounds],
+  );
+
+  const onKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>) => {
+      const step = event.shiftKey ? 48 : 16;
+      const decKey = axis === 'vertical' ? 'ArrowUp' : 'ArrowLeft';
+      const incKey = axis === 'vertical' ? 'ArrowDown' : 'ArrowRight';
+      if (event.key !== decKey && event.key !== incKey && event.key !== 'Home' && event.key !== 'End') return;
+      event.preventDefault();
+      const resolved = resolveBounds?.(event.currentTarget);
+      const activeMin = resolved?.min ?? min;
+      const activeMax = Math.max(activeMin, resolved?.max ?? max);
+      const current = resolved?.startValue ?? value;
+      const next = event.key === 'Home'
+        ? activeMin
+        : event.key === 'End'
+          ? activeMax
+          : clamp(current + (event.key === incKey ? step : -step) * direction, activeMin, activeMax);
+      onChange(next, true);
+    },
+    [axis, direction, max, min, onChange, resolveBounds, value],
   );
 
   const reset = useCallback(() => {
     onReset?.();
   }, [onReset]);
 
-  return { startResize, reset };
+  return { startResize, onKeyDown, reset };
 }

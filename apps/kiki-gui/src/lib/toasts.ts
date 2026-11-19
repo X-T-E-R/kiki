@@ -1,13 +1,14 @@
 /**
- * Toast store — framework-free so any layer (SessionView catch sites, route
- * fallbacks) can raise a toast without prop drilling. `Toasts.tsx` subscribes
- * and renders the stack; auto-dismiss timers live in the component, keeping
- * this module a pure synchronous queue (unit-test friendly).
+ * Toast store — backed by `@base-ui/react/toast`'s `createToastManager()` while
+ * keeping the framework-free synchronous facade (`pushToast`, `pushUndoToast`,
+ * `runToastAction`, `dismissToast`, `clearToasts`, `getToasts`, `subscribeToasts`)
+ * so every caller and unit test keeps the exact same contract.
  *
  * Queue rules: newest last, capped at MAX_TOASTS — the oldest entry is dropped
  * when a push would overflow, so a burst of failures never floods the screen.
  */
 
+import { Toast } from '@base-ui/react/toast';
 import { errorToText } from '@kiki/session-core/util';
 
 export type ToastTone = 'success' | 'info' | 'error';
@@ -64,6 +65,8 @@ export const MAX_TOASTS = 5;
 /** How long an undo stays offered. Hovering or focusing the toast pauses it. */
 export const UNDO_TOAST_MS = 8000;
 
+export const toastManager = Toast.createToastManager<ToastItem>();
+
 type Listener = () => void;
 
 let toasts: readonly ToastItem[] = [];
@@ -72,6 +75,30 @@ const listeners = new Set<Listener>();
 
 function emit(): void {
   for (const listener of listeners) listener();
+}
+
+function removeLocalToast(id: number): void {
+  if (!toasts.some((toast) => toast.id === id)) return;
+  toasts = toasts.filter((toast) => toast.id !== id);
+  emit();
+}
+
+export function toastTimeoutFor(item: ToastItem): number {
+  return item.tone === 'error' ? 0 : (item.durationMs ?? TOAST_AUTO_DISMISS_MS);
+}
+
+export function addItemToManager(item: ToastItem): void {
+  toastManager.add({
+    id: String(item.id),
+    title: item.text,
+    type: item.undo !== undefined ? 'undo' : item.tone,
+    timeout: toastTimeoutFor(item),
+    priority: item.tone === 'error' ? 'high' : 'low',
+    data: item,
+    onClose: () => {
+      removeLocalToast(item.id);
+    },
+  });
 }
 
 export function getToasts(): readonly ToastItem[] {
@@ -88,7 +115,15 @@ export function subscribeToasts(listener: Listener): () => void {
 export function pushToast(input: ToastInput): number {
   const id = nextId;
   nextId += 1;
-  toasts = [...toasts, { ...input, id }].slice(-MAX_TOASTS);
+  const item: ToastItem = { ...input, id };
+  const combined = [...toasts, item];
+  const overflowCount = Math.max(0, combined.length - MAX_TOASTS);
+  const dropped = combined.slice(0, overflowCount);
+  toasts = combined.slice(overflowCount);
+  for (const old of dropped) {
+    toastManager.close(String(old.id));
+  }
+  addItemToManager(item);
   emit();
   return id;
 }
@@ -145,12 +180,18 @@ export function runToastAction(label: string, action: () => void | Promise<void>
 export function dismissToast(id: number): void {
   if (!toasts.some((toast) => toast.id === id)) return;
   toasts = toasts.filter((toast) => toast.id !== id);
+  toastManager.close(String(id));
   emit();
 }
 
 /** Test hook: reset the queue and id counter between cases. */
 export function clearToasts(): void {
+  const previous = toasts;
   toasts = [];
   nextId = 1;
+  for (const item of previous) {
+    toastManager.close(String(item.id));
+  }
+  toastManager.close();
   emit();
 }

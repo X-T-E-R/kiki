@@ -15,7 +15,7 @@ import { basenameOf, resolveHostPath, type FileReference } from '@kiki/session-c
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { useHost } from '#/host';
 import { useI18n } from '#/i18n';
-import { usePhoneMode } from '#/lib/layoutHooks';
+import { usePaneResize, usePhoneMode } from '#/lib/layoutHooks';
 import { anyOverlayOpen } from '#/lib/uiBusy';
 import { cssZoomFactor, unzoomedViewport } from '#/lib/uiZoom';
 import { useOptionalConnection } from '#/state/connection';
@@ -46,6 +46,7 @@ import {
   downloadHostFile,
   fileWriteEpochFor,
   isLocalKikiComputer,
+  MAX_PREVIEW_WIDTH,
   measurePreviewMaxAvailableWidth,
   relativeToCwd,
   useFileOpeners,
@@ -154,12 +155,6 @@ export function PreviewWorkspace({
 }: PreviewWorkspaceProps) {
   const { t } = useI18n();
   const workspaceRef = useRef<HTMLElement | null>(null);
-  const activeResizeCleanupRef = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    return () => {
-      activeResizeCleanupRef.current?.();
-    };
-  }, []);
   const [menu, setMenu] = useState<{ tab: PreviewTabModel; x: number; y: number } | null>(null);
   const [uncontrolledFullscreen, setUncontrolledFullscreen] = useState(false);
   const isFullscreen = controlledFullscreen ?? uncontrolledFullscreen;
@@ -284,76 +279,36 @@ export function PreviewWorkspace({
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [exitFullscreen, isFullscreen, workspaceNavigation?.sharedRail]);
 
-  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (isFullscreen || event.button !== 0) return;
-    event.preventDefault();
-    activeResizeCleanupRef.current?.();
-    const handle = event.currentTarget;
+  const resolvePreviewBounds = useCallback((handle: HTMLElement) => {
     const workspaceEl = workspaceRef.current ?? handle.closest<HTMLElement>('[data-preview-workspace]');
-    const initialZoom = cssZoomFactor();
-    const initialRect = workspaceEl?.getBoundingClientRect();
-    const anchorRight =
-      initialRect !== undefined && initialRect.width > 0 ? initialRect.right / initialZoom : undefined;
-    const startX = event.clientX / initialZoom;
-    const startWidth = width;
-    let lastWidth = width;
-    let ended = false;
-    handle.setPointerCapture(event.pointerId);
-    handle.dataset['dragging'] = 'true';
-    document.body.dataset['paneResizing'] = 'true';
-    const computeNextWidth = (clientX: number) => {
+    const zoom = cssZoomFactor();
+    const viewportWidth = unzoomedViewport().width;
+    const maxAvailable = measurePreviewMaxAvailableWidth(workspaceEl ?? null, viewportWidth, zoom);
+    const max = clampPreviewWidth(MAX_PREVIEW_WIDTH, viewportWidth, maxAvailable);
+    const liveRect = workspaceEl?.getBoundingClientRect();
+    const measuredStart = liveRect !== undefined && liveRect.width > 0 ? liveRect.width / zoom : width;
+    return { startValue: clampPreviewWidth(measuredStart, viewportWidth, maxAvailable), min: 320, max };
+  }, [width]);
+
+  const { startResize, onKeyDown: onResizerKeyDown, reset: resetPreviewWidth } = usePaneResize({
+    value: width,
+    min: 320,
+    max: MAX_PREVIEW_WIDTH,
+    direction: -1,
+    resolveBounds: resolvePreviewBounds,
+    onChange: (nextWidth, final) => {
       const zoom = cssZoomFactor();
-      const x = clientX / zoom;
       const viewportWidth = unzoomedViewport().width;
-      const liveRect = workspaceEl?.getBoundingClientRect();
-      const rightEdge =
-        liveRect !== undefined && liveRect.width > 0 ? liveRect.right / zoom : anchorRight;
-      const desiredWidth = rightEdge !== undefined ? rightEdge - x : startWidth + (startX - x);
-      const maxAvailable = measurePreviewMaxAvailableWidth(workspaceEl ?? null, viewportWidth, zoom);
-      return clampPreviewWidth(desiredWidth, viewportWidth, maxAvailable);
-    };
-    const detachListeners = () => {
-      handle.dataset['dragging'] = 'false';
-      delete document.body.dataset['paneResizing'];
-      delete document.body.dataset['paneResizeAxis'];
-      handle.removeEventListener('pointermove', onMovePointer);
-      handle.removeEventListener('pointerup', onUp);
-      handle.removeEventListener('pointercancel', onCancel);
-      handle.removeEventListener('lostpointercapture', onCancel);
-      window.removeEventListener('blur', onCancel);
-    };
-    const onMovePointer = (move: Event) => {
-      if (ended) return;
-      lastWidth = computeNextWidth((move as PointerEvent).clientX);
-      onWidthChange(lastWidth, false);
-    };
-    const onUp = (up: Event) => {
-      if (ended) return;
-      ended = true;
-      activeResizeCleanupRef.current = null;
-      lastWidth = computeNextWidth((up as PointerEvent).clientX);
-      detachListeners();
-      onWidthChange(lastWidth, true);
-    };
-    const onCancel = () => {
-      if (ended) return;
-      ended = true;
-      activeResizeCleanupRef.current = null;
-      detachListeners();
-      onWidthChange(lastWidth, true);
-    };
-    activeResizeCleanupRef.current = () => {
-      if (ended) return;
-      ended = true;
-      activeResizeCleanupRef.current = null;
-      detachListeners();
-    };
-    handle.addEventListener('pointermove', onMovePointer);
-    handle.addEventListener('pointerup', onUp);
-    handle.addEventListener('pointercancel', onCancel);
-    handle.addEventListener('lostpointercapture', onCancel);
-    window.addEventListener('blur', onCancel);
-  };
+      const maxAvailable = measurePreviewMaxAvailableWidth(workspaceRef.current, viewportWidth, zoom);
+      onWidthChange(clampPreviewWidth(nextWidth, viewportWidth, maxAvailable), final);
+    },
+    onReset: () => {
+      const zoom = cssZoomFactor();
+      const viewportWidth = unzoomedViewport().width;
+      const maxAvailable = measurePreviewMaxAvailableWidth(workspaceRef.current, viewportWidth, zoom);
+      onWidthChange(clampPreviewWidth(DEFAULT_PREVIEW_WIDTH, viewportWidth, maxAvailable), true);
+    },
+  });
 
   if (normalizedTabs.length === 0) {
     return null;
@@ -391,18 +346,14 @@ export function PreviewWorkspace({
       {!isFullscreen && !phoneMode ? (
         <div
           className="preview-workspace__resizer"
-          aria-hidden
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t('preview.resetWidth')}
+          tabIndex={0}
           title={t('preview.resetWidth')}
-          onPointerDown={startResize}
-          onDoubleClick={() => {
-            const zoom = cssZoomFactor();
-            const viewportWidth = unzoomedViewport().width;
-            const maxAvailable = measurePreviewMaxAvailableWidth(workspaceRef.current, viewportWidth, zoom);
-            onWidthChange(
-              clampPreviewWidth(DEFAULT_PREVIEW_WIDTH, viewportWidth, maxAvailable),
-              true,
-            );
-          }}
+          onPointerDown={(event) => { if (!isFullscreen) startResize(event); }}
+          onKeyDown={onResizerKeyDown}
+          onDoubleClick={resetPreviewWidth}
         />
       ) : null}
       <PreviewTabStrip

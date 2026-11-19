@@ -1,12 +1,12 @@
 /**
- * QuickSwitcher — the Ctrl+K centered overlay. Empty query lists the most
- * recent sessions; a query merges local title/cwd matches with global-search
- * hits (`POST /search`). ↑↓ moves the active row, Enter opens it, Esc closes
- * (handled by Dialog). Replaces the old Ctrl+K-focuses-the-sidebar-search
- * behavior.
+ * QuickSwitcher — the Ctrl+K centered overlay backed by `@base-ui/react/autocomplete`
+ * (`inline` + `filter={null}`) over `@kiki/session-core`'s search results. Empty
+ * query lists recent sessions; typed queries merge local title/cwd matches,
+ * settings matches, and global-search hits (`POST /search`).
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { Autocomplete } from '@base-ui/react/autocomplete';
 
 import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
@@ -37,6 +37,13 @@ import { Icon } from './icons';
 import { ThreadTitle } from './ThreadTitle';
 
 const ADVISOR_ACTION = 'memory-advisor-toggle';
+
+interface IndexedSwitcherItem {
+  readonly key: string;
+  readonly index: number;
+  readonly headerText: string | null;
+  readonly item: SwitcherItem;
+}
 
 function Highlighted({ text, ranges }: { readonly text: string; readonly ranges: readonly MatchRange[] }) {
   if (ranges.length === 0) return <>{text}</>;
@@ -76,8 +83,6 @@ export function QuickSwitcher({
       : t(advisor.view.on ? 'memory.advisor.turnOff' : 'memory.advisor.turnOn');
   const [input, setInput] = useState(initialQuery ?? '');
   const [includeToolOutput, setIncludeToolOutput] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const listRef = useRef<HTMLDivElement>(null);
 
   const untitled = t('sidebar.untitled');
   // The same two-layer engine as the sidebar: instant local ranking plus the
@@ -145,19 +150,37 @@ export function QuickSwitcher({
       settingsActionTitle,
       settingsMatches,
       advisorTitle,
+      t,
     ],
   );
 
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [input]);
-
-  // Keep the active row visible while arrowing through a long list.
-  useEffect(() => {
-    listRef.current
-      ?.querySelector(`[data-index="${activeIndex}"]`)
-      ?.scrollIntoView({ block: 'nearest' });
-  }, [activeIndex]);
+  const indexedItems = useMemo<readonly IndexedSwitcherItem[]>(() => {
+    const firstActionIndex = items.findIndex((item) => item.kind === 'action');
+    const firstSessionIndex = items.findIndex((item) => item.kind === 'session');
+    const firstHitIndex = items.findIndex((item) => item.kind === 'hit');
+    const firstSettingIndex = items.findIndex((item) => item.kind === 'setting');
+    return items.map((item, index) => {
+      const headerText =
+        index === firstActionIndex
+          ? t('switcher.pages')
+          : index === firstSessionIndex
+            ? input.trim() === ''
+              ? t('switcher.recent')
+              : t('switcher.sessions')
+            : index === firstHitIndex
+              ? t('switcher.matches')
+              : index === firstSettingIndex
+                ? t('switcher.settings')
+                : null;
+      const key =
+        item.kind === 'action'
+          ? `action-${item.actionId}`
+          : item.kind === 'setting'
+            ? `setting-${item.cardId}`
+            : `${item.kind}-${item.sessionId}-${index}`;
+      return { key, index, headerText, item };
+    });
+  }, [items, input, t]);
 
   const openItem = (item: SwitcherItem | undefined) => {
     if (item === undefined) return;
@@ -183,23 +206,6 @@ export function QuickSwitcher({
     } else void navigate(`/s/${encodeURIComponent(item.sessionId)}`);
   };
 
-  const onInputKeyDown = (event: React.KeyboardEvent) => {
-    // Enter and the arrows belong to an open IME candidate window.
-    if (isImeKeyEvent(event)) return;
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      setActiveIndex((index) => (items.length === 0 ? 0 : (index + 1) % items.length));
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      setActiveIndex((index) =>
-        items.length === 0 ? 0 : (index - 1 + items.length) % items.length,
-      );
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
-      openItem(items[activeIndex]);
-    }
-  };
-
   const searching = search.contentPending;
   // The content layer keeps its own failures: a read that failed or an index
   // this server cannot serve is not "no sessions match". The local title /
@@ -208,10 +214,6 @@ export function QuickSwitcher({
   const unavailable = search.unavailable;
   const searchStatus = input.trim() !== ''
     && (contentProblem || unavailable !== undefined || search.building !== undefined || search.incomplete);
-  const firstActionIndex = items.findIndex((item) => item.kind === 'action');
-  const firstSessionIndex = items.findIndex((item) => item.kind === 'session');
-  const firstHitIndex = items.findIndex((item) => item.kind === 'hit');
-  const firstSettingIndex = items.findIndex((item) => item.kind === 'setting');
 
   return (
     <Dialog
@@ -220,178 +222,180 @@ export function QuickSwitcher({
       overlayId="quick-switcher"
       panelClassName="anim-enter w-full max-w-[560px] overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
     >
-      <div className="border-b border-hairline px-4 py-3">
-        <input
-          type="text"
-          data-autofocus
-          value={input}
-          onChange={(event) => { setInput(event.target.value); }}
-          onKeyDown={onInputKeyDown}
-          placeholder={t('switcher.placeholder')}
-          aria-label={t('switcher.aria')}
-          role="combobox"
-          aria-expanded="true"
-          aria-controls="quick-switcher-list"
-          aria-activedescendant={items.length > 0 ? `quick-switcher-item-${activeIndex}` : undefined}
-          className="w-full bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-faint"
-        />
-        <label className="mt-2 flex w-fit cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-within:outline-2 focus-within:outline-selected-ink">
-          <input type="checkbox" data-search-tools checked={includeToolOutput} onChange={(event) => { setIncludeToolOutput(event.target.checked); setActiveIndex(0); }} className="accent-selected-ink" />
-          {t('search.includeToolOutput')}
-        </label>
-      </div>
-
-      <div
-        ref={listRef}
-        id="quick-switcher-list"
-        role="listbox"
-        className="max-h-[340px] overflow-y-auto p-2"
+      <Autocomplete.Root
+        inline
+        open
+        filter={null}
+        autoHighlight="always"
+        keepHighlight
+        loopFocus
+        items={indexedItems}
+        value={input}
+        itemToStringValue={(entry) => entry.key}
+        onValueChange={(nextValue, eventDetails) => {
+          if (eventDetails.reason === 'input-change' || eventDetails.reason === 'input-clear') {
+            setInput(nextValue);
+          }
+        }}
+        onOpenChange={(nextOpen, eventDetails) => {
+          if (!nextOpen && eventDetails.reason === 'escape-key') {
+            onClose();
+          }
+        }}
       >
-        {items.length === 0 ? (
-          // A content-layer problem is stated below instead: never claim the
-          // search found nothing when it did not finish.
-          searchStatus ? null : (
-            <p className="px-2 py-6 text-center text-[12px] text-ink-faint">
-              {searching ? t('sidebar.searching') : input.trim() === '' ? t('switcher.empty') : t('switcher.noMatches', { query: input.trim() })}
-            </p>
-          )
-        ) : (
-          items.map((item, index) => {
-            const active = index === activeIndex;
-            const headerText =
-              index === firstActionIndex
-                ? t('switcher.pages')
-                : index === firstSessionIndex
-                  ? input.trim() === ''
-                    ? t('switcher.recent')
-                    : t('switcher.sessions')
-                  : index === firstHitIndex
-                    ? t('switcher.matches')
-                    : index === firstSettingIndex
-                      ? t('switcher.settings')
-                      : null;
-            const itemKey =
-              item.kind === 'action'
-                ? `action-${item.actionId}`
-                : item.kind === 'setting'
-                  ? `setting-${item.cardId}`
-                  : `${item.kind}-${item.sessionId}-${index}`;
-            return (
-              <div key={itemKey}>
-                {headerText !== null ? (
-                  <p className={`px-2 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2'}`}>
-                    {headerText}
-                  </p>
-                ) : null}
-                <button
-                  type="button"
-                  id={`quick-switcher-item-${index}`}
-                  data-index={index}
-                  role="option"
-                  aria-selected={active}
-                  onClick={() => { openItem(item); }}
-                  onMouseMove={() => { if (!active) setActiveIndex(index); }}
-                  className={`flex w-full flex-col gap-0.5 rounded-lg px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] ${
-                    active ? 'bg-paper shadow-[var(--kiki-sheet-shadow)]' : 'hover:bg-ink/[0.04]'
-                  }`}
-                >
-                  {item.kind === 'action' ? (
-                    <span className="flex items-center gap-2">
-                      <Icon name="arrowUpRight" size={14} className="text-ink-faint" />
-                      <span className="truncate text-[13px] font-medium text-ink">
-                        {item.title}
-                      </span>
-                    </span>
-                  ) : item.kind === 'setting' ? (
-                    <span className="flex min-w-0 items-center gap-1">
-                      <span className="shrink-0 text-[12px] text-ink-faint">
-                        {item.sectionLabel}
-                      </span>
-                      <Icon name="chevron" size={12} className="text-ink-faint" />
-                      <span className="truncate text-[13px] font-medium text-ink">
-                        {item.title}
-                      </span>
-                    </span>
-                  ) : item.kind === 'session' ? (
-                    <>
-                      <span className="truncate text-[13px] font-medium text-ink">
-                        <ThreadTitle text={item.title} />
-                      </span>
-                      <span className="flex items-center gap-1.5 text-[12px] text-ink-faint">
-                        <span className="truncate">{item.cwd}</span>
-                        <span className="shrink-0">· {time.relativeTime(item.updatedAt)}</span>
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="line-clamp-2 text-[12px] leading-snug text-ink">
-                        <Highlighted text={item.snippet} ranges={highlightTerms(item.snippet, search.contentQuery || search.parsed.text)} />
-                      </span>
-                      <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
-                        <span className="truncate">
-                          <ThreadTitle text={item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled} />
+        <div className="border-b border-hairline px-4 py-3">
+          <Autocomplete.Input
+            type="text"
+            data-autofocus
+            placeholder={t('switcher.placeholder')}
+            aria-label={t('switcher.aria')}
+            onKeyDown={(event) => {
+              // Enter and the arrows belong to an open IME candidate window.
+              if (isImeKeyEvent(event)) {
+                event.preventBaseUIHandler();
+              }
+            }}
+            className="w-full bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-faint"
+          />
+          <label className="mt-2 flex w-fit cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-within:outline-2 focus-within:outline-selected-ink">
+            <input
+              type="checkbox"
+              data-search-tools
+              checked={includeToolOutput}
+              onChange={(event) => { setIncludeToolOutput(event.target.checked); }}
+              className="accent-selected-ink"
+            />
+            {t('search.includeToolOutput')}
+          </label>
+        </div>
+
+        <Autocomplete.List
+          id="quick-switcher-list"
+          className="max-h-[340px] overflow-y-auto p-2"
+        >
+          {indexedItems.length === 0 ? (
+            // A content-layer problem is stated below instead: never claim the
+            // search found nothing when it did not finish.
+            searchStatus ? null : (
+              <p className="px-2 py-6 text-center text-[12px] text-ink-faint">
+                {searching ? t('sidebar.searching') : input.trim() === '' ? t('switcher.empty') : t('switcher.noMatches', { query: input.trim() })}
+              </p>
+            )
+          ) : (
+            indexedItems.map((entry) => {
+              const { item, index, headerText } = entry;
+              return (
+                <div key={entry.key}>
+                  {headerText !== null ? (
+                    <p className={`px-2 pb-0.5 text-[12px] font-medium text-ink-faint ${index === 0 ? 'pt-1' : 'pt-2'}`}>
+                      {headerText}
+                    </p>
+                  ) : null}
+                  <Autocomplete.Item
+                    value={entry}
+                    index={index}
+                    data-index={index}
+                    onClick={() => { openItem(item); }}
+                    className="flex w-full cursor-pointer flex-col gap-0.5 rounded-lg px-3 py-1.5 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] data-[highlighted]:bg-paper data-[highlighted]:shadow-[var(--kiki-sheet-shadow)]"
+                  >
+                    {item.kind === 'action' ? (
+                      <span className="flex items-center gap-2">
+                        <Icon name="arrowUpRight" size={14} className="text-ink-faint" />
+                        <span className="truncate text-[13px] font-medium text-ink">
+                          {item.title}
                         </span>
-                        {item.turn !== undefined ? (
-                          <span data-switcher-hit-turn className="shrink-0 rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft tabular-nums">
-                            #{item.turn}
-                          </span>
-                        ) : null}
-                        {item.agentId !== undefined && item.agentId !== '' && item.agentId !== 'main' ? (
-                          <span data-switcher-hit-agent className="max-w-28 shrink-0 truncate rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft">
-                            {item.agentId}
-                          </span>
-                        ) : null}
-                        <span className="shrink-0">· {t(item.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${item.role}`)}</span>
                       </span>
-                    </>
-                  )}
-                </button>
-              </div>
-            );
-          })
-        )}
-        {searchStatus ? (
-          <div data-switcher-search-status className="border-t border-hairline px-2 pt-1.5 pb-0.5 text-[12px] leading-snug text-ink-faint">
-            {contentProblem ? (
-              <div data-search-error className="mx-1 border-l-2 border-danger py-0.5 pl-3">
-                <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
-                <p className="text-[12px] text-ink-soft">{search.contentInitialError?.message || t('common.unknownError')}</p>
-                <button
-                  type="button"
-                  data-search-initial-retry
-                  onClick={search.retry}
-                  className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
-                >
-                  {t('common.retry')}
-                </button>
-              </div>
-            ) : null}
-            {unavailable !== undefined ? (
-              <p data-search-unavailable role="status" className="px-2">
-                {t(`sidebar.results.unavailable.${unavailable.reason ?? 'generic'}`)}
-                {unavailable.reason !== 'disabled' && unavailable.reason !== 'runtime_disabled' ? (
+                    ) : item.kind === 'setting' ? (
+                      <span className="flex min-w-0 items-center gap-1">
+                        <span className="shrink-0 text-[12px] text-ink-faint">
+                          {item.sectionLabel}
+                        </span>
+                        <Icon name="chevron" size={12} className="text-ink-faint" />
+                        <span className="truncate text-[13px] font-medium text-ink">
+                          {item.title}
+                        </span>
+                      </span>
+                    ) : item.kind === 'session' ? (
+                      <>
+                        <span className="truncate text-[13px] font-medium text-ink">
+                          <ThreadTitle text={item.title} />
+                        </span>
+                        <span className="flex items-center gap-1.5 text-[12px] text-ink-faint">
+                          <span className="truncate">{item.cwd}</span>
+                          <span className="shrink-0">· {time.relativeTime(item.updatedAt)}</span>
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="line-clamp-2 text-[12px] leading-snug text-ink">
+                          <Highlighted text={item.snippet} ranges={highlightTerms(item.snippet, search.contentQuery || search.parsed.text)} />
+                        </span>
+                        <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
+                          <span className="truncate">
+                            <ThreadTitle text={item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled} />
+                          </span>
+                          {item.turn !== undefined ? (
+                            <span data-switcher-hit-turn className="shrink-0 rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft tabular-nums">
+                              #{item.turn}
+                            </span>
+                          ) : null}
+                          {item.agentId !== undefined && item.agentId !== '' && item.agentId !== 'main' ? (
+                            <span data-switcher-hit-agent className="max-w-28 shrink-0 truncate rounded bg-ink/[0.06] px-1 py-px font-mono text-[10.5px] text-ink-soft">
+                              {item.agentId}
+                            </span>
+                          ) : null}
+                          <span className="shrink-0">· {t(item.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${item.role}`)}</span>
+                        </span>
+                      </>
+                    )}
+                  </Autocomplete.Item>
+                </div>
+              );
+            })
+          )}
+          {searchStatus ? (
+            <div data-switcher-search-status className="border-t border-hairline px-2 pt-1.5 pb-0.5 text-[12px] leading-snug text-ink-faint">
+              {contentProblem ? (
+                <div data-search-error className="mx-1 border-l-2 border-danger py-0.5 pl-3">
+                  <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+                  <p className="text-[12px] text-ink-soft">{search.contentInitialError?.message || t('common.unknownError')}</p>
                   <button
                     type="button"
-                    data-search-unavailable-retry
-                    onClick={() => { void search.retryUnavailable().catch(() => search.retry()); }}
-                    className="ml-2 font-medium text-ink underline underline-offset-2"
+                    data-search-initial-retry
+                    onClick={search.retry}
+                    className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
                   >
                     {t('common.retry')}
                   </button>
-                ) : null}
-              </p>
-            ) : null}
-            {search.building !== undefined ? (
-              <p data-search-building className="px-2">
-                {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}
-              </p>
-            ) : null}
-            {search.incomplete ? (
-              <p data-search-incomplete className="px-2">{t('sidebar.results.incomplete')}</p>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+                </div>
+              ) : null}
+              {unavailable !== undefined ? (
+                <p data-search-unavailable role="status" className="px-2">
+                  {t(`sidebar.results.unavailable.${unavailable.reason ?? 'generic'}`)}
+                  {unavailable.reason !== 'disabled' && unavailable.reason !== 'runtime_disabled' ? (
+                    <button
+                      type="button"
+                      data-search-unavailable-retry
+                      onClick={() => { void search.retryUnavailable().catch(() => search.retry()); }}
+                      className="ml-2 font-medium text-ink underline underline-offset-2"
+                    >
+                      {t('common.retry')}
+                    </button>
+                  ) : null}
+                </p>
+              ) : null}
+              {search.building !== undefined ? (
+                <p data-search-building className="px-2">
+                  {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}
+                </p>
+              ) : null}
+              {search.incomplete ? (
+                <p data-search-incomplete className="px-2">{t('sidebar.results.incomplete')}</p>
+              ) : null}
+            </div>
+          ) : null}
+        </Autocomplete.List>
+      </Autocomplete.Root>
 
       <div className="border-t border-hairline px-4 py-2 text-[11px] text-ink-faint">
         {t('switcher.hint')}

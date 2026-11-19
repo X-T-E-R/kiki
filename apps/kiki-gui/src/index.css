@@ -557,6 +557,36 @@ body {
   background-color: color-mix(in srgb, var(--color-selected-ink) 45%, transparent);
 }
 
+/* Desktop docked split separator managed by react-resizable-panels. */
+.kiki-panel-separator {
+  position: relative;
+  width: 6px;
+  margin-left: -3px;
+  margin-right: -3px;
+  z-index: 10;
+  flex-shrink: 0;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.kiki-panel-separator::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: transparent;
+  transition: background-color 120ms ease;
+}
+
+.kiki-panel-separator:hover::after,
+.kiki-panel-separator[data-separator='active']::after,
+.kiki-panel-separator:focus-visible::after {
+  background-color: color-mix(in srgb, var(--color-selected-ink) 45%, transparent);
+}
+
 /* While any pane handle is being dragged: global resize cursor, no text
  * selection, iframe pointer-events shield, and zero transition lag. */
 body[data-pane-resizing='true'] {

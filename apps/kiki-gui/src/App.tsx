@@ -22,6 +22,7 @@
 
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
 import type { WorkPresetItem, WorkspaceCatalogEntry } from '@kiki/protocol';
 import {
@@ -84,11 +85,15 @@ import {
 } from '@kiki/session-core/sessions';
 import {
   readLastSessionId,
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
   writeDesktopPrefs,
   writeLayoutPreferences,
   type SessionPrivateFilter,
 } from '@kiki/session-core/settings';
 import { useLayoutPreferences, useMediaQuery, usePhoneMode, useVisualViewportHeightVar } from './lib/layoutHooks';
+import { persistSidebarPanelWidth } from './lib/panelLayoutStorage';
 import { useLayerHistory } from './lib/layerHistory';
 import { setBackdropDrawerClosed } from './lib/skins/backdrop';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
@@ -1010,58 +1015,55 @@ function NormalApp() {
     && !(activeSession as { deleted?: boolean }).deleted,
   );
 
-  return (
-    <SidebarContext.Provider value={{ sidebarOpen, toggleSidebar: () => { setSidebarOpen((v) => !v); }, closeSidebar }}>
-    <DirtyGuardContext.Provider value={dirtyGuardValue}>
-      <NavHistoryBridge>
-      <DiscoveryProvider
-        activeSessionId={activeSessionId}
-        isSessionBusy={activeSession?.busy}
-        sessionReachable={isSessionReachable}
-      >
-      <div className="flex h-full overflow-hidden bg-canvas">
-      <Sidebar
-        id="app-sidebar"
-        inert={drawerClosed}
-        className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
-        activeSessionId={activeSessionId}
-        sessions={sessions}
-        personaSessions={globalSessions}
-        rooms={conversations.rooms}
-        sessionGroups={sessionGroups}
-        sessionsQuery={sessionsQuery}
-        roomsQuery={conversations.roomsQuery}
-        workspaceOptions={workspaceOptions}
-        filters={listFilters}
-        onFiltersChange={(filters) => { writeLayoutPreferences({ filters }); }}
-        groupBy={layoutPrefs.groupBy}
-        onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
-        sortBy={layoutPrefs.sortBy}
-        onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
-        onNewSession={() => { void navigate(newSessionPath); }}
-        onClose={closeSidebar}
-      />
+  const wideDockedDesktop = useMediaQuery('(min-width: 1360px)');
+  const dockedSidebarSplit = wideDockedDesktop && layoutPrefs.sidebarCollapsed !== true;
+  const sidebarPanelRef = usePanelRef();
+  const latestSidebarPixelsRef = useRef<number | null>(null);
 
-      {/* Stage: the canvas-side frame; the routed page floats on it as one
-          raised sheet (the conversation route splits into its own sheets). */}
-      <div className="app-stage">
-        {wsStatus !== 'open' && !isSettingsRoute ? (
-          <AppConnectionBanner wsStatus={wsStatus} suppressInitialConnecting={wsBannerSuppressed} recovery={recovery} onReconnect={() => { if (nudge !== undefined) nudge(); else socket.nudge(); }} onOpenConnectionSettings={() => { void navigate(recovery?.failure?.kind === 'identity' ? '/settings/spaces' : '/settings/connection'); }} />
-        ) : null}
-        <RestartBanner />
-        <NotifyAskBanner />
-        <div className="app-sheet">
-        <SpaceViewMemory />
-        <PageLoadBoundary
-          resetKey={location.pathname}
-          header={<PageHeader title={t('app.pageLoadFailed')} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
-          reloadLabel={t('app.reload')}
-        >
-        {/* Router navigations are transitions, so opening a lazy page keeps
-            the current page on screen until its chunk arrives. This blank
-            sheet shows only when the window starts at such a page. */}
-        <Suspense fallback={<div className="min-h-0 flex-1" aria-busy="true" />}>
-        <Routes>
+  const sidebarNode = (
+    <Sidebar
+      id="app-sidebar"
+      inert={drawerClosed}
+      dockedInPanelGroup={dockedSidebarSplit}
+      className={dockedSidebarSplit ? 'app-sidebar !w-full' : `app-sidebar ${sidebarOpen ? 'open' : ''}`}
+      activeSessionId={activeSessionId}
+      sessions={sessions}
+      personaSessions={globalSessions}
+      rooms={conversations.rooms}
+      sessionGroups={sessionGroups}
+      sessionsQuery={sessionsQuery}
+      roomsQuery={conversations.roomsQuery}
+      workspaceOptions={workspaceOptions}
+      filters={listFilters}
+      onFiltersChange={(filters) => { writeLayoutPreferences({ filters }); }}
+      groupBy={layoutPrefs.groupBy}
+      onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
+      sortBy={layoutPrefs.sortBy}
+      onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
+      onNewSession={() => { void navigate(newSessionPath); }}
+      onClose={closeSidebar}
+    />
+  );
+
+  const stageNode = (
+    <div className="app-stage">
+      {wsStatus !== 'open' && !isSettingsRoute ? (
+        <AppConnectionBanner wsStatus={wsStatus} suppressInitialConnecting={wsBannerSuppressed} recovery={recovery} onReconnect={() => { if (nudge !== undefined) nudge(); else socket.nudge(); }} onOpenConnectionSettings={() => { void navigate(recovery?.failure?.kind === 'identity' ? '/settings/spaces' : '/settings/connection'); }} />
+      ) : null}
+      <RestartBanner />
+      <NotifyAskBanner />
+      <div className="app-sheet">
+      <SpaceViewMemory />
+      <PageLoadBoundary
+        resetKey={location.pathname}
+        header={<PageHeader title={t('app.pageLoadFailed')} onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+        reloadLabel={t('app.reload')}
+      >
+      {/* Router navigations are transitions, so opening a lazy page keeps
+          the current page on screen until its chunk arrives. This blank
+          sheet shows only when the window starts at such a page. */}
+      <Suspense fallback={<div className="min-h-0 flex-1" aria-busy="true" />}>
+      <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route
             path="/discover"
@@ -1175,6 +1177,78 @@ function NormalApp() {
         </PageLoadBoundary>
         </div>
       </div>
+  );
+
+  return (
+    <SidebarContext.Provider value={{ sidebarOpen, toggleSidebar: () => { setSidebarOpen((v) => !v); }, closeSidebar }}>
+    <DirtyGuardContext.Provider value={dirtyGuardValue}>
+      <NavHistoryBridge>
+      <DiscoveryProvider
+        activeSessionId={activeSessionId}
+        isSessionBusy={activeSession?.busy}
+        sessionReachable={isSessionReachable}
+      >
+      <div className="flex h-full overflow-hidden bg-canvas">
+      {dockedSidebarSplit ? (
+        <Group
+          orientation="horizontal"
+          id="kiki-shell"
+          className="flex h-full min-w-0 flex-1 overflow-hidden bg-canvas"
+          onLayoutChanged={() => {
+            if (latestSidebarPixelsRef.current !== null && latestSidebarPixelsRef.current >= SIDEBAR_MIN_WIDTH) {
+              persistSidebarPanelWidth(latestSidebarPixelsRef.current);
+            }
+          }}
+        >
+          <Panel
+            id="sidebar"
+            panelRef={sidebarPanelRef}
+            defaultSize={layoutPrefs.sidebarWidth}
+            minSize={SIDEBAR_MIN_WIDTH}
+            maxSize={SIDEBAR_MAX_WIDTH}
+            onResize={(size) => {
+              if (size.inPixels >= SIDEBAR_MIN_WIDTH) {
+                latestSidebarPixelsRef.current = size.inPixels;
+              }
+            }}
+            className="flex h-full min-w-0 flex-col"
+          >
+            {sidebarNode}
+          </Panel>
+          <Separator
+            id="kiki-shell-resizer"
+            data-sidebar-resizer=""
+            aria-label={t('sidebar.resizeAria')}
+            title={t('sidebar.resizeAria')}
+            className="kiki-panel-separator"
+            onPointerDown={() => {
+              document.body.dataset['paneResizing'] = 'true';
+              const clear = () => {
+                delete document.body.dataset['paneResizing'];
+                window.removeEventListener('pointerup', clear);
+                window.removeEventListener('pointercancel', clear);
+                window.removeEventListener('blur', clear);
+              };
+              window.addEventListener('pointerup', clear);
+              window.addEventListener('pointercancel', clear);
+              window.addEventListener('blur', clear);
+            }}
+            onDoubleClick={() => {
+              sidebarPanelRef.current?.resize(SIDEBAR_DEFAULT_WIDTH);
+              latestSidebarPixelsRef.current = SIDEBAR_DEFAULT_WIDTH;
+              persistSidebarPanelWidth(SIDEBAR_DEFAULT_WIDTH);
+            }}
+          />
+          <Panel id="stage" minSize={480} className="flex h-full min-w-0 flex-col">
+            {stageNode}
+          </Panel>
+        </Group>
+      ) : (
+        <>
+          {sidebarNode}
+          {stageNode}
+        </>
+      )}
 
 
       {sidebarOpen ? (
