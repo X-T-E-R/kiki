@@ -5612,11 +5612,17 @@ boundExecution,
             goalMode={goalMode}
             efforts={supportedEfforts}
             effort={effectiveEffort}
-            contextUsage={
-              contextUsed !== undefined && effectiveContextLimit !== undefined
-                ? { used: contextUsed, limit: effectiveContextLimit }
-                : undefined
-            }
+            contextUsage={(() => {
+              const meterLimit = effectiveContextLimit ?? contextAutoCompact?.status.effectiveMaxContextTokens;
+              if (meterLimit === undefined) return undefined;
+              const hasSessionContext =
+                contextUsed !== undefined ||
+                (usage?.turn_count ?? 0) > 0 ||
+                state.blocks.length > 0 ||
+                contextAutoCompact !== undefined ||
+                usage !== undefined;
+              return hasSessionContext ? { used: contextUsed, limit: meterLimit } : undefined;
+            })()}
             sessionUsage={usage}
             sessionUsageError={usageError}
             workspaceId={profileWorkspaceId}

@@ -91,7 +91,7 @@ it('portals the global confirmation above nested modal depth and traps Tab in it
   try {
     const input = await openGlobalDirtySheet(true);
     const alert = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
-    expect(alert.parentElement?.parentElement).toBe(document.body);
+    expect(alert.closest('[data-base-ui-portal]')?.parentElement).toBe(document.body);
     const layers = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].map((el) => Number(el.parentElement?.style.zIndex || 50));
     expect(Number(alert.parentElement?.style.zIndex)).toBeGreaterThan(Math.max(...layers));
     const [keep, leave] = [...alert.querySelectorAll('button')];

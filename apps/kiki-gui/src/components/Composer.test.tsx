@@ -25,7 +25,7 @@ import { activateSkillWithConditionalClear, canAbortActiveTurn } from './Session
 
 const { selectFilesNative, selectFilePathNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   readClipboardFiles: vi.fn(),
-  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234', serverId: 'server-a', startedAt: 'generation-one' },
+  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234', serverId: 'server-a', startedAt: 'generation-one', pluginSlots: false },
   selectFilesNative: vi.fn(),
   selectFilePathNative: vi.fn(),
   onFileDrop: vi.fn(),
@@ -162,7 +162,11 @@ vi.mock('../state/connection', () => ({
     },
   }),
   // The picker only needs connection provenance; media surfaces are mocked separately.
-  useOptionalConnection: () => ({ connectionSource: connectionScope.source }),
+  useOptionalConnection: () => (
+    connectionScope.pluginSlots
+      ? { connectionSource: connectionScope.source, connectionId: connectionScope.id, scopeId: connectionScope.source, config: { url: connectionScope.url, token: '' } }
+      : { connectionSource: connectionScope.source }
+  ),
 }));
 vi.mock('../host', () => ({
   useHost: () =>
@@ -5294,4 +5298,136 @@ it('renders and removes multiple quote chips while preserving the legacy quote c
   expect(removeLegacy).toHaveBeenCalledTimes(1);
   await rerender({ quotes: [], quote: 'Legacy passage' });
   expect(container.querySelector('[data-quote-chip]')).toBeNull();
+});
+
+describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
+  it('enforces Layer 1 (SSH + plugin slots) -> Layer 2 (media -> chips) -> Layer 3 (editor) -> Layer 4 (toolbar) with nothing severing tray from editor', async () => {
+    connectionScope.pluginSlots = true;
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    sshSessionHosts.mockResolvedValue({
+      hosts: [
+        { host: { ...sshHost, id: 'build-box', name: 'build-box' }, status: { state: 'ready' } },
+        { host: { ...sshHost, id: 'staging-box', name: 'staging-box' }, status: { state: 'ready' } },
+      ],
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/api/plugins/gui-slots')) {
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            msg: 'ok',
+            data: {
+              slots: [
+                {
+                  pluginId: 'kiki-v42',
+                  id: 'remote-seat',
+                  slot: 'composer-toolbar',
+                  label: { default: 'Remote Seat', zh: '远端工位' },
+                  icon: 'terminal',
+                  tone: 'neutral',
+                  order: 10,
+                  action: { kind: 'open_plugin_panel', panelId: 'workbench' },
+                },
+                {
+                  pluginId: 'kiki-phone',
+                  id: 'phone-preview',
+                  slot: 'composer-toolbar',
+                  label: { default: 'Phone Preview', zh: '手机预览' },
+                  icon: 'smartphone',
+                  tone: 'neutral',
+                  order: 20,
+                  action: { kind: 'open_plugin_panel', panelId: 'phone' },
+                },
+                {
+                  pluginId: 'kiki-uu-remote',
+                  id: 'uu-remote',
+                  slot: 'composer-toolbar',
+                  label: { default: 'UU Remote', zh: 'UU远程' },
+                  icon: 'monitor',
+                  tone: 'neutral',
+                  order: 30,
+                  action: { kind: 'open_plugin_panel', panelId: 'uu' },
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ code: 0, msg: 'ok', data: {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+
+    try {
+      const { container } = await renderComposer({
+        sessionId: 'session-max-loaded',
+        value: 'Check the attached screenshot and file',
+        quotes: [{ id: 'q1', quote: 'Quoted snippet from earlier turn' }],
+        attachments: [
+          { kind: 'file', path: 'src/components/Composer.tsx', name: 'Composer.tsx', isDir: false },
+          {
+            kind: 'image',
+            name: 'screenshot.png',
+            mediaType: 'image/png',
+            data: 'iVBORw0KGgo=',
+            previewUrl: 'data:image/png;base64,iVBORw0KGgo=',
+            size: 12_400,
+          },
+        ],
+      });
+      await settle();
+      await settle();
+
+      const envStrip = container.querySelector<HTMLElement>('[data-composer-env-strip]');
+      const sshStrip = container.querySelector<HTMLElement>('[data-composer-ssh-strip]');
+      const envDivider = container.querySelector<HTMLElement>('[data-composer-env-divider]');
+      const pluginSlots = container.querySelector<HTMLElement>('[data-plugin-composer-slots]');
+      const tray = container.querySelector<HTMLElement>('[data-context-tray]');
+      const mediaStrip = container.querySelector<HTMLElement>('[data-context-media-strip]');
+      const chipsRow = container.querySelector<HTMLElement>('[data-context-chips-row]');
+      const editor = container.querySelector<HTMLElement>('[data-composer-editor]');
+      const toolbar = container.querySelector<HTMLElement>('[data-composer-toolbar]');
+
+      expect(envStrip).not.toBeNull();
+      expect(sshStrip).not.toBeNull();
+      expect(envDivider).not.toBeNull();
+      expect(pluginSlots).not.toBeNull();
+      expect(tray).not.toBeNull();
+      expect(mediaStrip).not.toBeNull();
+      expect(chipsRow).not.toBeNull();
+      expect(editor).not.toBeNull();
+      expect(toolbar).not.toBeNull();
+
+      // Layer 1b owns BOTH SSH hosts AND plugin workbench slots (never inside Layer 3 editor)
+      expect(envStrip!.contains(sshStrip!)).toBe(true);
+      expect(envStrip!.contains(pluginSlots!)).toBe(true);
+      expect(editor!.querySelector('[data-plugin-composer-slots]')).toBeNull();
+      expect(envStrip!.querySelectorAll('[data-composer-ssh-chip]').length).toBe(2);
+      expect(pluginSlots!.querySelectorAll('[data-plugin-composer-slot]').length).toBe(3);
+
+      // Exact Layer 1 -> Layer 2 -> Layer 3 -> Layer 4 DOM order
+      const isBefore = (a: Element, b: Element) =>
+        Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(isBefore(envStrip!, tray!)).toBe(true);
+      expect(isBefore(tray!, editor!)).toBe(true);
+      expect(isBefore(editor!, toolbar!)).toBe(true);
+
+      // Layer 2 touches Layer 3 directly with zero elements between them
+      expect(tray!.nextElementSibling).toBe(editor);
+
+      // Inside Layer 2: Media thumbnails strip strictly precedes Context chips row (Quote -> File)
+      expect(isBefore(mediaStrip!, chipsRow!)).toBe(true);
+      const quoteChip = chipsRow!.querySelector('[data-quote-chip]');
+      const fileChip = chipsRow!.querySelector('[title="src/components/Composer.tsx"]');
+      expect(quoteChip).not.toBeNull();
+      expect(fileChip).not.toBeNull();
+      expect(isBefore(quoteChip!, fileChip!)).toBe(true);
+    } finally {
+      connectionScope.pluginSlots = false;
+      fetchSpy.mockRestore();
+    }
+  });
 });

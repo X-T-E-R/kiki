@@ -7,7 +7,7 @@
  * the section title so nobody configures B thinking they are configuring A.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import type { RemoteConnection } from '@kiki/protocol';
@@ -33,10 +33,7 @@ import { useSpaceSettingsTarget } from '../../lib/spaceSettings';
 import { MAIN_SPACE_ID, useSpaces } from '../../lib/spaces';
 import { pushToast, UNDO_TOAST_MS } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
-import type { SshProfile } from '../../state/connectionConfig';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
-import { SshProfilesPanel } from '../SshProfilesPanel';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
@@ -49,7 +46,7 @@ import { useRemoteSpaceEntry } from './remote/useRemoteSpaceEntry';
 
 export function RemoteConnectionsSection() {
   const host = useHost();
-  const { client, localClient, connectionId, sshLabel, connectionSource, activateSshProfile } = useConnection();
+  const { client, localClient, connectionId, sshLabel, connectionSource } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const inRemoteScope = Boolean(connectionId) || Boolean(sshLabel) || isPeerConnectionSource(connectionSource);
@@ -58,12 +55,10 @@ export function RemoteConnectionsSection() {
   const threadBridges = useThreadBridges(control);
   const bridgesAvailable = hasThreadBridgesApi(control);
   const controlTarget = useSpaceSettingsTarget(control);
-  const [sshProfiles, setSshProfiles] = useState<SshProfile[]>([]);
   const [dialog, setDialog] = useState<
     | { kind: 'add' }
     | { kind: 'remove'; record: RemoteConnection }
     | { kind: 'thread-messages'; record: RemoteConnection }
-    | { kind: 'ssh'; profile?: SshProfile }
     | null
   >(null);
   const [menu, setMenu] = useState<{ record: RemoteConnection; anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
@@ -76,29 +71,6 @@ export function RemoteConnectionsSection() {
     void queryClient.invalidateQueries({ queryKey: remoteConnectionKeys.all });
     void queryClient.invalidateQueries({ queryKey: threadBridgeKeys.all });
   };
-
-  const listSshProfiles = host.connection?.listSshProfiles;
-
-  const reloadSshProfiles = () => {
-    if (!listSshProfiles) return;
-    void listSshProfiles().then(
-      (items) => { setSshProfiles(items); },
-      () => { setSshProfiles([]); },
-    );
-  };
-
-  useEffect(() => {
-    if (!listSshProfiles) {
-      setSshProfiles((prev) => (prev.length === 0 ? prev : []));
-      return;
-    }
-    let active = true;
-    void listSshProfiles().then(
-      (items) => { if (active) setSshProfiles(items); },
-      () => { if (active) setSshProfiles([]); },
-    );
-    return () => { active = false; };
-  }, [listSshProfiles]);
 
   const run = (record: RemoteConnection, work: (api: ReturnType<typeof connectionsApi>) => Promise<unknown>, done: Feedback) => {
     if (api === null) return;
@@ -127,13 +99,6 @@ export function RemoteConnectionsSection() {
       ? t('st.remote.configuresNoHome', { origin: connectionAddress(control.baseUrl) })
       : undefined;
 
-  const canManageSsh = Boolean(
-    host.connection?.listSshProfiles &&
-    host.connection?.saveSshProfile &&
-    host.connection?.removeSshProfile &&
-    activateSshProfile,
-  );
-
   return (
     <SectionCard id="st-card-remote-connections" title={sectionTitle} scope="server"
       aside={sourceLine === undefined ? undefined : <span data-remote-source>{sourceLine}</span>}
@@ -151,11 +116,11 @@ export function RemoteConnectionsSection() {
             : <InlineError error={connections.error} />
         ) : null}
 
-        {connections.isSuccess && records.length === 0 && sshProfiles.length === 0 ? (
+        {connections.isSuccess && records.length === 0 ? (
           <p className="text-[13px] text-ink-soft" data-remote-empty>{t('st.remote.emptyLine')}</p>
         ) : null}
 
-        {records.length > 0 || sshProfiles.length > 0 ? (
+        {records.length > 0 ? (
           <div role="list" aria-label={t('st.remote.outboundTitle')} className="space-y-1.5" data-remote-list>
             {records.map((record) => {
               const threadFact: ThreadMessageFact | null = !bridgesAvailable || threadBridges.isLoading
@@ -181,20 +146,6 @@ export function RemoteConnectionsSection() {
                 />
               );
             })}
-            {sshProfiles.map((profile) => (
-              <OwnerSshProfileRow key={profile.id} profile={profile}
-                onConnect={() => { setDialog({ kind: 'ssh', profile }); }} />
-            ))}
-          </div>
-        ) : null}
-
-        {canManageSsh && sshProfiles.length === 0 ? (
-          <div>
-            <button type="button" data-owner-ssh-manage
-              className="text-[12.5px] text-ink-faint underline decoration-hairline-strong underline-offset-2 hover:text-ink"
-              onClick={() => { setDialog({ kind: 'ssh' }); }}>
-              {t('st.remote.ownerSshManage')}
-            </button>
           </div>
         ) : null}
 
@@ -265,29 +216,6 @@ export function RemoteConnectionsSection() {
         />
       ) : null}
 
-      {dialog?.kind === 'ssh' && activateSshProfile !== undefined ? (
-        <Dialog onClose={() => { setDialog(null); reloadSshProfiles(); }} overlayId="owner-ssh-profiles"
-          ariaLabel={t('connect.sshTitle')}
-          panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
-          <div className="space-y-3" data-owner-ssh-dialog>
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-[14px] font-medium text-ink">{t('st.remote.ownerSshTag')}</h2>
-              <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDialog(null); reloadSshProfiles(); }}>
-                {t('common.close')}
-              </button>
-            </div>
-            <SshProfilesPanel
-              selectedProfile={dialog.profile}
-              onConnect={async (id, token) => {
-                await activateSshProfile(id, token);
-                setDialog(null);
-                reloadSshProfiles();
-              }}
-            />
-          </div>
-        </Dialog>
-      ) : null}
-
       {dialog?.kind === 'remove' && control !== null ? (
         <ConfirmDialog open overlayId="remote-connection-remove" tone="danger"
           title={t('st.remote.removeTitle', { name: dialog.record.label })}
@@ -301,38 +229,6 @@ export function RemoteConnectionsSection() {
           }} />
       ) : null}
     </SectionCard>
-  );
-}
-
-function OwnerSshProfileRow({ profile, onConnect }: {
-  readonly profile: SshProfile;
-  readonly onConnect: () => void;
-}) {
-  const { t } = useI18n();
-  const target = profile.target.kind === 'alias' ? profile.target.alias : profile.target.hostname;
-  return (
-    <div role="listitem" data-ssh-profile-row={profile.id}
-      className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-ink/[0.03] px-3 py-2">
-      <Icon name="terminal" size={14} className="shrink-0 text-ink-faint" />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-ink" title={profile.label}>
-            {profile.label}
-          </span>
-          <span className="shrink-0 rounded-full bg-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-ink-soft" data-owner-ssh-tag>
-            {t('st.remote.ownerSshTag')}
-          </span>
-        </div>
-        <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint" title={target}>
-          {target}{profile.remotePort !== undefined ? ` · 127.0.0.1:${profile.remotePort}` : ''}
-        </p>
-      </div>
-      <div className="ml-auto flex shrink-0 items-center gap-2">
-        <button type="button" data-ssh-profile-connect={profile.id} className={SECONDARY_BUTTON} onClick={onConnect}>
-          {t('st.remote.ownerSshConnect')}
-        </button>
-      </div>
-    </div>
   );
 }
 

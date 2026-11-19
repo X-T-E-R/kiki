@@ -16,7 +16,6 @@ import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
 import type { DesktopBootStatus, DesktopFailureInfo } from '../state/desktopConnection';
 import { Wordmark } from './Wordmark';
 import { appShellConnectUrl } from '../lib/appShell';
-import { SshProfilesPanel } from './SshProfilesPanel';
 
 declare const __KIKI_PROXY_TARGET__: string;
 
@@ -81,9 +80,9 @@ export function ConnectScreen({
   desktopFailure,
   onRetryDesktop,
   onCancelDesktopBoot,
-  onConnectSsh,
+  onConnectSsh: _onConnectSsh,
   onSwitchLocal,
-  sshProfile,
+  sshProfile: _sshProfile,
   webLink,
   onRetryWebLink,
   onRetryPaired,
@@ -111,10 +110,7 @@ export function ConnectScreen({
     return (
       <Card>
         {desktopFailure !== null ? (
-          <>
-            <DesktopFailureCard failure={desktopFailure} onRetry={onRetryDesktop} onSwitchLocal={onSwitchLocal} />
-            <div className="px-7 pb-7"><SshProfilesPanel onConnect={onConnectSsh} selectedProfile={sshProfile} /></div>
-          </>
+          <DesktopFailureCard failure={desktopFailure} onRetry={onRetryDesktop} onSwitchLocal={onSwitchLocal} />
         ) : <SshCheckingCard onSwitchLocal={onSwitchLocal} />}
       </Card>
     );
@@ -130,7 +126,6 @@ export function ConnectScreen({
     return (
       <Card>
         <DesktopFailureCard failure={desktopFailure} onRetry={onRetryDesktop} />
-        <div className="px-7 pb-7"><SshProfilesPanel onConnect={onConnectSsh} /></div>
       </Card>
     );
   }

@@ -299,7 +299,7 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
     <div
       data-composer-ssh-strip
       data-composer-ssh-open={listOpen ? '' : undefined}
-      className="mx-3 mt-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
+      className="flex min-w-0 flex-wrap items-center gap-1.5"
     >
       <button
         type="button"

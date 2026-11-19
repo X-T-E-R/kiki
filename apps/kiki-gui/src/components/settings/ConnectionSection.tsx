@@ -119,7 +119,8 @@ function CurrentConnectionContent() {
     ? (tokenDraft.mode === 'set' && nextToken !== '') || tokenDraft.mode === 'clear'
     : nextToken !== config.token.trim();
   const draftsDirty = urlDraft.trim() !== config.url.trim() || tokenDirty;
-  useDirtyReporter('connection-endpoint', draftsDirty && !isSsh);
+  const canEditLocalEndpoint = !isSsh && !inPairedSpace && !isShellPaired && !embeddedAndroid && !isDesktop;
+  useDirtyReporter('connection-endpoint', draftsDirty && canEditLocalEndpoint);
   const applyDrafts = () => {
     if (!draftsDirty) return;
     const trimmedUrl = urlDraft.trim();
@@ -213,7 +214,6 @@ function CurrentConnectionContent() {
   const remoteLastConnected = remoteRecord?.lastConnectedAt === undefined
     ? undefined
     : relativeTime(new Date(remoteRecord.lastConnectedAt).toISOString(), locale);
-  const canEditLocalEndpoint = !isSsh && !inPairedSpace;
 
   return (
     <div className="space-y-4">

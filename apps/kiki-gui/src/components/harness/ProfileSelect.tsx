@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -23,9 +23,9 @@ import {
   FLOATING_PORTAL_OWNERS_ATTRIBUTE,
   floatingSurfaceZIndex,
   owningModalId,
+  registerOverlay,
   resolveFloatingOwners,
 } from '../../lib/uiBusy';
-import { unzoomedRect, unzoomedViewport } from '../../lib/uiZoom';
 import { useConnection } from '../../state/connection';
 import {
   MENU_ROW_CLASS,
@@ -33,12 +33,16 @@ import {
   STATUS_SEGMENT_CLASS,
   STATUS_SEGMENT_ICON_CLASS,
   STATUS_SEGMENT_SET,
-  useComposerPanelAnchor,
-  usePopover,
 } from '../ComposerControls';
 import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
 import { Icon } from '../icons';
-import { placeAnchored } from '../overlays/anchoredPosition';
+import {
+  handleCompositeMenuKeyDown,
+  handleFloatingSelectOpenChange,
+  SELECT_SCROLL_LIST_CLASS,
+  SelectRowCheck,
+  useFloatingOutsidePointerDown,
+} from '../select/selectPrimitives';
 import { PersonaAvatar, personaAvatarOf } from '../persona/PersonaAvatar';
 import { matchesPersona, sortPersonas, usePersonaList } from '../persona/usePersonas';
 import {
@@ -47,14 +51,6 @@ import {
   engineOverridesOf,
   visibleEngines,
 } from '../settings/profileEditor/engines';
-
-function Check({ on }: { on: boolean }) {
-  return (
-    <span aria-hidden className={`flex h-[19px] w-3 shrink-0 items-center ${on ? 'text-ink' : 'text-transparent'}`}>
-      <Icon name="check" size={12} />
-    </span>
-  );
-}
 
 function formatProfileSource(profile: NamedAgentProfile, locale: string): string | undefined {
   const file = profile.source_file;
@@ -133,24 +129,22 @@ export function ProfileSelect({
     close(true);
     onPicked?.();
   }, [close, onPicked]);
-  const popoverKeyDown = usePopover(open, close, rootRef, 'composer-profile-select');
 
-  useComposerPanelAnchor(rootRef, open);
+  useEffect(() => {
+    if (!open) return;
+    return registerOverlay('composer-profile-select');
+  }, [open]);
+
+  useFloatingOutsidePointerDown(open, {
+    surfaceOwnerId: 'composer-profile-select',
+    rootRef,
+    triggerRef,
+    panelRef,
+    onDismiss: () => { close(false); },
+  });
 
   const modalOwnerId = open ? owningModalId(triggerRef.current) : undefined;
   const portalInModal = modalOwnerId !== undefined;
-  const [modalPanelPos, setModalPanelPos] = useState<{ left: number; top: number } | null>(null);
-
-  const [openDirection, setOpenDirection] = useState<'up' | 'down'>('up');
-  useEffect(() => {
-    if (!open) return;
-    const rect = rootRef.current?.getBoundingClientRect();
-    if (rect && rect.top > 0 && rect.top < 380 && window.innerHeight - rect.bottom > rect.top) {
-      setOpenDirection('down');
-    } else {
-      setOpenDirection('up');
-    }
-  }, [open]);
 
   const clientRef = useRef(client);
   clientRef.current = client;
@@ -191,34 +185,6 @@ export function ProfileSelect({
   formOpenRef.current = fileForm.open;
   const formPathRef = useRef(fileForm.path);
   formPathRef.current = fileForm.path;
-
-  useLayoutEffect(() => {
-    if (!open || !portalInModal) {
-      setModalPanelPos(null);
-      return;
-    }
-    const updatePosition = () => {
-      const triggerRect = triggerRef.current?.getBoundingClientRect();
-      const panelEl = panelRef.current;
-      if (triggerRect === undefined || panelEl === null) return;
-      const anchor = unzoomedRect(triggerRect);
-      const size = unzoomedRect(panelEl.getBoundingClientRect());
-      const placed = placeAnchored(
-        anchor,
-        { width: size.width || 360, height: size.height || 320 },
-        unzoomedViewport(),
-        { gap: 6 },
-      );
-      setModalPanelPos({ left: placed.left, top: placed.top });
-    };
-    updatePosition();
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [open, portalInModal, query, fileForm.open]);
 
   const [check, setCheck] = useState<{
     readonly path: string;
@@ -503,7 +469,7 @@ export function ProfileSelect({
           }}
           className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
         >
-          <Check on={isSelected} />
+          <SelectRowCheck on={isSelected} />
           <Icon
             name={resolveProfileIcon({
               profile: p.name,
@@ -536,15 +502,7 @@ export function ProfileSelect({
   };
 
   return (
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape/arrow handling
-    <div ref={rootRef} className="relative min-w-0" data-profile-select onKeyDown={(e) => {
-      if (e.key === 'Escape' && open) {
-        e.stopPropagation();
-        close(true);
-      } else {
-        popoverKeyDown(e);
-      }
-    }}>
+    <div ref={rootRef} className="relative min-w-0" data-profile-select>
       <button
         ref={triggerRef}
         type="button"
@@ -623,34 +581,55 @@ export function ProfileSelect({
         </button>
       ) : null}
 
-      {open ? (() => {
-        const panelElement = (
-          <div
-            ref={panelRef}
-            data-execution-panel
-            role="radiogroup"
-            aria-label="Profile"
-            {...(portalInModal
-              ? {
-                  [MODAL_ESCAPE_ATTRIBUTE]: modalOwnerId,
+      {open ? (
+        <Popover.Root
+          open
+          modal={false}
+          onOpenChange={(nextOpen, eventDetails) => {
+            handleFloatingSelectOpenChange(nextOpen, eventDetails, {
+              surfaceOwnerId: 'composer-profile-select',
+              triggerEl: triggerRef.current,
+              panelEl: panelRef.current,
+              rootEl: rootRef.current,
+              onDismiss: close,
+            });
+          }}
+        >
+          <Popover.Portal container={portalInModal ? undefined : rootRef}>
+            <Popover.Positioner
+              anchor={triggerRef}
+              side="top"
+              align="start"
+              sideOffset={6}
+              collisionPadding={8}
+              positionMethod="fixed"
+              style={{ zIndex: portalInModal ? floatingSurfaceZIndex(triggerRef.current) : 50 }}
+            >
+              <Popover.Popup
+                ref={panelRef}
+                data-execution-panel
+                role="radiogroup"
+                aria-label="Profile"
+                initialFocus={false}
+                finalFocus={false}
+                {...{
                   [FLOATING_OWNER_ATTRIBUTE]: 'composer-profile-select',
                   [FLOATING_PORTAL_OWNERS_ATTRIBUTE]:
                     resolveFloatingOwners(triggerRef.current) ?? 'composer-profile-select',
-                }
-              : undefined)}
-            className={portalInModal
-              ? 'anim-enter fixed flex max-h-[calc(100dvh-120px)] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg'
-              : `composer-floating-panel anim-enter absolute left-0 z-50 flex max-h-[min(var(--cp-max-h,calc(100dvh-120px)),calc(100dvh-120px))] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
-            style={portalInModal
-              ? {
-                  backgroundColor: 'var(--color-paper)',
-                  zIndex: floatingSurfaceZIndex(triggerRef.current),
-                  ...(modalPanelPos === null
-                    ? { visibility: 'hidden', left: 0, top: 0 }
-                    : { left: modalPanelPos.left, top: modalPanelPos.top }),
-                }
-              : { backgroundColor: 'var(--color-paper)' }}
-          >
+                  ...(portalInModal ? { [MODAL_ESCAPE_ATTRIBUTE]: modalOwnerId } : undefined),
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && !isImeKeyEvent(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    close(true);
+                    return;
+                  }
+                  handleCompositeMenuKeyDown(e, panelRef.current);
+                }}
+                className="composer-floating-panel anim-enter flex max-h-[min(var(--available-height,calc(100dvh-120px)),28rem,calc(100dvh-120px))] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg"
+                style={{ backgroundColor: 'var(--color-paper)' }}
+              >
           {fileForm.open ? (
             <div data-execution-file-form className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="flex shrink-0 items-center gap-1.5 border-b border-hairline px-2.5 py-1.5">
@@ -758,33 +737,13 @@ export function ProfileSelect({
                   data-execution-filter
                   value={query}
                   onChange={(e) => { setQuery(e.target.value); }}
-                  onKeyDown={(e) => {
-                    if (isImeKeyEvent(e)) return;
-                    const panel = e.currentTarget.closest<HTMLElement>('[data-execution-panel]') ?? rootRef.current;
-                    const rows = panel !== null
-                      ? [...panel.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)')]
-                      : [];
-                    if (e.key === 'ArrowDown') {
-                      if (rows.length === 0) return;
-                      e.preventDefault();
-                      rows[0]?.focus();
-                    } else if (e.key === 'ArrowUp') {
-                      if (rows.length === 0) return;
-                      e.preventDefault();
-                      rows[rows.length - 1]?.focus();
-                    } else if (e.key === 'Enter') {
-                      if (rows.length === 0) return;
-                      e.preventDefault();
-                      rows[0]?.click();
-                    }
-                  }}
                   placeholder={t('composer.profile.searchPlaceholder')}
                   aria-label={t('composer.execution.filterAria')}
                   className="w-full rounded-md border border-hairline bg-paper px-2.5 py-1 text-[12.5px] text-ink outline-none focus-visible:border-selected-ink placeholder:text-ink-faint"
                 />
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1 max-h-[min(var(--cp-max-h,24rem),24rem,calc(100dvh-160px))] space-y-2">
+              <div className={`${SELECT_SCROLL_LIST_CLASS} space-y-2 p-1`}>
                 {retainedUnavailableExternal ? (
                   <div data-execution-restore={choice.executor} className="mx-1 my-1 space-y-1 px-2.5 py-1.5 rounded border border-hairline bg-surface/40">
                     <p className="text-[11.5px] leading-snug text-ink-faint">
@@ -827,7 +786,7 @@ export function ProfileSelect({
                           onClick={pickDefault}
                           className={`${MENU_ROW_CLASS} items-start ${isNativeSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                         >
-                          <Check on={isNativeSelected} />
+                          <SelectRowCheck on={isNativeSelected} />
                           <Icon name="profileMain" size={14} className="mt-[3px] shrink-0 text-ink-soft" />
                           <span className="min-w-0 flex-1">
                             <span className="flex min-w-0 items-center justify-between gap-1.5">
@@ -878,7 +837,7 @@ export function ProfileSelect({
                             }}
                             className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''} ${!usable && choice.executor !== item.id ? 'opacity-60 cursor-not-allowed' : ''}`}
                           >
-                            <Check on={isSelected} />
+                            <SelectRowCheck on={isSelected} />
                             <Icon name="terminal" size={14} className="mt-[3px] shrink-0 text-ink-soft" />
                             <span className="min-w-0 flex-1">
                               <span className="flex min-w-0 items-center justify-between gap-1.5">
@@ -943,7 +902,7 @@ export function ProfileSelect({
                           onClick={() => { close(true); }}
                           className={`${MENU_ROW_CLASS} items-start ${MENU_ROW_SELECTED_CLASS}`}
                         >
-                          <Check on />
+                          <SelectRowCheck on />
                           <Icon
                             name={resolveProfileIcon({
                               profile: resolvedFile.path === choice.profile_file ? resolvedFile.name : undefined,
@@ -1001,7 +960,7 @@ export function ProfileSelect({
                             }}
                             className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                           >
-                            <Check on={isSelected} />
+                            <SelectRowCheck on={isSelected} />
                             <Icon
                               name={resolveProfileIcon({
                                 profile: retainedProfile,
@@ -1099,7 +1058,7 @@ export function ProfileSelect({
                                 }}
                                 className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                               >
-                                <Check on={isSelected} />
+                                <SelectRowCheck on={isSelected} />
                                 <PersonaAvatar
                                   persona={personaAvatarOf(item)}
                                   size={20}
@@ -1132,10 +1091,11 @@ export function ProfileSelect({
               </div>
             </>
           )}
-          </div>
-        );
-        return portalInModal ? createPortal(panelElement, document.body) : panelElement;
-      })() : null}
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
+      ) : null}
     </div>
   );
 }

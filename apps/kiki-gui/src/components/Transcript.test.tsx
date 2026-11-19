@@ -168,6 +168,7 @@ class TestResizeObserver {
       {
         target,
         borderBoxSize: [{ blockSize, inlineSize: 760 }],
+        contentRect: { height: blockSize, width: 760 },
       } as unknown as ResizeObserverEntry,
     ], this as unknown as ResizeObserver);
   }
@@ -11285,7 +11286,7 @@ describe('phone mode pending tray records (#26)', () => {
 
 describe('virtualizer scroll row-measurement guards and compact assistant row actions', () => {
   it('guards ResizeObserver measurements against render-phase getItemKey drift when data-row-key disagrees', async () => {
-    const { guardTranscriptRowMeasure, measureMountedTranscriptRow } = await import('./timeline/virtualLayoutSync');
+    const { measureTranscriptRow, reconcileMountedRows } = await import('./transcriptVirtualizer');
     const element = document.createElement('div');
     element.dataset['index'] = '2';
     element.dataset['rowKey'] = 'row-old';
@@ -11298,41 +11299,37 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
 
     const itemSizeCache = new Map<string, number>([['row-new', 175]]);
     const resized: Array<{ index: number; size: number }> = [];
+    const elementsCache = new Map<string, HTMLDivElement>();
     const instance = {
-      indexFromElement: () => 2,
+      indexFromElement: (el: HTMLDivElement) => Number(el.dataset['index'] ?? -1),
       options: {
         count: 5,
-        getItemKey: (idx: number) => (idx === 2 ? 'row-new' : `row-${idx}`),
+        getItemKey: (idx: number) => (idx === 2 ? 'row-new' : idx === 3 ? 'row-matched' : `row-${idx}`),
         estimateSize: () => 120,
         scrollMargin: 24,
       },
       itemSizeCache,
-      elementsCache: new Map<string, HTMLDivElement>(),
+      elementsCache,
       scrollElement: scrollEl,
       isScrolling: true,
-      measureElement: (el: HTMLDivElement) => {
-        // Simulates @tanstack/virtual-core skipping synchronous measurement while isScrolling === true.
-        instance.elementsCache.set('row-matched', el);
-      },
       resizeItem: (index: number, size: number) => {
         resized.push({ index, size });
         itemSizeCache.set('row-matched', size);
       },
-    } as unknown as Parameters<typeof guardTranscriptRowMeasure>[2];
+    } as unknown as Parameters<typeof measureTranscriptRow>[2];
 
     // Stale DOM node with data-row-key="row-old" must NOT overwrite "row-new"'s 175px cached height with 14px.
-    expect(guardTranscriptRowMeasure(element, undefined, instance)).toBe(175);
+    expect(measureTranscriptRow(element, undefined, instance)).toBe(175);
 
-    // Matching data-row-key measures synchronously even while instance.isScrolling === true.
+    // Matching data-row-key reconciles mounted height cleanly.
     const matchedEl = document.createElement('div');
     matchedEl.dataset['index'] = '3';
     matchedEl.dataset['rowKey'] = 'row-matched';
     Object.defineProperty(matchedEl, 'offsetHeight', { configurable: true, value: 184 });
     document.body.append(matchedEl);
+    elementsCache.set('row-matched', matchedEl);
 
-    (instance.options as { getItemKey: (idx: number) => string }).getItemKey = (idx: number) =>
-      (idx === 3 ? 'row-matched' : `row-${idx}`);
-    measureMountedTranscriptRow(matchedEl, 3, 'row-matched', instance);
+    reconcileMountedRows(instance);
 
     expect(resized).toEqual([{ index: 3, size: 184 }]);
     expect(itemSizeCache.get('row-matched')).toBe(184);
@@ -11372,87 +11369,55 @@ describe('virtualizer scroll row-measurement guards and compact assistant row ac
     expect(vItem.className).toContain('has-[[data-row-menu-open]]:z-20');
   });
 
-  it('batches all offsetHeight reads before any style.top writes in syncTranscriptVirtualDom', async () => {
-    const { syncTranscriptVirtualDom } = await import('./timeline/virtualLayoutSync');
-    const ops: string[] = [];
+  it('immediately disengages sticky bottom on a small upward wheel delta during active streaming and never yanks scrollTop back down', async () => {
+    const blocks = virtualBlocks(80, 'stream-noyank');
+    const live = { ...blocks.at(-1)!, streaming: true } as Extract<Block, { kind: 'assistant' }>;
+    const initial = [...blocks.slice(0, -1), live];
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(initial)));
+    await settleVirtualizer();
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    expect(transcriptDistanceFromEnd(scroll)).toBeLessThanOrEqual(80);
 
-    const scroll = document.createElement('div');
-    Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => { ops.push('read:clientHeight'); return 600; } });
-    const content = document.createElement('div');
-    content.setAttribute('data-transcript-virtual-content', '');
-    scroll.append(content);
-    document.body.append(scroll);
-
-    const heights = [64, 152, 28];
-    const rows = heights.map((h, idx) => {
-      const row = document.createElement('div');
-      row.setAttribute('data-transcript-virtual-item', '');
-      row.dataset['index'] = String(idx);
-      row.dataset['rowKey'] = `row-${idx}`;
-      Object.defineProperty(row, 'offsetHeight', {
-        configurable: true,
-        get: () => { ops.push(`read:row-${idx}`); return h; },
-      });
-      const rawStyle = row.style;
-      let topVal = '';
-      Object.defineProperty(rawStyle, 'top', {
-        configurable: true,
-        get: () => topVal,
-        set: (val: string) => { ops.push(`write:row-${idx}`); topVal = val; },
-      });
-      content.append(row);
-      return row;
+    // User scrolls UP by a small intentional delta (40px — still inside the 80px end threshold).
+    const targetTop = scroll.scrollTop - 40;
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true, cancelable: true }));
+      scroll.scrollTop = targetTop;
+      scroll.dispatchEvent(new Event('scroll'));
     });
 
-    const itemSizeCache = new Map<string, number>();
-    const elementsCache = new Map<string, HTMLDivElement>();
-    const measurementsCache = heights.map((_, idx) => ({ index: idx, key: `row-${idx}`, start: 24 + idx * 120, size: 120, end: 24 + (idx + 1) * 120, lane: 0 }));
+    // Active streaming appends tokens and grows the last row dramatically.
+    const liveRow = container.querySelector<HTMLElement>('[data-block-id="stream-noyank-79"]')!
+      .closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    await renderSettled(
+      root,
+      virtualTranscript({
+        ...transcriptState([...initial.slice(0, -1), { ...live, text: `${live.text}\n\nMore streamed paragraphs.` }]),
+        busy: true,
+      }),
+    );
+    await act(async () => {
+      resizeElement(liveRow, 640);
+    });
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(targetTop);
 
-    const onChangeSpy = vi.fn(() => { ops.push('callback:onChange'); });
-    const instance = {
-      indexFromElement: (el: Element) => Number((el as HTMLElement).dataset['index'] ?? -1),
-      options: {
-        count: rows.length,
-        getItemKey: (idx: number) => `row-${idx}`,
-        estimateSize: () => 120,
-        scrollMargin: 24,
-        onChange: onChangeSpy,
-      },
-      itemSizeCache,
-      elementsCache,
-      measurementsCache,
-      scrollElement: scroll,
-      isScrolling: false,
-      measureElement: (el: HTMLDivElement) => {
-        const idx = Number(el.dataset['index']);
-        elementsCache.set(`row-${idx}`, el);
-        instance.options.onChange?.(instance as never, false);
-      },
-      resizeItem: (idx: number, size: number) => {
-        itemSizeCache.set(`row-${idx}`, size);
-        let cursor = 24;
-        for (let i = 0; i < measurementsCache.length; i += 1) {
-          const s = itemSizeCache.get(`row-${i}`) ?? 120;
-          measurementsCache[i] = { ...measurementsCache[i]!, start: cursor, size: s, end: cursor + s };
-          cursor += s + 16;
-        }
-        instance.options.onChange?.(instance as never, false);
-      },
-      getTotalSize: () => measurementsCache.at(-1)!.end,
-      getVirtualItems: () => measurementsCache,
-    } as unknown as Parameters<typeof syncTranscriptVirtualDom>[1];
-
-    syncTranscriptVirtualDom(scroll, instance);
-
-    const firstWriteIdx = ops.findIndex((entry) => entry.startsWith('write:'));
-    const lastReadIdx = ops.reduce((acc, entry, i) => (entry.startsWith('read:') ? i : acc), -1);
-    expect(firstWriteIdx).toBeGreaterThan(0);
-    expect(lastReadIdx).toBeLessThan(firstWriteIdx);
-    // `onChange` is silenced across all 3 `measureElement` + 3 `resizeItem` calls and invoked exactly ONCE after batch writes!
-    expect(onChangeSpy).toHaveBeenCalledTimes(1);
-    expect(ops.at(-1)).toBe('callback:onChange');
-    expect(rows.map((r) => r.style.top)).toEqual(['0px', '80px', '248px']);
-
-    scroll.remove();
+    // Even when a new trailing block appends during the same turn, scrollTop stays rock-steady.
+    await renderSettled(
+      root,
+      virtualTranscript({
+        ...transcriptState([
+          ...initial.slice(0, -1),
+          { ...live, text: `${live.text}\n\nMore streamed paragraphs.` },
+          assistantBlock('stream-noyank-80', 'Additional streamed block'),
+        ]),
+        busy: true,
+      }),
+    );
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(targetTop);
   });
 });

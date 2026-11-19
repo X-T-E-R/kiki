@@ -164,6 +164,7 @@ import { usePluginPicker } from './capabilities/usePluginPicker';
 import { useMcpPicker } from './capabilities/useMcpPicker';
 import {
   interpolatePluginPromptText,
+  selectComposerToolbarSlots,
   subscribePluginPromptInserts,
   type PluginPromptInsertRequest,
 } from '@kiki/session-core';
@@ -533,7 +534,7 @@ export function Composer({
   efforts: readonly string[] | undefined;
   effort: string | undefined;
   /** Session context usage for the footer's mini meter (hidden when absent). */
-  contextUsage?: { readonly used: number; readonly limit: number };
+  contextUsage?: { readonly used?: number; readonly limit: number };
   /** Automatic-compaction point wiring for the meter's detail card. */
   contextAutoCompact?: ContextMeterAutoCompact;
   /**
@@ -1561,21 +1562,21 @@ export function Composer({
     const next = removeThreadRef(text, ref);
     applyTextChange(next.text, next.cursor);
   };
+  const hasPluginToolbarSlots =
+    variant !== 'subagent' &&
+    !queueEditing &&
+    !messageEditing &&
+    selectComposerToolbarSlots(pluginGuiSlots.slots).length > 0;
+  const hasEnvStrip = ssh.resident !== null || hasPluginToolbarSlots;
+  const hasModeBanner = queueEditing || runMode === 'goal';
+  const payloadAttachments = attachments.filter((attachment) => attachment.kind !== 'ssh');
   const hasTray =
     conversationRefs.length > 0 ||
     draftSkills.length > 0 ||
-    (quoteItems.length > 0) ||
+    quoteItems.length > 0 ||
     (annotations !== undefined && annotations.length > 0) ||
-    attachments.length > 0;
-  const hasChips =
-    queueEditing ||
-    hasTray ||
-    (annotations !== undefined && annotations.length > 0) ||
-    runMode === 'goal' ||
-    attachments.length > 0 ||
-    attachmentError !== null ||
-    slashConfirm !== null ||
-    ssh.resident !== null;
+    payloadAttachments.length > 0;
+  const hasLayer2 = hasTray || attachmentError !== null || slashConfirm !== null;
 
   /**
    * Snapshot the pre-edit state. Any genuine edit clears the redo lane —
@@ -3401,259 +3402,310 @@ export function Composer({
             </button>,
           ) : null}
           <div hidden={takenOver} data-composer-body>
-          {/* Chips ride above the input; the toolbar lives below it. The
-              wrapper only renders when at least one chip/banner exists so the
-              textarea keeps its comfortable top padding on an empty draft. */}
-          {hasChips ? (
-            <div className="pt-2 pb-1.5">
-          {queueEditing ? (
-            <div
-              data-queue-edit-banner
-              className="anim-enter mx-3 mt-2 flex items-center gap-2 rounded-md bg-amber-card px-3 py-1.5"
-            >
-              <span aria-hidden className="flex h-4 shrink-0 items-center text-amber-ink">
-                <Icon name="edit" />
-              </span>
-              <p className="min-w-0 flex-1 truncate text-[11.5px] leading-snug text-amber-ink">
-                {/* A touch keyboard's Enter is the newline key, so the hint
-                    names no keys there; ✓ and ✕ are right beside it. */}
-                {t(coarsePointer ? 'composer.queueEditBannerTouch' : 'composer.queueEditBanner')}
-              </p>
-              <button
-                type="button"
-                aria-label={t('composer.queueEditCancel')}
-                title={t('composer.queueEditCancel')}
-                disabled={turnInFlight}
-                onClick={() => { onQueueEditCancel?.(); }}
-                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-amber-ink/60 transition-colors hover:bg-amber-ink/10 hover:text-amber-ink"
-              >
-                <Icon name="close" size={12} />
-              </button>
-            </div>
-          ) : null}
-          {/* Session SSH: a resident control for the hosts joined to this
-              session, kept apart from the tray below it, which carries what
-              rides the next message. */}
-          {ssh.resident}
-          {/* Goal mode armed: the next message becomes the session goal. The
-              run-state card (pause/resume/cancel/edit) lives above the
-              composer dock — see GoalCard. */}
-          {runMode === 'goal' ? (
-            <div
-              data-goal-armed
-              role="group"
-              aria-label={t('composer.goalArmedAria')}
-              className="anim-enter mx-3 mt-2 flex h-7 w-fit items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 text-[12px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]"
-            >
-              <Icon name="goal" size={12} className="text-ink-soft" />
-              <span>{t('composer.goalArmedChip')}</span>
-              <button
-                type="button"
-                aria-label={t('composer.goalDisarmAria')}
-                title={t('composer.goalDisarmAria')}
-                onClick={() => { setGoalArmed(false); }}
-                className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-              >
-                <Icon name="close" size={12} />
-              </button>
-            </div>
-          ) : null}
-          {/* The context tray: everything that rides along with the next
-              prompt (quote, annotations, images, files) in one wrap row,
-              right above the input — state (goal/queue) stays in the header. */}
-          {hasTray ? (
-            <div data-context-tray role="group" aria-label={t('composer.contextTrayAria')} className="flex flex-wrap items-center gap-1.5 px-3 pt-2 pb-0.5">
-              {conversationRefs.map((ref, index) =>
-                ref.kind === 'room' ? (
-                  <RoomRefChip
-                    key={`room-${ref.start}`}
-                    roomId={ref.id}
-                    entry={roomRefDirectory.lookup(ref.id)}
-                    onRemove={() => { removeConversationRefAt(index); }}
-                  />
-                ) : (
-                  <ThreadRefChip
-                    key={`thread-${ref.start}`}
-                    sessionId={ref.id}
-                    entry={threadRefDirectory.lookup(ref.id)}
-                    group={threadRefs.map((item) => threadRefDirectory.lookup(item.id))}
-                    onRemove={() => { removeConversationRefAt(index); }}
-                  />
-                ),
-              )}
-              {draftSkills.map((match) => (
-                <SkillChip
-                  key={`skill-${match.skillName}`}
-                  name={match.item.name}
-                  description={match.item.description}
-                  onRemove={() => { removeDraftSkill(match.skillName); }}
-                />
-              ))}
-              {quoteItems.map((item) => (
-                <QuoteChip key={item.id} quote={item.quote} onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)} />
-              ))}
-              {annotations !== undefined && annotations.length > 0 ? (
-                <ComposerNotes
-                  annotations={annotations}
-                  onRemove={onRemoveAnnotation}
-                  onUpdate={onUpdateAnnotation}
-                  onLocate={onLocateAnnotation}
-                />
+          {/* Canonical 4-Layer Composer Slot Standard:
+              Layer 1 — Session Mode & Environment Header (1a Mode/Edit banners, 1b Unified SSH + Plugin Workbench strip).
+              Layer 2 — Draft Payload Tray (data-context-tray: Media thumbnails -> Context chips -> Inline draft alerts), touching Layer 3 directly.
+              Layer 3 — Primary Editor (<ComposerInput /> + floating / and @ menus).
+              Layer 4 — Action & Control Toolbar (data-composer-toolbar). */}
+          {hasModeBanner ? (
+            <div data-composer-mode-banner className="flex flex-col gap-1.5 px-3 pt-2.5 pb-1">
+              {queueEditing ? (
+                <div
+                  data-queue-edit-banner
+                  className="anim-enter flex items-center gap-2 rounded-md bg-amber-card px-3 py-1.5"
+                >
+                  <span aria-hidden className="flex h-4 shrink-0 items-center text-amber-ink">
+                    <Icon name="edit" />
+                  </span>
+                  <p className="min-w-0 flex-1 truncate text-[11.5px] leading-snug text-amber-ink">
+                    {/* A touch keyboard's Enter is the newline key, so the hint
+                        names no keys there; ✓ and ✕ are right beside it. */}
+                    {t(coarsePointer ? 'composer.queueEditBannerTouch' : 'composer.queueEditBanner')}
+                  </p>
+                  <button
+                    type="button"
+                    aria-label={t('composer.queueEditCancel')}
+                    title={t('composer.queueEditCancel')}
+                    disabled={turnInFlight}
+                    onClick={() => { onQueueEditCancel?.(); }}
+                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-amber-ink/60 transition-colors hover:bg-amber-ink/10 hover:text-amber-ink"
+                  >
+                    <Icon name="close" size={12} />
+                  </button>
+                </div>
               ) : null}
-              {attachments.length > 0 ? (
-                <div data-attachment-chips className="contents">
-                  {attachments.map((attachment) => {
-                    if (attachment.kind === 'ssh') return null;
-                    const chipKey = attachmentKeyOf(attachment);
-                    const remove = () => {
-                      if (attachment.kind === 'image' && attachment.previewUrl.startsWith('blob:')) {
-                        URL.revokeObjectURL(attachment.previewUrl);
-                      }
-                      updateAttachments((current) => current.filter((item) => item !== attachment));
-                    };
-                    if (attachment.kind === 'file') {
-                      return (
-                        <TextTile
-                          key={chipKey}
-                          title={attachment.path}
-                          mono
-                          onRemove={remove}
-                          removeLabel={t('composer.removeAttachment', { name: attachment.name })}
-                        >
-                          <FileGlyph dir={attachment.isDir} />
-                          <span className="min-w-0 truncate">{attachment.name}{attachment.isDir ? '/' : ''}</span>
-                        </TextTile>
-                      );
-                    }
-                    if (attachment.kind === 'retained') {
-                      const part = attachment.content;
-                      const src = attachment.previewUrl ?? (part.type === 'image' && part.source.kind === 'base64'
-                        ? `data:${part.source.media_type};base64,${part.source.data}`
-                        : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined);
-                      if (src !== undefined) return (
-                        <ImageTile key={chipKey} src={src} name={attachment.name}
-                          onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(src, attachment.name); }}
-                          onRemove={remove} removeLabel={t('composer.removeAttachment', { name: attachment.name })} />
-                      );
-                      return (
-                        <TextTile
-                          key={chipKey}
-                          title={attachment.name}
-                          onRemove={remove}
-                          removeLabel={t('composer.removeAttachment', { name: attachment.name })}
-                        >
-                          <FileGlyph dir={false} />
-                          <span className="min-w-0 truncate">{attachment.name}</span>
-                        </TextTile>
-                      );
-                    }
-                    if (attachment.kind === 'upload') {
-                      const name = attachment.name === '' ? t('attach.pastedFile') : attachment.name;
-                      const uploading = attachment.fileId === undefined;
-                      return (
-                        <TextTile
-                          key={chipKey}
-                          title={`${attachment.name} · ${attachment.mediaType} · ${formatBytes(attachment.size)}`}
-                          ariaLabel={uploading ? t('composer.attachmentUploading') : undefined}
-                          dataAttrs={{ 'data-attachment-uploading': uploading ? '' : undefined }}
-                          onRemove={remove}
-                          removeLabel={t('composer.removeAttachment', { name })}
-                        >
-                          {uploading ? (
-                            <span className="status-dot-busy flex h-4 w-4 shrink-0 items-center justify-center">
-                              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                            </span>
-                          ) : (
-                            <FileGlyph dir={false} />
-                          )}
-                          <span className="min-w-0 truncate">{name}</span>
-                          <span className="shrink-0 text-ink-faint tabular-nums">{formatBytes(attachment.size)}</span>
-                        </TextTile>
-                      );
-                    }
-                    const name = attachment.name === '' ? t('attach.pastedImage') : attachment.name;
-                    if (attachment.data === '') {
-                      // Read-in-flight placeholder: a pulsing dot instead of a
-                      // preview, and sending stays blocked until data lands.
-                      return (
-                        <TextTile
-                          key={chipKey}
-                          title={t('composer.attachmentReading')}
-                          ariaLabel={t('composer.attachmentReading')}
-                          dataAttrs={{ 'data-attachment-reading': '' }}
-                          onRemove={remove}
-                          removeLabel={t('composer.removeAttachment', { name })}
-                        >
-                          <span className="status-dot-busy flex h-4 w-4 shrink-0 items-center justify-center">
-                            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                          </span>
-                          <span className="min-w-0 truncate">{name}</span>
-                        </TextTile>
-                      );
-                    }
-                    return (
-                      <ImageTile
-                        key={chipKey}
-                        src={attachment.previewUrl}
-                        name={name}
-                        detail={formatBytes(attachment.size)}
-                        onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(attachment.previewUrl, name); }}
-                        onRemove={remove}
-                        removeLabel={t('composer.removeAttachment', { name })}
-                      />
-                    );
-                  })}
+              {/* Goal mode armed: the next message becomes the session goal. The
+                  run-state card (pause/resume/cancel/edit) lives above the
+                  composer dock — see GoalCard. */}
+              {runMode === 'goal' ? (
+                <div
+                  data-goal-armed
+                  role="group"
+                  aria-label={t('composer.goalArmedAria')}
+                  className="anim-enter flex h-7 w-fit items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 text-[12px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]"
+                >
+                  <Icon name="goal" size={12} className="text-ink-soft" />
+                  <span>{t('composer.goalArmedChip')}</span>
+                  <button
+                    type="button"
+                    aria-label={t('composer.goalDisarmAria')}
+                    title={t('composer.goalDisarmAria')}
+                    onClick={() => { setGoalArmed(false); }}
+                    className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                  >
+                    <Icon name="close" size={12} />
+                  </button>
                 </div>
               ) : null}
             </div>
           ) : null}
-          {attachmentError !== null ? (
-            <div role="alert" data-attachment-error className="flex items-start gap-2 px-3 pt-1.5 text-[12px] text-danger">
-              <p className="min-w-0 flex-1">{attachmentError}</p>
-              <button type="button" aria-label={t('common.close')} title={t('common.close')}
-                className="shrink-0 rounded p-0.5 text-ink-faint hover:bg-paper hover:text-ink"
-                onClick={() => { setAttachmentError(null); textareaRef.current?.focus(); }}>
-                <Icon name="close" size={14} />
-              </button>
-            </div>
-          ) : null}
-          {slashConfirm !== null ? (
+          {hasEnvStrip ? (
             <div
-              role="alert"
-              data-slash-confirm
-              className="mx-3 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-3 py-1.5 text-[12px] font-medium text-amber-ink"
+              data-composer-env-strip
+              className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-hairline/60 px-3 py-1.5"
             >
-              <span>
-                {slashConfirm.reason === 'unknown'
-                  ? t('composer.slash.unknownPrompt', { name: slashConfirm.name })
-                  : t('composer.slash.disabledPrompt', { name: slashConfirm.name })}
-              </span>
-              <span className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={confirmSendPlain}
-                  disabled={!canSend}
-                  className="rounded-full border border-amber-ink/30 px-2 py-0.5 text-[11px] transition-colors hover:bg-amber-ink/10 disabled:opacity-50"
-                >
-                  {t('composer.slash.sendAnyway')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setSlashConfirm(null); }}
-                  className="rounded-full border border-transparent px-2 py-0.5 text-[11px] text-amber-ink underline transition-colors hover:bg-amber-ink/10"
-                >
-                  {t('composer.slash.cancelSend')}
-                </button>
-              </span>
+              {ssh.resident}
+              {ssh.resident !== null && hasPluginToolbarSlots ? (
+                <span aria-hidden data-composer-env-divider className="h-3.5 w-px shrink-0 bg-hairline" />
+              ) : null}
+              {hasPluginToolbarSlots ? (
+                <PluginComposerSlots
+                  slots={pluginGuiSlots.slots}
+                  sessionId={sessionId}
+                  workspaceId={workspaceId}
+                  disabled={disabled}
+                />
+              ) : null}
             </div>
           ) : null}
-            </div>
-          ) : null}
+          {/* Layer 2 — Draft Payload Tray: strictly items that travel with this
+              message on Send, touching Layer 3 (<ComposerInput />) directly. */}
+          {hasLayer2 ? (() => {
+            const mediaTiles: ReactNode[] = [];
+            const chipTiles: ReactNode[] = [];
+            for (const attachment of payloadAttachments) {
+              const chipKey = attachmentKeyOf(attachment);
+              const remove = () => {
+                if (attachment.kind === 'image' && attachment.previewUrl.startsWith('blob:')) {
+                  URL.revokeObjectURL(attachment.previewUrl);
+                }
+                updateAttachments((current) => current.filter((item) => item !== attachment));
+              };
+              if (attachment.kind === 'file') {
+                chipTiles.push(
+                  <TextTile
+                    key={chipKey}
+                    title={attachment.path}
+                    mono
+                    onRemove={remove}
+                    removeLabel={t('composer.removeAttachment', { name: attachment.name })}
+                  >
+                    <FileGlyph dir={attachment.isDir} />
+                    <span className="min-w-0 truncate">{attachment.name}{attachment.isDir ? '/' : ''}</span>
+                  </TextTile>,
+                );
+                continue;
+              }
+              if (attachment.kind === 'retained') {
+                const part = attachment.content;
+                const src = attachment.previewUrl ?? (part.type === 'image' && part.source.kind === 'base64'
+                  ? `data:${part.source.media_type};base64,${part.source.data}`
+                  : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined);
+                if (src !== undefined) {
+                  mediaTiles.push(
+                    <ImageTile key={chipKey} src={src} name={attachment.name}
+                      onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(src, attachment.name); }}
+                      onRemove={remove} removeLabel={t('composer.removeAttachment', { name: attachment.name })} />,
+                  );
+                } else {
+                  chipTiles.push(
+                    <TextTile
+                      key={chipKey}
+                      title={attachment.name}
+                      onRemove={remove}
+                      removeLabel={t('composer.removeAttachment', { name: attachment.name })}
+                    >
+                      <FileGlyph dir={false} />
+                      <span className="min-w-0 truncate">{attachment.name}</span>
+                    </TextTile>,
+                  );
+                }
+                continue;
+              }
+              if (attachment.kind === 'upload') {
+                const name = attachment.name === '' ? t('attach.pastedFile') : attachment.name;
+                const uploading = attachment.fileId === undefined;
+                chipTiles.push(
+                  <TextTile
+                    key={chipKey}
+                    title={`${attachment.name} · ${attachment.mediaType} · ${formatBytes(attachment.size)}`}
+                    ariaLabel={uploading ? t('composer.attachmentUploading') : undefined}
+                    dataAttrs={{ 'data-attachment-uploading': uploading ? '' : undefined }}
+                    onRemove={remove}
+                    removeLabel={t('composer.removeAttachment', { name })}
+                  >
+                    {uploading ? (
+                      <span className="status-dot-busy flex h-4 w-4 shrink-0 items-center justify-center">
+                        <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                      </span>
+                    ) : (
+                      <FileGlyph dir={false} />
+                    )}
+                    <span className="min-w-0 truncate">{name}</span>
+                    <span className="shrink-0 text-ink-faint tabular-nums">{formatBytes(attachment.size)}</span>
+                  </TextTile>,
+                );
+                continue;
+              }
+              const name = attachment.name === '' ? t('attach.pastedImage') : attachment.name;
+              if (attachment.data === '') {
+                // Read-in-flight placeholder: a pulsing dot instead of a
+                // preview, and sending stays blocked until data lands.
+                chipTiles.push(
+                  <TextTile
+                    key={chipKey}
+                    title={t('composer.attachmentReading')}
+                    ariaLabel={t('composer.attachmentReading')}
+                    dataAttrs={{ 'data-attachment-reading': '' }}
+                    onRemove={remove}
+                    removeLabel={t('composer.removeAttachment', { name })}
+                  >
+                    <span className="status-dot-busy flex h-4 w-4 shrink-0 items-center justify-center">
+                      <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                    </span>
+                    <span className="min-w-0 truncate">{name}</span>
+                  </TextTile>,
+                );
+                continue;
+              }
+              mediaTiles.push(
+                <ImageTile
+                  key={chipKey}
+                  src={attachment.previewUrl}
+                  name={name}
+                  detail={formatBytes(attachment.size)}
+                  onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(attachment.previewUrl, name); }}
+                  onRemove={remove}
+                  removeLabel={t('composer.removeAttachment', { name })}
+                />,
+              );
+            }
+            const hasContextChipsRow =
+              quoteItems.length > 0 ||
+              (annotations !== undefined && annotations.length > 0) ||
+              chipTiles.length > 0 ||
+              conversationRefs.length > 0 ||
+              draftSkills.length > 0;
+            return (
+              <div
+                data-context-tray
+                role="group"
+                aria-label={t('composer.contextTrayAria')}
+                className="flex flex-col gap-1.5 px-3 pt-2 pb-1"
+              >
+                {mediaTiles.length > 0 ? (
+                  <div
+                    data-context-media-strip
+                    data-attachment-chips
+                    className="flex flex-wrap items-center gap-1.5"
+                  >
+                    {mediaTiles}
+                  </div>
+                ) : null}
+                {hasContextChipsRow ? (
+                  <div data-context-chips-row className="flex flex-wrap items-center gap-1.5">
+                    {quoteItems.map((item) => (
+                      <QuoteChip key={item.id} quote={item.quote} onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)} />
+                    ))}
+                    {annotations !== undefined && annotations.length > 0 ? (
+                      <ComposerNotes
+                        annotations={annotations}
+                        onRemove={onRemoveAnnotation}
+                        onUpdate={onUpdateAnnotation}
+                        onLocate={onLocateAnnotation}
+                      />
+                    ) : null}
+                    {chipTiles.length > 0 ? (
+                      <div data-attachment-chips className="contents">
+                        {chipTiles}
+                      </div>
+                    ) : null}
+                    {conversationRefs.map((ref, index) =>
+                      ref.kind === 'room' ? (
+                        <RoomRefChip
+                          key={`room-${ref.start}`}
+                          roomId={ref.id}
+                          entry={roomRefDirectory.lookup(ref.id)}
+                          onRemove={() => { removeConversationRefAt(index); }}
+                        />
+                      ) : (
+                        <ThreadRefChip
+                          key={`thread-${ref.start}`}
+                          sessionId={ref.id}
+                          entry={threadRefDirectory.lookup(ref.id)}
+                          group={threadRefs.map((item) => threadRefDirectory.lookup(item.id))}
+                          onRemove={() => { removeConversationRefAt(index); }}
+                        />
+                      ),
+                    )}
+                    {draftSkills.map((match) => (
+                      <SkillChip
+                        key={`skill-${match.skillName}`}
+                        name={match.item.name}
+                        description={match.item.description}
+                        onRemove={() => { removeDraftSkill(match.skillName); }}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {attachmentError !== null ? (
+                  <div role="alert" data-attachment-error className="flex items-start gap-2 pt-0.5 text-[12px] text-danger">
+                    <p className="min-w-0 flex-1">{attachmentError}</p>
+                    <button type="button" aria-label={t('common.close')} title={t('common.close')}
+                      className="shrink-0 rounded p-0.5 text-ink-faint hover:bg-paper hover:text-ink"
+                      onClick={() => { setAttachmentError(null); textareaRef.current?.focus(); }}>
+                      <Icon name="close" size={14} />
+                    </button>
+                  </div>
+                ) : null}
+                {slashConfirm !== null ? (
+                  <div
+                    role="alert"
+                    data-slash-confirm
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-3 py-1.5 text-[12px] font-medium text-amber-ink"
+                  >
+                    <span>
+                      {slashConfirm.reason === 'unknown'
+                        ? t('composer.slash.unknownPrompt', { name: slashConfirm.name })
+                        : t('composer.slash.disabledPrompt', { name: slashConfirm.name })}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={confirmSendPlain}
+                        disabled={!canSend}
+                        className="rounded-full border border-amber-ink/30 px-2 py-0.5 text-[11px] transition-colors hover:bg-amber-ink/10 disabled:opacity-50"
+                      >
+                        {t('composer.slash.sendAnyway')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setSlashConfirm(null); }}
+                        className="rounded-full border border-transparent px-2 py-0.5 text-[11px] text-amber-ink underline transition-colors hover:bg-amber-ink/10"
+                      >
+                        {t('composer.slash.cancelSend')}
+                      </button>
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })() : null}
 
-          {/* Right-click anywhere on the input area (textarea or its padding)
-              opens the composer menu. */}
+          {/* Layer 3 — Primary Editor: unobstructed writing area + floating /
+              and @ autocomplete menu. Right-click anywhere opens the composer menu. */}
           {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- context menu only; the textarea is the keyboard target */}
-          <div className="relative px-3 pt-3" onContextMenu={onComposerContextMenu}>
+          <div data-composer-editor className="relative px-3 pt-2.5 pb-1" onContextMenu={onComposerContextMenu}>
             {menu !== null ? (
               <div
                 data-composer-menu
@@ -3692,14 +3744,6 @@ export function Composer({
             ) : null}
             {slashPreviewItem !== null ? (
               <SkillPreviewCard item={slashPreviewItem} />
-            ) : null}
-            {variant !== 'subagent' && !queueEditing && !messageEditing ? (
-              <PluginComposerSlots
-                slots={pluginGuiSlots.slots}
-                sessionId={sessionId}
-                workspaceId={workspaceId}
-                disabled={disabled}
-              />
             ) : null}
             {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- clicking the editor after Escape re-opens a dismissed trigger menu */}
             <div

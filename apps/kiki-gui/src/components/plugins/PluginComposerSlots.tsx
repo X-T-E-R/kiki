@@ -505,7 +505,7 @@ export function PluginComposerSlots({
       role="toolbar"
       aria-label={t('pluginSlot.toolbarAria')}
       data-plugin-composer-slots
-      className="-mt-1 mb-2 flex min-w-0 flex-wrap items-center gap-1"
+      className="flex min-w-0 flex-wrap items-center gap-1.5"
     >
       {toolbarSlots.map((slot) => {
         const key = `${slot.pluginId}:${slot.id}`;

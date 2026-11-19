@@ -9,7 +9,7 @@
  * plugin skin, MCP servers in every state, and a mixed skill catalog.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,18 +19,53 @@ const SID = 'session_fixture_capabilities';
 const WSID = 'wd_fixture_000000000000';
 const OFFICIAL = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'plugins', 'official');
 
-function svgDataUri(file) {
-  return `data:image/svg+xml;base64,${readFileSync(file).toString('base64')}`;
+const FALLBACK_OFFICE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
+const FALLBACK_WRITING_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>';
+
+function svgDataUri(file, fallbackFiles = [], fallbackSvg = FALLBACK_OFFICE_SVG) {
+  for (const candidate of [file, ...fallbackFiles]) {
+    if (existsSync(candidate)) {
+      return `data:image/svg+xml;base64,${readFileSync(candidate).toString('base64')}`;
+    }
+  }
+  return `data:image/svg+xml;base64,${Buffer.from(fallbackSvg, 'utf8').toString('base64')}`;
 }
-function manifest(id) {
-  return JSON.parse(readFileSync(join(OFFICIAL, id, 'kimi.plugin.json'), 'utf8'));
+function manifest(id, fallback) {
+  const file = join(OFFICIAL, id, 'kimi.plugin.json');
+  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : fallback;
 }
 
-const OFFICE_ICON = svgDataUri(join(OFFICIAL, 'kiki-office', 'icon.svg'));
-const WRITING_ICON = svgDataUri(join(OFFICIAL, 'kiki-writing', 'icon.svg'));
-const OFFICE_MANIFEST = manifest('kiki-office');
-const WRITING_MANIFEST = manifest('kiki-writing');
-const WRITING_PANEL = readFileSync(join(OFFICIAL, 'kiki-writing', 'panel.html'), 'utf8');
+const OFFICE_ICON = svgDataUri(
+  join(OFFICIAL, 'kiki-office', 'icon.svg'),
+  [join(OFFICIAL, 'kimi-datasource', 'icon.svg')],
+  FALLBACK_OFFICE_SVG,
+);
+const WRITING_ICON = svgDataUri(
+  join(OFFICIAL, 'kiki-writing', 'icon.svg'),
+  [join(OFFICIAL, 'kimi-webbridge', 'icon.svg')],
+  FALLBACK_WRITING_SVG,
+);
+const OFFICE_MANIFEST = manifest('kiki-office', {
+  name: 'kiki-office',
+  version: '0.1.0',
+  description: 'Read, create, and edit Office documents (Word, Excel, PowerPoint).',
+  'x-kiki': {
+    displayName: 'Kiki Office',
+    permissions: ['process:exec'],
+    tools: [{ name: 'office_read' }, { name: 'office_write' }],
+    prerequisites: [{ id: 'officecli', label: 'officecli', kind: 'binary', binary: 'officecli', optional: false }],
+  },
+});
+const WRITING_MANIFEST = manifest('kiki-writing', {
+  name: 'kiki-writing',
+  version: '0.1.0',
+  description: 'Editorial drafting, manuscript layout, and style presets.',
+  'x-kiki': { displayName: 'Kiki Writing', permissions: [] },
+});
+const WRITING_PANEL_PATH = join(OFFICIAL, 'kiki-writing', 'panel.html');
+const WRITING_PANEL = existsSync(WRITING_PANEL_PATH)
+  ? readFileSync(WRITING_PANEL_PATH, 'utf8')
+  : '<!doctype html><html><body><main><h1>Kiki Writing</h1><p>Editorial workspace preview.</p></main></body></html>';
 
 const summary = (id, overrides = {}) => ({
   id,

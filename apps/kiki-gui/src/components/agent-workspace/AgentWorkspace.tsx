@@ -719,13 +719,21 @@ function ChildAgentWorkspace({
     (block): block is SubagentBlock =>
       block.kind === 'subagent' && block.subagentId === agentId,
   );
+  const branchFoldBlock = sessionState.blocks.find(
+    (block) => block.kind === 'user' && block.branchFold?.branchId === agentId,
+  );
   const crumbs = useMemo(() => agentPath(forest, agentId), [forest, agentId]);
   const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
-  const isBranch = selectedNode?.isBranch === true
+  // Fallback when deep-linking before the session roster finishes loading or
+  // when a branch falls outside a 400+ capped recent roster: never silently
+  // degrade a branch to a restricted `'sub'` agent.
+  const initialIsBranch = selectedNode?.isBranch === true
     || selectedNode?.branchSealed === true
     || selectedNode?.branchSeed !== undefined
-    || selectedNode?.toolsLocked === true;
-  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId ?? (isBranch ? 'native' : undefined);
+    || selectedNode?.toolsLocked === true
+    || branchFoldBlock !== undefined
+    || (selectedNode === undefined && selectedSubagent === undefined && /^branch[-_]/i.test(agentId));
+  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId ?? (initialIsBranch ? 'native' : undefined);
 
   const parentAgentId =
     (controller?.getForest() ?? sessionAgentForest(sessionState)).byId[agentId]?.parentAgentId;
@@ -795,6 +803,8 @@ function ChildAgentWorkspace({
       agentKnown,
     }) => {
       const capabilitiesProfile = capabilitiesQuery.data?.profile;
+      const liveIsBranch = initialIsBranch
+        || live.blocks.some((block) => block.kind === 'notice' && block.branchBase !== undefined);
       const busy = selectedNode?.busy === true || live.busy;
       const configuredDefault = normalizeSelectableModelAlias(
         config?.default_model ?? liveSettings.defaultModel,
@@ -804,8 +814,8 @@ function ChildAgentWorkspace({
       );
       const model =
         boundModel ??
-        (isBranch ? (normalizeSelectableModelAlias(parentModel) ?? configuredDefault) : undefined);
-      const execId = reportedExecutorId ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
+        (liveIsBranch ? (normalizeSelectableModelAlias(parentModel) ?? configuredDefault) : undefined);
+      const execId = reportedExecutorId ?? (liveIsBranch ? 'native' : undefined) ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
       const isExternal = execId !== undefined && !isNativeExecutor(execId);
       const resolvedModel = model !== undefined ? resolveCatalogModel(models ?? [], model) : undefined;
       const canonicalModel = model === undefined
@@ -877,6 +887,13 @@ function ChildAgentWorkspace({
 
   const capabilitiesProfile = capabilitiesQuery.data?.profile;
   const capturedBlocks = agentLiveState.blocks;
+  const branchBaseMarker = useMemo(() => {
+    for (const block of capturedBlocks) {
+      if (block.kind === 'notice' && block.branchBase !== undefined) return block.branchBase;
+    }
+    return undefined;
+  }, [capturedBlocks]);
+  const isBranch = initialIsBranch || branchBaseMarker !== undefined;
   const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
   useEffect(() => {
     if (!headerBusy) setExternalBindingSetting(undefined);
@@ -924,7 +941,7 @@ function ChildAgentWorkspace({
     mainTasks: sessionState.tasks,
     parentTasks: parentAgentState.tasks,
   });
-  const executorId = reportedExecutorId ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
+  const executorId = reportedExecutorId ?? (isBranch ? 'native' : undefined) ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
   const confirmedNativeExecutor =
     (selectedNode?.executorId ?? selectedSubagent?.executorId) === 'native' ||
     (executorBindingQuery.isSuccess && (executorBindingQuery.data ?? 'native') === 'native');
@@ -937,9 +954,10 @@ function ChildAgentWorkspace({
   const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
     executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
   };
-  const branchSealed = selectedNode?.branchSealed === true;
+  const branchSealed = selectedNode?.branchSealed === true
+    || (selectedNode === undefined && branchFoldBlock !== undefined);
   const branchToolsLocked = selectedNode?.toolsLocked === true;
-  const branchSeed = selectedNode?.branchSeed;
+  const branchSeed = selectedNode?.branchSeed ?? branchBaseMarker?.seedMode;
   const [branchFolding, setBranchFolding] = useState(false);
   const [branchFoldPending, setBranchFoldPending] = useState(false);
   const branchFoldSawBusyRef = useRef(false);
@@ -964,8 +982,9 @@ function ChildAgentWorkspace({
   }, [branchSealed, branchFoldPending, headerBusy]);
   const branchSeamLabel = useMemo(() => {
     if (!isBranch) return undefined;
-    const parentLabel = selectedNode?.parentAgentId !== undefined && selectedNode.parentAgentId !== MAIN_AGENT_ID
-      ? (forest.byId[selectedNode.parentAgentId]?.label ?? selectedNode.parentAgentId)
+    const effectiveParentId = selectedNode?.parentAgentId ?? branchBaseMarker?.sourceAgentId;
+    const parentLabel = effectiveParentId !== undefined && effectiveParentId !== MAIN_AGENT_ID
+      ? (forest.byId[effectiveParentId]?.label ?? effectiveParentId)
       : MAIN_AGENT_ID;
     const parts = [t('transcript.branch.seamHeader', { parent: parentLabel })];
     if (branchSeed === 'fresh' || branchSeed === 'compact' || branchSeed === 'verbatim') {
@@ -974,7 +993,7 @@ function ChildAgentWorkspace({
     if (branchSealed) parts.push(t('transcript.branch.sealed'));
     else if (branchToolsLocked) parts.push(t('transcript.branch.toolsLocked'));
     return parts.join(' · ');
-  }, [isBranch, selectedNode?.parentAgentId, forest.byId, t, branchSeed, branchSealed, branchToolsLocked]);
+  }, [isBranch, selectedNode?.parentAgentId, branchBaseMarker?.sourceAgentId, forest.byId, t, branchSeed, branchSealed, branchToolsLocked]);
 
   const handleUnlockBranchTools = useCallback(() => {
     if (branchUnlocking || typeof client.setBranchToolsLock !== 'function') return;
@@ -1239,6 +1258,24 @@ function ChildAgentWorkspace({
     const content = buildPromptContent(carry.quotedText, composerAttachments, carry.presentation);
     if (content === null) return;
     if (controller === null) throw new Error(t('subagent.composerUnavailable'));
+    const echoId = crypto.randomUUID();
+    const hasNonTextAttachment = content.some((part) => part.type !== 'text');
+    const keyedEcho = !externalExecutor && !hasNonTextAttachment;
+    let resolveFlight!: () => void;
+    const flightPromise = new Promise<void>((resolve) => {
+      resolveFlight = resolve;
+    });
+    const { generation } = beginPendingSubmissionFlight(
+      draftKey,
+      {
+        scope: sendScope,
+        connectionScopeId: scopeId,
+        payload: JSON.stringify(['send-now', carry.quotedText, content, skills]),
+        key: echoId,
+        draftText: draftRef.current,
+      },
+      flightPromise,
+    );
     draftRef.current = '';
     setSendNotice(null);
     setDraft('');
@@ -1246,6 +1283,18 @@ function ChildAgentWorkspace({
     if (carry.sentIds.size > 0) {
       setAnnotations((current) => current.filter((annotation) => !carry.sentIds.has(annotation.id)));
     }
+    setSendEcho({
+      scope: sendScope,
+      agentId,
+      id: echoId,
+      text: carry.quotedText,
+      content,
+      createdAt: new Date().toISOString(),
+      slow: false,
+      preserved: false,
+      retryable: false,
+      status: 'sending',
+    });
     revealOwnSend(true);
     try {
       const result = await controller.sendPromptNow({
@@ -1254,6 +1303,14 @@ function ChildAgentWorkspace({
         content,
         skills: externalExecutor ? undefined : skills,
       });
+      if (keyedEcho && result.promptId !== undefined) {
+        setSendEcho((current) =>
+          current?.id === echoId ? { ...current, id: result.promptId!, settledOnServer: true } : current,
+        );
+      } else {
+        clearSendEcho(echoId);
+      }
+      settlePendingSubmission(draftKey, echoId, carry.sentIds);
       const notice = sendNowNotice(result.outcome, result.reason);
       if (notice !== undefined) pushToast({ tone: notice.tone, text: t(notice.key) });
       // A queued acknowledgement already carries its final reason; only
@@ -1262,6 +1319,8 @@ function ChildAgentWorkspace({
         trackNowReceipt(result.promptId, null);
       }
     } catch (error) {
+      clearSendEcho(echoId);
+      settlePendingSubmission(draftKey, echoId);
       const reason = error instanceof SendNowError ? error.reason : 'submit';
       if (reason !== 'unknown') {
         recoverSubmittedDraft(draftKey, submittedDraft, composerAttachments);
@@ -1280,6 +1339,9 @@ function ChildAgentWorkspace({
           detail: cause instanceof Error ? cause.message : String(cause),
         }),
       });
+    } finally {
+      finishPendingSubmissionFlight(draftKey, generation);
+      resolveFlight();
     }
   };
   const childDurableIngress = useMemo(
@@ -1706,7 +1768,12 @@ function ChildAgentWorkspace({
           model={displayModel} defaultModel={displayModel} serverDefaultModel={configuredDefaultModel ?? displayModel}
           modelSource="session" permissionMode={permissionMode}
           planMode={planMode} efforts={supportedEfforts} effort={displayEffort}
-          contextUsage={displayContextTokens !== undefined && displayMaxContextTokens !== undefined
+          contextUsage={displayMaxContextTokens !== undefined && (
+            displayContextTokens !== undefined ||
+            agentLiveState.blocks.length > 0 ||
+            contextAutoCompact !== undefined ||
+            composerUsage !== undefined
+          )
             ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
           sessionUsage={composerUsage} agentProfileCatalogMode={{ mode: 'disabled' }}
           mentionScopeKey={`${scopeId}:${sessionId}`}

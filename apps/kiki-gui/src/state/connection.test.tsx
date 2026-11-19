@@ -655,9 +655,9 @@ describe('ConnectionProvider desktop backend recovery', () => {
       dangerous_bypass_auth: false, server_version: '0.1.0', build_id: 'test-build', build_channel: 'stable',
     } : { server_version: '0.1.0', server_id: 'local' }));
     const container = await mountProvider(false, true);
-    expect(container.querySelector('[data-conn-edit]')).not.toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click(); });
-    expect(container.querySelector('#st-conn-token')).not.toBeNull();
+    // Desktop sidecar hides manual URL/static-token editing even before switching to SSH.
+    expect(container.querySelector('[data-conn-edit]')).toBeNull();
+    expect(container.querySelector('#st-conn-token')).toBeNull();
     expect(container.querySelector('#st-card-conn-owned')).not.toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
     await flush();
@@ -729,45 +729,20 @@ describe('ConnectionProvider desktop backend recovery', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Kiki stopped');
   });
 
-  it('hides a stale local failure while verifying SSH and restarts only the local backend on fallback', async () => {
+  it('shows recoverable startup failure without mounting legacy manual SSH token forms and retries cleanly', async () => {
     const localConfig = { url: 'http://127.0.0.1:41001', token: 'local-token' };
-    const remoteConfig = { url: 'http://127.0.0.1:42002', token: 'a'.repeat(43) };
-    const remoteMeta = deferred<object>();
     mocks.detectLocalConnection.mockRejectedValueOnce(new Error('local backend unavailable'))
       .mockResolvedValueOnce({ config: localConfig, persist: false });
-    mocks.invoke.mockImplementation((command: string) => {
-      if (command === 'list_ssh_profiles') return Promise.resolve([{ id: 'host-1', label: 'Example', target: { kind: 'alias', alias: 'example' }, releaseChannel: 'stable', remotePort: 58627, serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed' }]);
-      if (command === 'ssh_tunnel_running') return Promise.resolve(true);
-      if (command === 'connect_ssh_profile') return Promise.resolve({ config: remoteConfig, tunnelId: 'tunnel-one',
-        serverHomeId: '46aca369-50e8-4fd3-9c45-606d084450ed', serverInstanceId: 'remote',
-        serverVersion: '0.1.0', buildId: 'test-build', buildChannel: 'stable',
-      });
-      return Promise.resolve(undefined);
-    });
-    mocks.meta.mockImplementation((url: string) => url === remoteConfig.url
-      ? remoteMeta.promise : Promise.resolve({ server_id: 'local' }));
+    mocks.meta.mockImplementation(() => Promise.resolve({ server_id: 'local' }));
     const container = await mountProvider();
     expect(container.textContent).toContain('local backend unavailable');
     expect(container.textContent).toContain('Retry startup');
-    const tokenInput = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    expect(tokenInput).not.toBeNull();
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(tokenInput, 'a'.repeat(43));
-      tokenInput.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    const connectButton = tokenInput.closest('label')!.nextElementSibling as HTMLButtonElement;
-    await act(async () => { connectButton.click(); });
-    await flush();
-    expect(container.textContent).toContain('Checking SSH server identity');
-    expect(container.textContent).not.toContain('local backend unavailable');
+    // Legacy 43-char static bearer token SSH form is never mounted on ConnectScreen.
+    expect(container.querySelector('input[type="password"]')).toBeNull();
     expect(container.querySelector('#connect-token')).toBeNull();
-    await act(async () => remoteMeta.resolve({ server_id: 'remote', server_version: '0.1.0', build_id: 'test-build', build_channel: 'stable' }));
-    await flush();
-    expect(container.textContent).toContain('SSH server identity changed');
-    expect(container.textContent).not.toContain('local backend unavailable');
-    const switchLocal = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Switch to this computer');
-    expect(switchLocal).toBeDefined();
-    await act(async () => { switchLocal!.click(); });
+    const retryButton = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry startup');
+    expect(retryButton).toBeDefined();
+    await act(async () => { retryButton!.click(); });
     await flush();
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(localConfig.url);
     expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
@@ -2017,79 +1992,20 @@ describe('mobile shell credential lifecycle in ConnectionProvider', () => {
     expect(container.querySelector('[data-shell-token]')?.textContent).toBe('paired-peer-secret-token');
     expect(localStorage.getItem('kiki.connection')).toBeNull();
 
-    const setInputValue = async (input: HTMLInputElement, value: string) => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      await act(async () => {
-        setter.call(input, value);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      });
-    };
+    // Capacitor app-shell paired sessions never expose manual Server URL / Access Token editing.
+    expect(container.querySelector('[data-conn-edit]')).toBeNull();
+    expect(container.querySelector('#st-conn-url')).toBeNull();
+    expect(container.querySelector('#st-conn-token')).toBeNull();
 
-    // 1. Same-origin URL edit with default KEEP_SECRET keeps the verified app-shell pairing without persisting to localStorage
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click();
-    });
-    const sameOriginUrlInput = container.querySelector<HTMLInputElement>('#st-conn-url')!;
-    const sameOriginTokenInput = container.querySelector<HTMLInputElement>('#st-conn-token')!;
-    expect(sameOriginTokenInput.value).toBe('');
-    expect(sameOriginTokenInput.readOnly).toBe(false);
-    await setInputValue(sameOriginUrlInput, window.location.origin);
-    await act(async () => {
-      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
-    await flush();
-    expect(container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
-    expect(container.querySelector('[data-shell-url]')?.textContent).toBe(window.location.origin);
-    expect(container.querySelector('[data-shell-token]')?.textContent).toBe('paired-peer-secret-token');
-    expect(localStorage.getItem('kiki.connection')).toBeNull();
-
-    // 2. Cross-origin URL edit with default KEEP_SECRET neither persists the paired peer token nor sends it to the edited origin
-    const klientCountBeforeCrossOrigin = mocks.klients.length;
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click();
-    });
-    const crossOriginUrlInput = container.querySelector<HTMLInputElement>('#st-conn-url')!;
-    await setInputValue(crossOriginUrlInput, 'http://edited-other-origin.example.test:9090');
-    await act(async () => {
-      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
-    await flush();
-    expect(localStorage.getItem('kiki.connection')).toBeNull();
-    const newKlients = mocks.klients.slice(klientCountBeforeCrossOrigin);
-    expect(newKlients.length).toBeGreaterThan(0);
-    for (const created of newKlients) {
-      expect(created.endpoint).toBe('http://edited-other-origin.example.test:9090');
-      expect(created.token ?? '').toBe('');
-      expect(created.token).not.toBe('paired-peer-secret-token');
-    }
-
-    // 3. Re-adopt paired credential, then explicitly enter an independent owner token in Settings -> saves to localStorage as manual owner
+    // Re-adopting a paired shell credential stays shell-owned and never persists to localStorage.
     await act(async () => {
       expect(applyCommittedShellCredential(window, window.location.origin, 'paired-peer-secret-token-2')).toBe(true);
     });
     await flush();
     expect(container.querySelector('[data-shell-source]')?.textContent).toBe('app-shell');
     expect(container.querySelector('[data-shell-token]')?.textContent).toBe('paired-peer-secret-token-2');
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click();
-    });
-    const explicitUrlInput = container.querySelector<HTMLInputElement>('#st-conn-url')!;
-    const explicitTokenInput = container.querySelector<HTMLInputElement>('#st-conn-token')!;
-    await setInputValue(explicitUrlInput, 'http://explicit-owner.example.test:8080');
-    await setInputValue(explicitTokenInput, 'explicit-owner-bearer-token');
-    await act(async () => {
-      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    });
-    await flush();
-    expect(container.querySelector('[data-shell-source]')?.textContent).toBe('manual');
-    expect(container.querySelector('[data-shell-url]')?.textContent).toBe('http://explicit-owner.example.test:8080');
-    expect(container.querySelector('[data-shell-token]')?.textContent).toBe('explicit-owner-bearer-token');
-    expect(JSON.parse(localStorage.getItem('kiki.connection') ?? 'null')).toEqual({
-      url: 'http://explicit-owner.example.test:8080',
-      token: 'explicit-owner-bearer-token',
-    });
+    expect(container.querySelector('[data-conn-edit]')).toBeNull();
+    expect(localStorage.getItem('kiki.connection')).toBeNull();
   });
 
   it('never persists or forwards a paired app-shell credential when retrying an initially failed /meta request from ConnectScreen', async () => {
