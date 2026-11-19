@@ -3273,7 +3273,8 @@ export class TranscriptService {
         if (raw !== undefined && (raw.ownerAgentId === undefined || raw.ownerAgentId === agentId)) {
           info = raw;
           if (info.kind === 'agent' && info.receipt?.contentState !== 'unavailable') {
-            outputText = await persistence.readTaskOutputBytes(taskId, 0, PERSISTED_TASK_SUMMARY_MAX_BYTES).catch(() => undefined);
+            const page = await persistence.readTaskOutputPage(taskId, 0, PERSISTED_TASK_SUMMARY_MAX_BYTES).catch(() => undefined);
+            outputText = page?.text;
           } else if (info.kind === 'process') {
             const snap = await persistence.readTaskOutputSnapshot(taskId, PERSISTED_TASK_OUTPUT_TAIL_BYTES).catch(() => undefined);
             outputText = snap?.preview;
@@ -3299,12 +3300,34 @@ export class TranscriptService {
         }
       }
     }
-    const targetSubagentId = info?.kind === 'agent' ? info.agentId : (info === undefined && isPlainAgentId(taskId) ? taskId : undefined);
+    let targetSubagentId = info?.kind === 'agent' ? info.agentId : undefined;
     let agentMeta: AgentMeta | undefined;
-    if (targetSubagentId !== undefined && targetSubagentId !== '') {
+    if (info === undefined || (targetSubagentId !== undefined && targetSubagentId !== '')) {
       const meta = await this.readSessionMetaDocument(sessionDir, sessionScope, docs, signal);
-      const rawAgent = meta?.agents?.[targetSubagentId];
-      if (rawAgent !== undefined && (rawAgent.taskId === undefined || rawAgent.taskId === taskId)) {
+      let rawAgent = targetSubagentId !== undefined && targetSubagentId !== ''
+        ? meta?.agents?.[targetSubagentId]
+        : isPlainAgentId(taskId)
+          ? meta?.agents?.[taskId]
+          : undefined;
+      if (rawAgent !== undefined && rawAgent.taskId !== undefined && rawAgent.taskId !== taskId) {
+        rawAgent = undefined;
+      }
+      if (rawAgent !== undefined && targetSubagentId === undefined) {
+        targetSubagentId = taskId;
+      }
+      if (rawAgent === undefined && info === undefined && meta?.agents !== undefined) {
+        for (const [candidateAgentId, candidate] of Object.entries(meta.agents)) {
+          if (candidate?.taskId !== taskId) continue;
+          const parentMatches = agentId === MAIN_AGENT_ID
+            ? (candidate.parentAgentId === undefined || candidate.parentAgentId === MAIN_AGENT_ID)
+            : candidate.parentAgentId === agentId;
+          if (!parentMatches) continue;
+          targetSubagentId = candidateAgentId;
+          rawAgent = candidate;
+          break;
+        }
+      }
+      if (rawAgent !== undefined) {
         agentMeta = await this.hydrateAgentOutcome(sessionDir, sessionScope, docs, rawAgent, signal);
       }
     }
@@ -3326,7 +3349,7 @@ export class TranscriptService {
       kind: 'subagent',
       state,
       detached: true,
-      agentId: taskId,
+      agentId: targetSubagentId ?? taskId,
       name: agentMeta.userLabel,
       subagentName: agentMeta.displayName,
       model: agentMeta.model,
@@ -5182,7 +5205,24 @@ async function readBoundedFileHead(filePath: string, maxBytes: number, signal?: 
       if (bytesRead === 0) break;
       offset += bytesRead;
     }
-    return buffer.subarray(0, offset).toString('utf8');
+    let end = offset;
+    if (fileStat.size > end && end > 0) {
+      let start = end - 1;
+      const minStart = Math.max(0, end - 4);
+      while (start > minStart && (buffer[start]! & 0xc0) === 0x80) start -= 1;
+      const lead = buffer[start]!;
+      const expected = (lead & 0x80) === 0
+        ? 1
+        : (lead & 0xe0) === 0xc0
+          ? 2
+          : (lead & 0xf0) === 0xe0
+            ? 3
+            : (lead & 0xf8) === 0xf0
+              ? 4
+              : 1;
+      if (start + expected > end) end = start;
+    }
+    return buffer.subarray(0, end).toString('utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return undefined;
     return undefined;
@@ -5220,6 +5260,15 @@ async function readBoundedFileTail(filePath: string, maxBytes: number, signal?: 
   }
 }
 
+function sliceUtf8Tail(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, 'utf8');
+  if (buf.byteLength <= maxBytes) return text;
+  const tail = buf.subarray(buf.byteLength - maxBytes);
+  let trim = 0;
+  while (trim < tail.byteLength && (tail[trim]! & 0xc0) === 0x80) trim += 1;
+  return tail.subarray(trim).toString('utf8');
+}
+
 function persistedTaskToTranscriptTask(
   info: AgentTaskInfo,
   outputText: string | undefined,
@@ -5245,7 +5294,7 @@ function persistedTaskToTranscriptTask(
     info.kind === 'process'
       ? (outputText ?? '')
       : info.kind === 'agent' && outputText !== undefined && outputText.length > 0
-        ? Buffer.from(outputText, 'utf8').subarray(-PERSISTED_TASK_OUTPUT_TAIL_BYTES).toString('utf8')
+        ? sliceUtf8Tail(outputText, PERSISTED_TASK_OUTPUT_TAIL_BYTES)
         : '';
   return {
     taskId: info.taskId,

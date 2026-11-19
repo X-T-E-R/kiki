@@ -1388,6 +1388,45 @@ describe('SubagentRosterTracker', () => {
     expect(sessionAgentCounts(meta.agents, stage5)).toMatchObject({ active: 6, idle: 0, completed: 1 });
   });
 
+  it('drops to idle instead of staying stuck running after a disposed scope reopens idle and the 120s refreshing lease expires', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      const tracker = new SubagentRosterTracker();
+      tracker.apply(SID, spawn('child-lease', { time: 1_000, taskId: 'task-lease', runInBackground: true }));
+      tracker.apply(SID, ev({ type: 'agent.disposed', agentId: 'child-lease', time: 2_000 }));
+      tracker.markRefreshing(SID, 'child-lease', 3_000);
+
+      vi.advanceTimersByTime(125_000);
+      const rows = tracker.get(SID);
+      expect(rows[0]).toMatchObject({
+        id: 'child-lease',
+        live: false,
+        refreshing: undefined,
+      });
+
+      const meta: SessionMeta = {
+        id: SID,
+        createdAt: 1,
+        updatedAt: 3_000,
+        archived: false,
+        agents: {
+          main: {},
+          'child-lease': { type: 'sub', parentAgentId: 'main', displayName: 'worker', createdAt: 1_000 },
+        },
+      };
+      const runtime = new Map<string, AgentActivityState & { readonly model?: string }>([
+        ['child-lease', { lifecycle: 'ready', background: [] }],
+      ]);
+      const roster = sessionAgentRoster(SID, meta, rows, runtime);
+      expect(roster.find((entry) => entry.id === 'child-lease')).toMatchObject({
+        activity_status: 'idle',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('clears disposal boundaries with the session state', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, ev({ type: 'agent.disposed', agentId: 'agent-1', time: 200 }));

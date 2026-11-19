@@ -7,7 +7,7 @@
 import { memo, useState, type ReactNode } from 'react';
 
 import { basenameOf, extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
-import { isLiveSubagentStatus, isMediaTool, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup } from '@kiki/session-core/session';
+import { effectiveSubagentStatus, isLiveSubagentStatus, isMediaTool, type AgentForest, type MediaRun, type SubagentBlock, type SubagentEnding, type SubagentGroup } from '@kiki/session-core/session';
 import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { resolveProfileIcon } from '../../lib/profileIcon';
@@ -118,23 +118,7 @@ function liveStatus(
 ): string {
   const latestCard = childBlocks?.get(block.subagentId);
   const isLatestRun = latestCard === undefined || latestCard.id === block.id;
-  const node = isLatestRun ? forest?.byId[block.subagentId] : undefined;
-  if (node === undefined) return block.status;
-  if (isLiveSubagentStatus(block.status)) {
-    if (node.status === 'unknown') return block.status;
-    if (
-      node.status === 'idle' &&
-      (node.toolCallCount ?? 0) === 0 &&
-      node.error === undefined &&
-      node.summary === undefined &&
-      node.turnOutcome === undefined &&
-      node.endedAt === undefined &&
-      node.startedAt === undefined
-    ) {
-      return block.status;
-    }
-  }
-  return node.status;
+  return isLatestRun ? effectiveSubagentStatus(block, forest) : block.status;
 }
 
 function settled(status: string): boolean {

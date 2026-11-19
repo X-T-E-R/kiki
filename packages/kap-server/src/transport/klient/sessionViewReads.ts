@@ -45,18 +45,22 @@ export async function readSessionViewTranscriptContent(
 ): Promise<ContentSegment | undefined> {
   const pageBytes = input.ref.kind === 'array' && input.ref.source.kind === 'turn' && input.ref.path[0] === 'steps'
     ? HISTORY_PAGE_BYTES : DETAIL_PAGE_BYTES;
-  let fastPathMismatch = false;
-  const resident = residentTimelineEntity(service, sessionId, input.agentId, input.ref.source);
+  const source = input.ref.source;
+  let authoritativeMismatch: ContentChangedError | undefined;
+  const resident = residentTimelineEntity(service, sessionId, input.agentId, source);
   if (resident !== undefined) {
     input.signal?.throwIfAborted();
     try {
       return readContentSegment(await planReadableEntity(service, sessionId, input.agentId, resident, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes);
     } catch (error) {
       if (!(error instanceof ContentChangedError)) throw error;
-      fastPathMismatch = true;
+      if (source.kind === 'task') {
+        authoritativeMismatch = error;
+      } else if (source.kind !== 'todo' && source.kind !== 'interaction' && source.kind !== 'turn' && source.kind !== 'frame') {
+        throw error;
+      }
     }
   }
-  const source = input.ref.source;
   if ((source.kind === 'turn' || source.kind === 'frame') && typeof service.readColdWindowTurn === 'function') {
     const turn = await service.readColdWindowTurn(sessionId, input.agentId, source.kind === 'turn' ? source.id : source.turnId ?? '', input.signal);
     const current = source.kind === 'turn' ? turn : turn?.steps.find(step => step.stepId === source.stepId)?.frames.find(frame => frame.frameId === source.id);
@@ -71,7 +75,11 @@ export async function readSessionViewTranscriptContent(
       try { return readContentSegment(cached, input.ref, input.range, input.agentId, pageBytes); }
       catch (error) {
         if (!(error instanceof ContentChangedError)) throw error;
-        fastPathMismatch = true;
+        if (source.kind === 'task') {
+          authoritativeMismatch ??= error;
+        } else if (source.kind !== 'todo' && source.kind !== 'interaction') {
+          throw error;
+        }
       }
     }
   }
@@ -79,14 +87,11 @@ export async function readSessionViewTranscriptContent(
     const persisted = await service.readPersistedTask(sessionId, input.agentId, source.id, input.signal);
     if (persisted !== undefined) {
       input.signal?.throwIfAborted();
-      try { return readContentSegment(persisted, input.ref, input.range, input.agentId, pageBytes); }
-      catch (error) {
-        if (!(error instanceof ContentChangedError)) throw error;
-        fastPathMismatch = true;
-      }
+      return readContentSegment(persisted, input.ref, input.range, input.agentId, pageBytes);
     }
   }
-  const entity = await readSessionViewCanonicalEntityInternal(service, sessionId, input, fastPathMismatch);
+  if (authoritativeMismatch !== undefined) throw authoritativeMismatch;
+  const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
   return entity === undefined ? undefined : readContentSegment(await planReadableEntity(service, sessionId, input.agentId, entity, input.ref, input.signal), input.ref, input.range, input.agentId, pageBytes);
 }
 
@@ -209,14 +214,6 @@ export async function readSessionViewCanonicalEntity(
   service: TranscriptService, sessionId: string,
   input: { readonly agentId: string; readonly ref: Pick<ContentRef, 'source'>; readonly signal?: AbortSignal },
 ): Promise<object | undefined> {
-  return readSessionViewCanonicalEntityInternal(service, sessionId, input, false);
-}
-
-async function readSessionViewCanonicalEntityInternal(
-  service: TranscriptService, sessionId: string,
-  input: { readonly agentId: string; readonly ref: Pick<ContentRef, 'source'>; readonly signal?: AbortSignal },
-  skipFastPath: boolean,
-): Promise<object | undefined> {
   input.signal?.throwIfAborted();
   const source = input.ref.source;
   if (source.kind === 'turn' || source.kind === 'frame') {
@@ -250,32 +247,30 @@ async function readSessionViewCanonicalEntityInternal(
   }
   const store = service.forSessionLive(sessionId, { tailFirst: true });
   const transcript = store === undefined ? undefined : await service.ensureAgentHistory(sessionId, input.agentId, { tailFirst: true, signal: input.signal });
-  if (!skipFastPath) {
-    if (source.kind === 'task') {
-      const liveTask = transcript?.getTask(source.id);
-      if (liveTask !== undefined && transcript?.hasMoreOlder !== true) return liveTask;
-      const windowTask = store === undefined && typeof service.readColdWindowEntity === 'function'
-        ? await service.readColdWindowEntity(sessionId, input.agentId, source, input.signal) as TranscriptTask | undefined
-        : undefined;
-      const persisted = typeof service.readPersistedTask === 'function'
-        ? await service.readPersistedTask(sessionId, input.agentId, source.id, input.signal)
-        : undefined;
-      const baseResident = liveTask ?? windowTask;
-      if (persisted !== undefined) {
-        return baseResident === undefined ? persisted : mergeTaskMetadata(persisted, baseResident);
-      }
-      if (baseResident !== undefined) return baseResident;
-    } else if (transcript !== undefined) {
-      const resident = selectTranscriptEntity(service, sessionId, transcript, source);
-      if (resident !== undefined) return resident;
-    } else if (typeof service.readColdWindowEntity === 'function') {
-      const cached = await service.readColdWindowEntity(sessionId, input.agentId, source, input.signal);
-      if (cached !== undefined) return cached;
+  if (source.kind === 'task') {
+    const liveTask = transcript?.getTask(source.id);
+    if (liveTask !== undefined && transcript?.hasMoreOlder !== true) return liveTask;
+    const windowTask = store === undefined && typeof service.readColdWindowEntity === 'function'
+      ? await service.readColdWindowEntity(sessionId, input.agentId, source, input.signal) as TranscriptTask | undefined
+      : undefined;
+    const persisted = typeof service.readPersistedTask === 'function'
+      ? await service.readPersistedTask(sessionId, input.agentId, source.id, input.signal)
+      : undefined;
+    const baseResident = liveTask ?? windowTask;
+    if (persisted !== undefined) {
+      return baseResident === undefined ? persisted : mergeTaskMetadata(persisted, baseResident);
     }
+    if (baseResident !== undefined) return baseResident;
+  } else if (transcript !== undefined) {
+    const resident = selectTranscriptEntity(service, sessionId, transcript, source);
+    if (resident !== undefined) return resident;
+  } else if (typeof service.readColdWindowEntity === 'function') {
+    const cached = await service.readColdWindowEntity(sessionId, input.agentId, source, input.signal);
+    if (cached !== undefined) return cached;
   }
-  const snapshot = transcript?.hasMoreOlder && (source.kind === 'task' || skipFastPath)
+  const snapshot = transcript?.hasMoreOlder && source.kind === 'task'
     ? await service.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal)
-    : transcript !== undefined && !skipFastPath
+    : transcript !== undefined
       ? transcript.snapshot()
       : await service.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
   if (snapshot === undefined) return undefined;

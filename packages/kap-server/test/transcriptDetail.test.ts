@@ -7,7 +7,7 @@ import { ISessionIndex, ISessionManager, type Scope } from '@kiki/agent-core-v2'
 import { describe, expect, it, vi } from 'vitest';
 
 import { TranscriptService } from '../src/services/transcript/transcriptService';
-import { boundedEntity } from '../src/transport/klient/boundedContent';
+import { ContentChangedError, boundedEntity } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import {
   readColdSessionViewBaseline,
@@ -396,6 +396,150 @@ describe('session transcript detail reads', () => {
       expect(ensureAgentHistorySpy).toHaveBeenCalledWith(sessionId, 'main', expect.objectContaining({ tailFirst: true }));
     } finally {
       coldService.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+    }
+  });
+
+  it('rejects stale ContentRef without full-wire scans, hydrates foreground tasks by taskId in state.json, and slices >4KiB CJK receipts cleanly', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-cjk-stale-'));
+    const sessionId = 's-cjk-stale';
+    const sessionDir = join(home, 'sessions', 'ws', sessionId);
+    const agentDir = join(sessionDir, 'agents', 'main');
+    const wirePath = join(agentDir, 'wire.jsonl');
+    const cjkTaskId = 'agent-cjk00001';
+    const fgTaskId = 'fg-agent-task-99';
+    const cjkUnit = '汉字中文测试摘要报告内容。';
+    const cjkReceipt = Array.from({ length: 220 }, (_, i) => `第${i + 1}段：${cjkUnit}`).join('\n');
+    expect(Buffer.byteLength(cjkReceipt, 'utf8')).toBeGreaterThan(8 * 1024);
+    const fgSummary = 'Foreground subagent summary stored only in session metadata.';
+
+    const now = Date.parse('2026-06-01T00:00:00.000Z');
+    const records: unknown[] = [
+      { type: 'metadata', protocol_version: '2', created_at: now - 1000 },
+      { type: 'turn.prompt', turnId: 0, promptId: 'p0', input: [{ type: 'text', text: 'start' }], origin: { kind: 'user' }, time: now },
+      { type: 'prompt.enqueued', promptId: 'p-stale', message: { role: 'user', content: [{ type: 'text', text: 'queued prompt '.repeat(80) }], origin: { kind: 'user' } }, time: now + 5 },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: now + 10 },
+    ];
+    await mkdir(dirname(wirePath), { recursive: true });
+    await writeFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+    const cjkDir = join(agentDir, 'tasks', cjkTaskId);
+    await mkdir(cjkDir, { recursive: true });
+    const cjkBuf = Buffer.from(cjkReceipt, 'utf8');
+    await writeFile(join(cjkDir, 'output.log'), cjkBuf);
+    await writeFile(join(agentDir, 'tasks', `${cjkTaskId}.json`), JSON.stringify({
+      taskId: cjkTaskId,
+      kind: 'agent',
+      status: 'completed',
+      detached: true,
+      description: 'CJK receipt task',
+      startedAt: now + 1,
+      endedAt: now + 9,
+      ownerAgentId: 'main',
+      agentId: 'sub-cjk',
+      profile: 'researcher',
+      receipt: {
+        schemaVersion: 1,
+        path: `tasks/${cjkTaskId}/output.log`,
+        mediaType: 'text/plain; charset=utf-8',
+        bytes: cjkBuf.byteLength,
+        sha256: createHash('sha256').update(cjkBuf).digest('hex'),
+        contentState: 'final',
+        committedAt: new Date(now + 9).toISOString(),
+      },
+      receiptVerification: 'verified',
+    }), 'utf8');
+
+    await writeFile(join(sessionDir, 'state.json'), JSON.stringify({
+      id: sessionId,
+      createdAt: now - 1000,
+      updatedAt: now + 10,
+      archived: false,
+      agents: {
+        main: { type: 'main' },
+        'sub-fg-child': {
+          type: 'sub',
+          parentAgentId: 'main',
+          taskId: fgTaskId,
+          status: 'completed',
+          displayName: 'explore',
+          userLabel: 'fg_child',
+          completedAt: now + 8,
+          resultSummary: fgSummary,
+        },
+      },
+    }), 'utf8');
+
+    const core = {
+      accessor: {
+        get: (token: unknown) => {
+          if (token === ISessionIndex) return { get: async () => ({ workspaceId: 'ws' }) };
+          if (token === ISessionManager) return { get: () => undefined, list: () => [] };
+          return undefined;
+        },
+      },
+    } as unknown as Scope;
+
+    const service = new TranscriptService({ homeDir: home, core });
+    try {
+      const baseline = await readColdSessionViewBaseline(service, sessionId, 'main', 'delta', new AbortController().signal);
+      expect(baseline).toBeDefined();
+
+      const fullColdSpy = vi.spyOn(service, 'readColdSnapshot');
+      const fullLiveSpy = vi.spyOn(service, 'readFullAgentSnapshot');
+
+      const cjkTask = await service.readPersistedTask(sessionId, 'main', cjkTaskId);
+      expect(cjkTask).toBeDefined();
+      expect(cjkTask!.resultSummary).toBe(cjkReceipt);
+      expect(cjkTask!.resultSummary).not.toContain('\uFFFD');
+      expect(cjkTask!.outputTail).not.toContain('\uFFFD');
+      expect(cjkTask!.outputTail.length).toBeGreaterThan(0);
+
+      let preview = boundedEntity(cjkTask!, { kind: 'task', id: cjkTaskId }, 1024);
+      const summaryRef = preview.contentRefs?.find((ref) => ref.path[0] === 'resultSummary');
+      expect(summaryRef).toBeDefined();
+      while (preview.contentRefs?.length) {
+        const seg = await readSessionViewTranscriptContent(service, sessionId, { agentId: 'main', ref: preview.contentRefs[0]! });
+        expect(seg).toBeDefined();
+        preview = applyContentSegment(preview, seg!);
+      }
+      expect(preview.resultSummary).toBe(cjkReceipt);
+      expect(preview.resultSummary).not.toContain('\uFFFD');
+      expect(preview.outputTail).toBe(cjkTask!.outputTail);
+      expect(preview.outputTail).not.toContain('\uFFFD');
+
+      await expect(
+        readSessionViewTranscriptContent(service, sessionId, {
+          agentId: 'main',
+          ref: { ...summaryRef!, revision: 'stale-drifted-revision' },
+        }),
+      ).rejects.toBeInstanceOf(ContentChangedError);
+
+      const promptPreview = baseline!.snapshot.prompts.find((p) => p.promptId === 'p-stale');
+      const promptRef = promptPreview?.contentRefs?.[0];
+      if (promptRef !== undefined) {
+        await expect(
+          readSessionViewTranscriptContent(service, sessionId, {
+            agentId: 'main',
+            ref: { ...promptRef, revision: 'stale-drifted-prompt' },
+          }),
+        ).rejects.toBeInstanceOf(ContentChangedError);
+      }
+
+      const fgTask = await service.readPersistedTask(sessionId, 'main', fgTaskId);
+      expect(fgTask).toMatchObject({
+        taskId: fgTaskId,
+        agentId: 'sub-fg-child',
+        state: 'completed',
+        resultSummary: fgSummary,
+      });
+      const fgDetail = await readSessionViewTranscriptDetail(service, sessionId, { agentId: 'main', kind: 'task', id: fgTaskId });
+      expect(fgDetail).toMatchObject({ kind: 'task', task: { taskId: fgTaskId, agentId: 'sub-fg-child', resultSummary: fgSummary } });
+
+      expect(fullColdSpy).not.toHaveBeenCalled();
+      expect(fullLiveSpy).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
     }
   });

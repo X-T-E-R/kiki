@@ -72,6 +72,7 @@ import {
   groupBlocks,
   groupHasError,
   groupHasRunning,
+  effectiveSubagentStatus,
   groupSummary,
   latestFinalAssistantBlockId,
   settledFinalAssistantBlockIds,
@@ -2168,7 +2169,7 @@ const SubagentCard = memo(function SubagentCard({
   const children = forest === undefined ? [] : agentChildren(forest, block.subagentId);
   const latestCard = childBlocks?.get(block.subagentId);
   const isLatestRun = latestCard === undefined || latestCard.id === block.id;
-  const status = displayStatus ?? (isLatestRun ? (node?.status ?? block.status) : block.status);
+  const status = displayStatus ?? (isLatestRun ? effectiveSubagentStatus(block, forest) : block.status);
   const elapsed = useSubagentElapsed(block, node, status, isLatestRun);
   const runIsLive = status === 'running' || status === 'background' || status === 'suspended';
   const model = isLatestRun ? (node?.model ?? block.model) : (block.model ?? node?.model);

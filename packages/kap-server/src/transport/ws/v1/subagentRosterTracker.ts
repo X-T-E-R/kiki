@@ -617,7 +617,7 @@ export class SubagentRosterTracker {
     for (const entry of roster.values()) {
       if (entry.refreshing === true && (parsedTime(entry.refreshing_until) ?? 0) <= Date.now()) {
         clearRefreshing(entry);
-        if (isTerminalStatus(entry.status)) entry.live = false;
+        entry.live = false;
       }
       const { status, subagent_phase: phase, ...rest } = entry;
       if (status === 'unknown' || phase === 'unknown') continue;
