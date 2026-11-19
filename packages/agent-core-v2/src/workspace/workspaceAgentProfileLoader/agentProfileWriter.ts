@@ -89,6 +89,19 @@ export interface AgentProfileWriteRequest {
   readonly rawText?: string;
 }
 
+export interface AgentProfileDeleteRequest {
+  readonly name: string;
+  readonly scope: 'user' | 'project';
+  readonly sourcePath?: string;
+}
+
+export interface AgentProfileDeleteResult {
+  readonly name: string;
+  readonly sourceId: 'user' | 'workspace';
+  readonly workspaceKey: string;
+  readonly sourcePath: string;
+}
+
 export interface AgentProfileWriteResult {
   readonly sourceId: 'user' | 'workspace' | 'extra';
   readonly workspaceKey: string;
@@ -104,4 +117,5 @@ export interface IAgentProfileWriter {
   readonly _serviceBrand: undefined;
   create(request: AgentProfileCreateRequest): Promise<AgentProfileWriteResult>;
   update(request: AgentProfileWriteRequest): Promise<AgentProfileWriteResult>;
+  delete(request: AgentProfileDeleteRequest): Promise<AgentProfileDeleteResult>;
 }

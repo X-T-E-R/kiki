@@ -29,7 +29,10 @@ export interface ImSubmitResult extends Omit<CoreImSubmitResult, 'deliveryState'
   readonly deliveryState: CoreImSubmitResult['deliveryState'] | 'accepted';
 }
 
-export interface ImSessionPorts extends Omit<CoreImSessionPorts, 'sessions'> {
+export interface ImSessionPorts extends Omit<CoreImSessionPorts, 'sessions' | 'credentials'> {
+  readonly credentials: CoreImSessionPorts['credentials'] & {
+    remove?(instanceId: string): Promise<void>;
+  };
   readonly sessions: Omit<CoreImSessionPorts['sessions'], 'submit' | 'steer'> & {
     submit(input: Parameters<CoreImSessionPorts['sessions']['submit']>[0]): Promise<ImSubmitResult>;
     steer(sessionId: string, promptId: string): Promise<'accepted' | Awaited<ReturnType<CoreImSessionPorts['sessions']['steer']>>>;

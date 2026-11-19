@@ -83,9 +83,12 @@ export function useRecipeMutation<TInput, TOutput>(
     onSuccess: async (result: TOutput, input: TInput) => {
       await queryClient.invalidateQueries({ queryKey: RECIPE_LIST_KEY });
       await queryClient.invalidateQueries({ queryKey: RECIPE_MARKETS_KEY });
+      await queryClient.invalidateQueries({ queryKey: ['recipe'] });
+      await queryClient.invalidateQueries({ queryKey: ['models'] });
+      await queryClient.invalidateQueries({ queryKey: ['model-entity'] });
+      await queryClient.invalidateQueries({ queryKey: ['config'] });
       if (options.alsoModelId !== undefined) {
         await queryClient.invalidateQueries({ queryKey: ['model-entity', options.alsoModelId] });
-        await queryClient.invalidateQueries({ queryKey: ['models'] });
       }
       options.onSuccess?.(result, input);
     },

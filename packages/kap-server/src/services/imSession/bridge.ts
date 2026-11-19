@@ -219,6 +219,7 @@ export class ImSessionBridge extends CoreImSessionBridge {
   private readonly bindingsByChannelId: Map<string, StoredBindingSummary>;
   private readonly classifiedDetails: Map<string, string>;
   private readonly readCredential: (instanceId: string) => string | undefined;
+  private readonly removeCredential: ((instanceId: string) => Promise<void>) | undefined;
   private readonly ensureBindingsSynced: () => void;
 
   constructor(options: ImSessionBridgeOptions) {
@@ -356,7 +357,14 @@ export class ImSessionBridge extends CoreImSessionBridge {
     this.bindingsByChannelId = bindingsByChannelId;
     this.classifiedDetails = classifiedDetails;
     this.readCredential = readCredential;
+    this.removeCredential = options.ports.credentials.remove?.bind(options.ports.credentials);
     this.ensureBindingsSynced = ensureBindingsSynced;
+  }
+
+  override async removeInstance(instanceId: string): Promise<Awaited<ReturnType<CoreImSessionBridge['removeInstance']>>> {
+    const snapshot = await super.removeInstance(instanceId);
+    if (this.removeCredential !== undefined) await this.removeCredential(instanceId);
+    return snapshot;
   }
 
   override async sendUserMessage(

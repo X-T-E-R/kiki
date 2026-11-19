@@ -26,16 +26,19 @@ it('keeps the id in front of the action colon', async () => {
     dismiss: async (id: string) => { seen.push(`dismiss:${id}`); return snapshot; },
     updateBinding: async (id: string) => { seen.push(`patch:${id}`); return snapshot; },
     removeBinding: async (id: string) => { seen.push(`delete:${id}`); return snapshot; },
+    removeInstance: async (id: string) => { seen.push(`delete-instance:${id}`); return snapshot; },
   } as unknown as ImSessionBridge;
   const app = Fastify();
   registerImSessionRoutes(app, bridge);
   expect((await app.inject({ method: 'POST', url: '/im/sessions/instances/inst/check', payload: {} })).json().code).toBe(0);
   expect((await app.inject({ method: 'POST', url: '/im/sessions/instances/inst/listen', payload: { listening: true } })).json().code).toBe(0);
+  expect((await app.inject({ method: 'DELETE', url: '/im/sessions/instances/inst' })).json().code).toBe(0);
+  expect((await app.inject({ method: 'DELETE', url: `/im/sessions/instances/${encodeURIComponent('plugin:kiki-qq/qq-official')}` })).json().code).toBe(0);
   expect((await app.inject({ method: 'POST', url: '/im/sessions/discoveries/d1/confirm', payload: { target: { kind: 'persona', persona_id: 'ada' } } })).json().code).toBe(0);
   expect((await app.inject({ method: 'POST', url: '/im/sessions/discoveries/d1/dismiss', payload: {} })).json().code).toBe(0);
   expect((await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { busy: 'steer' } })).json().code).toBe(0);
   expect((await app.inject({ method: 'DELETE', url: '/im/sessions/bindings/b1' })).json().code).toBe(0);
-  expect(seen).toEqual(['check:inst', 'listen:inst:true', 'confirm:d1', 'dismiss:d1', 'patch:b1', 'delete:b1']);
+  expect(seen).toEqual(['check:inst', 'listen:inst:true', 'delete-instance:inst', 'delete-instance:plugin:kiki-qq/qq-official', 'confirm:d1', 'dismiss:d1', 'patch:b1', 'delete:b1']);
   await app.close();
 });
 

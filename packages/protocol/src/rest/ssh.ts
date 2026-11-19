@@ -59,7 +59,10 @@ export const sshHostKeysSchema = z.object({
 });
 export type SshHostKeys = z.infer<typeof sshHostKeysSchema>;
 
-export const sshHostsResponseSchema = z.object({ hosts: z.array(sshHostSchema) });
+export const sshHostsResponseSchema = z.object({
+  hosts: z.array(sshHostSchema),
+  statuses: z.record(z.string(), sshHostStatusSchema).optional(),
+});
 export const sshHostResponseSchema = z.object({ host: sshHostSchema });
 export const sshSessionHostsResponseSchema = z.object({ hosts: z.array(z.object({
   host: sshHostSchema,

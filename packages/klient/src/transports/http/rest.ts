@@ -635,6 +635,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       paste: (text, instanceId) => transport.json('/im/sessions/paste', { method: 'POST', body: { text, ...(instanceId === undefined ? {} : { instance_id: instanceId }) } }),
       check: (instanceId) => transport.json(`/im/sessions/instances/${encodeURIComponent(instanceId)}/check`, { method: 'POST', body: {} }),
       listen: (instanceId, listening) => transport.json(`/im/sessions/instances/${encodeURIComponent(instanceId)}/listen`, { method: 'POST', body: { listening } }),
+      removeInstance: (instanceId) => transport.json(`/im/sessions/instances/${encodeURIComponent(instanceId)}`, { method: 'DELETE' }),
       confirm: (discoveryId, body) => transport.json(`/im/sessions/discoveries/${encodeURIComponent(discoveryId)}/confirm`, { method: 'POST', body }),
       dismiss: (discoveryId) => transport.json(`/im/sessions/discoveries/${encodeURIComponent(discoveryId)}/dismiss`, { method: 'POST', body: {} }),
       updateBinding: (id, patch) => transport.json(`/im/sessions/bindings/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }),
@@ -713,6 +714,11 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/agents/${encodeURIComponent(name)}`,
         { method: 'PATCH', body },
       ),
+      delete: (name: string, query: { readonly workspace_id: string; readonly scope: 'user' | 'project'; readonly source_file?: string }) =>
+        transport.json<{ readonly deleted: true; readonly name: string; readonly scope: 'user' | 'project'; readonly source_file: string }>(
+          `/agents/${encodeURIComponent(name)}`,
+          { method: 'DELETE', query },
+        ),
       shipped: {
         list: () => transport.json<ListShippedAgentProfilesResponse>('/agents/shipped'),
         restore: (id: string) => transport.json<ShippedAgentProfile>(

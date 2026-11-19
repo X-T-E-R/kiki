@@ -742,14 +742,38 @@ export function useNewSessionDraft({
     modelOverrideFromPersona.current = false;
     effortOverrideFromPersona.current = false;
     // A pin replaces the selection. The same engine with no pin keeps the model
-    // already chosen, including one taken from the previous profile. Crossing
-    // engines drops that raw id instead of carrying it.
+    // already chosen, including one taken from the previous profile — unless the
+    // new profile restricts models to its menu and excludes the current model, in
+    // which case we clear or clamp to the profile's first allowed model instead
+    // of immediately locking Send. Crossing engines drops that raw id instead of
+    // carrying it.
     if (isTargetExecutor && defaults.model !== undefined) {
       modelOverrideFromProfile.current = true;
       setModelOverrideState(defaults.model);
     } else if (!sameExecutor) {
       modelOverrideFromProfile.current = false;
       setModelOverrideState(undefined);
+    } else if (isTargetExecutor && selected?.restrict_models_to_menu === true) {
+      const catalogModels = modelsQuery.data?.items ?? [];
+      const currentEffective = resolveEffectiveModel(modelOverride, undefined, inheritedDefault);
+      const currentState = projectedProfileModelState(selected, catalogModels, currentEffective, 'main');
+      if (currentState !== 'allowed') {
+        const defaultAllowed = inheritedDefault !== undefined
+          && projectedProfileModelState(selected, catalogModels, inheritedDefault, 'main') === 'allowed';
+        const firstAllowed = selected.effective_model_aliases?.[0];
+        if (defaultAllowed) {
+          modelOverrideFromProfile.current = false;
+          setModelOverrideState(undefined);
+        } else if (firstAllowed !== undefined) {
+          modelOverrideFromProfile.current = true;
+          setModelOverrideState(firstAllowed);
+        } else {
+          modelOverrideFromProfile.current = false;
+          setModelOverrideState(undefined);
+        }
+      } else {
+        modelOverrideFromProfile.current = false;
+      }
     } else {
       modelOverrideFromProfile.current = false;
     }
@@ -758,7 +782,7 @@ export function useNewSessionDraft({
       setEffortOverrideState(isTargetExecutor ? defaults.thinking : undefined);
     }
     setSelectionRevision((value) => value + 1);
-  }, [execution.executor]);
+  }, [execution.executor, inheritedDefault, modelOverride, modelsQuery.data?.items]);
 
   useEffect(() => {
     const fromFile = execution.profile_file !== undefined;

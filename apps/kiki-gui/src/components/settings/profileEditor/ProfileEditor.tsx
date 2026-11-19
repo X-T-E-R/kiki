@@ -7,13 +7,14 @@ import { useI18n } from '../../../i18n';
 import type { NamedAgentProfile, ShippedAgentProfile } from '../../../lib/client';
 import { formatCompactTokens } from '../../../lib/autoCompact';
 import { useConnection } from '../../../state/connection';
+import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, Toggle, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
 import { DetailBack } from '../../overlays/DetailSplit';
 import { SearchableSelect } from '../../SearchableSelect';
 import { useGuardedNavigate } from '../../dirtyGuard';
 import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
-import { INPUT, SECONDARY_BUTTON } from '../../ui';
+import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../../ui';
 import { CompactPointField } from '../CompactPointField';
 import { FORM_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from '../SettingsPrimitives';
 import { ShippedProfileControls } from '../ShippedProfileControls';
@@ -114,7 +115,7 @@ function Block({ title, children, dataBlock, action }: { title: string; children
  * of only-these / suggested / never over the existing fields. Save, discard
  * and the PATCH stay exactly what they were.
  */
-export function ProfileEditor({ profile, writable, profiles, models, diagnostics, shippedEntry, onSaved, onClose, onOpenWinner,
+export function ProfileEditor({ profile, writable, profiles, models, diagnostics, shippedEntry, onSaved, onDeleted, onClose, onOpenWinner,
   onToggleEnabled, toggleSaving, onNewSession, newSessionBlocked, onDuplicate }: {
   profile: NamedAgentProfile;
   writable: boolean;
@@ -123,6 +124,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   diagnostics: readonly ProfileDiagnostic[];
   shippedEntry?: ShippedAgentProfile;
   onSaved: (updated: NamedAgentProfile) => void;
+  onDeleted?: () => void;
   onClose: () => void;
   onOpenWinner?: () => void;
   onToggleEnabled: (enabled: boolean) => Promise<void>;
@@ -139,6 +141,8 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   const [baseline, setBaseline] = useState(() => draftFromProfile(profile));
   const [draft, setDraft] = useState(baseline);
   const [saving, setSaving] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [justSaved, pingSaved] = useSavedTick();
   const [rawReload, setRawReload] = useState(0);
@@ -189,7 +193,33 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally { setSaving(false); }
   };
-  const disabled = !writable || saving;
+  const disabled = !writable || saving || deleting;
+  const canDelete = writable
+    && shippedEntry === undefined
+    && (profile.source === 'user' || profile.source === 'workspace')
+    && profile.workspace_id !== undefined
+    && profile.source_file !== undefined
+    && !(profile.source === 'user' && /(?:^|[\\/])SYSTEM\.md$/iu.test(profile.source_file));
+  const deleteProfile = async () => {
+    if (!canDelete || profile.workspace_id === undefined) return;
+    setDeleting(true);
+    setFeedback(null);
+    try {
+      await client.deleteNamedAgentProfile(profile.name, {
+        workspace_id: profile.workspace_id,
+        scope: profile.source === 'workspace' ? 'project' : 'user',
+        source_file: profile.source_file,
+      });
+      setConfirmingDelete(false);
+      setDraft(baseline);
+      onDeleted?.();
+    } catch (error) {
+      setConfirmingDelete(false);
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setDeleting(false);
+    }
+  };
   const problemText = problems.length === 0 ? null : t(`st.profiles.problem.${problems[0]}` as I18nKey);
   const engines = useMemo(() => engineChoices(profiles, catalog, {
     overrides: engineOverrides,
@@ -441,6 +471,12 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           onChange={(enabled) => { void onToggleEnabled(enabled).catch((error: unknown) => setFeedback({ tone: 'error', text: errorText(locale, error) })); }} />
         <button type="button" className={SECONDARY_BUTTON} onClick={onDuplicate}>{t('st.profiles.duplicate')}</button>
         <button type="button" className={SECONDARY_BUTTON} disabled={newSessionBlocked} onClick={onNewSession}>{t('st.namedAgents.newSession')}</button>
+        {canDelete ? (
+          <button type="button" data-profile-delete={profile.name} className={DANGER_GHOST_BUTTON} disabled={saving || deleting}
+            onClick={() => { setConfirmingDelete(true); }}>
+            {t('st.agents.delete')}
+          </button>
+        ) : null}
         <button type="button" onClick={onClose} aria-label={t('st.profiles.backToTeam')} title={t('st.profiles.backToTeam')} data-detail-close
           className="hidden h-8 w-8 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink md:flex">
           <Icon name="close" size={14} />
@@ -500,5 +536,18 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
             : dirty ? <span className="text-[12px] text-ink-faint">{tp('st.profiles.changedCount', changed.length)}</span> : undefined} />
     </div> : null}
     <FeedbackLine feedback={feedback} />
+    <ConfirmDialog
+      open={confirmingDelete}
+      title={t('st.agents.deleteTitle', { name: profile.name })}
+      body={t('st.agents.deleteBody')}
+      consequences={profile.source_file === undefined ? undefined : [profile.source_file]}
+      confirmLabel={t('st.agents.delete')}
+      cancelLabel={t('common.cancel')}
+      tone="danger"
+      busy={deleting}
+      overlayId={`profile-delete-${profile.name}`}
+      onConfirm={() => void deleteProfile()}
+      onCancel={() => { setConfirmingDelete(false); }}
+    />
   </div>;
 }

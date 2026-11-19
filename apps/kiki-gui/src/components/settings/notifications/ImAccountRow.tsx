@@ -8,8 +8,9 @@ import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
 import { copyTextToClipboard } from '../../../lib/clipboard';
 import { compactIdentifier } from '../../../lib/compactIdentifier';
+import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, Toggle } from '../../controls';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { FORM_LABEL } from '../SettingsPrimitives';
 import { AdvancedDetails } from '../fields';
 import { brandOfIm } from './catalog';
@@ -53,6 +54,8 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
   const discoveries = data.discoveries.filter((item) => item.provider_instance_id === account.id);
   const state = instanceState(account);
   const [reauthorizing, setReauthorizing] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   // A fresh server echo must not fight the person's unsaved choice of which
   // conversation they are editing, so a binding keeps its open editor until
   // they leave it.
@@ -64,6 +67,12 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
   const bodyId = `im-account-${account.id.replace(/[^A-Za-z0-9_-]/gu, '-')}`;
   const canListen = account.adapter !== 'missing';
   const listen = (on: boolean) => { void action.run(() => on ? startListening(account.id) : client.imSessions.listen(account.id, false)); };
+  const removeAccount = async () => {
+    setRemoving(true);
+    const ok = await action.run(() => client.imSessions.removeInstance(account.id));
+    setRemoving(false);
+    if (ok) setConfirmingRemove(false);
+  };
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: IM_KEY }); };
   const effectivePreselect = preselectedTarget ?? (initialTarget || defaultTarget(catalog));
 
@@ -86,10 +95,16 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
       ) : undefined}
     >
       <h3 className="sr-only">{name}</h3>
-      <AccountProblems account={account} state={state} busy={action.saving}
+      <AccountProblems account={account} state={state} qqPlugin={qqPlugin} busy={action.saving}
         onRetry={() => { void action.run(() => startListening(account.id)); }}
         onReauthorize={() => { setReauthorizing(true); }} />
       <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
+      {reauthorizing && !qqPlugin ? (
+        <div className="rounded-lg border border-hairline bg-panel p-4" data-im-connect-drawer data-im-instance={account.id}>
+          <Reauthorize account={account} setupPlatform={setupPlatform}
+            onDone={() => { setReauthorizing(false); }} />
+        </div>
+      ) : null}
 
       {state === 'auth_expired' && bindings.length === 0 && discoveries.length === 0 ? null : <section className="space-y-3" data-im-conversations={account.id}>
         <div className="flex items-center justify-between gap-2">
@@ -153,20 +168,34 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
             </button>
           )}
         </div>
-        {reauthorizing && !qqPlugin ? (
-          <div className="mt-3 rounded-lg border border-hairline bg-panel p-4" data-im-connect-drawer data-im-instance={account.id}>
-            <Reauthorize account={account} setupPlatform={setupPlatform}
-              onDone={() => { setReauthorizing(false); }} />
-          </div>
-        ) : null}
       </AdvancedDetails>
+      <div className="flex justify-end">
+        <button type="button" data-im-remove-account={account.id} className={DANGER_GHOST_BUTTON} disabled={action.saving}
+          onClick={() => { setConfirmingRemove(true); }}>
+          {t('st.im.remove')}
+        </button>
+      </div>
+      <ConfirmDialog
+        open={confirmingRemove}
+        title={t('st.im.removeAccountTitle', { name })}
+        body={t('st.im.removeAccountBody')}
+        consequences={bindings.length === 0 ? undefined : [t('st.im.removeAccountBindings', { count: bindings.length })]}
+        confirmLabel={t('st.im.remove')}
+        cancelLabel={t('common.cancel')}
+        tone="danger"
+        busy={removing}
+        overlayId={`im-account-remove-${bodyId}`}
+        onConfirm={() => void removeAccount()}
+        onCancel={() => { setConfirmingRemove(false); }}
+      />
     </ChannelListRow>
   );
 }
 
-function AccountProblems({ account, state, busy, onRetry, onReauthorize }: {
+function AccountProblems({ account, state, qqPlugin, busy, onRetry, onReauthorize }: {
   account: ImInstanceStatus;
   state: ImAccountState;
+  qqPlugin: boolean;
   busy: boolean;
   onRetry: () => void;
   onReauthorize: () => void;
@@ -176,7 +205,13 @@ function AccountProblems({ account, state, busy, onRetry, onReauthorize }: {
     return (
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] leading-5" data-im-problems={account.id}>
         <p className="min-w-0 flex-1 text-amber-ink" data-im-connection-detail>{t('st.im.authExpiredHint')}</p>
-        <button type="button" className={SECONDARY_BUTTON} data-im-reauthorize-now={account.id} onClick={onReauthorize}>{t('st.im.reauthorize')}</button>
+        {qqPlugin ? (
+          <Link to={pluginSettingsPath('kiki-qq')} className={SECONDARY_BUTTON} data-im-reauthorize-now={account.id}>
+            {t('st.im.reauthorize')}
+          </Link>
+        ) : (
+          <button type="button" className={SECONDARY_BUTTON} data-im-reauthorize-now={account.id} onClick={onReauthorize}>{t('st.im.reauthorize')}</button>
+        )}
         {(account.inbound_diagnostics?.length ?? 0) > 0 ? <div className="basis-full"><InboundFailures diagnostics={account.inbound_diagnostics!} /></div> : null}
       </div>
     );

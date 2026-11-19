@@ -49,7 +49,9 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
     method: 'GET', path: '/ssh/hosts', querystring,
     success: { data: sshHostsResponseSchema }, tags: ['ssh'],
   }, async (req, reply) => {
-    reply.send(okEnvelope({ hosts: await hosts().list(req.query.workspace_id) }, req.id));
+    const entries = await hosts().list(req.query.workspace_id);
+    const statuses = Object.fromEntries(entries.map((entry) => [entry.id, hosts().status(entry.id, req.query.workspace_id)]));
+    reply.send(okEnvelope({ hosts: entries, statuses }, req.id));
   });
   app.get(list.path, list.options, list.handler as SshHandler);
 

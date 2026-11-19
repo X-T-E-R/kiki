@@ -12,6 +12,7 @@ import { markRoomSeen } from '@kiki/session-core/settings';
 import type { BotRoomApi } from '../../lib/botRooms';
 
 export const ROOM_POLL_MS = 2000;
+export const ROOM_IDLE_POLL_MS = 15_000;
 /** The newest this many entries stay on the page. */
 export const ROOM_LOG_WINDOW = 2000;
 const PAGE = 500;
@@ -26,7 +27,7 @@ export interface RoomLogState {
 }
 
 /** Pages the whole log once, then asks only for entries after the last id. */
-export function useRoomLog(api: BotRoomApi, roomId: string): RoomLogState {
+export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: number | false = ROOM_POLL_MS): RoomLogState {
   const [entries, setEntries] = useState<readonly RoomLogEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -80,14 +81,20 @@ export function useRoomLog(api: BotRoomApi, roomId: string): RoomLogState {
     setError(null);
     setTruncated(false);
     void pull();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== 'hidden') void pull();
-    }, ROOM_POLL_MS);
     return () => {
       alive.current = false;
-      window.clearInterval(timer);
     };
   }, [pull]);
+
+  useEffect(() => {
+    if (pollIntervalMs === false) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') void pull();
+    }, pollIntervalMs);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [pull, pollIntervalMs]);
 
   return { entries, loaded, error, truncated, refresh: () => { void pull(); } };
 }

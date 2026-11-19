@@ -948,4 +948,66 @@ describe('Recipe file references', () => {
     expect((await service.resolve(`installation:${installed.installation_id}`)).branches.main.system).toBe('PARENT FILE');
     expect(await service.list()).toHaveLength(1);
   });
+
+  it('writes and removes markets using raw userValue when [recipes] is absent in config.toml and removes corrupt installations', async () => {
+    const replaceCalls: unknown[][] = [];
+    let userMarkets: { markets: { id: string; name: string; url: string; enabled: boolean }[] } | undefined;
+    const localDisposables = new DisposableStore();
+    try {
+      const ix = createServices(localDisposables, { additionalServices: (reg) => {
+        reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+        reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
+        reg.define(IBlobStore, BlobStoreService);
+        reg.definePartialInstance(IBootstrapService, { scope: () => 'store', homeDir: root, getEnv: () => undefined });
+        reg.definePartialInstance(IConfigService, {
+          ready: Promise.resolve(),
+          get: <T>(domain: string) => (domain === 'experimental' ? {} : (userMarkets ?? { markets: [] })) as T,
+          inspect: (<T>() => ({
+            value: (userMarkets ?? { markets: [] }) as T,
+            defaultValue: { markets: [] } as T,
+            userValue: userMarkets as T | undefined,
+            memoryValue: undefined,
+          })) as IConfigService['inspect'],
+          onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+          replaceSections: async (sections, _scope, expectedValues) => {
+            replaceCalls.push([sections, expectedValues]);
+            expect(expectedValues).toEqual({ recipes: userMarkets });
+            userMarkets = sections['recipes'] as typeof userMarkets;
+          },
+        });
+        reg.definePartialInstance(IFlagService, { enabled: () => true });
+        reg.definePartialInstance(IModelService, { list: () => ({}) });
+        reg.definePartialInstance(IPromptFieldRegistry, { get: () => ({ readonly: false }) as PromptFieldDefinition, validate: () => ({ values: {}, fields: [] }) });
+        reg.define(IRecipeSourceReader, RecipeSourceReader);
+        reg.define(IRecipeService, RecipeService);
+      } });
+      const recipes = ix.get(IRecipeService);
+      const docs = ix.get(IAtomicDocumentStore);
+
+      const added = await recipes.addMarket({ id: 'community', name: 'Community', url: 'https://example.test/catalog.json', enabled: true });
+      expect(added.id).toBe('community');
+      expect(replaceCalls[0]?.[1]).toEqual({ recipes: undefined });
+
+      await recipes.updateMarket({ id: 'community', name: 'Community Updated', url: 'https://example.test/catalog.json', enabled: false });
+      expect(userMarkets?.markets[0]?.enabled).toBe(false);
+
+      await recipes.removeMarket('community');
+      expect(userMarkets?.markets).toEqual([]);
+
+      const parentDir = path.join(root, 'corrupt-src');
+      await mkdir(parentDir, { recursive: true });
+      await writeFile(path.join(parentDir, 'recipe.toml'), stringify({ schema_version: 1, id: 'corrupt-pack', name: 'Corrupt Pack', version: '1.0.0', prompts: { system: { text: 'hello' } } }));
+      const installed = await recipes.install({ preview_id: (await recipes.preview({ source: { locator: parentDir } })).preview_id });
+      await docs.delete('store', `recipes/revisions/${installed.revision.slice(7)}`);
+
+      const listed = await recipes.list();
+      expect(listed[0]?.health).toBe('unavailable');
+      await expect(recipes.get(installed.installation_id)).rejects.toThrow();
+
+      await recipes.remove({ installation_id: installed.installation_id, expected_revision: installed.revision, disable_models: true });
+      expect(await recipes.list()).toEqual([]);
+    } finally {
+      await localDisposables.dispose();
+    }
+  });
 });

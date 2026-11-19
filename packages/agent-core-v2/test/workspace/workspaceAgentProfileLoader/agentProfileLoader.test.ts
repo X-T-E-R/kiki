@@ -3123,4 +3123,49 @@ describe('agent profile space inheritance', () => {
       expect(disposedWatches).toBe(3 + userWatches.length);
     });
   });
+
+  it('deletes writable user and project profiles while refusing builtin, SYSTEM.md, and path-traversal targets', async () => {
+    await withFixture(async (fixture) => {
+      const userPath = await writeAgent(join(fixture.homeDir, 'agents'), 'custom-user.md', agentMd('custom-user', 'User custom'));
+      await writeAgent(join(fixture.homeDir, 'agents', 'builtin'), 'shipped-guard.md', agentMd('shipped-guard', 'Shipped builtin'));
+      const projectPath = await writeAgent(join(fixture.workDir, '.kiki', 'agents'), 'custom-proj.md', agentMd('custom-proj', 'Project custom'));
+      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), '---\nname: agent\ndescription: System default\n---\nCustom default system prompt\n');
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const builtinHandle = stack.registry.register({
+          sourceId: 'builtin',
+          priority: 10,
+          contribution: {
+            profiles: [{
+              ...stack.catalog.get('agent')!,
+              name: 'explore',
+              description: 'Built-in explore',
+              sourcePath: undefined,
+            }],
+          },
+        });
+        try {
+          expect(stack.catalog.get('custom-user')).toBeDefined();
+          expect(stack.catalog.get('custom-proj')).toBeDefined();
+
+          await expect(stack.writer.delete({ name: '../escape', scope: 'user' })).rejects.toMatchObject({ code: 'validation.failed' });
+          await expect(stack.writer.delete({ name: 'explore', scope: 'user' })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.PROFILE_READ_ONLY });
+          await expect(stack.writer.delete({ name: 'shipped-guard', scope: 'user' })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.PROFILE_READ_ONLY });
+          await expect(stack.writer.delete({ name: 'agent', scope: 'user' })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.PROFILE_READ_ONLY });
+
+          const removedUser = await stack.writer.delete({ name: 'custom-user', scope: 'user', sourcePath: userPath });
+          expect(removedUser).toMatchObject({ name: 'custom-user', sourceId: 'user', sourcePath: userPath });
+          expect(stack.catalog.get('custom-user')).toBeUndefined();
+          await expect(readFile(userPath, 'utf8')).rejects.toThrow();
+
+          const removedProj = await stack.writer.delete({ name: 'custom-proj', scope: 'project', sourcePath: projectPath });
+          expect(removedProj).toMatchObject({ name: 'custom-proj', sourceId: 'workspace', sourcePath: projectPath });
+          expect(stack.catalog.get('custom-proj')).toBeUndefined();
+          await expect(readFile(projectPath, 'utf8')).rejects.toThrow();
+        } finally {
+          await builtinHandle.dispose();
+        }
+      });
+    });
+  });
 });

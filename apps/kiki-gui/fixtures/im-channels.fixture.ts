@@ -276,6 +276,13 @@ export function createImSettingsFixture(initial: ImSessionSnapshot = imSettingsS
     },
     dismiss: async (id: string) => { calls.push({ operation: 'dismiss', id }); state.discoveries = state.discoveries.filter((item) => item.id !== id); return clone(); },
     removeBinding: async (id: string) => { calls.push({ operation: 'removeBinding', id }); state.bindings = state.bindings.filter((item) => item.id !== id); return clone(); },
+    removeInstance: async (id: string) => {
+      calls.push({ operation: 'removeInstance', id });
+      state.instances = state.instances.filter((item) => item.id !== id);
+      state.bindings = state.bindings.filter((item) => item.provider_instance_id !== id);
+      state.discoveries = state.discoveries.filter((item) => item.provider_instance_id !== id);
+      return clone();
+    },
     testBinding: async (id: string): Promise<ImBindingTestResult> => {
       calls.push({ operation: 'testBinding', id });
       const b = state.bindings.find((item) => item.id === id);

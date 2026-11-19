@@ -2144,6 +2144,7 @@ export class KikiClient {
       paste: wrap(api.paste.bind(api)),
       check: wrap(api.check.bind(api)),
       listen: wrap(api.listen.bind(api)),
+      removeInstance: wrap(api.removeInstance.bind(api)),
       confirm: wrap(api.confirm.bind(api)),
       dismiss: wrap(api.dismiss.bind(api)),
       updateBinding: wrap(api.updateBinding.bind(api)),
@@ -2212,6 +2213,13 @@ export class KikiClient {
     body: UpdateNamedAgentProfileRequest,
   ): Promise<NamedAgentProfile> {
     return this.run(this.rest.agents.update(name, body));
+  }
+
+  deleteNamedAgentProfile(
+    name: string,
+    query: { readonly workspace_id: string; readonly scope: 'user' | 'project'; readonly source_file?: string },
+  ): Promise<{ readonly deleted: true; readonly name: string; readonly scope: 'user' | 'project'; readonly source_file: string }> {
+    return this.run(this.rest.agents.delete(name, query));
   }
 
   listShippedAgentProfiles(): Promise<ListShippedAgentProfilesResponse> {

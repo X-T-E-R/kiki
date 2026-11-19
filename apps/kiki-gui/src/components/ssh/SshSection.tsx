@@ -17,7 +17,7 @@
 import { useEffect, useId, useState } from 'react';
 
 import { pushToast, pushUndoToast } from '../../lib/toasts';
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import type { SshHostKeys } from '@kiki/protocol';
@@ -34,7 +34,7 @@ import {
   useNativeSshEnabled,
   useSshConfigSync,
   useSshHostKeys,
-  useSshHosts,
+  useSshHostsWithStatus,
   visibleState,
   type SshHost,
   type SshHostInput,
@@ -107,23 +107,15 @@ function SshFlagOffCard({ readOnly = false }: { readonly readOnly?: boolean }) {
 function SshHostsSettings({ client }: { readonly client: NonNullable<ReturnType<typeof useConnection>['localClient']> }) {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const hostsQuery = useSshHosts(client);
+  const hostsQuery = useSshHostsWithStatus(client);
   const discoveredQuery = useQuery({
     queryKey: sshKeys.discovered(),
     queryFn: async () => (await sshApi(client).discover()).hosts,
     staleTime: 30_000,
   });
-  const hosts = hostsQuery.data ?? [];
-  const statuses = useQueries({
-    queries: hosts.map((host) => ({
-      queryKey: sshKeys.status(host.id),
-      // Reading status never opens a connection (contract).
-      queryFn: () => sshApi(client).status(host.id),
-      staleTime: 10_000,
-    })),
-  });
-  const statusFor = (id: string): SshHostStatus | undefined =>
-    statuses[hosts.findIndex((host) => host.id === id)]?.data;
+  const hosts = hostsQuery.data?.hosts ?? [];
+  const statuses = hostsQuery.data?.statuses ?? {};
+  const statusFor = (id: string): SshHostStatus | undefined => statuses[id];
 
   const [form, setForm] = useState<SshHostFormMode | null>(null);
   // One dialog, opened from a profile row: this Kiki keeps the connection.

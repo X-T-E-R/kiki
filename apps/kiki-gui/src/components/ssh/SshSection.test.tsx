@@ -368,4 +368,18 @@ describe('host key entries', () => {
     await click(container.querySelector('[data-ssh-host-keys-retry]'));
     expect(container.querySelector('[data-ssh-host-keys]')?.getAttribute('data-state')).toBe('recorded');
   });
+
+  it('reads host connection statuses from GET /ssh/hosts without firing per-host :status RPCs on mount', async () => {
+    ssh.list.mockResolvedValue({
+      hosts: [KIKI_HOST, { ...KIKI_HOST, id: 'dev', name: 'Dev' }],
+      statuses: {
+        'gpu-box': { hostId: 'gpu-box', state: 'ready', generation: 2 },
+        dev: { hostId: 'dev', state: 'idle', generation: 0 },
+      },
+    } as Awaited<ReturnType<typeof ssh.list>>);
+    const container = await renderSection();
+    expect(ssh.list).toHaveBeenCalledTimes(1);
+    expect(ssh.status).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-ssh-host-row="gpu-box"]')?.textContent).toContain('Connected');
+  });
 });

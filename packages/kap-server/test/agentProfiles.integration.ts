@@ -1251,4 +1251,50 @@ describe('GET /api/agents (isolated config, SYSTEM.md, and restart proofs)', () 
       expect(wireRead.mock.calls.filter(([, key]) => key === AGENT_WIRE_RECORD_KEY)).toEqual([]);
     });
   });
+
+  it('deletes custom user/project agent profiles, cleans disabled_named_profiles, and refuses builtin profiles', async () => {
+    await withProfileHost(async (home) => {
+      await writeFile(join(home, 'config.toml'), 'disabled_named_profiles = ["disposable-helper"]\n');
+    }, async (ctx) => {
+      const ws = await ctx.postJson<{ id: string }>('/api/workspaces', { root: ctx.home });
+      expect(ws.code).toBe(0);
+      const workspaceId = ws.data.id;
+
+      const created = await ctx.postJson<{ name: string; source: string; source_file?: string }>('/api/agent-profiles', {
+        workspace_id: workspaceId,
+        scope: 'user',
+        name: 'disposable-helper',
+        description: 'Temporary custom helper',
+        prompt: 'Help briefly.',
+      });
+      expect(created.code).toBe(0);
+      expect(created.data.source_file).toBeTruthy();
+
+      const builtinDelete = await authedFetch(
+        ctx.server,
+        ctx.base,
+        `/api/agents/explore?workspace_id=${encodeURIComponent(workspaceId)}&scope=user`,
+        { method: 'DELETE' },
+      );
+      expect((await builtinDelete.json()).code).toBe(ErrorCode.AGENT_PROFILE_READ_ONLY);
+
+      const deletedRes = await authedFetch(
+        ctx.server,
+        ctx.base,
+        `/api/agents/disposable-helper?workspace_id=${encodeURIComponent(workspaceId)}&scope=user&source_file=${encodeURIComponent(created.data.source_file!)}`,
+        { method: 'DELETE' },
+      );
+      const deletedBody = await deletedRes.json();
+      expect(deletedBody).toMatchObject({
+        code: 0,
+        data: { deleted: true, name: 'disposable-helper', scope: 'user' },
+      });
+
+      const cfgAfter = await ctx.getJson<{ disabled_named_profiles?: string[] }>('/api/config');
+      expect(cfgAfter.data.disabled_named_profiles ?? []).not.toContain('disposable-helper');
+
+      const listedAfter = await ctx.getJson<{ items: { name: string }[] }>(`/api/agents?workspace_id=${encodeURIComponent(workspaceId)}`);
+      expect(listedAfter.data.items.some((item) => item.name === 'disposable-helper')).toBe(false);
+    });
+  });
 });

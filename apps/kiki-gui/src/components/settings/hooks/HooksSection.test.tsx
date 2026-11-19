@@ -589,4 +589,22 @@ describe('handing a new hook rule to Kiki', () => {
     expect(container.querySelector('[data-settings-card-actions] [data-hooks-add]')).not.toBeNull();
     expect(container.querySelector('[data-settings-card-actions] [data-hooks-ask-kiki]')).not.toBeNull();
   });
+
+  it('keeps the rule ID input mounted and focused across keystrokes without resetting DeclarativeRuleEditor', async () => {
+    await mount();
+    await click('Add rule');
+    const ruleEditor = editor('declarative');
+    const idInput = ruleEditor.querySelector<HTMLInputElement>('input[type="text"], input:not([type])')!;
+    idInput.focus();
+    expect(document.activeElement).toBe(idInput);
+
+    await change(idInput, 'rule-1a');
+    expect(editor('declarative').querySelector<HTMLInputElement>('input[type="text"], input:not([type])')).toBe(idInput);
+    expect(document.activeElement).toBe(idInput);
+
+    await change(idInput, 'custom-hook-id');
+    expect(editor('declarative').querySelector<HTMLInputElement>('input[type="text"], input:not([type])')).toBe(idInput);
+    expect(document.activeElement).toBe(idInput);
+    expect(idInput.value).toBe('custom-hook-id');
+  });
 });

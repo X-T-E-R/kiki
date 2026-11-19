@@ -42,7 +42,7 @@ import { usePersonaList } from '../persona/usePersonas';
 import { RelativeTime } from '../RelativeTime';
 import { RoomComposer } from './RoomComposer';
 import { RoomMembersPanel } from './RoomMembersPanel';
-import { isStopFirstError, livePauseIndex, ROOM_LOG_WINDOW, ROOM_POLL_MS, roomTokenTotal, useRoomLog } from './roomLog';
+import { isStopFirstError, livePauseIndex, ROOM_IDLE_POLL_MS, ROOM_LOG_WINDOW, ROOM_POLL_MS, roomTokenTotal, useRoomLog } from './roomLog';
 import { roomMemberId, threadMemberFace, threadMemberName } from './threadRooms';
 
 const HEADER_BUTTON =
@@ -66,7 +66,11 @@ export function RoomPage({
   const roomQuery = useQuery({
     queryKey: roomQueryKey(id),
     queryFn: () => api.getRoom(id),
-    refetchInterval: ROOM_POLL_MS,
+    refetchInterval: (query) => {
+      if (query.state.status === 'error') return false;
+      return query.state.data?.paused === true ? ROOM_IDLE_POLL_MS : ROOM_POLL_MS;
+    },
+    refetchIntervalInBackground: false,
     retry: false,
   });
   const room = roomQuery.data;
@@ -127,13 +131,6 @@ function RoomView({
   const api = useBotRoomApi();
   const queryClient = useQueryClient();
   const navigate = useGuardedNavigate();
-  const log = useRoomLog(api, room.id);
-  const usageQuery = useQuery({
-    queryKey: roomUsageQueryKey(room.id),
-    queryFn: () => api.roomUsage(room.id),
-    refetchInterval: ROOM_POLL_MS,
-    retry: false,
-  });
   // Member sessions are polled on their own: the sidebar's session list is
   // paged and may not hold them.
   const memberIds = room.members.map((member) => member.sessionId);
@@ -144,7 +141,14 @@ function RoomView({
       throw error;
     }))))
       .filter((session): session is Session => session !== undefined),
-    refetchInterval: ROOM_POLL_MS,
+    refetchInterval: (query) => {
+      if (query.state.status === 'error') return false;
+      if (room.paused) return ROOM_IDLE_POLL_MS;
+      const anyBusy = (query.state.data ?? []).some((session) => session.busy === true)
+        || sessions.some((session) => memberIds.includes(session.id) && session.busy === true);
+      return anyBusy ? ROOM_POLL_MS : ROOM_IDLE_POLL_MS;
+    },
+    refetchIntervalInBackground: false,
   });
   const personasQuery = usePersonaList({ includeArchived: true });
   const personas = useMemo(
@@ -156,6 +160,24 @@ function RoomView({
     for (const session of memberSessionsQuery.data ?? []) map.set(session.id, session);
     return map;
   }, [sessions, memberSessionsQuery.data]);
+  const busyMembers = room.members.filter((member) => sessionById.get(member.sessionId)?.busy === true);
+  const usageQuery = useQuery({
+    queryKey: roomUsageQueryKey(room.id),
+    queryFn: () => api.roomUsage(room.id),
+    refetchInterval: (query) => {
+      if (query.state.status === 'error') return false;
+      if (room.paused) return ROOM_IDLE_POLL_MS;
+      const active = busyMembers.length > 0 || query.state.data?.questions?.activeSessionId !== undefined;
+      return active ? ROOM_POLL_MS : ROOM_IDLE_POLL_MS;
+    },
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
+  const questions = usageQuery.data?.questions;
+  const pollIntervalMs = !room.paused && (busyMembers.length > 0 || questions?.activeSessionId !== undefined)
+    ? ROOM_POLL_MS
+    : ROOM_IDLE_POLL_MS;
+  const log = useRoomLog(api, room.id, pollIntervalMs);
 
   const [membersOpen, setMembersOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 1280);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -194,10 +216,8 @@ function RoomView({
   };
   const hostName = nameOf(room.host);
   const hostIsThread = room.members.some((member) => member.kind === 'thread' && member.sessionId === room.host);
-  const busyMembers = room.members.filter((member) => sessionById.get(member.sessionId)?.busy === true);
   const working = busyMembers.filter((member) => member.kind === 'persona' || !member.queueWhenBusy);
   const queuedBusy = busyMembers.filter((member) => member.kind === 'thread' && member.queueWhenBusy);
-  const questions = usageQuery.data?.questions;
   const running = busyMembers.some((member) => member.kind === 'persona') || questions?.activeSessionId !== undefined;
   const tokens = roomTokenTotal(usageQuery.data);
 
@@ -205,6 +225,7 @@ function RoomView({
     log.refresh();
     void queryClient.invalidateQueries({ queryKey: roomQueryKey(room.id) });
     void queryClient.invalidateQueries({ queryKey: roomUsageQueryKey(room.id) });
+    void queryClient.invalidateQueries({ queryKey: ['rooms', room.id, 'member-sessions'] });
     void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
   };
   const applyRoom = (next: RoomDocument) => {
@@ -338,6 +359,7 @@ function RoomView({
           queued={queuedBusy.map((member) => nameOf(roomMemberId(member)))}
           hostIsThread={hostIsThread}
           questions={questions}
+          pollIntervalMs={pollIntervalMs}
           questionSessionPersona={questions?.activeSessionId === undefined ? undefined
             : personaMembers.find((member) => member.sessionId === questions.activeSessionId)?.personaId}
           busy={action.isPending}
@@ -496,6 +518,7 @@ function RoomLogView({
   queued,
   hostIsThread,
   questions,
+  pollIntervalMs,
   questionSessionPersona,
   busy,
   onContinue,
@@ -513,6 +536,7 @@ function RoomLogView({
   readonly queued: readonly string[];
   readonly hostIsThread: boolean;
   readonly questions: { readonly activeSessionId?: string; readonly queued: number } | undefined;
+  readonly pollIntervalMs: number;
   readonly questionSessionPersona: string | undefined;
   readonly busy: boolean;
   readonly onContinue: () => void;
@@ -566,7 +590,7 @@ function RoomLogView({
           );
         })}
         {questions?.activeSessionId !== undefined ? (
-          <RoomQuestion sessionId={questions.activeSessionId} queued={questions.queued}
+          <RoomQuestion sessionId={questions.activeSessionId} queued={questions.queued} pollIntervalMs={pollIntervalMs}
             face={questionSessionPersona === undefined ? undefined : faceOf(questionSessionPersona)} />
         ) : null}
         {working.length > 0 ? (
@@ -680,12 +704,17 @@ function BotRoomRow({
 }
 
 /** The room's one live question card (asked in a member session). */
-function RoomQuestion({ sessionId, queued, face }: { readonly sessionId: string; readonly queued: number; readonly face: PersonaAvatarData | undefined }) {
+function RoomQuestion({ sessionId, queued, face, pollIntervalMs = ROOM_POLL_MS }: { readonly sessionId: string; readonly queued: number; readonly face: PersonaAvatarData | undefined; readonly pollIntervalMs?: number }) {
   const { t } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const key = ['rooms', 'question', sessionId] as const;
-  const query = useQuery({ queryKey: key, queryFn: () => client.listPendingQuestions(sessionId), refetchInterval: ROOM_POLL_MS });
+  const query = useQuery({
+    queryKey: key,
+    queryFn: () => client.listPendingQuestions(sessionId),
+    refetchInterval: (q) => (q.state.status === 'error' ? false : pollIntervalMs),
+    refetchIntervalInBackground: false,
+  });
   const request = query.data?.[0];
   if (request === undefined) return null;
   const done = () => { void queryClient.invalidateQueries({ queryKey: key }); };

@@ -24,6 +24,7 @@ export const SSH_HOSTNAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,253}$/;
 export const sshKeys = {
   all: ['ssh'] as const,
   hosts: () => ['ssh', 'hosts'] as const,
+  hostsWithStatus: () => ['ssh', 'hosts', 'with-status'] as const,
   discovered: () => ['ssh', 'discovered'] as const,
   approval: () => ['ssh', 'connection-approval'] as const,
   configSync: () => ['ssh', 'config-sync'] as const,
@@ -114,6 +115,22 @@ export function useSshHosts(client: KikiClient, enabled = true) {
   return useQuery({
     queryKey: sshKeys.hosts(),
     queryFn: async () => (await sshApi(client).list()).hosts,
+    enabled,
+    retry: (failureCount, error) => !isLocalOwnerRequiredError(error) && failureCount < 2,
+    staleTime: 10_000,
+  });
+}
+
+export function useSshHostsWithStatus(client: KikiClient, enabled = true) {
+  return useQuery({
+    queryKey: sshKeys.hostsWithStatus(),
+    queryFn: async () => {
+      const response = await sshApi(client).list();
+      return {
+        hosts: response.hosts,
+        statuses: response.statuses ?? {},
+      };
+    },
     enabled,
     retry: (failureCount, error) => !isLocalOwnerRequiredError(error) && failureCount < 2,
     staleTime: 10_000,

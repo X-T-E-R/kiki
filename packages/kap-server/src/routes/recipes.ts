@@ -15,7 +15,7 @@ export function registerRecipesRoutes(app: FastifyInstance, core: Scope): void {
     try { reply.send(okEnvelope(await action() ?? null, id)); }
     catch (error) {
       const failure = error as { code?: string; message?: string; details?: unknown };
-      reply.send({ ...errEnvelope(failure.code === 'validation.failed' || failure.code === 'request.invalid' || failure.code === 'config.revision_conflict' ? 40001 : 50001, failure.message ?? 'Recipe operation failed', id), details: failure.details });
+      reply.send({ ...errEnvelope(failure.code === 'validation.failed' || failure.code === 'request.invalid' || failure.code === 'config.invalid' || failure.code === 'config.revision_conflict' ? 40001 : 50001, failure.message ?? 'Recipe operation failed', id), details: failure.details });
     }
   };
   mount(defineRoute({ method: 'GET', path: '/recipes', success: { data: z.array(recipeSummarySchema) }, tags: ['recipes'] }, (req, reply) => run(req.id, reply, () => service().list())));
