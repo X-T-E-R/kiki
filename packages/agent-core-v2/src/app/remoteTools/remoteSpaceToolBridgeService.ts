@@ -54,7 +54,7 @@ export class RemoteSpaceToolBridgeService
   }
 
   private attachWaiter(
-    workspaceId: string,
+    key: string,
     entry: InFlightCatalogRequest,
     signal?: AbortSignal,
   ): Promise<readonly RemoteBorrowedSpaceCatalog[]> {
@@ -80,9 +80,9 @@ export class RemoteSpaceToolBridgeService
       const onAbort = (): void => {
         const remaining = release();
         if (remaining === 0 && !entry.state.settled) {
-          const current = this.inFlight.get(workspaceId);
+          const current = this.inFlight.get(key);
           if (current?.token === entry.token) {
-            this.inFlight.delete(workspaceId);
+            this.inFlight.delete(key);
           }
           entry.controller.abort(signal.reason);
         }
@@ -129,19 +129,19 @@ export class RemoteSpaceToolBridgeService
     input.signal?.throwIfAborted();
     const connector = this.connector;
     if (connector === undefined) return [];
-    const workspaceId = input.caller.workspaceId;
-    const cached = this.cache.get(workspaceId);
+    const key = `${input.caller.workspaceId}\0${input.caller.sessionId}`;
+    const cached = this.cache.get(key);
     if (cached !== undefined && Date.now() < cached.expiresAt) {
       return cached.catalogs;
     }
-    const existing = this.inFlight.get(workspaceId);
+    const existing = this.inFlight.get(key);
     if (
       existing !== undefined
       && existing.generation === this.cacheGeneration
       && !existing.controller.signal.aborted
       && !existing.state.settled
     ) {
-      return this.attachWaiter(workspaceId, existing, input.signal);
+      return this.attachWaiter(key, existing, input.signal);
     }
     const generation = this.cacheGeneration;
     const token = Symbol('inFlight');
@@ -154,25 +154,25 @@ export class RemoteSpaceToolBridgeService
           signal: controller.signal,
         });
         if (!controller.signal.aborted && generation === this.cacheGeneration && this.connector === connector) {
-          this.cache.set(workspaceId, {
+          this.cache.set(key, {
             catalogs,
             expiresAt: Date.now() + DEFAULT_CACHE_TTL_MS,
           });
         }
         return catalogs;
       } catch {
-        return this.cache.get(workspaceId)?.catalogs ?? [];
+        return this.cache.get(key)?.catalogs ?? [];
       } finally {
         state.settled = true;
-        const current = this.inFlight.get(workspaceId);
+        const current = this.inFlight.get(key);
         if (current?.token === token) {
-          this.inFlight.delete(workspaceId);
+          this.inFlight.delete(key);
         }
       }
     })();
     const entry: InFlightCatalogRequest = { token, generation, controller, promise, state };
-    this.inFlight.set(workspaceId, entry);
-    return this.attachWaiter(workspaceId, entry, input.signal);
+    this.inFlight.set(key, entry);
+    return this.attachWaiter(key, entry, input.signal);
   }
 
   async callBorrowedTool(input: CallRemoteSpaceToolInput): Promise<BridgeToolsCallResult> {

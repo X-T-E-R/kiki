@@ -55,7 +55,7 @@ describe('RemoteSpaceToolBridgeService refcounted AbortSignal sharing', () => {
     const mainController = new AbortController();
 
     const subagentPromise = bridge.listBorrowedTools({
-      caller: { workspaceId: 'ws-shared', sessionId: 'subagent-a' },
+      caller: { workspaceId: 'ws-shared', sessionId: 'main' },
       signal: subagentController.signal,
     });
     const mainPromise = bridge.listBorrowedTools({
@@ -74,7 +74,7 @@ describe('RemoteSpaceToolBridgeService refcounted AbortSignal sharing', () => {
     await expect(mainPromise).resolves.toEqual(SAMPLE_CATALOGS);
 
     await expect(
-      bridge.listBorrowedTools({ caller: { workspaceId: 'ws-shared', sessionId: 'main-followup' } }),
+      bridge.listBorrowedTools({ caller: { workspaceId: 'ws-shared', sessionId: 'main' } }),
     ).resolves.toEqual(SAMPLE_CATALOGS);
     expect(connector.listBorrowedTools).toHaveBeenCalledTimes(1);
 
@@ -108,11 +108,11 @@ describe('RemoteSpaceToolBridgeService refcounted AbortSignal sharing', () => {
     const callerB = new AbortController();
 
     const promiseA = bridge.listBorrowedTools({
-      caller: { workspaceId: 'ws-shared', sessionId: 'sub-a' },
+      caller: { workspaceId: 'ws-shared', sessionId: 'main' },
       signal: callerA.signal,
     });
     const promiseB = bridge.listBorrowedTools({
-      caller: { workspaceId: 'ws-shared', sessionId: 'sub-b' },
+      caller: { workspaceId: 'ws-shared', sessionId: 'main' },
       signal: callerB.signal,
     });
 
@@ -128,7 +128,7 @@ describe('RemoteSpaceToolBridgeService refcounted AbortSignal sharing', () => {
     expect(signals[0]?.aborted).toBe(true);
 
     const freshPromise = bridge.listBorrowedTools({
-      caller: { workspaceId: 'ws-shared', sessionId: 'main-fresh' },
+      caller: { workspaceId: 'ws-shared', sessionId: 'main' },
     });
     expect(connector.listBorrowedTools).toHaveBeenCalledTimes(2);
     expect(signals[1]?.aborted).toBe(false);
@@ -164,7 +164,7 @@ describe('RemoteSpaceToolBridgeService refcounted AbortSignal sharing', () => {
 
     const subAbort = new AbortController();
     const subPromise = bridge.listBorrowedTools({
-      caller: { workspaceId: 'ws-no-sig', sessionId: 'sub' },
+      caller: { workspaceId: 'ws-no-sig', sessionId: 'main' },
       signal: subAbort.signal,
     });
     const noSignalMainPromise = bridge.listBorrowedTools({
@@ -180,7 +180,7 @@ describe('RemoteSpaceToolBridgeService refcounted AbortSignal sharing', () => {
 
     capability.notifyChanged();
     const pendingBeforeNotify = bridge.listBorrowedTools({
-      caller: { workspaceId: 'ws-no-sig', sessionId: 'main-2' },
+      caller: { workspaceId: 'ws-no-sig', sessionId: 'main' },
     });
     expect(signals[1]?.aborted).toBe(false);
     capability.notifyChanged();
@@ -188,7 +188,7 @@ describe('RemoteSpaceToolBridgeService refcounted AbortSignal sharing', () => {
     await expect(pendingBeforeNotify).resolves.toEqual(SAMPLE_CATALOGS);
 
     const pendingBeforeDispose = bridge.listBorrowedTools({
-      caller: { workspaceId: 'ws-no-sig', sessionId: 'main-3' },
+      caller: { workspaceId: 'ws-no-sig', sessionId: 'main' },
     });
     expect(signals[2]?.aborted).toBe(false);
     bridge.dispose();
