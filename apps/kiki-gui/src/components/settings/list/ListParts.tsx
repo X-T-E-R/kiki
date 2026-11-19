@@ -21,7 +21,7 @@
  * vocabulary as the selected nav row — never an accent fill.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { useI18n } from '../../../i18n';
@@ -75,7 +75,7 @@ export function ListToolbar<T>({
     // Sticky only while there is a search to keep in reach; a short list's
     // toolbar is just its verbs and scrolls away with the list.
     <div data-list-toolbar
-      className={`${tools.search ? 'sticky -top-6 z-[3] bg-paper/95 backdrop-blur-[6px] lg:-top-8' : ''} -mx-2 flex flex-col gap-2 px-2 pt-2 pb-2`}>
+      className={`${tools.search ? 'sticky top-0 z-[3] bg-paper/95 backdrop-blur-[6px]' : ''} -mx-2 flex flex-col gap-2 px-2 pt-2 pb-2`}>
       <div className="flex min-w-0 items-center gap-2">
         {tools.search ? <label className="relative flex h-8 min-w-0 flex-1 items-center">
           <Icon name="search" size={14} className="pointer-events-none absolute left-2.5 text-ink-faint" />
@@ -236,6 +236,19 @@ export function ListBody<T>({ items, keyOf, density, renderRow, label, virtualiz
   );
 }
 
+function findScrollableAncestor(anchor: HTMLElement | null): HTMLElement | null {
+  if (anchor === null) return null;
+  const marked = anchor.closest<HTMLElement>('[data-settings-scroll]');
+  if (marked !== null) return marked;
+  for (let node = anchor.parentElement; node !== null; node = node.parentElement) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') {
+      return node;
+    }
+  }
+  return null;
+}
+
 function WindowedRows<T>({ items, keyOf, density, renderRow }: {
   items: readonly T[];
   keyOf: (item: T) => string;
@@ -245,20 +258,25 @@ function WindowedRows<T>({ items, keyOf, density, renderRow }: {
   const anchorRef = useRef<HTMLDivElement>(null);
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
   const [offset, setOffset] = useState(0);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const anchor = anchorRef.current;
-    const pane = anchor?.closest<HTMLElement>('[data-settings-scroll]') ?? null;
+    const pane = findScrollableAncestor(anchor);
     setScroller(pane);
     if (anchor === null || pane === null) return;
     // Where the list starts inside the scroller; re-read when anything above it grows.
     const measure = () => {
-      setOffset(anchor.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop);
+      const next = Math.max(0, Math.round(anchor.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop));
+      setOffset((prev) => (prev === next ? prev : next));
     };
     measure();
+    if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
     observer.observe(pane.firstElementChild ?? pane);
+    if (anchor.parentElement !== null && anchor.parentElement !== pane && anchor.parentElement !== pane.firstElementChild) {
+      observer.observe(anchor.parentElement);
+    }
     return () => { observer.disconnect(); };
-  }, []);
+  }, [items.length, density]);
   const rowHeight = LIST_ROW_HEIGHT[density];
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -273,9 +291,14 @@ function WindowedRows<T>({ items, keyOf, density, renderRow }: {
   return (
     <div ref={anchorRef} style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
       {virtualizer.getVirtualItems().map((row) => (
-        <div role="listitem" key={row.key} data-index={row.index}
-          className="absolute inset-x-0 border-b border-hairline"
-          style={{ top: row.start - offset, height: rowHeight }}>
+        <div
+          role="listitem"
+          key={row.key}
+          data-index={row.index}
+          ref={virtualizer.measureElement}
+          className="absolute inset-x-0 border-b border-hairline last:border-b-0"
+          style={{ top: row.start - offset, minHeight: rowHeight }}
+        >
           {renderRow(items[row.index]!)}
         </div>
       ))}

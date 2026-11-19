@@ -113,6 +113,7 @@ import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon, resolvePluginSlotIconName, Spinner } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
+import { usePersonaDirectory, type PersonaDirectoryEntry } from './persona/usePersonaDirectory';
 import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { JoinRoomDialog, NewThreadRoomDialog } from './room/ThreadRoomDialogs';
@@ -1027,10 +1028,27 @@ export function Sidebar({
   );
   const privateFilter = filters.private ?? 'hide';
   const narrowsBeyondWorkspace = filters.status.length > 0 || filters.archived !== 'hide' || privateFilter !== 'hide';
-  const allowedSessionIds = useMemo(
-    () => (narrowsBeyondWorkspace ? new Set(visibleSessions.map((session) => session.id)) : undefined),
-    [narrowsBeyondWorkspace, visibleSessions],
+  // When more pages exist on the server (`hasNextPage === true`), never intersect
+  // server search hits with only the currently loaded page-1 `visibleSessions`
+  // (which would silently discard hits from sessions #51+). Exclude only loaded
+  // sessions known to fail the active filter instead.
+  const hasMoreUnloadedSessions = sessionsQuery.hasNextPage === true;
+  const visibleSessionIdSet = useMemo(
+    () => new Set(visibleSessions.map((session) => session.id)),
+    [visibleSessions],
   );
+  const allowedSessionIds = useMemo(
+    () => (narrowsBeyondWorkspace && !hasMoreUnloadedSessions ? visibleSessionIdSet : undefined),
+    [narrowsBeyondWorkspace, hasMoreUnloadedSessions, visibleSessionIdSet],
+  );
+  const excludedSessionIds = useMemo(() => {
+    if (!narrowsBeyondWorkspace || !hasMoreUnloadedSessions) return undefined;
+    const excluded = new Set<string>();
+    for (const session of sessions) {
+      if (!visibleSessionIdSet.has(session.id)) excluded.add(session.id);
+    }
+    return excluded;
+  }, [narrowsBeyondWorkspace, hasMoreUnloadedSessions, sessions, visibleSessionIdSet]);
   const searchableSessions = useMemo(
     () => (narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true && session.private !== true)),
     [narrowsBeyondWorkspace, visibleSessions, sessions],
@@ -1042,6 +1060,7 @@ export function Sidebar({
     untitled,
     workspaceScope: filters.workspaces,
     allowedSessionIds,
+    excludedSessionIds,
     includeToolOutput,
   });
 
@@ -1309,6 +1328,19 @@ export function Sidebar({
     }
   };
 
+  const navigateAwayFromArchived = (archivedIds: ReadonlySet<string>) => {
+    if (activeSessionId === undefined || !archivedIds.has(activeSessionId)) return;
+    if (location.pathname.startsWith('/archived')) return;
+    const currentIndex = visibleSessions.findIndex((candidate) => candidate.id === activeSessionId);
+    const remaining = visibleSessions.filter((candidate) => !archivedIds.has(candidate.id) && candidate.archived !== true);
+    const next = currentIndex >= 0
+      ? (visibleSessions.slice(currentIndex + 1).find((candidate) => !archivedIds.has(candidate.id) && candidate.archived !== true)
+        ?? visibleSessions.slice(0, currentIndex).findLast((candidate) => !archivedIds.has(candidate.id) && candidate.archived !== true)
+        ?? remaining[0])
+      : remaining[0];
+    void navigate(next !== undefined ? `/s/${encodeURIComponent(next.id)}` : '/new');
+  };
+
   // The authoritative answer, not an optimistic guess: the archived fact goes
   // into the loaded pages so the ordinary list (archived: hide) drops the row
   // and the archived view keeps it, with no second wait on the network. The
@@ -1323,7 +1355,9 @@ export function Sidebar({
         items: page.items.map((session) => ids.has(session.id) ? { ...session, archived: true } : session),
       })),
     });
+    void queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined);
     refreshSessions();
+    navigateAwayFromArchived(ids);
   };
   const markRoomsArchived = (ids: ReadonlySet<string>) => {
     if (ids.size === 0) return;
@@ -1416,8 +1450,27 @@ export function Sidebar({
   // retype. Only Escape and the × clear it. A workspace pick is different: it
   // turns the query into a list filter, and the list it filters is only shown
   // once the query is gone.
+  const { directory: personaDirectory } = usePersonaDirectory({ sessions: personaSessions ?? sessions, seen });
+  const matchingPersonas = useMemo(() => {
+    if (!search.active) return [];
+    const term = search.parsed.text.trim().toLowerCase();
+    if (term === '') return [];
+    return personaDirectory.filter((item) =>
+      !item.hidden
+      && (item.name.toLowerCase().includes(term)
+        || item.id.toLowerCase().includes(term)
+        || (item.title?.toLowerCase().includes(term) ?? false)),
+    );
+  }, [personaDirectory, search.active, search.parsed.text]);
+
   const results = useMemo(() => {
     const items: { key: string; open: () => void }[] = [];
+    for (const persona of matchingPersonas) {
+      items.push({
+        key: `p:${persona.id}`,
+        open: () => { void navigate(`/p/${encodeURIComponent(persona.id)}/daily`); },
+      });
+    }
     for (const match of search.local.workspaces) {
       items.push({
         key: `ws:${match.workspace.id}`,
@@ -1437,15 +1490,21 @@ export function Sidebar({
         key: `h:${index}`,
         open: () => {
           const route = hit.agent_id && hit.agent_id !== 'main'
-            ? `/s/${hit.session_id}/agent/${hit.agent_id}` : `/s/${hit.session_id}`;
-          void navigate(hit.turn === undefined ? route : `${route}?turn=${hit.turn}`);
+            ? `/s/${encodeURIComponent(hit.session_id)}/agent/${encodeURIComponent(hit.agent_id)}`
+            : `/s/${encodeURIComponent(hit.session_id)}`;
+          const params = new URLSearchParams();
+          if (hit.turn !== undefined) params.set('turn', String(hit.turn));
+          if (hit.step_id !== undefined && hit.step_id !== '') params.set('step', hit.step_id);
+          if (search.parsed.text.trim() !== '') params.set('q', search.parsed.text.trim());
+          const qs = params.toString();
+          void navigate(qs === '' ? route : `${route}?${qs}`);
         },
       });
     });
     return items;
     // setFilters closes over the latest filters; recompute with them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search.local, search.hits, filters, navigate]);
+  }, [matchingPersonas, search.local, search.hits, filters, navigate]);
   useEffect(() => { setActiveResult(0); }, [searchInput]);
   const activeKey = search.active ? results[Math.min(activeResult, results.length - 1)]?.key : undefined;
   useEffect(() => {
@@ -1808,113 +1867,137 @@ export function Sidebar({
         offscreen={inert === true}
         onCloseSidebar={onClose}
       />
-      <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
-
-      <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">
-        {/* The section label never gives way: it is T5, unshrinkable and
-            single-line; the shortcuts beside it are what yield when the
-            sidebar is dragged narrow. "Needs you" is counted once, on the
-            bell above — here only the aggregate running mark remains. */}
-        <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-section-ink">{t('sidebar.results.sessions')}</h2>
-        <span className="min-w-0 flex-1" />
-        {counts.running > 0 ? (
-          // Said in words ("2 running"), still the shortcut that filters to
-          // the running sessions; a bare number beside a dot was a guess.
-          <button
-            type="button"
-            data-status-shortcut="running"
-            data-activity-summary
-            aria-pressed={filters.status.includes('running')}
-            title={tp('sidebar.runningCount', counts.running)}
-            onClick={() => { toggleStatus('running'); }}
-            className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            {/* The one breathing mark in the list: rows stay still. */}
-            <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
-            <span className="min-w-0 truncate">{tp('sidebar.runningCount', counts.running)}</span>
-          </button>
-        ) : null}
-        {workspaceGroupKeys.length > 1 && !foldsSuspended && !search.active ? (
-          <button
-            type="button"
-            data-session-groups-fold-all={allFolded ? 'expand' : 'collapse'}
-            aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
-            title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
-            onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
-          </button>
-        ) : null}
-        <button
-          type="button"
-          ref={filterMenuButtonRef}
-          data-filter-menu-toggle
-          aria-haspopup="menu"
-          aria-expanded={openMenu === 'filter'}
-          aria-label={t('sidebar.filterMenu')}
-          title={t('sidebar.filterMenu')}
-          onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
-          // An active filter is "on", not "needs you": the selected ink, never the accent.
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
-        >
-          <Icon name="filter" size={14} />
-        </button>
-        <button
-          type="button"
-          ref={viewMenuButtonRef}
-          data-view-menu-toggle
-          aria-haspopup="menu"
-          aria-expanded={openMenu === 'view'}
-          aria-label={t('sidebar.viewMenu')}
-          title={t('sidebar.viewMenu')}
-          onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
-        >
-          <Icon name="sliders" size={14} />
-        </button>
-      </div>
-
-      {filterChips.length > 0 ? (
-        <div data-sidebar-filters aria-label={t('sidebar.filtersAria')} className="flex flex-wrap items-center gap-1 px-3 pb-1.5">
-          {filterChips.map((chip) => (
-            <FilterChip
-              key={chip.key}
-              kind={chip.key.split(':')[0] ?? chip.key}
-              label={chip.label}
-              clearLabel={t('sidebar.clearFilter', { label: chip.label })}
-              openLabel={t('sidebar.filterMenu')}
-              onOpen={() => { setOpenMenu('filter'); }}
-              onClear={chip.clear}
-            />
-          ))}
-          {filterChips.length > 1 ? (
-            <button
-              type="button"
-              data-sidebar-filters-clear-all
-              onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
-              className="h-6 rounded px-1 text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline"
-            >
-              {t('sidebar.clearAllFilters')}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
 
       {search.active ? (
-        <SearchResults
-          search={search}
-          filtersActive={filtersActive}
-          activeKey={activeKey}
-          onHover={(key) => {
-            const index = results.findIndex((entry) => entry.key === key);
-            if (index >= 0) setActiveResult(index);
-          }}
-          onOpen={(key) => { results.find((entry) => entry.key === key)?.open(); }}
-          workspaceNames={new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name]))}
-        />
+        <>
+          {filterChips.length > 0 ? (
+            <div data-sidebar-filters aria-label={t('sidebar.filtersAria')} className="flex flex-wrap items-center gap-1 px-3 pt-1 pb-1.5">
+              {filterChips.map((chip) => (
+                <FilterChip
+                  key={chip.key}
+                  kind={chip.key.split(':')[0] ?? chip.key}
+                  label={chip.label}
+                  clearLabel={t('sidebar.clearFilter', { label: chip.label })}
+                  openLabel={t('sidebar.filterMenu')}
+                  onOpen={() => { setOpenMenu('filter'); }}
+                  onClear={chip.clear}
+                />
+              ))}
+              {filterChips.length > 1 ? (
+                <button
+                  type="button"
+                  data-sidebar-filters-clear-all
+                  onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
+                  className="h-6 rounded px-1 text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline"
+                >
+                  {t('sidebar.clearAllFilters')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <SearchResults
+            search={search}
+            personas={matchingPersonas}
+            filtersActive={filtersActive}
+            activeKey={activeKey}
+            onHover={(key) => {
+              const index = results.findIndex((entry) => entry.key === key);
+              if (index >= 0) setActiveResult(index);
+            }}
+            onOpen={(key) => { results.find((entry) => entry.key === key)?.open(); }}
+            workspaceNames={new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name]))}
+          />
+        </>
       ) : (
       <div ref={listRef} onScroll={onListScroll} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
+        <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
+
+        <div className="flex items-center gap-0.5 pt-2 pr-0 pb-0.5 pl-2">
+          {/* The section label never gives way: it is T5, unshrinkable and
+              single-line; the shortcuts beside it are what yield when the
+              sidebar is dragged narrow. "Needs you" is counted once, on the
+              bell above — here only the aggregate running mark remains. */}
+          <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-section-ink">{t('sidebar.results.sessions')}</h2>
+          <span className="min-w-0 flex-1" />
+          {counts.running > 0 ? (
+            <button
+              type="button"
+              data-status-shortcut="running"
+              data-activity-summary
+              aria-pressed={filters.status.includes('running')}
+              title={tp('sidebar.runningCount', counts.running)}
+              onClick={() => { toggleStatus('running'); }}
+              className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
+              <span className="min-w-0 truncate">{tp('sidebar.runningCount', counts.running)}</span>
+            </button>
+          ) : null}
+          {workspaceGroupKeys.length > 1 && !foldsSuspended ? (
+            <button
+              type="button"
+              data-session-groups-fold-all={allFolded ? 'expand' : 'collapse'}
+              aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
+              title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
+              onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            ref={filterMenuButtonRef}
+            data-filter-menu-toggle
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'filter'}
+            aria-label={t('sidebar.filterMenu')}
+            title={t('sidebar.filterMenu')}
+            onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
+          >
+            <Icon name="filter" size={14} />
+          </button>
+          <button
+            type="button"
+            ref={viewMenuButtonRef}
+            data-view-menu-toggle
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'view'}
+            aria-label={t('sidebar.viewMenu')}
+            title={t('sidebar.viewMenu')}
+            onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
+          >
+            <Icon name="sliders" size={14} />
+          </button>
+        </div>
+
+        {filterChips.length > 0 ? (
+          <div data-sidebar-filters aria-label={t('sidebar.filtersAria')} className="flex flex-wrap items-center gap-1 px-1 pb-1.5">
+            {filterChips.map((chip) => (
+              <FilterChip
+                key={chip.key}
+                kind={chip.key.split(':')[0] ?? chip.key}
+                label={chip.label}
+                clearLabel={t('sidebar.clearFilter', { label: chip.label })}
+                openLabel={t('sidebar.filterMenu')}
+                onOpen={() => { setOpenMenu('filter'); }}
+                onClear={chip.clear}
+              />
+            ))}
+            {filterChips.length > 1 ? (
+              <button
+                type="button"
+                data-sidebar-filters-clear-all
+                onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
+                className="h-6 rounded px-1 text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline"
+              >
+                {t('sidebar.clearAllFilters')}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {sessionsQuery.isLoading && sessions.length === 0 ? (
           <div className="flex items-center gap-2 px-2 pt-4 text-[12.5px] text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-faint" />
@@ -2347,59 +2430,82 @@ export function Sidebar({
             const target = renaming;
             const sequence = (renameSequences.current.get(target.key) ?? 0) + 1;
             renameSequences.current.set(target.key, sequence);
+            const previousTitle = target.kind === 'room' ? target.title : target.session.title;
+            setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? previousTitle, to: title }));
             if (target.kind === 'room') {
-              const updated = await roomApi.updateRoom(target.id, { name: title });
-              if (renameSequences.current.get(target.key) !== sequence) return;
               queryClient.setQueryData<RoomListItem[]>(ROOM_ITEMS_QUERY_KEY, (old) =>
                 old === undefined ? old : old.map((room) => (room.id === target.id ? { ...room, title } : room)),
               );
-              if (updated !== undefined && updated !== null && typeof updated === 'object' && 'id' in updated) {
-                queryClient.setQueryData(roomQueryKey(target.id), { ...updated, name: title });
-              } else if (queryClient.getQueryData(roomQueryKey(target.id)) !== undefined) {
-                queryClient.setQueryData(roomQueryKey(target.id), (old: unknown) =>
-                  old !== null && typeof old === 'object' ? { ...old, name: title } : old,
-                );
+              try {
+                const updated = await roomApi.updateRoom(target.id, { name: title });
+                if (renameSequences.current.get(target.key) !== sequence) return;
+                if (updated !== undefined && updated !== null && typeof updated === 'object' && 'id' in updated) {
+                  queryClient.setQueryData(roomQueryKey(target.id), { ...updated, name: title });
+                } else if (queryClient.getQueryData(roomQueryKey(target.id)) !== undefined) {
+                  queryClient.setQueryData(roomQueryKey(target.id), (old: unknown) =>
+                    old !== null && typeof old === 'object' ? { ...old, name: title } : old,
+                  );
+                }
+                setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
+                setRenaming((current) => current === target ? null : current);
+                refreshRooms();
+              } catch (cause: unknown) {
+                if (renameSequences.current.get(target.key) === sequence) {
+                  setRenamedTitles((prev) => { const next = new Map(prev); next.delete(target.key); return next; });
+                  refreshRooms();
+                }
+                throw cause;
               }
-              setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? target.title, to: title }));
-              setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
-              setRenaming((current) => current === target ? null : current);
-              refreshRooms();
               return;
             }
+            const patchSessionTitle = (nextTitle: string, serverUpdated?: unknown) => {
+              const serverSession = serverUpdated !== undefined && serverUpdated !== null && typeof serverUpdated === 'object' && 'id' in serverUpdated && typeof (serverUpdated as { id?: unknown }).id === 'string'
+                ? serverUpdated as Partial<Session>
+                : undefined;
+              const mergeUpdated = (existing: Session): Session => ({
+                ...existing,
+                ...serverSession,
+                title: nextTitle,
+              });
+              queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+                old === undefined || !Array.isArray(old.pages)
+                  ? old
+                  : {
+                      ...old,
+                      pages: old.pages.map((page) => ({
+                        ...page,
+                        items: page.items.map((entry) => (entry.id === target.id ? mergeUpdated(entry) : entry)),
+                      })),
+                    },
+              );
+              if (queryClient.getQueryData(['session', target.id]) !== undefined) {
+                queryClient.setQueryData<Session>(['session', target.id], (old) =>
+                  old === undefined ? old : mergeUpdated(old),
+                );
+              }
+            };
+            patchSessionTitle(title);
             // A bare title patch omits `metadata`, so the server leaves the
             // stored custom document (and with it any client-local pin) untouched.
-            const updated = await client.updateSessionProfile(target.id, { title });
-            if (renameSequences.current.get(target.key) !== sequence) return;
-            const mergeUpdated = (existing: Session): Session => ({
-              ...existing,
-              ...(updated !== null && typeof updated === 'object' && 'id' in updated ? updated : undefined),
-              title,
-            });
-            queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
-              old === undefined || !Array.isArray(old.pages)
-                ? old
-                : {
-                    ...old,
-                    pages: old.pages.map((page) => ({
-                      ...page,
-                      items: page.items.map((entry) => (entry.id === target.id ? mergeUpdated(entry) : entry)),
-                    })),
-                  },
-            );
-            if (queryClient.getQueryData(['session', target.id]) !== undefined) {
-              queryClient.setQueryData<Session>(['session', target.id], (old) =>
-                old === undefined ? old : mergeUpdated(old),
-              );
-            }
-            setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? target.session.title, to: title }));
-            setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
-            setRenaming((current) => current === target ? null : current);
-            void queryClient.invalidateQueries({
-              queryKey: ['sessions'],
-              predicate: (query) => !Array.isArray((query.state.data as SessionListData | undefined)?.pages),
-            });
-            if (target.session.agent_config?.persona !== undefined) {
-              invalidatePersonaSessionLists(queryClient);
+            try {
+              const updated = await client.updateSessionProfile(target.id, { title });
+              if (renameSequences.current.get(target.key) !== sequence) return;
+              patchSessionTitle(title, updated);
+              setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
+              setRenaming((current) => current === target ? null : current);
+              void queryClient.invalidateQueries({
+                queryKey: ['sessions'],
+                predicate: (query) => !Array.isArray((query.state.data as SessionListData | undefined)?.pages),
+              });
+              if (target.session.agent_config?.persona !== undefined) {
+                invalidatePersonaSessionLists(queryClient);
+              }
+            } catch (cause: unknown) {
+              if (renameSequences.current.get(target.key) === sequence) {
+                setRenamedTitles((prev) => { const next = new Map(prev); next.delete(target.key); return next; });
+                patchSessionTitle(previousTitle);
+              }
+              throw cause;
             }
           }}
           onClose={closeRenameEditor}
@@ -2446,8 +2552,17 @@ export function Sidebar({
           onClose={() => { setConfirmArchiveWorktree(null); }}
           onArchiveFailed={() => { refreshSessions(); }}
           onArchived={(result) => {
+            const archivedRootId = confirmArchiveWorktree.id;
             setConfirmArchiveWorktree(null);
+            void queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined);
             refreshSessions();
+            const archivedSet = new Set<string>([archivedRootId]);
+            for (const candidate of sessions) {
+              if (sessionRelationOf(candidate)?.parentId === archivedRootId && !topLevelThreads.has(candidate.id)) {
+                archivedSet.add(candidate.id);
+              }
+            }
+            navigateAwayFromArchived(archivedSet);
             if (result?.tone === 'error') setActionError(result.text);
             else if (result !== null) setActionNotice(result.text);
           }}
@@ -3478,6 +3593,7 @@ function ResultHeading({ children }: { children: React.ReactNode }) {
  */
 function SearchResults({
   search,
+  personas = [],
   filtersActive,
   activeKey,
   onHover,
@@ -3485,6 +3601,7 @@ function SearchResults({
   workspaceNames,
 }: {
   search: SessionSearchState;
+  personas?: readonly PersonaDirectoryEntry[];
   filtersActive: boolean;
   activeKey: string | undefined;
   onHover: (key: string) => void;
@@ -3503,8 +3620,9 @@ function SearchResults({
     className: `${RESULT_ROW} ${activeKey === key ? 'bg-paper' : 'hover:bg-paper/70'}`,
   });
   const { local, parsed } = search;
-  const nothingLocal = local.workspaces.length === 0 && local.sessions.length === 0;
+  const nothingLocal = personas.length === 0 && local.workspaces.length === 0 && local.sessions.length === 0;
   const contentSettledEmpty = search.contentActive && !search.contentPending && search.contentInitialError === null && search.hits.length === 0;
+  const personaQuery = parsed.text.trim();
   return (
     <div
       id="sidebar-search-results"
@@ -3523,6 +3641,25 @@ function SearchResults({
             <span className="rounded bg-paper px-1.5 text-ink-soft">{t('sidebar.prefixRole', { role: parsed.role })}</span>
           ) : null}
         </p>
+      ) : null}
+
+      {personas.length > 0 ? (
+        <div role="group" aria-label={t('sidebar.persona.resultsHeading')} data-search-personas>
+          <ResultHeading>{t('sidebar.persona.resultsHeading')}</ResultHeading>
+          {personas.map((persona) => (
+            <button key={persona.id} type="button" {...option(`p:${persona.id}`)}>
+              <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] text-ink">
+                  <Highlighted text={persona.name} ranges={highlightTerms(persona.name, personaQuery)} />
+                </span>
+                {persona.title !== undefined && persona.title.trim() !== '' ? (
+                  <span className="block truncate text-[11.5px] text-ink-faint">{persona.title}</span>
+                ) : null}
+              </span>
+            </button>
+          ))}
+        </div>
       ) : null}
 
       {local.workspaces.length > 0 ? (

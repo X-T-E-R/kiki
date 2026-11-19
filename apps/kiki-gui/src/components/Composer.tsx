@@ -25,7 +25,7 @@
  *     text (disabled `reference` skills explain themselves instead).
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { isPeerConnectionSource } from '../lib/peerAccess';
@@ -40,6 +40,7 @@ import {
   extractSlashSkillTokens,
   filterSlashItems,
   hasInlineSlashCandidate,
+  orderSlashItemsForDisplay,
   parseSlashDraft,
   parseSlashTrigger,
   removeSkillToken,
@@ -829,6 +830,18 @@ export function Composer({
   // same-tick paste/drop batches reserve against one another.
   const attachmentBaselineRef = useRef(attachments);
   attachmentBaselineRef.current = attachments;
+  const attachmentKeyMapRef = useRef(new WeakMap<ComposerAttachment, number>());
+  const nextAttachmentKeyRef = useRef(1);
+  const attachmentKeyOf = (attachment: ComposerAttachment): string => {
+    const map = attachmentKeyMapRef.current;
+    let id = map.get(attachment);
+    if (id === undefined) {
+      id = nextAttachmentKeyRef.current;
+      nextAttachmentKeyRef.current += 1;
+      map.set(attachment, id);
+    }
+    return `${attachment.kind}-${id}`;
+  };
   const updateAttachments = (
     next:
       | readonly ComposerAttachment[]
@@ -878,6 +891,7 @@ export function Composer({
     if ((next === 'goal') !== goalArmed) setGoalArmed(next === 'goal');
   };
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
+  const dismissedTriggerRef = useRef<{ kind: 'slash' | 'mention'; start: number; query: string } | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const turnInFlightRef = useRef(false);
@@ -953,6 +967,8 @@ export function Composer({
   const inputHistory = historyKey !== undefined ? readInputHistory(historyKey) : [];
   const historyIndexRef = useRef<number | null>(null);
   const historySnapshotRef = useRef('');
+  const recalledCaretUntouchedRef = useRef(false);
+  const recalledCaretPosRef = useRef<number | null>(null);
 
   // C-3 composer-local undo/redo: the controlled value defeats the native
   // textarea undo stack, so Ctrl+Z / Ctrl+Shift+Z walk these (text + caret).
@@ -1089,13 +1105,20 @@ export function Composer({
     ? (typeof selectedExecution.overrides?.model === 'string' ? selectedExecution.overrides.model : undefined)
     : normalizedModel || selectionDefaultModel || normalizedServerDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
-  const modelDomainState = externalExecution ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
+  const modelUnresolvedPending = validatingModel === undefined
+    && (modelsQuery.isPending || frozenMenuQuery.isPending || normalizedServerDefaultModel === undefined);
+  const modelDomainState = externalExecution
+    ? 'allowed'
+    : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition, {
+        unresolvedPending: modelUnresolvedPending,
+      });
   const recipeBindingSourceRevision = JSON.stringify([
     selectedProfileName,
     validatingModel,
     frozenMenuQuery.data?.prompt?.binding_revision,
   ]);
-  const invalidModelDomain = modelDomainState === 'blocked' || modelDomainState === 'unknown';
+  const invalidModelDomain = modelDomainState === 'blocked'
+    || (modelDomainState === 'unknown' && !(modelUnresolvedPending && !frozenMenuQuery.isError));
   const queryClient = useQueryClient();
   const executorModelsKey = ['executor-models', connectionId, scopeId, executorId] as const;
   const executorRefresh = useMutation({
@@ -1212,6 +1235,7 @@ export function Composer({
     setSlashCatalogPending(slashPending);
     setAttachmentError(null);
     setMenu(null);
+    dismissedTriggerRef.current = null;
     setSlashConfirm(null);
     setContextRebuildConfirm(false);
     // Session-scoped recall/undo state would otherwise leak A's entries into
@@ -1275,7 +1299,7 @@ export function Composer({
     const candidates = menu.inline
       ? slashItems.filter((item) => item.kind === 'skill')
       : slashItems;
-    return filterSlashItems(candidates, menu.query);
+    return orderSlashItemsForDisplay(filterSlashItems(candidates, menu.query));
   }, [menu, slashItems]);
 
   // Debounced file-picker query (fires only while the mention menu is open).
@@ -1284,13 +1308,25 @@ export function Composer({
     const timer = setTimeout(() => { setMentionQuery(menu.query); }, MENTION_DEBOUNCE_MS);
     return () => { clearTimeout(timer); };
   }, [menu]);
+  const mentionScope = mentionScopeKey ?? sessionId ?? 'none';
   const fsFeed = useFsSearchFeed({
-    scopeKey: mentionScopeKey ?? sessionId ?? 'none',
+    scopeKey: mentionScope,
     query: mentionQuery,
     search: fsSearch ?? (() => Promise.resolve([])),
     enabled: menu?.kind === 'mention' && menu.query === mentionQuery && fsSearch !== undefined,
   });
-  const mentionItems = menu?.kind === 'mention' && menu.query === mentionQuery ? fsFeed.items : [];
+  const lastMentionItemsRef = useRef<readonly FsSearchHit[]>([]);
+  const lastMentionScopeRef = useRef(mentionScope);
+  if (menu?.kind !== 'mention' || lastMentionScopeRef.current !== mentionScope) {
+    lastMentionScopeRef.current = mentionScope;
+    lastMentionItemsRef.current = [];
+  } else if (menu.query === mentionQuery && !fsFeed.pendingInitial) {
+    lastMentionItemsRef.current = fsFeed.items;
+  }
+  const mentionLoading = menu?.kind === 'mention' && fsSearch !== undefined && (menu.query !== mentionQuery || fsFeed.pendingInitial);
+  const mentionItems = menu?.kind === 'mention'
+    ? (menu.query === mentionQuery && !fsFeed.pendingInitial ? fsFeed.items : lastMentionItemsRef.current)
+    : [];
 
   // Agent candidates (the `@` menu's agent groups) come from the server's
   // `GET /agents/references`, keyed to the same scope the profile catalog uses.
@@ -1339,10 +1375,23 @@ export function Composer({
 
   const menuRowCount = menu?.kind === 'slash' ? filteredSlashItems.length : mentionRowCount;
   const menuQuery = menu?.query ?? null;
+  const isMenuRowDisabled = (index: number): boolean => {
+    if (menu?.kind === 'slash') return filteredSlashItems[index]?.disabled === true;
+    const row = mentionRows[index];
+    return row !== undefined && row.kind === 'agent' && !row.candidate.available;
+  };
   useEffect(() => {
-    setActiveIndex(0);
+    let firstEnabled = 0;
+    if (menu?.kind === 'slash') {
+      const idx = filteredSlashItems.findIndex((item) => item.disabled !== true);
+      if (idx >= 0) firstEnabled = idx;
+    } else if (menu?.kind === 'mention') {
+      const idx = mentionRows.findIndex((row) => row.kind === 'file' || row.candidate.available);
+      if (idx >= 0) firstEnabled = idx;
+    }
+    setActiveIndex(firstEnabled);
     setSlashHoverIndex(null);
-  }, [menuQuery, menu?.kind]);
+  }, [menuQuery, menu?.kind]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // C-2: the preview card follows the hovered row, else the keyboard-active
   // row; actions already show their whole one-liner inline, and a skill/plugin
@@ -1679,15 +1728,19 @@ export function Composer({
     if (node === null || node.selectionStart !== node.selectionEnd) return false;
     const atStart = node.selectionStart === 0;
     const atEnd = node.selectionStart === node.value.length;
-    if (delta === -1 ? !atStart : !atEnd) return false;
     if (historyIndexRef.current === null) {
-      if (delta !== -1) return false;
+      if (delta !== -1 || !atStart) return false;
       historySnapshotRef.current = text;
       historyIndexRef.current = inputHistory.length - 1;
     } else {
+      const canStepOlder = delta === -1 && (atStart || (atEnd && recalledCaretUntouchedRef.current));
+      const canStepNewer = delta === 1 && (atEnd || (atStart && recalledCaretUntouchedRef.current));
+      if (!canStepOlder && !canStepNewer) return false;
       const next = historyIndexRef.current + delta;
       if (next >= inputHistory.length) {
         historyIndexRef.current = null;
+        recalledCaretUntouchedRef.current = false;
+        recalledCaretPosRef.current = null;
         applyTextChange(historySnapshotRef.current, historySnapshotRef.current.length);
         return true;
       }
@@ -1695,6 +1748,8 @@ export function Composer({
       historyIndexRef.current = next;
     }
     const entry = inputHistory[historyIndexRef.current] ?? '';
+    recalledCaretUntouchedRef.current = true;
+    recalledCaretPosRef.current = entry.length;
     applyTextChange(entry, entry.length);
     return true;
   };
@@ -1772,6 +1827,7 @@ export function Composer({
   const acceptSlashItem = (item: SlashItem) => {
     if (item.disabled === true || composingRef.current) return;
     const trigger = menu?.kind === 'slash' ? menu : null;
+    dismissedTriggerRef.current = null;
     setMenu(null);
     if (item.kind === 'skill') {
       if (trigger === null) return;
@@ -1810,6 +1866,7 @@ export function Composer({
   const acceptMentionItem = (hit: FsSearchHit) => {
     if (menu?.kind !== 'mention') return;
     const trigger = menu;
+    dismissedTriggerRef.current = null;
     setMenu(null);
     const node = textareaRef.current;
     const cursor = node?.selectionStart ?? text.length;
@@ -1840,6 +1897,7 @@ export function Composer({
   const acceptMentionAgent = (candidate: AgentReferenceCandidate) => {
     if (menu?.kind !== 'mention' || !candidate.available) return;
     const trigger = menu;
+    dismissedTriggerRef.current = null;
     setMenu(null);
     const node = textareaRef.current;
     const cursor = node?.selectionStart ?? text.length;
@@ -1929,26 +1987,25 @@ export function Composer({
     // reads replace them by identity through updater writes, so back-to-back
     // pastes cannot drop each other's images the way stale render closures did.
     updateAttachments((current) => [...current, ...stubs]);
-    void Promise.all(
+    void Promise.allSettled(
       accepted.map(async (file) => fileToImageAttachment(await file.read())),
-    )
-      .then((images) => {
-        if (!ownsReservedAttachmentResult()) return;
-        updateAttachments((current) =>
-          current.flatMap((item) => {
-            const stubIndex = stubs.indexOf(item);
-            if (stubIndex === -1) return [item];
-            const image = images[stubIndex];
-            return image !== undefined ? [image] : [];
-          }),
-        );
-      })
-      .catch((error: unknown) => {
-        if (!ownsReservedAttachmentResult()) return;
-        // Reads failed wholesale: drop this batch's stubs, keep the rest.
-        updateAttachments((current) => current.filter((item) => !stubs.includes(item)));
-        if (ownsAttachmentResult()) setAttachmentError(errorText(locale, error));
-      });
+    ).then((results) => {
+      if (!ownsReservedAttachmentResult()) return;
+      let firstError: unknown;
+      updateAttachments((current) =>
+        current.flatMap((item) => {
+          const stubIndex = stubs.indexOf(item);
+          if (stubIndex === -1) return [item];
+          const result = results[stubIndex];
+          if (result?.status === 'fulfilled') return [result.value];
+          if (result?.status === 'rejected' && firstError === undefined) firstError = result.reason;
+          return [];
+        }),
+      );
+      if (firstError !== undefined && ownsAttachmentResult()) {
+        setAttachmentError(errorText(locale, firstError));
+      }
+    });
   };
 
   const addUploadFiles = (files: readonly SelectedAttachmentFile[]) => {
@@ -2023,10 +2080,6 @@ export function Composer({
       const browser = native === null || native === undefined ? await read() : null;
       const latest = pasteDraftRef.current;
       if (!ownsAttachmentResult() || textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
-      if (latest.text !== draft.text) {
-        setAttachmentError(t('composer.pasteDraftChanged'));
-        return;
-      }
       const paths = [...(native?.paths ?? [])];
       const media = [...(native?.media ?? [])];
       let missingPaths = false;
@@ -2040,8 +2093,15 @@ export function Composer({
           else missingPaths = true;
         }
       }
-      let next = { text: draft.text, cursor: selection.start };
+      if (media.length > 0) addFiles(media);
       const plain = browser?.text ?? '';
+      if (latest.text !== draft.text) {
+        if (plain !== '' || paths.length > 0 || media.length === 0) {
+          setAttachmentError(t('composer.pasteDraftChanged'));
+        }
+        return;
+      }
+      let next = { text: draft.text, cursor: selection.start };
       if (plain !== '') {
         next = { text: draft.text.slice(0, selection.start) + plain + draft.text.slice(selection.end), cursor: selection.start + plain.length };
       }
@@ -2053,7 +2113,6 @@ export function Composer({
         historyIndexRef.current = null;
         applyTextChange(next.text, next.cursor);
       }
-      if (media.length > 0) addFiles(media);
       if (missingPaths) setAttachmentError(t('composer.pastePathUnavailable'));
     } catch (error) {
       if (ownsAttachmentResult()) setAttachmentError(errorText(locale, error));
@@ -2305,7 +2364,16 @@ export function Composer({
       });
       return;
     }
-    // An open menu owns Enter: accept the highlighted row instead of sending.
+    // An open menu owns Enter: accept the highlighted row instead of sending,
+    // and while a mention query is actively debouncing/loading, never ship the
+    // unfinished raw `@query` text.
+    if (menu !== null && menu.kind === 'mention' && mentionLoading) {
+      const row = mentionRows[Math.min(activeIndex, mentionRows.length - 1)];
+      if (row !== undefined && row.kind === 'agent' && row.candidate.available) {
+        acceptMentionRow(row);
+      }
+      return;
+    }
     if (menu !== null && menuRowCount > 0) {
       if (menu.kind === 'slash') {
         const item = filteredSlashItems[Math.min(activeIndex, filteredSlashItems.length - 1)];
@@ -2594,18 +2662,40 @@ export function Composer({
   /** Recompute the trigger-driven menu after any text/caret change. */
   const refreshMenu = (nextText: string, cursor: number) => {
     if (composingRef.current) return;
+    const dismissed = dismissedTriggerRef.current;
     const slashTrigger = parseSlashTrigger(nextText, cursor);
     if (slashTrigger !== null) {
+      if (
+        dismissed !== null &&
+        dismissed.kind === 'slash' &&
+        dismissed.start === slashTrigger.start &&
+        dismissed.query === slashTrigger.query
+      ) {
+        setMenu(null);
+        return;
+      }
+      dismissedTriggerRef.current = null;
       setMenu({ kind: 'slash', ...slashTrigger });
       return;
     }
     if (fsSearch !== undefined) {
       const trigger = parseMentionTrigger(nextText, cursor);
       if (trigger !== null) {
+        if (
+          dismissed !== null &&
+          dismissed.kind === 'mention' &&
+          dismissed.start === trigger.start &&
+          dismissed.query === trigger.query
+        ) {
+          setMenu(null);
+          return;
+        }
+        dismissedTriggerRef.current = null;
         setMenu({ kind: 'mention', start: trigger.start, query: trigger.query });
         return;
       }
     }
+    dismissedTriggerRef.current = null;
     setMenu(null);
   };
 
@@ -2646,7 +2736,13 @@ export function Composer({
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
         const delta = event.key === 'ArrowDown' ? 1 : -1;
-        setActiveIndex((index) => (index + delta + menuRowCount) % menuRowCount);
+        setActiveIndex((index) => {
+          for (let step = 1; step <= menuRowCount; step += 1) {
+            const candidate = ((index + delta * step) % menuRowCount + menuRowCount) % menuRowCount;
+            if (!isMenuRowDisabled(candidate)) return candidate;
+          }
+          return Math.min(Math.max(index, 0), menuRowCount - 1);
+        });
         return;
       }
       if (event.key === 'Tab') {
@@ -2663,6 +2759,7 @@ export function Composer({
     }
     if (event.key === 'Escape' && menu !== null) {
       event.preventDefault();
+      dismissedTriggerRef.current = { kind: menu.kind, start: menu.start, query: menu.query };
       setMenu(null);
       return;
     }
@@ -2945,6 +3042,7 @@ export function Composer({
             executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
             onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
             domainNote={modelDomainState === 'warning' ? t('selection.modelMenuWarning', { source: modelRuleSource }) : undefined}
+            openSignal={modelMenuSignal}
             onPicked={focusEditorAfterPick}
           />
         </ComposerPanelOrigin>
@@ -3152,7 +3250,23 @@ export function Composer({
         ) : null}
         {selectionBlocked || selectionCatalogError !== null ? <div data-selection-diagnostic role={selectionBlocked ? 'alert' : 'status'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
           {selectionCatalogError !== null ? <p>{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
-          {invalidProfile ? <p>{t('selection.profileInvalid', { value: agentProfile! })}</p> : null}
+          {invalidProfile ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <p>{t('selection.profileInvalid', { value: agentProfile! })}</p>
+              {onChangeExecution !== undefined && execution !== undefined ? (
+                <button
+                  type="button"
+                  data-reset-invalid-profile
+                  className="underline"
+                  onClick={() => {
+                    onChangeExecution({ ...execution, profile: undefined, profile_file: undefined });
+                  }}
+                >
+                  {t('composer.agentDefaultName')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           {invalidModel ? (
             <p>
               {/* The sentence is the recovery: it opens the model chip's own
@@ -3162,9 +3276,35 @@ export function Composer({
               </button>
             </p>
           ) : null}
-          {invalidModelDomain ? <p data-model-menu-blocked>{modelDomainState === 'unknown'
-            ? t(frozenMenuQuery.isPending ? 'selection.modelMenuPending' : 'selection.modelMenuError')
-            : t('selection.modelMenuBlocked', { source: modelRuleSource })}</p> : null}
+          {invalidModelDomain ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <p data-model-menu-blocked>{modelDomainState === 'unknown'
+                ? t(frozenMenuQuery.isPending ? 'selection.modelMenuPending' : 'selection.modelMenuError')
+                : t('selection.modelMenuBlocked', { source: modelRuleSource })}</p>
+              {modelDomainState === 'blocked' ? (
+                <>
+                  {normalizedModel !== undefined && projectedProfileModelState(modelProjection, models, selectionDefaultModel ?? normalizedServerDefaultModel, modelSelectionPosition) !== 'blocked' ? (
+                    <button
+                      type="button"
+                      data-reset-invalid-model-domain
+                      className="underline"
+                      onClick={() => { void onChangeModel(undefined); }}
+                    >
+                      {t('composer.execution.defaultModelOption')}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    data-open-model-menu-recovery
+                    className="underline"
+                    onClick={() => { setModelMenuSignal((n) => n + 1); }}
+                  >
+                    {locale === 'zh' ? '选择可用模型' : 'Choose allowed model'}
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
           {modelDomainState === 'unknown' && frozenMenuQuery.isError ? <button type="button" className="min-h-9 underline" onClick={() => { void frozenMenuQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort ? <p>{t('selection.effortInvalid', { value: effort! })}</p> : null}
           {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); if (validateFile) void filePreviewQuery.refetch(); }}>{t('common.retry')}</button> : null}
@@ -3362,13 +3502,19 @@ export function Composer({
               ) : null}
               {attachments.length > 0 ? (
                 <div data-attachment-chips className="contents">
-                  {attachments.map((attachment, index) => {
+                  {attachments.map((attachment) => {
                     if (attachment.kind === 'ssh') return null;
-                    const remove = () => { updateAttachments(attachments.filter((_, i) => i !== index)); };
+                    const chipKey = attachmentKeyOf(attachment);
+                    const remove = () => {
+                      if (attachment.kind === 'image' && attachment.previewUrl.startsWith('blob:')) {
+                        URL.revokeObjectURL(attachment.previewUrl);
+                      }
+                      updateAttachments((current) => current.filter((item) => item !== attachment));
+                    };
                     if (attachment.kind === 'file') {
                       return (
                         <TextTile
-                          key={`file-${attachment.path}`}
+                          key={chipKey}
                           title={attachment.path}
                           mono
                           onRemove={remove}
@@ -3385,13 +3531,13 @@ export function Composer({
                         ? `data:${part.source.media_type};base64,${part.source.data}`
                         : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined);
                       if (src !== undefined) return (
-                        <ImageTile key={`retained-${index}`} src={src} name={attachment.name}
+                        <ImageTile key={chipKey} src={src} name={attachment.name}
                           onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(src, attachment.name); }}
                           onRemove={remove} removeLabel={t('composer.removeAttachment', { name: attachment.name })} />
                       );
                       return (
                         <TextTile
-                          key={`retained-${index}`}
+                          key={chipKey}
                           title={attachment.name}
                           onRemove={remove}
                           removeLabel={t('composer.removeAttachment', { name: attachment.name })}
@@ -3406,7 +3552,7 @@ export function Composer({
                       const uploading = attachment.fileId === undefined;
                       return (
                         <TextTile
-                          key={`upload-${attachment.name}-${attachment.size}`}
+                          key={chipKey}
                           title={`${attachment.name} · ${attachment.mediaType} · ${formatBytes(attachment.size)}`}
                           ariaLabel={uploading ? t('composer.attachmentUploading') : undefined}
                           dataAttrs={{ 'data-attachment-uploading': uploading ? '' : undefined }}
@@ -3431,7 +3577,7 @@ export function Composer({
                       // preview, and sending stays blocked until data lands.
                       return (
                         <TextTile
-                          key={`image-${attachment.name}-${attachment.size}`}
+                          key={chipKey}
                           title={t('composer.attachmentReading')}
                           ariaLabel={t('composer.attachmentReading')}
                           dataAttrs={{ 'data-attachment-reading': '' }}
@@ -3447,7 +3593,7 @@ export function Composer({
                     }
                     return (
                       <ImageTile
-                        key={`image-${attachment.name}-${attachment.size}`}
+                        key={chipKey}
                         src={attachment.previewUrl}
                         name={name}
                         detail={formatBytes(attachment.size)}
@@ -3513,7 +3659,7 @@ export function Composer({
                 data-composer-menu
                 role="listbox"
                 aria-label={menu.kind === 'slash' ? t('composer.slashAria') : t('composer.filesAria')}
-                className={`anim-enter absolute right-0 bottom-full left-0 z-30 mb-1.5 max-h-72 overflow-y-auto p-1 ${POPOVER_SURFACE_CLASS}`}
+                className={`anim-enter absolute right-0 bottom-full left-0 z-30 mb-1.5 max-h-[min(18rem,calc(100dvh-160px))] overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
                 // Keep textarea focus while rows are clicked.
                 onMouseDown={(event) => { event.preventDefault(); }}
                 onMouseLeave={() => { setSlashHoverIndex(null); }}
@@ -3536,7 +3682,7 @@ export function Composer({
                     delegationReason={agentCandidateList.unavailableReason}
                     activeIndex={activeIndex}
                     feed={fsFeed}
-                    loading={fsFeed.pendingInitial || menu.query !== mentionQuery}
+                    loading={mentionLoading}
                     query={menu.query}
                     onAccept={acceptMentionItem}
                     onAcceptAgent={acceptMentionAgent}
@@ -3555,6 +3701,17 @@ export function Composer({
                 disabled={disabled}
               />
             ) : null}
+            {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- clicking the editor after Escape re-opens a dismissed trigger menu */}
+            <div
+              className="contents"
+              onClick={() => {
+                if (dismissedTriggerRef.current !== null) {
+                  dismissedTriggerRef.current = null;
+                  const node = textareaRef.current;
+                  refreshMenu(node?.value ?? text, node?.selectionStart ?? lastCursorRef.current);
+                }
+              }}
+            >
             <ComposerInput
               inputRef={textareaRef}
               value={text}
@@ -3586,6 +3743,8 @@ export function Composer({
                   pushUndoSnapshot({ text, cursor: lastCursorRef.current });
                 }
                 historyIndexRef.current = null;
+                recalledCaretUntouchedRef.current = false;
+                recalledCaretPosRef.current = null;
                 onChange(nextText);
                 lastCursorRef.current = cursor;
                 setSlashConfirm(null);
@@ -3594,6 +3753,9 @@ export function Composer({
               onKeyDown={onKeyDown}
               onSelection={(cursor) => {
                 lastCursorRef.current = cursor;
+                if (recalledCaretUntouchedRef.current && recalledCaretPosRef.current !== null && cursor !== recalledCaretPosRef.current) {
+                  recalledCaretUntouchedRef.current = false;
+                }
                 refreshMenu(textareaRef.current?.value ?? text, cursor);
               }}
               onFocus={() => { setInputFocused(true); }}
@@ -3620,6 +3782,7 @@ export function Composer({
                     : t('composer.placeholder')
               }
             />
+            </div>
           </div>
 
           {/* Bottom row: attach on the left edge, one quiet status line in the
@@ -4030,6 +4193,11 @@ function SlashMenuBody({
 }) {
   const { t } = useI18n();
   const coarsePointer = useCoarsePointer();
+  const rootRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const active = rootRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+    active?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeIndex, items.length]);
   const skills = items.filter((item) => item.kind === 'skill');
   const plugins = items.filter((item) => item.kind === 'plugin');
   const actions = items.filter((item) => item.kind === 'action');
@@ -4083,7 +4251,7 @@ function SlashMenuBody({
     );
   };
   return (
-    <>
+    <div ref={rootRef}>
       {skills.length > 0 ? (
         <>
           <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
@@ -4119,7 +4287,7 @@ function SlashMenuBody({
           {t('composer.slash.skillsFailed')}
         </p>
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -4198,22 +4366,38 @@ function MentionMenuBody({
   onAcceptAgent: (candidate: AgentReferenceCandidate) => void;
 }) {
   const { t } = useI18n();
+  const listRef = useRef<HTMLDivElement>(null);
   const pending = feed.pendingMore || feed.pendingRestart;
   const agentCount = agentGroups.reduce((total, group) => total + group.candidates.length, 0);
   const bothEmpty = items.length === 0 && agentCount === 0;
+  useLayoutEffect(() => {
+    const active = listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+    active?.scrollIntoView?.({ block: 'nearest' });
+    if (
+      !loading &&
+      !pending &&
+      !feed.failed &&
+      !feed.exhausted &&
+      items.length > 0 &&
+      activeIndex >= items.length - 2 &&
+      activeIndex < items.length
+    ) {
+      feed.loadMore();
+    }
+  }, [activeIndex, items.length, loading, pending, feed]);
   return (
     <>
       {feed.failed ? <p className="px-3 py-2 text-[12px] text-danger">{t('composer.filesFailed')}</p> : null}
       {/* The agent candidate load failing is its own line, independent of the
           file list beside it — files may still list while agents are gone. */}
       {agentsFailed ? <p className="px-3 py-2 text-[12px] text-ink-faint" data-agent-mention-failed>{t('composer.agentsFailed')}</p> : null}
-      {loading || (bothEmpty && feed.exhausted && !feed.failed && !agentsFailed) ? (
+      {(loading && bothEmpty) || (bothEmpty && feed.exhausted && !feed.failed && !agentsFailed) ? (
         <p className="px-3 py-2 text-[12px] text-ink-faint" data-mention-empty>
           {loading ? t('composer.filesSearching') : query === '' ? t('composer.mentionEmpty') : t('composer.mentionNoMatch', { query })}
         </p>
       ) : null}
       {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.filesHeader')}</p> : null}
-      <div data-mention-file-list className="max-h-64 overflow-y-auto" onScroll={(event) => {
+      <div ref={listRef} data-mention-file-list className="max-h-64 overflow-y-auto" onScroll={(event) => {
         const node = event.currentTarget;
         if (!loading && !pending && !feed.failed && !feed.exhausted && node.scrollHeight - node.scrollTop - node.clientHeight <= 32) feed.loadMore();
       }}>
@@ -4553,7 +4737,7 @@ function ModelChip({
       // filter and effort row keep their height and the list scrolls, so a
       // tall catalog on the centred /new hero never slides its first line
       // under the page header.
-      panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-96 flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
+      panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,420px),calc(100dvh-120px))] w-96 flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
       buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${
         modelSource === 'override' ? STATUS_SEGMENT_SET : ''
       } disabled:cursor-not-allowed disabled:opacity-60`}

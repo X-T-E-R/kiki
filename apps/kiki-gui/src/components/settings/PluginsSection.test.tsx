@@ -77,6 +77,7 @@ const previewPlugin = vi.fn(async () => PLAN);
  *  protocol's own `PluginInstallPlan.appService` arrives with the preview. */
 const APP_SERVICE_PLAN = { ...PLAN, appService: true };
 const installPreviewedPlugin = vi.fn(async (): Promise<Record<string, unknown>> => ({ ...PLUGIN, id: 'catalog-notes', displayName: 'Catalog Notes', enabled: false }));
+const reloadPlugin = vi.fn(async () => ({ ok: true }));
 const rollbackPlugin = vi.fn(async () => ({ ok: true }));
 const installPluginPrerequisite = vi.fn(async () => ({ ok: true }));
 const recommendPlugins = vi.fn(async () => ({ entries: [] }));
@@ -683,21 +684,26 @@ describe('PluginsSection', () => {
     expect(container.querySelector('#plugins-shelf-official [data-catalog-row="kiki-extract"]')).not.toBeNull();
   });
 
-  it('renders the Extensions installed summary line with a link to Capabilities instead of listing installed plugins', async () => {
+  it('renders direct plugin management on the Plugins settings leaf with search, install trigger, reload, and enable switches', async () => {
+    Object.assign(mocks.client, { reloadPlugin });
+    reloadPlugin.mockClear();
     const container = await renderLeaf();
     await flush();
     const card = container.querySelector('#st-card-plugins')!;
     expect(card).not.toBeNull();
-    expect(card.textContent).toContain('1 plugins and 1 skills installed');
-    const link = card.querySelector<HTMLAnchorElement>('[data-extensions-open-capabilities]')!;
-    expect(link.getAttribute('href')).toBe('/capabilities');
-    expect(link.textContent).toBe('View on the Capabilities page');
-    expect(container.querySelector('[data-plugin-row]')).toBeNull();
-    expect(container.querySelector('[data-plugins-installed-list]')).toBeNull();
-    expect(container.querySelector('[data-plugin-settings]')).toBeNull();
+    expect(card.querySelector('[data-plugins-view="installed"]')).not.toBeNull();
+    expect(card.querySelector('[data-plugins-install-trigger]')).not.toBeNull();
+    expect(card.querySelector('[data-list-search]')).not.toBeNull();
+    const row = card.querySelector('[data-plugin-row="notes"]')!;
+    expect(row).not.toBeNull();
+    expect(row.getAttribute('data-plugin-health')).toBe('ok');
+    await click(row.querySelector('[data-plugin-reload="notes"]')!);
+    await flush();
+    expect(reloadPlugin).toHaveBeenCalledExactlyOnceWith('notes');
+    delete (mocks.client as { reloadPlugin?: unknown }).reloadPlugin;
   });
 
-  it('reports parse failures and server errors on the Extensions summary line with Retry', async () => {
+  it('reports parse failures and server errors on the Plugins settings leaf with Retry', async () => {
     const zodError = Object.assign(new Error('invalid payload'), {
       name: 'ZodError',
       issues: [{ path: ['plugins', 0, 'state'], message: 'Invalid enum value' }],
@@ -717,7 +723,7 @@ describe('PluginsSection', () => {
     await click(failed.querySelector('[data-settings-retry]')!);
     await flush();
     expect(failed.querySelector('[data-plugins-installed-error]')).toBeNull();
-    expect(failed.querySelector('#st-card-plugins')?.textContent).toContain('1 plugins and 1 skills installed');
+    expect(failed.querySelector('#st-card-plugins [data-plugin-row="notes"]')).not.toBeNull();
   });
 
   it('opens a plugin\'s own settings page at ?plugin=<id> and returns to the summary leaf on Back', async () => {

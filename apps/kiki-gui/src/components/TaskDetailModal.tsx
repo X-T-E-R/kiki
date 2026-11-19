@@ -161,13 +161,24 @@ export function TaskDetailModal({
   onCancelTask: (taskId: string, ownerAgentId?: string) => void;
 }) {
   const { client } = useConnection();
-  const { t, time } = useI18n();
+  const { t, time, locale } = useI18n();
   const [live, setLive] = useState<Task>(task);
   const [follow, setFollow] = useState(true);
+  const [outputCopied, setOutputCopied] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [pollError, setPollError] = useState<string | null>(null);
+  const outputCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const outputRef = useRef<HTMLPreElement>(null);
   const now = useNow();
 
+  useEffect(() => () => {
+    if (outputCopyTimerRef.current !== null) clearTimeout(outputCopyTimerRef.current);
+  }, []);
+
   const terminal = live.status !== 'running';
+  useEffect(() => {
+    if (terminal) setStopping(false);
+  }, [terminal]);
   useEffect(() => {
     let stale = false;
     const refresh = async () => {
@@ -175,16 +186,23 @@ export function TaskDetailModal({
         with_output: true,
         agent_id: ownerAgentId,
       });
-      if (!stale) setLive(fresh);
+      if (!stale) {
+        setPollError(null);
+        setLive(fresh);
+      }
     };
     // Immediate fetch, then one final refetch when the task goes terminal (the
     // status flip re-runs this effect); continuous polling only while running.
-    refresh().catch(() => undefined);
+    refresh().catch((error: unknown) => {
+      if (!stale) setPollError(error instanceof Error ? error.message : String(error));
+    });
     if (terminal) return () => { stale = true; };
     const stop = startVisiblePoll({
       intervalMs: POLL_INTERVAL_MS,
       task: refresh,
-      onError: () => undefined,
+      onError: (error: unknown) => {
+        if (!stale) setPollError(error instanceof Error ? error.message : String(error));
+      },
     });
     return () => {
       stale = true;
@@ -279,15 +297,40 @@ export function TaskDetailModal({
             <span className="font-mono text-[10.5px] tracking-wide text-shell-ink-soft select-none">
               {t('tasks.field.output')}
             </span>
-            <button
-              type="button"
-              aria-pressed={!follow}
-              data-task-detail-follow={follow ? 'on' : 'off'}
-              onClick={() => { setFollow((value) => !value); }}
-              className="ml-auto flex min-h-7 items-center rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[10.5px] text-shell-ink transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-            >
-              {follow ? t('tasks.detail.pauseScroll') : t('tasks.detail.resumeScroll')}
-            </button>
+            {pollError !== null ? (
+              <span data-task-detail-poll-error className="min-w-0 truncate text-[10.5px] text-danger" title={pollError}>
+                {pollError}
+              </span>
+            ) : null}
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              {output !== '' ? (
+                <button
+                  type="button"
+                  data-task-detail-copy-output
+                  aria-label={outputCopied ? t('st.engines.copied') : (locale === 'zh' ? '复制输出' : 'Copy output')}
+                  onClick={() => {
+                    void copyTextToClipboard(output).then(() => {
+                      setOutputCopied(true);
+                      if (outputCopyTimerRef.current !== null) clearTimeout(outputCopyTimerRef.current);
+                      outputCopyTimerRef.current = setTimeout(() => { setOutputCopied(false); }, 1500);
+                    }).catch(() => undefined);
+                  }}
+                  className="flex min-h-7 items-center gap-1 rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[10.5px] text-shell-ink transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  <Icon name={outputCopied ? 'check' : 'copy'} size={12} />
+                  <span>{outputCopied ? t('st.engines.copied') : (locale === 'zh' ? '复制输出' : 'Copy output')}</span>
+                </button>
+              ) : null}
+              <button
+                type="button"
+                aria-pressed={!follow}
+                data-task-detail-follow={follow ? 'on' : 'off'}
+                onClick={() => { setFollow((value) => !value); }}
+                className="flex min-h-7 items-center rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[10.5px] text-shell-ink transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {follow ? t('tasks.detail.pauseScroll') : t('tasks.detail.resumeScroll')}
+              </button>
+            </div>
           </div>
           {/* min-h-0 lets this flex child shrink below its content; the inner
               floor keeps a short run readable when the command eats the panel.
@@ -311,10 +354,19 @@ export function TaskDetailModal({
         {live.status === 'running' ? (
           <button
             type="button"
-            onClick={() => { onCancelTask(live.id, ownerAgentId); }}
-            className="flex min-h-8 items-center rounded-md border border-danger/40 bg-panel px-3 py-1.5 text-[12px] font-medium text-danger transition-colors hover:bg-danger/5 focus-visible:outline-2 focus-visible:outline-selected-ink"
+            disabled={stopping}
+            data-task-detail-stop
+            onClick={() => {
+              if (stopping) return;
+              setStopping(true);
+              Promise.resolve(onCancelTask(live.id, ownerAgentId)).catch((error: unknown) => {
+                setStopping(false);
+                setPollError(error instanceof Error ? error.message : String(error));
+              });
+            }}
+            className="flex min-h-8 items-center rounded-md border border-danger/40 bg-panel px-3 py-1.5 text-[12px] font-medium text-danger transition-colors hover:bg-danger/5 focus-visible:outline-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {t('rail.stop')}
+            {stopping ? t('tasks.stopping') : t('rail.stop')}
           </button>
         ) : null}
         <button

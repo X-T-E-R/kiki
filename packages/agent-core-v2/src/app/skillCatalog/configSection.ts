@@ -9,6 +9,8 @@ import {
 } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 
+import { normalizeSkillName } from './types';
+
 export const EXTRA_SKILL_DIRS_SECTION = 'extraSkillDirs';
 export const ExtraSkillDirsConfigSchema = z.array(z.string()).optional();
 export type ExtraSkillDirsConfig = z.infer<typeof ExtraSkillDirsConfigSchema>;
@@ -17,6 +19,24 @@ registerConfigSection(EXTRA_SKILL_DIRS_SECTION, ExtraSkillDirsConfigSchema, {
   defaultValue: [],
   layerMerge: 'union',
 });
+
+export const DISABLED_SKILLS_SECTION = 'disabledSkills';
+export const DisabledSkillsConfigSchema = z.array(z.string()).optional();
+export type DisabledSkillsConfig = z.infer<typeof DisabledSkillsConfigSchema>;
+
+registerConfigSection(DISABLED_SKILLS_SECTION, DisabledSkillsConfigSchema, {
+  defaultValue: [],
+});
+
+export function disabledSkillNames(config: IConfigService | undefined): ReadonlySet<string> {
+  const list = config?.get<DisabledSkillsConfig>(DISABLED_SKILLS_SECTION) ?? [];
+  const out = new Set<string>();
+  for (const entry of list) {
+    const trimmed = entry.trim();
+    if (trimmed !== '') out.add(normalizeSkillName(trimmed));
+  }
+  return out;
+}
 
 export const MERGE_ALL_AVAILABLE_SKILLS_SECTION = 'mergeAllAvailableSkills';
 export const MergeAllAvailableSkillsConfigSchema = z.boolean().optional();

@@ -3082,6 +3082,10 @@ export class KikiClient {
     return this.run(this.rest.plugins.rollback(pluginId));
   }
 
+  reloadPlugin(pluginId: string): Promise<{ readonly ok: true }> {
+    return this.run(this.rest.plugins.reload(pluginId));
+  }
+
   installPluginPrerequisite(pluginId: string, prerequisiteId: string): Promise<{ readonly ok: true }> {
     return this.run(this.rest.plugins.installPrerequisite(pluginId, { id: prerequisiteId, consent: true }));
   }

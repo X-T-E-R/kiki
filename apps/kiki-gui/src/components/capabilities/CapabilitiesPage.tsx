@@ -17,7 +17,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
-import { importHistoryPath, pluginSettingsPath, readLastSessionId } from '@kiki/session-core/settings';
+import { importHistoryPath, readLastSessionId } from '@kiki/session-core/settings';
 
 import type { PluginUsageTarget } from '@kiki/protocol';
 
@@ -38,6 +38,7 @@ import { SkillsView } from './SkillsView';
 import { ToolsView } from './ToolsView';
 import { usePluginPanels } from './usePlugins';
 import { panelScopeFrom, panelSheetNotice } from './pluginUsage';
+import { PluginSettingsPage } from '../settings/plugins/PluginSettingsPage';
 
 export type CapabilityTab = 'plugins' | 'skills' | 'mcp' | 'tools';
 const TABS: readonly CapabilityTab[] = ['plugins', 'skills', 'mcp', 'tools'];
@@ -143,6 +144,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const [addMenu, setAddMenu] = useState(false);
   const [adding, setAdding] = useState(false);
   const [install, setInstall] = useState<InstallRequest | null>(null);
+  const [settingsPluginId, setSettingsPluginId] = useState<string | null>(null);
   const panel = params.get('panel');
   const [panelPluginId, panelId] = panel?.split(':') ?? [];
   const rawSession = params.get('session');
@@ -243,7 +245,13 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
             setAddMenu(false);
             if (kind === 'plugin') setAdding(true);
             if (kind === 'mcp') { setTab('mcp'); requestAnimationFrame(() => { document.querySelector<HTMLButtonElement>('[data-mcp-add]')?.click(); }); }
-            if (kind === 'skill') setTab('skills');
+            if (kind === 'skill') {
+              setTab('skills');
+              requestAnimationFrame(() => {
+                const btn = document.querySelector<HTMLButtonElement>('[data-skills-sources-toggle]');
+                if (btn?.getAttribute('aria-expanded') === 'false') btn.click();
+              });
+            }
           }}
         />
       ) : null}
@@ -263,7 +271,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
           {addControl}
           <PageMoreMenu menuId="capabilities-more" entries={[{ key: 'refresh', label: t('cap.page.refresh'), run: refresh }]} />
         </PageHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 lg:px-6">
+        <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 lg:px-6">
           <div className={`mx-auto w-full ${PAGE_WIDTH.split} pb-16 pt-4 min-[720px]:pt-8`}>
             {/* One row of chrome: which kind of capability, and (for Skills and
                 MCP) which workspace. Every view below starts at its own
@@ -327,7 +335,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 onOpenPanel={openPanel}
                 onOpenPlugin={(id) => { setRoute({ view: 'detail', id }); }}
                 sessionId={sessionId}
-                onOpenSettings={(id) => { void navigate(pluginSettingsPath(id)); }}
+                onOpenSettings={(id) => { setSettingsPluginId(id); }}
                 onOpenImportHistory={({ source, sourcePlugin }) => {
                   void navigate(`${importHistoryPath()}?source=${encodeURIComponent(source)}&sourcePlugin=${encodeURIComponent(sourcePlugin)}`);
                 }}
@@ -342,6 +350,21 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
       {install !== null ? <InstallFlow request={install} onClose={() => { setInstall(null); }} /> : null}
       {panelPluginId !== undefined && panelId !== undefined ? (
         <PanelSheet pluginId={panelPluginId} panelId={panelId} sessionId={panelScope.sessionId} target={panelScope.target} onClose={closePanel} />
+      ) : null}
+      {settingsPluginId !== null ? (
+        <SidePanel
+          onClose={() => { setSettingsPluginId(null); }}
+          title={t('cap.detail.openSettings')}
+          overlayId="plugin-settings-sheet"
+          width="lg"
+          data={{ 'data-plugin-settings-sheet': settingsPluginId }}
+        >
+          <PluginSettingsPage
+            pluginId={settingsPluginId}
+            hideBack
+            onBack={() => { setSettingsPluginId(null); }}
+          />
+        </SidePanel>
       ) : null}
     </MediaPreviewProvider>
   );
@@ -394,6 +417,7 @@ function AddMenu({ onClose, onPick }: { readonly onClose: () => void; readonly o
   }, [onClose]);
   const items: readonly { kind: 'plugin' | 'mcp' | 'skill'; label: string; hint: string }[] = [
     { kind: 'plugin', label: t('cap.add.plugin'), hint: t('cap.add.pluginHint') },
+    { kind: 'skill', label: t('st.caps.addDir'), hint: t('st.caps.extraDirsHint') },
     { kind: 'mcp', label: t('cap.add.mcp'), hint: t('cap.add.mcpHint') },
   ];
   return (

@@ -873,5 +873,45 @@ describe('server-v2 /api skills', () => {
       );
       expect(body.code).toBe(40410);
     });
+
+    it('keeps disabled_skills visible with enabled: false in workspace catalog while excluding them from session and draft skills', async () => {
+      const workspaceDir = await makeWorkspaceDir();
+      await seedProjectSkill(workspaceDir, 'toggle-target');
+      await seedProjectSkill(workspaceDir, 'keep-enabled');
+
+      const wid = await registerWorkspace(workspaceDir);
+      const sid = await createSession(workspaceDir);
+
+      const patchRes = await postJson<{ disabled_skills?: string[] }>('/api/config', {
+        disabled_skills: ['toggle-target'],
+      });
+      expect(patchRes.body.code).toBe(0);
+      expect(patchRes.body.data.disabled_skills).toEqual(['toggle-target']);
+
+      const [wsRes, sessRes, draftRes] = await Promise.all([
+        getJson<{ skills: Array<SkillWire & { enabled?: boolean }> }>(`/api/workspaces/${wid}/skills`),
+        getJson<{ skills: SkillWire[] }>(`/api/sessions/${sid}/skills`),
+        getJson<{ skills: SkillWire[] }>(`/api/skills?cwd=${encodeURIComponent(workspaceDir)}`),
+      ]);
+      const wsSkills = listSkillsResponseSchema.parse(wsRes.body.data).skills;
+      const sessSkills = listSkillsResponseSchema.parse(sessRes.body.data).skills;
+      const draftSkills = listSkillsResponseSchema.parse(draftRes.body.data).skills;
+
+      expect(wsSkills.find((s) => s.name === 'toggle-target')?.enabled).toBe(false);
+      expect(wsSkills.find((s) => s.name === 'keep-enabled')?.enabled).toBeUndefined();
+      expect(sessSkills.some((s) => s.name === 'toggle-target')).toBe(false);
+      expect(sessSkills.some((s) => s.name === 'keep-enabled')).toBe(true);
+      expect(draftSkills.some((s) => s.name === 'toggle-target')).toBe(false);
+
+      const activateRes = await postJson<unknown>(`/api/sessions/${sid}/skills/toggle-target:activate`, {});
+      expect(activateRes.body.code).not.toBe(0);
+
+      const reenableRes = await postJson<{ disabled_skills?: string[] }>('/api/config', {
+        disabled_skills: [],
+      });
+      expect(reenableRes.body.code).toBe(0);
+      const sessAfter = await getJson<{ skills: SkillWire[] }>(`/api/sessions/${sid}/skills`);
+      expect(sessAfter.body.data.skills.some((s) => s.name === 'toggle-target')).toBe(true);
+    });
   });
 });

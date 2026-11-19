@@ -157,7 +157,10 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
   );
 
   const refresh = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined),
+      queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined),
+    ]);
   }, [queryClient]);
 
   const readOutcome = useCallback((result: DeleteArchivedSessionsResponse): DeleteOutcome => ({

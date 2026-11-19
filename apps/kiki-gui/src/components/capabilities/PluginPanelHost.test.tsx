@@ -70,6 +70,7 @@ interface TestPanelProps {
   readonly panelId?: string;
   readonly sessionId?: string;
   readonly workspaceId?: string;
+  readonly variant?: 'card' | 'workspace';
 }
 
 function panelElement(queryClient: QueryClient, props: TestPanelProps = {}) {
@@ -80,6 +81,7 @@ function panelElement(queryClient: QueryClient, props: TestPanelProps = {}) {
         panelId={props.panelId ?? 'panel-id'}
         sessionId={props.sessionId}
         workspaceId={props.workspaceId}
+        variant={props.variant}
       />
     </QueryClientProvider>
   );
@@ -509,6 +511,25 @@ describe('PluginPanelHost streams', () => {
     expect(channel.port1.close).toHaveBeenCalledTimes(1);
     expect(channel.port2.close).toHaveBeenCalledTimes(1);
     expect(post.mock.calls.some(([message]) => (message as { id?: number }).id === 70)).toBe(false);
+  });
+
+  it('keeps workspace-scoped plugin panels and active streams alive across sessionId changes', async () => {
+    const liveStream = makeStream();
+    openPluginPanelStream.mockResolvedValueOnce(liveStream.stream);
+    const frame = await renderPanel({ html: '<p>workspace panel</p>' }, { sessionId: 'session-a', variant: 'workspace' });
+    const post = vi.spyOn(frame.contentWindow!, 'postMessage');
+    await act(async () => {
+      request(frame, { channel: 'kiki.panel.v1', kind: 'request', id: 75, method: 'plugin.openStream', stream: 'capture' });
+    });
+    const channel = TestMessageChannel.instances[0]!;
+    const { root, queryClient } = renderings.get(frame)!;
+    await act(async () => {
+      root.render(panelElement(queryClient, { sessionId: 'session-b', variant: 'workspace' }));
+    });
+    expect(liveStream.stream.close).not.toHaveBeenCalled();
+    expect(channel.port1.close).not.toHaveBeenCalled();
+    expect(getPluginPanelDocument).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenLastCalledWith({ channel: 'kiki.panel.v1', kind: 'init', sessionId: 'session-b' }, '*');
   });
 
   it('closes a pending open after iframe reload and on component unmount', async () => {

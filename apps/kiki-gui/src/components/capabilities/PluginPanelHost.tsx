@@ -95,6 +95,10 @@ export function PluginPanelHost({
   } | null>(null);
   const [loadSeq, setLoadSeq] = useState(0);
   const effectiveLabel = label ?? title ?? panelId;
+  // Workspace/device-scoped plugin panels (phone, remote desktop, fleet workbench)
+  // keep a stable document & stream identity across sessionId updates and receive
+  // the active session via the `init` postMessage hook instead of reloading.
+  const keepAliveAcrossSessions = variant === 'workspace' && target === undefined;
   const effectiveTarget: PluginUsageTarget | undefined =
     target ??
     (workspaceId !== undefined && workspaceId !== ''
@@ -102,7 +106,9 @@ export function PluginPanelHost({
       : sessionId !== undefined && sessionId !== ''
         ? { session_id: sessionId }
         : undefined);
-  const targetKey = scopeKey(effectiveTarget);
+  const stableTargetKey = keepAliveAcrossSessions
+    ? scopeKey(workspaceId !== undefined && workspaceId !== '' ? { workspace_id: workspaceId } : undefined)
+    : scopeKey(effectiveTarget);
   const streamSessionId = sessionId !== undefined && sessionId !== ''
     ? sessionId
     : effectiveTarget !== undefined && 'session_id' in effectiveTarget ? effectiveTarget.session_id : undefined;
@@ -123,15 +129,15 @@ export function PluginPanelHost({
       ? (connection.meta as { server_id: string }).server_id
       : '';
   const baseOrigin = client.baseUrl || (typeof window !== 'undefined' ? window.location.origin : '');
-  const documentIdentity = `${scopeId}\0${serverId}\0${baseOrigin}\0${pluginId}\0${panelId}\0${targetKey}`;
-  const streamIdentity = `${documentIdentity}\0${streamSessionId ?? ''}`;
+  const documentIdentity = `${scopeId}\0${serverId}\0${baseOrigin}\0${pluginId}\0${panelId}\0${stableTargetKey}`;
+  const streamIdentity = keepAliveAcrossSessions ? documentIdentity : `${documentIdentity}\0${streamSessionId ?? ''}`;
   const resolvedClassName =
     className ??
     (variant === 'workspace'
       ? 'h-full min-h-0 min-w-0 w-full flex-1'
       : 'h-full min-h-[420px] w-full');
   const documentQuery = useQuery({
-    queryKey: ['plugin-panel-document', pluginId, panelId, targetKey, serverId, baseOrigin],
+    queryKey: ['plugin-panel-document', pluginId, panelId, stableTargetKey, serverId, baseOrigin],
     queryFn: () => client.getPluginPanelDocument(pluginId, panelId, effectiveTarget),
     staleTime: PANEL_DOCUMENT_STALE_TIME_MS,
     gcTime: PANEL_GRANT_SAFE_REUSE_MS,

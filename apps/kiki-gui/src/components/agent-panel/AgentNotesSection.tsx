@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { TranscriptTodoNotes, TranscriptTodoNotesMeta, TranscriptTodoNotesStatus } from '@kiki/transcript';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import { InspectorChevron, INSPECTOR_HEAD } from './InspectorSection';
 import { Icon } from '../icons';
 
@@ -48,6 +49,11 @@ export const AgentNotesSection = memo(function AgentNotesSection({
 }: AgentNotesSectionProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
+  }, []);
   const read = useRef<ReturnType<NonNullable<AgentNotesSectionProps['beginRead']>>>(undefined);
   const sections = [...SECTIONS, ...Object.keys(notes ?? {}).filter((section) => !SECTIONS.includes(section))];
   const present = sections.filter((section) => (notes?.[section] ?? '').trim() !== '');
@@ -155,6 +161,30 @@ export const AgentNotesSection = memo(function AgentNotesSection({
           ) : <span className="flex-1" />}
           <InspectorChevron open={open} />
         </button>
+        {open && present.length > 0 ? (
+          <button
+            type="button"
+            data-agent-notes-copy
+            title={copied ? t('st.engines.copied') : t('transcript.copy')}
+            aria-label={copied ? t('st.engines.copied') : t('transcript.copy')}
+            onClick={() => {
+              const text = present.map((section) => {
+                const heading = Object.hasOwn(NOTE_SECTION_LABELS, section)
+                  ? t(NOTE_SECTION_LABELS[section as keyof typeof NOTE_SECTION_LABELS])
+                  : section;
+                return `## ${heading}\n${(notes?.[section] ?? '').trim()}`;
+              }).join('\n\n');
+              void copyTextToClipboard(text).then(() => {
+                setCopied(true);
+                if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
+                copiedTimerRef.current = setTimeout(() => { setCopied(false); }, 1500);
+              }).catch(() => undefined);
+            }}
+            className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={12} />
+          </button>
+        ) : null}
         {status !== undefined || effectiveContentStatus === 'partial' ? quietNotice : null}
       </div>
       {!open && effectiveContentStatus !== undefined && present.length === 0 ? <p className="text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.notes.readOnOpen')}</p> : null}

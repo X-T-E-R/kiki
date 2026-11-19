@@ -121,8 +121,8 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
       if (card === null) return;
       if (observed !== card) {
         if (observed !== null) observer?.unobserve(observed);
-        observer?.observe(card);
         observed = card;
+        observer?.observe(card);
       }
       // Offsets are relative to the panel's containing block: the root, or
       // the positioned root of a wrapped SearchableSelect (ComposerPanelOrigin).
@@ -141,11 +141,13 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
       for (let node = origin.parentElement; node !== null; node = node.parentElement) {
         const style = getComputedStyle(node);
         if (style.overflowY !== 'visible' || style.overflowX !== 'visible') {
-          clipTop = node.getBoundingClientRect().top;
+          clipTop = Math.max(clipTop, node.getBoundingClientRect().top);
           break;
         }
       }
-      root.style.setProperty('--cp-max-h', `${Math.max(160, cardRect.top - clipTop - PANEL_GAP_PX - 8)}px`);
+      const viewportLimit = typeof window === 'undefined' ? 600 : Math.max(160, window.innerHeight - 120);
+      const roomAbove = Math.min(viewportLimit, Math.max(160, Math.floor(cardRect.top - clipTop - PANEL_GAP_PX - 8)));
+      root.style.setProperty('--cp-max-h', `${roomAbove}px`);
     };
     measure();
     // The ref lands in the same commit, after this effect; one frame later it
@@ -154,11 +156,13 @@ export function useComposerPanelAnchor(rootRef: RefObject<HTMLElement | null>, o
     root.addEventListener('pointerdown', measure, true);
     root.addEventListener('keydown', measure, true);
     window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
     return () => {
       cancelAnimationFrame(frame);
       root.removeEventListener('pointerdown', measure, true);
       root.removeEventListener('keydown', measure, true);
       window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
       observer?.disconnect();
     };
   }, [rootRef, cardRef, open]);
@@ -1407,10 +1411,10 @@ export function AddMenu({
   );
 
   const skillsBody = skills === undefined ? null : (
-    <div data-add-skills-view>
+    <div data-add-skills-view className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {backRow(t('composer.addMenu.skills'))}
       {searchField(t('composer.addMenu.searchSkills'))}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {skills.status === 'loading' && skills.items.length === 0 ? note(t('composer.addMenu.skillsLoading'))
           : skills.status === 'error' && skills.items.length === 0 ? note(t('composer.addMenu.skillsFailed'), 'danger')
           : skillMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.skillsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
@@ -1420,14 +1424,14 @@ export function AddMenu({
   );
 
   const pluginsBody = plugins === undefined ? null : (
-    <div data-add-plugins-view>
+    <div data-add-plugins-view className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {backRow(t('composer.addMenu.plugins'))}
       {searchField(t('composer.addMenu.searchPlugins'))}
       {/* The flexible child of the capped card, so the note below it keeps
           its own two lines. A partially scrolled row is a normal state for a
           long list, so the clip is left to mean "more below" rather than
           being hidden. */}
-      <div className="min-h-0 flex-1 overflow-y-auto pb-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">
         {plugins.loading && plugins.items.length === 0 ? note(t('composer.addMenu.pluginsLoading'))
           : plugins.failed && plugins.items.length === 0 ? note(t('composer.addMenu.pluginsFailed'), 'danger')
           : pluginMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.pluginsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
@@ -1435,27 +1439,27 @@ export function AddMenu({
             <PluginRow key={plugin.id} plugin={plugin} busy={busyPlugins === plugin.id} onToggle={togglePlugin} />
           ))}
       </div>
-      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.pluginsHint')}</p>
+      <p className="shrink-0 px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.pluginsHint')}</p>
     </div>
   );
 
   const optionalBody = optional === undefined ? null : (
-    <div data-add-optional-view>
+    <div data-add-optional-view className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {backRow(t('composer.addMenu.optional'))}
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-1.5">
         <OptionalCapabilityRows sessionId={optional.sessionId} />
       </div>
     </div>
   );
 
   const mcpBody = mcp === undefined ? null : (
-    <div data-add-mcp-view>
+    <div data-add-mcp-view className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {backRow(t('composer.addMenu.mcp'))}
       {searchField(t('composer.addMenu.searchMcp'))}
       {/* The engine boundary comes before the rows: it changes what the list
           below can mean, so it is read before any row is read as usable. */}
       {mcp.externalEngine === undefined ? null : note(t('composer.addMenu.mcpExternalHint', { engine: mcp.externalEngine }))}
-      <div className="min-h-0 flex-1 overflow-y-auto pb-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-1.5">
         {mcp.failed && mcp.items.length === 0 ? note(t('composer.addMenu.mcpFailed'), 'danger')
           : mcp.loading && mcp.items.length === 0 ? note(t('composer.addMenu.mcpLoading'))
           : mcpMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.mcpEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
@@ -1474,7 +1478,7 @@ export function AddMenu({
       {/* A refused write is about the row it was made on, so it stays until the
           reader has seen it rather than flashing past with the panel. */}
       {mcp.failure === undefined ? null : (
-        <p role="alert" className="flex items-start gap-2 px-3 pt-1 pb-0.5 text-[12px] leading-4 text-danger">
+        <p role="alert" className="flex shrink-0 items-start gap-2 px-3 pt-1 pb-0.5 text-[12px] leading-4 text-danger">
           <span className="min-w-0 flex-1">
             {t('composer.addMenu.mcpWriteFailed', { name: mcp.failure.name, detail: mcp.failure.message })}
           </span>
@@ -1483,17 +1487,17 @@ export function AddMenu({
           </button>
         </p>
       )}
-      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">
+      <p className="shrink-0 px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">
         {mcp.writable ? t('composer.addMenu.mcpHint') : t('composer.addMenu.mcpNoWrite')}
       </p>
     </div>
   );
 
   const mentionBody = files === undefined ? null : (
-    <div data-add-mention-view>
+    <div data-add-mention-view className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {backRow(t('composer.addMenu.mention'))}
       {searchField(t('composer.addMenu.searchFiles'))}
-      <div className="min-h-0 flex-1 overflow-y-auto" data-add-file-list data-file-order={fileFeed.order} onScroll={onFileScroll}>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-add-file-list data-file-order={fileFeed.order} onScroll={onFileScroll}>
         {fileWaiting ? note(t('composer.filesSearching'))
           : fileFeed.failed && fileItems.length === 0 ? note(t('composer.filesFailed'), 'danger')
           : fileItems.length === 0 && fileFeed.exhausted ? note(trimmed === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query: trimmed }))
@@ -1506,7 +1510,7 @@ export function AddMenu({
           />
         ) : null}
       </div>
-      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.mentionHint')}</p>
+      <p className="shrink-0 px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.mentionHint')}</p>
     </div>
   );
 
@@ -1549,12 +1553,14 @@ export function AddMenu({
           // and the list takes what is left and scrolls. Without the flex
           // column a tall list pushes the note past the cap, where it paints
           // over the last row instead of the list shrinking under it.
-          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-80 flex-col overflow-hidden p-1 ${POPOVER_SURFACE_CLASS}`}
+          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,420px),calc(100dvh-120px))] w-80 flex-col overflow-hidden p-1 ${POPOVER_SURFACE_CLASS}`}
         >
           {resolvedView === 'root' ? (
             <>
               {searchable ? searchField(t('composer.addMenu.search')) : null}
-              {rootBody}
+              <div data-add-root-scroll className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {rootBody}
+              </div>
             </>
           ) : resolvedView === 'skills' ? (
             skillsBody
@@ -1567,25 +1573,31 @@ export function AddMenu({
           ) : resolvedView === 'mention' ? (
             mentionBody
           ) : resolvedView === 'ssh' && ssh !== undefined ? (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               {backRow(t('composer.addMenu.ssh'))}
-              {ssh.renderPanel(close)}
-            </>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {ssh.renderPanel(close)}
+              </div>
+            </div>
           ) : resolvedView === 'timing' && timing !== undefined ? (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               {backRow(t('composer.addMenu.timing'))}
-              <SendTimingRows
-                defaultTiming={timing.defaultTiming}
-                canSendNow={timing.canSendNow}
-                busySendsNow={timing.busySendsNow}
-                onPick={(choice) => { close(); timing.onPick(choice); }}
-              />
-            </>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                <SendTimingRows
+                  defaultTiming={timing.defaultTiming}
+                  canSendNow={timing.canSendNow}
+                  busySendsNow={timing.busySendsNow}
+                  onPick={(choice) => { close(); timing.onPick(choice); }}
+                />
+              </div>
+            </div>
           ) : runMode !== undefined ? (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               {backRow(t('composer.addMenu.mode'))}
-              <RunModePanel controls={runMode} />
-            </>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                <RunModePanel controls={runMode} />
+              </div>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -1721,9 +1733,9 @@ export function PermissionSelect({
         <span className="min-w-0 truncate @max-[28rem]/toolbar:sr-only">{t(current.labelKey)}</span>
       </button>
       {open ? (
-        <div data-permission-panel className={`anim-enter ${COMPOSER_PANEL_END} w-72 p-1 ${POPOVER_SURFACE_CLASS}`}>
-          <p className={POPOVER_LABEL_CLASS}>{t('composer.permAria')}</p>
-          <div role="listbox" aria-label={t('composer.permAria')}>
+        <div data-permission-panel className={`anim-enter ${COMPOSER_PANEL_END} flex max-h-[min(var(--cp-max-h,420px),calc(100dvh-120px))] w-72 flex-col overflow-hidden p-1 ${POPOVER_SURFACE_CLASS}`}>
+          <p className={`shrink-0 ${POPOVER_LABEL_CLASS}`}>{t('composer.permAria')}</p>
+          <div role="listbox" aria-label={t('composer.permAria')} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {PERMISSION_MODES.map((mode) => {
               const isCurrent = mode.id === value;
               return (

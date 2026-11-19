@@ -1,5 +1,7 @@
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
+import { IConfigService } from '#/app/config/config';
+import { DISABLED_SKILLS_SECTION, disabledSkillNames } from '#/app/skillCatalog/configSection';
 import { defineState } from '#/state/state';
 import { IBuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
@@ -40,6 +42,7 @@ export class WorkspaceSkillCatalogService extends Disposable implements IWorkspa
     @IWorkspaceRootSkillSource workspace: IWorkspaceRootSkillSource,
     @IPluginSkillSource plugin: IPluginSkillSource,
     @IWorkspaceStateService private readonly states: IWorkspaceStateService,
+    @IConfigService private readonly config?: IConfigService,
   ) {
     super();
     this.states.contributeState(workspaceSkillCatalogContributionsKey);
@@ -52,6 +55,15 @@ export class WorkspaceSkillCatalogService extends Disposable implements IWorkspa
         this._register(
           s.onDidChange(() => this.reloadSource(s.id)),
         );
+    }
+    if (this.config !== undefined) {
+      this._register(
+        this.config.onDidSectionChange((change) => {
+          if (change.domain !== DISABLED_SKILLS_SECTION) return;
+          this.remerge();
+          this.onDidChangeEmitter.fire(DISABLED_SKILLS_SECTION);
+        }),
+      );
     }
     this.ready = this.loadAll();
   }
@@ -135,6 +147,7 @@ export class WorkspaceSkillCatalogService extends Disposable implements IWorkspa
 
   private remerge(): void {
     const m = new InMemorySkillCatalog();
+    m.setDisabledSkills(disabledSkillNames(this.config));
     const ordered = [...this.contributions.values()].toSorted((a, b) => a.priority - b.priority);
     for (const { c } of ordered) {
       for (const skill of c.skills) m.register(skill, { replace: true });

@@ -24,7 +24,6 @@ import { localizeEntry, pluginUpdate, shelveCatalog, type CatalogShelfId, type P
 import { useConnection } from '../../state/connection';
 import { Icon, Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
-import { LIST_TOOLS_MIN_ITEMS } from '../settings/list';
 import { AddSourceDialog, CatalogSourceField } from './AddSourceDialog';
 import { MediaSourcesView } from '../media/MediaSourcesView';
 import { InstalledList } from './InstalledList';
@@ -51,6 +50,7 @@ export function PluginsView({
   onOpenImportHistory,
   sessionId,
   onOpenSettings,
+  inSettings = false,
 }: {
   readonly route: PluginsRoute;
   readonly onRoute: (next: PluginsRoute) => void;
@@ -58,19 +58,16 @@ export function PluginsView({
   readonly workspaceRoot?: string;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
   /**
-   * A plugin's configuration lives on its own settings page, which this view
-   * links to rather than embedding. Unset where that page is unreachable, so
-   * a build without the settings route shows no dead control.
+   * A plugin's configuration lives on its own settings page or sheet.
    */
   readonly onOpenSettings?: (pluginId: string) => void;
   /**
    * The built-in import-history page, with the source a plugin hands off.
-   * Import history is not a plugins sub-view any more, so a source plugin's
-   * "import from here" leaves this page instead of drilling into it.
    */
   readonly onOpenImportHistory?: (source: { readonly source: string; readonly sourcePlugin: string }) => void;
   /** Session whose media jobs this view lists; without one, no job list. */
   readonly sessionId?: string;
+  readonly inSettings?: boolean;
 }) {
   const { t, tp, locale, time } = useI18n();
   const { client, scopeId } = useConnection();
@@ -173,9 +170,7 @@ export function PluginsView({
   }
 
   const tab = route.view === 'installed' ? 'installed' : 'market';
-  // Search is a list tool: a catalog of a handful of entries is read at a
-  // glance, and a query typed before the field went away stops narrowing it.
-  const searchable = entries.length >= LIST_TOOLS_MIN_ITEMS;
+  const searchable = entries.length > 0;
   const activeQuery = searchable ? query : '';
   const filtering = activeQuery.trim() !== '';
   const relevant = new Set((recommendQuery.data?.entries ?? []).map((entry) => entry.id));
@@ -200,55 +195,70 @@ export function PluginsView({
 
   return (
     <div className="min-w-0 space-y-6" data-plugins-view={route.view}>
-      <div className="flex flex-col gap-3 min-[720px]:flex-row min-[720px]:items-center">
+      <div className="flex flex-wrap items-center gap-2.5">
         <Segmented
           value={tab}
           onChange={(next) => { onRoute(next === 'installed' ? { view: 'installed' } : { view: 'market' }); }}
           ariaLabel={t('cap.plugins.views')}
           dataAttribute="data-plugins-tab"
           options={[
-            { value: 'installed', label: installed.length > 0 ? `${t('cap.plugins.installed')} ${installed.length}` : t('cap.plugins.installed') },
+            {
+              value: 'installed',
+              label: !inSettings && installed.length > 0
+                ? `${t('cap.plugins.installed')} ${installed.length}`
+                : t('cap.plugins.installed'),
+            },
             { value: 'market', label: t('cap.plugins.market') },
           ]}
         />
-        <div className="min-w-0 flex-1">
-          {tab === 'market' && searchable ? (
+        {tab === 'market' && searchable ? (
+          <div className="min-w-[180px] flex-1">
             <SearchField
               value={query}
               onChange={setQuery}
               placeholder={t('cap.plugins.search')}
               ariaLabel={t('cap.plugins.search')}
             />
-          ) : null}
-        </div>
-        {/* No import button here on purpose. Bringing an old conversation in
-            is a way of working with sessions and it ships with Kiki, so it is
-            offered from Settings → Sessions (and beside the new-session
-            starters) rather than as a control on the plugin market, where it
-            would read as a plugin to install. `?view=import` still resolves, so
-            an old link and a source plugin's "import from here" both land on
-            the same built-in surface. */}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          data-plugins-install-trigger
+          onClick={() => { setAdding(true); }}
+          className={`${SECONDARY_BUTTON} ml-auto inline-flex shrink-0 items-center gap-1.5`}
+        >
+          <Icon name="plus" size={14} />
+          <span>{t('cap.plugins.install')}</span>
+        </button>
       </div>
 
       {tab === 'installed' && !installedQuery.isPending && !installedQuery.isError && installed.length === 0 ? (
-        // Nothing installed: one sentence and the one way to fill it.
         <div data-plugins-installed-empty className="space-y-2">
           <p className="text-[13px] text-ink-soft">{t('cap.installed.empty')}</p>
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => { onRoute({ view: 'market' }); }} data-plugins-browse-market>
-            {t('cap.installed.browseMarket')}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { onRoute({ view: 'market' }); }} data-plugins-browse-market>
+              {t('cap.installed.browseMarket')}
+            </button>
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { setAdding(true); }}>
+              {t('cap.plugins.addFromSource')}
+            </button>
+          </div>
         </div>
       ) : tab === 'installed' ? (
         <InstalledList
           plugins={installed}
           entries={entries}
           loading={installedQuery.isPending}
+          retrying={installedQuery.isFetching}
           error={installedQuery.isError ? installedQuery.error : undefined}
+          onRetry={() => { void installedQuery.refetch(); }}
           updates={updates}
           updateCheck={updateCheck}
           onOpen={open}
+          onOpenSettings={onOpenSettings}
           onUpdate={startUpdate}
           onAdd={() => { setAdding(true); }}
+          inSettings={inSettings}
         />
       ) : (
         <>

@@ -123,6 +123,9 @@ export class SkillTool implements ISkillTool {
             promptCommand: isPromptCommandPath(lexicalPath),
             text: await lease.runtime.fs!.readText(actualPath),
           });
+          if (this.catalog.catalog.isSkillDisabled?.(definition.name) === true) {
+            return errorResult(`Skill "${definition.name}" is disabled.`);
+          }
           return await executeModelSkill(this.catalog, this.skill, args, this.effectiveQueryDepth(), this.sessionContext.sessionId, definition);
         } finally {
           lease.dispose();

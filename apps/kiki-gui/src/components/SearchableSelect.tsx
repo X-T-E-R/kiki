@@ -14,15 +14,15 @@
  * itself), the panel is portaled to <body> and positioned against the viewport.
  */
 
-import { type CSSProperties, type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Popover } from '@base-ui/react/popover';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
 import { useLayerHistory } from '../lib/layerHistory';
 import { isCoarsePointer, usePhoneMode } from '../lib/layoutHooks';
 import { isImeKeyEvent } from '../lib/shortcuts';
-import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import {
   containsOrOwnsFloatingTarget,
   FLOATING_OWNER_ATTRIBUTE,
@@ -36,7 +36,7 @@ import {
 } from '../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
-import { LIST_TOOLS_MIN_ITEMS } from './settings/list';
+import { LIST_TOOLS_MIN_ITEMS } from './settings/list/listState';
 
 /**
  * The one floating-surface look shared by composer pickers and popovers:
@@ -95,60 +95,6 @@ function windowStartForIndex(targetIndex: number, total: number): number {
   const maxStart = total - VIRTUAL_WINDOW_SIZE;
   if (targetIndex < VIRTUAL_WINDOW_SIZE - VIRTUAL_OVERSCAN) return 0;
   return Math.max(0, Math.min(targetIndex - VIRTUAL_OVERSCAN, maxStart));
-}
-
-/**
- * Viewport-fixed placement for a panel this component owns.
- *
- * The panel is portaled to <body>, so its coordinates are viewport
- * coordinates and no clipping or transformed ancestor of the trigger can
- * capture it: the profile editor's scrolling sheet, the settings page's scroll
- * column and the app shell's `overflow-hidden` frame all stop mattering. It is
- * at least as wide as its trigger, hangs from the trigger edge `align` names,
- * is clamped inside the viewport horizontally, and takes whichever side has
- * room, with its height capped to that room. Recomputed on scroll and resize
- * so it follows the trigger instead of floating over neighbours.
- */
-function useViewportPlacement(
-  active: boolean,
-  triggerRef: React.RefObject<HTMLButtonElement | null>,
-  align: 'start' | 'end',
-  prefer: 'below' | 'above',
-): CSSProperties | undefined {
-  const [style, setStyle] = useState<CSSProperties | undefined>(undefined);
-  useLayoutEffect(() => {
-    if (!active) {
-      setStyle(undefined);
-      return;
-    }
-    const place = () => {
-      const trigger = triggerRef.current;
-      if (trigger === null) return;
-      const rect = unzoomedRect(trigger.getBoundingClientRect());
-      const { width: viewportWidth, height: viewportHeight } = unzoomedViewport();
-      const width = Math.min(Math.max(rect.width, PANEL_MIN_WIDTH), viewportWidth - VIEWPORT_MARGIN * 2);
-      const preferredLeft = align === 'end' ? rect.right - width : rect.left;
-      const left = Math.max(VIEWPORT_MARGIN, Math.min(preferredLeft, viewportWidth - width - VIEWPORT_MARGIN));
-      const below = viewportHeight - rect.bottom - PANEL_GAP - VIEWPORT_MARGIN;
-      const above = rect.top - PANEL_GAP - VIEWPORT_MARGIN;
-      const openBelow = prefer === 'below'
-        ? below >= Math.min(PANEL_MAX_HEIGHT, 200) || below >= above
-        : below > above;
-      const room = openBelow ? below : above;
-      const maxHeight = Math.max(0, Math.min(PANEL_MAX_HEIGHT, room));
-      setStyle(openBelow
-        ? { left, width, top: rect.bottom + PANEL_GAP, maxHeight }
-        : { left, width, bottom: viewportHeight - rect.top + PANEL_GAP, maxHeight });
-    };
-    place();
-    window.addEventListener('resize', place);
-    window.addEventListener('scroll', place, true);
-    return () => {
-      window.removeEventListener('resize', place);
-      window.removeEventListener('scroll', place, true);
-    };
-  }, [active, triggerRef, align, prefer]);
-  return style;
 }
 
 export interface SearchableSelectBaseProps {
@@ -300,11 +246,13 @@ export function SearchableSelect(props: SearchableSelectProps) {
   const openSelect = () => {
     let initialActive = 0;
     let initialWindow = 0;
-    if (!isMultiple && singleValue !== '' && options.length > VIRTUALIZE_THRESHOLD) {
+    if (!isMultiple && singleValue !== '') {
       const idx = options.findIndex((option) => option.value === singleValue && option.disabled !== true);
       if (idx >= 0) {
         initialActive = idx;
-        initialWindow = windowStartForIndex(idx, options.length);
+        if (options.length > VIRTUALIZE_THRESHOLD) {
+          initialWindow = windowStartForIndex(idx, options.length);
+        }
       }
     }
     keyboardNavRef.current = true;
@@ -328,13 +276,6 @@ export function SearchableSelect(props: SearchableSelectProps) {
     setQuery('');
     setWindowStart(0);
   }, [closeSignal]);
-
-  const panelStyle = useViewportPlacement(
-    ownsPanel && !asSheet && open,
-    triggerRef,
-    align,
-    placement === 'above' ? 'above' : 'below',
-  );
 
   const panelZIndex = open && isPortaled ? floatingSurfaceZIndex(triggerRef.current) : undefined;
 
@@ -897,29 +838,48 @@ export function SearchableSelect(props: SearchableSelectProps) {
             document.body,
           )
           : ownsPanel
-            ? createPortal(
-              <div
-                ref={panelRef}
-                data-select-panel
-                {...panelData}
-                {...{
-                  [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
-                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
-                  [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  close();
-                  triggerRef.current?.focus();
-                }}
-                className={`anim-enter fixed flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
-                style={{ ...panelStyle, zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
-              >
-                {renderPanel()}
-              </div>,
-              document.body,
+            ? (
+              <Popover.Root open modal={false}>
+                <Popover.Portal>
+                  <Popover.Positioner
+                    anchor={triggerRef}
+                    side={placement === 'above' ? 'top' : 'bottom'}
+                    align={align}
+                    sideOffset={PANEL_GAP}
+                    collisionPadding={VIEWPORT_MARGIN}
+                    positionMethod="fixed"
+                    style={{ zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
+                  >
+                    <Popover.Popup
+                      ref={panelRef}
+                      initialFocus={!showFilter && (!isCoarsePointer() || asSheet) ? listRef : false}
+                      finalFocus={false}
+                      data-select-panel
+                      {...panelData}
+                      {...{
+                        [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
+                        [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
+                        [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        close();
+                        triggerRef.current?.focus();
+                      }}
+                      className={`anim-enter flex flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+                      style={{
+                        width: `min(max(var(--anchor-width, ${PANEL_MIN_WIDTH}px), ${PANEL_MIN_WIDTH}px), calc(100vw - ${VIEWPORT_MARGIN * 2}px))`,
+                        maxHeight: `min(var(--available-height, ${PANEL_MAX_HEIGHT}px), ${PANEL_MAX_HEIGHT}px)`,
+                        zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX,
+                      }}
+                    >
+                      {renderPanel()}
+                    </Popover.Popup>
+                  </Popover.Positioner>
+                </Popover.Portal>
+              </Popover.Root>
             )
             : (
               <div

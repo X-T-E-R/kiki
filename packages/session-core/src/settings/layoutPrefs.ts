@@ -113,6 +113,8 @@ export interface LayoutPreferences extends SessionListPreferences {
   sidebarNavSectionCollapsed?: boolean;
   /** Whether the sidebar persona group is folded. Default: expanded (`false`). */
   sidebarPersonaSectionCollapsed?: boolean;
+  /** Whether the sidebar persona preview fold (>5 personas) is expanded to show all. */
+  sidebarPersonasShowAll?: boolean;
 }
 
 export const SIDEBAR_DEFAULT_WIDTH = 264;
@@ -208,6 +210,9 @@ export function readLayoutPreferences(): LayoutPreferences {
   const sidebarPersonaSectionCollapsed = typeof stored['sidebarPersonaSectionCollapsed'] === 'boolean'
     ? stored['sidebarPersonaSectionCollapsed']
     : undefined;
+  const sidebarPersonasShowAll = typeof stored['sidebarPersonasShowAll'] === 'boolean'
+    ? stored['sidebarPersonasShowAll']
+    : undefined;
   return {
     groupBy: isGroupBy(groupBy) ? groupBy : DEFAULT_LAYOUT_PREFERENCES.groupBy,
     sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_LAYOUT_PREFERENCES.sortBy,
@@ -227,6 +232,7 @@ export function readLayoutPreferences(): LayoutPreferences {
     pinnedNavItems,
     sidebarNavSectionCollapsed,
     ...(sidebarPersonaSectionCollapsed !== undefined ? { sidebarPersonaSectionCollapsed } : {}),
+    ...(sidebarPersonasShowAll !== undefined ? { sidebarPersonasShowAll } : {}),
   };
 }
 
@@ -306,6 +312,11 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
       : current.sidebarPersonaSectionCollapsed !== undefined
         ? { sidebarPersonaSectionCollapsed: current.sidebarPersonaSectionCollapsed }
         : {}),
+    ...(patch.sidebarPersonasShowAll !== undefined
+      ? { sidebarPersonasShowAll: patch.sidebarPersonasShowAll }
+      : current.sidebarPersonasShowAll !== undefined
+        ? { sidebarPersonasShowAll: current.sidebarPersonasShowAll }
+        : {}),
   };
   // Every write stores the whole record, so an unrelated write (a width, the
   // grouping) would otherwise save the default tool list as if it had been
@@ -323,4 +334,8 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
 
 export function setSidebarPersonaSectionCollapsed(collapsed: boolean): LayoutPreferences {
   return writeLayoutPreferences({ sidebarPersonaSectionCollapsed: collapsed });
+}
+
+export function setSidebarPersonasShowAll(showAll: boolean): LayoutPreferences {
+  return writeLayoutPreferences({ sidebarPersonasShowAll: showAll });
 }

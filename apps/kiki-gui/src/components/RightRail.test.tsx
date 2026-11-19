@@ -1423,22 +1423,53 @@ describe('RightRail Todos resilient baseline and fallback', () => {
     expect(agentsSection.textContent).not.toContain('Verify auth token refresh');
     expect(agentsSection.textContent).not.toContain('Merged check');
 
-    // Branches section renders bespoke rows with seed tags, branch states, fold summary preview, and >5 merged disclosure:
+    // Branches section renders compact single-line open rows and keeps merged history folded until opened:
     const branchesSection = rail.querySelector('[data-rail-section="branches"]')!;
     expect(branchesSection.querySelector('[data-branch-row="branch-live"]')?.getAttribute('data-branch-state')).toBe('running');
     expect(branchesSection.querySelector('[data-branch-row="branch-open"]')?.getAttribute('data-branch-state')).toBe('open');
-    expect(branchesSection.querySelector('[data-branch-row="branch-merged-6"]')?.textContent).toContain('Confirmed schema v3 migration cleans up stale indexes.');
+    expect(branchesSection.querySelectorAll('[data-branch-state="merged"]')).toHaveLength(0);
+
+    const mergedToggle = branchesSection.querySelector<HTMLButtonElement>('[data-branches-more]')!;
+    await act(async () => { mergedToggle.click(); });
+    expect(branchesSection.querySelector('[data-branch-row="branch-merged-6"]')?.getAttribute('title')).toContain('Confirmed schema v3 migration cleans up stale indexes.');
     expect(branchesSection.querySelectorAll('[data-branch-state="merged"]')).toHaveLength(5);
 
-    const moreBtn = branchesSection.querySelector<HTMLButtonElement>('[data-branches-more]')!;
-    expect(moreBtn.textContent).toContain('Merged (1)');
-    await act(async () => { moreBtn.click(); });
+    const moreMergedBtn = branchesSection.querySelector<HTMLButtonElement>('[data-branches-more-merged]')!;
+    expect(moreMergedBtn.textContent).toContain('Merged (1)');
+    await act(async () => { moreMergedBtn.click(); });
     expect(branchesSection.querySelectorAll('[data-branch-state="merged"]')).toHaveLength(6);
 
     await act(async () => {
       branchesSection.querySelector<HTMLButtonElement>('[data-branch-row="branch-merged-6"]')?.click();
     });
     expect(onOpenSubagent).toHaveBeenCalledWith('branch-merged-6');
+
+    // When only merged branches exist (no open branches), the Branches chapter starts collapsed to one quiet line:
+    const mergedOnlyForest = buildAgentForest([], [
+      {
+        agentId: 'branch-merged-only-1',
+        parentAgentId: 'main',
+        label: 'Old exploration',
+        status: 'completed',
+        isBranch: true,
+        branchSealed: true,
+        startedAt: '2026-04-01T00:00:00.000Z',
+        endedAt: '2026-04-01T00:01:00.000Z',
+      },
+    ]);
+    const mergedOnlyRail = await renderRail({
+      agentForest: mergedOnlyForest,
+      stateTasks: [],
+      onOpenSubagent,
+      onInspectMain,
+    });
+    const mergedOnlySection = mergedOnlyRail.querySelector('[data-rail-section="branches"]')!;
+    const mergedOnlyHeader = mergedOnlySection.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+    expect(mergedOnlyHeader.getAttribute('aria-expanded')).toBe('false');
+    expect(mergedOnlySection.querySelector('[data-branch-row="branch-merged-only-1"]')).toBeNull();
+    await act(async () => { mergedOnlyHeader.click(); });
+    expect(mergedOnlyHeader.getAttribute('aria-expanded')).toBe('true');
+    expect(mergedOnlySection.querySelector('[data-branch-row="branch-merged-only-1"]')).not.toBeNull();
 
     // When viewing a branch, the Branches header exposes a quick "Main" return action:
     const focusedRail = await renderRail({
@@ -1677,8 +1708,9 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
       );
     });
 
-    // Main-only sections never leak into the routed Branch page
-    expect(container.querySelector('[data-rail-section="branches"]')).toBeNull();
+    // Routed branch page keeps the Branches switcher accessible so users can jump between branches or back to main,
+    // while main-only cron & persona settings stay out of the branch rail.
+    expect(container.querySelector('[data-rail-section="branches"]')).not.toBeNull();
     expect(container.querySelector('[data-rail-session-cron]')).toBeNull();
     expect(container.querySelector('[data-rail-persona-settings]')).toBeNull();
 
@@ -1699,6 +1731,6 @@ describe('RightRail plugin preview routing and branch-owned rail', () => {
     expect(overviewCockpit.getAttribute('data-panel-mode')).toBe('cockpit');
     expect(overviewCockpit.getAttribute('data-panel-agent')).toBe('branch-281');
     expect(overviewCockpit.getAttribute('data-panel-scope-root')).toBe('branch-281');
-    expect(container.querySelector('[data-rail-section="branches"]')).toBeNull();
+    expect(container.querySelector('[data-rail-section="branches"]')).not.toBeNull();
   });
 });

@@ -362,7 +362,7 @@ function CommandIsland({ command, cwd, output }: { command: string; cwd?: string
         {command}
       </div>
       {output !== undefined ? (
-        <div className="max-h-72 overflow-auto border-t border-shell-hairline px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
+        <div className="max-h-72 overflow-auto border-t border-shell-hairline px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-shell-ink">
           {output}
         </div>
       ) : null}
@@ -374,9 +374,9 @@ function CommandIsland({ command, cwd, output }: { command: string; cwd?: string
  * dark command island the well dissolves into the island itself. */
 function wellClass(island: boolean, tone: 'plain' | 'danger' = 'plain'): string {
   if (island) {
-    return `whitespace-pre-wrap font-mono text-[12px] leading-relaxed ${tone === 'danger' ? 'text-shell-danger' : ''}`;
+    return `whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[12px] leading-relaxed ${tone === 'danger' ? 'text-shell-danger' : ''}`;
   }
-  return `max-h-72 overflow-auto rounded-md px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap ${
+  return `max-h-72 overflow-auto rounded-md px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] ${
     tone === 'danger' ? 'bg-danger/[0.06] text-danger' : 'bg-panel text-ink'
   }`;
 }
@@ -583,9 +583,15 @@ ${engineError}`;
   // Built-in tools say what they did in their own terms (a thread, a task, a
   // history hit); the raw payload stays one disclosure away.
   const semanticContext = useSemanticContext();
+  const semanticContextWithSession = useMemo(
+    () => (transcriptTarget?.sessionId !== undefined
+      ? { ...semanticContext, sessionId: transcriptTarget.sessionId }
+      : semanticContext),
+    [semanticContext, transcriptTarget?.sessionId],
+  );
   const semantics = useMemo(
-    () => (external || memoryRow || (bridged && realName === undefined) ? undefined : describeTool(block, semanticContext)),
-    [external, memoryRow, bridged, realName, block, semanticContext],
+    () => (external || memoryRow || (bridged && realName === undefined) ? undefined : describeTool(block, semanticContextWithSession)),
+    [external, memoryRow, bridged, realName, block, semanticContextWithSession],
   );
   const pluginToolSlot = useMemo(
     () => (memoryRow || semantics !== undefined || external || (bridged && realName === undefined)

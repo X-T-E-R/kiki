@@ -3344,8 +3344,8 @@ describe('Composer ＋ menu', () => {
 });
 
 describe('Composer input history', () => {
-  it('recalls sent prompts from the text boundaries and walks only from those edges', async () => {
-    pushInputHistory('s_hist', 'first prompt');
+  it('recalls sent prompts consecutively on ArrowUp/ArrowDown including multi-line entries', async () => {
+    pushInputHistory('s_hist', 'first line 1\nfirst line 2');
     pushInputHistory('s_hist', 'second prompt');
     const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
     const textarea = composerInputOf(container);
@@ -3354,27 +3354,23 @@ describe('Composer input history', () => {
     await pressKey(textarea, { key: 'ArrowUp' });
     expect(textarea.value).toBe('second prompt');
     await flushCaret();
-    await placeCaret(textarea, textarea.value.length);
-    // At the end of a recalled prompt, ↑ stays inside the text.
+    // Consecutive ArrowUp from the recalled entry's end steps straight to the older entry.
     await pressKey(textarea, { key: 'ArrowUp' });
-    expect(textarea.value).toBe('second prompt');
-
-    await placeCaret(textarea, 0);
-    await pressKey(textarea, { key: 'ArrowUp' });
-    expect(textarea.value).toBe('first prompt');
+    expect(textarea.value).toBe('first line 1\nfirst line 2');
     await flushCaret();
-    await placeCaret(textarea, 0);
     // The oldest entry sticks — no wrap-around.
     await pressKey(textarea, { key: 'ArrowUp' });
-    expect(textarea.value).toBe('first prompt');
-    // ↓ inside the prompt does not youthen.
+    expect(textarea.value).toBe('first line 1\nfirst line 2');
+    // Moving the caret into the middle keeps native cursor movement inside the prompt.
+    await placeCaret(textarea, 5);
+    await pressKey(textarea, { key: 'ArrowUp' });
     await pressKey(textarea, { key: 'ArrowDown' });
-    expect(textarea.value).toBe('first prompt');
+    expect(textarea.value).toBe('first line 1\nfirst line 2');
+    // From either edge while browsing, ArrowDown steps forward through history.
     await placeCaret(textarea, textarea.value.length);
     await pressKey(textarea, { key: 'ArrowDown' });
     expect(textarea.value).toBe('second prompt');
     await flushCaret();
-    await placeCaret(textarea, textarea.value.length);
     // ArrowDown past the newest entry hands the pre-browse draft back.
     await pressKey(textarea, { key: 'ArrowDown' });
     expect(textarea.value).toBe('');

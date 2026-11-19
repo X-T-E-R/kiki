@@ -685,6 +685,8 @@ describe('projected profile model permission', () => {
     expect(projectedProfileModelState(projection, models, 'fast')).toBe('allowed');
     expect(projectedProfileModelState(projection, models, 'fixture/slow')).toBe('blocked');
     expect(projectedProfileModelState(projection, models, undefined)).toBe('blocked');
+    expect(projectedProfileModelState(projection, models, undefined, 'sub', { unresolvedPending: true })).toBe('unknown');
+    expect(projectedProfileModelState({ ...projection, effective_model_aliases: [] }, models, undefined, 'sub', { unresolvedPending: true })).toBe('blocked');
     expect(projectedProfileModelState({ ...projection, effective_model_aliases: [] }, models, 'fast')).toBe('blocked');
   });
   it('fails closed when an enabled restriction has no projection and preserves the disabled legacy case', () => {

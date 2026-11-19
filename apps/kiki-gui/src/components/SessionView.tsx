@@ -55,7 +55,7 @@ import {
   updateStoredAnnotations,
   useConversationAnnotations,
 } from './agent-workspace/useConversationAnnotations';
-import { useStableForest, type TranscriptRowActions } from './Transcript';
+import { registerTurnLocateHint, useStableForest, type TranscriptRowActions } from './Transcript';
 import { mergeLoadedAttachments } from './RowActions';
 import { Icon } from './icons';
 import { useSidebarContext } from './sidebarContext';
@@ -81,6 +81,7 @@ import {
 } from './transcriptDetail';
 import { contentTextPresentation, projectPresentedText, readTextPresentation, type ContentRef } from '@kiki/transcript';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
+import { getBackEntry } from '../lib/navHistory';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import {
   SESSION_REWRITTEN_EVENT,
@@ -2260,6 +2261,8 @@ export function SessionView({
   // pages older history in, opens folds, and says so when the place is gone.
   const locatorParams = new URLSearchParams(location.search);
   const turnLocator = locatorParams.get('turn');
+  const stepLocator = locatorParams.get('step');
+  const queryLocator = locatorParams.get('q');
   const blockLocator = locatorParams.get('block');
   const interactionLocator = locatorParams.get('interaction');
   const navVisitId = useNavVisitId();
@@ -2273,10 +2276,16 @@ export function SessionView({
       ? { kind: 'interaction' as const, id: interactionLocator }
       : blockLocator !== null ? { kind: 'block' as const, blockId: blockLocator }
         : { kind: 'turn' as const, turnId: normalizeTurnId(turnLocator!) };
+    if (target.kind === 'turn' && (stepLocator !== null || queryLocator !== null)) {
+      registerTurnLocateHint(sessionId, selectedAgentId ?? MAIN_AGENT_ID, target.turnId, {
+        stepId: stepLocator ?? undefined,
+        query: queryLocator ?? undefined,
+      });
+    }
     const controller = new AbortController();
     void locateInTimeline(target, { sessionId, agentId: selectedAgentId, signal: controller.signal });
     return () => { controller.abort(); };
-  }, [turnLocator, blockLocator, interactionLocator, sessionId, selectedAgentId, navVisitId]);
+  }, [turnLocator, stepLocator, queryLocator, blockLocator, interactionLocator, sessionId, selectedAgentId, navVisitId]);
   const initialPromptRef = useRef(createHandoff.initialPrompt);
   const initialSkillRef = useRef(createHandoff.initialSkill);
   const initialOptionsRef = useRef(createHandoff);
@@ -2460,6 +2469,8 @@ export function SessionView({
     readonly loading: boolean;
     readonly loadError: boolean;
     readonly attachments: readonly ComposerAttachment[];
+    readonly initialAttachments: readonly ComposerAttachment[];
+    readonly initialBody: string;
     readonly savedDraft: string;
     readonly savedAnnotations: readonly SelectionAnnotation[];
     readonly original: { readonly text: string; readonly presentation?: import('@kiki/transcript').TextPresentation };
@@ -4165,7 +4176,8 @@ boundExecution,
             old === undefined ? old : mergeUpdated(old),
           );
         }
-        actionContext.refreshSessions();
+        // Cache was already patched in-place above and WS session.metaUpdated
+        // reconciles; avoid invalidating all ['sessions'] pages/pinned scans.
       } catch (error: unknown) {
         pushToast({
           tone: 'error',
@@ -4548,10 +4560,24 @@ boundExecution,
   // preview buffer is never dropped silently.
   const navigateVisits = useGuardedNavigate();
 
+  // Route-shell seams for the agent workspace: back-to-session and the
+  // route-level agent open (the spawn jump-back and the preview tab's "open in
+  // page" — returning via POP when main was the immediate previous visit keeps
+  // main's exact scroll snapshot).
+  const openSession = useCallback(() => {
+    const sessionPath = `/s/${sessionId}`;
+    const back = getBackEntry();
+    if (back !== null && back.pathname === sessionPath && back.search === '' && back.hash === '') {
+      void navigate(-1);
+      return;
+    }
+    void navigateVisits(sessionPath);
+  }, [navigate, navigateVisits, sessionId]);
+
   const openAgent = useCallback(
     (agentId: string) => {
       if (agentId === MAIN_AGENT_ID) {
-        void navigateVisits(`/s/${sessionId}`);
+        openSession();
         return;
       }
       const node = forest.byId[agentId];
@@ -4564,7 +4590,7 @@ boundExecution,
       const title = node?.label ?? agentId;
       previewRef.current.openAgentPanel(agentId, title);
     },
-    [forest, liveSettings.subagentPanelOpenMode, navigateVisits, sessionId],
+    [forest, liveSettings.subagentPanelOpenMode, navigateVisits, openSession, sessionId],
   );
   // `/btw` and the header's "Side question": fork a tool-less side agent from
   // the main context and anchor a compact ephemeral floating card right above
@@ -4670,13 +4696,6 @@ boundExecution,
     },
     [navigateVisits, sessionId],
   );
-  // Route-shell seams for the agent workspace: back-to-session and the
-  // route-level agent open (the spawn jump-back and the preview tab's "open in
-  // page" — the source visit keeps its preview snapshot, so the return arrow
-  // reopens the panel the reader left).
-  const openSession = useCallback(() => {
-    void navigateVisits(`/s/${sessionId}`);
-  }, [navigateVisits, sessionId]);
   const openAgentRoute = useCallback(
     (agentId: string) => {
       const path = agentDetailPath(sessionId, agentId);
@@ -4856,16 +4875,20 @@ boundExecution,
       let initialAttachments = retainedAttachmentsFromContent(item.content ?? []);
       const abort = new AbortController();
       const incomplete = controller.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content') === true;
+      const original = { text: block?.text ?? item.text, presentation: block?.presentation ?? contentTextPresentation(item.content ?? [], '\n\n') };
+      const carryovers = parseSelectionCarryovers(original.text, original.presentation);
+      const startingAttachments = [...initialAttachments, ...pathFileMentions];
       const edit = {
         promptId, owner: crypto.randomUUID(), abort, loading: incomplete, loadError: false,
-        attachments: [...initialAttachments, ...pathFileMentions],
+        attachments: startingAttachments,
+        initialAttachments: startingAttachments,
+        initialBody: carryovers.body,
         savedDraft: draftRef.current,
         savedAnnotations: draftSelectionsRef.current,
-        original: { text: block?.text ?? item.text, presentation: block?.presentation ?? contentTextPresentation(item.content ?? [], '\n\n') },
+        original,
       };
       queueEditRef.current = edit;
       setQueueEdit(edit);
-      const carryovers = parseSelectionCarryovers(edit.original.text, edit.original.presentation);
       updateDraft(carryovers.body);
       const annotationsFromCarryovers = (selections: typeof carryovers.selections) => selections.reduce<readonly SelectionAnnotation[]>(
         (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
@@ -4873,14 +4896,6 @@ boundExecution,
       setAnnotations(annotationsFromCarryovers(carryovers.selections));
       const ownsEdit = () => !abort.signal.aborted && composerOwnerActive.current && sessionIdRef.current === sessionId && queueEditRef.current?.owner === edit.owner;
       void (async () => {
-        const releaseAbandonedHold = () => {
-          if ((abort.signal.aborted || !composerOwnerActive.current || sessionIdRef.current !== sessionId) && queueEditRef.current?.promptId !== promptId) {
-            void controller.holdQueued(promptId, false).catch(() => undefined);
-          }
-        };
-        const holdFlight = controller.holdQueued(promptId, true).then((held) => {
-          if (held) releaseAbandonedHold();
-        }, () => undefined);
         try {
           const content = incomplete ? await controller.readQueuedPromptContent(promptId, abort.signal) : item.content ?? [];
           abort.signal.throwIfAborted();
@@ -4889,12 +4904,17 @@ boundExecution,
           if (incomplete) {
             const completeAttachments = retainedAttachmentsFromContent(content);
             const previous = initialAttachments;
-            const original = { text: content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'), presentation: contentTextPresentation(content, '\n\n') };
+            const loadedOriginal = { text: content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'), presentation: contentTextPresentation(content, '\n\n') };
+            const complete = parseSelectionCarryovers(loadedOriginal.text, loadedOriginal.presentation);
             setQueueEdit((current) => current?.owner !== edit.owner ? current : {
-              ...current, loading: false, original, attachments: mergeLoadedAttachments(current.attachments, completeAttachments, previous),
+              ...current,
+              loading: false,
+              original: loadedOriginal,
+              initialBody: complete.body,
+              attachments: mergeLoadedAttachments(current.attachments, completeAttachments, previous),
+              initialAttachments: mergeLoadedAttachments(current.initialAttachments, completeAttachments, previous),
             });
             initialAttachments = completeAttachments;
-            const complete = parseSelectionCarryovers(original.text, original.presentation);
             updateDraft(complete.body);
             setAnnotations(annotationsFromCarryovers(complete.selections));
           }
@@ -4904,15 +4924,14 @@ boundExecution,
             return undefined;
           });
           if (loaded !== undefined && ownsEdit()) setQueueEdit((current) => current?.owner !== edit.owner ? current : {
-            ...current, attachments: mergeLoadedAttachments(current.attachments, loaded, initialAttachments),
+            ...current,
+            attachments: mergeLoadedAttachments(current.attachments, loaded, initialAttachments),
+            initialAttachments: mergeLoadedAttachments(current.initialAttachments, loaded, initialAttachments),
           });
         } catch (error: unknown) {
           if (!ownsEdit()) return;
           setQueueEdit((current) => current?.owner !== edit.owner ? current : { ...current, loading: false, loadError: true });
           pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
-        } finally {
-          await holdFlight;
-          releaseAbandonedHold();
         }
       })();
     },
@@ -4925,6 +4944,41 @@ boundExecution,
       attachments: typeof next === 'function' ? next(current.attachments) : next,
     });
   }, [queueEdit?.owner]);
+  const handleQueueEditLeftQueue = useCallback((editedText?: string, editedAttachments?: readonly ComposerAttachment[]) => {
+    const edit = queueEditRef.current;
+    if (edit === null) return;
+    edit.abort.abort();
+    queueEditRef.current = null;
+    setQueueEdit(null);
+    const currentText = editedText ?? draftRef.current;
+    const currentAttachments = editedAttachments ?? edit.attachments;
+    const textModified = currentText.trim() !== edit.initialBody.trim();
+    const addedAttachments = currentAttachments.filter((a) => !edit.initialAttachments.includes(a));
+    const attachmentsModified =
+      addedAttachments.length > 0 ||
+      currentAttachments.length !== edit.initialAttachments.length ||
+      currentAttachments.some((a, i) => a !== edit.initialAttachments[i]);
+    if (textModified || attachmentsModified) {
+      const mergedDraft = edit.savedDraft.trim() !== '' && currentText.trim() !== '' && edit.savedDraft !== currentText
+        ? `${edit.savedDraft}\n\n${currentText}`
+        : (currentText.trim() !== '' ? currentText : edit.savedDraft);
+      updateDraft(mergedDraft);
+      if (addedAttachments.length > 0) {
+        setAttachments((current) => [...current, ...addedAttachments]);
+      } else if (attachmentsModified && currentAttachments.length > 0) {
+        setAttachments((current) => [...current, ...currentAttachments.filter((a) => !current.includes(a))]);
+      }
+      pushToast({
+        tone: 'info',
+        text: locale === 'zh'
+          ? '原排队消息已开始执行或移出队列，你的修改已保留到输入框草稿中。'
+          : 'The queued prompt already started or left the queue; your edits were kept in the draft.',
+      });
+      return;
+    }
+    updateDraft(edit.savedDraft);
+    setAnnotations(edit.savedAnnotations);
+  }, [updateDraft, locale]);
   const handleQueueEditConfirm = useCallback(
     (text: string, editedAttachments: readonly ComposerAttachment[], argumentPresentation?: import('@kiki/transcript').TextPresentation): Promise<void> => {
       const edit = queueEdit;
@@ -4952,7 +5006,7 @@ boundExecution,
       };
       const content = buildPromptContent(`${carry.prefix}${prepared.text}`, editedAttachments, presentation);
       if (item === undefined) {
-        exit();
+        handleQueueEditLeftQueue(text, editedAttachments);
         return Promise.resolve();
       }
       if (actions === null || content === null) return Promise.resolve();
@@ -4963,7 +5017,7 @@ boundExecution,
         .then(exit)
         .catch(() => undefined);
     },
-    [queueEdit, queuedItems, annotations, actions, updateDraft],
+    [queueEdit, queuedItems, annotations, actions, updateDraft, handleQueueEditLeftQueue],
   );
   const handleQueueEditCancel = useCallback(() => {
     const edit = queueEditRef.current;
@@ -5012,13 +5066,13 @@ boundExecution,
     [controller, t],
   );
   // Self-heal: if the row being edited leaves the queue (steered, cleared, or
-  // aborted from another surface), leave edit mode and restore the draft.
+  // aborted from another surface), leave edit mode without discarding modified edits.
   useEffect(() => {
     if (queueEdit === null || !state.loaded) return;
     if (!state.queuedPromptIds.includes(queueEdit.promptId)) {
-      handleQueueEditCancel();
+      handleQueueEditLeftQueue();
     }
-  }, [queueEdit, state.loaded, state.queuedPromptIds, handleQueueEditCancel]);
+  }, [queueEdit, state.loaded, state.queuedPromptIds, handleQueueEditLeftQueue]);
   // Edit hold: while a queued prompt sits in the composer for editing, the
   // engine must not launch it (nor anything queued behind it; prompts ahead
   // of it still run). The server lets an unrenewed hold lapse, so renew it
@@ -5028,6 +5082,7 @@ boundExecution,
   useEffect(() => {
     if (editHoldPromptId === undefined || controller === null) return;
     let active = true;
+    let warned = false;
     let inFlight: Promise<unknown> = Promise.resolve();
     const hold = () => {
       if (!active) return;
@@ -5035,7 +5090,17 @@ boundExecution,
         if (!active && held && queueEditRef.current?.promptId !== editHoldPromptId) {
           return controller.holdQueued(editHoldPromptId, false).catch(() => undefined);
         }
-      }, () => undefined);
+      }, () => {
+        if (active && !warned) {
+          warned = true;
+          pushToast({
+            tone: 'info',
+            text: locale === 'zh'
+              ? '未能暂停该排队消息，若当前轮次结束它可能提前发出（你的修改不会被清空）。'
+              : 'Could not hold the queued prompt; if the current turn finishes it may run, while your edits stay safe.',
+          });
+        }
+      });
       inFlight = flight;
     };
     hold();
@@ -5049,7 +5114,7 @@ boundExecution,
         }
       });
     };
-  }, [controller, editHoldPromptId]);
+  }, [controller, editHoldPromptId, locale]);
   const retryPendingSubmission = useCallback((promptId: string) => {
     const pending = pendingRetryRef.current;
     if (pending?.id === promptId) pending.run();
@@ -5179,6 +5244,50 @@ boundExecution,
     [actions, revealOwnSend],
   );
   const handleCompactContext = useCallback(() => { runSessionAction('compact'); }, [runSessionAction]);
+  const handleRetryCompaction = useCallback((strategy: 'summarize' | 'relay') => {
+    setManualCompactSessionId(sessionId);
+    void client.compactSession(sessionId, { strategy })
+      .then((receipt) => {
+        const outcome = compactReceiptOutcome(receipt);
+        if (outcome === 'duplicate') {
+          pushToast({ tone: 'info', text: t('context.compaction.manual.duplicate') });
+          return;
+        }
+        seedCompactionProgress(receipt);
+        if (outcome === 'requested' || !compactionHintShownRef.current) {
+          pushToast({
+            tone: 'success',
+            text: t(outcome === 'requested' ? 'action.compactRequestedSession' : `context.compaction.manual.${outcome}`),
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
+        });
+      });
+  }, [client, locale, seedCompactionProgress, sessionId, t]);
+  const handleContinueFailedTurn = useCallback(() => {
+    if (state.busy || actions === null) return;
+    revealOwnSend(false);
+    void actions.send(locale === 'zh' ? '继续' : 'Continue', []);
+  }, [actions, locale, revealOwnSend, state.busy]);
+  const handleRetryFailedTurn = useCallback((failedUserBlock: UserBlock | undefined) => {
+    if (state.busy || actions === null) return;
+    if (failedUserBlock?.userMessageId !== undefined && controller !== null) {
+      void controller.regenerateMessage(failedUserBlock.userMessageId).catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('action.regenerateFailed', { detail: sessionActionErrorText(locale, error) }),
+        });
+      });
+      return;
+    }
+    const text = failedUserBlock?.text.trim() || (locale === 'zh' ? '继续' : 'Continue');
+    revealOwnSend(false);
+    void actions.send(text, []);
+  }, [actions, controller, locale, revealOwnSend, state.busy, t]);
   const handleComposerSend = useCallback(
     (
       text: string,
@@ -5754,72 +5863,7 @@ boundExecution,
     () => ({ inTray: true, onReview: reviewPending, pendingItems: pendingInteractionRefs }),
     [reviewPending, pendingInteractionRefs],
   );
-  // The subagent route branch: the shell resolves the target and navigation;
-  // the workspace owns header, timeline, resync, details, and actions.
-  if (selectedAgentId !== undefined) {
-    return (
-      <>
-        <AgentWorkspace
-          target={{ sessionId, agentId: selectedAgentId }}
-          controller={controller}
-          sessionState={state}
-          forest={forest}
-          navigation={agentWorkspaceNavigation}
-          railOpen={railOpen}
-          railIsOverlay={railIsOverlay}
-          onToggleRail={toggleRail}
-          railAvailable={railAvailable}
-          onCloseRail={closeRail}
-          onCancelTask={handleCancelTask}
-          onStopAgentTask={stopAgentTask}
-          previewApiRef={previewRef}
-          historyBack
-          locateSpawnInMenu
-        />
-        <SessionAnnouncer
-          pendingInteraction={state.pendingInteraction}
-          busy={state.busy}
-          queuedItemCount={queuedItemCount}
-        />
-        <ConfirmDialog
-          open={confirmUndo}
-          overlayId="confirm-undo"
-          title={t('undo.title')}
-          body={t('undo.bodySession')}
-          confirmLabel={t('undo.confirm')}
-          onConfirm={confirmUndoRun}
-          onCancel={() => { setConfirmUndo(false); }}
-        />
-        <ConfirmDialog
-          open={batchConfirm !== undefined}
-          overlayId="confirm-batch-approvals"
-          title={
-            batchConfirm?.decision === 'rejected'
-              ? t('sv.rejectAllTitle', { count: batchConfirm.ids.length })
-              : t('sv.approveAllTitle', { count: batchConfirm?.ids.length ?? 0 })
-          }
-          body={
-            batchConfirm?.decision === 'rejected'
-              ? t('sv.rejectAllBody')
-              : t('sv.approveAllBody')
-          }
-          confirmLabel={batchConfirm?.decision === 'rejected' ? t('sv.rejectAll') : t('sv.approveAll')}
-          tone={batchConfirm?.decision === 'rejected' ? 'danger' : 'default'}
-          onConfirm={confirmBatchRun}
-          onCancel={() => { setBatchConfirm(undefined); }}
-        />
-        <ConfirmDialog
-          open={confirmClearQueue}
-          overlayId="confirm-clear-queue"
-          title={t('sv.queueClearTitle', { count: queueRowCount })}
-          body={t('sv.queueClearBody')}
-          confirmLabel={t('sv.queueClearAll')}
-          onConfirm={confirmClearQueueRun}
-          onCancel={() => { setConfirmClearQueue(false); }}
-        />
-      </>
-    );
-  }
+  const routedSubagent = selectedAgentId !== undefined;
 
   return (
     <MediaPreviewProvider
@@ -5834,149 +5878,201 @@ boundExecution,
       onCancelTask={handleCancelTask}
       onStopAgentTask={stopAgentTask}
     >
-      <PreviewFocusBridge onFocusedAgent={setPanelFocusAgent} />
-      <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
-      <MessageViewContext.Provider value={messageViewContext}>
-      <InteractionPlacementContext.Provider value={interactionPlacement}>
-      <AdmissionScope value={admissionScope}>
-      <AgentWorkspace
-        target={{ sessionId, agentId: MAIN_AGENT_ID }}
-        controller={controller}
-        sessionState={state}
-        forest={forest}
-        navigation={agentWorkspaceNavigation}
-        railOpen={railOpen}
-        railIsOverlay={railIsOverlay}
-        onToggleRail={toggleRail}
-        onCloseRail={closeRail}
-        onCancelTask={handleCancelTask}
-        onStopAgentTask={stopAgentTask}
-        inheritMediaPreview
-        main={{
-          header: <Header
-            controller={controller} railOpen={railOpen} railAvailable={railAvailable}
-            terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
-            onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
-            onToggleSidebar={onToggleSidebar} sidebarBadge={sidebarBadge} onRenameSession={renameSession}
-            onTogglePrivate={toggleSessionPrivate}
-            privateBusy={pendingPrivacy.has(sessionId)}
-            onSessionAction={runSessionAction}
-            freshContextAvailable={conversationStarted}
-            onSideQuestion={() => { startSideQuestion(); }}
-            onOpenBranch={() => { startBranch(); }}
-            forkLineage={forkLineage}
-            forkPopoverOpenRequest={forkPopoverOpenRequest}
-            forkLaunchBusy={forkingSession || branchPending || sideQuestionPending}
-            onOpenForkSession={openForkSession}
-            onOpenBranchAgent={openAgentRoute}
-            onForkSessionWithSeed={handleForkSessionWithSeed}
-            onStartBranchWithSeed={startBranch}
-            view={timelineView} onView={setTimelineView}
-            onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
-            harness={harness}
-          />,
-          timeline: {
-            view: timelineView,
-            state: timelineState,
-            connected: wsStatus === 'open',
-            onLoadOlder: mainTimelineActions.loadOlder,
-            onResolveApproval: mainTimelineActions.resolveApproval,
-            onAnswerQuestion: mainTimelineActions.answerQuestion,
-            onDismissQuestion: mainTimelineActions.dismissQuestion,
-            onCancelQueued: handleCancelQueuedChips,
-            onRetryLoad: mainTimelineActions.retryLoad,
-            onRetryPending: retryPendingSubmission,
-            forest,
-            onOpenAgent: openAgent,
-            rowActions: transcriptRowActionsWithBranch,
-            offshootsByBlockId: forkLineage.byBlockId,
-            onOpenForkSession: openForkSession,
-            onOpenBranchAgent: openAgentRoute,
-          },
-          annotations: annotationSurface,
-          dock: <>
-            {shownBtw !== null ? (
-              <BtwFloatingCard
-                sessionId={sessionId}
-                agentId={shownBtw.agentId}
-                controller={controller}
-                sendingInitial={shownBtw.sendingInitial}
-                onSendQuestion={handleSendBtwQuestion}
-                onExpandFullView={(btwAgentId) => {
-                  setActiveBtw(null);
-                  openAgentRoute(btwAgentId);
-                }}
-                onClose={() => { setActiveBtw(null); }}
-              />
-            ) : null}
-            <SubmissionRecovery sessionId={sessionId} state={state} />
-            <ResyncStatusBanner
-              resyncing={state.resyncing} resyncFailed={state.resyncFailed}
-              error={state.resyncError}
-              onRetry={controller === null ? undefined : () => { void controller.resync(); }}
-            />
-            {recoveryHold ? (
-              <RecoveryHoldBar count={recoveryHoldCount} pending={recoveryPending}
-                onConfirm={handleRecoveryConfirm} />
-            ) : null}
-            {state.session?.ephemeral === true ? (
-              <EphemeralBar
-                session={state.session}
-                busy={state.busy}
-                onSaved={() => { void controller?.refreshSession(); }}
-              />
-            ) : null}
-          </>,
-          // The inspector's session-operation reads use the mounted
-          // controller; resyncs keep the rail and its drafts mounted.
-          rail: controller !== null ? <RightRail
-            className={`app-rail ${railOpen ? 'open' : ''}`}
-            state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
-            subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
-            onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
-            onOpenSubagent={openAgent} onClose={closeRail}
-            onInspectMain={inspectMain} onOpenFile={openFileInPreview}
-            onReviewPending={reviewPending}
-            sessionPending={trayItems} onResolveApproval={mainTimelineActions.resolveApproval}
-          /> : null,
-        }}
-      />
-      </AdmissionScope>
-      </InteractionPlacementContext.Provider>
-      </MessageViewContext.Provider>
-      <ModelSwitchDialog
-        open={modelSwitchDialog !== undefined}
-        fromModel={modelSwitchDialog?.fromModel ?? ''}
-        toModel={modelSwitchDialog?.toModel ?? ''}
-        initialMode={modelSwitchDialog?.initialMode ?? 'direct'}
-        editing={modelSwitchDialog?.editingOperationId !== undefined}
-        busy={state.busy}
-        submitting={modelSwitchSubmitting}
-        matchedRuleId={modelSwitchDialog?.matchedRuleId}
-        efforts={dialogSwitchEffort?.efforts}
-        initialEffort={dialogSwitchEffort?.effort}
-        defaultEffort={dialogSwitchEffort?.defaultEffort}
-        effortAdjustedFrom={dialogSwitchEffort?.adjustedFrom}
-        onConfirm={(choice) => {
-          const dialog = modelSwitchDialog;
-          if (dialog === undefined) return;
-          void submitModelSwitch({
-            fromModel: dialog.fromModel,
-            toModel: dialog.toModel,
-            mode: choice.mode,
-            remember: choice.remember,
-            effort: choice.effort,
-            editingOperationId: dialog.editingOperationId,
-            editingRevision: dialog.editingRevision,
-          });
-        }}
-        onCancel={() => { setModelSwitchDialog(undefined); }}
-        onOpenSettings={() => {
-          setModelSwitchDialog(undefined);
-          void navigate(settingsCardRoute('ai', 'st-card-model-switch', 'defaults'));
-        }}
-      />
-      </ModelSwitchActionsContext.Provider>
+      {routedSubagent ? (
+        <AgentWorkspace
+          target={{ sessionId, agentId: selectedAgentId }}
+          controller={controller}
+          sessionState={state}
+          forest={forest}
+          navigation={agentWorkspaceNavigation}
+          railOpen={railOpen}
+          railIsOverlay={railIsOverlay}
+          onToggleRail={toggleRail}
+          railAvailable={railAvailable}
+          onCloseRail={closeRail}
+          onCancelTask={handleCancelTask}
+          onStopAgentTask={stopAgentTask}
+          previewApiRef={previewRef}
+          inheritMediaPreview
+          historyBack
+          locateSpawnInMenu
+        />
+      ) : (
+        <>
+          <PreviewFocusBridge onFocusedAgent={setPanelFocusAgent} />
+          <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
+          <MessageViewContext.Provider value={messageViewContext}>
+          <InteractionPlacementContext.Provider value={interactionPlacement}>
+          <AdmissionScope value={admissionScope}>
+          <AgentWorkspace
+            target={{ sessionId, agentId: MAIN_AGENT_ID }}
+            controller={controller}
+            sessionState={state}
+            forest={forest}
+            navigation={agentWorkspaceNavigation}
+            railOpen={railOpen}
+            railIsOverlay={railIsOverlay}
+            onToggleRail={toggleRail}
+            onCloseRail={closeRail}
+            onCancelTask={handleCancelTask}
+            onStopAgentTask={stopAgentTask}
+            inheritMediaPreview
+            main={{
+              header: <Header
+                controller={controller} railOpen={railOpen} railAvailable={railAvailable}
+                terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
+                onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
+                onToggleSidebar={onToggleSidebar} sidebarBadge={sidebarBadge} onRenameSession={renameSession}
+                onTogglePrivate={toggleSessionPrivate}
+                privateBusy={pendingPrivacy.has(sessionId)}
+                onSessionAction={runSessionAction}
+                freshContextAvailable={conversationStarted}
+                onSideQuestion={() => { startSideQuestion(); }}
+                onOpenBranch={() => { startBranch(); }}
+                forkLineage={forkLineage}
+                forkPopoverOpenRequest={forkPopoverOpenRequest}
+                forkLaunchBusy={forkingSession || branchPending || sideQuestionPending}
+                onOpenForkSession={openForkSession}
+                onOpenBranchAgent={openAgentRoute}
+                onForkSessionWithSeed={handleForkSessionWithSeed}
+                onStartBranchWithSeed={startBranch}
+                view={timelineView} onView={setTimelineView}
+                onDelivery={changeDelivery} deliveryPending={deliveryChangedInTurn && state.busy}
+                harness={harness}
+              />,
+              timeline: {
+                view: timelineView,
+                state: timelineState,
+                connected: wsStatus === 'open',
+                onLoadOlder: mainTimelineActions.loadOlder,
+                onResolveApproval: mainTimelineActions.resolveApproval,
+                onAnswerQuestion: mainTimelineActions.answerQuestion,
+                onDismissQuestion: mainTimelineActions.dismissQuestion,
+                onCancelQueued: handleCancelQueuedChips,
+                onRetryLoad: mainTimelineActions.retryLoad,
+                onRetryPending: retryPendingSubmission,
+                forest,
+                onOpenAgent: openAgent,
+                rowActions: transcriptRowActionsWithBranch,
+                offshootsByBlockId: forkLineage.byBlockId,
+                onOpenForkSession: openForkSession,
+                onOpenBranchAgent: openAgentRoute,
+                onContinueFailedTurn: handleContinueFailedTurn,
+                onRetryFailedTurn: handleRetryFailedTurn,
+                onRetryCompaction: handleRetryCompaction,
+              },
+              annotations: annotationSurface,
+              dock: <>
+                {shownBtw !== null ? (
+                  <BtwFloatingCard
+                    sessionId={sessionId}
+                    agentId={shownBtw.agentId}
+                    controller={controller}
+                    sendingInitial={shownBtw.sendingInitial}
+                    onSendQuestion={handleSendBtwQuestion}
+                    onExpandFullView={(btwAgentId) => {
+                      setActiveBtw(null);
+                      openAgentRoute(btwAgentId);
+                    }}
+                    onClose={() => { setActiveBtw(null); }}
+                  />
+                ) : null}
+                <SubmissionRecovery sessionId={sessionId} state={state} />
+                <ResyncStatusBanner
+                  resyncing={state.resyncing} resyncFailed={state.resyncFailed}
+                  error={state.resyncError}
+                  onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+                />
+                {recoveryHold ? (
+                  <RecoveryHoldBar count={recoveryHoldCount} pending={recoveryPending}
+                    onConfirm={handleRecoveryConfirm} />
+                ) : null}
+                {state.session?.archived === true ? (
+                  <div
+                    data-archived-session-banner
+                    className="mx-auto flex w-full max-w-[var(--kiki-chat-content-width,760px)] flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink-soft"
+                  >
+                    <span>{locale === 'zh' ? '此对话已归档' : 'This conversation is archived'}</span>
+                    <button
+                      type="button"
+                      data-archived-session-restore
+                      onClick={() => {
+                        void client.restoreSession(sessionId).then(async () => {
+                          await Promise.all([
+                            queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined),
+                            queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined),
+                            controller?.refreshSession(),
+                          ]);
+                        }).catch((error: unknown) => {
+                          pushToast({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+                        });
+                      }}
+                      className="h-7 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10]"
+                    >
+                      {t('archive.restore')}
+                    </button>
+                  </div>
+                ) : null}
+                {state.session?.ephemeral === true ? (
+                  <EphemeralBar
+                    session={state.session}
+                    busy={state.busy}
+                    onSaved={() => { void controller?.refreshSession(); }}
+                  />
+                ) : null}
+              </>,
+              // The inspector's session-operation reads use the mounted
+              // controller; resyncs keep the rail and its drafts mounted.
+              rail: controller !== null ? <RightRail
+                className={`app-rail ${railOpen ? 'open' : ''}`}
+                state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
+                subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
+                onCancelTask={handleCancelTask} onStopAgentTask={stopAgentTask}
+                onOpenSubagent={openAgent} onClose={closeRail}
+                onInspectMain={inspectMain} onOpenFile={openFileInPreview}
+                onReviewPending={reviewPending}
+                sessionPending={trayItems} onResolveApproval={mainTimelineActions.resolveApproval}
+              /> : null,
+            }}
+          />
+          </AdmissionScope>
+          </InteractionPlacementContext.Provider>
+          </MessageViewContext.Provider>
+          <ModelSwitchDialog
+            open={modelSwitchDialog !== undefined}
+            fromModel={modelSwitchDialog?.fromModel ?? ''}
+            toModel={modelSwitchDialog?.toModel ?? ''}
+            initialMode={modelSwitchDialog?.initialMode ?? 'direct'}
+            editing={modelSwitchDialog?.editingOperationId !== undefined}
+            busy={state.busy}
+            submitting={modelSwitchSubmitting}
+            matchedRuleId={modelSwitchDialog?.matchedRuleId}
+            efforts={dialogSwitchEffort?.efforts}
+            initialEffort={dialogSwitchEffort?.effort}
+            defaultEffort={dialogSwitchEffort?.defaultEffort}
+            effortAdjustedFrom={dialogSwitchEffort?.adjustedFrom}
+            onConfirm={(choice) => {
+              const dialog = modelSwitchDialog;
+              if (dialog === undefined) return;
+              void submitModelSwitch({
+                fromModel: dialog.fromModel,
+                toModel: dialog.toModel,
+                mode: choice.mode,
+                remember: choice.remember,
+                effort: choice.effort,
+                editingOperationId: dialog.editingOperationId,
+                editingRevision: dialog.editingRevision,
+              });
+            }}
+            onCancel={() => { setModelSwitchDialog(undefined); }}
+            onOpenSettings={() => {
+              setModelSwitchDialog(undefined);
+              void navigate(settingsCardRoute('ai', 'st-card-model-switch', 'defaults'));
+            }}
+          />
+          </ModelSwitchActionsContext.Provider>
+        </>
+      )}
       {slots.footer !== null && terminalOpen && currentTerminalManager !== null
         ? createPortal(
             // The fallback takes the panel's own box, so the column does not

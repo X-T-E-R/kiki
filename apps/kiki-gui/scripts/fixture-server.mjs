@@ -612,6 +612,8 @@ class FixtureSession {
     // key (`frame:`/`turn:`/`task:` + id) → the unbounded canonical entity the
     // segment route reads from, so a read continues what the preview showed.
     this.boundedCanonical = new Map();
+    this.seq = scenarioData.as_of_seq ?? record.last_seq ?? this.messages.length;
+    this.epoch = scenarioData.epoch ?? 'ep_fixture_1';
     this.transcript = new TranscriptProjector(record.id, this.agentTranscripts, this.epoch);
     if ((scenarioData.messages ?? []).length > 0 || (scenarioData.older ?? []).length > 0) {
       seedMessages(this.transcript, this.messages, {
@@ -625,8 +627,6 @@ class FixtureSession {
     this.lastSkillActivation = null; // {name, args, attachments} — walker assertions
     this.lastFsSearch = null; // last fs:search body
     this.lastMessageAction = null; // {action: 'edit'|'regenerate', message_id, body}
-    this.seq = scenarioData.as_of_seq ?? record.last_seq ?? this.messages.length;
-    this.epoch = scenarioData.epoch ?? 'ep_fixture_1';
     this.scriptRunning = false;
     this.abortRequested = false;
     this.waiters = []; // [{kind, resolve, payload?}]
@@ -1835,6 +1835,7 @@ class FixtureServer {
 
   fanoutTranscriptReset(session, agentId) {
     this.klient.transcript(session, agentId);
+    if (typeof session.transcript?.resetEvent !== 'function') return;
     const payload = session.transcript.resetEvent(agentId);
     for (const connection of this.sockets) {
       const spec = connection.transcriptGrades?.get(session.record.id);
@@ -4087,12 +4088,15 @@ class FixtureServer {
       this.plugins.push(plugin);
       return this.envelope(res, plugin);
     }
-    const pluginActionMatch = /^\/plugins\/([^/]+):(enable|disable|remove)$/.exec(path);
+    const pluginActionMatch = /^\/plugins\/([^/]+):(enable|disable|remove|reload)$/.exec(path);
     if (pluginActionMatch !== null && method === 'POST') {
       const pluginId = decodeURIComponent(pluginActionMatch[1]);
       const action = pluginActionMatch[2];
       const index = this.plugins.findIndex((entry) => entry.id === pluginId);
       if (index < 0) return this.envelope(res, null, 40419, 'plugin.not_found');
+      if (action === 'reload') {
+        return this.envelope(res, this.plugins[index]);
+      }
       if (action === 'remove') this.plugins.splice(index, 1);
       else {
         // This is the global call, so the master and the global default move
@@ -4153,8 +4157,16 @@ class FixtureServer {
     }
     const workspaceSkillsMatch = /^\/workspaces\/([^/]+)\/skills$/.exec(path);
     if (workspaceSkillsMatch !== null) {
+      const disabledSet = new Set(
+        (this.config.disabled_skills ?? []).map((entry) => String(entry).trim().toLowerCase()).filter(Boolean),
+      );
+      const rawSkills = this.scenario?.data.workspaceSkills?.[workspaceSkillsMatch[1]] ?? [];
       return this.envelope(res, {
-        skills: this.scenario?.data.workspaceSkills?.[workspaceSkillsMatch[1]] ?? [],
+        skills: rawSkills.map((skill) => (
+          disabledSet.has(String(skill.name ?? '').trim().toLowerCase())
+            ? { ...skill, enabled: false }
+            : skill
+        )),
       });
     }
     if (path === '/workspaces:inspect' && method === 'POST') {

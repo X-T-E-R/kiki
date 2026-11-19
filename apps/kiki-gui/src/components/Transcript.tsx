@@ -153,9 +153,11 @@ import {
   TRANSCRIPT_ESTIMATED_ROW_HEIGHT,
   hasReaderDisclosure,
   installTranscriptAnchoring,
+  isFollowingTranscriptEnd,
   landAtEnd,
   noteReaderDisclosure,
   reconcileMountedRows,
+  setFollowingTranscriptEnd,
 } from './transcriptVirtualizer';
 import {
   guardTranscriptRowMeasure,
@@ -2573,8 +2575,129 @@ const COMPACTION_ROOTS = ['payload'] as const;
  * failure is visible in a fast scroll, while opening onto the full error or
  * compaction summary on request.
  */
+const CompactionRecoveryContext = createContext<{
+  readonly latestFailedNoticeId?: string;
+  readonly onRetryCompaction?: (strategy: 'summarize' | 'relay') => void;
+}>({});
+
+interface TurnLocateHint {
+  readonly stepId?: string;
+  readonly query?: string;
+}
+const turnLocateHints = new Map<string, TurnLocateHint>();
+const lastReadingSnapshotByScope = new Map<string, TimelineReadingSnapshot>();
+
+/**
+ * Attach optional `step` / `q` precision to a `?turn=` deep-link jump without
+ * changing the core `TimelineTarget` union. Consumed once the target turn resolves.
+ */
+export function registerTurnLocateHint(
+  sessionId: string,
+  agentId: string,
+  turnId: string,
+  hint: TurnLocateHint,
+): void {
+  const key = `${sessionId}\0${agentId}\0${normalizeTurnId(turnId)}`;
+  if ((hint.stepId === undefined || hint.stepId === '') && (hint.query === undefined || hint.query.trim() === '')) {
+    turnLocateHints.delete(key);
+    return;
+  }
+  turnLocateHints.set(key, hint);
+  if (turnLocateHints.size > 32) {
+    const oldest = turnLocateHints.keys().next().value;
+    if (oldest !== undefined) turnLocateHints.delete(oldest);
+  }
+}
+
+function nodeSearchableText(node: TimelineNode): string {
+  switch (node.kind) {
+    case 'assistant':
+    case 'thinking':
+    case 'message':
+    case 'user':
+    case 'notice':
+    case 'system':
+      return node.text;
+    case 'tool': {
+      const out = typeof node.output === 'string' ? node.output : JSON.stringify(node.output ?? '');
+      return `${node.name} ${out}`;
+    }
+    case 'shell':
+      return `${node.command} ${node.output ?? ''}`;
+    default:
+      return '';
+  }
+}
+
+function findTurnHintMatch(
+  virtualNodes: readonly TranscriptVirtualNode[],
+  normalizedTurnId: string,
+  hint: TurnLocateHint,
+): { index: number; foldId?: string; blockId?: string } | undefined {
+  const stepId = hint.stepId?.trim() || undefined;
+  const query = hint.query?.trim().toLowerCase() || undefined;
+  let queryMatch: { index: number; foldId?: string; blockId?: string } | undefined;
+  let userQueryMatch: { index: number; foldId?: string; blockId?: string } | undefined;
+
+  const inspect = (
+    node: TimelineNode,
+    index: number,
+    foldId: string | undefined,
+  ): { index: number; foldId?: string; blockId?: string } | undefined => {
+    const turnId = displayNodeTurnId(node);
+    const inTurn = turnId !== undefined && normalizeTurnId(turnId) === normalizedTurnId;
+    if (node.kind === 'history-fold') {
+      for (const member of node.members) {
+        const hit = inspect(member, index, node.id);
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    }
+    if (node.kind === 'subagent-group' || node.kind === 'media-run' || node.kind === 'activity-summary') {
+      for (const member of node.members) {
+        const hit = inspect(member, index, foldId);
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    }
+    if (node.kind === 'tool-group') {
+      for (const member of node.members) {
+        const hit = inspect(member, index, foldId);
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    }
+    if (!inTurn) return undefined;
+    if (stepId !== undefined && nodeMatchesStepId(node, stepId)) {
+      return { index, foldId, blockId: node.id };
+    }
+    if (query !== undefined && queryMatch === undefined) {
+      if (nodeSearchableText(node).toLowerCase().includes(query)) {
+        if (node.kind === 'user') {
+          userQueryMatch ??= { index, foldId, blockId: node.id };
+        } else {
+          queryMatch = { index, foldId, blockId: node.id };
+        }
+      }
+    }
+    return undefined;
+  };
+
+  for (let index = 0; index < virtualNodes.length; index += 1) {
+    const node = virtualNodes[index];
+    if (node === undefined) continue;
+    const stepHit = inspect(node, index, undefined);
+    if (stepHit !== undefined) return stepHit;
+  }
+  return queryMatch ?? userQueryMatch;
+}
+
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
-  const { t, time } = useI18n();
+  const { t, time, locale } = useI18n();
+  const compactionRecovery = useContext(CompactionRecoveryContext);
+  const canRecoverCompaction =
+    compactionRecovery.onRetryCompaction !== undefined &&
+    compactionRecovery.latestFailedNoticeId === block.id;
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   useFindReveal(block.id, open, setOpen);
@@ -2627,6 +2750,26 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
             <DisclosureChevron open={open} />
           </button>
         ) : label}
+        {canRecoverCompaction ? (
+          <span className="ml-1 inline-flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              data-compaction-retry-summarize
+              onClick={() => { compactionRecovery.onRetryCompaction?.('summarize'); }}
+              className="min-h-6 cursor-pointer rounded-md border border-hairline bg-paper px-2 text-[11.5px] font-medium text-ink transition-colors hover:border-hairline-strong hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              {locale === 'zh' ? '重试压缩' : 'Retry compaction'}
+            </button>
+            <button
+              type="button"
+              data-compaction-retry-fresh
+              onClick={() => { compactionRecovery.onRetryCompaction?.('relay'); }}
+              className="min-h-6 cursor-pointer rounded-md border border-hairline bg-paper px-2 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              {locale === 'zh' ? '清空较早上下文' : 'Compact fresh'}
+            </button>
+          </span>
+        ) : null}
       </TimelineDivider>
       {open ? (
         <div id={detailsId} className="mt-1 mb-1.5 space-y-2">
@@ -3868,6 +4011,10 @@ type TranscriptViewportAnchor = {
   atEnd: boolean;
   key: string | undefined;
   offset: number;
+  /** First stable member block id when `key` is a fold or group that may re-key. */
+  memberId?: string;
+  /** Normalized turn id for fallback anchoring across window resets. */
+  turnId?: string;
 };
 
 type PendingResetRestore = {
@@ -3988,15 +4135,34 @@ function locateIndexFor(virtualNodes: readonly TranscriptVirtualNode[]): Transcr
   return located;
 }
 
+function anchorIdentityForNode(node: TranscriptVirtualNode): { memberId?: string; turnId?: string } {
+  if (node === undefined) return {};
+  const rawTurnId = displayNodeTurnId(node);
+  const turnId = rawTurnId === undefined ? undefined : normalizeTurnId(rawTurnId);
+  if (node.kind === 'history-fold' || node.kind === 'tool-group' || node.kind === 'subagent-group' || node.kind === 'media-run' || node.kind === 'activity-summary') {
+    const firstMember = node.members.find((m) => m.kind !== 'turn-gap');
+    return { memberId: firstMember?.id, turnId };
+  }
+  return { memberId: node.id, turnId };
+}
+
 function captureTranscriptAnchor(
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
   measured = false,
+  virtualNodes?: readonly TranscriptVirtualNode[],
 ): TranscriptViewportAnchor {
   const scroll = virtualizer.scrollElement;
   const scrollOffset = virtualizer.scrollOffset ?? scroll?.scrollTop ?? 0;
   const item = virtualizer.getVirtualItemForOffset(scrollOffset);
   const key = typeof item?.key === 'string' ? item.key : undefined;
-  const modelAnchor = { atEnd: virtualizer.isAtEnd(TRANSCRIPT_END_THRESHOLD), key, offset: item === undefined ? 0 : scrollOffset - item.start };
+  const following = isFollowingTranscriptEnd(virtualizer);
+  const modelMeta = item !== undefined && virtualNodes !== undefined ? anchorIdentityForNode(virtualNodes[item.index]) : {};
+  const modelAnchor: TranscriptViewportAnchor = {
+    atEnd: following && virtualizer.isAtEnd(TRANSCRIPT_END_THRESHOLD),
+    key,
+    offset: item === undefined ? 0 : scrollOffset - item.start,
+    ...modelMeta,
+  };
   if (!measured || scroll === null) return modelAnchor;
   const top = scroll.getBoundingClientRect().top;
   const rows = [...scroll.querySelectorAll<HTMLElement>('[data-transcript-virtual-item]')]
@@ -4006,13 +4172,16 @@ function captureTranscriptAnchor(
   const row = rows.find(({ box }) => box.top <= top && box.bottom > top)?.row
     ?? rows.filter(({ box }) => box.top >= top).sort((left, right) => left.box.top - right.box.top)[0]?.row;
   if (row === undefined) return modelAnchor;
-  const rowKey = virtualizer.options.getItemKey(Number(row.dataset['index']));
+  const rowIndex = Number(row.dataset['index']);
+  const rowKey = virtualizer.options.getItemKey(rowIndex);
+  const rowMeta = virtualNodes !== undefined && Number.isInteger(rowIndex) ? anchorIdentityForNode(virtualNodes[rowIndex]) : {};
   const block = [...row.querySelectorAll<HTMLElement>('[data-block-id]')]
     .find((candidate) => candidate.dataset['blockId'] === rowKey);
   return {
-    atEnd: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= TRANSCRIPT_END_THRESHOLD,
+    atEnd: following && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= TRANSCRIPT_END_THRESHOLD,
     key: typeof rowKey === 'string' ? rowKey : undefined,
     offset: top - (block ?? row).getBoundingClientRect().top,
+    ...rowMeta,
   };
 }
 
@@ -4568,6 +4737,9 @@ export const TurnTailLine = memo(function TurnTailLine({
   resumeDisabled = false,
   onRetry,
   retryDisabled = false,
+  onContinueFailed,
+  onRetryFailed,
+  failedHasWork,
 }: {
   tail: TurnTailInfo;
   /**
@@ -4581,8 +4753,14 @@ export const TurnTailLine = memo(function TurnTailLine({
   /** Present when this turn's message can be sent again. */
   onRetry?: () => void;
   retryDisabled?: boolean;
+  /** 1-click Continue for a failed turn that already ran partial steps. */
+  onContinueFailed?: () => void;
+  /** 1-click Retry for a failed turn. */
+  onRetryFailed?: () => void;
+  /** True when the failed turn already executed tool/subagent steps. */
+  failedHasWork?: boolean;
 }) {
-  const { t, time } = useI18n();
+  const { t, time, locale } = useI18n();
   const [copied, setCopied] = useState(false);
   const [errorOpen, setErrorOpen] = useState(false);
   const isFailed = tail.state === 'failed';
@@ -4684,7 +4862,28 @@ export const TurnTailLine = memo(function TurnTailLine({
               {copied ? t('cb.copied') : t('cb.copy')}
             </button>
           ) : null}
-          {(isFailed || (gap !== undefined && gap.work === 'idle')) && onRetry !== undefined ? (
+          {isFailed && onContinueFailed !== undefined && failedHasWork === true ? (
+            <button
+              type="button"
+              data-turn-tail-continue
+              onClick={onContinueFailed}
+              disabled={retryDisabled}
+              className="min-h-6 cursor-pointer rounded-md bg-ink/[0.07] px-2 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.12] disabled:cursor-default disabled:opacity-50"
+            >
+              {locale === 'zh' ? '继续' : 'Continue'}
+            </button>
+          ) : null}
+          {isFailed && onRetryFailed !== undefined ? (
+            <button
+              type="button"
+              data-turn-tail-retry-now
+              onClick={onRetryFailed}
+              disabled={retryDisabled}
+              className={failedHasWork === true ? TAIL_ACTION : 'min-h-6 cursor-pointer rounded-md bg-ink/[0.07] px-2 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.12] disabled:cursor-default disabled:opacity-50'}
+            >
+              {locale === 'zh' ? '重试' : 'Retry'}
+            </button>
+          ) : (isFailed || (gap !== undefined && gap.work === 'idle')) && onRetry !== undefined ? (
             <button
               type="button"
               data-turn-tail-retry={isFailed ? '' : undefined}
@@ -4780,6 +4979,9 @@ export const Transcript = memo(function Transcript({
   onSaveDraftAnnotation,
   onRemoveDraftAnnotation,
   showQueuedPrompts = false,
+  onContinueFailedTurn,
+  onRetryFailedTurn,
+  onRetryCompaction,
 }: {
   state: SessionViewState;
   agentId?: string;
@@ -4828,6 +5030,12 @@ export const Transcript = memo(function Transcript({
   draftAnnotations?: readonly TimelineAnnotation[];
   onSaveDraftAnnotation?: (id: string, comment: string) => void;
   onRemoveDraftAnnotation?: (id: string) => void;
+  /** 1-click Continue when a failed turn already completed partial tool/subagent steps. */
+  onContinueFailedTurn?: () => void;
+  /** 1-click Retry/regenerate for a failed turn. */
+  onRetryFailedTurn?: (failedUserBlock: UserBlock | undefined) => void;
+  /** 1-click inline recovery for an unresolved `compaction.failed` notice. */
+  onRetryCompaction?: (strategy: 'summarize' | 'relay') => void;
 }) {
   const { t } = useI18n();
   const { blocks } = state;
@@ -5033,16 +5241,56 @@ export const Transcript = memo(function Transcript({
           : node,
       );
   }, [nodes, stoppedTailTurnId, failedTailTurnId]);
-  // The failed turn's message, for the tail's send-again.
-  const failedTailText = useMemo(() => {
+  // The failed turn's message & work status, for 1-click Continue / Retry.
+  const failedTurnUserBlock = useMemo(() => {
     if (failedTailTurnId === undefined) return undefined;
-    const user = blocks.findLast(
+    return blocks.findLast(
       (block): block is UserBlock => block.kind === 'user' && sameTurn(block.turnId, failedTailTurnId),
     );
+  }, [blocks, failedTailTurnId]);
+  const failedTurnHasWork = useMemo(() => (
+    failedTailTurnId !== undefined &&
+    blocks.some((block) =>
+      sameTurn(displayNodeTurnId(block), failedTailTurnId) &&
+      (block.kind === 'tool' || block.kind === 'shell' || block.kind === 'subagent'),
+    )
+  ), [blocks, failedTailTurnId]);
+  const failedTailText = useMemo(() => {
+    const user = failedTurnUserBlock;
     return user === undefined || user.text.trim() === '' || isUserBlockContentIncomplete(user, state.contentRefs)
       ? undefined
       : user.text;
-  }, [blocks, failedTailTurnId, state.contentRefs]);
+  }, [failedTurnUserBlock, state.contentRefs]);
+  const latestUnresolvedCompactionFailureId = useMemo(() => {
+    if (readOnly || state.busy || onRetryCompaction === undefined) return undefined;
+    for (let i = blocks.length - 1; i >= 0; i -= 1) {
+      const block = blocks[i];
+      if (block?.kind !== 'notice') continue;
+      if (
+        block.compactionPhase === 'completed' ||
+        block.i18n?.key === 'transcript.marker.compaction' ||
+        block.i18n?.key === 'transcript.marker.compactionSummarize' ||
+        block.i18n?.key === 'transcript.marker.compactionFresh'
+      ) {
+        return undefined;
+      }
+      if (
+        block.compactionPhase === 'failed' ||
+        block.compactionFailure !== undefined ||
+        block.i18n?.key === 'transcript.marker.compactionFailed'
+      ) {
+        return block.id;
+      }
+    }
+    return undefined;
+  }, [blocks, readOnly, state.busy, onRetryCompaction]);
+  const compactionRecoveryValue = useMemo(
+    () => ({
+      latestFailedNoticeId: latestUnresolvedCompactionFailureId,
+      onRetryCompaction: readOnly || state.busy ? undefined : onRetryCompaction,
+    }),
+    [latestUnresolvedCompactionFailureId, readOnly, state.busy, onRetryCompaction],
+  );
   // A turn that ended with nothing to read: main only, because this page owns
   // the session's own last turn. The facts come from the published state, so
   // switching sessions never shows another session's ending.
@@ -5580,6 +5828,15 @@ export const Transcript = memo(function Transcript({
         olderCarryPxRef.current = 0;
         return;
       }
+      // Upward scroll intent immediately disengages follow-end so streaming
+      // appends, row measurements, or viewport resizes cannot drag the reader
+      // back down before the async scroll event settles.
+      if (virtualizerRef.current !== null) {
+        setFollowingTranscriptEnd(virtualizerRef.current, false);
+      }
+      if (viewportAnchorRef.current.atEnd) {
+        viewportAnchorRef.current = { ...viewportAnchorRef.current, atEnd: false };
+      }
       if (olderInflightRef.current || state.loadingOlder) {
         olderIntentRef.current = false;
         return;
@@ -5693,16 +5950,24 @@ export const Transcript = memo(function Transcript({
   const initialScrollDoneRef = useRef(false);
   const initialScrollFrameRef = useRef<number | null>(null);
   const measuredResetRef = useRef(state.transcriptResetVersion);
+  const resetVersionRef = useRef(state.transcriptResetVersion);
+  resetVersionRef.current = state.transcriptResetVersion;
   const pendingResetRestoreRef = useRef<PendingResetRestore | null>(null);
   // Measurement + anchoring model: see transcriptVirtualizer.ts.
   const virtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
   const [, rerenderVirtualWindow] = useReducer((count: number) => count + 1, 0);
   const renderedVirtualRangeRef = useRef<{ startIndex: number; endIndex: number } | null>(null);
   const renderedVirtualSignatureRef = useRef('');
-  const wasAtEndBeforeRender =
+  const domAtEndBeforeRender =
     scrollRef.current !== null && scrollRef.current.isConnected && scrollRef.current.clientHeight > 0
       ? scrollRef.current.scrollHeight - scrollRef.current.clientHeight - scrollRef.current.scrollTop <= TRANSCRIPT_END_THRESHOLD
-      : viewportAnchorRef.current.atEnd;
+      : true;
+  const followingEndNow =
+    viewportAnchorRef.current.atEnd &&
+    (virtualizerRef.current === null || isFollowingTranscriptEnd(virtualizerRef.current)) &&
+    (!initialScrollDoneRef.current || domAtEndBeforeRender);
+  const wasAtEndBeforeRender =
+    initialScrollDoneRef.current ? followingEndNow : viewportAnchorRef.current.atEnd;
   const priorHistoryShapeRef = useRef({ resetVersion: state.transcriptResetVersion, length: virtualNodes.length });
   useInsertionEffect(() => {
     const prior = priorHistoryShapeRef.current;
@@ -5719,7 +5984,7 @@ export const Transcript = memo(function Transcript({
     measureElement: guardTranscriptRowMeasure,
     getItemKey: (index) => virtualNodeKey(virtualNodes[index]),
     anchorTo: 'end',
-    followOnAppend: true,
+    followOnAppend: followingEndNow,
     scrollEndThreshold: TRANSCRIPT_END_THRESHOLD,
     overscan: TRANSCRIPT_OVERSCAN,
     rangeExtractor,
@@ -5752,12 +6017,18 @@ export const Transcript = memo(function Transcript({
       ) {
         rerenderVirtualWindow();
       }
-      // A hidden (display:none) box reports scrollTop 0 on every tick; the
-      // reader's real place is the anchor captured while it was shown.
-      if (!visibleRef.current) return;
-      viewportAnchorRef.current = captureTranscriptAnchor(instance);
+      // A hidden (display:none) box reports scrollTop 0 on every tick, and a
+      // pending transcript reset has not restored the pre-reset anchor yet.
+      if (
+        !visibleRef.current ||
+        measuredResetRef.current !== resetVersionRef.current ||
+        pendingResetRestoreRef.current !== null
+      ) {
+        return;
+      }
+      viewportAnchorRef.current = captureTranscriptAnchor(instance, false, virtualNodesRef.current);
       if (scrollRef.current?.isConnected === true && instance.scrollElement === scrollRef.current) {
-        navViewportAnchorRef.current = captureTranscriptAnchor(instance, true);
+        navViewportAnchorRef.current = captureTranscriptAnchor(instance, true, virtualNodesRef.current);
       }
     },
   });
@@ -5782,6 +6053,7 @@ export const Transcript = memo(function Transcript({
     if (
       !olderInflightRef.current &&
       initialScrollDoneRef.current &&
+      measuredResetRef.current === state.transcriptResetVersion &&
       wasAtEndBeforeRender &&
       !navRestorePendingRef.current &&
       pendingResetRestoreRef.current === null &&
@@ -5792,7 +6064,7 @@ export const Transcript = memo(function Transcript({
         landAtEnd(virtualizer);
         syncTranscriptVirtualPositions(scroll, virtualizer);
       }
-      viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
+      viewportAnchorRef.current = captureTranscriptAnchor(virtualizer, false, virtualNodesRef.current);
     }
     const afterSignature = virtualWindowSignature(virtualizer);
     if (afterSignature !== renderedVirtualSignatureRef.current) {
@@ -6094,6 +6366,21 @@ export const Transcript = memo(function Transcript({
     return () => { observer.disconnect(); };
   }, [loadError, loaded, virtualNodes.length]);
 
+  const resolveSurvivingAnchor = useCallback((anchor: TranscriptViewportAnchor): { index: number; exactKey: boolean } | undefined => {
+    const exact = anchor.key === undefined ? undefined : nodeIndexesRef.current.get(anchor.key);
+    if (exact !== undefined) return { index: exact, exactKey: true };
+    const locateIdx = locateIndexFor(virtualNodesRef.current);
+    if (anchor.memberId !== undefined) {
+      const memberHit = locateIdx.blocks.get(anchor.memberId);
+      if (memberHit !== undefined) return { index: memberHit.index, exactKey: false };
+    }
+    if (anchor.turnId !== undefined) {
+      const turnIndex = locateIdx.turns.get(anchor.turnId);
+      if (turnIndex !== undefined) return { index: turnIndex, exactKey: false };
+    }
+    return virtualNodesRef.current.length > 0 ? { index: 0, exactKey: false } : undefined;
+  }, []);
+
   useLayoutEffect(() => {
     if (!loaded || loadError !== undefined || scrollRef.current === null) return;
     // A visit being restored owns the viewport: its saved anchor lands after
@@ -6110,7 +6397,9 @@ export const Transcript = memo(function Transcript({
       initialScrollFrameRef.current = requestAnimationFrame(() => {
         initialScrollFrameRef.current = null;
         // First measurements keep the end pinned (following → compensate), so
-        // a real distance past the threshold means someone else moved it.
+        // a real distance past the threshold or an upward user gesture means
+        // someone else moved it.
+        if (!isFollowingTranscriptEnd(virtualizer)) return;
         const scroll = scrollRef.current;
         if (scroll !== null && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > TRANSCRIPT_END_THRESHOLD) return;
         landAtEnd(virtualizer);
@@ -6144,23 +6433,32 @@ export const Transcript = memo(function Transcript({
       olderIntentRef.current = false;
       const { anchor } = pending;
       if (anchor.atEnd) {
-        virtualizer.scrollToEnd();
+        landAtEnd(virtualizer);
         pendingResetRestoreRef.current = null;
         return;
       }
-      const index = anchor.key === undefined ? undefined : nodeIndexesRef.current.get(anchor.key);
-      if (index === undefined) {
-        virtualizer.scrollToEnd();
-        pendingResetRestoreRef.current = null;
-        return;
-      }
-      const offset = virtualizer.getOffsetForIndex(index, 'start')?.[0];
-      if (offset !== undefined) {
-        virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
+      // Reader was scrolled away from the end: NEVER snap to bottom on reset.
+      // Recover by exact key, surviving fold member, same turn, or stay at the
+      // top of the current window while keeping `atEnd = false`.
+      setFollowingTranscriptEnd(virtualizer, false);
+      const survived = resolveSurvivingAnchor(anchor);
+      if (survived !== undefined) {
+        const offset = virtualizer.getOffsetForIndex(survived.index, 'start')?.[0] ?? 0;
+        const targetOffset = Math.max(0, offset + (survived.exactKey ? anchor.offset : 0));
+        virtualizer.scrollToOffset(targetOffset, { align: 'start' });
+        const scroll = scrollRef.current;
+        if (scroll !== null) virtualizer.scrollOffset = scroll.scrollTop;
+        const targetNode = virtualNodesRef.current[survived.index];
+        viewportAnchorRef.current = {
+          atEnd: false,
+          key: virtualNodeKey(targetNode),
+          offset: survived.exactKey ? anchor.offset : 0,
+          ...anchorIdentityForNode(targetNode),
+        };
       }
       pendingResetRestoreRef.current = null;
     });
-  }, [loadError, loaded, state.transcriptResetVersion, virtualNodes.length, virtualizer]);
+  }, [loadError, loaded, resolveSurvivingAnchor, state.transcriptResetVersion, virtualNodes.length, virtualizer]);
 
   // ---- visibility: a hidden tab keeps its reader's place ----
   // While hidden the scroll box has no layout, so its scroll events report a
@@ -6174,16 +6472,29 @@ export const Transcript = memo(function Transcript({
     if (!visible || was || !initialScrollDoneRef.current) return;
     const anchor = viewportAnchorRef.current;
     reconcileMountedRows(virtualizer);
-    const index = anchor.key === undefined ? undefined : nodeIndexesRef.current.get(anchor.key);
-    if (anchor.atEnd || index === undefined) {
+    if (anchor.atEnd) {
       landAtEnd(virtualizer);
       viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
     } else {
-      const offset = virtualizer.getOffsetForIndex(index, 'start')?.[0];
-      if (offset !== undefined) virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
+      setFollowingTranscriptEnd(virtualizer, false);
+      const survived = resolveSurvivingAnchor(anchor);
+      if (survived !== undefined) {
+        const offset = virtualizer.getOffsetForIndex(survived.index, 'start')?.[0] ?? 0;
+        const targetOffset = Math.max(0, offset + (survived.exactKey ? anchor.offset : 0));
+        virtualizer.scrollToOffset(targetOffset, { align: 'start' });
+        const scroll = scrollRef.current;
+        if (scroll !== null) virtualizer.scrollOffset = scroll.scrollTop;
+        const targetNode = virtualNodesRef.current[survived.index];
+        viewportAnchorRef.current = {
+          atEnd: false,
+          key: virtualNodeKey(targetNode),
+          offset: survived.exactKey ? anchor.offset : 0,
+          ...anchorIdentityForNode(targetNode),
+        };
+      }
     }
     if (sessionIdForLocate !== undefined) timelineBecameVisible(sessionIdForLocate, agentId);
-  }, [visible, virtualizer, agentId, sessionIdForLocate]);
+  }, [visible, virtualizer, agentId, sessionIdForLocate, resolveSurvivingAnchor]);
 
   // ---- unified locate entry (see lib/timelineLocate.ts) ----
   const liveRef = useRef({ loaded, loadError, hasMore: state.hasMoreHistory, olderError: state.olderError, coverage: state.historyCoverageKind, visible });
@@ -6219,28 +6530,33 @@ export const Transcript = memo(function Transcript({
     seekRequestRef.current = request;
     const signal = options?.signal === undefined ? request.signal : anySignal([request.signal, options.signal]);
     const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current;
+    const cancelOutcome = (): LocateOutcome => ({ status: 'no-timeline' });
     while (!liveRef.current.loaded || !initialScrollDoneRef.current) {
-      if (cancelled()) return { status: 'no-timeline' };
+      if (cancelled()) return cancelOutcome();
       if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
       await nextFrame();
     }
-    if (cancelled()) return { status: 'no-timeline' };
+    if (cancelled()) return cancelOutcome();
     if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
     if (target.kind === 'latest') {
       if (target.respectReader === true && !viewportAnchorRef.current.atEnd) return { status: 'kept' };
       landAtEnd(virtualizer);
       viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
       await nextFrame();
-      if (cancelled()) return { status: 'no-timeline' };
+      if (cancelled()) return cancelOutcome();
       landAtEnd(virtualizer);
       viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
       await nextFrame();
-      if (cancelled()) return { status: 'no-timeline' };
+      if (cancelled()) return cancelOutcome();
       landAtEnd(virtualizer);
       viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
       locateTargetRef.current = { key: timelineTargetKey(target), anchor: { ...viewportAnchorRef.current } };
       return { status: 'found' };
     }
+    const turnHintKey = target.kind === 'turn' && sessionIdForLocate !== undefined
+      ? `${sessionIdForLocate}\0${agentId}\0${normalizeTurnId(target.turnId)}`
+      : undefined;
+    const turnHint = turnHintKey === undefined ? undefined : turnLocateHints.get(turnHintKey);
     const resolve = (): { index: number; foldId?: string; blockId?: string } | undefined => {
       const { blocks, turns, subagents } = locateIndexFor(virtualNodesRef.current);
       switch (target.kind) {
@@ -6249,7 +6565,12 @@ export const Transcript = memo(function Transcript({
         case 'annotation':
           return blocks.has(target.blockId) ? { ...blocks.get(target.blockId)!, blockId: target.blockId } : undefined;
         case 'turn': {
-          const index = turns.get(normalizeTurnId(target.turnId));
+          const normalized = normalizeTurnId(target.turnId);
+          if (turnHint !== undefined) {
+            const precise = findTurnHintMatch(virtualNodesRef.current, normalized, turnHint);
+            if (precise !== undefined) return precise;
+          }
+          const index = turns.get(normalized);
           return index === undefined ? undefined : { index };
         }
         case 'subagent': {
@@ -6267,10 +6588,10 @@ export const Transcript = memo(function Transcript({
     };
     let hit = resolve();
     while (hit === undefined) {
-      if (cancelled()) return { status: 'no-timeline' };
+      if (cancelled()) return cancelOutcome();
       if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
       const structure = target.kind === 'turn' ? undefined : await readSeekStructure(signal);
-      if (cancelled()) return { status: 'no-timeline' };
+      if (cancelled()) return cancelOutcome();
       if (liveRef.current.loadError !== undefined) return { status: 'load-failed' };
       if (structure === undefined && !liveRef.current.hasMore) {
         return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
@@ -6295,10 +6616,10 @@ export const Transcript = memo(function Transcript({
       if (loadedMore) {
         for (let frame = 0; frame < (target.kind === 'turn' && controller !== undefined ? 2 : 4); frame += 1) {
           await nextFrame();
-          if (cancelled()) return { status: 'no-timeline' };
+          if (cancelled()) return cancelOutcome();
         }
       } else if (cancelled()) {
-        return { status: 'no-timeline' };
+        return cancelOutcome();
       }
       if (liveRef.current.loadError !== undefined || liveRef.current.olderError !== undefined) return { status: 'load-failed' };
       hit = resolve();
@@ -6311,7 +6632,7 @@ export const Transcript = memo(function Transcript({
     }
     // Row first (virtualized: it may not be mounted), then the exact element
     // (a fold member or an annotation mark inside a tall row).
-    if (cancelled()) return { status: 'no-timeline' };
+    if (cancelled()) return cancelOutcome();
     hit = resolve();
     if (hit === undefined) return { status: 'load-failed' };
     let requestedIndex = hit.index;
@@ -6319,7 +6640,7 @@ export const Transcript = memo(function Transcript({
     let element: HTMLElement | null = null;
     for (let frame = 0; frame < 120 && element === null; frame += 1) {
       await nextFrame();
-      if (cancelled()) return { status: 'no-timeline' };
+      if (cancelled()) return cancelOutcome();
       hit = resolve();
       const scroll = scrollRef.current;
       if (scroll === null || hit === undefined) return { status: 'load-failed' };
@@ -6344,7 +6665,8 @@ export const Transcript = memo(function Transcript({
             ) ?? row);
     }
     if (element === null) return { status: 'load-failed' };
-    if (cancelled()) return { status: 'no-timeline' };
+    if (cancelled()) return cancelOutcome();
+    if (turnHintKey !== undefined) turnLocateHints.delete(turnHintKey);
     if (options?.quiet === true) return { status: 'found' };
     element.scrollIntoView?.({ block: 'center' });
     viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
@@ -6498,15 +6820,38 @@ export const Transcript = memo(function Transcript({
     // Reading a place back only makes sense once this transcript has rows: a
     // not-yet-loaded timeline would page history for an anchor it cannot see.
     ready: loaded && loadError === undefined && visible,
-    capture: () => ({
-      anchor: departingReadingAnchorRef.current ?? (visibleRef.current && scrollRef.current?.isConnected === true && virtualizer.scrollElement === scrollRef.current
-        ? captureTranscriptAnchor(virtualizer, true) : { ...(navViewportAnchorRef.current ?? viewportAnchorRef.current) }),
-      openFolds: [...openFolds],
-      cardForms: Object.fromEntries(cardForms),
-    }),
+    capture: () => {
+      const captured: TimelineReadingSnapshot = {
+        anchor: departingReadingAnchorRef.current ?? (visibleRef.current && scrollRef.current?.isConnected === true && virtualizer.scrollElement === scrollRef.current
+          ? captureTranscriptAnchor(virtualizer, true) : { ...(navViewportAnchorRef.current ?? viewportAnchorRef.current) }),
+        openFolds: [...openFolds],
+        cardForms: Object.fromEntries(cardForms),
+      };
+      if (sessionIdForLocate !== undefined) {
+        const scopeKey = `${sessionIdForLocate}\0${agentId}`;
+        if (captured.anchor.atEnd) lastReadingSnapshotByScope.delete(scopeKey);
+        else lastReadingSnapshotByScope.set(scopeKey, captured);
+      }
+      return captured;
+    },
     restore: (snapshot, signal) => restoreReading(snapshot, signal),
     onRestoreError: () => { setReadingRestoreFailed((previous) => previous ?? t('locate.failedLoad')); },
   });
+  const fallbackRestoredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || loadError !== undefined || !visible || sessionIdForLocate === undefined) return;
+    if (reading.hasSnapshot) return;
+    const scopeKey = `${sessionIdForLocate}\0${agentId}`;
+    const restoreKey = `${reading.visitId ?? 'none'}\0${scopeKey}`;
+    if (fallbackRestoredRef.current === restoreKey) return;
+    const saved = lastReadingSnapshotByScope.get(scopeKey);
+    if (saved === undefined || saved.anchor.atEnd) return;
+    fallbackRestoredRef.current = restoreKey;
+    lastReadingSnapshotByScope.delete(scopeKey);
+    const ac = new AbortController();
+    void restoreReading(saved, ac.signal).catch(() => undefined);
+    return () => { ac.abort(); };
+  }, [loaded, loadError, visible, sessionIdForLocate, agentId, reading.hasSnapshot, reading.visitId, restoreReading]);
   navVisitRef.current = reading.visitId;
   navRestorePendingRef.current = reading.hasSnapshot && navRestoredVisitRef.current !== reading.visitId;
   // Freeze source geometry before the virtualizer's layout cleanup detaches
@@ -6920,6 +7265,7 @@ export const Transcript = memo(function Transcript({
       >
         {/* Bottom clearance is 24px of breathing room + the 36px fade band the
             shell's active composer seat overlaps (see index.css). */}
+        <CompactionRecoveryContext.Provider value={compactionRecoveryValue}>
         <PhoneMergedPendingLeadContext.Provider value={mergedPendingLeadId}>
         <div
           ref={virtualizer.containerRef}
@@ -7054,6 +7400,9 @@ export const Transcript = memo(function Transcript({
                         resumeDisabled={rowActions?.disabled === true}
                         onRetry={tailRetry}
                         retryDisabled={promptOutcomeActions.disabled === true}
+                        onContinueFailed={!readOnly && onContinueFailedTurn !== undefined ? onContinueFailedTurn : undefined}
+                        onRetryFailed={!readOnly && onRetryFailedTurn !== undefined ? () => { onRetryFailedTurn(failedTurnUserBlock); } : undefined}
+                        failedHasWork={failedTurnHasWork}
                       />
                     </div>
                   ) : null}
@@ -7073,6 +7422,7 @@ export const Transcript = memo(function Transcript({
           })}
         </div>
         </PhoneMergedPendingLeadContext.Provider>
+        </CompactionRecoveryContext.Provider>
       </div>
       {annotationPopover !== null && openAnnotation !== undefined ? (
         <AnnotationPopover

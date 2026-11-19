@@ -8,6 +8,8 @@ export const skillDescriptorSchema = z.object({
   description: z.string(),
   path: z.string(),
   source: skillSourceSchema,
+  plugin_id: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
   type: z.string().optional(),
   disable_model_invocation: z.boolean().optional(),
   prompt_command: z.boolean().optional(),

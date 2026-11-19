@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CompactionStartedEvent, CompactionCancelledEvent, CompactionCompletedEvent, CompactSessionResponse } from '@kiki/protocol';
 import type { KikiClient } from '../lib/client';
+import { pushToast } from '../lib/toasts';
 
 export interface CompactionProgress {
   readonly source: 'manual' | 'auto';
@@ -62,6 +63,8 @@ export interface CompactionProgressHandle {
   readonly progress: CompactionProgress | undefined;
   /** Record what a manual-compaction request answered, so the hint never depends on the event stream alone. */
   readonly seed: (receipt: CompactSessionResponse) => void;
+  /** Clear a settled status hint (e.g. a failed badge) immediately. */
+  readonly dismiss: () => void;
 }
 
 export function useCompactionProgress(client: KikiClient, sessionId: string | undefined): CompactionProgressHandle {
@@ -128,11 +131,29 @@ export function useCompactionProgress(client: KikiClient, sessionId: string | un
       for (const subscription of subscriptions) subscription.dispose();
     };
   }, [client, sessionId]);
+  const toastedFailedRef = useRef<CompactionProgress | undefined>(undefined);
   useEffect(() => {
-    if (progress?.phase !== 'completed') return;
+    if (progress === undefined) return;
+    if (progress.phase === 'failed' && toastedFailedRef.current !== progress) {
+      toastedFailedRef.current = progress;
+      if (progress.source === 'manual' || (progress.reason !== undefined && progress.reason !== '')) {
+        pushToast({
+          tone: 'error',
+          text: progress.reason !== undefined && progress.reason !== ''
+            ? progress.reason
+            : 'Compaction failed',
+        });
+      }
+    }
+    const clearDelayMs = progress.phase === 'completed'
+      ? 3_000
+      : progress.phase === 'failed' || progress.phase === 'cancelled'
+        ? 12_000
+        : undefined;
+    if (clearDelayMs === undefined) return;
     const timer = setTimeout(() => {
       setProgress((current) => current === progress ? undefined : current);
-    }, 3_000);
+    }, clearDelayMs);
     return () => { clearTimeout(timer); };
   }, [progress, client, sessionId]);
   const unconfirmed = progress?.unconfirmed === true && inFlight(progress);
@@ -144,5 +165,8 @@ export function useCompactionProgress(client: KikiClient, sessionId: string | un
   const seed = useCallback((receipt: CompactSessionResponse) => {
     setProgress((current) => seedCompactionProgress(current, receipt, attachedRef.current));
   }, []);
-  return { progress, seed };
+  const dismiss = useCallback(() => {
+    setProgress(undefined);
+  }, []);
+  return { progress, seed, dismiss };
 }

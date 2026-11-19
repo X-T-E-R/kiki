@@ -6160,6 +6160,118 @@ describe('virtualized transcript scrolling', () => {
     expect(virtualItemStart(item) - scroll.scrollTop).toBe(before.offset);
   });
 
+  it('never drags a scrolled-up reader to the bottom on streaming appends or a tail-first reset that drops the anchor', async () => {
+    const blocks = virtualBlocks(160, 'anti-drag');
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(blocks), undefined, agentId));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+
+    // User scrolls up to read earlier history well away from the bottom.
+    await setTranscriptScroll(scroll, 2400);
+    const readingTop = scroll.scrollTop;
+    expect(transcriptDistanceFromEnd(scroll)).toBeGreaterThan(500);
+
+    // 1. Streaming continuously appends new blocks at the tail.
+    const streamedBlocks = [
+      ...blocks,
+      ...virtualBlocks(6, 'anti-drag-stream'),
+    ];
+    await renderSettled(
+      root,
+      virtualTranscript({ ...transcriptState(streamedBlocks), busy: true }, undefined, agentId),
+    );
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(readingTop);
+    expect(transcriptDistanceFromEnd(scroll)).toBeGreaterThan(500);
+
+    // 2. A tail-first transcript reset drops the user's old anchor completely.
+    const tailWindowBlocks = streamedBlocks.slice(110);
+    await renderSettled(
+      root,
+      virtualTranscript(
+        { ...transcriptState(tailWindowBlocks), transcriptResetVersion: 1, hasMoreHistory: true },
+        undefined,
+        agentId,
+      ),
+    );
+    await settleVirtualizer();
+    // Must land near the top of the surviving window (NOT dragged to the bottom).
+    expect(scroll.scrollTop).toBeLessThanOrEqual(80);
+    expect(transcriptDistanceFromEnd(scroll)).toBeGreaterThan(500);
+  });
+
+  it('renders 1-click Continue/Retry on failed turns and compaction recovery buttons on compaction.failed notices', async () => {
+    const onContinueFailedTurn = vi.fn();
+    const onRetryFailedTurn = vi.fn();
+    const onRetryCompaction = vi.fn();
+    const { root, container } = makeRoot();
+    const blocks: Block[] = [
+      userBlock({ id: 'u-fail', text: 'Run checks', userMessageId: 'um-fail', turnId: 't-fail' }),
+      liveToolRow('tool-fail', 't-fail'),
+      {
+        kind: 'notice',
+        id: 'compaction-failed-notice',
+        turnId: 't-fail',
+        text: 'Compaction failed',
+        tone: 'danger',
+        compactionPhase: 'failed',
+        i18n: { key: 'transcript.marker.compactionFailed' },
+        createdAt: '2026-01-01T00:00:02.000Z',
+      },
+    ];
+    const state = {
+      ...transcriptState(blocks),
+      turnTail: {
+        turnId: 't-fail',
+        state: 'failed' as const,
+        endedAt: '2026-01-01T00:00:03.000Z',
+        durationMs: undefined,
+        ttftMs: undefined,
+        usage: undefined,
+        tokensPerSecond: undefined,
+        error: 'Upstream timeout',
+      },
+    };
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <MemoryRouter>
+            <Transcript
+              state={state}
+              agentId={agentId}
+              onLoadOlder={async () => false}
+              onResolveApproval={async () => undefined}
+              onAnswerQuestion={async () => undefined}
+              onDismissQuestion={async () => undefined}
+              onContinueFailedTurn={onContinueFailedTurn}
+              onRetryFailedTurn={onRetryFailedTurn}
+              onRetryCompaction={onRetryCompaction}
+            />
+          </MemoryRouter>
+        </I18nProvider>,
+      );
+    });
+    const continueBtn = container.querySelector<HTMLButtonElement>('[data-turn-tail-continue]');
+    const retryBtn = container.querySelector<HTMLButtonElement>('[data-turn-tail-retry-now]');
+    const retrySummarizeBtn = container.querySelector<HTMLButtonElement>('[data-compaction-retry-summarize]');
+    const retryFreshBtn = container.querySelector<HTMLButtonElement>('[data-compaction-retry-fresh]');
+    expect(continueBtn).not.toBeNull();
+    expect(retryBtn).not.toBeNull();
+    expect(retrySummarizeBtn).not.toBeNull();
+    expect(retryFreshBtn).not.toBeNull();
+    await act(async () => {
+      continueBtn!.click();
+      retryBtn!.click();
+      retrySummarizeBtn!.click();
+      retryFreshBtn!.click();
+    });
+    expect(onContinueFailedTurn).toHaveBeenCalledTimes(1);
+    expect(onRetryFailedTurn).toHaveBeenCalledTimes(1);
+    expect(onRetryCompaction).toHaveBeenNthCalledWith(1, 'summarize');
+    expect(onRetryCompaction).toHaveBeenNthCalledWith(2, 'relay');
+  });
+
   it('finishes reset restoration when a same-version delta lands before its frame', async () => {
     const blocks = virtualBlocks(160, 'reset-race');
     const { root, container } = makeRoot();

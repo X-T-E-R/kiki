@@ -7,6 +7,8 @@ export const skillDescriptorSchema = z.object({
   description: z.string(),
   path: z.string(),
   source: skillSourceSchema,
+  plugin_id: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
   type: z.string().optional(),
   /** `true` when the skill is user-slash only (model must not auto-invoke). */
   disable_model_invocation: z.boolean().optional(),
