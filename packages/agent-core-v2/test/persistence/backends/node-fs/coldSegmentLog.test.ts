@@ -2921,4 +2921,120 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it('propagates transient EIO on segment listing instead of swallowing and sweeping recoverable .zst segments (Round-7 #1)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-r7-list-eio-'));
+    const scope = 'agents/transient-list-eio';
+    await mkdir(join(root, scope), { recursive: true });
+    const wirePath = join(root, scope, KEY);
+    const baseStorage = new FileStorageService(root);
+    try {
+      const fullPayload = Buffer.from('{"a":123}\n{"b":"RECOVERABLE_ZSTD_PAYLOAD"}\n');
+      await writeFile(wirePath, fullPayload);
+      await sealColdSegments(baseStorage, scope, KEY, fullPayload.byteLength, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 64 * 1024,
+      });
+      const zstBefore = (await readdir(`${wirePath}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      expect(zstBefore.length).toBe(1);
+
+      await rm(wirePath);
+      await rm(`${wirePath}.segments.json`);
+
+      let listCalls = 0;
+      class TransientListEioStorage extends FileStorageService {
+        override async list(listScope: string, prefix?: string): Promise<readonly string[]> {
+          if (prefix === `${KEY}.segments/` && ++listCalls === 1) {
+            throw Object.assign(new Error('EIO: simulated transient segment list failure'), { code: 'EIO' });
+          }
+          return super.list(listScope, prefix);
+        }
+      }
+      const eioStorage = new TransientListEioStorage(root);
+      try {
+        await expect(unsealColdSegments(eioStorage, scope, KEY)).rejects.toThrow(
+          'EIO: simulated transient segment list failure',
+        );
+      } finally {
+        await eioStorage.close();
+      }
+      expect(listCalls).toBe(1);
+      const zstAfter = (await readdir(`${wirePath}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      expect(zstAfter).toEqual(zstBefore);
+    } finally {
+      await baseStorage.close();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('verifies byte-for-byte prefix coverage of orphaned .segments/* against wire.jsonl on fs and memory backends (Round-7 #2)', async () => {
+    const rec1 = Buffer.from('{"a":123}\n');
+    const rec2 = Buffer.from('{"b":"ONLY_IN_ZSTD_123456"}\n');
+    expect(rec1.byteLength).toBe(10);
+    const fullBytes = Buffer.concat([rec1, rec2]);
+
+    const root = await mkdtemp(join(tmpdir(), 'cold-r7-prefix-cover-'));
+    const storage = new FileStorageService(root);
+    try {
+      const scopeTrunc = 'agents/truncated-10b';
+      await mkdir(join(root, scopeTrunc), { recursive: true });
+      const wireTrunc = join(root, scopeTrunc, KEY);
+      await writeFile(wireTrunc, fullBytes);
+      await sealColdSegments(storage, scopeTrunc, KEY, fullBytes.byteLength, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 64 * 1024,
+      });
+      const zstFiles = (await readdir(`${wireTrunc}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      expect(zstFiles.length).toBe(1);
+      const savedZstBytes = await readFile(join(`${wireTrunc}.segments`, zstFiles[0]!));
+
+      await writeFile(wireTrunc, rec1);
+      await rm(`${wireTrunc}.segments.json`);
+
+      await expect(unsealRetainedJournal(wireTrunc)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      await expect(discardRetainedJournal(wireTrunc)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      expect(await readFile(join(`${wireTrunc}.segments`, zstFiles[0]!))).toEqual(savedZstBytes);
+
+      const tamperedSameLen = Buffer.concat([rec1, Buffer.from('{"b":"TAMPERED_ZSTD_12345"}\n')]);
+      expect(tamperedSameLen.byteLength).toBe(fullBytes.byteLength);
+      await writeFile(wireTrunc, tamperedSameLen);
+      await expect(unsealRetainedJournal(wireTrunc)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      expect(await readFile(join(`${wireTrunc}.segments`, zstFiles[0]!))).toEqual(savedZstBytes);
+
+      const mem = new InMemoryStorageService();
+      await mem.write(SCOPE, KEY, fullBytes);
+      await sealColdSegments(mem, SCOPE, KEY, fullBytes.byteLength, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 64 * 1024,
+      });
+      expect((await mem.list(SCOPE, `${KEY}.segments/`)).length).toBe(1);
+      await mem.write(SCOPE, KEY, rec1);
+      await mem.delete(SCOPE, coldManifestKey(KEY));
+
+      await expect(unsealColdSegments(mem, SCOPE, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      expect((await mem.list(SCOPE, `${KEY}.segments/`)).length).toBe(1);
+    } finally {
+      await storage.close();
+      closeSparseFileWorker();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });

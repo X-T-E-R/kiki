@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, rmdir, unlink, type FileHandle } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { mkdir, open, readFile, readdir, rmdir, unlink, type FileHandle } from 'node:fs/promises';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import {
@@ -727,16 +728,40 @@ async function removeSegments(
   await rmdir(`${located}.segments`).catch(() => undefined);
 }
 
+function isMissingPathError(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false;
+  if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+  return error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_NOT_FOUND;
+}
+
+async function listStoragePrefixStrict(
+  storage: IFileSystemStorageService,
+  scope: string,
+  prefix: string,
+): Promise<readonly string[]> {
+  try {
+    return await storage.list(scope, prefix);
+  } catch (error) {
+    if (isMissingPathError(error)) return [];
+    throw error;
+  }
+}
+
+async function readDirWithTypesOrEmpty(dirPath: string): Promise<Dirent[]> {
+  try {
+    return await readdir(dirPath, { withFileTypes: true });
+  } catch (error) {
+    if (isMissingPathError(error)) return [];
+    throw error;
+  }
+}
+
 async function hasStaleSegmentDirectoriesOnDisk(
   located: string,
   keepSealIds: ReadonlySet<string>,
 ): Promise<boolean> {
-  try {
-    const entries = await readdir(`${located}.segments`, { withFileTypes: true });
-    return entries.some((entry) => entry.isDirectory() && !keepSealIds.has(entry.name));
-  } catch {
-    return false;
-  }
+  const entries = await readDirWithTypesOrEmpty(`${located}.segments`);
+  return entries.some((entry) => entry.isDirectory() && !keepSealIds.has(entry.name));
 }
 
 async function sweepStaleSegmentDirectories(
@@ -746,8 +771,9 @@ async function sweepStaleSegmentDirectories(
   keepSealIds: ReadonlySet<string>,
   signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   const prefix = `${key}.segments/`;
-  const listed = await storage.list(scope, prefix).catch(() => [] as readonly string[]);
+  const listed = await listStoragePrefixStrict(storage, scope, prefix);
   const keysBySealId = new Map<string, string[]>();
   const looseKeys: string[] = [];
   for (const segKey of listed) {
@@ -771,7 +797,7 @@ async function sweepStaleSegmentDirectories(
   const located = locatedJournal(storage, scope, key);
   const looseFiles: string[] = [];
   if (located !== undefined) {
-    const entries = await readdir(`${located}.segments`, { withFileTypes: true }).catch(() => []);
+    const entries = await readDirWithTypesOrEmpty(`${located}.segments`);
     for (const entry of entries) {
       if (entry.isDirectory()) {
         if (!keepSealIds.has(entry.name) && !keysBySealId.has(entry.name)) {
@@ -794,7 +820,12 @@ async function sweepStaleSegmentDirectories(
     }
     if (located !== undefined) {
       const dirPath = `${located}.segments/${staleSealId}`;
-      const subEntries = await readdir(dirPath).catch(() => [] as string[]);
+      let subEntries: string[] = [];
+      try {
+        subEntries = await readdir(dirPath);
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
+      }
       for (const subName of subEntries) {
         await unlink(`${dirPath}/${subName}`).catch(() => undefined);
       }
@@ -842,42 +873,195 @@ function untrustedManifestMayRequireSegments(bytes: Uint8Array): boolean {
   return false;
 }
 
-async function journalContainsNulByte(filePath: string, signal?: AbortSignal): Promise<boolean> {
-  let handle: FileHandle | undefined;
-  try {
-    handle = await open(filePath, 'r');
-    const chunk = Buffer.alloc(256 * 1024);
-    let offset = 0;
-    for (;;) {
-      signal?.throwIfAborted();
-      const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, offset);
-      if (bytesRead <= 0) return false;
-      if (chunk.subarray(0, bytesRead).includes(0)) return true;
-      offset += bytesRead;
-    }
-  } catch (error) {
-    if (signal?.aborted) throw signal.reason;
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  } finally {
-    await handle?.close().catch(() => undefined);
+const ORPHAN_SEGMENT_FILENAME = /^(\d{6})\.(zst|deflate)$/;
+
+interface OrphanSegmentEntry {
+  readonly index: number;
+  readonly codec: ColdSealCodec;
+  readonly relPath: string;
+}
+
+async function readHandleExactSlice(
+  handle: FileHandle,
+  position: number,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  const out = Buffer.allocUnsafe(length);
+  let filled = 0;
+  while (filled < length) {
+    signal?.throwIfAborted();
+    const { bytesRead } = await handle.read(out, filled, length - filled, position + filled);
+    if (bytesRead <= 0) break;
+    filled += bytesRead;
+  }
+  return filled === length ? out : out.subarray(0, filled);
+}
+
+async function handleContainsNulByte(handle: FileHandle, signal?: AbortSignal): Promise<boolean> {
+  const chunk = Buffer.allocUnsafe(256 * 1024);
+  let offset = 0;
+  for (;;) {
+    signal?.throwIfAborted();
+    const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, offset);
+    if (bytesRead <= 0) return false;
+    if (chunk.subarray(0, bytesRead).includes(0)) return true;
+    offset += bytesRead;
   }
 }
 
-async function hasAnySegmentArtifacts(
+async function verifyJournalCoversOrphanedSegments(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
   located: string | undefined,
-): Promise<boolean> {
-  const listed = await storage.list(scope, `${key}.segments/`).catch(() => [] as readonly string[]);
-  if (listed.length > 0) return true;
-  if (located === undefined) return false;
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  const prefix = `${key}.segments/`;
+  const listed = await listStoragePrefixStrict(storage, scope, prefix);
+  const relativeFiles = new Set<string>();
+  for (const segKey of listed) {
+    if (!segKey.startsWith(prefix)) continue;
+    const rel = segKey.slice(prefix.length).replaceAll('\\', '/');
+    if (rel.length > 0) relativeFiles.add(rel);
+  }
+
+  if (located !== undefined) {
+    const normalizedBase = `${located.replaceAll('\\', '/')}.segments/`;
+    let entries: Dirent[] = [];
+    try {
+      entries = await readdir(`${located}.segments`, { recursive: true, withFileTypes: true });
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory())) {
+        throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+      }
+      if (!entry.isFile()) continue;
+      const full = `${entry.parentPath.replaceAll('\\', '/')}/${entry.name}`;
+      if (!full.startsWith(normalizedBase)) {
+        throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+      }
+      const rel = full.slice(normalizedBase.length);
+      if (rel.length > 0) relativeFiles.add(rel);
+    }
+  }
+
+  if (relativeFiles.size === 0) return;
+
+  const grouped = new Map<string, OrphanSegmentEntry[]>();
+  for (const relPath of relativeFiles) {
+    const slash = relPath.indexOf('/');
+    if (slash <= 0 || relPath.indexOf('/', slash + 1) !== -1) {
+      throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+    }
+    const sealId = relPath.slice(0, slash);
+    const fileName = relPath.slice(slash + 1);
+    const match = ORPHAN_SEGMENT_FILENAME.exec(fileName);
+    if (!SEAL_ID.test(sealId) || match === null) {
+      throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+    }
+    const index = Number(match[1]);
+    const codec: ColdSealCodec = match[2] === 'zst' ? 'zstd' : 'deflate-raw';
+    let bucket = grouped.get(sealId);
+    if (bucket === undefined) {
+      bucket = [];
+      grouped.set(sealId, bucket);
+    }
+    bucket.push({ index, codec, relPath });
+  }
+
+  for (const items of grouped.values()) {
+    items.sort((a, b) => a.index - b.index);
+    if (items.length === 0 || items.length > MAX_SEGMENTS) {
+      throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+    }
+    const expectedCodec = items[0]!.codec;
+    for (let i = 0; i < items.length; i += 1) {
+      if (items[i]!.index !== i || items[i]!.codec !== expectedCodec) {
+        throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+      }
+    }
+  }
+
+  const journalSize = await storage.size(scope, key);
+  if (journalSize === undefined || journalSize <= 0) {
+    throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+  }
+
+  let handle: FileHandle | undefined;
+  let memoryJournal: Uint8Array | undefined;
   try {
-    const entries = await readdir(`${located}.segments`, { recursive: true, withFileTypes: true });
-    return entries.some((entry) => entry.isFile());
-  } catch {
-    return false;
+    if (located !== undefined) {
+      try {
+        handle = await open(located, 'r');
+      } catch (error) {
+        if (isMissingPathError(error)) {
+          throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+        }
+        throw error;
+      }
+    } else {
+      memoryJournal = await storage.read(scope, key, { signal });
+      if (memoryJournal === undefined || memoryJournal.byteLength !== journalSize) {
+        throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+      }
+    }
+
+    for (const items of grouped.values()) {
+      let offset = 0;
+      for (const item of items) {
+        signal?.throwIfAborted();
+        const segKey = `${prefix}${item.relPath}`;
+        let compressed = await storage.read(scope, segKey, { signal });
+        if (compressed === undefined && located !== undefined) {
+          compressed = await readFile(`${located}.segments/${item.relPath}`, { signal }).catch((error: unknown) => {
+            if (signal?.aborted) throw signal.reason;
+            if (isMissingPathError(error)) return undefined;
+            throw error;
+          });
+        }
+        if (compressed === undefined || compressed.byteLength === 0) {
+          throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+        }
+        let plain: Uint8Array;
+        try {
+          plain = await decompressBounded(compressed, item.codec, COLD_SEGMENT_BYTES, signal);
+        } catch (error) {
+          if (signal?.aborted) throw signal.reason;
+          throw corrupted(scope, key, 'manifest-missing-on-sparse-journal', error);
+        }
+        if (plain.byteLength === 0 || offset + plain.byteLength > journalSize) {
+          throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+        }
+        const plainBuf = Buffer.from(plain.buffer, plain.byteOffset, plain.byteLength);
+        if (handle !== undefined) {
+          const actualBuf = await readHandleExactSlice(handle, offset, plain.byteLength, signal);
+          if (actualBuf.byteLength !== plain.byteLength || Buffer.compare(actualBuf, plainBuf) !== 0) {
+            throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+          }
+        } else {
+          const slice = memoryJournal!.subarray(offset, offset + plain.byteLength);
+          const actualBuf = Buffer.from(slice.buffer, slice.byteOffset, slice.byteLength);
+          if (Buffer.compare(actualBuf, plainBuf) !== 0) {
+            throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+          }
+        }
+        offset += plain.byteLength;
+        await yieldToEventLoop();
+      }
+    }
+
+    const containsNul = handle !== undefined
+      ? await handleContainsNulByte(handle, signal)
+      : memoryJournal!.includes(0);
+    if (containsNul) {
+      throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+    }
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
@@ -1159,18 +1343,7 @@ export async function discardColdUnlocked(
         if (located !== undefined && await detectOrphanedSparseJournal(located, options.signal)) {
           throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
         }
-        if (await hasAnySegmentArtifacts(storage, scope, key, located)) {
-          const journalSize = await storage.size(scope, key);
-          if (journalSize === undefined || journalSize <= 0) {
-            throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
-          }
-          const containsNul = located !== undefined
-            ? await journalContainsNulByte(located, options.signal)
-            : (await storage.read(scope, key, { signal: options.signal }))?.includes(0) === true;
-          if (containsNul) {
-            throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
-          }
-        }
+        await verifyJournalCoversOrphanedSegments(storage, scope, key, located, options.signal);
       }
       if (located !== undefined) {
         await removeSparseMarker(located).catch(() => undefined);
