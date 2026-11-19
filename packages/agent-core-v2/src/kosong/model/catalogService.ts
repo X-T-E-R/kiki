@@ -34,7 +34,11 @@ import {
   resolveProviderApiKey,
 } from '../provider/providerDefinition';
 import { resolveImagePolicy } from '../provider/providerImagePolicy';
-import { resolveRequestCompression, resolveResponsesWebSocket } from '../provider/requestCompression';
+import {
+  resolveAnthropicMessageThreads,
+  resolveRequestCompression,
+  resolveResponsesWebSocket,
+} from '../provider/requestCompression';
 
 import {
   type AuthProvider,
@@ -513,6 +517,10 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         responsesWebSocket: resolveResponsesWebSocket(
           this.providers.transportDefaults().responsesWebSocket,
           providerConfig?.responsesWebSocket,
+        ),
+        anthropicMessageThreads: resolveAnthropicMessageThreads(
+          this.providers.transportDefaults().anthropicMessageThreads,
+          providerConfig?.anthropicMessageThreads,
         ),
         headers,
         capabilities,

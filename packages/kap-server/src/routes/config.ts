@@ -19,7 +19,12 @@ import { AGENT_EXECUTOR_INSTANCES_SECTION } from '@kiki/agent-core-v2/app/agentE
 import { MODEL_SWITCH_SECTION, modelSwitchPreferencesToToml } from '@kiki/agent-core-v2/app/modelSwitchPreferences/configSection';
 import { describeDecisionSource } from '@kiki/agent-core-v2/kosong/model/decision';
 import { decisionSourceSchema, publicExecutorInstance, type ExecutorInstanceConfig, modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
-import { REQUEST_COMPRESSION_SECTION, REQUEST_IDENTITY_SECTION, RESPONSES_WEB_SOCKET_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import {
+  ANTHROPIC_MESSAGE_THREADS_SECTION,
+  REQUEST_COMPRESSION_SECTION,
+  REQUEST_IDENTITY_SECTION,
+  RESPONSES_WEB_SOCKET_SECTION,
+} from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
@@ -48,12 +53,16 @@ import {
   type NbSearchSourceConfig,
 } from '@kiki/agent-core-v2/app/nbSearch/configSection';
 import {
+  anthropicMessageThreadsFromWire,
+  anthropicMessageThreadsToWire,
+  AnthropicMessageThreadsSystemSchema,
   requestCompressionFromWire,
   requestCompressionToWire,
   RequestCompressionSystemSchema,
   responsesWebSocketFromWire,
   responsesWebSocketToWire,
   ResponsesWebSocketSystemSchema,
+  type AnthropicMessageThreadsLayer,
   type RequestCompressionLayer,
   type ResponsesWebSocketLayer,
 } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
@@ -134,6 +143,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         const requestIdentity = req.body.request_identity;
         const requestCompression = req.body.request_compression;
         const responsesWebSocket = req.body.responses_web_socket;
+        const anthropicMessageThreads = req.body.anthropic_message_threads;
         const camelPatch = convertKeysSnakeToCamel(req.body) as Record<string, unknown>;
         const replaceDomains = new Set(
           ((camelPatch['replaceDomains'] as string[] | undefined) ?? []).map(snakeToCamel),
@@ -142,6 +152,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         delete camelPatch[REQUEST_IDENTITY_SECTION];
         delete camelPatch[REQUEST_COMPRESSION_SECTION];
         delete camelPatch[RESPONSES_WEB_SOCKET_SECTION];
+        delete camelPatch[ANTHROPIC_MESSAGE_THREADS_SECTION];
         if (requestIdentity !== undefined && requestIdentity !== null) {
           await core.accessor.get(IRequestIdentityCatalog).ready;
           resolveRequestIdentityLayers(requestIdentityFromWire(requestIdentity));
@@ -151,6 +162,11 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         }
         if (responsesWebSocket !== undefined && responsesWebSocket !== null) {
           ResponsesWebSocketSystemSchema.parse(responsesWebSocketFromWire(responsesWebSocket));
+        }
+        if (anthropicMessageThreads !== undefined && anthropicMessageThreads !== null) {
+          AnthropicMessageThreadsSystemSchema.parse(
+            anthropicMessageThreadsFromWire(anthropicMessageThreads),
+          );
         }
         const subagent = camelPatch[SUBAGENT_SECTION];
         const requestedModels = [
@@ -310,6 +326,15 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
           await config.replace(
             RESPONSES_WEB_SOCKET_SECTION,
             responsesWebSocket === null ? null : responsesWebSocketFromWire(responsesWebSocket),
+            ConfigTarget.User,
+          );
+        }
+        if (anthropicMessageThreads !== undefined) {
+          await config.replace(
+            ANTHROPIC_MESSAGE_THREADS_SECTION,
+            anthropicMessageThreads === null
+              ? null
+              : anthropicMessageThreadsFromWire(anthropicMessageThreads),
             ConfigTarget.User,
           );
         }
@@ -536,6 +561,10 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       wire['request_compression'] = requestCompressionToWire(value as RequestCompressionLayer);
     } else if (domain === RESPONSES_WEB_SOCKET_SECTION) {
       wire['responses_web_socket'] = responsesWebSocketToWire(value as ResponsesWebSocketLayer);
+    } else if (domain === ANTHROPIC_MESSAGE_THREADS_SECTION) {
+      wire['anthropic_message_threads'] = anthropicMessageThreadsToWire(
+        value as AnthropicMessageThreadsLayer,
+      );
     } else if (domain === 'permission' && isPlainObject(value)) {
       const publicValue = splitConfigCredentials({ [domain]: value }).config[domain];
       if (isPlainObject(publicValue)) {

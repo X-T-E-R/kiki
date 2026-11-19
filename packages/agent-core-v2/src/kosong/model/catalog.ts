@@ -17,6 +17,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ProviderRequestAuth, ServiceTier } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { AnthropicMessageThreadsConfig } from '#/kosong/contract/anthropicThreads';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 import { ProtocolSchema, type Protocol, type ProtocolProviderOptions } from '#/kosong/protocol/protocol';
@@ -29,6 +30,8 @@ import {
   type ResolvedImagePolicy,
 } from '../provider/providerImagePolicy';
 import {
+  anthropicMessageThreadsToWire,
+  AnthropicMessageThreadsWireSchema,
   requestCompressionToWire,
   responsesWebSocketToWire,
   RequestCompressionWireSchema,
@@ -72,6 +75,7 @@ export interface Model {
   readonly baseUrl?: string;
   readonly requestCompression?: RequestCompression;
   readonly responsesWebSocket?: ResponsesWebSocketConfig;
+  readonly anthropicMessageThreads?: AnthropicMessageThreadsConfig;
   readonly headers: Readonly<Record<string, string>>;
 
   readonly capabilities: ModelCapability;
@@ -172,6 +176,7 @@ export const providerCatalogItemSchema = z.object({
   request_identity: RequestIdentityPolicyWireSchema.optional(),
   request_compression: RequestCompressionWireSchema.optional(),
   responses_web_socket: ResponsesWebSocketWireSchema.optional(),
+  anthropic_message_threads: AnthropicMessageThreadsWireSchema.optional(),
   images: imagePolicyWireSchema.optional(),
   api_key: z.string().min(1).optional(),
   api_key_env: z.string().min(1).optional(),
@@ -342,6 +347,7 @@ export function toProtocolProvider(
     request_identity: requestIdentityToWire(provider.requestIdentity),
     request_compression: requestCompressionToWire(provider.requestCompression),
     responses_web_socket: responsesWebSocketToWire(provider.responsesWebSocket),
+    anthropic_message_threads: anthropicMessageThreadsToWire(provider.anthropicMessageThreads),
     images: imagePolicyToWire(provider.images),
     api_key_env: key.api_key_env,
     has_api_key: credential.hasApiKey,

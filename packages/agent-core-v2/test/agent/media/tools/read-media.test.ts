@@ -1,4 +1,6 @@
-import { writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as posixPath from 'node:path/posix';
 
 import { UNKNOWN_CAPABILITY, type ModelCapability } from '#/kosong/contract/capability';
@@ -31,6 +33,7 @@ import {
   AV_INLINE_BYTE_BUDGET,
   compressAudioForModel,
   compressVideoForModel,
+  findWinGetFfmpegBinary,
   setConfiguredAvCompressRunner,
   setConfiguredAvInlineByteBudget,
   type AvCompressRunner,
@@ -1414,5 +1417,33 @@ describe('createVideoUploader', () => {
     expect(result.output).toContain('/workspace/photo.jpg');
     expect(result.output).toMatch(/sips -s format jpeg|magick/);
     expect(result.output).not.toContain('heif-convert');
+  });
+
+  it('discovers Windows WinGet ffmpeg binaries in Links and Packages layouts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-winget-ffmpeg-'));
+    try {
+      expect(await findWinGetFfmpegBinary(root)).toBeNull();
+      const pkgBin = join(
+        root,
+        'Microsoft',
+        'WinGet',
+        'Packages',
+        'Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe',
+        'ffmpeg-9.0.2-full_build',
+        'bin',
+      );
+      await mkdir(pkgBin, { recursive: true });
+      const pkgFfmpeg = join(pkgBin, 'ffmpeg.exe');
+      await writeFile(pkgFfmpeg, '');
+      expect(await findWinGetFfmpegBinary(root)).toBe(pkgFfmpeg);
+
+      const linksDir = join(root, 'Microsoft', 'WinGet', 'Links');
+      await mkdir(linksDir, { recursive: true });
+      const linkFfmpeg = join(linksDir, 'ffmpeg.exe');
+      await writeFile(linkFfmpeg, '');
+      expect(await findWinGetFfmpegBinary(root)).toBe(linkFfmpeg);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

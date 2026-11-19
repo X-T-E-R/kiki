@@ -122,6 +122,7 @@ export interface GenerateOptions {
   responseFormat?: ResponseFormat;
   toolChoice?: ToolChoice;
   cacheKey?: string;
+  threadScopeKey?: string;
   googleContinuationToken?: string;
   serviceTier?: ServiceTier;
   headers?: Readonly<Record<string, string>>;

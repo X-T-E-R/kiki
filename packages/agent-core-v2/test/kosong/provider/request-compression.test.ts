@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ConfigRegistry } from '#/app/config/configService';
 import {
+  ANTHROPIC_MESSAGE_THREADS_SECTION,
   ProviderConfigSchema,
   REQUEST_COMPRESSION_SECTION,
   providersFromToml,
@@ -20,10 +21,15 @@ import { isRetryableCompactionError } from '#/agent/fullCompaction/compactionFai
 import type { Message } from '#/kosong/contract/message';
 import { createRequestCompressionFetch, withRequestCompressionDelivery } from '#/kosong/provider/bases/request-compression';
 import {
+  AnthropicMessageThreadsSystemSchema,
+  AnthropicMessageThreadsWireSchema,
   RequestCompressionSystemSchema,
   RequestCompressionWireSchema,
+  anthropicMessageThreadsFromWire,
+  anthropicMessageThreadsToWire,
   requestCompressionFromWire,
   requestCompressionToWire,
+  resolveAnthropicMessageThreads,
   resolveRequestCompression,
 } from '#/kosong/provider/requestCompression';
 import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
@@ -375,5 +381,33 @@ describe('request compression system default', () => {
     expect(() => resolveRequestCompression({ encoding: 'gzip', targets: ['https://example.test/v1'] }, { dictionary: true })).toThrowError(
       expect.objectContaining({ code: 'config.invalid' }),
     );
+  });
+});
+
+describe('anthropic message threads system default and provider override', () => {
+  it('registers an absent system table, defaults to auto, and round-trips TOML and wire shapes', () => {
+    expect(new ConfigRegistry().getSection(ANTHROPIC_MESSAGE_THREADS_SECTION)).toMatchObject({
+      domain: ANTHROPIC_MESSAGE_THREADS_SECTION,
+      defaultValue: undefined,
+    });
+    expect(resolveAnthropicMessageThreads(undefined, undefined)).toEqual({ mode: 'auto' });
+    expect(resolveAnthropicMessageThreads({ mode: 'off' }, undefined)).toEqual({ mode: 'off' });
+    expect(resolveAnthropicMessageThreads({ mode: 'off' }, { mode: 'auto' })).toEqual({ mode: 'auto' });
+    expect(resolveAnthropicMessageThreads({ mode: 'auto' }, { mode: 'off' })).toEqual({ mode: 'off' });
+    expect(resolveAnthropicMessageThreads(undefined, { mode: 'off' })).toEqual({ mode: 'off' });
+
+    const raw = { synthetic: { anthropic_message_threads: { mode: 'off' } } };
+    const parsed = providersFromToml(raw);
+    expect(parsed).toEqual({ synthetic: { anthropicMessageThreads: { mode: 'off' } } });
+    expect(providersToToml(parsed, {})).toEqual(raw);
+
+    expect(AnthropicMessageThreadsSystemSchema.parse({ mode: 'auto' })).toEqual({ mode: 'auto' });
+    expect(AnthropicMessageThreadsSystemSchema.safeParse({ mode: 'invalid' }).success).toBe(false);
+    expect(AnthropicMessageThreadsSystemSchema.safeParse({}).success).toBe(false);
+    expect(ProviderConfigSchema.parse({ anthropicMessageThreads: { mode: 'off' } }).anthropicMessageThreads).toEqual({ mode: 'off' });
+    expect(anthropicMessageThreadsToWire({ mode: 'off' })).toEqual({ mode: 'off' });
+    expect(anthropicMessageThreadsToWire(undefined)).toBeUndefined();
+    expect(anthropicMessageThreadsFromWire({ mode: 'auto' })).toEqual({ mode: 'auto' });
+    expect(AnthropicMessageThreadsWireSchema.parse({ mode: 'auto' })).toEqual({ mode: 'auto' });
   });
 });

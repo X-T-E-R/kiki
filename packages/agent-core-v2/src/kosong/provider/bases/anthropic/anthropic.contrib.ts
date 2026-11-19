@@ -21,6 +21,7 @@ registerProtocolBase({
           config.baseUrl ?? firstProcessEnv(endpoint?.baseUrlEnv) ?? endpoint?.defaultBaseUrl,
         defaultHeaders: traitDefaultHeaders(traits),
         requestCompression: config.requestCompression,
+        anthropicMessageThreads: config.anthropicMessageThreads,
         defaultMaxTokens: config.providerOptions?.defaultMaxTokens,
         adaptiveThinking: config.providerOptions?.adaptiveThinking,
         supportEfforts: config.providerOptions?.supportEfforts,

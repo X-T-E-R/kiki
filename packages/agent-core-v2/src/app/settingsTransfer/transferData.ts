@@ -3,7 +3,7 @@ import { isPlainObject, deepEqual } from '#/app/config/configPure';
 import { splitConfigCredentials } from '#/app/config/credentials';
 
 export const TRANSFER_DOMAINS: Readonly<Record<SettingsTransferCategory, readonly string[]>> = {
-  models: ['providers', 'models', 'defaultModel', 'defaultProvider', 'thinking', 'fastModel', 'modelSwitch', 'requestIdentity', 'requestCompression', 'responsesWebSocket', 'requestGovernance', 'image', 'tokenCounting'],
+  models: ['providers', 'models', 'defaultModel', 'defaultProvider', 'thinking', 'fastModel', 'modelSwitch', 'requestIdentity', 'requestCompression', 'responsesWebSocket', 'anthropicMessageThreads', 'requestGovernance', 'image', 'tokenCounting'],
   agents: ['agents', 'subagent', 'prompt', 'disabledNamedProfiles', 'skipBuiltinProfileInstallation', 'agentExecutors', 'agentExecutorOverrides', 'agentExecutorDisplay', 'builtinProductSkills', 'mergeAllAvailableSkills', 'memory', 'bot', 'recipes'],
   permissions: ['permission', 'defaultPermissionMode', 'defaultPlanMode', 'plan', 'loopControl', 'retry', 'interaction', 'task', 'background', 'sessionTitle', 'sessionResidency', 'threadCommunication', 'branch', 'worktree', 'hooks', 'workspaceInstance', 'taskBoard', 'experimental'],
   tools: ['tools', 'mcp', 'plugins', 'pluginSettings', 'nbSearch', 'nbSearchSource', 'optionalCapabilities'],

@@ -7,6 +7,7 @@
  */
 
 import {
+  AnthropicMessageThreadsLayerSchema,
   RequestCompressionLayerSchema,
   ResponsesWebSocketLayerSchema,
 } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
@@ -35,6 +36,7 @@ const providerConfigObjectSchema = z.object({
   requestIdentity: requestIdentityPolicySchema.optional(),
   requestCompression: RequestCompressionLayerSchema.optional(),
   responsesWebSocket: ResponsesWebSocketLayerSchema.optional(),
+  anthropicMessageThreads: AnthropicMessageThreadsLayerSchema.optional(),
 
   type: providerTypeSchema.optional(),
   apiKey: z.string().optional(),

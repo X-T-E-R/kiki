@@ -4,6 +4,8 @@
  */
 
 import {
+  AnthropicMessageThreadsLayerSchema,
+  AnthropicMessageThreadsSystemSchema,
   RequestCompressionLayerSchema,
   RequestCompressionSystemSchema,
   ResponsesWebSocketLayerSchema,
@@ -42,6 +44,9 @@ export const configSetInputSchema = z
     if (domain === 'responsesWebSocket') {
       addSchemaIssues(ResponsesWebSocketLayerSchema, value, ctx, [1], false);
     }
+    if (domain === 'anthropicMessageThreads') {
+      addSchemaIssues(AnthropicMessageThreadsLayerSchema, value, ctx, [1], false);
+    }
   });
 
 export const configReplaceInputSchema = z
@@ -56,6 +61,9 @@ export const configReplaceInputSchema = z
     if (domain === 'responsesWebSocket') {
       addSchemaIssues(ResponsesWebSocketSystemSchema, value, ctx, [1], true);
     }
+    if (domain === 'anthropicMessageThreads') {
+      addSchemaIssues(AnthropicMessageThreadsSystemSchema, value, ctx, [1], true);
+    }
   });
 
 export const configReplaceSectionsInputSchema = z
@@ -69,6 +77,9 @@ export const configReplaceSectionsInputSchema = z
     }
     if (Object.hasOwn(sections, 'responsesWebSocket')) {
       addSchemaIssues(ResponsesWebSocketSystemSchema, sections['responsesWebSocket'], ctx, [0, 'responsesWebSocket'], true);
+    }
+    if (Object.hasOwn(sections, 'anthropicMessageThreads')) {
+      addSchemaIssues(AnthropicMessageThreadsSystemSchema, sections['anthropicMessageThreads'], ctx, [0, 'anthropicMessageThreads'], true);
     }
   });
 

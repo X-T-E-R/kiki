@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { decisionSourceSchema, decisionSourceStatusSchema } from '../decision';
 
-import { requestCompressionWireSchema, requestIdentityPolicySchema, responsesWebSocketWireSchema } from '../modelCatalog';
+import {
+  anthropicMessageThreadsWireSchema,
+  requestCompressionWireSchema,
+  requestIdentityPolicySchema,
+  responsesWebSocketWireSchema,
+} from '../modelCatalog';
 import { browserControlSettingsPatchSchema, browserControlSettingsSchema } from './browser';
 import { interactionConfigSchema, askUserQuestionGuardWireSchema } from '../questionGuard';
 import { hooksConfigSchema } from './hooksConfig';
@@ -425,6 +430,7 @@ export const configResponseSchema = z.object({
   request_identity: requestIdentityPolicySchema.optional(),
   request_compression: requestCompressionWireSchema.optional(),
   responses_web_socket: responsesWebSocketWireSchema.optional(),
+  anthropic_message_threads: anthropicMessageThreadsWireSchema.optional(),
   thinking: z.unknown().optional(),
   plan: planConfigResponseSchema.optional(),
   plan_mode: z.boolean().optional(),
@@ -478,6 +484,7 @@ export const patchConfigRequestSchema = z.object({
   request_identity: requestIdentityPolicySchema.nullable().optional(),
   request_compression: requestCompressionWireSchema.nullable().optional(),
   responses_web_socket: responsesWebSocketWireSchema.nullable().optional(),
+  anthropic_message_threads: anthropicMessageThreadsWireSchema.nullable().optional(),
   thinking: z.unknown().optional(),
   plan: planConfigRequestSchema.optional(),
   plan_mode: z.boolean().optional(),

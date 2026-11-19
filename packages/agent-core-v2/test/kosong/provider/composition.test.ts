@@ -673,7 +673,7 @@ describe('request identity final fetch projection', () => {
     const body = await request.clone().json() as Record<string, unknown>;
     expect(request.headers.get('user-agent')).toBe('kiki-cli/1.2.3');
     expect(body['metadata']).toEqual({ user_id: 'session_11111111-1111-4111-8111-111111111111' });
-    expect(body).toEqual(kimiWireFixture.anthropic);
+    expect(body).toEqual({ ...kimiWireFixture.anthropic, thread: { type: 'create' } });
     expect(body['system']).toEqual([
       expect.objectContaining({ cache_control: { type: 'ephemeral' } }),
     ]);
@@ -4484,5 +4484,571 @@ describe('Google SDK SSE transport contract', () => {
       await expect(generate(provider, '', [], PROBE_HISTORY)).rejects.toMatchObject({ statusCode: 429, retryAfterMs: 17250 });
       await socketClosed;
     });
+  });
+});
+
+describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
+  interface RecordedRequest {
+    readonly url: string;
+    readonly headers: Headers;
+    readonly body: Record<string, unknown>;
+  }
+
+  function anthropicSse(events: readonly Record<string, unknown>[]): Response {
+    const body = events
+      .map((evt) => `event: ${String(evt['type'])}\ndata: ${JSON.stringify(evt)}\n\n`)
+      .join('');
+    return new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+
+  function okStreamResponse(
+    id: string,
+    text = 'Reply',
+    options?: {
+      readonly stopReason?: string;
+      readonly fallbackIteration?: boolean;
+      readonly toolUse?: { readonly id: string; readonly name: string; readonly inputJson: string };
+      readonly omitMessageStop?: boolean;
+    },
+  ): Response {
+    const events: Record<string, unknown>[] = [
+      {
+        type: 'message_start',
+        message: {
+          id,
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-sonnet-4-6',
+          content: [],
+          usage: {
+            input_tokens: 10,
+            output_tokens: 0,
+            ...(options?.fallbackIteration === true
+              ? { iterations: [{ type: 'fallback_message', input_tokens: 10, output_tokens: 5 }] }
+              : undefined),
+          },
+        },
+      },
+    ];
+    let index = 0;
+    if (text.length > 0) {
+      events.push(
+        { type: 'content_block_start', index, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index, delta: { type: 'text_delta', text } },
+        { type: 'content_block_stop', index },
+      );
+      index += 1;
+    }
+    if (options?.toolUse !== undefined) {
+      events.push(
+        {
+          type: 'content_block_start',
+          index,
+          content_block: {
+            type: 'tool_use',
+            id: options.toolUse.id,
+            name: options.toolUse.name,
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'input_json_delta', partial_json: options.toolUse.inputJson },
+        },
+        { type: 'content_block_stop', index },
+      );
+    }
+    events.push({
+      type: 'message_delta',
+      delta: { stop_reason: options?.stopReason ?? 'end_turn' },
+      usage: { output_tokens: 5 },
+    });
+    if (options?.omitMessageStop !== true) {
+      events.push({ type: 'message_stop' });
+    }
+    return anthropicSse(events);
+  }
+
+  function okJsonResponse(id: string, text = 'Reply', stopReason = 'end_turn'): Response {
+    return Response.json({
+      id,
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-sonnet-4-6',
+      stop_reason: stopReason,
+      content: [{ type: 'text', text }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+  }
+
+  function threadErrorResponse(
+    status: number,
+    message: string,
+    errorCode?: string,
+  ): Response {
+    return Response.json(
+      {
+        type: 'error',
+        error: {
+          type: status === 404 ? 'not_found_error' : 'invalid_request_error',
+          message,
+          ...(errorCode !== undefined ? { details: { error_code: errorCode } } : undefined),
+        },
+      },
+      { status },
+    );
+  }
+
+  function userMsg(text: string): Message {
+    return { role: 'user', content: [{ type: 'text', text }], toolCalls: [] };
+  }
+
+  const sampleTool = {
+    name: 'lookup',
+    description: 'Look up a fact',
+    parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+  };
+
+  function stubAnthropicFetch(responses: Array<() => Response>): RecordedRequest[] {
+    const recorded: RecordedRequest[] = [];
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = JSON.parse(await request.clone().text()) as Record<string, unknown>;
+      recorded.push({ url: request.url, headers: request.headers, body });
+      const next = responses.shift();
+      if (next === undefined) throw new Error('Unexpected extra fetch call');
+      return next();
+    });
+    return recorded;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('creates a thread on turn 1, continues with delta messages omitting system/tools on turn 2, and preserves createBetas', async () => {
+    const recorded = stubAnthropicFetch([
+      () => okStreamResponse('msg_1', 'First reply'),
+      () => okStreamResponse('msg_2', 'Second reply'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+
+    const history: Message[] = [userMsg('Hello')];
+    const r1 = await generate(provider, 'Be terse.', [sampleTool], history, undefined, {
+      threadScopeKey: 'sess-1\0main',
+      headers: { 'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14' },
+    });
+    history.push(r1.message, userMsg('Follow up'));
+    const r2 = await generate(provider, 'Be terse.', [sampleTool], history, undefined, {
+      threadScopeKey: 'sess-1\0main',
+      headers: { 'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14' },
+    });
+
+    expect(r2.message.content).toEqual([{ type: 'text', text: 'Second reply' }]);
+    expect(recorded).toHaveLength(2);
+    expect(recorded[0]!.body['thread']).toEqual({ type: 'create' });
+    expect(recorded[0]!.body['system']).toBeDefined();
+    expect(recorded[0]!.body['tools']).toBeDefined();
+    expect(recorded[0]!.headers.get('anthropic-beta')).toContain('message-threads-2026-08-12');
+    expect(recorded[0]!.headers.get('anthropic-beta')).toContain('fine-grained-tool-streaming-2025-05-14');
+
+    expect(recorded[1]!.body['thread']).toEqual({ type: 'continue', previous_message_id: 'msg_1' });
+    expect(recorded[1]!.body).not.toHaveProperty('system');
+    expect(recorded[1]!.body).not.toHaveProperty('tools');
+    expect(recorded[1]!.body['messages']).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Follow up', cache_control: { type: 'ephemeral' } }],
+      },
+    ]);
+    expect(recorded[1]!.headers.get('anthropic-beta')).toBe(recorded[0]!.headers.get('anthropic-beta'));
+  });
+
+  it('isolates thread state across concurrent agents sharing one AnthropicChatProvider', async () => {
+    const recorded = stubAnthropicFetch([
+      () => okStreamResponse('msg_main_1', 'Main 1'),
+      () => okStreamResponse('msg_sub_1', 'Sub 1'),
+      () => okStreamResponse('msg_main_2', 'Main 2'),
+      () => okStreamResponse('msg_sub_2', 'Sub 2'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+
+    const mainHistory: Message[] = [userMsg('Main start')];
+    const subHistory: Message[] = [userMsg('Sub start')];
+
+    const m1 = await generate(provider, 'Sys', [], mainHistory, undefined, {
+      threadScopeKey: 'sess-shared\0main',
+      cacheKey: 'shared-session-cache-key',
+    });
+    const s1 = await generate(provider, 'Sys', [], subHistory, undefined, {
+      threadScopeKey: 'sess-shared\0subagent-1',
+      cacheKey: 'shared-session-cache-key',
+    });
+
+    mainHistory.push(m1.message, userMsg('Main next'));
+    subHistory.push(s1.message, userMsg('Sub next'));
+
+    await generate(provider, 'Sys', [], mainHistory, undefined, {
+      threadScopeKey: 'sess-shared\0main',
+      cacheKey: 'shared-session-cache-key',
+    });
+    await generate(provider, 'Sys', [], subHistory, undefined, {
+      threadScopeKey: 'sess-shared\0subagent-1',
+      cacheKey: 'shared-session-cache-key',
+    });
+
+    expect(recorded.map((entry) => entry.body['thread'])).toEqual([
+      { type: 'create' },
+      { type: 'create' },
+      { type: 'continue', previous_message_id: 'msg_main_1' },
+      { type: 'continue', previous_message_id: 'msg_sub_1' },
+    ]);
+  });
+
+  it('starts a new create thread when prefix history, system prompt, or tools change', async () => {
+    const recorded = stubAnthropicFetch([
+      () => okStreamResponse('msg_1', 'A1'),
+      () => okStreamResponse('msg_2', 'A2'),
+      () => okStreamResponse('msg_3', 'A3'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+
+    const history: Message[] = [userMsg('U1')];
+    const r1 = await generate(provider, 'Sys v1', [sampleTool], history, undefined, {
+      threadScopeKey: 'sess-change\0main',
+    });
+    const mutated: Message[] = [userMsg('U1 edited'), r1.message, userMsg('U2')];
+    const r2 = await generate(provider, 'Sys v1', [sampleTool], mutated, undefined, {
+      threadScopeKey: 'sess-change\0main',
+    });
+    mutated.push(r2.message, userMsg('U3'));
+    await generate(provider, 'Sys v2', [sampleTool], mutated, undefined, {
+      threadScopeKey: 'sess-change\0main',
+    });
+
+    expect(recorded.map((entry) => entry.body['thread'])).toEqual([
+      { type: 'create' },
+      { type: 'create' },
+      { type: 'create' },
+    ]);
+    expect(recorded[1]!.body['system']).toBeDefined();
+    expect(recorded[2]!.body['system']).toEqual([
+      { type: 'text', text: 'Sys v2', cache_control: { type: 'ephemeral' } },
+    ]);
+  });
+
+  it('does not commit thread state on incomplete stream, refusal, fallback_message, or max_tokens-truncated tool_use', async () => {
+    const recorded = stubAnthropicFetch([
+      () => okStreamResponse('msg_partial', 'Cut off', { omitMessageStop: true }),
+      () => okStreamResponse('msg_refusal', 'No.', { stopReason: 'refusal' }),
+      () => okStreamResponse('msg_fallback', 'Fallback answer', { fallbackIteration: true }),
+      () =>
+        okStreamResponse('msg_trunc_tool', '', {
+          stopReason: 'max_tokens',
+          toolUse: { id: 'toolu_1', name: 'lookup', inputJson: '{"q":"ok"}' },
+        }),
+      () => okStreamResponse('msg_clean', 'Final clean'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+    const scope = { threadScopeKey: 'sess-nocommit\0main' };
+
+    await expect(generate(provider, 'Sys', [], [userMsg('1')], undefined, scope)).rejects.toBeInstanceOf(
+      APIConnectionError,
+    );
+    const refusal = await generate(provider, 'Sys', [], [userMsg('2')], undefined, scope);
+    const fallback = await generate(
+      provider,
+      'Sys',
+      [],
+      [userMsg('2'), refusal.message, userMsg('3')],
+      undefined,
+      scope,
+    );
+    const truncTool = await generate(
+      provider,
+      'Sys',
+      [sampleTool],
+      [userMsg('2'), refusal.message, userMsg('3'), fallback.message, userMsg('4')],
+      undefined,
+      scope,
+    );
+    await generate(
+      provider,
+      'Sys',
+      [sampleTool],
+      [userMsg('2'), refusal.message, userMsg('3'), fallback.message, userMsg('4'), truncTool.message, userMsg('5')],
+      undefined,
+      scope,
+    );
+
+    expect(recorded.map((entry) => entry.body['thread'])).toEqual([
+      { type: 'create' },
+      { type: 'create' },
+      { type: 'create' },
+      { type: 'create' },
+      { type: 'create' },
+    ]);
+  });
+
+  it('continues with empty messages after pause_turn', async () => {
+    const recorded = stubAnthropicFetch([
+      () => okStreamResponse('msg_pause', 'Working...', { stopReason: 'pause_turn' }),
+      () => okStreamResponse('msg_done', 'Finished!'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+    const history: Message[] = [userMsg('Long task')];
+    const r1 = await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-pause\0main',
+    });
+    history.push(r1.message);
+    const r2 = await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-pause\0main',
+    });
+
+    expect(r2.message.content).toEqual([{ type: 'text', text: 'Finished!' }]);
+    expect(recorded[1]!.body['thread']).toEqual({ type: 'continue', previous_message_id: 'msg_pause' });
+    expect(recorded[1]!.body['messages']).toEqual([]);
+  });
+
+  it.each([
+    [404, 'thread_not_found'],
+    [400, 'thread_already_continued'],
+    [400, 'thread_continue_in_flight'],
+    [400, 'thread_fingerprint_mismatch'],
+  ] as const)(
+    'transparently replays continue as full create on HTTP %i %s within one generate call',
+    async (status, code) => {
+      const recorded = stubAnthropicFetch([
+        () => okStreamResponse('msg_1', 'First'),
+        () => threadErrorResponse(status, `Thread rejected: ${code}`, code),
+        () => okStreamResponse('msg_replayed', 'Recovered'),
+      ]);
+      const provider = new AnthropicChatProvider({
+        model: 'claude-sonnet-4-6',
+        apiKey: 'YOUR_API_KEY',
+        baseUrl: 'https://api.example.test',
+      });
+      const history: Message[] = [userMsg('One')];
+      const r1 = await generate(provider, 'Sys', [sampleTool], history, undefined, {
+        threadScopeKey: `sess-replay-${code}\0main`,
+      });
+      history.push(r1.message, userMsg('Two'));
+      const r2 = await generate(provider, 'Sys', [sampleTool], history, undefined, {
+        threadScopeKey: `sess-replay-${code}\0main`,
+      });
+
+      expect(r2.message.content).toEqual([{ type: 'text', text: 'Recovered' }]);
+      expect(recorded).toHaveLength(3);
+      expect(recorded[1]!.body['thread']).toEqual({ type: 'continue', previous_message_id: 'msg_1' });
+      expect(recorded[2]!.body['thread']).toEqual({ type: 'create' });
+      expect(recorded[2]!.body['system']).toBeDefined();
+      expect(recorded[2]!.body['tools']).toBeDefined();
+      expect((recorded[2]!.body['messages'] as unknown[]).length).toBe(3);
+    },
+  );
+
+  it('disables threads for the target and retries unthreaded when the first continue after a thread_not_found replay returns thread_not_found again', async () => {
+    const recorded = stubAnthropicFetch([
+      () => okStreamResponse('msg_1', 'One'),
+      () => threadErrorResponse(404, 'Lost thread 1', 'thread_not_found'),
+      () => okStreamResponse('msg_2', 'Two'),
+      () => threadErrorResponse(404, 'Lost thread 2', 'thread_not_found'),
+      () => okStreamResponse('msg_3', 'Three'),
+      () => okStreamResponse('msg_4', 'Four'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+    const history: Message[] = [userMsg('U1')];
+    const r1 = await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-double-lost\0main',
+    });
+    history.push(r1.message, userMsg('U2'));
+    const r2 = await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-double-lost\0main',
+    });
+    history.push(r2.message, userMsg('U3'));
+    const r3 = await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-double-lost\0main',
+    });
+    history.push(r3.message, userMsg('U4'));
+    await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-double-lost\0main',
+    });
+
+    expect(recorded.map((entry) => entry.body['thread'])).toEqual([
+      { type: 'create' },
+      { type: 'continue', previous_message_id: 'msg_1' },
+      { type: 'create' },
+      { type: 'continue', previous_message_id: 'msg_2' },
+      undefined,
+      undefined,
+    ]);
+    expect(recorded[4]!.headers.get('anthropic-beta') ?? '').not.toContain('message-threads-2026-08-12');
+    expect(recorded[5]!.headers.get('anthropic-beta') ?? '').not.toContain('message-threads-2026-08-12');
+  });
+
+  it.each([
+    ['thread_unsupported_request', () => threadErrorResponse(400, 'Cannot thread', 'thread_unsupported_request')],
+    ['unknown thread field', () => threadErrorResponse(400, 'thread: Extra inputs are not permitted')],
+    ['rejected anthropic-beta', () => threadErrorResponse(400, "Unexpected value 'message-threads-2026-08-12' for the 'anthropic-beta' header")],
+  ] as const)(
+    'falls back to unthreaded and caches unsupported target on %s until TTL expires',
+    async (_label, errorFactory) => {
+      let nowMs = 1_000;
+      const recorded = stubAnthropicFetch([
+        errorFactory,
+        () => okStreamResponse('msg_fallback_1', 'Unthreaded 1'),
+        () => okStreamResponse('msg_fallback_2', 'Unthreaded 2'),
+        () => okStreamResponse('msg_after_ttl', 'Threaded again'),
+      ]);
+      const provider = new AnthropicChatProvider({
+        model: 'claude-sonnet-4-6',
+        apiKey: 'YOUR_API_KEY',
+        baseUrl: 'https://proxy.example.test',
+        threadTrackerOptions: { unsupportedTtlMs: 60_000, now: () => nowMs },
+      });
+
+      const r1 = await generate(provider, 'Sys', [], [userMsg('A')], undefined, {
+        threadScopeKey: 'sess-unsup\0main',
+      });
+      expect(r1.message.content).toEqual([{ type: 'text', text: 'Unthreaded 1' }]);
+
+      await generate(provider, 'Sys', [], [userMsg('B')], undefined, {
+        threadScopeKey: 'sess-unsup\0sub',
+      });
+
+      nowMs += 61_000;
+      await generate(provider, 'Sys', [], [userMsg('C')], undefined, {
+        threadScopeKey: 'sess-unsup\0sub2',
+      });
+
+      expect(recorded).toHaveLength(4);
+      expect(recorded[0]!.body['thread']).toEqual({ type: 'create' });
+      expect(recorded[1]!.body).not.toHaveProperty('thread');
+      expect(recorded[1]!.headers.get('anthropic-beta') ?? '').not.toContain('message-threads-2026-08-12');
+      expect(recorded[2]!.body).not.toHaveProperty('thread');
+      expect(recorded[2]!.headers.get('anthropic-beta') ?? '').not.toContain('message-threads-2026-08-12');
+      expect(recorded[3]!.body['thread']).toEqual({ type: 'create' });
+      expect(recorded[3]!.headers.get('anthropic-beta')).toContain('message-threads-2026-08-12');
+    },
+  );
+
+  it('respects anthropicMessageThreads mode off and supports non-streaming + betaApi threads', async () => {
+    const recorded = stubAnthropicFetch([
+      () => okJsonResponse('msg_off', 'Plain'),
+      () => okJsonResponse('msg_beta_1', 'Beta 1'),
+      () => okJsonResponse('msg_beta_2', 'Beta 2'),
+    ]);
+    const disabled = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+      defaultMaxTokens: 1024,
+      stream: false,
+      anthropicMessageThreads: { mode: 'off' },
+    });
+    await generate(disabled, 'Sys', [], [userMsg('No thread')], undefined, {
+      threadScopeKey: 'sess-off\0main',
+    });
+    expect(recorded[0]!.body).not.toHaveProperty('thread');
+    expect(recorded[0]!.headers.get('anthropic-beta') ?? '').not.toContain('message-threads-2026-08-12');
+
+    const betaProvider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+      defaultMaxTokens: 1024,
+      stream: false,
+      betaApi: true,
+    });
+    const history: Message[] = [userMsg('Hi')];
+    const b1 = await generate(betaProvider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-beta\0main',
+    });
+    history.push(b1.message, userMsg('Again'));
+    await generate(betaProvider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-beta\0main',
+    });
+
+    expect(recorded[1]!.body['thread']).toEqual({ type: 'create' });
+    expect(recorded[1]!.headers.get('anthropic-beta')).toContain('message-threads-2026-08-12');
+    expect(recorded[2]!.body['thread']).toEqual({ type: 'continue', previous_message_id: 'msg_beta_1' });
+    expect(recorded[2]!.headers.get('anthropic-beta')).toContain('message-threads-2026-08-12');
+  });
+
+  it('keeps at most 4 cache_control breakpoints across multi-turn continues and full replays', async () => {
+    const countCacheControls = (value: unknown): number => {
+      if (Array.isArray(value)) return value.reduce((sum, item) => sum + countCacheControls(item), 0);
+      if (typeof value !== 'object' || value === null) return 0;
+      let total = 0;
+      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        if (key === 'cache_control' && entry !== undefined) total += 1;
+        else total += countCacheControls(entry);
+      }
+      return total;
+    };
+
+    const recorded = stubAnthropicFetch([
+      () => okStreamResponse('msg_1', 'A1'),
+      () => okStreamResponse('msg_2', 'A2'),
+      () => okStreamResponse('msg_3', 'A3'),
+      () => okStreamResponse('msg_4', 'A4'),
+      () => threadErrorResponse(404, 'Expired', 'thread_not_found'),
+      () => okStreamResponse('msg_5', 'A5'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+
+    const history: Message[] = [];
+    for (const label of ['U1', 'U2', 'U3', 'U4', 'U5']) {
+      history.push(userMsg(label));
+      const reply = await generate(provider, 'System', [sampleTool], history, undefined, {
+        threadScopeKey: 'sess-cc\0main',
+      });
+      history.push(reply.message);
+    }
+
+    expect(recorded).toHaveLength(6);
+    for (const entry of recorded) {
+      expect(countCacheControls(entry.body)).toBeLessThanOrEqual(4);
+    }
+    const replayedMessages = recorded[5]!.body['messages'] as Array<{
+      content: Array<Record<string, unknown>>;
+    }>;
+    expect(replayedMessages).toHaveLength(9);
+    for (let i = 0; i < replayedMessages.length - 1; i += 1) {
+      expect(countCacheControls(replayedMessages[i])).toBe(0);
+    }
+    expect(countCacheControls(replayedMessages.at(-1))).toBe(1);
   });
 });

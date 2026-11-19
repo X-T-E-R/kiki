@@ -4015,6 +4015,9 @@ export interface AgentStateSnapshot {
         off?: true;
         targets?: string[];
       };
+      anthropicMessageThreads?: {
+        mode: 'off' | 'auto';
+      };
       images?: /* ImagePolicyConfig — packages/agent-core-v2/src/kosong/provider/providerImagePolicy.ts */ {
         acceptedTypes?: ('image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp' | 'image/heic' | 'image/heif' | 'image/avif' | 'image/tiff' | 'image/x-icon')[];
         convertUnsupported?: 'off' | 'auto' | 'png' | 'jpeg';

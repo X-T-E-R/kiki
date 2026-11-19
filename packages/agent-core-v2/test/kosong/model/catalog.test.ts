@@ -1303,12 +1303,14 @@ describe('ModelCatalog inspect', () => {
         usageParameters: _usageParameters,
         requestCompression: _requestCompression,
         responsesWebSocket: _responsesWebSocket,
+        anthropicMessageThreads: _anthropicMessageThreads,
         ...rest
       } = model;
       expect(model.usageParameters).toHaveProperty('main.values');
       expect(view.resolved).not.toHaveProperty('usageParameters');
       expect(view.resolved).not.toHaveProperty('requestCompression');
       expect(view.resolved).not.toHaveProperty('responsesWebSocket');
+      expect(view.resolved).not.toHaveProperty('anthropicMessageThreads');
       expect(view.resolved).toMatchObject({ ...rest, wireName: name });
       expect(view.sources['resolved.maxContextSize']).toEqual(view.sources['model.effective.maxContextSize']);
       expect(view.sources['resolved.maxContextSize']).toMatchObject({ kind: 'config' });

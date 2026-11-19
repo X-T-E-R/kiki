@@ -142,6 +142,11 @@ export const responsesWebSocketWireSchema = z.object({
 });
 export type ResponsesWebSocketWire = z.infer<typeof responsesWebSocketWireSchema>;
 
+export const anthropicMessageThreadsWireSchema = z.object({
+  mode: z.enum(['auto', 'off']),
+}).strict();
+export type AnthropicMessageThreadsWire = z.infer<typeof anthropicMessageThreadsWireSchema>;
+
 export const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
 export type ServiceTierWire = z.infer<typeof serviceTierSchema>;
 
@@ -312,6 +317,7 @@ export const providerCatalogItemSchema = z.object({
   request_identity: requestIdentityPolicySchema.optional(),
   request_compression: requestCompressionWireSchema.optional(),
   responses_web_socket: responsesWebSocketWireSchema.optional(),
+  anthropic_message_threads: anthropicMessageThreadsWireSchema.optional(),
   images: imagePolicySchema.optional(),
   api_key: z.string().min(1).optional(),
   api_key_env: z.string().min(1).optional(),
@@ -653,6 +659,7 @@ export const patchProviderRequestSchema = z
     request_identity: requestIdentityPolicySchema.nullable().optional(),
     request_compression: requestCompressionWireSchema.nullable().optional(),
     responses_web_socket: responsesWebSocketWireSchema.nullable().optional(),
+    anthropic_message_threads: anthropicMessageThreadsWireSchema.nullable().optional(),
     images: imagePolicyPatchSchema.nullable().optional(),
     model_source: z.enum(['static', 'discover', 'oauth-catalog']).nullable().optional(),
     // Per-name writes: a string sets that entry, null removes it, absent names are kept.
@@ -763,6 +770,7 @@ export const createProviderRequestSchema = z
     request_identity: requestIdentityPolicySchema.optional(),
     request_compression: requestCompressionWireSchema.optional(),
     responses_web_socket: responsesWebSocketWireSchema.optional(),
+    anthropic_message_threads: anthropicMessageThreadsWireSchema.optional(),
     images: imagePolicySchema.optional(),
     models: z.array(createProviderModelSchema).optional(),
   })

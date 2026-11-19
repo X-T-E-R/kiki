@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { Error2 } from '#/_base/errors/errors';
 import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
+import type { AnthropicMessageThreadsConfig } from '#/kosong/contract/anthropicThreads';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 
@@ -54,9 +55,17 @@ export const ResponsesWebSocketLayerSchema = responsesWebSocketObject.superRefin
 });
 export type ResponsesWebSocketLayer = z.infer<typeof ResponsesWebSocketLayerSchema>;
 
+const anthropicMessageThreadsObject = z.object({
+  mode: z.enum(['auto', 'off']),
+}).strict();
+
+export const AnthropicMessageThreadsLayerSchema = anthropicMessageThreadsObject;
+export type AnthropicMessageThreadsLayer = z.infer<typeof AnthropicMessageThreadsLayerSchema>;
+
 export interface ProviderTransportDefaults {
   readonly requestCompression?: RequestCompressionLayer;
   readonly responsesWebSocket?: ResponsesWebSocketLayer;
+  readonly anthropicMessageThreads?: AnthropicMessageThreadsLayer;
 }
 
 /**
@@ -100,6 +109,18 @@ export function resolveResponsesWebSocket(
     throw new Error2(CONFIG_INVALID_ERROR_CODE, 'responses_web_socket needs targets');
   }
   return { targets: [...chosen.targets] };
+}
+
+/**
+ * Whole-object override for Anthropic Message Threads.
+ * An omitted provider layer inherits the system layer; when both are absent, defaults to `'auto'`.
+ */
+export function resolveAnthropicMessageThreads(
+  system: AnthropicMessageThreadsLayer | undefined,
+  provider: AnthropicMessageThreadsLayer | undefined,
+): AnthropicMessageThreadsConfig {
+  const mode = provider?.mode ?? system?.mode ?? 'auto';
+  return { mode };
 }
 
 function isCompressionOff(layer: RequestCompressionLayer | undefined): layer is { encoding: 'off' } {
@@ -149,6 +170,9 @@ export const ResponsesWebSocketSystemSchema = responsesWebSocketObject.superRefi
   resolveResponsesWebSocket(parsed.data, undefined);
 });
 
+/** System-level configuration for Anthropic Message Threads (`mode`: `'auto' | 'off'`). */
+export const AnthropicMessageThreadsSystemSchema = anthropicMessageThreadsObject;
+
 export const RequestCompressionWireSchema = z.object({
   encoding: z.enum(['off', 'gzip', 'zstd']).optional(),
   targets: ProviderTargetsSchema.optional(),
@@ -174,6 +198,9 @@ export const ResponsesWebSocketWireSchema = z.object({
   }
 });
 export type ResponsesWebSocketWire = z.infer<typeof ResponsesWebSocketWireSchema>;
+
+export const AnthropicMessageThreadsWireSchema = anthropicMessageThreadsObject;
+export type AnthropicMessageThreadsWire = z.infer<typeof AnthropicMessageThreadsWireSchema>;
 
 export function requestCompressionFromWire(wire: {
   readonly encoding?: 'off' | 'gzip' | 'zstd';
@@ -219,4 +246,17 @@ export function responsesWebSocketToWire(
   if (layer.off !== undefined) wire.off = layer.off;
   if (layer.targets !== undefined) wire.targets = [...layer.targets];
   return wire;
+}
+
+export function anthropicMessageThreadsFromWire(wire: {
+  readonly mode: 'auto' | 'off';
+}): AnthropicMessageThreadsLayer {
+  return { mode: wire.mode };
+}
+
+export function anthropicMessageThreadsToWire(
+  layer: AnthropicMessageThreadsLayer | undefined,
+): AnthropicMessageThreadsWire | undefined {
+  if (layer === undefined) return undefined;
+  return { mode: layer.mode };
 }

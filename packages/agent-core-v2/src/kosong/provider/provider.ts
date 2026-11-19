@@ -7,12 +7,18 @@ import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIden
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import type { GenerationParameters } from '#/kosong/contract/generationParameters';
 import type {
+  AnthropicMessageThreadsLayer,
   ProviderTransportDefaults,
   RequestCompressionLayer,
   ResponsesWebSocketLayer,
 } from '#/kosong/provider/requestCompression';
 
-export type { ProviderTransportDefaults, RequestCompressionLayer, ResponsesWebSocketLayer };
+export type {
+  AnthropicMessageThreadsLayer,
+  ProviderTransportDefaults,
+  RequestCompressionLayer,
+  ResponsesWebSocketLayer,
+};
 
 export type ProviderType = string;
 
@@ -48,6 +54,7 @@ export interface ProviderConfig {
   requestIdentity?: RequestIdentityPolicy;
   requestCompression?: RequestCompressionLayer;
   responsesWebSocket?: ResponsesWebSocketLayer;
+  anthropicMessageThreads?: AnthropicMessageThreadsLayer;
   images?: ImagePolicyConfig;
 
   type?: ProviderType;

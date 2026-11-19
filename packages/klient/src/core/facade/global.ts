@@ -86,7 +86,11 @@ import type {
   McpServerStopResult,
 } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import type { McpRevealedOAuthCredential, McpStoredOAuthCredential, McpStoredOAuthIdentity } from '@kiki/agent-core-v2/mcpCore/oauth/service';
-import type { RequestCompressionLayer, ResponsesWebSocketLayer } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
+import type {
+  AnthropicMessageThreadsLayer,
+  RequestCompressionLayer,
+  ResponsesWebSocketLayer,
+} from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import type {
   AnonymousProviderInput,
   GenerateEvent,
@@ -237,6 +241,7 @@ export interface GlobalConfigFacade {
   get(domain: 'requestIdentity'): Promise<RequestIdentityPolicy | undefined>;
   get(domain: 'requestCompression'): Promise<RequestCompressionLayer | undefined>;
   get(domain: 'responsesWebSocket'): Promise<ResponsesWebSocketLayer | undefined>;
+  get(domain: 'anthropicMessageThreads'): Promise<AnthropicMessageThreadsLayer | undefined>;
   get<T = unknown>(domain: string): Promise<T>;
   getAll(): Promise<Record<string, unknown>>;
   inspect(
@@ -248,6 +253,9 @@ export interface GlobalConfigFacade {
   inspect(
     domain: 'responsesWebSocket',
   ): Promise<ConfigInspectValue<ResponsesWebSocketLayer | undefined>>;
+  inspect(
+    domain: 'anthropicMessageThreads',
+  ): Promise<ConfigInspectValue<AnthropicMessageThreadsLayer | undefined>>;
   inspect<T = unknown>(domain: string): Promise<ConfigInspectValue<T>>;
   set(input: {
     domain: 'requestIdentity';
@@ -264,6 +272,11 @@ export interface GlobalConfigFacade {
     patch: ResponsesWebSocketLayer;
     target?: ConfigTargetLiteral;
   }): Promise<void>;
+  set(input: {
+    domain: 'anthropicMessageThreads';
+    patch: AnthropicMessageThreadsLayer;
+    target?: ConfigTargetLiteral;
+  }): Promise<void>;
   set(input: { domain: string; patch: unknown; target?: ConfigTargetLiteral }): Promise<void>;
   replace(input: {
     domain: 'requestIdentity';
@@ -278,6 +291,11 @@ export interface GlobalConfigFacade {
   replace(input: {
     domain: 'responsesWebSocket';
     value: ResponsesWebSocketLayer | undefined;
+    target?: ConfigTargetLiteral;
+  }): Promise<void>;
+  replace(input: {
+    domain: 'anthropicMessageThreads';
+    value: AnthropicMessageThreadsLayer | undefined;
     target?: ConfigTargetLiteral;
   }): Promise<void>;
   replace(input: {
@@ -698,6 +716,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
             requestIdentity: config.requestIdentity,
             requestCompression: config.requestCompression,
             responsesWebSocket: config.responsesWebSocket,
+            anthropicMessageThreads: config.anthropicMessageThreads,
             apiKey: config.auth.method === 'api-key' ? config.auth.apiKey : '',
           };
           return call('providerService', 'set', [idOrConfig, wire]) as Promise<void>;

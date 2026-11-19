@@ -8,12 +8,13 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (60 sections · 1 overlay(s))
+# Index (61 sections · 1 overlay(s))
 #   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorInstances          src/app/agentExecutor/executorInstances.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
+#   anthropicMessageThreads         src/app/kosongConfig/configSection.ts
 #   background                      src/agent/task/configSection.ts
 #   bot                             src/app/bot/configSection.ts
 #   branch                          src/app/branch/configSection.ts
@@ -228,6 +229,16 @@ notify_parent = true
 # [agents.delegation]
   # sub: boolean
   # independent: boolean
+
+# ##########################################################################
+# anthropicMessageThreads (config.toml: anthropic_message_threads)
+#   owner: src/app/kosongConfig/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[anthropic_message_threads]
+# mode: "auto" | "off"
 
 # ##########################################################################
 # background
@@ -923,6 +934,8 @@ enter_approval_timeout_ms = 60000
   # responses_web_socket: object
     # off: true
     # targets: string[]
+  # anthropic_message_threads: object
+    # mode: "auto" | "off"
   # images: object
     # accepted_types: "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/x-icon"[]
     # convert_unsupported: "off" | "auto" | "png" | "jpeg"

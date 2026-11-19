@@ -10,6 +10,7 @@ import type { Tool } from '@kiki/agent-core-v2/kosong/contract/tool';
 import type { TokenUsage } from '@kiki/agent-core-v2/kosong/contract/usage';
 import type { ResponseFormat } from '@kiki/agent-core-v2/kosong/contract/provider';
 import type {
+  AnthropicMessageThreadsLayer,
   RequestCompressionLayer,
   ResponsesWebSocketLayer,
 } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
@@ -39,6 +40,7 @@ export interface ProviderInput {
   requestIdentity?: RequestIdentityPolicy;
   requestCompression?: RequestCompressionLayer;
   responsesWebSocket?: ResponsesWebSocketLayer;
+  anthropicMessageThreads?: AnthropicMessageThreadsLayer;
 }
 
 /**

@@ -61,6 +61,10 @@ import type {
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type {
+  AnthropicMessageThreadsConfig,
+  AnthropicMessageThreadsMode,
+} from '#/kosong/contract/anthropicThreads';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
 import { createRequestCompressionFetch, withRequestCompressionDelivery } from '../request-compression';
 import { guardRequestDelivery } from '../request-delivery';
@@ -75,6 +79,19 @@ import {
   type AnthropicModelProfile,
   type AnthropicModelVersion,
 } from './anthropic-profile';
+import {
+  AnthropicThreadTracker,
+  MESSAGE_THREADS_BETA,
+  classifyAnthropicThreadError,
+  extractHeaderBetaTokens,
+  hashThreadFixedFields,
+  hashThreadMessages,
+  isUnfinishedAnthropicStopReason,
+  mergeBetaTokens,
+  stripAnthropicBetaHeader,
+  type AnthropicThreadTrackerOptions,
+  type PreparedAnthropicThreadRequest,
+} from './anthropic-threads';
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
 import { isGeminiModel } from '#/kosong/contract/modelFamily';
 import {
@@ -144,6 +161,8 @@ export interface AnthropicOptions {
   betaFeatures?: string[] | undefined;
   defaultHeaders?: Record<string, string>;
   requestCompression?: RequestCompression;
+  anthropicMessageThreads?: AnthropicMessageThreadsConfig;
+  threadTrackerOptions?: AnthropicThreadTrackerOptions;
   metadata?: Record<string, string> | undefined;
   stream?: boolean | undefined;
   adaptiveThinking?: boolean | undefined;
@@ -668,6 +687,24 @@ export function convertAnthropicError(
   return new ChatProviderError(`Error: ${String(error)}`);
 }
 
+interface AnthropicThreadSettlement {
+  readonly responseId: string;
+  readonly rawFinishReason: string | null;
+  readonly message: Message;
+}
+
+function hasFallbackMessageIteration(usage: unknown): boolean {
+  if (typeof usage !== 'object' || usage === null) return false;
+  const iterations = (usage as { iterations?: unknown }).iterations;
+  if (!Array.isArray(iterations)) return false;
+  return iterations.some(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      (entry as { type?: unknown }).type === 'fallback_message',
+  );
+}
+
 class AnthropicStreamedMessage implements StreamedMessage {
   private _id: string | null = null;
   private _usage: TokenUsage | null = null;
@@ -677,11 +714,19 @@ class AnthropicStreamedMessage implements StreamedMessage {
   private readonly _controller?: AbortController;
   private _completedNormally = false;
   private _continuationBlocked = false;
+  private _sawMessageStop = false;
+  private _sawFallbackMessage = false;
+  private _sawToolUse = false;
 
   get completionAuthority(): 'normal' | undefined { return this._completedNormally && !this._continuationBlocked ? 'normal' : undefined; }
   get thinkingOnlyRecoveryBlocked(): boolean { return this._continuationBlocked; }
 
   cancel(): void { this._controller?.abort(); }
+
+  commitMessage(message: Message): void {
+    if (!this._sawMessageStop) return;
+    this._settleThread(message);
+  }
 
   constructor(
     response: unknown,
@@ -689,6 +734,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
     private readonly _convertErrorHook?:
       | ((error: unknown) => ChatProviderError | undefined)
       | undefined,
+    private readonly _onThreadSettle?: (settlement: AnthropicThreadSettlement | null) => void,
   ) {
     if (isStream) {
       this._controller = (response as { controller?: AbortController }).controller;
@@ -737,6 +783,27 @@ class AnthropicStreamedMessage implements StreamedMessage {
 
   async *[Symbol.asyncIterator](): AsyncIterator<StreamedMessagePart> {
     yield* this._iter;
+  }
+
+  private _settleThread(message: Message): void {
+    if (this._onThreadSettle === undefined) return;
+    const truncatedToolUse =
+      this._rawFinishReason === 'max_tokens' && (this._sawToolUse || message.toolCalls.length > 0);
+    if (
+      this._id === null ||
+      !this._sawMessageStop ||
+      this._rawFinishReason === 'refusal' ||
+      this._sawFallbackMessage ||
+      truncatedToolUse
+    ) {
+      this._onThreadSettle(null);
+      return;
+    }
+    this._onThreadSettle({
+      responseId: this._id,
+      rawFinishReason: this._rawFinishReason,
+      message,
+    });
   }
 
   private _captureStopReason(raw: string | null | undefined): void {
@@ -798,41 +865,63 @@ class AnthropicStreamedMessage implements StreamedMessage {
     }>;
   }): AsyncGenerator<StreamedMessagePart> {
     this._id = response.id;
+    if (hasFallbackMessageIteration(response.usage)) this._sawFallbackMessage = true;
     this._extractUsage(response.usage);
     this._captureStopReason(response.stop_reason);
     this._completedNormally = this._finishReason === 'completed';
 
+    const assembledContent: ContentPart[] = [];
+    const assembledToolCalls: ToolCall[] = [];
+
     for (const block of response.content) {
+      if (block.type === 'fallback') this._sawFallbackMessage = true;
+      if (block.type === 'tool_use') this._sawToolUse = true;
       if (!['text', 'thinking', 'redacted_thinking', 'tool_use'].includes(block.type)) this._continuationBlocked = true;
       switch (block.type) {
         case 'text':
           if (block.text !== undefined) {
-            yield { type: 'text', text: block.text };
+            const part: ContentPart = { type: 'text', text: block.text };
+            assembledContent.push(part);
+            yield part;
           }
           break;
-        case 'thinking':
-          yield block.signature !== undefined
+        case 'thinking': {
+          const part: ContentPart = block.signature !== undefined
             ? { type: 'think' as const, think: block.thinking ?? '', encrypted: block.signature }
             : { type: 'think' as const, think: block.thinking ?? '' };
+          assembledContent.push(part);
+          yield part;
           break;
-        case 'redacted_thinking':
-          yield typeof block.data === 'string' && block.data.length > 0
+        }
+        case 'redacted_thinking': {
+          const part: ContentPart = typeof block.data === 'string' && block.data.length > 0
             ? { type: 'think' as const, think: '', redacted: block.data }
             : { type: 'think' as const, think: '' };
+          assembledContent.push(part);
+          yield part;
           break;
+        }
         case 'tool_use': {
           const signature: unknown = block.signature;
-          yield {
+          const toolCall: ToolCall = {
             type: 'function',
             id: block.id ?? crypto.randomUUID(),
             name: block.name ?? '',
             arguments: block.input !== undefined ? JSON.stringify(block.input) : null,
             extras: typeof signature === 'string' && signature.length > 0 ? { anthropic_tool_signature: signature } : undefined,
-          } satisfies ToolCall;
+          };
+          assembledToolCalls.push(toolCall);
+          yield toolCall;
           break;
         }
       }
     }
+    this._sawMessageStop = true;
+    this._settleThread({
+      role: 'assistant',
+      content: assembledContent,
+      toolCalls: assembledToolCalls,
+    });
   }
 
   private async *_convertStreamResponse(
@@ -840,6 +929,41 @@ class AnthropicStreamedMessage implements StreamedMessage {
   ): AsyncGenerator<StreamedMessagePart> {
     const toolUseBlockIndexes = new Set<number>();
     let sawMessageStop = false;
+    const assembledBlocks = new Map<
+      number,
+      | { readonly kind: 'text'; text: string }
+      | { readonly kind: 'think'; think: string; encrypted?: string; redacted?: string }
+      | { readonly kind: 'tool_use'; id: string; name: string; arguments: string; signature?: string }
+    >();
+    const assembledOrder: number[] = [];
+    const buildAssembledMessage = (): Message => {
+      const content: ContentPart[] = [];
+      const toolCalls: ToolCall[] = [];
+      for (const idx of assembledOrder) {
+        const entry = assembledBlocks.get(idx);
+        if (entry === undefined) continue;
+        if (entry.kind === 'text') {
+          content.push({ type: 'text', text: entry.text });
+        } else if (entry.kind === 'think') {
+          if (entry.redacted !== undefined) {
+            content.push({ type: 'think', think: entry.think, redacted: entry.redacted });
+          } else if (entry.encrypted !== undefined) {
+            content.push({ type: 'think', think: entry.think, encrypted: entry.encrypted });
+          } else {
+            content.push({ type: 'think', think: entry.think });
+          }
+        } else {
+          toolCalls.push({
+            type: 'function',
+            id: entry.id,
+            name: entry.name,
+            arguments: entry.arguments,
+            extras: entry.signature !== undefined ? { anthropic_tool_signature: entry.signature } : undefined,
+          });
+        }
+      }
+      return { role: 'assistant', content, toolCalls };
+    };
     const streamed: { signed: boolean; text: boolean; tool: boolean } = {
       signed: false,
       text: false,
@@ -864,6 +988,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
         if (eventType === 'message_start') {
           const startEvt = evt as unknown as RawMessageStartEvent;
           this._id = startEvt.message.id;
+          if (hasFallbackMessageIteration(startEvt.message.usage)) this._sawFallbackMessage = true;
           this._extractUsage(
             startEvt.message.usage as {
               input_tokens?: number;
@@ -876,20 +1001,35 @@ class AnthropicStreamedMessage implements StreamedMessage {
           const blockEvt = evt as unknown as RawContentBlockStartEvent;
           const block = blockEvt.content_block;
           const blockIndex = blockEvt.index;
+          if ((block as { type?: unknown }).type === 'fallback') this._sawFallbackMessage = true;
+          if (block.type === 'tool_use') this._sawToolUse = true;
           if (!['text', 'thinking', 'redacted_thinking', 'tool_use'].includes(block.type)) this._continuationBlocked = true;
           switch (block.type) {
             case 'text': {
               const text = typeof block.text === 'string' ? block.text : '';
               if (text.trim().length > 0) streamed.text = true;
+              assembledOrder.push(blockIndex);
+              assembledBlocks.set(blockIndex, { kind: 'text', text });
               yield { type: 'text', text };
               break;
             }
-            case 'thinking':
-              yield { type: 'think', think: block.thinking ?? '' };
+            case 'thinking': {
+              const thinking = block.thinking ?? '';
+              assembledOrder.push(blockIndex);
+              assembledBlocks.set(blockIndex, { kind: 'think', think: thinking });
+              yield { type: 'think', think: thinking };
               break;
+            }
             case 'redacted_thinking': {
               const data = (block as unknown as { data?: string }).data;
               if (typeof data === 'string' && data.length > 0) streamed.signed = true;
+              assembledOrder.push(blockIndex);
+              assembledBlocks.set(
+                blockIndex,
+                typeof data === 'string' && data.length > 0
+                  ? { kind: 'think', think: '', redacted: data }
+                  : { kind: 'think', think: '' },
+              );
               yield typeof data === 'string' && data.length > 0
                 ? { type: 'think' as const, think: '', redacted: data }
                 : { type: 'think' as const, think: '' };
@@ -897,15 +1037,24 @@ class AnthropicStreamedMessage implements StreamedMessage {
             }
             case 'tool_use': {
               const signature = (block as { signature?: unknown }).signature;
+              const sigStr = typeof signature === 'string' && signature.length > 0 ? signature : undefined;
               streamed.tool = true;
               toolUseBlockIndexes.add(blockIndex);
+              assembledOrder.push(blockIndex);
+              assembledBlocks.set(blockIndex, {
+                kind: 'tool_use',
+                id: block.id,
+                name: block.name,
+                arguments: '',
+                signature: sigStr,
+              });
               yield {
                 type: 'function',
                 id: block.id,
                 name: block.name,
                 arguments: '',
                 _streamIndex: blockIndex,
-                extras: typeof signature === 'string' && signature.length > 0 ? { anthropic_tool_signature: signature } : undefined,
+                extras: sigStr !== undefined ? { anthropic_tool_signature: sigStr } : undefined,
               } satisfies ToolCall;
               break;
             }
@@ -918,28 +1067,42 @@ class AnthropicStreamedMessage implements StreamedMessage {
             case 'text_delta': {
               const text = typeof delta.text === 'string' ? delta.text : '';
               if (text.trim().length > 0) streamed.text = true;
+              const entry = assembledBlocks.get(blockIndex);
+              if (entry?.kind === 'text') entry.text += text;
               yield { type: 'text', text };
               break;
             }
-            case 'thinking_delta':
-              yield { type: 'think', think: delta.thinking ?? '' };
+            case 'thinking_delta': {
+              const thinking = delta.thinking ?? '';
+              const entry = assembledBlocks.get(blockIndex);
+              if (entry?.kind === 'think') entry.think += thinking;
+              yield { type: 'think', think: thinking };
               break;
-            case 'input_json_delta':
+            }
+            case 'input_json_delta': {
+              const entry = assembledBlocks.get(blockIndex);
+              if (entry?.kind === 'tool_use') entry.arguments += delta.partial_json;
               yield {
                 type: 'tool_call_part',
                 argumentsPart: delta.partial_json,
                 index: blockIndex,
               };
               break;
-            case 'signature_delta':
+            }
+            case 'signature_delta': {
               if (toolUseBlockIndexes.has(blockIndex)) break;
               if (delta.signature.length > 0) streamed.signed = true;
+              const entry = assembledBlocks.get(blockIndex);
+              if (entry?.kind === 'think') {
+                entry.encrypted = (entry.encrypted ?? '') + delta.signature;
+              }
               yield {
                 type: 'think',
                 think: '',
                 encrypted: delta.signature,
               };
               break;
+            }
           }
         } else if (eventType === 'error') {
           const streamedError = anthropicApiErrorFromStreamEvent(evt);
@@ -953,6 +1116,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
         } else if (eventType === 'message_delta') {
           const deltaUsage = (evt as { usage?: Record<string, unknown> }).usage;
           if (deltaUsage !== undefined) {
+            if (hasFallbackMessageIteration(deltaUsage)) this._sawFallbackMessage = true;
             this._extractUsage({
               input_tokens:
                 typeof deltaUsage['input_tokens'] === 'number'
@@ -980,13 +1144,16 @@ class AnthropicStreamedMessage implements StreamedMessage {
           }
         } else if (eventType === 'message_stop') {
           sawMessageStop = true;
+          this._sawMessageStop = true;
           this._completedNormally = this._finishReason === 'completed';
+          this._settleThread(buildAssembledMessage());
         }
       }
       if (this._controller?.signal.aborted) throw createAbortError();
       if (!sawMessageStop) throw new APIConnectionError('Anthropic stream ended before message_stop.');
     } catch (error: unknown) {
       this._completedNormally = false;
+      this._onThreadSettle?.(null);
       const code = error instanceof AnthropicAPIError
         ? anthropicStreamErrorCode(error.error)
         : readProviderEventErrorCode(error);
@@ -1060,6 +1227,8 @@ export class AnthropicChatProvider implements ChatProvider {
   private readonly _hooks: AnthropicHooks | undefined;
   private readonly _acceptedImageMimes: ReadonlySet<string>;
   private readonly _audioIn: boolean;
+  private readonly _messageThreadsMode: AnthropicMessageThreadsMode;
+  private readonly _threadTracker: AnthropicThreadTracker;
   readonly uploadImage: ChatProvider['uploadImage'];
 
   constructor(options: AnthropicOptions) {
@@ -1076,6 +1245,8 @@ export class AnthropicChatProvider implements ChatProvider {
     this._acceptedImageMimes =
       options.acceptedImageMimes ?? providerImagePolicy().acceptedMimes;
     this._audioIn = options.audioIn ?? false;
+    this._messageThreadsMode = options.anthropicMessageThreads?.mode ?? 'auto';
+    this._threadTracker = new AnthropicThreadTracker(options.threadTrackerOptions);
     this._apiKey =
       options.apiKey === undefined || options.apiKey.length === 0 ? undefined : options.apiKey;
     this._baseUrl = options.baseUrl;
@@ -1235,10 +1406,6 @@ export class AnthropicChatProvider implements ChatProvider {
     applyResponseFormat(requestKwargs, options?.responseFormat);
 
     const betas = kwargs.betaFeatures ?? [];
-    const extraHeaders: Record<string, string> = {};
-    if (!useBetaApi && betas.length > 0) {
-      extraHeaders['anthropic-beta'] = betas.join(',');
-    }
 
     const anthropicTools: AnthropicToolParam[] = tools.map((t) => convertTool(t));
     if (anthropicTools.length > 0) {
@@ -1273,10 +1440,6 @@ export class AnthropicChatProvider implements ChatProvider {
       createParams['metadata'] = metadata;
     }
 
-    if (useBetaApi && betas.length > 0) {
-      createParams['betas'] = betas;
-    }
-
     if (
       options?.requestIdentity?.suppressUserAgent === true &&
       this._clientFactory !== undefined
@@ -1287,48 +1450,194 @@ export class AnthropicChatProvider implements ChatProvider {
       );
     }
     const auth = mergeProviderRequestAuth(options?.auth, options?.headers);
-    const requestOptions: Record<string, unknown> = {};
-    const headers = mergeRequestHeaders(extraHeaders, undefined, auth?.headers);
-    if (headers !== undefined) {
-      requestOptions['headers'] = headers;
-    }
-    if (options?.signal) {
-      requestOptions['signal'] = options.signal;
-    }
-    const finalRequestOptions = Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
+    const defaultHeaderBetas = extractHeaderBetaTokens(this._defaultHeaders);
+    const authHeaderBetas = extractHeaderBetaTokens(auth?.headers);
+    const baseBetas = mergeBetaTokens(betas, defaultHeaderBetas, authHeaderBetas);
+    const authHeadersWithoutBeta = stripAnthropicBetaHeader(auth?.headers);
     const client = this._createClient(auth, options?.rawResponseObserver);
-    options?.onRequestSent?.();
 
-    if (this._stream) {
+    const sendAttempt = async (
+      body: Record<string, unknown>,
+      attemptBetas: readonly string[],
+    ): Promise<unknown> => {
+      const requestBody: Record<string, unknown> = { ...body };
+      const extraHeaders: Record<string, string> = {};
+      if (useBetaApi) {
+        if (attemptBetas.length > 0) {
+          requestBody['betas'] = [...attemptBetas];
+        } else {
+          delete requestBody['betas'];
+        }
+      } else {
+        delete requestBody['betas'];
+        if (attemptBetas.length > 0) {
+          extraHeaders['anthropic-beta'] = attemptBetas.join(',');
+        }
+      }
+      const requestOptions: Record<string, unknown> = {};
+      const mergedHeaders = mergeRequestHeaders(extraHeaders, undefined, authHeadersWithoutBeta);
+      if (mergedHeaders !== undefined) {
+        requestOptions['headers'] = mergedHeaders;
+      }
+      if (options?.signal) {
+        requestOptions['signal'] = options.signal;
+      }
+      const finalRequestOptions =
+        Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
+      options?.onRequestSent?.();
+      return withRequestCompressionDelivery(options?.signal, async () =>
+        this._stream
+          ? useBetaApi
+            ? client.beta.messages.create(
+                { ...requestBody, stream: true } as unknown as MessageCreateParamsStreaming,
+                finalRequestOptions,
+              )
+            : client.messages.create(
+                { ...requestBody, stream: true } as unknown as MessageCreateParamsStreaming,
+                finalRequestOptions,
+              )
+          : useBetaApi
+            ? client.beta.messages.create(
+                { ...requestBody, stream: false } as unknown as MessageCreateParams,
+                finalRequestOptions,
+              )
+            : client.messages.create(
+                { ...requestBody, stream: false } as unknown as MessageCreateParams,
+                finalRequestOptions,
+              ),
+      );
+    };
+
+    const normalizedEndpoint = (this._baseUrl ?? 'https://api.anthropic.com').replace(/\/$/, '');
+    const targetKey = `${normalizedEndpoint}\0${this._model}`;
+    const threadScopeKey = options?.threadScopeKey ?? metadata?.['user_id'];
+    const threadingActive =
+      this._messageThreadsMode === 'auto' &&
+      threadScopeKey !== undefined &&
+      threadScopeKey.length > 0 &&
+      !this._threadTracker.isTargetUnsupported(targetKey);
+
+    if (!threadingActive) {
       try {
-        const stream = await withRequestCompressionDelivery(options?.signal, async () => useBetaApi
-          ? client.beta.messages.create(
-              { ...createParams, stream: true } as unknown as MessageCreateParamsStreaming,
-              finalRequestOptions,
-            )
-          : client.messages.create(
-              { ...createParams, stream: true } as unknown as MessageCreateParamsStreaming,
-              finalRequestOptions,
-            ));
-        return guardRequestDelivery(new AnthropicStreamedMessage(stream, true, this._hooks?.convertError), this._guardDelivery);
+        const response = await sendAttempt(createParams, baseBetas);
+        return guardRequestDelivery(
+          new AnthropicStreamedMessage(response, this._stream, this._hooks?.convertError),
+          this._guardDelivery,
+        );
       } catch (error: unknown) {
         throw convertAnthropicError(error, this._hooks?.convertError);
       }
     }
 
+    const fixedHash = hashThreadFixedFields({
+      endpoint: normalizedEndpoint,
+      model: this._model,
+      system: createParams['system'],
+      tools: createParams['tools'],
+      toolChoice: createParams['tool_choice'],
+      thinking: createParams['thinking'],
+      outputConfig: createParams['output_config'],
+      contextManagement: createParams['context_management'],
+      cacheControl: createParams['cache_control'],
+      fallbacks: createParams['fallbacks'],
+      betas: mergeBetaTokens(baseBetas, [MESSAGE_THREADS_BETA]),
+    });
+    const threadInput = {
+      scopeKey: threadScopeKey,
+      baseBody: createParams,
+      messages,
+      baseBetas,
+      fixedHash,
+    };
+    let currentAttempt: PreparedAnthropicThreadRequest = this._threadTracker.prepare(threadInput);
+    let replayedAsCreate = false;
+
+    for (;;) {
+      try {
+        const response = await sendAttempt(currentAttempt.body, currentAttempt.betas);
+        const committedAttempt = currentAttempt;
+        return guardRequestDelivery(
+          new AnthropicStreamedMessage(
+            response,
+            this._stream,
+            this._hooks?.convertError,
+            (settlement) => this._commitThreadSettlement(committedAttempt, settlement),
+          ),
+          this._guardDelivery,
+        );
+      } catch (error: unknown) {
+        if (options?.signal?.aborted === true) {
+          throw convertAnthropicError(error, this._hooks?.convertError);
+        }
+        const classified = classifyAnthropicThreadError(error);
+        if (classified.kind === 'replay' && currentAttempt.kind === 'continue' && !replayedAsCreate) {
+          this._threadTracker.delete(threadScopeKey);
+          if (classified.errorCode === 'thread_not_found' && currentAttempt.replacesLostThread) {
+            this._threadTracker.markTargetUnsupported(targetKey);
+            break;
+          }
+          replayedAsCreate = true;
+          currentAttempt = this._threadTracker.buildCreate(
+            threadInput,
+            classified.errorCode === 'thread_not_found',
+          );
+          continue;
+        }
+        if (classified.kind === 'unsupported') {
+          this._threadTracker.delete(threadScopeKey);
+          this._threadTracker.markTargetUnsupported(targetKey);
+          break;
+        }
+        throw convertAnthropicError(error, this._hooks?.convertError);
+      }
+    }
+
+    const unthreaded = this._threadTracker.buildUnthreaded(threadInput);
     try {
-      const response = await withRequestCompressionDelivery(options?.signal, async () => useBetaApi
-        ? client.beta.messages.create(
-            { ...createParams, stream: false } as unknown as MessageCreateParams,
-            finalRequestOptions,
-          )
-        : client.messages.create(
-            { ...createParams, stream: false } as unknown as MessageCreateParams,
-            finalRequestOptions,
-          ));
-      return guardRequestDelivery(new AnthropicStreamedMessage(response, false, this._hooks?.convertError), this._guardDelivery);
+      const response = await sendAttempt(unthreaded.body, unthreaded.betas);
+      return guardRequestDelivery(
+        new AnthropicStreamedMessage(response, this._stream, this._hooks?.convertError),
+        this._guardDelivery,
+      );
     } catch (error: unknown) {
       throw convertAnthropicError(error, this._hooks?.convertError);
+    }
+  }
+
+  private _commitThreadSettlement(
+    attempt: PreparedAnthropicThreadRequest,
+    settlement: AnthropicThreadSettlement | null,
+  ): void {
+    if (settlement === null) {
+      this._threadTracker.delete(attempt.scopeKey);
+      return;
+    }
+    try {
+      const normalized = normalizeToolCallIdsForProvider(
+        [settlement.message],
+        ANTHROPIC_TOOL_CALL_ID_POLICY,
+      );
+      const convertedReply = normalized
+        .map((msg) =>
+          convertMessage(msg, this._model, this._acceptedImageMimes, this._isGemini, this._audioIn),
+        )
+        .filter(shouldKeepConvertedMessage);
+      if (convertedReply.length === 0) {
+        this._threadTracker.delete(attempt.scopeKey);
+        return;
+      }
+      const prefix = [...attempt.fullMessages, ...convertedReply];
+      this._threadTracker.commit(attempt.scopeKey, {
+        responseId: settlement.responseId,
+        prefixCount: prefix.length,
+        prefixHash: hashThreadMessages(prefix),
+        fixedHash: attempt.fixedHash,
+        createBetas: attempt.betas,
+        replacesLostThread: attempt.kind === 'create' && attempt.replacesLostThread,
+        unfinishedTurn: isUnfinishedAnthropicStopReason(settlement.rawFinishReason),
+      });
+    } catch {
+      this._threadTracker.delete(attempt.scopeKey);
     }
   }
 

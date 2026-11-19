@@ -84,6 +84,7 @@ export class ModelRequesterImpl implements ModelRequester {
       defaultHeaders: model.headers,
       requestCompression: model.requestCompression,
       responsesWebSocket: model.responsesWebSocket,
+      anthropicMessageThreads: model.anthropicMessageThreads,
       capabilities: model.capabilities,
       providerOptions: model.providerOptions,
     });
@@ -212,6 +213,10 @@ export class ModelRequesterImpl implements ModelRequester {
       signal,
       streamTaps: params.streamTaps,
       cacheKey: params?.cacheKey,
+      threadScopeKey:
+        params.attribution.sessionId !== undefined && params.attribution.agentId !== undefined
+          ? `${params.attribution.sessionId}\0${params.attribution.agentId}`
+          : undefined,
       toolChoice: params.toolChoice,
       googleContinuationToken: params?.googleContinuationToken,
       serviceTier: isApiDefault(serviceTier) ? undefined : serviceTier,

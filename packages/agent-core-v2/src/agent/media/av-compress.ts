@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -45,6 +45,8 @@ export interface CompressAvResult {
 
 let configuredAvRunner: AvCompressRunner | undefined;
 let configuredAvByteBudget: number | undefined;
+let cachedWinGetFfmpegPath: string | null | undefined;
+let winGetLookupInFlight: Promise<string | null> | undefined;
 
 export function setConfiguredAvCompressRunner(runner: AvCompressRunner | undefined): void {
   configuredAvRunner = runner;
@@ -82,11 +84,90 @@ const defaultRunner: AvCompressRunner = (command, args, options) =>
     );
   });
 
-function resolveFfmpegPath(explicit: string | undefined): string {
+function isEnoentError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT';
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Searches the Windows WinGet installation directories for an `ffmpeg.exe` binary.
+ */
+export async function findWinGetFfmpegBinary(localAppData: string): Promise<string | null> {
+  const trimmed = localAppData.trim();
+  if (trimmed.length === 0) return null;
+  const winGetRoot = join(trimmed, 'Microsoft', 'WinGet');
+  const linkCandidate = join(winGetRoot, 'Links', 'ffmpeg.exe');
+  if (await fileExists(linkCandidate)) return linkCandidate;
+
+  const packagesDir = join(winGetRoot, 'Packages');
+  let packageEntries: string[];
+  try {
+    packageEntries = await readdir(packagesDir);
+  } catch {
+    return null;
+  }
+  const matchingPackages = packageEntries
+    .filter((entry) => /ffmpeg/iu.test(entry))
+    .sort()
+    .reverse();
+
+  for (const pkg of matchingPackages) {
+    const pkgDir = join(packagesDir, pkg);
+    const directBin = join(pkgDir, 'bin', 'ffmpeg.exe');
+    if (await fileExists(directBin)) return directBin;
+    let subEntries: string[];
+    try {
+      subEntries = await readdir(pkgDir);
+    } catch {
+      continue;
+    }
+    for (const sub of subEntries.sort().reverse()) {
+      const candidate = join(pkgDir, sub, 'bin', 'ffmpeg.exe');
+      if (await fileExists(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+async function resolveCachedWinGetFfmpegPath(): Promise<string | null> {
+  if (cachedWinGetFfmpegPath !== undefined) return cachedWinGetFfmpegPath;
+  if (winGetLookupInFlight === undefined) {
+    const localAppData = process.env['LOCALAPPDATA'] ?? '';
+    winGetLookupInFlight = findWinGetFfmpegBinary(localAppData)
+      .then((found) => {
+        cachedWinGetFfmpegPath = found;
+        return found;
+      })
+      .finally(() => {
+        winGetLookupInFlight = undefined;
+      });
+  }
+  return winGetLookupInFlight;
+}
+
+function hasExplicitFfmpegPath(explicit: string | undefined): boolean {
+  const trimmed = explicit?.trim();
+  if (trimmed !== undefined && trimmed.length > 0) return true;
+  const envPath = process.env['KIKI_FFMPEG_PATH']?.trim();
+  return envPath !== undefined && envPath.length > 0;
+}
+
+function resolveFfmpegPath(explicit: string | undefined, useDefaultRunner: boolean): string {
   const trimmed = explicit?.trim();
   if (trimmed !== undefined && trimmed.length > 0) return trimmed;
   const envPath = process.env['KIKI_FFMPEG_PATH']?.trim();
   if (envPath !== undefined && envPath.length > 0) return envPath;
+  if (useDefaultRunner && process.platform === 'win32' && typeof cachedWinGetFfmpegPath === 'string') {
+    return cachedWinGetFfmpegPath;
+  }
   return 'ffmpeg';
 }
 
@@ -99,6 +180,40 @@ function resolveFfprobePath(explicit: string | undefined, ffmpegPath: string): s
     return ffmpegPath.replace(/ffmpeg(\.exe)?$/iu, 'ffprobe$1');
   }
   return 'ffprobe';
+}
+
+async function runFfmpegCommand(
+  state: { ffmpegPath: string },
+  args: readonly string[],
+  runner: AvCompressRunner,
+  options: {
+    readonly signal?: AbortSignal;
+    readonly timeoutMs: number;
+    readonly allowWinGetFallback: boolean;
+  },
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  try {
+    return await runner(state.ffmpegPath, args, {
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+  } catch (error) {
+    if (
+      options.allowWinGetFallback &&
+      state.ffmpegPath === 'ffmpeg' &&
+      isEnoentError(error)
+    ) {
+      const discovered = await resolveCachedWinGetFfmpegPath();
+      if (discovered !== null) {
+        state.ffmpegPath = discovered;
+        return await runner(discovered, args, {
+          signal: options.signal,
+          timeoutMs: options.timeoutMs,
+        });
+      }
+    }
+    throw error;
+  }
 }
 
 function passthroughResult(bytes: Uint8Array, mimeType: string): CompressAvResult {
@@ -131,29 +246,53 @@ function formatFps(fps: number): string {
 
 async function probeVideoFps(
   inputPath: string,
-  ffprobePath: string,
+  state: { ffmpegPath: string },
+  explicitFfprobePath: string | undefined,
   runner: AvCompressRunner,
   signal: AbortSignal | undefined,
+  allowWinGetFallback: boolean,
 ): Promise<number | undefined> {
+  const ffprobeArgs = [
+    '-v',
+    'error',
+    '-select_streams',
+    'v:0',
+    '-show_entries',
+    'stream=avg_frame_rate,r_frame_rate',
+    '-of',
+    'default=noprint_wrappers=1:nokey=1',
+    inputPath,
+  ];
+  const initialProbe = resolveFfprobePath(explicitFfprobePath, state.ffmpegPath);
   try {
-    const { stdout } = await runner(
-      ffprobePath,
-      [
-        '-v',
-        'error',
-        '-select_streams',
-        'v:0',
-        '-show_entries',
-        'stream=avg_frame_rate,r_frame_rate',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        inputPath,
-      ],
-      { signal, timeoutMs: DEFAULT_FFPROBE_TIMEOUT_MS },
-    );
+    const { stdout } = await runner(initialProbe, ffprobeArgs, {
+      signal,
+      timeoutMs: DEFAULT_FFPROBE_TIMEOUT_MS,
+    });
     return parseFrameRate(stdout);
   } catch (error) {
     if (signal?.aborted === true || isAbortError(error)) throw createAbortError();
+    if (
+      allowWinGetFallback &&
+      initialProbe === 'ffprobe' &&
+      isEnoentError(error)
+    ) {
+      const discovered = await resolveCachedWinGetFfmpegPath();
+      if (discovered !== null) {
+        state.ffmpegPath = discovered;
+        const fallbackProbe = resolveFfprobePath(explicitFfprobePath, discovered);
+        try {
+          const { stdout } = await runner(fallbackProbe, ffprobeArgs, {
+            signal,
+            timeoutMs: DEFAULT_FFPROBE_TIMEOUT_MS,
+          });
+          return parseFrameRate(stdout);
+        } catch (retryError) {
+          if (Boolean(signal?.aborted) || isAbortError(retryError)) throw createAbortError();
+          return undefined;
+        }
+      }
+    }
     return undefined;
   }
 }
@@ -183,8 +322,10 @@ export async function compressVideoForModel(
   }
 
   const runner = options.runner ?? configuredAvRunner ?? defaultRunner;
-  const ffmpegPath = resolveFfmpegPath(options.ffmpegPath);
-  const ffprobePath = resolveFfprobePath(options.ffprobePath, ffmpegPath);
+  const useDefaultRunner = runner === defaultRunner;
+  const allowWinGetFallback =
+    useDefaultRunner && process.platform === 'win32' && !hasExplicitFfmpegPath(options.ffmpegPath);
+  const binState = { ffmpegPath: resolveFfmpegPath(options.ffmpegPath, useDefaultRunner) };
   const timeoutMs = options.timeoutMs ?? DEFAULT_FFMPEG_TIMEOUT_MS;
   const inputExt = mediaExtensionForMime(mimeType) ?? '.bin';
   const workDir = await mkdtemp(join(tmpdir(), 'kiki-av-'));
@@ -196,15 +337,22 @@ export async function compressVideoForModel(
     await writeFile(inputPath, bytes);
     options.signal?.throwIfAborted();
 
-    const sourceFps = await probeVideoFps(inputPath, ffprobePath, runner, options.signal);
+    const sourceFps = await probeVideoFps(
+      inputPath,
+      binState,
+      options.ffprobePath,
+      runner,
+      options.signal,
+      allowWinGetFallback,
+    );
     const pass1Fps =
       sourceFps === undefined ? VIDEO_PASS1_MAX_FPS : Math.max(MIN_VIDEO_FPS, Math.min(sourceFps, VIDEO_PASS1_MAX_FPS));
     const pass2Fps =
       sourceFps === undefined ? VIDEO_PASS2_MAX_FPS : Math.max(MIN_VIDEO_FPS, Math.min(sourceFps, VIDEO_PASS2_MAX_FPS));
 
     let best: Uint8Array | undefined;
-    await runner(
-      ffmpegPath,
+    await runFfmpegCommand(
+      binState,
       [
         '-nostdin',
         '-y',
@@ -232,7 +380,8 @@ export async function compressVideoForModel(
         '32k',
         pass1Path,
       ],
-      { signal: options.signal, timeoutMs },
+      runner,
+      { signal: options.signal, timeoutMs, allowWinGetFallback },
     );
     options.signal?.throwIfAborted();
 
@@ -255,8 +404,8 @@ export async function compressVideoForModel(
 
     const fsCap = Math.max(MIN_FS_CAP_BYTES, byteBudget - VIDEO_PASS2_FS_HEADROOM);
     try {
-      await runner(
-        ffmpegPath,
+      await runFfmpegCommand(
+        binState,
         [
           '-nostdin',
           '-y',
@@ -286,7 +435,8 @@ export async function compressVideoForModel(
           String(fsCap),
           pass2Path,
         ],
-        { signal: options.signal, timeoutMs },
+        runner,
+        { signal: options.signal, timeoutMs, allowWinGetFallback },
       );
       options.signal?.throwIfAborted();
       const pass2Bytes = await readNonEmptyFile(pass2Path);
@@ -331,7 +481,10 @@ export async function compressAudioForModel(
   }
 
   const runner = options.runner ?? configuredAvRunner ?? defaultRunner;
-  const ffmpegPath = resolveFfmpegPath(options.ffmpegPath);
+  const useDefaultRunner = runner === defaultRunner;
+  const allowWinGetFallback =
+    useDefaultRunner && process.platform === 'win32' && !hasExplicitFfmpegPath(options.ffmpegPath);
+  const binState = { ffmpegPath: resolveFfmpegPath(options.ffmpegPath, useDefaultRunner) };
   const timeoutMs = options.timeoutMs ?? DEFAULT_FFMPEG_TIMEOUT_MS;
   const inputExt = mediaExtensionForMime(mimeType) ?? '.bin';
   const workDir = await mkdtemp(join(tmpdir(), 'kiki-av-'));
@@ -348,8 +501,8 @@ export async function compressAudioForModel(
     let codec: 'libmp3lame' | 'aac' = 'libmp3lame';
 
     try {
-      await runner(
-        ffmpegPath,
+      await runFfmpegCommand(
+        binState,
         [
           '-nostdin',
           '-y',
@@ -366,7 +519,8 @@ export async function compressAudioForModel(
           '32k',
           mp3Pass1Path,
         ],
-        { signal: options.signal, timeoutMs },
+        runner,
+        { signal: options.signal, timeoutMs, allowWinGetFallback },
       );
       options.signal?.throwIfAborted();
       const pass1Bytes = await readNonEmptyFile(mp3Pass1Path);
@@ -376,8 +530,8 @@ export async function compressAudioForModel(
     } catch (error) {
       if (options.signal?.aborted === true || isAbortError(error)) throw createAbortError();
       codec = 'aac';
-      await runner(
-        ffmpegPath,
+      await runFfmpegCommand(
+        binState,
         [
           '-nostdin',
           '-y',
@@ -394,7 +548,8 @@ export async function compressAudioForModel(
           '32k',
           aacPass1Path,
         ],
-        { signal: options.signal, timeoutMs },
+        runner,
+        { signal: options.signal, timeoutMs, allowWinGetFallback },
       );
       options.signal?.throwIfAborted();
       const aacBytes = await readNonEmptyFile(aacPass1Path);
@@ -420,8 +575,8 @@ export async function compressAudioForModel(
     const pass2OutPath = codec === 'libmp3lame' ? mp3Pass2Path : join(workDir, 'out-pass2.m4a');
     const pass2Mime = codec === 'libmp3lame' ? 'audio/mpeg' : 'audio/mp4';
     try {
-      await runner(
-        ffmpegPath,
+      await runFfmpegCommand(
+        binState,
         [
           '-nostdin',
           '-y',
@@ -440,7 +595,8 @@ export async function compressAudioForModel(
           String(fsCap),
           pass2OutPath,
         ],
-        { signal: options.signal, timeoutMs },
+        runner,
+        { signal: options.signal, timeoutMs, allowWinGetFallback },
       );
       options.signal?.throwIfAborted();
       const pass2Bytes = await readNonEmptyFile(pass2OutPath);

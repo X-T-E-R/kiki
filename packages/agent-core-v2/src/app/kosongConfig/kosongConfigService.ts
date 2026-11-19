@@ -12,6 +12,7 @@ import { IProviderService, type ProvidersSection } from '#/kosong/provider/provi
 
 import { IKosongConfigService } from './kosongConfig';
 import {
+  ANTHROPIC_MESSAGE_THREADS_SECTION,
   DEFAULT_MODEL_SECTION,
   DEFAULT_PROVIDER_SECTION,
   MODELS_SECTION,
@@ -19,7 +20,11 @@ import {
   REQUEST_COMPRESSION_SECTION,
   RESPONSES_WEB_SOCKET_SECTION,
 } from './configSection';
-import type { RequestCompressionLayer, ResponsesWebSocketLayer } from '#/kosong/provider/requestCompression';
+import type {
+  AnthropicMessageThreadsLayer,
+  RequestCompressionLayer,
+  ResponsesWebSocketLayer,
+} from '#/kosong/provider/requestCompression';
 
 const PERSIST_MAX_ATTEMPTS = 3;
 
@@ -115,6 +120,7 @@ export class KosongConfigService extends Disposable implements IKosongConfigServ
         break;
       case REQUEST_COMPRESSION_SECTION:
       case RESPONSES_WEB_SOCKET_SECTION:
+      case ANTHROPIC_MESSAGE_THREADS_SECTION:
         this.publishTransportDefaults();
         break;
     }
@@ -124,6 +130,7 @@ export class KosongConfigService extends Disposable implements IKosongConfigServ
     this.providers.setTransportDefaults({
       requestCompression: this.config.get<RequestCompressionLayer | undefined>(REQUEST_COMPRESSION_SECTION),
       responsesWebSocket: this.config.get<ResponsesWebSocketLayer | undefined>(RESPONSES_WEB_SOCKET_SECTION),
+      anthropicMessageThreads: this.config.get<AnthropicMessageThreadsLayer | undefined>(ANTHROPIC_MESSAGE_THREADS_SECTION),
     });
   }
 

@@ -23,6 +23,7 @@ export class ProviderService extends Disposable implements IProviderService {
   private transportDefaultsValue: ProviderTransportDefaults = {
     requestCompression: undefined,
     responsesWebSocket: undefined,
+    anthropicMessageThreads: undefined,
   };
   private defaultProvider: string | undefined;
   private hydrated = false;
@@ -103,6 +104,9 @@ export class ProviderService extends Disposable implements IProviderService {
       responsesWebSocket: defaults.responsesWebSocket === undefined
         ? undefined
         : structuredClone(defaults.responsesWebSocket),
+      anthropicMessageThreads: defaults.anthropicMessageThreads === undefined
+        ? undefined
+        : structuredClone(defaults.anthropicMessageThreads),
     };
     if (deepEqual(this.transportDefaultsValue, next)) return;
     this.transportDefaultsValue = next;

@@ -45,6 +45,7 @@ import { explainModelProtocol, resolveModelProtocol } from '#/kosong/model/model
 import type { ProviderConfig, ProviderDecisionCapability, ProviderDecisionConfig, ProvidersSection } from '#/kosong/provider/provider';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import {
+  anthropicMessageThreadsFromWire,
   requestCompressionFromWire,
   responsesWebSocketFromWire,
 } from '#/kosong/provider/requestCompression';
@@ -579,6 +580,10 @@ function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderReques
     if (patch.responses_web_socket === null) setCleared(next, 'responsesWebSocket');
     else next.responsesWebSocket = responsesWebSocketFromWire(patch.responses_web_socket);
   }
+  if (patch.anthropic_message_threads !== undefined) {
+    if (patch.anthropic_message_threads === null) setCleared(next, 'anthropicMessageThreads');
+    else next.anthropicMessageThreads = anthropicMessageThreadsFromWire(patch.anthropic_message_threads);
+  }
   if (patch.images !== undefined) {
     if (patch.images === null) {
       setCleared(next, 'images');
@@ -888,6 +893,9 @@ export class ModelCatalogMutationService
       }
       if (request.responses_web_socket !== undefined) {
         provider.responsesWebSocket = responsesWebSocketFromWire(request.responses_web_socket);
+      }
+      if (request.anthropic_message_threads !== undefined) {
+        provider.anthropicMessageThreads = anthropicMessageThreadsFromWire(request.anthropic_message_threads);
       }
       const nextModels: ModelsSection = { ...models };
       for (const entry of request.models ?? []) {

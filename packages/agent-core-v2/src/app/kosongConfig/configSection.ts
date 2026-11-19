@@ -33,6 +33,8 @@ import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import {
+  AnthropicMessageThreadsLayerSchema,
+  AnthropicMessageThreadsSystemSchema,
   RequestCompressionLayerSchema,
   RequestCompressionSystemSchema,
   ResponsesWebSocketLayerSchema,
@@ -134,6 +136,7 @@ const ProviderConfigObjectSchema = z.object({
   requestIdentity: RequestIdentityPolicySchema.optional(),
   requestCompression: RequestCompressionLayerSchema.optional(),
   responsesWebSocket: ResponsesWebSocketLayerSchema.optional(),
+  anthropicMessageThreads: AnthropicMessageThreadsLayerSchema.optional(),
   images: ImagePolicyConfigSchema.optional(),
 
   type: ProviderTypeSchema.optional(),
@@ -203,7 +206,7 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
-    } else if (targetKey === 'requestIdentity' || targetKey === 'requestCompression' || targetKey === 'images' || targetKey === 'defaults') {
+    } else if (targetKey === 'requestIdentity' || targetKey === 'requestCompression' || targetKey === 'anthropicMessageThreads' || targetKey === 'images' || targetKey === 'defaults') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'decision') {
       out[targetKey] = isPlainObject(value) ? providerDecisionFromToml(value) : value;
@@ -236,7 +239,7 @@ function providerEntryToToml(
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
-    } else if ((key === 'requestIdentity' || key === 'requestCompression' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
+    } else if ((key === 'requestIdentity' || key === 'requestCompression' || key === 'anthropicMessageThreads' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if (key === 'decision' && isPlainObject(value)) {
       out['decision'] = providerDecisionToToml(value);
@@ -311,12 +314,19 @@ export const REQUEST_COMPRESSION_SECTION = 'requestCompression';
 
 export const RESPONSES_WEB_SOCKET_SECTION = 'responsesWebSocket';
 
+export const ANTHROPIC_MESSAGE_THREADS_SECTION = 'anthropicMessageThreads';
+
 registerConfigSection(REQUEST_COMPRESSION_SECTION, RequestCompressionSystemSchema, {
   fromToml: requestIdentityFromToml,
   toToml: requestIdentityToToml,
 });
 
 registerConfigSection(RESPONSES_WEB_SOCKET_SECTION, ResponsesWebSocketSystemSchema, {
+  fromToml: requestIdentityFromToml,
+  toToml: requestIdentityToToml,
+});
+
+registerConfigSection(ANTHROPIC_MESSAGE_THREADS_SECTION, AnthropicMessageThreadsSystemSchema, {
   fromToml: requestIdentityFromToml,
   toToml: requestIdentityToToml,
 });
