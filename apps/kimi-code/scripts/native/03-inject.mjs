@@ -1,4 +1,4 @@
-import { copyFile, mkdir, stat } from 'node:fs/promises';
+import { copyFile, mkdir, rm, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { fail, run, tryRun } from './exec.mjs';
@@ -28,6 +28,7 @@ async function ensureBlobExists() {
 async function copyNodeExecutable(target) {
   await mkdir(nativeBinDir(target), { recursive: true });
   const out = nativeBinPath(target);
+  await rm(out, { force: true });
   await copyFile(process.execPath, out);
   if (process.platform !== 'win32') {
     await run('chmod', ['755', out]);

@@ -4934,6 +4934,20 @@ mod tests {
     fn bundle_metadata_matches_the_bundled_node_macos_floor() {
         let config: tauri::utils::config::Config = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(config.bundle.macos.minimum_system_version.as_deref(), Some("13.5"));
+        assert_eq!(config.bundle.macos.entitlements.as_deref(), Some("entitlements.plist"));
+        assert!(config.bundle.macos.hardened_runtime);
+        let entitlements = include_str!("../entitlements.plist");
+        for required in [
+            "com.apple.security.cs.allow-jit",
+            "com.apple.security.cs.allow-unsigned-executable-memory",
+            "com.apple.security.cs.disable-executable-page-protection",
+            "com.apple.security.cs.disable-library-validation",
+        ] {
+            assert!(
+                entitlements.contains(required),
+                "macOS entitlements.plist must include {required} for the bundled Node.js SEA sidecar"
+            );
+        }
         assert_eq!(config.bundle.create_updater_artifacts, tauri::utils::config::Updater::Bool(false));
     }
 

@@ -15,6 +15,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -202,6 +203,7 @@ export function stageSidecar({
   }
 
   mkdirSync(binariesDir, { recursive: true });
+  rmSync(destination, { force: true });
   copyFileSync(source, destination);
   if (!target.includes('windows')) chmodSync(destination, 0o755);
 

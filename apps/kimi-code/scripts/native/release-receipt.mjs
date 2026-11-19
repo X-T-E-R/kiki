@@ -343,7 +343,14 @@ function verifyCandidateReceipt({ receipt, candidateRoot, prepare, prepareArtifa
   assertEqual(receipt.tools?.pnpm, prepare.receipt.tools.pnpm, 'native pnpm version');
   required(receipt.tools?.rust, 'native Rust version');
   assertEqual(receipt.seaProfile, 'release', 'SEA profile');
-  assertEqual(receipt.signingMode?.native, 'unsigned', 'native signing mode');
+  const allowedSigningModes = receipt.target.sea.startsWith('darwin-')
+    ? ['unsigned', 'apple-developer-id']
+    : ['unsigned'];
+  if (!allowedSigningModes.includes(receipt.signingMode?.native)) {
+    fail(
+      `Unexpected native signing mode for ${receipt.target.sea}: ${String(receipt.signingMode?.native)}.`,
+    );
+  }
   const desktopTarget = RELEASE_TARGETS.get(receipt.target.sea).desktop;
   const expectedUpdaterMode = receipt.target.sea === 'win32-x64' && !allowPendingDesktop ? 'temporary' : 'none';
   assertEqual(receipt.signingMode?.desktopUpdater, expectedUpdaterMode, 'desktop updater signing mode');
@@ -549,6 +556,7 @@ export function verifyCandidateSet({
   }
   const byTarget = new Map();
   let sharedEnvironment;
+  let sharedMacosSigningMode;
   for (const candidate of receipts) {
     const target = candidate.receipt.target?.sea;
     if (byTarget.has(target)) fail(`Duplicate release candidate for ${target}.`);
@@ -562,7 +570,6 @@ export function verifyCandidateSet({
     const environment = stableJson({
       tools: receipt.tools,
       seaProfile: receipt.seaProfile,
-      nativeSigningMode: receipt.signingMode.native,
       guiVersion: receipt.guiEnvironment.version,
       guiChannel: receipt.guiEnvironment.channel,
       guiSourceSha: receipt.guiEnvironment.sourceSha,
@@ -571,6 +578,12 @@ export function verifyCandidateSet({
       fail(`Release candidate environment differs for ${target}.`);
     }
     sharedEnvironment = environment;
+    if (target.startsWith('darwin-')) {
+      if (sharedMacosSigningMode !== undefined && receipt.signingMode.native !== sharedMacosSigningMode) {
+        fail(`macOS signing mode differs across darwin targets: ${target}.`);
+      }
+      sharedMacosSigningMode = receipt.signingMode.native;
+    }
     byTarget.set(target, { candidateRoot: candidate.candidateRoot, receipt });
   }
   for (const target of RELEASE_TARGETS.keys()) {

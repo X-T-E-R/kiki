@@ -131,10 +131,55 @@ export class SshHostFileSystem implements IHostFileSystem {
   }
 }
 
+const POSIX_RG_LOOKUP =
+  'r=$(command -v rg 2>/dev/null || true); if [ -z "$r" ]; then for p in /opt/homebrew/bin/rg /usr/local/bin/rg "$HOME/.cargo/bin/rg" "$HOME/.local/bin/rg" /opt/local/bin/rg; do if [ -x "$p" ]; then r="$p"; break; fi; done; fi; if [ -n "$r" ]; then printf "KIKI_SSH_RG_PATH=%s\\n" "$r"; else exit 1; fi';
+
+async function readStreamText(stream: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function probePosixRg(ssh: SSHKaos): Promise<string | undefined> {
+  const proc = await ssh.execWithEnv(['sh', '-c', POSIX_RG_LOOKUP]);
+  try {
+    const [stdout, exitCode] = await Promise.all([readStreamText(proc.stdout), proc.wait()]);
+    if (exitCode !== 0) return undefined;
+    const match = /^KIKI_SSH_RG_PATH=(\/[^\r\n]+)$/m.exec(stdout);
+    return match?.[1]?.trim();
+  } finally {
+    try {
+      proc.dispose();
+    } catch {
+      undefined;
+    }
+  }
+}
+
 export class SshHostProcessService implements IHostProcessService {
   declare readonly _serviceBrand: undefined;
+  private readonly posixRgCache = new WeakMap<SSHKaos, Promise<string | undefined>>();
 
   constructor(private readonly connect: Connect) {}
+
+  private resolvePosixRg(ssh: SSHKaos): Promise<string | undefined> {
+    const cached = this.posixRgCache.get(ssh);
+    if (cached !== undefined) return cached;
+    const lookup = probePosixRg(ssh).then(
+      (resolved) => {
+        if (resolved === undefined) this.posixRgCache.delete(ssh);
+        return resolved;
+      },
+      () => {
+        this.posixRgCache.delete(ssh);
+        return undefined;
+      },
+    );
+    this.posixRgCache.set(ssh, lookup);
+    return lookup;
+  }
 
   spawn(command: string, args: readonly string[] = [], options: HostProcessOptions = {}): Promise<IHostProcess> {
     if (options.detached === true) throw new Error('Detached SSH processes are not supported');
@@ -142,10 +187,13 @@ export class SshHostProcessService implements IHostProcessService {
       if (!command) throw new Error('No executable shell was found on the remote SSH host');
       const scoped = ssh.withCwd(options.cwd ?? ssh.getcwd());
       if (command === 'rg' && ssh.osEnv.osKind === 'Windows') return spawnWindowsSearch(scoped, args);
-      const process = ssh.osEnv.shellName === 'powershell' && command === ssh.osEnv.shellPath &&
+      const executable = command === 'rg' && ssh.osEnv.osKind !== 'Windows'
+        ? await this.resolvePosixRg(ssh) ?? command
+        : command;
+      const process = ssh.osEnv.shellName === 'powershell' && executable === ssh.osEnv.shellPath &&
         (args[0]?.toLowerCase() === '-command' || args[0]?.toLowerCase() === '-c') && args.length === 2
         ? await scoped.execPowerShell(args[1]!, options.env)
-        : await scoped.execWithEnv([command, ...args], options.env);
+        : await scoped.execWithEnv([executable, ...args], options.env);
       return {
         _serviceBrand: undefined,
         pid: process.pid,

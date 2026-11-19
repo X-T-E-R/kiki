@@ -169,7 +169,7 @@ jobs:
     uses: ./.github/workflows/_native-build.yml
     with:
       retention-days: 7
-      sign-macos: false
+      sign-macos: ${{ vars.KIKI_SIGN_MACOS == 'true' }}
       build-desktop: true
       prepare-artifact-id: ${{ needs.prepare.outputs.artifact-id }}
       prepare-run-attempt: ${{ needs.prepare.outputs.producer-attempt }}
@@ -177,6 +177,12 @@ jobs:
       release-tag: ${{ needs.validate.outputs.tag }}
       release-version: ${{ needs.validate.outputs.version }}
       release-channel: ${{ needs.validate.outputs.channel }}
+    secrets:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
+      APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+      APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
     permissions:
       contents: read
 

@@ -38,6 +38,8 @@
     "desktop:build": "tauri build --bundles nsis",
     "desktop:build:mac": "tauri build --bundles dmg",
     "desktop:build:mac:app": "tauri build --bundles app",
+    "desktop:sign:mac": "node scripts/macos-sign-notarize.mjs",
+    "desktop:sign:mac:test": "node --test scripts/macos-sign-notarize.test.mjs",
     "desktop:version:check": "node scripts/desktop-version.mjs check",
     "desktop:version:set": "node scripts/desktop-version.mjs set",
     "desktop:promote:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-release.ps1 -Action Promote",
