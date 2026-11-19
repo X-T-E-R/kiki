@@ -794,7 +794,7 @@ export class SessionExternalDelegationService
       });
       this.controllers.set(dispatchId, controller);
       this.trackExecutionSettlement(dispatchId, run);
-      void this.observeDispatch(dispatchId, run, controller);
+      this.observeDispatchDetached(dispatchId, run, controller);
       return dispatchView(this.lookup(doc, dispatchId));
     } catch (error) {
       if (isError2(error) && error.code === ErrorCodes.PROFILE_UNKNOWN) {
@@ -1083,7 +1083,7 @@ export class SessionExternalDelegationService
     });
     this.controllers.set(dispatchId, controller);
     this.trackExecutionSettlement(dispatchId, run);
-    void this.observeDispatch(dispatchId, run, controller);
+    this.observeDispatchDetached(dispatchId, run, controller);
     return dispatchView(this.lookup(doc, dispatchId));
   }
 
@@ -1181,6 +1181,24 @@ export class SessionExternalDelegationService
     );
   }
 
+  private observeDispatchDetached(
+    dispatchId: string,
+    dispatchRun: DispatchRun,
+    controller: AbortController,
+  ): void {
+    void this.observeDispatch(dispatchId, dispatchRun, controller)
+      .catch((error: unknown) => this.logTerminalizationFailure(dispatchId, error));
+  }
+
+  private logTerminalizationFailure(dispatchId: string, error: unknown): void {
+    this.log.error('External dispatch terminalization failed.', {
+      dispatchId,
+      sessionId: this.sessionId,
+      delegationId: this.document?.delegationId,
+      error,
+    });
+  }
+
   private async observeDispatch(
     dispatchId: string,
     dispatchRun: DispatchRun,
@@ -1231,14 +1249,35 @@ export class SessionExternalDelegationService
           }
           return this.failDispatch(dispatchId, error, boundary);
         },
-      );
-      await this.persist();
+      ).catch((error: unknown) => this.logTerminalizationFailure(dispatchId, error));
     } catch (error) {
       if (controller.signal.aborted) {
         await this.finish(dispatchId, 'cancelled', undefined, 'Cancelled');
       } else {
         await this.failDispatch(dispatchId, error);
       }
+      return;
+    }
+    await this.persistRunning(dispatchId);
+  }
+
+  private async persistRunning(dispatchId: string): Promise<void> {
+    try {
+      await this.persist();
+    } catch (error) {
+      this.log.error('Failed to persist running external dispatch; retrying.', {
+        dispatchId,
+        sessionId: this.sessionId,
+        error,
+      });
+      if (this.document?.dispatches[dispatchId]?.status !== 'running') return;
+      await this.persist().catch((retryError: unknown) => {
+        this.log.error('Failed to persist running external dispatch after retry.', {
+          dispatchId,
+          sessionId: this.sessionId,
+          error: retryError,
+        });
+      });
     }
   }
 
@@ -1599,7 +1638,7 @@ function continueFingerprint(request: ExternalContinueRequest, message: string):
 }
 
 function safeFailureText(message: string): string {
-  const normalized = message.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  const normalized = message.replaceAll(/[\u0000-\u001F\u007F]+/g, ' ').trim();
   if (
     normalized.length === 0 ||
     /(?:https?:\/\/|bearer\s+|authorization|api[-_ ]?key|access[-_ ]?token|password|credential|secret)/i.test(normalized) ||
@@ -1693,8 +1732,8 @@ function boundedTextCursor(value: string, rawCursor: number | undefined): number
   if (
     cursor > 0 &&
     cursor < value.length &&
-    isHighSurrogate(value.charCodeAt(cursor - 1)) &&
-    isLowSurrogate(value.charCodeAt(cursor))
+    isHighSurrogate(value.codePointAt(cursor - 1)) &&
+    isLowSurrogate(value.codePointAt(cursor))
   ) {
     throw invalid('cursor is invalid.');
   }
