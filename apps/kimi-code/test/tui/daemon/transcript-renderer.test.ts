@@ -1174,4 +1174,141 @@ describe('DaemonTranscriptRenderer', () => {
     ]);
     renderer.dispose();
   });
+
+  it('auto-folds single settled thinking and single settled tool blocks, supports individual MouseRoutable fold toggle, and surfaces only failures without leaking completed thinking', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const frame = (width = 100) => strip(container.render(width).join('\n'));
+    const mkTool = (id: string, path: string, turnId: string, status: 'done' | 'error' = 'done'): Block => ({
+      kind: 'tool',
+      id,
+      toolCallId: id,
+      name: 'Read',
+      turnId,
+      args: { path },
+      argsText: '',
+      display: undefined,
+      description: undefined,
+      status,
+      output: status === 'error' ? `${path} does not exist` : `content-of-${path}`,
+      isError: status === 'error',
+      durationMs: 10,
+      progressText: undefined,
+    });
+
+    renderer.sync([
+      { kind: 'user', id: 'u1', turnId: 't1', text: 'One-word reply', createdAt: '' },
+      { kind: 'thinking', id: 'th1', turnId: 't1', text: 'Secret chain of thought line 1\nSecret line 2', streaming: false, createdAt: undefined },
+      { kind: 'assistant', id: 'a1', turnId: 't1', text: 'pong', streaming: false, createdAt: undefined },
+
+      { kind: 'user', id: 'u2', turnId: 't2', text: 'Read alpha', createdAt: '' },
+      mkTool('tool-single', 'alpha.txt', 't2'),
+      { kind: 'assistant', id: 'a2', turnId: 't2', text: '42', streaming: false, createdAt: undefined },
+
+      { kind: 'user', id: 'u3', turnId: 't3', text: 'Read three with error', createdAt: '' },
+      { kind: 'thinking', id: 'th3', turnId: 't3', text: 'Turn 3 private reasoning', streaming: false, createdAt: undefined },
+      mkTool('tool-ok-1', 'alpha.txt', 't3'),
+      mkTool('tool-ok-2', 'beta.txt', 't3'),
+      mkTool('tool-err-3', 'missing.txt', 't3', 'error'),
+      { kind: 'assistant', id: 'a3', turnId: 't3', text: 'missing.txt is absent', streaming: false, createdAt: undefined },
+    ]);
+
+    const compact = frame();
+    expect(compact).toContain('▸ Thought');
+    expect(compact).not.toContain('Secret chain of thought');
+    expect(compact).toContain('▸ Worked · 1 step · read alpha.txt');
+    expect(compact).not.toContain('content-of-alpha.txt');
+    expect(compact).toContain('▸ Worked · 3 steps · 1 thought · 1 failed');
+    expect(compact).toContain('missing.txt does not exist');
+    expect(compact).not.toContain('Turn 3 private reasoning');
+    expect(compact).not.toContain('Used Read (beta.txt)');
+
+    // Clicking only the first fold (▸ Thought) expands just turn 1 without affecting turn 2 or turn 3.
+    const thoughtSummary = container.children.find((child) => strip(child.render(100).join('\n')).includes('▸ Thought')) as {
+      routeMouse?: (event: { leftClick: boolean }, line: number, col: number) => boolean;
+    };
+    expect(typeof thoughtSummary?.routeMouse).toBe('function');
+    expect(thoughtSummary.routeMouse!({ leftClick: true }, 0, 4)).toBe(true);
+    const afterClick = frame();
+    expect(afterClick).toContain('▾ Thought');
+    expect(afterClick).toContain('Secret chain of thought line 1');
+    expect(afterClick).toContain('▸ Worked · 1 step · read alpha.txt');
+    expect(afterClick).not.toContain('Turn 3 private reasoning');
+
+    // Clicking the same header collapses turn 1 back cleanly.
+    expect(thoughtSummary.routeMouse!({ leftClick: true }, 0, 4)).toBe(true);
+    expect(frame()).toContain('▸ Thought');
+    expect(frame()).not.toContain('Secret chain of thought line 1');
+  });
+
+  it('summarizes live subagent-group and historical media-run cleanly and supports click expand', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const frame = () => strip(container.render(100).join('\n'));
+    const mkSub = (id: string, name: string, status: 'running' | 'completed' | 'failed'): Block => ({
+      kind: 'subagent',
+      id: `sub-${id}`,
+      subagentId: id,
+      parentAgentId: 'main',
+      parentToolCallId: `call-${id}`,
+      parentTurnId: 't2',
+      name,
+      description: `Task for ${name}`,
+      model: undefined,
+      thinkingEffort: undefined,
+      status,
+      summary: status === 'completed' ? `${name} done` : undefined,
+      error: status === 'failed' ? `${name} crashed` : undefined,
+      endedAt: undefined,
+      toolCallCount: 1,
+      transcript: [],
+    });
+    const mediaTool = (id: string, path: string, turnId: string): Block => ({
+      kind: 'tool',
+      id,
+      toolCallId: id,
+      name: 'ReadMediaFile',
+      turnId,
+      args: { path },
+      argsText: '',
+      display: undefined,
+      description: undefined,
+      status: 'done',
+      output: undefined,
+      media: [{ kind: 'image', fileId: `file-${id}`, name: path, mime: 'image/png' }],
+      isError: false,
+      durationMs: 12,
+      progressText: undefined,
+    });
+
+    renderer.sync(
+      [
+        { kind: 'user', id: 'u1', turnId: 't1', text: 'Inspect image', createdAt: '' },
+        mediaTool('m1', 'shot.png', 't1'),
+        mediaTool('m2', 'chart.png', 't1'),
+        { kind: 'assistant', id: 'a1', turnId: 't1', text: 'Looked at both.', streaming: false, createdAt: undefined },
+        { kind: 'user', id: 'u2', turnId: 't2', text: 'Run agents', createdAt: '' },
+        mkSub('a1', 'explore', 'completed'),
+        mkSub('a2', 'reviewer', 'running'),
+        mkSub('a3', 'worker', 'failed'),
+      ],
+      { liveTurnId: 't2' },
+    );
+
+    const compact = frame();
+    expect(compact).toContain('▸ Viewed · 2 images · shot.png, chart.png');
+    expect(compact).toContain('▸ Agents · 2/3 done · 1 failed · explore, reviewer, worker');
+    expect(compact).toContain('worker');
+    expect(compact).not.toContain('Task for explore');
+    expect(compact).not.toContain('Task for reviewer');
+
+    const agentSummary = container.children.find((child) => strip(child.render(100).join('\n')).includes('▸ Agents ·')) as {
+      routeMouse?: (event: { leftClick: boolean }, line: number, col: number) => boolean;
+    };
+    expect(agentSummary.routeMouse!({ leftClick: true }, 0, 4)).toBe(true);
+    const expandedAgents = frame();
+    expect(expandedAgents).toContain('▾ Agents · 2/3 done · 1 failed');
+    expect(expandedAgents).toContain('Task for explore');
+    expect(expandedAgents).toContain('Task for reviewer');
+  });
 });

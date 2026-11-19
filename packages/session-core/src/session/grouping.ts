@@ -531,6 +531,14 @@ export interface FoldOptions {
    * transcript block snapshot has not yet received a terminal task update.
    */
   readonly forest?: AgentForest;
+  /**
+   * Fold even a single settled process step (`thinking`, `tool`, `tool-group`,
+   * `shell`, `subagent`) into a `HistoryFold` while keeping lone 1-line notes
+   * (`system`, `system-reminder`, `skill`, `notice`, resolved `approval`)
+   * directly readable, and fold completed `thinking` immediately without
+   * holding it open as `newest`. Defaults to `false` (`HISTORY_FOLD_MIN = 2`).
+   */
+  readonly foldSingleProcess?: boolean;
 }
 
 function latestSubagentCardIds(nodes: readonly DisplayNode[]): ReadonlyMap<string, string> {
@@ -624,11 +632,22 @@ export function foldHistory(
     break;
   }
   const keepOpen = options.keepOpen;
+  const foldSingleProcess = options.foldSingleProcess === true;
+  const isSingleFoldableProcess = (node: Row): boolean =>
+    node.kind === 'shell' ||
+    node.kind === 'thinking' ||
+    node.kind === 'tool' ||
+    node.kind === 'tool-group' ||
+    node.kind === 'subagent';
   const out: DisplayNode[] = [];
   let run: Row[] = [];
   let runTurn: string | undefined;
   const flush = () => {
-    if (run.length >= HISTORY_FOLD_MIN || run.some((node) => node.kind === 'shell')) out.push(buildFold(run, runTurn, forest, latestCardIdByAgent));
+    const shouldFold =
+      run.length >= HISTORY_FOLD_MIN ||
+      run.some((node) => node.kind === 'shell') ||
+      (foldSingleProcess && run.length === 1 && isSingleFoldableProcess(run[0]!));
+    if (shouldFold) out.push(buildFold(run, runTurn, forest, latestCardIdByAgent));
     else out.push(...run);
     run = [];
     runTurn = undefined;
@@ -640,7 +659,9 @@ export function foldHistory(
       continue;
     }
     const turn = normTurn(foldTurnId(node));
-    const held = turn === live && (node.id === newest || keepOpen?.has(node.id) === true);
+    const heldByNewest =
+      node.id === newest && !(foldSingleProcess && node.kind === 'thinking' && !node.streaming);
+    const held = turn === live && (heldByNewest || keepOpen?.has(node.id) === true);
     const eligible = turn !== undefined && !held && foldable(node, forest, latestCardIdByAgent);
     if (!eligible || (run.length > 0 && turn !== runTurn)) flush();
     if (eligible) {

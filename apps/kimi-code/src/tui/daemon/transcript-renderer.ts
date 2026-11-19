@@ -5,13 +5,28 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
   type Component,
+  type MouseRoutable,
+  type SgrMouseEvent,
   type TUI,
 } from '@kiki/pi-tui';
 
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import {
-  foldHistory, groupBlocks, groupHasError, groupHasRunning, groupSummary,
-  readSubagentEndings, type AgentForest, type DisplayNode, type EndingTask,
+  effectiveSubagentStatus,
+  foldHistory,
+  groupBlocks,
+  groupHasRunning,
+  groupSummary,
+  isLiveSubagentStatus,
+  readSubagentEndings,
+  stepObject,
+  type AgentForest,
+  type DisplayNode,
+  type EndingTask,
+  type HistoryFold,
+  type MediaRun,
+  type SubagentGroup,
+  type ToolGroup,
 } from '@kiki/session-core/session';
 import { projectMessageContent } from '@kiki/session-core/session/transcript';
 import type {
@@ -30,6 +45,7 @@ import { AssistantMessageComponent } from '#/tui/components/messages/assistant-m
 import { ThinkingComponent } from '#/tui/components/messages/thinking';
 import { ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { UserMessageComponent } from '#/tui/components/messages/user-message';
+import { FOLD_COLLAPSED_MARK, FOLD_EXPANDED_MARK } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
 import type { ImageAttachment } from '#/tui/utils/image-attachment-store';
@@ -53,6 +69,7 @@ export class DaemonTranscriptRenderer {
   private lastIngress: readonly import('@kiki/protocol').PromptItem[] | undefined;
   private context: TranscriptContext = {};
   private readonly summaries = new Map<string, TranscriptSummary>();
+  private readonly expandedFolds = new Set<string>();
   private expanded = false;
   private showThinking = true;
   private showTimestamps = false;
@@ -143,8 +160,9 @@ export class DaemonTranscriptRenderer {
   }
 
   setExpanded(expanded: boolean): void {
-    if (this.expanded === expanded) return;
+    if (this.expanded === expanded && this.expandedFolds.size === 0) return;
     this.expanded = expanded;
+    this.expandedFolds.clear();
     for (const { component } of this.mounted.values()) {
       if (
         component instanceof ToolCallComponent ||
@@ -157,6 +175,17 @@ export class DaemonTranscriptRenderer {
     }
     this.mountChildren();
     this.ui?.requestRender();
+  }
+
+  toggleFold(foldId: string): void {
+    if (this.expandedFolds.has(foldId)) this.expandedFolds.delete(foldId);
+    else this.expandedFolds.add(foldId);
+    this.mountChildren();
+    this.ui?.requestRender();
+  }
+
+  isFoldExpanded(foldId: string): boolean {
+    return this.expanded || this.expandedFolds.has(foldId);
   }
 
   setShowThinking(showThinking: boolean): void {
@@ -182,6 +211,8 @@ export class DaemonTranscriptRenderer {
   dispose(): void {
     for (const mounted of this.mounted.values()) disposeComponent(mounted.component);
     this.mounted.clear();
+    this.summaries.clear();
+    this.expandedFolds.clear();
     this.notes.length = 0;
     this.lastBlocks = undefined;
     this.lastSourceBlocks = undefined;
@@ -205,14 +236,17 @@ export class DaemonTranscriptRenderer {
           note.afterBlockId === undefined || leadingSuppressedIds.has(note.afterBlockId),
       )
       .map((note) => note.component);
-    const nodes = this.expanded ? blocks : foldHistory(
-      readSubagentEndings(groupBlocks(blocks), this.context.tasks ?? []),
-      this.context.liveTurnId,
-      { forest: this.context.forest },
-    );
+    const nodes = this.expanded
+      ? blocks
+      : foldHistory(
+          readSubagentEndings(groupBlocks(blocks), this.context.tasks ?? []),
+          this.context.liveTurnId,
+          { forest: this.context.forest, foldSingleProcess: true },
+        );
     const visible = new Set<string>();
     const summaries = new Set<string>();
     const appendNotes = (ids: ReadonlySet<string>) => {
+      if (ids.size === 0) return;
       const matchIds = new Set(ids);
       for (const id of ids) {
         for (const suppressedId of suppressedAfterVisibleId.get(id) ?? []) {
@@ -225,39 +259,99 @@ export class DaemonTranscriptRenderer {
         }
       }
     };
-    const append = (node: DisplayNode): void => {
-      switch (node.kind) {
-        case 'history-fold':
-          if (node.failed > 0 || this.nodeHasActionableNote(node)) { node.members.forEach(append); return; }
-          break;
-        case 'tool-group':
-          if (groupHasRunning(node) || groupHasError(node) || this.nodeHasActionableNote(node)) {
-            node.members.forEach(append);
-            return;
-          }
-          break;
-        case 'subagent-group':
-        case 'media-run':
-          node.members.forEach(append);
-          return;
-        case 'subagent-ended':
-          if (this.expanded) { append(node.note); return; }
-          break;
-        default:
-          visible.add(node.id);
-          components.push(this.updateOrCreate(node).component);
-          appendNotes(new Set([node.id]));
-          return;
-      }
+    const mountLeaf = (block: Block, forceExpandInner = false): void => {
+      visible.add(block.id);
+      const mounted = this.updateOrCreate(block, forceExpandInner);
+      components.push(mounted.component);
+      appendNotes(new Set([block.id]));
+    };
+    const mountSummary = (node: DisplayNode, expanded: boolean): void => {
       summaries.add(node.id);
       let summary = this.summaries.get(node.id);
       if (summary === undefined) {
-        summary = new TranscriptSummary();
+        summary = new TranscriptSummary(() => this.toggleFold(node.id));
         this.summaries.set(node.id, summary);
       }
-      summary.setText(summarizeNode(node));
+      summary.setSummary(summarizeNode(node, this.context.forest), expanded);
       components.push(summary);
-      appendNotes(new Set(memberIds(node)));
+    };
+    const mountFoldMembers = (node: DisplayNode, forceExpandInner: boolean): void => {
+      if (node.kind === 'history-fold' || node.kind === 'tool-group' || node.kind === 'subagent-group' || node.kind === 'media-run') {
+        for (const member of node.members) {
+          mountFoldMembers(member, forceExpandInner);
+        }
+        return;
+      }
+      if (node.kind === 'subagent-ended') {
+        mountLeaf(node.note, true);
+        return;
+      }
+      mountLeaf(node, forceExpandInner);
+    };
+    const mountCompactGroup = (node: HistoryFold | ToolGroup | SubagentGroup | MediaRun): void => {
+      const individuallyExpanded = this.expandedFolds.has(node.id);
+      if (individuallyExpanded) {
+        mountSummary(node, true);
+        const expandThoughtOnly =
+          node.kind === 'history-fold' &&
+          node.steps === 0 &&
+          node.agents === 0 &&
+          node.agentsDone === 0 &&
+          node.notes === 0;
+        mountFoldMembers(node, expandThoughtOnly);
+        return;
+      }
+      const allLeaves = collectLeafBlocks(node);
+      const surfaced = allLeaves.filter((block) => this.isSurfacedInCompact(block));
+      if (surfaced.length > 0 && surfaced.length === allLeaves.length) {
+        for (const block of surfaced) mountLeaf(block);
+        return;
+      }
+      mountSummary(node, false);
+      const surfacedIds = new Set(surfaced.map((block) => block.id));
+      const hiddenIds = new Set(memberIds(node).filter((id) => !surfacedIds.has(id)));
+      appendNotes(hiddenIds);
+      for (const block of surfaced) mountLeaf(block);
+    };
+    const append = (node: DisplayNode): void => {
+      switch (node.kind) {
+        case 'history-fold':
+          mountCompactGroup(node);
+          return;
+        case 'tool-group':
+          if (groupHasRunning(node)) {
+            node.members.forEach(append);
+            return;
+          }
+          mountCompactGroup(node);
+          return;
+        case 'subagent-group':
+          mountCompactGroup(node);
+          return;
+        case 'media-run':
+          if (node.latest) {
+            node.members.forEach(append);
+            return;
+          }
+          mountCompactGroup(node);
+          return;
+        case 'subagent-ended':
+          if (this.expanded) {
+            mountLeaf(node.note, true);
+            return;
+          }
+          if (this.expandedFolds.has(node.id)) {
+            mountSummary(node, true);
+            mountLeaf(node.note, true);
+            return;
+          }
+          mountSummary(node, false);
+          appendNotes(new Set(memberIds(node)));
+          return;
+        default:
+          mountLeaf(node);
+          return;
+      }
     };
     nodes.forEach(append);
     for (const [id, mounted] of this.mounted) {
@@ -277,51 +371,74 @@ export class DaemonTranscriptRenderer {
     for (const component of components) this.container.addChild(component);
   }
 
-  private nodeHasActionableNote(node: DisplayNode): boolean {
-    const resolve = this.context.resolveBlockMeta;
-    if (resolve === undefined) return false;
-    if (
-      node.kind === 'history-fold' ||
-      node.kind === 'tool-group' ||
-      node.kind === 'subagent-group' ||
-      node.kind === 'media-run'
-    ) {
-      return node.members.some((member) => this.nodeHasActionableNote(member));
+  private blockHasActionableNote(block: ToolBlock | ShellBlock): boolean {
+    const meta = this.context.resolveBlockMeta?.(block);
+    return meta?.note !== undefined && parseToolSideChannelNote(meta.note).actionableLines.length > 0;
+  }
+
+  private isSurfacedInCompact(block: Block): boolean {
+    if (block.kind === 'tool') {
+      return (
+        block.status === 'running' ||
+        block.status === 'error' ||
+        block.isError === true ||
+        this.blockHasActionableNote(block)
+      );
     }
-    if (node.kind === 'tool' || node.kind === 'shell') {
-      const meta = resolve(node);
-      return meta?.note !== undefined && parseToolSideChannelNote(meta.note).actionableLines.length > 0;
+    if (block.kind === 'shell') {
+      return !block.done || block.isError === true || this.blockHasActionableNote(block);
+    }
+    if (block.kind === 'subagent') {
+      const status = effectiveSubagentStatus(block, this.context.forest);
+      if (status === 'failed' || status === 'lost') return true;
+      const error = this.context.forest?.byId[block.subagentId]?.error ?? block.error;
+      return error !== undefined && error !== '';
     }
     return false;
   }
 
-  private updateOrCreate(block: Block): MountedBlock {
+  private updateOrCreate(block: Block, forceExpandInner = false): MountedBlock {
     const mounted = this.mounted.get(block.id);
+    const effectiveExpanded = this.expanded || forceExpandInner;
     const meta =
       block.kind === 'tool' || block.kind === 'shell'
         ? this.context.resolveBlockMeta?.(block)
         : undefined;
-    const nextMetaKey = serializeMetaKey(meta, this.expanded);
-    if (mounted?.block === block && mounted.metaKey === nextMetaKey) return mounted;
+    const nextMetaKey = serializeMetaKey(meta, effectiveExpanded);
+    if (mounted?.block === block && mounted.metaKey === nextMetaKey) {
+      if (
+        forceExpandInner &&
+        (mounted.component instanceof ThinkingComponent || mounted.component instanceof ProcessDetail)
+      ) {
+        mounted.component.setExpanded(true);
+      }
+      return mounted;
+    }
     if (
       mounted !== undefined &&
       mounted.kind === block.kind &&
       !requiresReplacement(mounted.block, block, mounted.metaKey, nextMetaKey)
     ) {
       updateMountedBlock(mounted.component, block, meta);
+      if (
+        forceExpandInner &&
+        (mounted.component instanceof ThinkingComponent || mounted.component instanceof ProcessDetail)
+      ) {
+        mounted.component.setExpanded(true);
+      }
       mounted.block = block;
       mounted.metaKey = nextMetaKey;
       return mounted;
     }
     if (mounted !== undefined) disposeComponent(mounted.component);
-    const component = createBlockComponent(block, this.ui, this.workDir, meta, this.expanded);
+    const component = createBlockComponent(block, this.ui, this.workDir, meta, effectiveExpanded);
     if (
       component instanceof ToolCallComponent ||
       component instanceof DaemonUserMessageComponent ||
       component instanceof ThinkingComponent ||
       component instanceof ProcessDetail
     ) {
-      component.setExpanded(this.expanded);
+      component.setExpanded(effectiveExpanded);
     }
     if (component instanceof DaemonUserMessageComponent) {
       component.setShowTimestamp(this.showTimestamps);
@@ -356,9 +473,9 @@ export function createBlockComponent(
     case 'message':
       return new DaemonMessageComponent(block);
     case 'subagent':
-      return new ProcessDetail(formatSubagent(block), [formatSubagent(block), block.summary, block.error].filter(Boolean).join('\n'), 'text');
+      return new ProcessDetail(formatSubagent(block), [formatSubagent(block), block.summary, block.error].filter(Boolean).join('\n'), 'text', ui);
     case 'subagent-event':
-      return new ProcessDetail(`${block.name} · ${block.event}`, [block.name, block.event, block.message, block.error].filter(Boolean).join('\n'), block.error ? 'error' : 'textDim');
+      return new ProcessDetail(`${block.name} · ${block.event}`, [block.name, block.event, block.message, block.error].filter(Boolean).join('\n'), block.error ? 'error' : 'textDim', ui);
     case 'approval':
       return new Text(
         block.resolution === undefined
@@ -376,20 +493,20 @@ export function createBlockComponent(
         0,
       );
     case 'shell': {
-      return renderShellBlockComponent(block, meta, expanded);
+      return renderShellBlockComponent(block, meta, expanded, ui);
     }
     case 'skill':
       return new Text(currentTheme.dim(`/${block.name}${block.args === undefined ? '' : ` ${block.args}`}`), 2, 0);
     case 'system': {
       const info = classifySystemBlock(block);
       const body = info.kind === 'other' ? block.text : `${info.summary}\n${block.text}`;
-      return new ProcessDetail(info.summary, body);
+      return new ProcessDetail(info.summary, body, 'textDim', ui);
     }
     case 'system-reminder': {
       const label = block.variant === 'steer' ? 'Steer' : 'Reminder';
       const category = block.category?.kind;
       const heading = category === undefined ? label : `${label} · ${category}`;
-      return new ProcessDetail(heading, `${heading}\n${block.text}`);
+      return new ProcessDetail(heading, `${heading}\n${block.text}`, 'textDim', ui);
     }
     case 'notice': {
       const text = formatNoticeText(block);
@@ -411,13 +528,62 @@ export interface TranscriptContext {
   readonly resolveBlockMeta?: (block: ToolBlock | ShellBlock) => ResolvedBlockContinuationMeta | undefined;
 }
 
-class TranscriptSummary implements Component {
-  private text = '';
-  setText(text: string): void { this.text = text; }
-  invalidate(): void {}
-  render(width: number): string[] {
-    return [currentTheme.dim(truncateToWidth(`  ${this.text}`, width, '…'))];
+interface SummaryDisplay {
+  readonly lead: string;
+  readonly errorBadge?: string;
+  readonly detail?: string;
+  readonly errorTone?: boolean;
+}
+
+class TranscriptSummary implements Component, MouseRoutable {
+  private display: SummaryDisplay = { lead: '' };
+  private expanded = false;
+
+  constructor(private readonly onToggle: () => void) {}
+
+  setSummary(display: SummaryDisplay, expanded: boolean): void {
+    this.display = display;
+    this.expanded = expanded;
   }
+
+  invalidate(): void {}
+
+  routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    if (!event.leftClick || line !== 0) return false;
+    this.onToggle();
+    return true;
+  }
+
+  render(width: number): string[] {
+    const marker = this.expanded
+      ? currentTheme.fg('primary', FOLD_EXPANDED_MARK)
+      : currentTheme.fg('textMuted', FOLD_COLLAPSED_MARK);
+    const lead = this.display.errorTone
+      ? currentTheme.fg('error', this.display.lead)
+      : currentTheme.dim(this.display.lead);
+    const badge =
+      this.display.errorBadge === undefined
+        ? ''
+        : `${currentTheme.dim(' · ')}${currentTheme.fg('error', this.display.errorBadge)}`;
+    const detail =
+      this.display.detail === undefined || this.display.detail.length === 0
+        ? ''
+        : currentTheme.dim(` · ${this.display.detail}`);
+    return [truncateToWidth(`  ${marker} ${lead}${badge}${detail}`, width, '…')];
+  }
+}
+
+function collectLeafBlocks(node: DisplayNode): Block[] {
+  if (
+    node.kind === 'history-fold' ||
+    node.kind === 'tool-group' ||
+    node.kind === 'subagent-group' ||
+    node.kind === 'media-run'
+  ) {
+    return node.members.flatMap(collectLeafBlocks);
+  }
+  if (node.kind === 'subagent-ended') return [node.note];
+  return [node];
 }
 
 function memberIds(node: DisplayNode): string[] {
@@ -427,24 +593,136 @@ function memberIds(node: DisplayNode): string[] {
   return [node.kind === 'subagent-ended' ? node.note.id : node.id];
 }
 
-function summarizeNode(node: DisplayNode): string {
+function summarizeFoldActions(fold: HistoryFold, maxTargets = 3): string | undefined {
+  const parts: { verb: string; targets: string[]; more: number }[] = [];
+  const push = (verb: string, target: string | undefined) => {
+    let part = parts.at(-1);
+    if (part?.verb !== verb) {
+      part = { verb, targets: [], more: 0 };
+      parts.push(part);
+    }
+    if (target === undefined || target.length === 0 || part.targets.includes(target)) return;
+    if (part.targets.length < maxTargets) part.targets.push(target);
+    else part.more += 1;
+  };
+  const visit = (node: DisplayNode) => {
+    if (node.kind === 'tool-group') {
+      for (const tool of node.tools) {
+        const obj = stepObject(tool);
+        push(obj.verb, obj.target);
+      }
+      return;
+    }
+    if (node.kind === 'tool') {
+      const obj = stepObject(node);
+      push(obj.verb, obj.target);
+      return;
+    }
+    if (node.kind === 'shell') {
+      const firstLine = (node.command ?? '').split(/\r?\n/u, 1)[0]?.trim();
+      push('run', firstLine && firstLine.length > 0 ? firstLine : undefined);
+    }
+  };
+  for (const member of fold.members) visit(member);
+  const formatted = parts
+    .map((part) => [part.verb, part.targets.join(', '), part.more > 0 ? `+${part.more}` : ''].filter(Boolean).join(' '))
+    .filter((entry) => entry.length > 0 && entry !== 'other');
+  if (formatted.length === 0) return undefined;
+  return formatted.slice(0, 3).join(' · ');
+}
+
+function summarizeSubagentGroup(node: SubagentGroup, forest?: AgentForest): SummaryDisplay {
+  let done = 0;
+  let failed = 0;
+  const names: string[] = [];
+  for (const member of node.members) {
+    const status = effectiveSubagentStatus(member, forest);
+    if (!isLiveSubagentStatus(status)) done += 1;
+    const error = forest?.byId[member.subagentId]?.error ?? member.error;
+    if (status === 'failed' || status === 'lost' || (error !== undefined && error !== '')) {
+      failed += 1;
+    }
+    if (names.length < 3) names.push(member.name);
+  }
+  const extra = node.members.length > names.length ? ` +${node.members.length - names.length}` : '';
+  return {
+    lead: `Agents · ${done}/${node.members.length} done`,
+    errorBadge: failed > 0 ? `${failed} failed` : undefined,
+    detail: names.length > 0 ? `${names.join(', ')}${extra}` : undefined,
+  };
+}
+
+function summarizeMediaRun(node: MediaRun): SummaryDisplay {
+  const targets: string[] = [];
+  let failed = 0;
+  for (const member of node.members) {
+    if (member.status === 'error' || member.isError === true) failed += 1;
+    const target = stepObject(member).target;
+    if (target !== undefined && !targets.includes(target) && targets.length < 3) {
+      targets.push(target);
+    }
+  }
+  const count = node.members.length;
+  return {
+    lead: `Viewed · ${count} ${count === 1 ? 'image' : 'images'}`,
+    errorBadge: failed > 0 ? `${failed} failed` : undefined,
+    detail: targets.length > 0 ? targets.join(', ') : undefined,
+  };
+}
+
+function summarizeNode(node: DisplayNode, forest?: AgentForest): SummaryDisplay {
   if (node.kind === 'history-fold') {
+    const sentCount = node.sentMessages?.reduce((sum, item) => sum + item.count, 0) ?? 0;
+    if (
+      node.steps === 0 &&
+      node.agents === 0 &&
+      node.agentsDone === 0 &&
+      node.notes === 0 &&
+      sentCount === 0 &&
+      node.thoughts > 0
+    ) {
+      return {
+        lead: node.thoughts === 1 ? 'Thought' : `Thought · ${node.thoughts} thoughts`,
+      };
+    }
     const parts = ['Worked'];
     if (node.steps > 0) parts.push(`${node.steps} ${node.steps === 1 ? 'step' : 'steps'}`);
     if (node.thoughts > 0) parts.push(`${node.thoughts} ${node.thoughts === 1 ? 'thought' : 'thoughts'}`);
     if (node.agents > 0) parts.push(`${node.agents} ${node.agents === 1 ? 'agent' : 'agents'}`);
+    if (node.agentsDone > 0) parts.push(`${node.agentsDone} completed`);
+    if (sentCount > 0) {
+      const names = node.sentMessages!.slice(0, 2).map((item) => item.name).join(', ');
+      parts.push(`messaged ${names}`);
+    }
     if (node.notes > 0) parts.push(`${node.notes} ${node.notes === 1 ? 'note' : 'notes'}`);
-    return parts.join(' · ');
+    return {
+      lead: parts.join(' · '),
+      errorBadge: node.failed > 0 ? `${node.failed} failed` : undefined,
+      detail: summarizeFoldActions(node),
+    };
   }
   if (node.kind === 'tool-group') {
+    const failed = node.tools.filter((tool) => tool.status === 'error' || tool.isError === true).length;
     const objects = groupSummary(node).map((part) => [part.verb, part.targets.join(', '), part.more > 0 ? `+${part.more}` : ''].filter(Boolean).join(' '));
-    return `Read · ${node.count} steps · ${objects.join(' · ')}`;
+    return {
+      lead: `Read · ${node.count} steps`,
+      errorBadge: failed > 0 ? `${failed} failed` : undefined,
+      detail: objects.join(' · '),
+    };
   }
-  if (node.kind === 'subagent-ended') return `Agent ${node.agentId} · ${node.outcome}`;
-  return '';
+  if (node.kind === 'subagent-group') return summarizeSubagentGroup(node, forest);
+  if (node.kind === 'media-run') return summarizeMediaRun(node);
+  if (node.kind === 'subagent-ended') {
+    const isErr = node.outcome === 'failed' || node.outcome === 'timedOut';
+    return {
+      lead: `Agent ${node.agentId} · ${node.outcome}`,
+      errorTone: isErr,
+    };
+  }
+  return { lead: '' };
 }
 
-class ProcessDetail implements Component {
+class ProcessDetail implements Component, MouseRoutable {
   private expanded = false;
   private readonly detail = new Text('', 2, 0);
 
@@ -452,6 +730,7 @@ class ProcessDetail implements Component {
     private readonly summary: string,
     private readonly body: string,
     private readonly tone: 'text' | 'textDim' | 'error' = 'textDim',
+    private readonly ui?: TUI,
   ) {}
 
   setExpanded(expanded: boolean): void {
@@ -463,9 +742,18 @@ class ProcessDetail implements Component {
     if (this.expanded) this.detail.setText(currentTheme.fg(this.tone, this.body));
   }
 
+  routeMouse(event: SgrMouseEvent, line: number, _col: number): boolean {
+    if (!event.leftClick || this.body === this.summary || line !== 0) return false;
+    this.setExpanded(!this.expanded);
+    this.ui?.requestRender();
+    return true;
+  }
+
   render(width: number): string[] {
-    return this.expanded ? this.detail.render(width)
-      : [currentTheme.fg(this.tone, truncateToWidth(`  ${this.summary}`, width, '…'))];
+    if (this.expanded) return this.detail.render(width);
+    const expandable = this.body !== this.summary;
+    const prefix = expandable ? `  ${currentTheme.fg('textMuted', FOLD_COLLAPSED_MARK)} ` : '  ';
+    return [truncateToWidth(`${prefix}${currentTheme.fg(this.tone, this.summary)}`, width, '…')];
   }
 }
 
@@ -825,6 +1113,7 @@ function renderShellBlockComponent(
   block: ShellBlock,
   meta?: ResolvedBlockContinuationMeta,
   expanded = false,
+  ui?: TUI,
 ): Component {
   const fullOutput = `${block.output}${meta?.rangeSuffix ?? ''}`;
   const command = block.command ?? fullOutput;
@@ -850,7 +1139,7 @@ function renderShellBlockComponent(
   const firstLine = command.split(/\r?\n/u, 1)[0] ?? '';
   const summaryNote =
     noteInfo.actionableLines.length > 0 ? ` · ${noteInfo.actionableLines[0]}` : '';
-  return new ProcessDetail(`$ ${firstLine}${summaryNote}`, body, 'text');
+  return new ProcessDetail(`$ ${firstLine}${summaryNote}`, body, 'text', ui);
 }
 
 function mediaKey(media: readonly MediaRef[] | undefined): string {
@@ -966,7 +1255,7 @@ function formatSubagent(block: Extract<Block, { kind: 'subagent' }>): string {
         ? currentTheme.fg('error', '✗')
         : currentTheme.fg('primary', '●');
   const detail = block.description ?? block.summary;
-  return `  ${status} ${currentTheme.boldFg('primary', block.name)}${detail === undefined ? '' : currentTheme.dim(` · ${detail}`)}`;
+  return `${status} ${currentTheme.boldFg('primary', block.name)}${detail === undefined ? '' : currentTheme.dim(` · ${detail}`)}`;
 }
 
 function disposeComponent(component: Component): void {

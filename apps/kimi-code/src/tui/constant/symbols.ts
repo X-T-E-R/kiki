@@ -6,6 +6,9 @@ export const STATUS_BULLET = '● ';
 export const USER_MESSAGE_BULLET = '❯ ';
 export const SUCCESS_MARK = '✓ ';
 export const FAILURE_MARK = '✗ ';
+export const FOLD_COLLAPSED_MARK = '▸';
+export const FOLD_EXPANDED_MARK = '▾';
+export const TREE_BRANCH_MARK = '└ ';
 
 // Shared selector markers — keep every list picker visually consistent.
 // SELECT_POINTER marks the highlighted row; CURRENT_MARK is appended to the

@@ -247,6 +247,14 @@ function driver(
     getForest: vi.fn(() => undefined),
     getState: vi.fn(() => controllerState),
     getAgentState: vi.fn((agentId: string) => ensureAgentState(agentId)),
+    getContentRevision: vi.fn(() => 0),
+    contentRefsFor: vi.fn(() => []),
+    beginContentRead: vi.fn(() => ({ release: vi.fn(), retry: vi.fn() })),
+    isContentRange: vi.fn(() => false),
+    readContentRange: vi.fn(async () => ''),
+    loadTranscriptDetail: vi.fn(async () => false),
+    lookupToolCall: vi.fn(async () => ({ status: 'missing' as const })),
+    getToolCallDetail: vi.fn(() => undefined),
     setFocusedAgent: vi.fn(),
     subscribeAgent: vi.fn((agentId: string, listener: () => void) => {
       let set = agentListeners.get(agentId);
@@ -3183,7 +3191,7 @@ describe('DaemonTUI commands', () => {
   });
 
   it('toggles transcript output from both the approval panel and question dialog', () => {
-    const { tui, internal } = driver();
+    const { tui, internal, controllerState } = driver();
     const tool = {
       kind: 'tool',
       id: 'tool-output',
@@ -3200,6 +3208,7 @@ describe('DaemonTUI commands', () => {
       progressText: undefined,
       turnId: 'turn-1',
     };
+    controllerState.blocks = [tool];
     internal.renderTranscript({ blocks: [tool], busy: false, tasks: [] });
     expect(transcriptText(tui)).not.toContain('expanded-tool-output');
     const approval = {

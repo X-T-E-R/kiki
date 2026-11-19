@@ -13,7 +13,6 @@ import { GoalStatusMessageComponent } from '#/tui/components/messages/goal-panel
 import { ThinkingComponent } from '#/tui/components/messages/thinking';
 import { UsagePanelComponent, buildUsageReportLines } from '#/tui/components/messages/usage-panel';
 import { UserMessageComponent } from '#/tui/components/messages/user-message';
-import { QueuePaneComponent } from '#/tui/components/panes/queue-pane';
 import { daemonAutocompleteCommands } from '#/tui/daemon/commands';
 import { setRainbowDance, type RainbowDanceController } from '#/tui/easter-eggs/dance';
 import { currentTheme, darkColors, lightColors } from '#/tui/theme';
@@ -351,12 +350,6 @@ describe('WelcomeComponent', () => {
             ' Usage ',
           );
           const goalPanel = new GoalStatusMessageComponent(state.goal!);
-          const queuePane = new QueuePaneComponent({
-            isCompacting: false,
-            isStreaming: true,
-            canSteerImmediately: true,
-            messages: [{ text: 'Add virtual-TTY frame verification next' }],
-          });
           const listTheme = {
             selectedPrefix: (t: string) => currentTheme.fg('primary', t),
             selectedText: (t: string) => currentTheme.boldFg('primary', t),
@@ -418,7 +411,6 @@ describe('WelcomeComponent', () => {
             ...slashMenu.render(width),
             ...fuzzyMenu.render(width),
             ...settingsDialog.render(width),
-            ...queuePane.render(width),
             ...footerWrap.render(width),
           ];
 

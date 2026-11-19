@@ -693,4 +693,43 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(resumedNodes.map((node) => node.kind)).toEqual(['user', 'history-fold', 'assistant', 'user', 'subagent']);
     expect((resumedNodes[1] as HistoryFold).agents).toBe(1);
   });
+
+  it('folds single settled process blocks and completed thinking immediately when foldSingleProcess is enabled', () => {
+    const singleThought = [inTurn(text('user'), 't1'), inTurn(thinking(), 't1'), inTurn(text('assistant'), 't1')];
+    expect(foldHistory(singleThought, undefined, { foldSingleProcess: true }).map((n) => n.kind)).toEqual([
+      'user',
+      'history-fold',
+      'assistant',
+    ]);
+
+    const singleTool = [inTurn(text('user'), 't2'), inTurn(read('/w/a.ts'), 't2'), inTurn(text('assistant'), 't2')];
+    expect(foldHistory(singleTool, undefined, { foldSingleProcess: true }).map((n) => n.kind)).toEqual([
+      'user',
+      'history-fold',
+      'assistant',
+    ]);
+
+    const liveCompletedThinking = [inTurn(text('user'), 't3'), inTurn(thinking(), 't3')];
+    expect(foldHistory(liveCompletedThinking, 't3', { foldSingleProcess: true }).map((n) => n.kind)).toEqual([
+      'user',
+      'history-fold',
+    ]);
+
+    const liveStreamingThinking = [inTurn(text('user'), 't3'), inTurn({ ...thinking(), streaming: true }, 't3')];
+    expect(foldHistory(liveStreamingThinking, 't3', { foldSingleProcess: true }).map((n) => n.kind)).toEqual([
+      'user',
+      'thinking',
+    ]);
+
+    const loneSystemNote: Block[] = [
+      inTurn(text('user'), 't4'),
+      { kind: 'system', id: 'sys-1', turnId: 't4', variant: 'injection', source: 'recipe', text: 'Recipe', createdAt: undefined },
+      inTurn(text('assistant'), 't4'),
+    ];
+    expect(foldHistory(loneSystemNote, undefined, { foldSingleProcess: true }).map((n) => n.kind)).toEqual([
+      'user',
+      'system',
+      'assistant',
+    ]);
+  });
 });

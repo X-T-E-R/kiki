@@ -29,7 +29,6 @@ Main directories:
 - `src/tui/components/editor/`: the custom input box and the file mention provider.
 - `src/tui/components/media/`: image, diff, code highlight, and other media displays.
 - `src/tui/components/messages/`: message blocks in the transcript — assistant, user, tool call, thinking, usage, subagent, and so on.
-- `src/tui/components/panes/`: legacy, unmounted pane implementations (`ActivityPaneComponent`, `QueuePaneComponent`, and `BtwPanelComponent`); `DaemonTUI` does not mount them.
 - `src/tui/interactions/`: neutral approval/question panel types and adapters.
 - `src/tui/theme/`: themes, color tokens, style helpers, terminal-background detection, and the pi-tui markdown theme.
 - `src/tui/utils/`: TUI-only utility functions.

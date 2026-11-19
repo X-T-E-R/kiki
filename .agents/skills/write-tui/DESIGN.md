@@ -1,7 +1,7 @@
 # TUI 设计规范（Design Spec）
 
-> 本目录所有 dialog / selector / 输入框的**单一真值源**。新增或改造交互组件前先读本文件，提交前对照文末「自查清单」。
-> 基准组件：`components/dialogs/choice-picker.ts`（`ChoicePickerComponent`）。所有列表型 dialog 的头部、hint、搜索、选中/当前态都以它为准对齐。
+> 本目录所有 dialog / selector / 输入框以及主对话转录流的**单一真值源**。新增或改造交互组件或转录渲染前先读本文件，提交前对照文末「自查清单」。
+> 列表型 dialog 基准组件：`components/dialogs/choice-picker.ts`（`ChoicePickerComponent`）；主对话转录流基准实现：`daemon/transcript-renderer.ts`（`DaemonTranscriptRenderer`）。
 
 ---
 
@@ -16,6 +16,8 @@
 | 危险确认 `[y/N]` | `warning` + bold | `chalk.hex(colors.warning)` |
 | 开关项状态：开 | 名称后 `  enabled`（`success`） | `chalk.hex(colors.success)` |
 | 开关项状态：关 | 名称后 `  disabled`（`textDim`） | `chalk.hex(colors.textDim)` |
+| 折叠行收起指示 | `▸`（`textMuted`） | `constant/symbols.ts` → `FOLD_COLLAPSED_MARK` |
+| 折叠行展开指示 | `▾`（`primary`） | `constant/symbols.ts` → `FOLD_EXPANDED_MARK` |
 | 列表 / 选择器边框 | 平直 `─`（`primary`），仅顶/底各一条 | — |
 | 输入框边框 | 圆角 `╭ ╮ ╰ ╯`（`primary`） | — |
 
@@ -179,11 +181,51 @@
 - **分层 Esc**：审批的反馈输入态 → 回到选项列表；提问的 Other 输入态 → 退出输入；提问里已有答案时，第一次 Esc 只把提示行末项换成 `Esc again to discard answers`，第二次才放弃（其它任意键解除）；其余情况拒绝 / 取消。
 - 只提示真正可用的键：宿主没有接上的功能（如 `Ctrl+E preview`）不出现在提示里。
 
-## 12. 新增 / 改造 dialog 自查清单
+## 12. 主对话转录流（Compact Scrollback vs Expanded Transcript）与自动折叠
+
+主对话转录流采用双态密度模型，对标 `codex-rs/tui` 与 Claude Code：默认 **Compact Scrollback** 保持高信噪比，**Expanded Transcript** 保留全部推理、工具输出与内部注入供按需审计。
+
+### 12.1 双态法则与自动折叠边界
+
+- **已完成思考零残留（Compact）**：思考仅在流式生成中（`streaming: true`）以动态预览展示；一旦思考完成（`streaming: false`），在默认 Compact 模式下立即自动收进所属轮次的过程折叠行，**不得**把多行斜体思考文本摊留在滚动流中。完整思考文本仅在点击该折叠行展开或切换到 Expanded 模式时可见。
+- **单步落定即折叠**：通过 `foldHistory(..., { foldSingleProcess: true })` 将已落定的单段思考、单次工具调用、已结束 shell 与已结束子代理纳入自动折叠，按真实对话边界（用户消息、助手正文、开放交互、最新媒体预览、活跃子代理组）切分，不因终端或 Memory 工具名单独拆组。
+- **单行元信息保留直读**：独立出现的单行提示项（`Recipe · ...`、`/skill`、已决审批）本身已占 1 行且带具体标题，不包进泛化的 `Worked · 1 note` 折叠；相邻真实过程步骤时则随该段一起合入折叠。
+- **运行态与最新实时项可见**：正在执行的工具、shell、流式思考以及当前活跃轮次最新落定的非思考步骤保持展开，待后续步骤或助手正文抵达（或整轮结束）后自动收起。
+
+### 12.2 错误与可操作提示外露（禁止静默吞错、禁止连带炸开）
+
+- 折叠组内若存在失败工具、非零退出命令、失败子代理或带可操作侧通道提示（actionable side-channel note）的步骤，**不得**把整段折叠全部炸开（避免连带把已完成的思考和成功读取摊满屏幕）。
+- 默认 Compact 态呈现为「折叠摘要行（带 `error` 色 `N failed` 标记）+ 紧随其下的失败/可操作成员」，既保证错误行一眼可见，又维持其余已完成过程紧凑收起。
+- 若折叠组内所有成员均为失败或可操作项（例如整段仅包含 1 次失败工具），直接渲染该失败成员本身，不叠加冗余摘要行。
+
+### 12.3 折叠行语法与组摘要
+
+所有折叠摘要行由 `TranscriptSummary` 统一渲染，实现 `MouseRoutable`，左键点击单行即就地切换该折叠块的展开/收起（持久化在 `DaemonTranscriptRenderer.expandedFolds`，互不影响其他轮次），整行经 `truncateToWidth(..., width, '…')` 约束宽度：
+
+```
+  ▸ Thought                                                          ← 纯思考轮次（单行）
+  ▸ Worked · 3 steps · 1 thought · read alpha.txt, beta.txt          ← 已落定工作流（含对象摘要）
+  ▸ Worked · 3 steps · 1 thought · 1 failed · read alpha.txt, …      ← 含失败：`1 failed` 用 error token
+  ✗ Used Read (missing.txt) · 1 line                                 ← 仅外露失败成员，不泄漏思考与成功读取
+    "missing.txt" does not exist.
+  ▸ Agents · 1/3 done · explore, reviewer, worker                    ← 活跃子代理组摘要（失败成员外露）
+  ▸ Viewed · 2 images · shot.png, chart.png                          ← 历史媒体读取组（最新活跃组保持预览）
+  ▸ Agent reviewer · completed                                       ← 跨轮子代理终态（失败态用 error token）
+```
+
+- 收起态前缀为 `FOLD_COLLAPSED_MARK`（`▸`，`textMuted`）；单独展开态前缀为 `FOLD_EXPANDED_MARK`（`▾`，`primary`），并在下方按原顺序挂载该折叠块成员（点击纯思考折叠或跨轮子代理终态时自动展开内部正文，一次点击即可阅读）。
+- 独立可展开的 `ProcessDetail`（如 `Recipe · ...`、已结束 shell）同样以 `▸ ` 标示可点击展开并实现 `MouseRoutable`。
+
+### 12.4 全局切换（`Ctrl+O` / `/expand`）
+
+- `Ctrl+O`（或 `/expand`）在 Compact Scrollback 与 Expanded Transcript 之间全局切换，并清空单块覆盖集合，避免局部展开状态残留。
+- Expanded 态还原全部隐藏的思考正文、工具完整输入输出、内部系统提醒与去重前的诊断通知，同时按需拉取工具/shell 长输出续页；切回 Compact 态立即释放续页租约并恢复紧凑折叠。
+
+## 13. 新增 / 改造自查清单
 
 - [ ] 头部按第 3 节：顶部一条 `─`、标题（+`(type to search)` 后缀）、hint、空行、`Search:` 行、列表、底部一条 `─`；标题下**无**内层 `─`。
 - [ ] hint 整行 `textMuted`，**不**做键位高亮；键位首字母大写、描述词小写、` · ` 分隔。
-- [ ] 选中指针用 `SELECT_POINTER`，当前项用 `CURRENT_MARK`，未自造 `>` / `▶` / `→` / `● ` / `(current)`。
+- [ ] 选中指针用 `SELECT_POINTER`，当前项用 `CURRENT_MARK`，折叠指示用 `FOLD_COLLAPSED_MARK` / `FOLD_EXPANDED_MARK`，未自造 `>` / `▶` / `→` / `● ` / `(current)`。
 - [ ] 颜色全部来自 `colors.<token>`，无 named color。
 - [ ] 键位：`↑↓` 移动、`PgUp/PgDn` 翻页、`Enter` 确认、`Esc` 取消（可搜索列表 `Esc` 两段式：先清 query 再关闭）、`D` 删除（可搜索列表用 `Ctrl+X`）；字符比较经 `printableChar()`。
 - [ ] 「离开对话框」只说 `cancel`，不混用 close / back / exit / dismiss；对话框内子层级的 Esc 写 `Esc back`（见第 4 节）。
@@ -193,4 +235,5 @@
 - [ ] hint 行不截断：超宽时在 ` · ` 处折成多行（参考 `approval-panel.ts` 的 `layoutHintLines`）；离开对话框的键（`Esc cancel` / `Esc reject`）必须在任何宽度下完整可见。
 - [ ] 复用 `SearchableList`；输入框圆角盒，多字段支持 `Tab/↑↓` 切换、Enter 推进 / 末段提交。
 - [ ] 系统主动弹出、替换输入框的对话框按第 11 节处理上膛时间、默认项、单次响应和分层 Esc。
-- [ ] 有对应的组件测试（render 快照 + handleInput 键行为）。
+- [ ] 主对话转录流按第 12 节执行 Compact / Expanded 双态折叠：已完成思考不残留、单步过程自动折叠、失败与可操作提示外露而不炸开成功步骤、支持单块点击展开与 `Ctrl+O` 全局切换。
+- [ ] 有对应的组件或转录渲染测试（render 快照 + handleInput / 鼠标点击行为）。

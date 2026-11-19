@@ -10,12 +10,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { Spacer, type Terminal, TuiAltScreen } from '@kiki/pi-tui';
 import { VirtualTerminal } from '../../../../packages/pi-tui/test/virtual-terminal';
 
+import { ActivityLineComponent } from '#/tui/components/chrome/activity-line';
 import { GutterContainer } from '#/tui/components/chrome/gutter-container';
-import { MoonLoader } from '#/tui/components/chrome/moon-loader';
 import { AssistantMessageComponent } from '#/tui/components/messages/assistant-message';
 import { StatusMessageComponent } from '#/tui/components/messages/status-message';
 import { UserMessageComponent } from '#/tui/components/messages/user-message';
-import { ActivityPaneComponent } from '#/tui/components/panes/activity-pane';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { createTUIState } from '#/tui/tui-state';
 import type { AppState, KimiTUIOptions } from '#/tui/types';
@@ -98,11 +97,15 @@ describe('fullscreen layout', () => {
       return rows;
     };
 
-    // User message, then a streaming assistant message with the activity pane up.
+    // User message, then a streaming assistant message with the activity line up.
     state.transcriptContainer.addChild(new UserMessageComponent('分析下这个项目'));
-    const spinner = new MoonLoader(state.ui);
     state.activityContainer.addChild(
-      new ActivityPaneComponent({ mode: 'tool', spinner, tip: 'streaming' }),
+      new ActivityLineComponent({
+        lead: 'Working 2s',
+        tone: 'text',
+        details: ['streaming'],
+        hint: 'Esc to interrupt',
+      }),
     );
     const assistant = new AssistantMessageComponent();
     state.transcriptContainer.addChild(assistant);

@@ -32,5 +32,3 @@ export * from './messages/thinking';
 export * from './messages/tool-call';
 export * from './messages/usage-panel';
 export * from './messages/user-message';
-export * from './panes/activity-pane';
-export * from './panes/queue-pane';
