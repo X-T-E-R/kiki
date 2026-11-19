@@ -289,8 +289,11 @@ export class LockFile {
     return false;
   }
 
-  /** Atomic create-if-absent publish: tmp write + hard link (EEXIST-safe). */
+  /** Atomic create-if-absent publish: tmp write + hard link (EEXIST-safe), with O_CREAT|O_EXCL fallback where hard links are forbidden (e.g. Android SELinux). */
   private async tryCreate(): Promise<boolean> {
+    if (process.platform === 'android') {
+      return this.tryCreateDirect();
+    }
     const tmp = `${this.path}.tmp-${process.pid}-${nextSidecarSeq()}`;
     try {
       await fs.writeFile(tmp, this.payload());
@@ -298,11 +301,35 @@ export class LockFile {
       this.markHeld();
       return true;
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-      return false;
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') return false;
+      if (code === 'ENOSYS' || code === 'ENOTSUP') {
+        return this.tryCreateDirect();
+      }
+      throw e;
     } finally {
       await fs.unlink(tmp).catch(() => {});
     }
+  }
+
+  private async tryCreateDirect(): Promise<boolean> {
+    let handle: fs.FileHandle;
+    try {
+      handle = await fs.open(this.path, 'wx');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw e;
+    }
+    try {
+      await handle.writeFile(this.payload());
+    } catch (e) {
+      await handle.close().catch(() => {});
+      await fs.unlink(this.path).catch(() => {});
+      throw e;
+    }
+    await handle.close();
+    this.markHeld();
+    return true;
   }
 
   /** Read the lock file and decide its state. null = the file vanished.

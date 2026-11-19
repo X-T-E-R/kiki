@@ -1524,4 +1524,19 @@ describe('SSHKaos.close lifecycle', () => {
     await expect(kaos.exec('pwd')).rejects.toThrow(/channel closed/);
     expect(kaos.activeProcesses).toBe(0);
   });
+
+  it('normalizes MSYS /c/ and /cygdrive/d/ paths on Windows SSH hosts', () => {
+    const instance = uninitializedSsh();
+    const internals = instance as unknown as {
+      _osEnv: { osKind: string };
+      _home: string;
+      _cwd: string;
+    };
+    internals._osEnv = { osKind: 'Windows' };
+    internals._home = 'C:/Users/admin';
+    internals._cwd = 'C:/Users/admin';
+    expect(instance.normpath('/c/kiki-e2e/space dir/file.txt')).toBe('C:/kiki-e2e/space dir/file.txt');
+    expect(instance.normpath('/C:/kiki-e2e/file.txt')).toBe('C:/kiki-e2e/file.txt');
+    expect(instance.normpath('/cygdrive/d/work/notes.md')).toBe('D:/work/notes.md');
+  });
 });

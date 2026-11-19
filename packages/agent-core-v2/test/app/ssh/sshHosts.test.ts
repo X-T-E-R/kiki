@@ -141,15 +141,17 @@ describe('SSH host store', () => {
     expect((await isolated.list()).some((host) => host.id === 'shared')).toBe(false);
   });
 
-  it('accepts only absolute POSIX workspace roots', async () => {
+  it('accepts only absolute POSIX or Windows drive workspace roots', async () => {
     const { hosts } = await fixture();
     const host = { id: 'gpu', name: 'GPU', hostname: 'gpu.example.test' };
-    for (const root of ['relative', 'C:\\work', '/work\\other', '/work\0other']) {
-      await expect(hosts.upsert({ ...host, roots: [root] })).rejects.toThrow('absolute POSIX');
+    for (const root of ['relative', '/work\\other', '/work\0other']) {
+      await expect(hosts.upsert({ ...host, roots: [root] })).rejects.toThrow('absolute POSIX or Windows drive');
     }
-    await expect(hosts.upsert({ ...host, roots: [] })).rejects.toThrow('absolute POSIX');
+    await expect(hosts.upsert({ ...host, roots: [] })).rejects.toThrow('absolute POSIX or Windows drive');
     await hosts.upsert({ ...host, roots: ['/home/user/../user/project', '/scratch'] });
     expect((await hosts.list()).find((entry) => entry.id === 'gpu')?.roots).toEqual(['/home/user/project', '/scratch']);
+    await hosts.upsert({ ...host, id: 'win-box', name: 'Windows Box', roots: ['c:\\kiki-e2e\\workspace\\sub\\..', 'D:/projects/app'] });
+    expect((await hosts.list()).find((entry) => entry.id === 'win-box')?.roots).toEqual(['C:/kiki-e2e/workspace', 'D:/projects/app']);
   });
 
   it('scopes a temporary user@host:port target to one session without persisting it', async () => {

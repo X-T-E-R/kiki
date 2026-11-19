@@ -225,18 +225,32 @@ class NodeSupervisor(
 
                 val stdoutJob = scope.launch {
                     readStdoutLoop(spawned.stdout, runtime, gatewayPort, readyDeferred)
+                    if (!readyDeferred.isCompleted) {
+                        val code = runCatching { spawned.process.waitFor() }.getOrElse { -1 }
+                        readyDeferred.completeExceptionally(
+                            IllegalStateException("Kernel exited before ready (exitCode=$code)"),
+                        )
+                    }
                 }
                 val stderrJob = scope.launch {
                     readStderrLoop(spawned.stderr, crashLog)
                 }
 
-                val readyFrame = withTimeoutOrNull(45_000L) {
-                    readyDeferred.await()
+                val readyFrame = try {
+                    withTimeoutOrNull(45_000L) {
+                        readyDeferred.await()
+                    }
+                } catch (earlyExit: Throwable) {
+                    runCatching { spawned.process.destroyForcibly() }
+                    stdoutJob.cancelAndJoin()
+                    withTimeoutOrNull(2_000L) { stderrJob.join() } ?: stderrJob.cancelAndJoin()
+                    val tail = tailFile(crashLog, 1_200)
+                    throw IllegalStateException("${earlyExit.message}. stderr: $tail", earlyExit)
                 }
                 if (readyFrame == null) {
                     runCatching { spawned.process.destroyForcibly() }
                     stdoutJob.cancelAndJoin()
-                    stderrJob.cancelAndJoin()
+                    withTimeoutOrNull(2_000L) { stderrJob.join() } ?: stderrJob.cancelAndJoin()
                     val tail = tailFile(crashLog, 1_200)
                     throw IllegalStateException("Kernel ready timeout (45s). stderr: $tail")
                 }
@@ -314,12 +328,13 @@ class NodeSupervisor(
             val heapMb = selectOldSpaceMb()
             val selinuxLinkShim = writeSelinuxLinkShim(File(runtime.runDir, "android-selinux-fs-shim.cjs"))
             val workspace = host.workspaceDir.apply { mkdirs() }
+            val entryPath = runCatching { runtime.entryMjs.canonicalPath }.getOrDefault(runtime.entryMjs.absolutePath)
             val pb = ProcessBuilder(
                 runtime.nodeBinary.absolutePath,
                 "--max-old-space-size=$heapMb",
                 "--require",
                 selinuxLinkShim.absolutePath,
-                runtime.entryMjs.absolutePath,
+                entryPath,
             ).directory(workspace)
 
             val env = pb.environment()

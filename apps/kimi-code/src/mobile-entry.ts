@@ -1,6 +1,6 @@
 import '@kiki/node-sdk/native-fs-watch-error-guard';
 import { enableIndependentWorkerHeaps, removeInjectedHeapOption } from '@kiki/node-sdk/worker-heap-policy';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
@@ -780,11 +780,20 @@ export function dispatchMobileCliEntry(defaultPlatform: MobileHostPlatform = 'an
   });
 }
 
+function canonicalEntryPath(filePath: string): string {
+  const resolved = resolve(filePath);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 function isDirectEntryExecution(metaUrl: string): boolean {
   try {
-    const selfPath = resolve(fileURLToPath(metaUrl));
+    const selfPath = canonicalEntryPath(fileURLToPath(metaUrl));
     const argv1 = process.argv[1];
-    if (argv1 !== undefined && resolve(argv1) === selfPath) return true;
+    if (argv1 !== undefined && canonicalEntryPath(argv1) === selfPath) return true;
     const workerPayload =
       !isMainThread && workerData !== null && typeof workerData === 'object'
         ? (workerData as Record<string, unknown>)

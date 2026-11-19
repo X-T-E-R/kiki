@@ -504,8 +504,8 @@ function createSelfCheckIndexHtml() {
       document.getElementById('output').textContent = JSON.stringify(await res.json(), null, 2);
     });
     document.getElementById('btn-settings').addEventListener('click', () => {
-      if (window.kikiAndroid && typeof window.kikiAndroid.openMikaSettings === 'function') {
-        window.kikiAndroid.openMikaSettings();
+      if (window.kikiAndroid && typeof window.kikiAndroid.openPhoneSettings === 'function') {
+        window.kikiAndroid.openPhoneSettings();
       }
     });
     refreshStatus();

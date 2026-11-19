@@ -96,11 +96,38 @@ export async function isFence(path: string, migrationId: string): Promise<boolea
 
 export async function installMailboxFence(path: string, migrationId: string): Promise<void> {
   if (await isFence(path, migrationId)) return;
+  const text = fenceText(migrationId);
+  if (process.platform === 'android') {
+    try {
+      const handle = await open(path, 'wx', 0o600);
+      try { await handle.writeFile(text); await handle.sync(); }
+      catch (error) { await handle.close().catch(() => undefined); await unlink(path).catch(() => undefined); throw error; }
+      await handle.close();
+    } catch (error) {
+      if (!await isFence(path, migrationId)) throw error;
+    }
+    await syncDirectory(dirname(path));
+    return;
+  }
   const temporary = `${path}.fence-${migrationId}-${randomUUID()}`;
   const handle = await open(temporary, 'wx', 0o600);
-  try { await handle.writeFile(fenceText(migrationId)); await handle.sync(); } finally { await handle.close(); }
+  try { await handle.writeFile(text); await handle.sync(); } finally { await handle.close(); }
   try { await link(temporary, path); }
-  catch (error) { if (!await isFence(path, migrationId)) throw error; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOSYS' || code === 'ENOTSUP') {
+      try {
+        const direct = await open(path, 'wx', 0o600);
+        try { await direct.writeFile(text); await direct.sync(); }
+        catch (writeError) { await direct.close().catch(() => undefined); await unlink(path).catch(() => undefined); throw writeError; }
+        await direct.close();
+      } catch (directError) {
+        if (!await isFence(path, migrationId)) throw directError;
+      }
+    } else if (!await isFence(path, migrationId)) {
+      throw error;
+    }
+  }
   await syncDirectory(dirname(path));
   await unlink(temporary);
 }

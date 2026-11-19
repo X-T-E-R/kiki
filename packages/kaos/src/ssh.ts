@@ -555,7 +555,14 @@ export class SSHKaos implements Kaos {
   }
 
   private _nativePath(path: string): string {
-    return this.pathClass() === 'win32' ? path.replace(/^\/([A-Za-z]:[\\/])/, '$1').replaceAll('\\', '/') : path;
+    if (this.pathClass() !== 'win32') return path;
+    const colonDrive = /^\/([A-Za-z]):(?:[\\/](.*))?$/.exec(path);
+    if (colonDrive !== null) return `${colonDrive[1]!.toUpperCase()}:/${(colonDrive[2] ?? '').replaceAll('\\', '/')}`;
+    const cygdrive = /^\/cygdrive\/([A-Za-z])(?:\/(.*))?$/.exec(path);
+    if (cygdrive !== null) return `${cygdrive[1]!.toUpperCase()}:/${(cygdrive[2] ?? '').replaceAll('\\', '/')}`;
+    const msysDrive = /^\/([A-Za-z])(?:\/(.*))?$/.exec(path);
+    if (msysDrive !== null) return `${msysDrive[1]!.toUpperCase()}:/${(msysDrive[2] ?? '').replaceAll('\\', '/')}`;
+    return path.replaceAll('\\', '/');
   }
 
   private constructor(

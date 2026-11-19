@@ -417,3 +417,27 @@ test('onLockAcquired fires with the held token; read-only fallback opens skip it
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
+
+test('android platform acquires db.lock via O_CREAT|O_EXCL without hard link and preserves mutual exclusion', async () => {
+  const dir = await tmpDir();
+  const originalDesc = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { value: 'android', configurable: true });
+  let db1: MiniDb<string> | undefined;
+  let ro: MiniDb<string> | undefined;
+  try {
+    db1 = await MiniDb.open({ dir, valueCodec: 'string', fsyncPolicy: 'no' });
+    ro = await MiniDb.open({ dir, valueCodec: 'string', fsyncPolicy: 'no', onLockFail: 'readonly' });
+    assert.equal(ro.readOnly, true);
+    await ro.close();
+    ro = undefined;
+    await db1.close();
+    db1 = undefined;
+    const reopened = await MiniDb.open({ dir, valueCodec: 'string', fsyncPolicy: 'no' });
+    await reopened.close();
+  } finally {
+    await ro?.close();
+    await db1?.close();
+    Object.defineProperty(process, 'platform', originalDesc);
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});

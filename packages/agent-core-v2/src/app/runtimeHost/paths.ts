@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { chmod, lstat, link, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, link, mkdir, open, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -164,12 +164,28 @@ async function ensurePrivateDir(runtimeDir: string): Promise<void> {
 }
 
 async function installStable(pending: string, target: string): Promise<void> {
+  if (process.platform === 'android') {
+    try {
+      const content = await readFile(pending);
+      const handle = await open(target, 'wx', MODE_PRIVATE_FILE);
+      try { await handle.writeFile(content); await handle.sync(); }
+      catch (writeError) { await handle.close().catch(() => undefined); await unlinkQuietly(target); throw writeError; }
+      await handle.close();
+      await chmodIfSupported(target, MODE_PRIVATE_FILE);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    } finally {
+      await unlinkQuietly(pending);
+    }
+    return;
+  }
   try {
     await link(pending, target);
     await unlinkQuietly(pending);
     return;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') {
       await unlinkQuietly(pending);
       return;
     }
@@ -179,6 +195,21 @@ async function installStable(pending: string, target: string): Promise<void> {
       } catch (renameError) {
         await unlinkQuietly(pending);
         if ((renameError as NodeJS.ErrnoException).code !== 'EEXIST') throw renameError;
+      }
+      return;
+    }
+    if (code === 'ENOSYS' || code === 'ENOTSUP') {
+      try {
+        const content = await readFile(pending);
+        const handle = await open(target, 'wx', MODE_PRIVATE_FILE);
+        try { await handle.writeFile(content); await handle.sync(); }
+        catch (writeError) { await handle.close().catch(() => undefined); await unlinkQuietly(target); throw writeError; }
+        await handle.close();
+        await chmodIfSupported(target, MODE_PRIVATE_FILE);
+      } catch (directError) {
+        if ((directError as NodeJS.ErrnoException).code !== 'EEXIST') throw directError;
+      } finally {
+        await unlinkQuietly(pending);
       }
       return;
     }

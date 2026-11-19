@@ -859,6 +859,32 @@ describe('SSH tools over a real ssh2 transport', () => {
     expect(f.files.has('/home/tester/test.txt')).toBe(false);
     f.remote.dispose();
   });
+
+  it('supports --glob-case-insensitive, MSYS /c/ paths, fixed strings, and OR semantics across multiple positive globs in Windows SSH search', async () => {
+    const f = await fixture('win32');
+    const ssh = (await f.remote.connect()).withCwd('C:/Users/tester');
+    f.response.stdout = Buffer.alloc(0);
+    const proc = spawnWindowsSearch(ssh, [
+      '--files',
+      '--glob-case-insensitive',
+      '--glob', '*.txt',
+      '--glob', '*.md',
+      '--glob', '!*.ignore.txt',
+      '/c/kiki-e2e/ssh-test',
+    ]);
+    proc.stdout.resume();
+    proc.stderr.resume();
+    await proc.wait();
+    const script = f.commands.at(-1) ?? '';
+    expect(script).toContain('$hasInclude=$false');
+    expect(script).toContain('if ($hasInclude -and !$matchedInclude)');
+    const b64Match = /FromBase64String\('([^']+)'\)/.exec(script);
+    expect(b64Match).not.toBeNull();
+    const cfg = JSON.parse(Buffer.from(b64Match![1]!, 'base64').toString('utf8')) as { paths: string[]; globs: string[] };
+    expect(cfg.paths).toEqual(['C:/kiki-e2e/ssh-test']);
+    expect(cfg.globs).toEqual(['*.txt', '*.md', '!*.ignore.txt']);
+    f.remote.dispose();
+  });
 });
 
 function filesText(buffer: Buffer | undefined): string {

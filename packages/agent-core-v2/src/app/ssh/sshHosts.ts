@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { isAbsolute, normalize } from 'node:path/posix';
+import { win32 } from 'node:path';
 import { join } from 'pathe';
 import { parse, stringify } from 'smol-toml';
 
@@ -69,8 +70,8 @@ export function normalizeHost(host: SshHostInput): SshHostRecord {
     throw new Error('Invalid SSH agent access');
   }
   if (host.roots !== undefined && (!Array.isArray(host.roots) || host.roots.length === 0 ||
-    host.roots.some((root) => typeof root !== 'string' || !isAbsolute(root) || root.includes('\\') || root.includes('\0')))) {
-    throw new Error('SSH roots must be absolute POSIX paths');
+    host.roots.some((root) => typeof root !== 'string' || root.includes('\0') || !isAbsoluteSshRoot(root)))) {
+    throw new Error('SSH roots must be absolute POSIX or Windows drive paths');
   }
   return {
     id: host.id,
@@ -80,10 +81,27 @@ export function normalizeHost(host: SshHostInput): SshHostRecord {
     user: host.user,
     port: host.port,
     identityFile: host.identityFile,
-    roots: host.roots?.map((root) => normalize(root)),
+    roots: host.roots?.map((root) => normalizeSshRoot(root)),
     description: host.description,
     agentAccess: host.agentAccess,
   };
+}
+
+function isWindowsDriveRoot(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value);
+}
+
+function isAbsoluteSshRoot(value: string): boolean {
+  if (isWindowsDriveRoot(value)) return true;
+  return isAbsolute(value) && !value.includes('\\');
+}
+
+function normalizeSshRoot(value: string): string {
+  if (isWindowsDriveRoot(value)) {
+    const normalized = win32.normalize(value).replaceAll('\\', '/');
+    return `${normalized[0]!.toUpperCase()}${normalized.slice(1)}`;
+  }
+  return normalize(value);
 }
 
 export class SshHostStore {
