@@ -1,7 +1,6 @@
-import { statSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
+import { resolveWorkerEntry } from '@kiki/agent-core-v2/_base/node/workerEntry';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import { trackReaderWorkerThread } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileLock';
 import type { TranscriptService } from '../../transcript/transcriptService';
@@ -77,8 +76,10 @@ export class HistoryNavigationWorker {
 
   private start(): Worker {
     if (this.worker !== undefined) return this.worker;
-    const configured = process.env['KIKI_HISTORY_NAVIGATION_WORKER_ENTRY'];
-    const entry = configured === undefined ? resolveEntry() : pathToFileURL(configured);
+    const entry = resolveWorkerEntry(import.meta.url, './sourceEntry.mjs', 'history-navigation-worker.mjs', {
+      configuredEntry: process.env['KIKI_HISTORY_NAVIGATION_WORKER_ENTRY'],
+      unavailableMessage: 'History navigation worker asset is unavailable',
+    });
     const worker = new Worker(entry, { name: 'kiki-history-navigation', workerData: { database: this.database },
       execArgv: [], resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb } });
     trackReaderWorkerThread(worker);
@@ -176,12 +177,4 @@ export class HistoryNavigationWorker {
       finally { await exited; clearTimeout(timer); }
     })();
   }
-}
-
-function resolveEntry(): URL {
-  for (const path of ['./sourceEntry.mjs', './history-navigation-worker.mjs']) {
-    const entry = new URL(path, import.meta.url);
-    try { if (statSync(entry).isFile()) return entry; } catch {}
-  }
-  throw new Error('History navigation worker asset is unavailable');
 }

@@ -114,6 +114,13 @@ export function sanitizeCreateMessagesCacheControl(
 }
 
 const messageDigestCache = new WeakMap<object, string>();
+const messageDigestKeyMap = new WeakMap<object, object>();
+
+/** Associates a freshly converted provider message with a stable cache key object (e.g. canonical input Message token). */
+export function bindThreadMessageDigestKey<T extends object>(message: T, cacheKey: object): T {
+  messageDigestKeyMap.set(message, cacheKey);
+  return message;
+}
 
 function isVacuousAssistantTextBlock(value: unknown): boolean {
   return (
@@ -140,7 +147,8 @@ function feedThreadHashValue(
     return;
   }
   if (valueType === 'number') {
-    hash.update(Number.isFinite(value as number) ? `d:${String(value)};` : 'n;');
+    const num = value as number;
+    hash.update(Number.isFinite(num) ? `d:${num};` : 'n;');
     return;
   }
   if (valueType === 'string') {
@@ -190,12 +198,13 @@ function feedThreadHashValue(
 
 function hashSingleThreadMessage(message: unknown): string {
   if (typeof message === 'object' && message !== null) {
-    const cached = messageDigestCache.get(message);
+    const cacheTarget = messageDigestKeyMap.get(message) ?? message;
+    const cached = messageDigestCache.get(cacheTarget);
     if (cached !== undefined) return cached;
     const hash = createHash('sha256');
     feedThreadHashValue(hash, message);
     const digest = hash.digest('hex');
-    messageDigestCache.set(message, digest);
+    messageDigestCache.set(cacheTarget, digest);
     return digest;
   }
   const hash = createHash('sha256');

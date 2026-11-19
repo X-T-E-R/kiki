@@ -79,4 +79,62 @@ describe('SqliteSearchHost IPC disconnect handling', () => {
     expect(joined).toContain('search indexer exited code=1 signal=null');
     expect(host['failures']).toBe(1);
   });
+
+  it('completes multi-page inventory sync when child.send signals backpressure (returns false)', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-sqlite-backpressure-'));
+    homes.push(home);
+    const script = join(home, 'paged-indexer.mjs');
+    await writeFile(
+      script,
+      [
+        "process.send?.({ type: 'ready', writer: true });",
+        'let pages = 0;',
+        'let total = 0;',
+        "process.on('message', (msg) => {",
+        "  if (msg?.type === 'sync') {",
+        '    pages += 1;',
+        '    total += (msg.sessions ?? []).length;',
+        '    if (msg.last) {',
+        "      process.send?.({ type: 'inventory_synced', revision: msg.revision, pages, total });",
+        "      process.send?.({ type: 'status', status: { state: 'ready', indexedSessions: total, totalSessions: total, documents: total, filesPending: 0, stale: false, lastBatchMs: 1 } });",
+        '    }',
+        '  }',
+        '});',
+      ].join('\n'),
+    );
+
+    const host = new SqliteSearchHost({
+      database: join(home, 'index.sqlite'),
+      indexerEntry: script,
+      heartbeatMs: 5_000,
+    });
+    hosts.push(host);
+
+    await host.open();
+    const child = host['child']!;
+    try { if (child.pid) setPriority(child.pid, 0); } catch {}
+    await expect.poll(() => host['ready'], { timeout: 10_000 }).toBe(true);
+
+    const origSend = child.send.bind(child);
+    let syncCalls = 0;
+    vi.spyOn(child, 'send').mockImplementation(((message: unknown, ...rest: unknown[]) => {
+      const result = (origSend as (...args: unknown[]) => boolean)(message, ...rest);
+      if (typeof message === 'object' && message !== null && (message as { type?: string }).type === 'sync') {
+        syncCalls += 1;
+        if (syncCalls === 1) return false;
+      }
+      return result;
+    }) as typeof child.send);
+
+    const sessions = Array.from({ length: 2_050 }, (_, idx) => ({
+      id: `session-${idx}`,
+      dir: home,
+      workspaceId: 'w1',
+      updatedAt: idx + 1,
+    }));
+    host.sync(sessions);
+
+    await expect.poll(() => host.snapshot().indexedSessions, { timeout: 10_000 }).toBe(2_050);
+    expect(syncCalls).toBe(3);
+  });
 });

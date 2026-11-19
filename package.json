@@ -8,6 +8,7 @@
     "postinstall": "node scripts/fix-node-pty-perms.mjs",
     "build": "pnpm -r run build",
     "build:packages": "pnpm -r --filter \"./packages/*\" --fail-if-no-match run build",
+    "build:external-harness": "tsdown --config scripts/external-harness/tsdown.config.ts",
     "dev:cli": "pnpm -C apps/kimi-code run dev",
     "dev:cli:marketplace": "KIKI_DEV_MARKETPLACE_URL=plugins/marketplace.json pnpm -C apps/kimi-code run dev",
     "dev:server": "pnpm -C apps/kimi-code run dev:server",
@@ -46,6 +47,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.2",
+    "@bufbuild/protobuf": "^2.17.0",
     "@changesets/changelog-github": "0.7.0",
     "@changesets/cli": "2.30.0",
     "@microsoft/api-extractor": "7.58.7",

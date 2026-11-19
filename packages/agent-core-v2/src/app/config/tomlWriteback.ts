@@ -44,15 +44,48 @@ function collectExplicitTablePaths(cst: readonly TomlCstBlock[]): ReadonlySet<st
   return paths;
 }
 
+function collectInlineTablePaths(cst: readonly TomlCstBlock[]): ReadonlySet<string> {
+  const paths = new Set<string>();
+  const visitKeyValue = (prefix: readonly string[], item: TomlCstKeyValue): void => {
+    const fullPath = [...prefix, ...item.key.value];
+    if (item.value.type === 'InlineTable') {
+      paths.add(JSON.stringify(fullPath));
+    }
+  };
+  for (const block of cst) {
+    if (block.type === 'KeyValue') {
+      visitKeyValue([], block);
+    } else if (block.type === 'Table') {
+      const tablePrefix = block.key.item.value;
+      for (const item of block.items) {
+        if (item.type === 'KeyValue') {
+          visitKeyValue(tablePrefix, item);
+        }
+      }
+    }
+  }
+  return paths;
+}
+
+function hasNestedObjectOrObjectArray(value: Record<string, unknown>): boolean {
+  return Object.values(value).some((entry) => isPlainObject(entry) || isObjectArray(entry));
+}
+
 function splitNewSectionBlocks(
   path: readonly string[],
   previous: Record<string, unknown>,
   next: Record<string, unknown>,
   explicitTablePaths: ReadonlySet<string>,
+  inlineTablePaths: ReadonlySet<string>,
   deferred: DeferredSectionBlock[],
 ): Record<string, unknown> | undefined {
+  const serializedPath = JSON.stringify(path);
+  if (inlineTablePaths.has(serializedPath) && hasNestedObjectOrObjectArray(next)) {
+    deferred.push({ path, value: next });
+    return undefined;
+  }
   const out: Record<string, unknown> = {};
-  const parentExplicit = explicitTablePaths.has(JSON.stringify(path));
+  const parentExplicit = explicitTablePaths.has(serializedPath);
   for (const [key, nextVal] of Object.entries(next)) {
     const prevVal = previous[key];
     const childPath = [...path, key];
@@ -69,7 +102,14 @@ function splitNewSectionBlocks(
       continue;
     }
     if (isPlainObject(prevVal) && isPlainObject(nextVal)) {
-      const sub = splitNewSectionBlocks(childPath, prevVal, nextVal, explicitTablePaths, deferred);
+      const sub = splitNewSectionBlocks(
+        childPath,
+        prevVal,
+        nextVal,
+        explicitTablePaths,
+        inlineTablePaths,
+        deferred,
+      );
       if (sub !== undefined) out[key] = sub;
       continue;
     }
@@ -123,6 +163,7 @@ export function planConfigWriteback(
   if (!isPlainObject(current)) return undefined;
 
   const explicitTablePaths = collectExplicitTablePaths(doc.cst);
+  const inlineTablePaths = collectInlineTablePaths(doc.cst);
   const deferred: DeferredSectionBlock[] = [];
   let changed = false;
   const patchTarget: Record<string, unknown> = { ...current };
@@ -141,6 +182,7 @@ export function planConfigWriteback(
         update.previousValue,
         update.nextValue,
         explicitTablePaths,
+        inlineTablePaths,
         deferred,
       );
       if (sub === undefined) {

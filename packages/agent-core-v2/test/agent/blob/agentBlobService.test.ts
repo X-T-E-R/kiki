@@ -15,7 +15,11 @@ import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/
 import { BlobStoreService } from '#/persistence/backends/node-fs/blobStoreService';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IBlobStore } from '#/persistence/interface/blobStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import {
+  IFileSystemStorageService,
+  StorageError,
+  StorageErrors,
+} from '#/persistence/interface/storage';
 
 const LARGE = 'A'.repeat(5000);
 const SMALL = 'AQID';
@@ -196,5 +200,48 @@ describe('agent blob service (offload/load of inline media)', () => {
     expect(svc.isBlobRef('blobref:image/png;abc')).toBe(true);
     expect(svc.isBlobRef('data:image/png;base64,AQID')).toBe(false);
     expect(svc.isBlobRef('https://example.com/a.png')).toBe(false);
+  });
+
+  it('keeps the inline media part intact on storage.disk_full and offloads once space recovers', async () => {
+    const svc = service();
+    const uri = dataUri('image/png', LARGE);
+    const part = imagePart(uri);
+    const origPut = blobs.put.bind(blobs);
+    let failWithDiskFull = true;
+    blobs.put = async (scope, key, data) => {
+      if (failWithDiskFull) {
+        throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'no space left on device');
+      }
+      await origPut(scope, key, data);
+    };
+
+    try {
+      const duringEnospc = await svc.offloadParts([part]);
+      expect(duringEnospc[0]).toBe(part);
+      expect(imageUrl(duringEnospc[0]!)).toBe(uri);
+      expect(await blobs.list('blobs')).toHaveLength(0);
+
+      failWithDiskFull = false;
+      const recovered = await svc.offloadParts([part]);
+      expect(svc.isBlobRef(imageUrl(recovered[0]!))).toBe(true);
+      expect(await blobs.list('blobs')).toHaveLength(1);
+    } finally {
+      blobs.put = origPut;
+    }
+  });
+
+  it('still propagates non-disk-full storage errors during blob offload', async () => {
+    const svc = service();
+    const uri = dataUri('image/png', LARGE);
+    const origPut = blobs.put.bind(blobs);
+    blobs.put = async () => {
+      throw new StorageError(StorageErrors.codes.STORAGE_PERMISSION_DENIED, 'permission denied');
+    };
+
+    try {
+      await expect(svc.offloadParts([imagePart(uri)])).rejects.toThrow(/permission denied/);
+    } finally {
+      blobs.put = origPut;
+    }
   });
 });

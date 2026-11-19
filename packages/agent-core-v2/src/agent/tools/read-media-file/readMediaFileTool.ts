@@ -5,6 +5,7 @@ import { VideoUploadUnsupportedError } from '#/kosong/contract/errors';
 import { inlineVideoPart, isVideoUploadAuthError } from '#/agent/media/videoUpload';
 import { compressAudioForModel, compressVideoForModel } from '#/agent/media/av-compress';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
+import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
@@ -226,6 +227,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     inlineVideoSupported?: boolean,
     private readonly providerType?: string,
     private readonly imagePolicy?: ResolvedImagePolicy,
+    private readonly cpuWorker?: ICpuWorkerService,
   ) {
     this.description = buildDescription(capabilities);
     this.compressTelemetry =
@@ -498,6 +500,8 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             telemetry: this.compressTelemetry,
             acceptedMimes: this.imagePolicy?.acceptedTypes,
             outputMimes: imageOutputMimes(this.imagePolicy),
+            cpuWorker: this.cpuWorker,
+            signal,
           });
           if (!outcome.ok) {
             return { isError: true, output: `Cannot read region from "${args.path}": ${outcome.error}` };
@@ -544,6 +548,8 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             telemetry: this.compressTelemetry,
             acceptedMimes: this.imagePolicy?.acceptedTypes,
             outputMimes: imageOutputMimes(this.imagePolicy),
+            cpuWorker: this.cpuWorker,
+            signal,
           });
           if (
             compressed.finalByteLength > readByteBudget ||

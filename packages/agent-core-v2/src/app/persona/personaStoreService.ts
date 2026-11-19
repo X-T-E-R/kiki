@@ -11,11 +11,13 @@ import {
 } from '@kiki/agent-profiles/personaFile';
 
 import { Disposable } from '#/_base/di/lifecycle';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Emitter } from '#/_base/event';
 import { TimeoutTimer } from '#/_base/utils/timer';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { ILogService } from '#/_base/log/log';
 import { IMemoryStore } from '#/app/memory/memoryStore';
 import { IHostFsWatchService, type HostFsChange } from '#/os/interface/hostFsWatch';
@@ -79,6 +81,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     @IMemoryStore private readonly memoryStore: IMemoryStore,
     @ILogService private readonly log: ILogService,
     @IHostFsWatchService fsWatch: IHostFsWatchService,
+    @ref(ICpuWorkerService) private readonly cpuWorkerRef?: LiveRef<ICpuWorkerService>,
   ) {
     super();
     const watch = fsWatch.watch(join(bootstrap.homeDir, PERSONA_ROOT), { recursive: true });
@@ -281,7 +284,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     const definition = { ...preview.definition, id };
     if (parsed.avatar !== undefined) {
       if (parsed.avatar.data.byteLength > MAX_AVATAR_BYTES) throw new Error('Avatar exceeds the 2 MiB size limit');
-      await normalizeAvatar(parsed.avatar.data, detectAvatarMime(parsed.avatar.data, parsed.avatar.mimeType));
+      await normalizeAvatar(parsed.avatar.data, detectAvatarMime(parsed.avatar.data, parsed.avatar.mimeType), this.cpuWorkerRef?.current);
     }
     const personaText = serializePersonaFile(definition);
     this.validateDefinitionText(id, personaText);
@@ -344,7 +347,16 @@ export class PersonaStore extends Disposable implements IPersonaStore {
         memoryScopes.push(memoryScopeLabel(entry.scope));
       }
     }
-    const exported = await exportPersonaCard(format, snapshot.definition, snapshot.examples, avatar, extensions, memoryEntries, assets);
+    const exported = await exportPersonaCard(
+      format,
+      snapshot.definition,
+      snapshot.examples,
+      avatar,
+      extensions,
+      memoryEntries,
+      assets,
+      { cpuWorker: this.cpuWorkerRef?.current },
+    );
     return options.includeMemory === true
       ? { ...exported, memoryScopes: [...new Set(memoryScopes)].toSorted() }
       : exported;
@@ -359,7 +371,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     }
     const data = await this.storage.read(this.scope(id), found.key, { recoverMissing: false });
     if (data === undefined) return undefined;
-    const dimensions = await avatarDimensions(data, found.mimeType);
+    const dimensions = await avatarDimensions(data, found.mimeType, this.cpuWorkerRef?.current);
     return {
       data,
       mimeType: found.mimeType,
@@ -377,7 +389,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
     if (raw.data.byteLength > MAX_AVATAR_BYTES) throw new Error('Avatar exceeds the 2 MiB size limit');
     if (raw.shape !== undefined && !isAvatarShape(raw.shape)) throw new Error('Avatar shape must be circle or square');
     const mimeType = detectAvatarMime(raw.data, raw.mimeType);
-    const normalized: PersonaAvatar = { ...await normalizeAvatar(raw.data, mimeType), shape: raw.shape };
+    const normalized: PersonaAvatar = { ...await normalizeAvatar(raw.data, mimeType, this.cpuWorkerRef?.current), shape: raw.shape };
     if (normalized.data.byteLength > MAX_AVATAR_BYTES) throw new Error('Scaled avatar exceeds the 2 MiB size limit');
     let before: ReadonlyMap<string, Uint8Array> | undefined;
     let mutated = false;
@@ -518,7 +530,7 @@ export class PersonaStore extends Disposable implements IPersonaStore {
 
   private async writeAvatarUnlocked(id: string, input: PersonaAvatarInput): Promise<void> {
     const mimeType = detectAvatarMime(input.data, input.mimeType);
-    const normalized = await normalizeAvatar(input.data, mimeType);
+    const normalized = await normalizeAvatar(input.data, mimeType, this.cpuWorkerRef?.current);
     await this.writeAvatarDataUnlocked(id, normalized);
   }
 
@@ -763,12 +775,20 @@ function detectAvatarMime(data: Uint8Array, requested: string | undefined): Pers
   return detected;
 }
 
-async function normalizeAvatar(data: Uint8Array, mimeType: PersonaAvatarMime): Promise<PersonaAvatar> {
-  return normalizeAvatarImage(data, mimeType);
+async function normalizeAvatar(
+  data: Uint8Array,
+  mimeType: PersonaAvatarMime,
+  cpuWorker?: ICpuWorkerService,
+): Promise<PersonaAvatar> {
+  return normalizeAvatarImage(data, mimeType, { cpuWorker });
 }
 
-async function avatarDimensions(data: Uint8Array, mimeType: PersonaAvatarMime): Promise<{ readonly width: number; readonly height: number }> {
-  return readAvatarDimensions(data, mimeType);
+async function avatarDimensions(
+  data: Uint8Array,
+  mimeType: PersonaAvatarMime,
+  cpuWorker?: ICpuWorkerService,
+): Promise<{ readonly width: number; readonly height: number }> {
+  return readAvatarDimensions(data, mimeType, { cpuWorker });
 }
 
 function isAvatarShape(value: unknown): value is PersonaAvatarShape {

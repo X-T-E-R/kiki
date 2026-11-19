@@ -1,7 +1,6 @@
-import { statSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import { usageReadModelWorkerEntry, type UsageStoreOperation, type UsageStoreRequest, type UsageStoreResponse } from './usageProtocol';
 
 interface Pending {
@@ -33,8 +32,10 @@ export class UsageReadModelWorker {
   private readonly exited: Promise<void>;
 
   constructor(database: string, private readonly writable: boolean) {
-    const configured = usageReadModelWorkerEntry();
-    const entry = configured === undefined ? resolveEntry() : pathToFileURL(configured);
+    const entry = resolveWorkerEntry(import.meta.url, './usageEntry.ts', 'usage-read-model-worker.mjs', {
+      configuredEntry: usageReadModelWorkerEntry(),
+      unavailableMessage: 'Usage read-model worker asset is unavailable',
+    });
     this.worker = new Worker(entry, { name: writable ? 'kiki-usage-writer' : 'kiki-usage-reader', workerData: { database, writable }, execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [], resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb } });
     this.worker.unref();
     this.exited = new Promise((resolve) => { this.worker.once('exit', () => resolve()); });
@@ -113,12 +114,4 @@ export class UsageReadModelWorker {
     this.waiting.length = 0;
     void this.worker.terminate();
   }
-}
-
-function resolveEntry(): URL {
-  for (const relative of ['./usageEntry.ts', './usage-read-model-worker.mjs']) {
-    const entry = new URL(relative, import.meta.url);
-    try { if (statSync(entry).isFile()) return entry; } catch {}
-  }
-  throw new Error('Usage read-model worker asset is unavailable');
 }

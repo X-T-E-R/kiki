@@ -409,4 +409,49 @@ describe('ConfigService key-level writeback', () => {
 
     await disposables.dispose();
   });
+
+  it('expands an inline provider table when adding custom_headers without erasing comments in unrelated sections', () => {
+    const text = [
+      '# top-level user comment',
+      'default_model = "kimi-k2"',
+      '',
+      '[providers]',
+      '# keep sibling provider comment',
+      'other = { type = "anthropic", base_url = "https://other.example.test" }',
+      'my_prov = { type = "openai", base_url = "https://example.test/v1", api_key = "k" }',
+      '',
+      '[image]',
+      '# unrelated comment that must survive',
+      'max_edge_px = 1500',
+      '',
+    ].join('\n');
+    const previous = {
+      other: { type: 'anthropic', base_url: 'https://other.example.test' },
+      my_prov: { type: 'openai', base_url: 'https://example.test/v1', api_key: 'k' },
+    };
+    const next = {
+      other: { type: 'anthropic', base_url: 'https://other.example.test' },
+      my_prov: {
+        type: 'openai',
+        base_url: 'https://example.test/v1',
+        api_key: 'k',
+        custom_headers: { 'X-Custom': '1' },
+      },
+    };
+    const expected = {
+      default_model: 'kimi-k2',
+      providers: next,
+      image: { max_edge_px: 1500 },
+    };
+    const result = planConfigWriteback(
+      text,
+      [{ snakeKey: 'providers', previousValue: previous, nextValue: next }],
+      expected,
+    );
+    expect(result).toBeDefined();
+    expect(result).toContain('# top-level user comment');
+    expect(result).toContain('# keep sibling provider comment');
+    expect(result).toContain('# unrelated comment that must survive');
+    expect(parseToml(result!)).toEqual(expected);
+  });
 });

@@ -1311,4 +1311,79 @@ describe('DaemonTranscriptRenderer', () => {
     expect(expandedAgents).toContain('Task for explore');
     expect(expandedAgents).toContain('Task for reviewer');
   });
+
+  it('gates forest failure status and error to the latest subagent card when a resumed subagent fails later', () => {
+    const container = new Container();
+    const renderer = new DaemonTranscriptRenderer(container);
+    const frame = () => strip(container.render(100).join('\n'));
+    const mkSub = (
+      id: string,
+      subagentId: string,
+      parentTurnId: string,
+      name: string,
+      status: 'completed' | 'failed',
+      description: string,
+      error?: string,
+    ): Block => ({
+      kind: 'subagent',
+      id,
+      subagentId,
+      parentAgentId: 'main',
+      parentToolCallId: `call-${id}`,
+      parentTurnId,
+      name,
+      description,
+      model: undefined,
+      thinkingEffort: undefined,
+      status,
+      summary: status === 'completed' ? `${name} done` : undefined,
+      error,
+      endedAt: undefined,
+      toolCallCount: 1,
+      transcript: [],
+    });
+
+    renderer.sync(
+      [
+        { kind: 'user', id: 'u1', turnId: 't1', text: 'First run', createdAt: '' },
+        mkSub('card-0', 'agent-other-1', 't1', 'explore', 'completed', 'Explore step'),
+        mkSub('card-0b', 'agent-other-2', 't1', 'reviewer', 'completed', 'Review step'),
+        mkSub('card-1', 'agent-reused', 't1', 'worker', 'completed', 'Initial run succeeded'),
+        { kind: 'assistant', id: 'a1', turnId: 't1', text: 'Done first.', streaming: false, createdAt: undefined },
+        { kind: 'user', id: 'u2', turnId: 't2', text: 'Resume run', createdAt: '' },
+        mkSub('card-2', 'agent-reused', 't2', 'worker', 'failed', 'Resumed run failed', 'boom on resume'),
+        { kind: 'assistant', id: 'a2', turnId: 't2', text: 'Failed second.', streaming: false, createdAt: undefined },
+      ],
+      {
+        liveTurnId: 't2',
+        forest: {
+          byId: {
+            'agent-reused': {
+              id: 'agent-reused',
+              parentId: 'main',
+              name: 'worker',
+              status: 'failed',
+              error: 'boom on resume',
+              children: [],
+            },
+          },
+          rootIds: ['agent-reused'],
+        } as never,
+      },
+    );
+
+    const output = frame();
+    expect(output).toContain('▸ Worked · 3 agents');
+    expect(output).not.toContain('Initial run succeeded');
+    expect(output).toContain('Resumed run failed');
+    expect(output).toContain('✗');
+
+    const workedSummary = container.children.find((child) => strip(child.render(100).join('\n')).includes('▸ Worked ·')) as {
+      routeMouse?: (event: { leftClick: boolean }, line: number, col: number) => boolean;
+    };
+    expect(workedSummary.routeMouse!({ leftClick: true }, 0, 4)).toBe(true);
+    const expanded = frame();
+    expect(expanded).toContain('✓ worker · Initial run succeeded');
+    expect(expanded).toContain('▸ ✗ worker · Resumed run failed');
+  });
 });

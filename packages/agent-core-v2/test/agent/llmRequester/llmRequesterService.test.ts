@@ -2735,6 +2735,38 @@ describe('AgentLLMRequesterService media-degraded resend', () => {
     expect(projection.calls).toEqual(['normal', 'degraded', 'stripped']);
   });
 
+  it('still degrades and strips media on structured HTTP 413 with upstream retryable=false and execution=not_executed', async () => {
+    const vetoed413 = normalizeAPIStatusError(
+      413,
+      '413 Request Entity Too Large',
+      null,
+      null,
+      null,
+      {
+        error: {
+          code: 'request_body_too_large',
+          message: 'Request Entity Too Large',
+        },
+        retryable: false,
+        execution: 'not_executed',
+      },
+    );
+    attachErrorDetails(vetoed413, { upstream_retryable: false });
+
+    const calls = { value: 0 };
+    const projection = recordProjectionCalls();
+    const { service } = createService(
+      createRequester(calls, vetoed413, [vetoed413]),
+      projection.projector,
+    );
+
+    const result = await service.request({ source: { type: 'turn', turnId: 10, step: 1 } });
+
+    expect(result.message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(3);
+    expect(projection.calls).toEqual(['normal', 'degraded', 'stripped']);
+  });
+
   it('records repeated-413 recovery projections on the sticky later request', async () => {
     const calls = { value: 0 };
     const { service, dispatcher, records } = createService(

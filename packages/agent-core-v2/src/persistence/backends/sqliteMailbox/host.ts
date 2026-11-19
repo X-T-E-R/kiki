@@ -1,7 +1,6 @@
-import { statSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 
 import { MAILBOX_QUEUE_FULL, mailboxWorkerEntry, type MailboxOperation, type MailboxRequest, type MailboxResponse } from './protocol';
 
@@ -26,8 +25,10 @@ export class MailboxWorker {
   private readonly exited: Promise<void>;
 
   constructor(database: string, create: boolean, readOnly: boolean) {
-    const configured = mailboxWorkerEntry();
-    const entry = configured === undefined ? resolveEntry() : pathToFileURL(configured);
+    const entry = resolveWorkerEntry(import.meta.url, './entry.ts', 'mailbox-worker.mjs', {
+      configuredEntry: mailboxWorkerEntry(),
+      unavailableMessage: 'Canonical mailbox SQLite worker asset is unavailable',
+    });
     this.worker = new Worker(entry, {
       name: 'kiki-canonical-mailbox', workerData: { database, create, readOnly },
       execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [],
@@ -102,12 +103,4 @@ export class MailboxWorker {
     this.waiting.length = 0;
     void this.worker.terminate();
   }
-}
-
-function resolveEntry(): URL {
-  for (const relative of ['./entry.ts', './mailbox-worker.mjs']) {
-    const entry = new URL(relative, import.meta.url);
-    try { if (statSync(entry).isFile()) return entry; } catch {}
-  }
-  throw new Error('Canonical mailbox SQLite worker asset is unavailable');
 }

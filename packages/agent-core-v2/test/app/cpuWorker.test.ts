@@ -104,6 +104,20 @@ describe('CPU worker pool', () => {
     expect(secondThreadId).toBe(firstThreadId);
   });
 
+  it('detaches a slow cancelled worker past grace without mid-call terminate, serves replacement work, and retires cleanly on completion', async () => {
+    const workers = await pool({ maxWorkers: 1, cancelGraceMs: 40 });
+    const firstThreadId = await workers.request<number>({ type: 'delay', ms: 5 });
+    const controller = new AbortController();
+    const active = workers.request<number>({ type: 'delay', ms: 160 }, { signal: controller.signal });
+    const cancelled = expect(active).rejects.toThrow('slow cancel');
+    controller.abort(new Error('slow cancel'));
+    await cancelled;
+    const replacementThreadId = await workers.request<number>({ type: 'delay', ms: 5 });
+    expect(replacementThreadId).not.toBe(firstThreadId);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
+    expect(workers.liveWorkerCount).toBe(1);
+  });
+
   it('recovers from worker death and running cancellation without replaying failed work', async () => {
     const workers = await pool({ maxWorkers: 1, cancelGraceMs: 120 });
     await expect(workers.request({type:'crash'})).rejects.toMatchObject({code:'CPU_WORKER_EXIT'});
@@ -386,4 +400,54 @@ describe('CPU cooperative abort stress regression', () => {
 
     await workers.close();
   }, 60_000);
+});
+
+describe('CPU worker image operations', () => {
+  const ONE_BY_ONE_PNG = Uint8Array.from(
+    Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+  );
+
+  it('executes image.crop, image.normalizeAvatar, image.dimensions, and image.toPng in the worker and honors AbortSignal', async () => {
+    const { cropImageForModel, normalizeAvatarImage, readAvatarDimensions, encodeImageAsPng } = await import('#/agent/media/image-compress');
+    const workers = productionPool();
+    const cpuWorker = {
+      _serviceBrand: undefined,
+      request: <T>(operation: unknown, options?: Parameters<CpuWorkerPool['request']>[1]) =>
+        workers.request<T>(operation, options),
+    };
+
+    const cropped = await cropImageForModel(
+      ONE_BY_ONE_PNG,
+      'image/png',
+      { x: 0, y: 0, width: 1, height: 1 },
+      { cpuWorker },
+    );
+    expect(cropped.ok).toBe(true);
+    if (cropped.ok) {
+      expect(cropped.width).toBe(1);
+      expect(cropped.height).toBe(1);
+    }
+
+    const normalized = await normalizeAvatarImage(ONE_BY_ONE_PNG, 'image/png', { cpuWorker });
+    expect(normalized).toMatchObject({ width: 1, height: 1, mimeType: 'image/png', extension: 'png' });
+
+    const dims = await readAvatarDimensions(ONE_BY_ONE_PNG, 'image/png', { cpuWorker });
+    expect(dims).toEqual({ width: 1, height: 1 });
+
+    const png = await encodeImageAsPng(ONE_BY_ONE_PNG, 'image/png', { cpuWorker });
+    expect(png.byteLength).toBeGreaterThan(8);
+
+    const aborted = new AbortController();
+    aborted.abort(new Error('cancelled-before-crop'));
+    const abortedCrop = await cropImageForModel(
+      ONE_BY_ONE_PNG,
+      'image/png',
+      { x: 0, y: 0, width: 1, height: 1 },
+      { cpuWorker, signal: aborted.signal },
+    );
+    expect(abortedCrop.ok).toBe(false);
+    await expect(
+      normalizeAvatarImage(ONE_BY_ONE_PNG, 'image/png', { cpuWorker, signal: aborted.signal }),
+    ).rejects.toThrow('cancelled-before-crop');
+  }, 30_000);
 });

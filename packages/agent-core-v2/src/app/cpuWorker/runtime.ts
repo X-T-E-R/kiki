@@ -1,5 +1,4 @@
-import { statSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import { CpuWorkerPool, type CpuPoolOptions, type CpuRequestOptions } from './host';
 import { cpuWorkerEntry } from './protocol';
 
@@ -7,7 +6,13 @@ const owners = new Set<CpuWorkerPool>();
 let standalone: CpuWorkerPool | undefined;
 
 export function createCpuPool(options?: CpuPoolOptions): CpuWorkerPool {
-  return new CpuWorkerPool(resolveEntry(), options);
+  return new CpuWorkerPool(
+    resolveWorkerEntry(import.meta.url, './bootstrap.mjs', 'cpu-worker.mjs', {
+      configuredEntry: cpuWorkerEntry(),
+      unavailableMessage: 'CPU worker asset is unavailable',
+    }),
+    options,
+  );
 }
 
 export function registerCpuPool(pool: CpuWorkerPool): { dispose(): Promise<void> } {
@@ -32,14 +37,4 @@ export async function closeCpuPool(): Promise<void> {
   const previous = standalone;
   standalone = undefined;
   await previous?.close();
-}
-
-function resolveEntry(): URL {
-  const configuredEntry = cpuWorkerEntry();
-  if (configuredEntry !== undefined) return pathToFileURL(configuredEntry);
-  for (const relative of ['./bootstrap.mjs', './cpu-worker.mjs']) {
-    const entry = new URL(relative, import.meta.url);
-    try { if (statSync(entry).isFile()) return entry; } catch {}
-  }
-  throw new Error('CPU worker asset is unavailable');
 }

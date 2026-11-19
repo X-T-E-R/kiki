@@ -4,6 +4,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { Emitter, Event } from '#/_base/event';
 import { createServices } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { ILogService } from '#/_base/log/log';
 import { IPersonaStore } from '#/app/persona/personaStore';
 import { PersonaStore } from '#/app/persona/personaStoreService';
@@ -520,5 +521,68 @@ describe('PersonaStore', () => {
     const deleted = await store.delete(result.snapshot.definition.id, snapshot?.revision);
     expect(deleted.memory).toEqual({ status: 'committed' });
     expect(deletedPersonas).toEqual([result.snapshot.definition.id]);
+  });
+
+  it('routes avatar normalize, dimensions, and PNG card export through injected ICpuWorkerService', async () => {
+    const ops: Array<{ readonly type: string; readonly transferred: number }> = [];
+    const jpegHeader = Uint8Array.of(0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01);
+    const stubWorker: ICpuWorkerService = {
+      _serviceBrand: undefined,
+      async request<T>(operation: unknown, options?: { readonly transferList?: readonly unknown[] }): Promise<T> {
+        const op = operation as { readonly type: string };
+        ops.push({ type: op.type, transferred: options?.transferList?.length ?? 0 });
+        if (op.type === 'image.normalizeAvatar') {
+          return {
+            data: jpegHeader.slice().buffer,
+            mimeType: 'image/jpeg',
+            extension: 'jpg',
+            width: 64,
+            height: 64,
+          } as T;
+        }
+        if (op.type === 'image.dimensions') {
+          return { width: 64, height: 64 } as T;
+        }
+        if (op.type === 'image.toPng') {
+          return AVATAR.slice().buffer as T;
+        }
+        throw new Error(`Unexpected cpu op: ${op.type}`);
+      },
+    };
+    const scoped = new DisposableStore();
+    try {
+      const ix = createServices(scoped, {
+        additionalServices: (reg) => {
+          reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+          reg.definePartialInstance(IBootstrapService, { homeDir: '/kimi-test-home' });
+          reg.definePartialInstance(ILogService, { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), child: () => ({}) as never });
+          reg.definePartialInstance(IHostFsWatchService, {
+            watch: () => ({ ready: Promise.resolve(), onDidChange: externalChange.event, dispose: () => {} }),
+          });
+          reg.definePartialInstance(IMemoryStore, {
+            importLorebook: async () => [],
+            deletePersonaNamespaces: async () => ({ namespaceCount: 0, entryCount: 0 }),
+            listPersonaEntries: async () => [],
+          });
+          reg.defineInstance(ICpuWorkerService, stubWorker);
+          reg.define(IPersonaStore, PersonaStore);
+        },
+      });
+      const workerStore = ix.get(IPersonaStore);
+      await workerStore.put(definition);
+      const avatar = await workerStore.putAvatar(definition.id, { data: jpegHeader, mimeType: 'image/jpeg' });
+      expect(avatar).toMatchObject({ mimeType: 'image/jpeg', extension: 'jpg', width: 64, height: 64 });
+      expect(await workerStore.getAvatar(definition.id)).toMatchObject({ width: 64, height: 64 });
+      const pngCard = await workerStore.exportCard(definition.id, 'png');
+      expect(pngCard.mimeType).toBe('image/png');
+      expect(ops).toEqual([
+        { type: 'image.normalizeAvatar', transferred: 1 },
+        { type: 'image.dimensions', transferred: 1 },
+        { type: 'image.dimensions', transferred: 1 },
+        { type: 'image.toPng', transferred: 1 },
+      ]);
+    } finally {
+      await scoped.dispose();
+    }
   });
 });

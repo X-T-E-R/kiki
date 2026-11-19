@@ -928,8 +928,13 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           (attemptObservedOutput ? !attemptObservedSubstantiveOutput : requestDeliveryProvenance(error) !== 'executed') &&
           isRetryableUncommittedStreamOverloadError(error);
         const discardRetry = malformedFunctionCall || missingTerminal || uncommittedOverload;
+        const canDegradeOrStripMedia =
+          raw instanceof APIRequestTooLargeError &&
+          requestDeliveryProvenance(error) !== 'executed' &&
+          (policy?.media === undefined || policy?.media === 'degraded');
         if (source?.type === 'operation' && retryPolicy?.retry === false) attachErrorDetails(error, { retry_policy_veto: true });
-        if (retry === 'never' || retryPolicy?.retry === false || (hasExplicitRetryVeto(error) && !discardRetry) ||
+        if (retry === 'never' || retryPolicy?.retry === false ||
+          (hasExplicitRetryVeto(error) && !discardRetry && !canDegradeOrStripMedia) ||
           isAbortError(error) || signal?.aborted === true) throw error;
         if (source?.type === 'turn' && (discardRetry || isRetryableRequestInterruption(error))) {
           const partialOutput = attemptObservedOutput || (discardRetry
@@ -993,7 +998,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           }
         }
         params = { ...params, googleContinuationToken: undefined };
-        if ((requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error) && !uncommittedOverload) ||
+        if ((requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error) && !uncommittedOverload && !canDegradeOrStripMedia) ||
           readProviderEventErrorCode(error) === 'antigravity_thinking_only') throw error;
         const nextPolicy = this.nextProjectionPolicyForError(
           error,
@@ -1044,8 +1049,16 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     signal: AbortSignal | undefined,
     captureMediaStripPolicy: () => { readonly strip: MediaStripSnapshot },
   ): ProjectionPolicy | undefined {
-    if (signal?.aborted === true || (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error))) return undefined;
     const raw = unwrapErrorCause(error);
+    const provenance = requestDeliveryProvenance(error);
+    if (
+      signal?.aborted === true ||
+      (provenance !== undefined &&
+        !isRetryableGenerateError(error) &&
+        !(raw instanceof APIRequestTooLargeError && provenance !== 'executed'))
+    ) {
+      return undefined;
+    }
     const media = policy?.media;
     if (
       raw instanceof APIRequestTooLargeError &&

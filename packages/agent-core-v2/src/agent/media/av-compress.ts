@@ -19,6 +19,12 @@ const MAX_PROBED_FPS = 240;
 const VIDEO_PASS2_FS_HEADROOM = 256 * 1024;
 const AUDIO_PASS2_FS_HEADROOM = 128 * 1024;
 const MIN_FS_CAP_BYTES = 256 * 1024;
+const VIDEO_PASS2_BUDGET_UTILIZATION = 0.88;
+const AUDIO_PASS2_BUDGET_UTILIZATION = 0.9;
+const MIN_VIDEO_PASS2_KBPS = 32;
+const MAX_VIDEO_PASS2_KBPS = 1200;
+const MIN_AUDIO_PASS2_KBPS = 8;
+const MAX_AUDIO_PASS2_KBPS = 24;
 
 export type AvCompressRunner = (
   command: string,
@@ -206,7 +212,7 @@ async function runFfmpegCommand(
       const discovered = await resolveCachedWinGetFfmpegPath();
       if (discovered !== null) {
         state.ffmpegPath = discovered;
-        return await runner(discovered, args, {
+        return runner(discovered, args, {
           signal: options.signal,
           timeoutMs: options.timeoutMs,
         });
@@ -244,32 +250,31 @@ function formatFps(fps: number): string {
   return String(Number(fps.toFixed(3)));
 }
 
-async function probeVideoFps(
-  inputPath: string,
+function parseDurationSeconds(raw: string): number | undefined {
+  for (const line of raw.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed === 'N/A') continue;
+    const value = Number(trimmed);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return undefined;
+}
+
+async function runFfprobe(
+  args: readonly string[],
   state: { ffmpegPath: string },
   explicitFfprobePath: string | undefined,
   runner: AvCompressRunner,
   signal: AbortSignal | undefined,
   allowWinGetFallback: boolean,
-): Promise<number | undefined> {
-  const ffprobeArgs = [
-    '-v',
-    'error',
-    '-select_streams',
-    'v:0',
-    '-show_entries',
-    'stream=avg_frame_rate,r_frame_rate',
-    '-of',
-    'default=noprint_wrappers=1:nokey=1',
-    inputPath,
-  ];
+): Promise<string | undefined> {
   const initialProbe = resolveFfprobePath(explicitFfprobePath, state.ffmpegPath);
   try {
-    const { stdout } = await runner(initialProbe, ffprobeArgs, {
+    const { stdout } = await runner(initialProbe, args, {
       signal,
       timeoutMs: DEFAULT_FFPROBE_TIMEOUT_MS,
     });
-    return parseFrameRate(stdout);
+    return stdout;
   } catch (error) {
     if (signal?.aborted === true || isAbortError(error)) throw createAbortError();
     if (
@@ -282,11 +287,11 @@ async function probeVideoFps(
         state.ffmpegPath = discovered;
         const fallbackProbe = resolveFfprobePath(explicitFfprobePath, discovered);
         try {
-          const { stdout } = await runner(fallbackProbe, ffprobeArgs, {
+          const { stdout } = await runner(fallbackProbe, args, {
             signal,
             timeoutMs: DEFAULT_FFPROBE_TIMEOUT_MS,
           });
-          return parseFrameRate(stdout);
+          return stdout;
         } catch (retryError) {
           if (Boolean(signal?.aborted) || isAbortError(retryError)) throw createAbortError();
           return undefined;
@@ -295,6 +300,62 @@ async function probeVideoFps(
     }
     return undefined;
   }
+}
+
+async function probeMediaDurationSeconds(
+  inputPath: string,
+  state: { ffmpegPath: string },
+  explicitFfprobePath: string | undefined,
+  runner: AvCompressRunner,
+  signal: AbortSignal | undefined,
+  allowWinGetFallback: boolean,
+): Promise<number | undefined> {
+  const stdout = await runFfprobe(
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      inputPath,
+    ],
+    state,
+    explicitFfprobePath,
+    runner,
+    signal,
+    allowWinGetFallback,
+  );
+  return stdout === undefined ? undefined : parseDurationSeconds(stdout);
+}
+
+async function probeVideoFps(
+  inputPath: string,
+  state: { ffmpegPath: string },
+  explicitFfprobePath: string | undefined,
+  runner: AvCompressRunner,
+  signal: AbortSignal | undefined,
+  allowWinGetFallback: boolean,
+): Promise<number | undefined> {
+  const stdout = await runFfprobe(
+    [
+      '-v',
+      'error',
+      '-select_streams',
+      'v:0',
+      '-show_entries',
+      'stream=avg_frame_rate,r_frame_rate',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      inputPath,
+    ],
+    state,
+    explicitFfprobePath,
+    runner,
+    signal,
+    allowWinGetFallback,
+  );
+  return stdout === undefined ? undefined : parseFrameRate(stdout);
 }
 
 async function readNonEmptyFile(path: string): Promise<Uint8Array | undefined> {
@@ -402,39 +463,80 @@ export async function compressVideoForModel(
       }
     }
 
+    const durationSec = await probeMediaDurationSeconds(
+      inputPath,
+      binState,
+      options.ffprobePath,
+      runner,
+      options.signal,
+      allowWinGetFallback,
+    );
     const fsCap = Math.max(MIN_FS_CAP_BYTES, byteBudget - VIDEO_PASS2_FS_HEADROOM);
+    const pass2VideoArgs: string[] = [
+      '-nostdin',
+      '-y',
+      '-i',
+      inputPath,
+      '-vf',
+      `fps=fps=${formatFps(pass2Fps)}:round=near,scale='trunc(min(960,iw)/2)*2':-2:flags=lanczos`,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+    ];
+    if (durationSec !== undefined) {
+      const totalKbps = Math.floor((byteBudget * VIDEO_PASS2_BUDGET_UTILIZATION * 8) / (durationSec * 1000));
+      const audioKbps = totalKbps < 80 ? 16 : 24;
+      const videoKbps = Math.max(
+        MIN_VIDEO_PASS2_KBPS,
+        Math.min(MAX_VIDEO_PASS2_KBPS, totalKbps - audioKbps),
+      );
+      pass2VideoArgs.push(
+        '-b:v',
+        `${String(videoKbps)}k`,
+        '-maxrate',
+        `${String(Math.max(videoKbps + 8, Math.round(videoKbps * 1.2)))}k`,
+        '-bufsize',
+        `${String(videoKbps * 2)}k`,
+        '-pix_fmt',
+        'yuv420p',
+        '-movflags',
+        '+faststart',
+        '-ac',
+        '1',
+        '-ar',
+        '16000',
+        '-c:a',
+        'aac',
+        '-b:a',
+        `${String(audioKbps)}k`,
+        pass2Path,
+      );
+    } else {
+      pass2VideoArgs.push(
+        '-crf',
+        '32',
+        '-pix_fmt',
+        'yuv420p',
+        '-movflags',
+        '+faststart',
+        '-ac',
+        '1',
+        '-ar',
+        '16000',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '24k',
+        '-fs',
+        String(fsCap),
+        pass2Path,
+      );
+    }
     try {
       await runFfmpegCommand(
         binState,
-        [
-          '-nostdin',
-          '-y',
-          '-i',
-          inputPath,
-          '-vf',
-          `fps=fps=${formatFps(pass2Fps)}:round=near,scale='trunc(min(960,iw)/2)*2':-2:flags=lanczos`,
-          '-c:v',
-          'libx264',
-          '-preset',
-          'veryfast',
-          '-crf',
-          '32',
-          '-pix_fmt',
-          'yuv420p',
-          '-movflags',
-          '+faststart',
-          '-ac',
-          '1',
-          '-ar',
-          '16000',
-          '-c:a',
-          'aac',
-          '-b:a',
-          '24k',
-          '-fs',
-          String(fsCap),
-          pass2Path,
-        ],
+        pass2VideoArgs,
         runner,
         { signal: options.signal, timeoutMs, allowWinGetFallback },
       );
@@ -571,30 +673,46 @@ export async function compressAudioForModel(
       return passthroughResult(bytes, mimeType);
     }
 
+    const durationSec = await probeMediaDurationSeconds(
+      inputPath,
+      binState,
+      options.ffprobePath,
+      runner,
+      options.signal,
+      allowWinGetFallback,
+    );
     const fsCap = Math.max(MIN_FS_CAP_BYTES, byteBudget - AUDIO_PASS2_FS_HEADROOM);
     const pass2OutPath = codec === 'libmp3lame' ? mp3Pass2Path : join(workDir, 'out-pass2.m4a');
     const pass2Mime = codec === 'libmp3lame' ? 'audio/mpeg' : 'audio/mp4';
+    const pass2AudioArgs: string[] = [
+      '-nostdin',
+      '-y',
+      '-i',
+      inputPath,
+      '-vn',
+      '-ac',
+      '1',
+      '-ar',
+      '16000',
+      '-c:a',
+      codec,
+    ];
+    if (durationSec !== undefined) {
+      const targetKbps = Math.max(
+        MIN_AUDIO_PASS2_KBPS,
+        Math.min(
+          MAX_AUDIO_PASS2_KBPS,
+          Math.floor((byteBudget * AUDIO_PASS2_BUDGET_UTILIZATION * 8) / (durationSec * 1000)),
+        ),
+      );
+      pass2AudioArgs.push('-b:a', `${String(targetKbps)}k`, pass2OutPath);
+    } else {
+      pass2AudioArgs.push('-b:a', '16k', '-fs', String(fsCap), pass2OutPath);
+    }
     try {
       await runFfmpegCommand(
         binState,
-        [
-          '-nostdin',
-          '-y',
-          '-i',
-          inputPath,
-          '-vn',
-          '-ac',
-          '1',
-          '-ar',
-          '16000',
-          '-c:a',
-          codec,
-          '-b:a',
-          '16k',
-          '-fs',
-          String(fsCap),
-          pass2OutPath,
-        ],
+        pass2AudioArgs,
         runner,
         { signal: options.signal, timeoutMs, allowWinGetFallback },
       );

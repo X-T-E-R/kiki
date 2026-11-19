@@ -1,9 +1,9 @@
-import { ZipFile } from 'yazl';
-import { type Entry, fromBuffer as yauzlFromBuffer } from 'yauzl';
+import { crc32 } from 'node:zlib';
 
 import type { PersonaDefinition } from '@kiki/agent-profiles/personaFile';
 
-import { encodeImageAsPng } from '#/agent/media/image-compress';
+import { buildZipBuffer, readZipBuffer } from '#/_base/node/zip';
+import { encodeImageAsPng, type ImageWorkerOptions } from '#/agent/media/image-compress';
 
 import type {
   PersonaAvatar,
@@ -52,6 +52,7 @@ export async function exportPersonaCard(
   extensions: unknown,
   memoryEntries: readonly PersonaMemoryImportEntry[] = [],
   assets: readonly PersonaCardAsset[] = [],
+  workerOptions?: ImageWorkerOptions,
 ): Promise<PersonaExport> {
   const card = buildCard(definition, examples, avatar, extensions, memoryEntries);
   if (format === 'json') {
@@ -63,7 +64,7 @@ export async function exportPersonaCard(
     };
   }
   if (format === 'png') {
-    const png = await avatarAsPng(avatar);
+    const png = await avatarAsPng(avatar, workerOptions);
     return {
       format,
       extension: '.png',
@@ -83,7 +84,7 @@ export async function exportPersonaCard(
     format,
     extension: '.charx',
     mimeType: 'application/zip',
-    data: await makeZip(entries),
+    data: await buildZipBuffer(entries),
   };
 }
 
@@ -129,7 +130,10 @@ function parsePngCard(bytes: Uint8Array, id: string): Promise<ParsedCard> {
 
 async function parseCharxCard(bytes: Uint8Array, id: string): Promise<ParsedCard> {
   if (bytes.byteLength > MAX_CHARX_BYTES) throw new Error('Character card archive exceeds the size limit');
-  const entries = await readZip(bytes);
+  const entries = await readZipBuffer(bytes, {
+    maxEntries: MAX_CHARX_ENTRIES,
+    maxUncompressedBytes: MAX_CHARX_UNCOMPRESSED_BYTES,
+  });
   const cardEntry = [...entries.entries()].find(([name]) => isCardJsonName(name));
   if (cardEntry === undefined) throw new Error('Character card archive does not contain card.json');
   let value: unknown;
@@ -316,10 +320,13 @@ function findArchiveAvatar(
   return undefined;
 }
 
-async function avatarAsPng(avatar: PersonaAvatar | undefined): Promise<Uint8Array> {
+async function avatarAsPng(
+  avatar: PersonaAvatar | undefined,
+  workerOptions?: ImageWorkerOptions,
+): Promise<Uint8Array> {
   if (avatar === undefined) return EMPTY_PNG;
   if (avatar.mimeType === 'image/png') return avatar.data;
-  return encodeImageAsPng(avatar.data, avatar.mimeType);
+  return encodeImageAsPng(avatar.data, avatar.mimeType, workerOptions);
 }
 
 function appendPngText(png: Uint8Array, keyword: string, value: string): Uint8Array {
@@ -379,18 +386,8 @@ function pngChunk(type: string, content: Uint8Array): Buffer {
   result.writeUInt32BE(content.length, 0);
   result.write(type, 4, 4, 'ascii');
   Buffer.from(content).copy(result, 8);
-  result.writeUInt32BE(crc32(result.subarray(4, 8 + content.length)), 8 + content.length);
+  result.writeUInt32BE(crc32(result.subarray(4, 8 + content.length)) >>> 0, 8 + content.length);
   return result;
-}
-
-function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-  }
-  const value = crc ^ 0xffffffff;
-  return value < 0 ? value + 0x100000000 : value;
 }
 
 function readUint32(bytes: Uint8Array, offset: number): number {
@@ -401,87 +398,9 @@ function isPng(bytes: Uint8Array): boolean {
   return PNG_SIGNATURE.every((value, index) => bytes[index] === value);
 }
 
-async function makeZip(entries: readonly { readonly name: string; readonly data: Uint8Array }[]): Promise<Uint8Array> {
-  const zip = new ZipFile();
-  const chunks: Buffer[] = [];
-  const stream = zip.outputStream;
-  const output = new Promise<Uint8Array>((resolve, reject) => {
-    stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-    stream.once('error', reject);
-    stream.once('end', () => resolve(Uint8Array.from(Buffer.concat(chunks))));
-  });
-  for (const entry of entries) zip.addBuffer(Buffer.from(entry.data), entry.name);
-  zip.end();
-  return output;
-}
-
-async function readZip(bytes: Uint8Array): Promise<Map<string, Uint8Array>> {
-  return new Promise((resolve, reject) => {
-    const result = new Map<string, Uint8Array>();
-    let count = 0;
-    let total = 0;
-    let settled = false;
-    yauzlFromBuffer(Buffer.from(bytes), { lazyEntries: true }, (openError, zipfile) => {
-      if (openError !== null || zipfile === undefined) {
-        reject(openError ?? new Error('Unable to open character card archive'));
-        return;
-      }
-      const fail = (error: unknown): void => {
-        if (settled) return;
-        settled = true;
-        zipfile.close();
-        reject(error instanceof Error ? error : new Error(String(error)));
-      };
-      zipfile.on('error', fail);
-      zipfile.on('entry', (entry: Entry) => {
-        if (settled) return;
-        count += 1;
-        total += entry.uncompressedSize;
-        if (count > MAX_CHARX_ENTRIES || total > MAX_CHARX_UNCOMPRESSED_BYTES) {
-          fail(new Error('Character card archive exceeds its entry or expanded-size limit'));
-          return;
-        }
-        if (entry.fileName.endsWith('/')) {
-          zipfile.readEntry();
-          return;
-        }
-        if (!isSafeArchivePath(entry.fileName)) {
-          fail(new Error(`Character card archive contains an unsafe path: ${entry.fileName}`));
-          return;
-        }
-        zipfile.openReadStream(entry, (streamError, stream) => {
-          if (streamError !== null || stream === undefined) {
-            fail(streamError ?? new Error(`Unable to read ${entry.fileName}`));
-            return;
-          }
-          const chunks: Buffer[] = [];
-          stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-          stream.once('error', fail);
-          stream.once('end', () => {
-            if (settled) return;
-            result.set(entry.fileName.replaceAll('\\', '/'), Uint8Array.from(Buffer.concat(chunks)));
-            zipfile.readEntry();
-          });
-        });
-      });
-      zipfile.once('end', () => {
-        if (!settled) {
-          settled = true;
-          resolve(result);
-        }
-      });
-      zipfile.readEntry();
-    });
-  });
-}
-
 function isCardJsonName(name: string): boolean {
   const normalized = name.toLowerCase().replaceAll('\\', '/');
   return normalized === 'card.json' || normalized.endsWith('/card.json') || normalized === 'character.json' || normalized.endsWith('/character.json');
-}
-
-function isSafeArchivePath(name: string): boolean {
-  return !name.startsWith('/') && !name.split(/[\\/]/).includes('..');
 }
 
 function mimeFromName(name: string): PersonaAvatar['mimeType'] | undefined {

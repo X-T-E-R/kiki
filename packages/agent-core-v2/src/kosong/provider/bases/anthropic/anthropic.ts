@@ -82,6 +82,7 @@ import {
 import {
   AnthropicThreadTracker,
   MESSAGE_THREADS_BETA,
+  bindThreadMessageDigestKey,
   classifyAnthropicThreadError,
   extractHeaderBetaTokens,
   hashThreadFixedFields,
@@ -523,6 +524,29 @@ function toolResultToBlock(
   } as ToolResultBlockParam;
 }
 
+const messageConversionTokens = new WeakMap<Message, Map<string, object>>();
+
+function getMessageDigestToken(
+  message: Message,
+  model: string,
+  acceptedImageMimes: ReadonlySet<string>,
+  includeToolSignature: boolean,
+  audioIn: boolean,
+): object {
+  const configKey = `${model}\0${includeToolSignature ? '1' : '0'}\0${audioIn ? '1' : '0'}\0${[...acceptedImageMimes].toSorted().join(',')}`;
+  let byConfig = messageConversionTokens.get(message);
+  if (byConfig === undefined) {
+    byConfig = new Map();
+    messageConversionTokens.set(message, byConfig);
+  }
+  let token = byConfig.get(configKey);
+  if (token === undefined) {
+    token = {};
+    byConfig.set(configKey, token);
+  }
+  return token;
+}
+
 function convertMessage(
   message: Message,
   model: string,
@@ -530,6 +554,11 @@ function convertMessage(
   includeToolSignature: boolean,
   audioIn: boolean,
 ): MessageParam {
+  const token = getMessageDigestToken(message, model, acceptedImageMimes, includeToolSignature, audioIn);
+  const attach = (result: MessageParam): MessageParam => {
+    bindThreadMessageDigestKey(result, token);
+    return result;
+  };
   const role = message.role;
 
   if (role === 'system') {
@@ -537,10 +566,10 @@ function convertMessage(
       .filter((p) => p.type === 'text')
       .map((p) => p.text)
       .join('\n');
-    return {
+    return attach({
       role: 'user',
       content: [{ type: 'text', text: `<system>${text}</system>` }],
-    };
+    });
   }
 
   if (role === 'tool') {
@@ -553,7 +582,7 @@ function convertMessage(
       acceptedImageMimes,
       audioIn,
     );
-    return { role: 'user', content: [block as ContentBlockParam] };
+    return attach({ role: 'user', content: [block as ContentBlockParam] });
   }
 
   const blocks: ContentBlockParam[] = [];
@@ -622,7 +651,7 @@ function convertMessage(
     }
   }
 
-  return { role: role, content: blocks };
+  return attach({ role: role, content: blocks });
 }
 
 function shouldKeepConvertedMessage(message: MessageParam): boolean {
