@@ -6,7 +6,15 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 
 import { IFileSystemStorageService, StorageError, StorageErrors, type StorageFileStat } from '#/persistence/interface/storage';
-import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
+import {
+  discardColdSegments,
+  discardColdUnlocked,
+  readLogicalBytes,
+  requiresProtectedColdReplace,
+  sealColdSegments,
+  waitActiveReadersIdle,
+  withColdExclusive,
+} from '#/persistence/coldSegmentLog';
 import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import { encodeJsonLines } from '#/persistence/jsonLines';
 import {
@@ -325,9 +333,13 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         let committed: { generation: string; offset: number; boundary: Uint8Array } | undefined;
         await withColdExclusive(this.storage, scope, key, async () => {
           const replace = async (): Promise<void> => {
-            await discardColdUnlocked(this.storage, scope, key, { skipRestoreOriginal: true });
+            const deferColdDiscard = await requiresProtectedColdReplace(this.storage, scope, key);
+            if (!deferColdDiscard) {
+              await discardColdUnlocked(this.storage, scope, key, { skipRestoreOriginal: true });
+            } else {
+              await waitActiveReadersIdle(this.storage, scope, key);
+            }
             const generation = randomUUID();
-            await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
             state.position = undefined;
             if (state.source !== undefined) {
               state.source.revision++;
@@ -344,7 +356,14 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
                 yield chunk;
               }
             };
-            await this.storage.writeStream(scope, key, source(), { atomic: true });
+            if (!deferColdDiscard) {
+              await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
+              await this.storage.writeStream(scope, key, source(), { atomic: true });
+            } else {
+              await this.storage.writeStream(scope, key, source(), { atomic: true });
+              await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
+              await discardColdUnlocked(this.storage, scope, key, { skipRestoreOriginal: true });
+            }
             committed = { generation, offset, boundary };
           };
           const located = this.storage.pathFor(scope, key);

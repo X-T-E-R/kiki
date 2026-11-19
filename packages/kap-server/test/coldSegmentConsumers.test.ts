@@ -322,4 +322,84 @@ describe('sealed journal consumers', () => {
       closeSparseFileWorker();
     }
   }, 30_000);
+
+  it('coordinates SqliteSearchIndex unsealed batch scanning with concurrent first sparse punch via shared reader leases (P1-1)', async () => {
+    home = await mkdtemp(join(tmpdir(), 'cold-search-race-'));
+    const sessionDir = join(home, 'sessions', WORKSPACE_ID, SESSION_ID);
+    const agentDir = join(sessionDir, 'agents', 'main');
+    const wirePath = join(agentDir, 'wire.jsonl');
+    const records: string[] = [];
+    for (let i = 1; i <= 160; i += 1) {
+      const marker = i === 120 ? 'LATE_DENSE_BATCH_TOKEN_120' : `BATCH_ROW_${i}`;
+      records.push(
+        line({
+          type: 'turn.prompt',
+          turnId: i,
+          promptId: `p-${i}`,
+          input: [{ type: 'text', text: `${marker} ${'SEARCH_RACE_PAD_'.repeat(180)}` }],
+          origin: { kind: 'user' },
+          time: 2000 + i * 10,
+        }),
+        line({
+          type: 'context.append_message',
+          time: 2000 + i * 10,
+          message: {
+            role: 'user',
+            origin: { kind: 'user' },
+            content: [{ type: 'text', text: `${marker} ${'SEARCH_RACE_PAD_'.repeat(180)}` }],
+          },
+        }),
+        line({ type: 'turn.ended', turnId: i, reason: 'completed', time: 2005 + i * 10 }),
+      );
+    }
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(wirePath, Buffer.from(records.join('')));
+    await writeFile(join(sessionDir, 'state.json'), JSON.stringify({ title: 'Concurrent Search Sync' }));
+
+    let compacting: ReturnType<typeof compactRetainedSession> | undefined;
+    let compactSettled = false;
+    let hookedOnce = false;
+    const searchIndex = await SqliteSearchIndex.open(join(home, 'race-search.sqlite'), {
+      batchMaxDocs: () => 25,
+      afterBatch: async () => {
+        if (hookedOnce) return;
+        hookedOnce = true;
+        compacting = compactRetainedSession(sessionDir, {
+          segmentBytes: 128 * 1024,
+          hotTailBytes: 64 * 1024,
+        }).then((res) => {
+          compactSettled = true;
+          return res;
+        });
+        await new Promise((r) => setTimeout(r, 80));
+        if (process.platform === 'win32') {
+          expect(compactSettled).toBe(false);
+        }
+      },
+    });
+    try {
+      await searchIndex.syncSession({
+        id: SESSION_ID,
+        workspaceId: WORKSPACE_ID,
+        dir: sessionDir,
+        updatedAt: 5000,
+      });
+      expect(compacting).toBeDefined();
+      const compactRes = await compacting!;
+      expect(compactRes.compactedJournals).toBe(1);
+
+      const hits = await searchIndex.search({
+        query: 'LATE_DENSE_BATCH_TOKEN_120',
+        mode: 'terms',
+        sort: 'time_asc',
+        pageSize: 10,
+        op: 'AND',
+        termsQuery: [...new Set(tokenize('LATE_DENSE_BATCH_TOKEN_120'))],
+      });
+      expect(hits.rows.length).toBeGreaterThan(0);
+    } finally {
+      searchIndex.close();
+      closeSparseFileWorker();
+    }
+  }, 30_000);
 });

@@ -4,7 +4,7 @@
  *
  * The engine persists each agent's journal at
  * `<sessionDir>/agents/<agentId>/wire.jsonl`. This module folds that journal
- * directly: it walks the records in order, mirrors just enough context state to
+ * directly: it streams the records in order, mirrors just enough context state to
  * decide what the UI transcript looks like, and emits the replay records hosts
  * render. There is no engine instance behind it — the wire is the contract.
  *
@@ -15,35 +15,6 @@
  * interrupted results, messages arriving behind an open tool exchange are
  * deferred and flushed in order, and a step that produced nothing but vacuous
  * content is dropped.
- *
- * Record-type → replay-record mapping:
- * - `context.append_message`      → `{type:'message'}` (same for the
- *   assistant/tool messages assembled out of `context.append_loop_event`)
- * - `full_compaction.begin`       → `{type:'compaction', instruction}`;
- *   `context.apply_compaction` patches the last one with `result`;
- *   `full_compaction.cancel` marks it `'cancelled'`
- * - `goal.create` / `goal.update` → `{type:'goal_updated'}` (`created` /
- *   `lifecycle` / `completion` change)
- * - `plan_mode.enter`             → `{type:'plan_updated', enabled:true}`;
- *   `plan_mode.cancel` / `plan_mode.exit` → `enabled:false`
- * - `config.update`               → `{type:'config_updated', config}` (the raw
- *   record fields, including `type`/`time`)
- * - `permission.set_mode`         → `{type:'permission_updated', mode}`
- * - `permission.record_approval_result` → `{type:'approval_result', record}`
- * - `context.undo`                → removes the replay records of the messages
- *   it drops from the live context
- * - `context.clear`               → resets the mirrored context; the replay
- *   records already emitted stay (they are transcript, not context)
- * - `tools.update_store`          → no replay record; last-wins into the tool
- *   store returned alongside
- * - everything else (`metadata`, `turn.*`, `usage.record`, `profile.bind`,
- *   `tools.set_active_tools`, `context.update_token_count`, `task.*`,
- *   `skill.activate`, `interaction.*`, `llm.*`, `mcp.*`) rebuilds no
- *   transcript state. Background tasks in particular do NOT come from this
- *   fold — the caller reads them from the live agent scope.
- *
- * Any failure — missing/corrupt file, newer protocol, unexpected record —
- * degrades to an empty result instead of failing the session resume.
  */
 
 import { openPersistedJournal } from '#/retained-session';
@@ -79,47 +50,84 @@ export interface FoldedAgentReplay {
 }
 
 const EMPTY_FOLD: FoldedAgentReplay = { replay: [], toolStore: {} };
+const STREAM_CHUNK_BYTES = 256 * 1024;
+
+class MalformedWireRecordError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MalformedWireRecordError';
+  }
+}
 
 /**
- * Fold one agent's `wire.jsonl` into replay records and a tool-store snapshot.
- * Best-effort: unreadable or malformed journals yield an empty fold, never a
- * rejected resume.
+ * Fold one agent's `wire.jsonl` into replay records and a tool-store snapshot
+ * by streaming bounded UTF-8 chunks without materializing a single whole-file
+ * string. Missing, empty, or record-malformed journals yield an empty fold
+ * (with a truncated trailing line tolerated), while storage/segment corruption
+ * and I/O errors propagate.
  */
 export async function foldAgentWireReplay(wirePath: string): Promise<FoldedAgentReplay> {
   let journal: Awaited<ReturnType<typeof openPersistedJournal>>;
   try {
     journal = await openPersistedJournal(wirePath);
     if (journal === undefined || journal.size === 0) return EMPTY_FOLD;
-    const bytes = await journal.readAt(0, journal.size);
-    const records = parseWireRecords(new TextDecoder().decode(bytes));
-    if (records.length === 0) return EMPTY_FOLD;
-    return new ReplayFold().run(records);
-  } catch {
-    return EMPTY_FOLD;
+    const decoder = new TextDecoder('utf-8');
+    const fold = new ReplayFold();
+    let carry = '';
+    let offset = 0;
+    while (offset < journal.size) {
+      const length = Math.min(STREAM_CHUNK_BYTES, journal.size - offset);
+      const chunk = await journal.readAt(offset, length);
+      if (chunk.byteLength === 0) break;
+      offset += chunk.byteLength;
+      carry += decoder.decode(chunk, { stream: true });
+      let lineStart = 0;
+      for (;;) {
+        const nl = carry.indexOf('\n', lineStart);
+        if (nl === -1) break;
+        const rawLine = carry.slice(lineStart, nl);
+        lineStart = nl + 1;
+        consumeCompleteWireLine(fold, rawLine);
+      }
+      if (lineStart > 0) {
+        carry = carry.slice(lineStart);
+      }
+    }
+    carry += decoder.decode();
+    if (carry.length > 0) {
+      consumeTrailingWireLine(fold, carry);
+    }
+    return fold.finish();
+  } catch (error) {
+    if (error instanceof MalformedWireRecordError) return EMPTY_FOLD;
+    throw error;
   } finally {
     await journal?.close().catch(() => undefined);
   }
 }
 
-/**
- * The line reader's rules: blank lines skipped, a truncated TAIL line tolerated
- * (the last write may have crashed mid-flush), corruption anywhere else is an
- * error.
- */
-function parseWireRecords(content: string): AgentRecord[] {
-  const lines = content.split('\n');
-  const records: AgentRecord[] = [];
-  for (const [index, rawLine] of lines.entries()) {
-    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-    if (line.length === 0) continue;
-    try {
-      records.push(JSON.parse(line) as AgentRecord);
-    } catch (error) {
-      if (index === lines.length - 1) break;
-      throw error;
-    }
+function consumeCompleteWireLine(fold: ReplayFold, rawLine: string): void {
+  const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+  if (line.length === 0) return;
+  let parsed: AgentRecord;
+  try {
+    parsed = JSON.parse(line) as AgentRecord;
+  } catch {
+    throw new MalformedWireRecordError('invalid JSON wire record');
   }
-  return records;
+  fold.add(parsed);
+}
+
+function consumeTrailingWireLine(fold: ReplayFold, rawLine: string): void {
+  const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+  if (line.length === 0) return;
+  let parsed: AgentRecord;
+  try {
+    parsed = JSON.parse(line) as AgentRecord;
+  } catch {
+    return;
+  }
+  fold.add(parsed);
 }
 
 /** The mirrored goal state a `goal_updated` snapshot is derived from. */
@@ -135,32 +143,22 @@ interface GoalState {
   terminalReason?: string;
 }
 
-/**
- * A replay record under construction. The records are mutated in place after
- * being appended (a compaction's `result` patch, an assistant message growing
- * content), so the fold keeps them mutable internally and only widens to the
- * readonly public type on the way out.
- */
 type MutableReplayRecord = { time: number } & AgentReplayRecordPayload;
 
-/** Assistant/tool messages are mutated in place while their step is open. */
 type MutableContextMessage = ContextMessage & {
   content: ContentPart[];
   toolCalls: ToolCall[];
-  partial?: boolean | undefined;
+  partial?: boolean;
 };
 
 class ReplayFold {
   private readonly replay: MutableReplayRecord[] = [];
   private readonly toolStore: Record<string, unknown> = {};
-  /**
-   * The live context mirror. Only used to decide what `context.undo` removes
-   * and what survives a compaction — the transcript itself is `replay`.
-   */
   private history: MutableContextMessage[] = [];
   private openAssistant: MutableContextMessage | undefined;
   private goal: GoalState | undefined;
-  /** The time of the record currently being folded; stamps replay records. */
+  private migrations: readonly WireMigration[] | undefined;
+  private sawFirstRecord = false;
   private now = Date.now();
 
   private readonly sink: LoopEventFoldSink = {
@@ -189,7 +187,7 @@ class ReplayFold {
       if (index !== -1) this.history.splice(index, 1);
     },
     sealOpenAssistant: () => {
-      if (this.openAssistant !== undefined) this.openAssistant.partial = undefined;
+      if (this.openAssistant !== undefined) delete this.openAssistant.partial;
       this.openAssistant = undefined;
     },
     pushToolMessage: (message) => {
@@ -202,24 +200,29 @@ class ReplayFold {
 
   private fold = createLoopEventFold(this.sink);
 
-  run(records: readonly AgentRecord[]): FoldedAgentReplay {
-    const first = records[0];
-    if (first?.type !== 'metadata') {
-      throw new Error('wire replay expected metadata as the first record');
+  add(record: AgentRecord): void {
+    if (record === null || typeof record !== 'object' || Array.isArray(record)) {
+      throw new MalformedWireRecordError('wire record is not an object');
     }
-    const migrations: readonly WireMigration[] = isNewerWireVersion(first.protocol_version)
-      ? []
-      : resolveWireMigrations(first.protocol_version);
-    for (const record of records) {
-      const migrated = migrateWireRecord(
-        record as unknown as WireMigrationRecord,
-        migrations,
-      ) as unknown as AgentRecord;
-      this.now = migrated.time ?? Date.now();
-      this.apply(migrated);
+    if (!this.sawFirstRecord) {
+      this.sawFirstRecord = true;
+      if (record.type !== 'metadata') {
+        throw new MalformedWireRecordError('wire replay expected metadata as the first record');
+      }
+      this.migrations = isNewerWireVersion(record.protocol_version)
+        ? []
+        : resolveWireMigrations(record.protocol_version);
     }
-    // Close a genuinely interrupted trailing exchange, exactly as a live
-    // restore does at the end of resume.
+    const migrated = migrateWireRecord(
+      record as unknown as WireMigrationRecord,
+      this.migrations ?? [],
+    ) as unknown as AgentRecord;
+    this.now = migrated.time ?? Date.now();
+    this.apply(migrated);
+  }
+
+  finish(): FoldedAgentReplay {
+    if (!this.sawFirstRecord) return EMPTY_FOLD;
     this.fold.settle(this.now);
     return { replay: this.replay, toolStore: this.toolStore };
   }
@@ -278,7 +281,6 @@ class ReplayFold {
         this.goal = undefined;
         return;
       default:
-        // Every other record rebuilds engine state the transcript does not show.
         return;
     }
   }
@@ -297,10 +299,6 @@ class ReplayFold {
     if (last?.type === 'compaction') Object.assign(last, patch);
   }
 
-  /**
-   * Mirror of the live undo: compute the same context cut and remove the
-   * corresponding message replay records.
-   */
   private undo(count: number): void {
     const cut = computeUndoCut(this.history, count);
     if (!isFullyUndoable(cut, count)) return;
@@ -320,10 +318,6 @@ class ReplayFold {
     }
   }
 
-  /**
-   * A compaction's outcome patches the `compaction` record it opened and folds
-   * the mirrored context through the engine's compaction projection.
-   */
   private applyCompaction(record: Extract<AgentRecord, { type: 'context.apply_compaction' }>): void {
     const { type: _type, time: _time, ...result } = record;
     this.patchLastCompaction({ result });

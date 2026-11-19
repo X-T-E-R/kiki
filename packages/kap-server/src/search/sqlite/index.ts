@@ -479,7 +479,7 @@ export class SqliteSearchIndex {
 
   private async syncFile(session: SqliteSessionInput, path: string, agentId: string, isBranch = false): Promise<void> {
     const db = this.db;
-    const st = await stat(path);
+    let st = await stat(path);
     let file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as FileRow | undefined;
     const policy = agentId === 'main' || this.indexSubagents ? 'full' : 'skip';
     if (policy === 'skip') {
@@ -506,15 +506,23 @@ export class SqliteSearchIndex {
       return;
     }
     if (file?.policy === 'quarantined') return;
-    const hasSegments = statSync(`${path}.segments.json`, { throwIfNoEntry: false }) !== undefined;
-    const storage = hasSegments ? new FileStorageService(wireFileAddress(path).baseDir) : undefined;
+    if (
+      file !== undefined &&
+      file.policy === policy &&
+      file.offset === st.size &&
+      st.size === file.size &&
+      st.mtimeMs === file.mtime_ms &&
+      String(st.ino) === file.ino
+    ) {
+      return;
+    }
+    const address = wireFileAddress(path);
+    const storage = new FileStorageService(address.baseDir);
     let pinned: PinnedLogicalRead | undefined;
     let fd: Awaited<ReturnType<typeof open>> | undefined;
     try {
-      if (storage !== undefined) {
-        const address = wireFileAddress(path);
-        pinned = await openPinnedLogicalRead(storage, address.scope, address.key);
-      }
+      pinned = await openPinnedLogicalRead(storage, address.scope, address.key);
+      st = await stat(path);
       const changed = file && (st.size !== file.size || st.mtimeMs !== file.mtime_ms || file.ino !== String(st.ino));
       const replace = file && (st.size < file.offset || file.policy !== policy || (changed && file.offset > 0 &&
         (file.ino !== String(st.ino) || (st.size === file.size && st.mtimeMs !== file.mtime_ms) ||

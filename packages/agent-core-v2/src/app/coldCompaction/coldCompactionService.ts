@@ -7,6 +7,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { SESSION_LOCK_SCOPE, sessionLockKey } from '#/persistence/backends/node-fs/fileLock';
+import { warmSparseFileWorker } from '#/persistence/backends/node-fs/sparseFile';
 import type { ColdUnsealOptions } from '#/persistence/coldSegmentLog';
 import { IFileSystemStorageService, StorageErrors } from '#/persistence/interface/storage';
 import {
@@ -23,12 +24,23 @@ import { COLD_COMPACTION_SECTION, ColdCompactionConfigSchema, type ColdCompactio
 
 const CANDIDATE_PAGE_SIZE = 32;
 const MAX_CANDIDATE_PAGES = 8;
+const FOREGROUND_COOLDOWN_MS = 5_000;
+
+class ForegroundSessionPreemptionError extends Error {
+  constructor(sessionId: string) {
+    super(`Cold compaction preempted by foreground access to ${sessionId}`);
+    this.name = 'ForegroundSessionPreemptionError';
+  }
+}
 
 export class ColdCompactionService extends Disposable implements IColdCompactionService {
   declare readonly _serviceBrand: undefined;
 
   private readonly checkedUpdatedAt = new Map<string, number>();
+  private readonly recentForegroundAccess = new Map<string, number>();
+  private readonly activePreemptible = new Map<string, Set<AbortController>>();
   private readonly disposalAbort = new AbortController();
+  private sweepCursor: { readonly updatedAt: number; readonly id: string } | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private activeSweep: Promise<number> | undefined;
   private sweepsCompleted = 0;
@@ -46,6 +58,13 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
     @ILogService private readonly log?: ILogService,
   ) {
     super();
+    if (this.sessions.onWillAccessSession !== undefined) {
+      this._register(
+        this.sessions.onWillAccessSession((sessionId) => {
+          this.noteForegroundAccess(sessionId);
+        }),
+      );
+    }
     if (this.isFileBacked()) {
       const cfg = this.readConfig();
       if (cfg.enabled) {
@@ -83,24 +102,7 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
     sessionId: string,
     options: RetainedCompactOptions & { readonly workspaceId?: string } = {},
   ): Promise<RetainedCompactSessionResult | undefined> {
-    if (this.disposed || !this.isFileBacked()) return undefined;
-    const workspaceId = options.workspaceId ?? (await this.index.get(sessionId))?.workspaceId;
-    if (workspaceId === undefined) return undefined;
-    const cfg = this.readConfig();
-    const signal = this.mergeSignal(options.signal);
-    return this.withColdSessionLock(sessionId, workspaceId, async (sessionDir) => {
-      const result = await compactRetainedSession(sessionDir, {
-        ...options,
-        reclaim: options.reclaim ?? cfg.reclaimSparse,
-        signal,
-      });
-      const reclaimed = Math.max(0, result.physicalBytesBefore - result.physicalBytesAfter);
-      if (result.compactedJournals > 0) {
-        this.sessionsCompacted += 1;
-        this.physicalBytesReclaimed += reclaimed;
-      }
-      return result;
-    });
+    return this.runSessionCompaction(sessionId, options, true);
   }
 
   async unsealSession(
@@ -111,10 +113,10 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
     const workspaceId = options.workspaceId ?? (await this.index.get(sessionId))?.workspaceId;
     if (workspaceId === undefined) return undefined;
     const signal = this.mergeSignal(options.signal);
-    return this.withColdSessionLock(sessionId, workspaceId, (sessionDir) =>
+    return this.withColdSessionLock(sessionId, workspaceId, false, signal, (sessionDir, effectiveSignal) =>
       unsealRetainedSession(sessionDir, {
         ...options,
-        signal,
+        signal: effectiveSignal,
       }),
     );
   }
@@ -133,10 +135,71 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
     this.disposed = true;
     this.clearTimer();
     this.disposalAbort.abort();
+    for (const controllers of this.activePreemptible.values()) {
+      for (const controller of controllers) controller.abort();
+    }
     if (this.activeSweep !== undefined) {
       await this.activeSweep.catch(() => undefined);
     }
     super.dispose();
+  }
+
+  private noteForegroundAccess(sessionId: string): void {
+    const now = Date.now();
+    if (this.recentForegroundAccess.size >= 512) {
+      for (const [key, stamp] of this.recentForegroundAccess) {
+        if (now - stamp >= FOREGROUND_COOLDOWN_MS) this.recentForegroundAccess.delete(key);
+      }
+      if (this.recentForegroundAccess.size >= 512) {
+        const oldest = this.recentForegroundAccess.keys().next().value;
+        if (oldest !== undefined) this.recentForegroundAccess.delete(oldest);
+      }
+    }
+    this.recentForegroundAccess.set(sessionId, now);
+    const controllers = this.activePreemptible.get(sessionId);
+    if (controllers === undefined) return;
+    const reason = new ForegroundSessionPreemptionError(sessionId);
+    for (const controller of controllers) {
+      controller.abort(reason);
+    }
+  }
+
+  private hasRecentForegroundAccess(sessionId: string): boolean {
+    const stamp = this.recentForegroundAccess.get(sessionId);
+    if (stamp === undefined) return false;
+    if (Date.now() - stamp < FOREGROUND_COOLDOWN_MS) return true;
+    this.recentForegroundAccess.delete(sessionId);
+    return false;
+  }
+
+  private async runSessionCompaction(
+    sessionId: string,
+    options: RetainedCompactOptions & { readonly workspaceId?: string },
+    preemptible: boolean,
+  ): Promise<RetainedCompactSessionResult | undefined> {
+    if (this.disposed || !this.isFileBacked()) return undefined;
+    const workspaceId = options.workspaceId ?? (await this.index.get(sessionId))?.workspaceId;
+    if (workspaceId === undefined) return undefined;
+    const cfg = this.readConfig();
+    const signal = this.mergeSignal(options.signal);
+    try {
+      return await this.withColdSessionLock(sessionId, workspaceId, preemptible, signal, async (sessionDir, effectiveSignal) => {
+        const result = await compactRetainedSession(sessionDir, {
+          ...options,
+          reclaim: options.reclaim ?? cfg.reclaimSparse,
+          signal: effectiveSignal,
+        });
+        const reclaimed = Math.max(0, result.physicalBytesBefore - result.physicalBytesAfter);
+        if (result.compactedJournals > 0) {
+          this.sessionsCompacted += 1;
+          this.physicalBytesReclaimed += reclaimed;
+        }
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof ForegroundSessionPreemptionError) return undefined;
+      throw error;
+    }
   }
 
   private isFileBacked(): boolean {
@@ -188,7 +251,9 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
     const limit = Math.max(1, maxSessionsOverride ?? cfg.maxSessionsPerSweep);
     const cutoff = Date.now() - cfg.minIdleAgeMs;
     let compactedCount = 0;
-    let beforePosition: { readonly updatedAt: number; readonly id: string } | undefined;
+    const startedWithCursor = this.sweepCursor !== undefined;
+    let beforePosition = this.sweepCursor;
+    let wrapped = false;
 
     for (let pageIndex = 0; pageIndex < MAX_CANDIDATE_PAGES && compactedCount < limit; pageIndex += 1) {
       if (this.disposalAbort.signal.aborted) break;
@@ -197,37 +262,64 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
         limit: CANDIDATE_PAGE_SIZE,
         beforePosition,
       });
-      if (page.items.length === 0) break;
+      if (page.items.length === 0) {
+        if (startedWithCursor && !wrapped) {
+          beforePosition = undefined;
+          wrapped = true;
+          continue;
+        }
+        beforePosition = undefined;
+        break;
+      }
       for (const summary of page.items) {
         if (this.disposalAbort.signal.aborted || compactedCount >= limit) break;
         beforePosition = { updatedAt: summary.updatedAt, id: summary.id };
         if (summary.updatedAt > cutoff) continue;
         if (summary.executionPhase !== undefined && summary.executionPhase !== 'failed') continue;
-        if (this.sessions.get(summary.id) !== undefined) continue;
+        if (this.sessions.get(summary.id) !== undefined || this.hasRecentForegroundAccess(summary.id)) continue;
         if (this.checkedUpdatedAt.get(summary.id) === summary.updatedAt) continue;
         try {
-          const result = await this.compactSession(summary.id, {
-            workspaceId: summary.workspaceId,
-            reclaim: cfg.reclaimSparse,
-            incremental: true,
-          });
+          const result = await this.runSessionCompaction(
+            summary.id,
+            {
+              workspaceId: summary.workspaceId,
+              reclaim: cfg.reclaimSparse,
+              incremental: true,
+            },
+            true,
+          );
           if (result === undefined) continue;
           this.checkedUpdatedAt.set(summary.id, summary.updatedAt);
-          const reclaimed = Math.max(0, result.physicalBytesBefore - result.physicalBytesAfter);
-          if (reclaimed > 0) {
+          if (result.compactedJournals > 0) {
             compactedCount += 1;
           }
         } catch (error) {
-          if (isLockedStorageError(error) || this.disposalAbort.signal.aborted) continue;
+          if (
+            error instanceof ForegroundSessionPreemptionError ||
+            isLockedStorageError(error) ||
+            this.disposalAbort.signal.aborted
+          ) {
+            continue;
+          }
           this.log?.warn('idle cold compaction skipped session after error', {
             sessionId: summary.id,
             error: error instanceof Error ? error.message : String(error),
           });
         }
       }
-      if (page.nextCursor === undefined && page.items.length < CANDIDATE_PAGE_SIZE) break;
+      if (compactedCount >= limit) break;
+      if (page.nextCursor === undefined && page.items.length < CANDIDATE_PAGE_SIZE) {
+        if (startedWithCursor && !wrapped) {
+          beforePosition = undefined;
+          wrapped = true;
+          continue;
+        }
+        beforePosition = undefined;
+        break;
+      }
     }
 
+    this.sweepCursor = beforePosition;
     this.sweepsCompleted += 1;
     this.lastSweepAt = Date.now();
     return compactedCount;
@@ -236,18 +328,44 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
   private async withColdSessionLock<T>(
     sessionId: string,
     workspaceId: string,
-    work: (sessionDir: string) => Promise<T>,
+    preemptible: boolean,
+    baseSignal: AbortSignal,
+    work: (sessionDir: string, signal: AbortSignal) => Promise<T>,
   ): Promise<T | undefined> {
-    return this.sessions.withLifecycleSerialization(sessionId, async () => {
+    if (this.sessions.get(sessionId) !== undefined) return undefined;
+    if (preemptible && this.hasRecentForegroundAccess(sessionId)) return undefined;
+
+    const preemptionController = new AbortController();
+    let bucket = this.activePreemptible.get(sessionId);
+    if (preemptible) {
+      if (bucket === undefined) {
+        bucket = new Set();
+        this.activePreemptible.set(sessionId, bucket);
+      }
+      bucket.add(preemptionController);
+    }
+    const effectiveSignal = preemptible
+      ? AbortSignal.any([baseSignal, preemptionController.signal])
+      : baseSignal;
+
+    try {
       if (this.sessions.get(sessionId) !== undefined) return undefined;
+      if (preemptible && this.hasRecentForegroundAccess(sessionId)) return undefined;
+      effectiveSignal.throwIfAborted();
+
       const sessionsScope = this.bootstrap.scope('sessions');
       const scope = sessionScopeOf(workspacePersistenceScope(sessionsScope, workspaceId), sessionId);
       const sessionDir = this.storage.pathFor(scope, '');
       if (sessionDir === undefined || sessionDir.length === 0) return undefined;
+      await warmSparseFileWorker(effectiveSignal);
+      if (this.sessions.get(sessionId) !== undefined) return undefined;
+      if (preemptible && this.hasRecentForegroundAccess(sessionId)) return undefined;
+      effectiveSignal.throwIfAborted();
       let lock: { release(): Promise<void> } | undefined;
       try {
         lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, sessionLockKey(scope), {
           waitForMs: 0,
+          signal: effectiveSignal,
           owner: {
             sessionId,
             workspaceId,
@@ -259,11 +377,18 @@ export class ColdCompactionService extends Disposable implements IColdCompaction
         throw error;
       }
       try {
-        return await work(sessionDir);
+        if (this.sessions.get(sessionId) !== undefined) return undefined;
+        effectiveSignal.throwIfAborted();
+        return await work(sessionDir, effectiveSignal);
       } finally {
         await lock.release();
       }
-    });
+    } finally {
+      if (preemptible && bucket !== undefined) {
+        bucket.delete(preemptionController);
+        if (bucket.size === 0) this.activePreemptible.delete(sessionId);
+      }
+    }
   }
 }
 

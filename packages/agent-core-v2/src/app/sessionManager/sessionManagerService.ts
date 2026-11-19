@@ -94,6 +94,8 @@ export class SessionManager implements ISessionManager {
   private evictionFailures = 0;
   private readonly evictionSkips = new Map<string, number>();
   private readonly unloadRefusals = new Map<string, number>();
+  private readonly willAccessEmitter = new Emitter<string>();
+  readonly onWillAccessSession: Event<string> = this.willAccessEmitter.event;
   private readonly willCreateEmitter = new Emitter<SessionWillCreateEvent>();
   readonly onWillCreateSession: Event<SessionWillCreateEvent> = this.willCreateEmitter.event;
   private readonly didCreateEmitter = new Emitter<SessionCreatedEvent & IWaitUntil>();
@@ -148,6 +150,7 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     options?: ResumeSessionOptions,
   ): Promise<ISessionScopeHandle | undefined> {
+    this.willAccessEmitter.fire(sessionId);
     const closing = this.finishCommittedEviction(sessionId);
     if (closing) return closing.then(() => this.resume(sessionId, options));
     this.touchResidency(sessionId);
@@ -199,6 +202,7 @@ export class SessionManager implements ISessionManager {
     signal?: AbortSignal,
   ): Promise<SessionLease | undefined> {
     signal?.throwIfAborted();
+    this.willAccessEmitter.fire(sessionId);
     for (let closing = this.finishCommittedEviction(sessionId); closing; closing = this.finishCommittedEviction(sessionId)) {
       if (signal) await abortable(closing, signal);
       else await closing;
@@ -471,6 +475,7 @@ export class SessionManager implements ISessionManager {
   }
 
   async archive(sessionId: string): Promise<void> {
+    this.willAccessEmitter.fire(sessionId);
     await this.serializeLifecycle(sessionId, () => this.archiveInner(sessionId));
   }
 
@@ -488,10 +493,12 @@ export class SessionManager implements ISessionManager {
   }
 
   async restore(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined> {
+    this.willAccessEmitter.fire(sessionId);
     return this.serializeLifecycle(sessionId, () => this.restoreInner(sessionId, options));
   }
 
   async delete(sessionId: string): Promise<void> {
+    this.willAccessEmitter.fire(sessionId);
     await this.serializeLifecycle(sessionId, () => this.deleteInner(sessionId));
   }
 
@@ -512,6 +519,7 @@ export class SessionManager implements ISessionManager {
   }
 
   async fork(options: ForkSessionOptions): Promise<ISessionScopeHandle> {
+    this.willAccessEmitter.fire(options.sourceSessionId);
     return this.serializeLifecycleForKeys(
       this.lifecycleKeys(options.sourceSessionId, options.newSessionId),
       async () => {
@@ -532,6 +540,7 @@ export class SessionManager implements ISessionManager {
   }
 
   async createChild(options: CreateChildSessionOptions): Promise<ISessionScopeHandle> {
+    this.willAccessEmitter.fire(options.sourceSessionId);
     return this.serializeLifecycleForKeys(
       this.lifecycleKeys(options.sourceSessionId, options.newSessionId),
       async () => {
@@ -552,6 +561,7 @@ export class SessionManager implements ISessionManager {
   }
 
   async promoteAgent(options: PromoteAgentOptions): Promise<ISessionScopeHandle> {
+    this.willAccessEmitter.fire(options.sourceSessionId);
     const source = await this.controllerForSession(options.sourceSessionId);
     if (source === undefined) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${options.sourceSessionId} does not exist`);

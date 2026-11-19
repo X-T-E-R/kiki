@@ -1,4 +1,4 @@
-import { open, readdir, stat } from 'node:fs/promises';
+import { open, readFile, readdir, stat } from 'node:fs/promises';
 
 import { basename, dirname, join } from 'pathe';
 
@@ -14,6 +14,7 @@ import {
   COLD_ZSTD_SEGMENT_BYTES,
   discardColdSegments,
   openPinnedLogicalRead,
+  readColdManifestSummary,
   sealColdSegments,
   unsealColdSegments,
   type ColdUnsealOptions,
@@ -180,28 +181,24 @@ export async function compactRetainedJournal(
         details: { scope: address.scope, key: address.key },
       });
     }
-    const allocatedBefore = (await allocatedFileBytes(wirePath)) ?? size;
+    const allocatedBefore = (await allocatedFileBytes(wirePath, options.signal)) ?? size;
     const segmentBytesBefore = await directoryAllocatedBytes(`${wirePath}.segments`);
+    const prior = await readColdManifestSummary(storage, address.scope, address.key, options.signal);
     const keepHeadBytes = options.keepHeadBytes ?? DEFAULT_KEEP_HEAD_BYTES;
-    const reclaim = options.reclaim ?? true;
+    const requestedReclaim = options.reclaim ?? true;
+    const checkpoint = await inspectCheckpointWireOffset(dirname(wirePath), options.signal);
+    const reclaim = checkpoint.kind === 'unreadable' ? false : requestedReclaim;
     const hotTailBytes = resolveHotTailBytes(wirePath, size, options);
     const maxDesiredCut = Math.max(0, size - hotTailBytes);
+    const desiredCut = maxDesiredCut > 0
+      ? await recordCutAtOrBefore(storage, address.scope, address.key, maxDesiredCut, options.signal)
+      : 0;
+    const sealedCut = prior !== undefined && size >= prior.sealedCut
+      ? Math.max(prior.sealedCut, desiredCut)
+      : desiredCut;
     const minWorthwhileCut = reclaim ? keepHeadBytes + SPARSE_UNIT_BYTES : 1;
-    if (maxDesiredCut < minWorthwhileCut) {
-      return {
-        wirePath,
-        skipped: true,
-        logicalSize: size,
-        allocatedWireBytesBefore: allocatedBefore,
-        allocatedWireBytesAfter: allocatedBefore,
-        segmentBytesBefore,
-        segmentBytesAfter: segmentBytesBefore,
-        physicalBytesBefore: allocatedBefore + segmentBytesBefore,
-        physicalBytesAfter: allocatedBefore + segmentBytesBefore,
-      };
-    }
-    const sealedCut = await recordCutAtOrBefore(storage, address.scope, address.key, maxDesiredCut, options.signal);
-    if (sealedCut < minWorthwhileCut) {
+    const needsDenseRestore = !reclaim && prior?.originalRetained === false;
+    if (!needsDenseRestore && sealedCut < minWorthwhileCut) {
       return {
         wirePath,
         skipped: true,
@@ -217,8 +214,7 @@ export async function compactRetainedJournal(
     const codec: ColdSealCodec = options.codec ?? 'zstd';
     const level = options.level ?? (codec === 'zstd' ? COLD_ZSTD_LEVEL : COLD_DEFLATE_LEVEL);
     const segmentBytes = options.segmentBytes ?? COLD_ZSTD_SEGMENT_BYTES;
-    const checkpointOffset = await readCheckpointWireOffset(dirname(wirePath));
-    const preserveOffsets = checkpointOffset !== undefined && checkpointOffset > 0 ? [checkpointOffset] : undefined;
+    const preserveOffsets = checkpoint.kind === 'found' && checkpoint.offset > 0 ? [checkpoint.offset] : undefined;
     const seal = await sealColdSegments(storage, address.scope, address.key, sealedCut, {
       codec,
       level,
@@ -229,7 +225,7 @@ export async function compactRetainedJournal(
       preserveOffsets,
       signal: options.signal,
     });
-    const allocatedAfter = seal.allocatedBytesAfter ?? (await allocatedFileBytes(wirePath)) ?? size;
+    const allocatedAfter = seal.allocatedBytesAfter ?? (await allocatedFileBytes(wirePath, options.signal)) ?? size;
     const segmentBytesAfter = await directoryAllocatedBytes(`${wirePath}.segments`);
     return {
       wirePath,
@@ -306,21 +302,41 @@ function resolveHotTailBytes(wirePath: string, size: number, options: RetainedCo
   return Math.max(0, options.subagentHotTailBytes ?? DEFAULT_SUBAGENT_HOT_TAIL_BYTES);
 }
 
-async function readCheckpointWireOffset(agentDir: string): Promise<number | undefined> {
+type CheckpointWireOffset =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'found'; readonly offset: number }
+  | { readonly kind: 'unreadable' };
+
+async function inspectCheckpointWireOffset(agentDir: string, signal?: AbortSignal): Promise<CheckpointWireOffset> {
   const checkpointPath = join(agentDir, 'replay-checkpoints', 'engine-v1');
   let handle;
   try {
     handle = await open(checkpointPath, 'r');
     const buffer = Buffer.alloc(4096);
     const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
-    if (bytesRead <= 0) return undefined;
-    const head = buffer.subarray(0, bytesRead).toString('utf8');
-    const match = /"wire"\s*:\s*\{[^}]*?"size"\s*:\s*(\d+)/.exec(head);
-    if (match === null) return undefined;
-    const parsed = Number(match[1]);
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
-  } catch {
-    return undefined;
+    await handle.close();
+    handle = undefined;
+    if (bytesRead > 0) {
+      const head = buffer.subarray(0, bytesRead).toString('utf8');
+      const match = /"wire"\s*:\s*\{[^{}]*?"size"\s*:\s*(\d+)/.exec(head);
+      if (match !== null) {
+        const parsed = Number(match[1]);
+        if (Number.isSafeInteger(parsed) && parsed >= 0) {
+          return { kind: 'found', offset: parsed };
+        }
+      }
+    }
+    const fullText = await readFile(checkpointPath, { encoding: 'utf8', signal });
+    const parsedJson = JSON.parse(fullText) as { wire?: { size?: unknown } } | null;
+    const wireSize = parsedJson?.wire?.size;
+    if (typeof wireSize === 'number' && Number.isSafeInteger(wireSize) && wireSize >= 0) {
+      return { kind: 'found', offset: wireSize };
+    }
+    return { kind: 'unreadable' };
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason;
+    if (isEnoent(error)) return { kind: 'absent' };
+    return { kind: 'unreadable' };
   } finally {
     await handle?.close().catch(() => undefined);
   }

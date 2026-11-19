@@ -50,6 +50,7 @@ export interface SessionResidencyReport {
 
 export interface ISessionManager {
   readonly _serviceBrand: undefined;
+  readonly onWillAccessSession?: Event<string>;
   readonly onWillCreateSession?: Event<SessionWillCreateEvent>;
   readonly onDidCreateSession?: Event<SessionCreatedEvent & IWaitUntil>;
   readonly onWillCloseSession?: Event<SessionWillCloseEvent & IWaitUntil>;

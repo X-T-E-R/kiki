@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { open, rmdir } from 'node:fs/promises';
+import { mkdir, open, readdir, rmdir } from 'node:fs/promises';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import {
   constants as zlibConstants,
-  deflateRawSync,
-  inflateRawSync,
-  zstdCompressSync,
-  zstdDecompressSync,
+  deflateRaw,
+  inflateRaw,
+  zstdCompress,
+  zstdDecompress,
 } from 'node:zlib';
 
 import { dirname, resolve } from 'pathe';
@@ -14,14 +15,19 @@ import { dirname, resolve } from 'pathe';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { abortable } from '#/_base/utils/abort';
 import { acquireSharedReadLease, waitSharedReadIdle, withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import {
   allocatedFileBytes,
   captureFileBasicTimes,
+  clipSparseRanges,
   DEFAULT_KEEP_HEAD_BYTES,
+  isSparseFile,
   mergeSparseRanges,
   planSparseRanges,
   punchSparseRanges,
   restoreFileBasicTimes,
+  subtractSparseRanges,
+  writeFileAtomicNoUnlink,
 } from '#/persistence/backends/node-fs/sparseFile';
 import type {
   ColdSealCodec,
@@ -44,10 +50,17 @@ export const COLD_ZSTD_LEVEL = 3;
 const MAX_SEGMENTS = 16384;
 const YIELD_BYTES = 64 * 1024;
 const SEAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UNSEALED_PIN_ID = '__unsealed__';
+
+const deflateRawAsync = promisify(deflateRaw);
+const inflateRawAsync = promisify(inflateRaw);
+const zstdCompressAsync = promisify(zstdCompress);
+const zstdDecompressAsync = promisify(zstdDecompress);
 
 export interface ColdUnsealOptions {
   readonly skipRestoreOriginal?: boolean;
   readonly forceRestoreOriginal?: boolean;
+  readonly requireValidManifest?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -56,6 +69,14 @@ export interface ColdUnsealResult {
   readonly restoredOriginal: boolean;
   readonly restoredBytes: number;
   readonly verifiedSegments: number;
+}
+
+export interface ColdManifestSummary {
+  readonly format: 1 | 2;
+  readonly codec: ColdSealCodec;
+  readonly sealedCut: number;
+  readonly logicalSize: number;
+  readonly originalRetained: boolean;
 }
 
 interface ColdSegment {
@@ -145,12 +166,39 @@ async function pinSeal(storage: IFileSystemStorageService, scope: string, key: s
   }
 }
 
-async function waitUnpinned(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<void> {
+async function waitInProcessPin(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<void> {
   const entry = sealPins.get(pinId(storage, scope, key, sealId));
   if (entry !== undefined && entry.count > 0) {
     await new Promise<void>((resolvePromise) => {
       entry.waiters.push(resolvePromise);
     });
+  }
+}
+
+async function waitUnpinned(storage: IFileSystemStorageService, scope: string, key: string, sealId: string): Promise<void> {
+  await waitInProcessPin(storage, scope, key, sealId);
+  const located = locatedJournal(storage, scope, key);
+  if (located !== undefined) await waitSharedReadIdle(located);
+}
+
+export async function waitActiveReadersIdle(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+): Promise<void> {
+  const prefix = `${resourceId(storage, scope, key)}\0`;
+  for (;;) {
+    const pending: Promise<void>[] = [];
+    for (const [id, entry] of sealPins) {
+      if (!id.startsWith(prefix) || entry.count <= 0) continue;
+      pending.push(
+        new Promise<void>((resolvePromise) => {
+          entry.waiters.push(resolvePromise);
+        }),
+      );
+    }
+    if (pending.length === 0) break;
+    await Promise.all(pending);
   }
   const located = locatedJournal(storage, scope, key);
   if (located !== undefined) await waitSharedReadIdle(located);
@@ -241,23 +289,55 @@ function requireCodecLevel(codec: ColdSealCodec, level: number): number {
   return level;
 }
 
-function compressSegment(plain: Uint8Array, codec: ColdSealCodec, level: number): Uint8Array {
-  if (codec === 'zstd') {
-    return zstdCompressSync(plain, {
-      params: { [zlibConstants.ZSTD_c_compressionLevel]: level },
-    });
-  }
-  return deflateRawSync(plain, { level });
+async function compressSegment(
+  plain: Uint8Array,
+  codec: ColdSealCodec,
+  level: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  signal?.throwIfAborted();
+  const promise = codec === 'zstd'
+    ? zstdCompressAsync(plain, { params: { [zlibConstants.ZSTD_c_compressionLevel]: level } })
+    : deflateRawAsync(plain, { level });
+  const buf = signal === undefined ? await promise : await abortable(promise, signal);
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }
 
-function decompressBounded(compressed: Uint8Array, codec: ColdSealCodec, outputBytes: number): Uint8Array {
+async function decompressBounded(
+  compressed: Uint8Array,
+  codec: ColdSealCodec,
+  outputBytes: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  signal?.throwIfAborted();
   if (compressed.byteLength > compressedInputLimit(outputBytes)) {
     throw Object.assign(new Error(`${codec} input exceeds the segment bound`), { code: 'ERR_BUFFER_TOO_LARGE' });
   }
-  if (codec === 'zstd') {
-    return zstdDecompressSync(compressed, { maxOutputLength: outputBytes });
+  const promise = codec === 'zstd'
+    ? zstdDecompressAsync(compressed, { maxOutputLength: outputBytes })
+    : inflateRawAsync(compressed, { maxOutputLength: outputBytes });
+  const buf = signal === undefined ? await promise : await abortable(promise, signal);
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
+async function writeManifestAtomic(
+  storage: IFileSystemStorageService,
+  scope: string,
+  manifestKey: string,
+  encoded: Uint8Array,
+  signal?: AbortSignal,
+): Promise<void> {
+  const located = storage.pathFor(scope, manifestKey);
+  if (
+    located !== undefined &&
+    located.length > 0 &&
+    storage.write === FileStorageService.prototype.write
+  ) {
+    await mkdir(dirname(located), { recursive: true });
+    await writeFileAtomicNoUnlink(located, encoded, signal);
+    return;
   }
-  return inflateRawSync(compressed, { maxOutputLength: outputBytes });
+  await storage.write(scope, manifestKey, encoded, { atomic: true, signal });
 }
 
 async function readRawExact(
@@ -458,33 +538,37 @@ function isManifest(value: unknown, key: string): ColdManifest | undefined {
   };
 }
 
-function serializeManifest(manifest: ColdManifest): Uint8Array {
-  if (manifest.format === 1) {
-    return new TextEncoder().encode(JSON.stringify({
-      format: 1,
-      codec: manifest.codec,
-      level: manifest.level,
-      segmentBytes: manifest.segmentBytes,
-      sealedCut: manifest.sealedCut,
-      logicalSize: manifest.logicalSize,
-      generation: manifest.generation,
-      sealId: manifest.sealId,
-      segments: manifest.segments,
-    }));
+function serializeValidatedManifest(manifest: ColdManifest, key: string): Uint8Array {
+  const payload = manifest.format === 1
+    ? {
+        format: 1,
+        codec: manifest.codec,
+        level: manifest.level,
+        segmentBytes: manifest.segmentBytes,
+        sealedCut: manifest.sealedCut,
+        logicalSize: manifest.logicalSize,
+        generation: manifest.generation,
+        sealId: manifest.sealId,
+        segments: manifest.segments,
+      }
+    : {
+        format: 2,
+        codec: manifest.codec,
+        level: manifest.level,
+        segmentBytes: manifest.segmentBytes,
+        sealedCut: manifest.sealedCut,
+        logicalSize: manifest.logicalSize,
+        generation: manifest.generation,
+        sealId: manifest.sealId,
+        originalRetained: manifest.originalRetained,
+        sparseRanges: manifest.sparseRanges,
+        segments: manifest.segments,
+      };
+  const jsonText = JSON.stringify(payload);
+  if (isManifest(JSON.parse(jsonText), key) === undefined) {
+    throw new BugIndicatingError('generated cold manifest failed schema validation');
   }
-  return new TextEncoder().encode(JSON.stringify({
-    format: 2,
-    codec: manifest.codec,
-    level: manifest.level,
-    segmentBytes: manifest.segmentBytes,
-    sealedCut: manifest.sealedCut,
-    logicalSize: manifest.logicalSize,
-    generation: manifest.generation,
-    sealId: manifest.sealId,
-    originalRetained: manifest.originalRetained,
-    sparseRanges: manifest.sparseRanges,
-    segments: manifest.segments,
-  }));
+  return new TextEncoder().encode(jsonText);
 }
 
 async function loadManifest(
@@ -509,25 +593,65 @@ async function loadMatchedManifest(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
+  expectedGeneration?: string,
 ): Promise<ColdManifest | undefined> {
   const manifest = await loadManifest(storage, scope, key);
-  if (manifest === undefined) return undefined;
-  if (await generationOf(storage, scope, key) !== manifest.generation) throw corrupted(scope, key, 'generation');
+  if (manifest === undefined) {
+    const located = locatedJournal(storage, scope, key);
+    if (located !== undefined && await isSparseFile(located)) {
+      throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+    }
+    return undefined;
+  }
+  const actualGeneration = expectedGeneration ?? await generationOf(storage, scope, key);
+  if (actualGeneration !== manifest.generation) throw corrupted(scope, key, 'generation');
   return manifest;
 }
 
-async function tryLoadPreviousMatchedManifest(
+export async function readColdManifestSummary(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
-  generation: string,
-): Promise<ColdManifest | undefined> {
+  signal?: AbortSignal,
+): Promise<ColdManifestSummary | undefined> {
+  return withColdExclusive(storage, scope, key, async () => {
+    const manifest = await loadMatchedManifest(storage, scope, key);
+    if (manifest === undefined) return undefined;
+    return {
+      format: manifest.format,
+      codec: manifest.codec,
+      sealedCut: manifest.sealedCut,
+      logicalSize: manifest.logicalSize,
+      originalRetained: manifest.originalRetained,
+    };
+  }, signal);
+}
+
+export async function requiresProtectedColdReplace(
+  storage: IFileSystemStorageService,
+  scope: string,
+  key: string,
+): Promise<boolean> {
+  const located = locatedJournal(storage, scope, key);
+  if (located !== undefined) {
+    try {
+      if (await isSparseFile(located)) return true;
+    } catch {
+      return true;
+    }
+  }
+  let bytes: Uint8Array | undefined;
   try {
-    const manifest = await loadManifest(storage, scope, key);
-    if (manifest === undefined || manifest.generation !== generation) return undefined;
-    return manifest;
+    bytes = await storage.read(scope, coldManifestKey(key));
   } catch {
-    return undefined;
+    return true;
+  }
+  if (bytes === undefined) return false;
+  try {
+    const parsed = isManifest(JSON.parse(new TextDecoder().decode(bytes)), key);
+    return parsed === undefined || parsed.originalRetained !== true;
+  } catch {
+    return true;
   }
 }
 
@@ -566,7 +690,7 @@ function sealIdOf(bytes: Uint8Array): string | undefined {
   return typeof sealId === 'string' ? sealId : undefined;
 }
 
-function rawOriginalRetainedFalse(bytes: Uint8Array): boolean {
+function untrustedManifestMayRequireSegments(bytes: Uint8Array): boolean {
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder().decode(bytes));
@@ -574,7 +698,21 @@ function rawOriginalRetainedFalse(bytes: Uint8Array): boolean {
     return false;
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
-  return (parsed as { originalRetained?: unknown }).originalRetained === false;
+  const raw = parsed as Record<string, unknown>;
+  if (raw['format'] === 2) return raw['originalRetained'] !== true;
+  if ('originalRetained' in raw && raw['originalRetained'] !== true) return true;
+  if (raw['codec'] === 'zstd') return true;
+  return false;
+}
+
+async function hasZstdSegmentFiles(located: string): Promise<boolean> {
+  try {
+    const entries = await readdir(`${located}.segments`, { recursive: true, withFileTypes: true });
+    return entries.some((entry) => entry.isFile() && entry.name.endsWith('.zst'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    return true;
+  }
 }
 
 function listedSegmentKeys(bytes: Uint8Array, key: string): string[] {
@@ -613,8 +751,9 @@ async function readAndVerifySegment(
   if (compressed === undefined) throw corrupted(scope, key, 'segment-missing');
   let plain: Uint8Array;
   try {
-    plain = decompressBounded(compressed, manifest.codec, expected);
+    plain = await decompressBounded(compressed, manifest.codec, expected, options?.signal);
   } catch (error) {
+    if (options?.signal?.aborted) throw options.signal.reason;
     throw corrupted(scope, key, 'segment', error);
   }
   if (plain.byteLength !== expected || sha256(plain) !== segment.uncompressedSha256) {
@@ -655,6 +794,7 @@ async function restoreRangeFromManifest(
   if (located !== undefined) {
     const savedTimes = await captureFileBasicTimes(located);
     const handle = await open(located, 'r+');
+    let writeErr: unknown;
     try {
       for (const segment of targets) {
         signal?.throwIfAborted();
@@ -671,10 +811,19 @@ async function restoreRangeFromManifest(
         await yieldToEventLoop();
       }
       await handle.sync();
+    } catch (error) {
+      writeErr = error;
     } finally {
-      await handle.close();
+      await handle.close().catch((closeErr) => {
+        if (writeErr === undefined) writeErr = closeErr;
+      });
     }
-    await restoreFileBasicTimes(located, savedTimes);
+    try {
+      await restoreFileBasicTimes(located, savedTimes);
+    } catch (timesErr) {
+      if (writeErr === undefined) writeErr = timesErr;
+    }
+    if (writeErr !== undefined) throw writeErr;
   } else {
     const head = start > 0 ? await readManifestRange(storage, scope, key, manifest, 0, start - 1, { signal }) : new Uint8Array();
     const middle = await readManifestRange(storage, scope, key, manifest, start, end - 1, { signal });
@@ -720,38 +869,75 @@ export async function discardColdUnlocked(
     restoredBytes: 0,
     verifiedSegments: 0,
   };
+  const located = locatedJournal(storage, scope, key);
   const drop = async (): Promise<void> => {
     options.signal?.throwIfAborted();
     const bytes = await storage.read(scope, coldManifestKey(key));
-    if (bytes === undefined) return;
+    if (bytes === undefined) {
+      if (options.skipRestoreOriginal !== true && located !== undefined && await isSparseFile(located)) {
+        throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+      }
+      return;
+    }
     let parsedManifest: ColdManifest | undefined;
     try {
       parsedManifest = isManifest(JSON.parse(new TextDecoder().decode(bytes)), key);
     } catch {
       parsedManifest = undefined;
     }
-    const mustRestore = options.skipRestoreOriginal !== true && (
-      options.forceRestoreOriginal === true ||
-      parsedManifest?.originalRetained === false ||
-      rawOriginalRetainedFalse(bytes)
-    );
-    if (mustRestore) {
-      if (parsedManifest === undefined) throw corrupted(scope, key, 'manifest');
-      const restored = await restoreRangeFromManifest(
-        storage,
-        scope,
-        key,
-        parsedManifest,
-        0,
-        parsedManifest.sealedCut,
-        options.signal,
-      );
-      outcome = {
-        hadManifest: true,
-        restoredOriginal: true,
-        restoredBytes: restored.restoredBytes,
-        verifiedSegments: restored.verifiedSegments,
-      };
+
+    if (options.skipRestoreOriginal !== true) {
+      if (parsedManifest === undefined) {
+        const unsafeDiscard =
+          options.requireValidManifest === true ||
+          options.forceRestoreOriginal === true ||
+          untrustedManifestMayRequireSegments(bytes) ||
+          (located !== undefined && (await isSparseFile(located) || await hasZstdSegmentFiles(located)));
+        if (unsafeDiscard) {
+          throw corrupted(scope, key, 'manifest');
+        }
+      } else {
+        const currentGen = await generationOf(storage, scope, key);
+        if (
+          currentGen !== parsedManifest.generation &&
+          (options.requireValidManifest === true ||
+            options.forceRestoreOriginal === true ||
+            parsedManifest.originalRetained === false ||
+            (located !== undefined && await isSparseFile(located)))
+        ) {
+          throw corrupted(scope, key, 'generation');
+        }
+        const mustRestore =
+          options.forceRestoreOriginal === true ||
+          parsedManifest.originalRetained === false ||
+          (located !== undefined && await isSparseFile(located));
+        if (mustRestore) {
+          await waitUnpinned(storage, scope, key, UNSEALED_PIN_ID);
+          await waitUnpinned(storage, scope, key, parsedManifest.sealId);
+          const restored = await restoreRangeFromManifest(
+            storage,
+            scope,
+            key,
+            parsedManifest,
+            0,
+            parsedManifest.sealedCut,
+            options.signal,
+          );
+          outcome = {
+            hadManifest: true,
+            restoredOriginal: true,
+            restoredBytes: restored.restoredBytes,
+            verifiedSegments: restored.verifiedSegments,
+          };
+        } else {
+          outcome = {
+            hadManifest: true,
+            restoredOriginal: false,
+            restoredBytes: 0,
+            verifiedSegments: 0,
+          };
+        }
+      }
     } else {
       outcome = {
         hadManifest: true,
@@ -760,12 +946,12 @@ export async function discardColdUnlocked(
         verifiedSegments: 0,
       };
     }
+
     await storage.delete(scope, coldManifestKey(key));
     const sealId = sealIdOf(bytes);
     if (sealId !== undefined) await waitUnpinned(storage, scope, key, sealId);
     await removeSegments(storage, scope, key, listedSegmentKeys(bytes, key), sealId);
   };
-  const located = locatedJournal(storage, scope, key);
   if (located === undefined) await drop();
   else await withColdReaderGate(located, drop, options.signal);
   return outcome;
@@ -788,7 +974,13 @@ export function unsealColdSegments(
   key: string,
   options?: ColdUnsealOptions,
 ): Promise<ColdUnsealResult> {
-  return withColdExclusive(storage, scope, key, () => discardColdUnlocked(storage, scope, key, options), options?.signal);
+  return withColdExclusive(
+    storage,
+    scope,
+    key,
+    () => discardColdUnlocked(storage, scope, key, { ...options, requireValidManifest: true }),
+    options?.signal,
+  );
 }
 
 async function sumSegmentBytes(
@@ -828,7 +1020,7 @@ async function sealUnlocked(
   const defaultSegmentBytes = codec === 'zstd' ? COLD_ZSTD_SEGMENT_BYTES : COLD_SEGMENT_BYTES;
   const segmentBytes = requireSegmentBytes(options.segmentBytes ?? defaultSegmentBytes);
   const generation = await generationOf(storage, scope, key);
-  const previousManifest = await tryLoadPreviousMatchedManifest(storage, scope, key, generation);
+  const previousManifest = await loadMatchedManifest(storage, scope, key, generation);
   const located = locatedJournal(storage, scope, key);
 
   if (sealedCut > 0) {
@@ -844,6 +1036,12 @@ async function sealUnlocked(
     ? planSparseRanges(sealedCut, options.keepHeadBytes ?? DEFAULT_KEEP_HEAD_BYTES, options.preserveOffsets)
     : [];
 
+  const retentionSatisfied = previousManifest !== undefined && (
+    reclaim
+      ? (previousManifest.originalRetained === false || candidateSparse.length === 0 || process.platform !== 'win32')
+      : previousManifest.originalRetained === true
+  );
+
   if (
     options.incremental === true &&
     previousManifest !== undefined &&
@@ -852,7 +1050,7 @@ async function sealUnlocked(
     previousManifest.level === level &&
     previousManifest.segmentBytes === segmentBytes &&
     previousManifest.sealedCut === sealedCut &&
-    (!reclaim || previousManifest.originalRetained === false || candidateSparse.length === 0 || process.platform !== 'win32')
+    retentionSatisfied
   ) {
     const compressedBytes = await sumSegmentBytes(storage, scope, key, previousManifest.segments);
     const allocated = located === undefined ? undefined : await allocatedFileBytes(located);
@@ -874,9 +1072,29 @@ async function sealUnlocked(
     };
   }
 
+  let priorRemainingSparse: readonly ColdSparseRange[] =
+    reclaim && previousManifest !== undefined ? previousManifest.sparseRanges : [];
+
   if (previousManifest?.originalRetained === false && (!reclaim || sealedCut < previousManifest.sealedCut)) {
     const restoreFrom = reclaim ? sealedCut : 0;
-    await restoreRangeFromManifest(storage, scope, key, previousManifest, restoreFrom, previousManifest.sealedCut, options.signal);
+    const applyGate = async (): Promise<void> => {
+      await waitUnpinned(storage, scope, key, UNSEALED_PIN_ID);
+      await waitUnpinned(storage, scope, key, previousManifest.sealId);
+      await restoreRangeFromManifest(
+        storage,
+        scope,
+        key,
+        previousManifest,
+        restoreFrom,
+        previousManifest.sealedCut,
+        options.signal,
+      );
+    };
+    if (located === undefined) await applyGate();
+    else await withColdReaderGate(located, applyGate, options.signal);
+    priorRemainingSparse = reclaim
+      ? subtractSparseRanges(priorRemainingSparse, [{ start: restoreFrom, end: previousManifest.sealedCut }])
+      : [];
   }
 
   const sealId = randomUUID();
@@ -885,7 +1103,8 @@ async function sealUnlocked(
   const written: ColdSegment[] = [];
   let reusedSegmentCount = 0;
   let compressedBytes = 0;
-  let committed = false;
+  const manifestKey = coldManifestKey(key);
+  let manifestPublished = false;
   try {
     for (let index = 0; index < planned.length; index += 1) {
       options.signal?.throwIfAborted();
@@ -898,11 +1117,12 @@ async function sealUnlocked(
           ? previousManifest.segments[index]
           : undefined;
       if (
+        previousManifest !== undefined &&
         reusable !== undefined &&
         reusable.logicalStart === plan.logicalStart &&
         reusable.logicalEnd === plan.logicalEnd
       ) {
-        const verified = await readAndVerifySegment(storage, scope, key, previousManifest!, reusable, {
+        const verified = await readAndVerifySegment(storage, scope, key, previousManifest, reusable, {
           signal: options.signal,
         });
         const segment: ColdSegment = { ...plan, uncompressedSha256: reusable.uncompressedSha256 };
@@ -918,7 +1138,7 @@ async function sealUnlocked(
       });
       if (plain.byteLength !== expected) throw corrupted(scope, key, 'short-read');
       const segment: ColdSegment = { ...plan, uncompressedSha256: sha256(plain) };
-      const compressed = compressSegment(plain, codec, level);
+      const compressed = await compressSegment(plain, codec, level, options.signal);
       await storage.write(scope, segment.key, compressed, { atomic: true, signal: options.signal });
       written.push(segment);
       compressedBytes += compressed.byteLength;
@@ -940,14 +1160,13 @@ async function sealUnlocked(
 
     const sizeAfter = await storage.size(scope, key);
     if (sizeAfter === undefined || sizeAfter < size) throw corrupted(scope, key, 'changed-during-seal');
-    if (await generationOf(storage, scope, key) !== generation) throw corrupted(scope, key, 'generation');
 
     const willAttemptPunch = reclaim && located !== undefined && candidateSparse.length > 0 && process.platform === 'win32';
-    const priorSparseRetained = reclaim && previousManifest?.originalRetained === false;
-    const tentativeOriginalRetained = !(willAttemptPunch || priorSparseRetained);
+    const priorSparseStillActive = reclaim && priorRemainingSparse.length > 0 && previousManifest?.originalRetained === false;
+    const tentativeOriginalRetained = !(willAttemptPunch || priorSparseStillActive);
     const tentativeSparseRanges = tentativeOriginalRetained
       ? []
-      : mergeSparseRanges([...(reclaim ? (previousManifest?.sparseRanges ?? []) : []), ...candidateSparse]);
+      : clipSparseRanges(mergeSparseRanges([...priorRemainingSparse, ...candidateSparse]), sealedCut);
 
     let manifest: ColdManifest = {
       format,
@@ -962,19 +1181,14 @@ async function sealUnlocked(
       sparseRanges: tentativeSparseRanges,
       segments: written,
     };
-    const manifestKey = coldManifestKey(key);
+    const encodedManifest = serializeValidatedManifest(manifest, key);
     const previous = await storage.read(scope, manifestKey);
-    options.signal?.throwIfAborted();
-    await storage.write(scope, manifestKey, serializeManifest(manifest), {
-      atomic: true,
-      signal: options.signal,
-    });
     if (await generationOf(storage, scope, key) !== generation) {
-      if (previous === undefined) await storage.delete(scope, manifestKey);
-      else await storage.write(scope, manifestKey, previous, { atomic: true });
       throw corrupted(scope, key, 'generation');
     }
-    committed = true;
+    options.signal?.throwIfAborted();
+    await writeManifestAtomic(storage, scope, manifestKey, encodedManifest, options.signal);
+    manifestPublished = true;
 
     const fresh = new Set(written.map((segment) => segment.key));
     let allocatedBytesBefore: number | undefined;
@@ -992,16 +1206,30 @@ async function sealUnlocked(
           previousId !== sealId ? previousId : undefined,
         ).catch(() => undefined);
       }
-      if (willAttemptPunch && located !== undefined) {
-        const punched = await punchSparseRanges(located, candidateSparse);
-        allocatedBytesBefore = punched.allocatedBytesBefore;
-        allocatedBytesAfter = punched.allocatedBytesAfter;
-        if (!punched.supported && !priorSparseRetained) {
-          manifest = { ...manifest, originalRetained: true, sparseRanges: [] };
-          await storage.write(scope, manifestKey, serializeManifest(manifest), { atomic: true });
+      if (willAttemptPunch && located !== undefined && !options.signal?.aborted) {
+        await (
+          options.signal === undefined
+            ? waitActiveReadersIdle(storage, scope, key)
+            : abortable(waitActiveReadersIdle(storage, scope, key), options.signal)
+        );
+        if (!options.signal?.aborted) {
+          const punched = await punchSparseRanges(located, candidateSparse);
+          allocatedBytesBefore = punched.allocatedBytesBefore;
+          allocatedBytesAfter = punched.allocatedBytesAfter;
+          if (punched.status === 'unsupported_before_mutation' && !priorSparseStillActive) {
+            manifest = { ...manifest, originalRetained: true, sparseRanges: [] };
+            const fallbackEncoded = serializeValidatedManifest(manifest, key);
+            await writeManifestAtomic(storage, scope, manifestKey, fallbackEncoded);
+          } else if (punched.status === 'mutated_or_unknown') {
+            throw new StorageError(
+              StorageErrors.codes.STORAGE_IO_FAILED,
+              `Sparse extent reclamation failed after sparse open: ${punched.error ?? 'unknown error'}`,
+              { details: { scope, key, sealId } },
+            );
+          }
         }
-      } else if (located !== undefined && reclaim) {
-        const allocated = await allocatedFileBytes(located);
+      } else if (located !== undefined && reclaim && !options.signal?.aborted) {
+        const allocated = await allocatedFileBytes(located, options.signal);
         allocatedBytesBefore = allocated;
         allocatedBytesAfter = allocated;
       }
@@ -1027,7 +1255,18 @@ async function sealUnlocked(
       allocatedBytesAfter,
     };
   } catch (error) {
-    if (!committed) await removeSegments(storage, scope, key, written.map((segment) => segment.key), sealId).catch(() => undefined);
+    if (!manifestPublished) {
+      let safeToDelete = false;
+      try {
+        const onDisk = await storage.read(scope, manifestKey);
+        safeToDelete = onDisk === undefined || sealIdOf(onDisk) !== sealId;
+      } catch {
+        safeToDelete = false;
+      }
+      if (safeToDelete) {
+        await removeSegments(storage, scope, key, written.map((segment) => segment.key), sealId).catch(() => undefined);
+      }
+    }
     throw error;
   }
 }
@@ -1109,7 +1348,7 @@ export interface PinnedLogicalRead {
   close(): void;
 }
 
-/** Pins the selected seal under the reader gate; cancellation releases an unpublished pin. */
+/** Pins the selected seal or dense file under the reader gate; cancellation releases an unpublished pin. */
 export async function openPinnedLogicalRead(
   storage: IFileSystemStorageService,
   scope: string,
@@ -1129,6 +1368,8 @@ export async function openPinnedLogicalRead(
         if (manifest !== undefined) {
           if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
           release = await pinSeal(storage, scope, key, manifest.sealId);
+        } else if (size !== undefined) {
+          release = await pinSeal(storage, scope, key, UNSEALED_PIN_ID);
         }
         signal?.throwIfAborted();
       };
