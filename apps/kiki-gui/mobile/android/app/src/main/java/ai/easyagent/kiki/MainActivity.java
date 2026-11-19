@@ -2,9 +2,11 @@ package ai.easyagent.kiki;
 
 import android.net.http.SslError;
 import android.os.Bundle;
+import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
 import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.BridgeWebChromeClient;
 import com.getcapacitor.BridgeWebViewClient;
 import com.getcapacitor.PluginHandle;
 
@@ -24,6 +26,17 @@ public class MainActivity extends BridgeActivity {
                         public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
                             if (!shellPlugin.handleSslError(view, handler, error)) {
                                 super.onReceivedSslError(view, handler, error);
+                            }
+                        }
+                    }
+                );
+            getBridge()
+                .setWebChromeClient(
+                    new BridgeWebChromeClient(getBridge()) {
+                        @Override
+                        public void onPermissionRequest(PermissionRequest request) {
+                            if (!shellPlugin.handleWebPermissionRequest(request)) {
+                                super.onPermissionRequest(request);
                             }
                         }
                     }

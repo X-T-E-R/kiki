@@ -5,6 +5,8 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "build": "node scripts/build-launcher.mjs",
+    "typecheck": "node scripts/build-launcher.mjs --typecheck",
     "sync": "cap sync",
     "android:debug": "node scripts/build-android.mjs debug",
     "android:release": "node scripts/build-android.mjs release",

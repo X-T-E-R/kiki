@@ -108,6 +108,7 @@ export * from './rest/persona';
 export * from './rest/memory';
 export * from './shortcuts';
 export * from './rest/agentHooks';
+export * from './pairing';
 export * from './rest/connections';
 export * from './rest/connection-operations';
 export * from './rest/ssh-remote';

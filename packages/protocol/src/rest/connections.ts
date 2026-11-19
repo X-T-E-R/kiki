@@ -1,4 +1,21 @@
 import { z } from 'zod';
+import {
+  PAIRING_CODE_ALPHABET,
+  PAIRING_URI_PREFIX,
+  formatPairingUri,
+  isDirectConnectionHost,
+  normalizePairingCode,
+  parsePairingUri,
+} from '../pairing';
+
+export {
+  PAIRING_CODE_ALPHABET,
+  PAIRING_URI_PREFIX,
+  formatPairingUri,
+  isDirectConnectionHost,
+  normalizePairingCode,
+  parsePairingUri,
+};
 
 const fingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const CONNECTION_PROTOCOL = 1;
@@ -47,58 +64,6 @@ export const connectionAddInputSchema = z.object({
   invitation: z.string().min(32).max(128), backgroundSummary: z.boolean().default(false),
 }).strict();
 export type ConnectionAddInput = z.infer<typeof connectionAddInputSchema>;
-export const PAIRING_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-export const PAIRING_URI_PREFIX = 'kiki://pair';
-export function normalizePairingCode(raw: string): string | undefined {
-  const compact = raw.trim().toUpperCase().replace(/[\s-]/g, '');
-  if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/.test(compact)) return undefined;
-  return `${compact.slice(0, 4)}-${compact.slice(4)}`;
-}
-export function formatPairingUri(input: { readonly endpoint: string; readonly code: string; readonly fingerprint?: string }): string {
-  const endpoint = input.endpoint.trim();
-  const code = normalizePairingCode(input.code);
-  const fingerprint = input.fingerprint;
-  if (endpoint === '' || code === undefined || (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint))) {
-    throw new Error('Invalid pairing URI payload');
-  }
-  const payload = `endpoint=${encodeURIComponent(endpoint)}&code=${encodeURIComponent(code)}`;
-  return `${PAIRING_URI_PREFIX}?${payload}${fingerprint === undefined ? '' : `&fp=${encodeURIComponent(fingerprint)}`}`;
-}
-export function parsePairingUri(raw: string): { readonly endpoint: string; readonly code: string; readonly fingerprint?: string } | undefined {
-  const text = raw.trim();
-  if (!/^kiki:\/\/\/?pair(?:\?|$)/i.test(text)) return undefined;
-  try {
-    const url = new URL(text);
-    const host = url.hostname.toLowerCase();
-    const path = url.pathname.toLowerCase();
-    if (url.protocol.toLowerCase() !== 'kiki:' || url.username !== '' || url.password !== '' || url.port !== '' || url.hash !== '') return undefined;
-    if (!((host === 'pair' && (path === '' || path === '/')) || (host === '' && path === '/pair'))) return undefined;
-    const endpoint = url.searchParams.get('endpoint')?.trim() ?? '';
-    const code = normalizePairingCode(url.searchParams.get('code') ?? '');
-    const fingerprint = url.searchParams.get('fp') ?? undefined;
-    if (endpoint === '' || code === undefined || (fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(fingerprint))) return undefined;
-    return fingerprint === undefined ? { endpoint, code } : { endpoint, code, fingerprint };
-  } catch {
-    return undefined;
-  }
-}
-export function isDirectConnectionHost(hostname: string): boolean {
-  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
-  const name = bare.toLowerCase();
-  if (name === 'localhost' || name.endsWith('.local') || name.endsWith('.ts.net')) return true;
-  if (name === '::1' || name.startsWith('fe80:')) return true;
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name);
-  if (match === null) return false;
-  const parts = match.slice(1).map(Number);
-  if (parts.some((part) => part > 255)) return false;
-  const a = parts[0]!; const b = parts[1]!;
-  if (a === 127 || a === 10) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 169 && b === 254) return true;
-  return false;
-}
 export const pairCodeCreateInputSchema = z.object({
   label: z.string().max(128).optional(),
   expiresInMs: z.number().int().min(60_000).max(3_600_000).default(600_000),

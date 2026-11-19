@@ -1,0 +1,128 @@
+{
+  "version": "kiki-pairing-handshake-vectors-v1",
+  "pairingCodes": {
+    "valid": [
+      { "input": "k9f2 7x4m", "normalized": "K9F2-7X4M" },
+      { "input": "k9f27x4m", "normalized": "K9F2-7X4M" },
+      { "input": "  K9F2-7X4M  ", "normalized": "K9F2-7X4M" },
+      { "input": "ab23cd45", "normalized": "AB23-CD45" }
+    ],
+    "invalid": [
+      "1111-1111",
+      "OOOO-0000",
+      "K9F2-7X4",
+      "K9F2-7X4MX",
+      ""
+    ]
+  },
+  "spkiPin": {
+    "spkiDerHex": "302a300506032b6570032100d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "spkiSha256Hex": "06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9",
+    "validInputs": [
+      "06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9",
+      "06E3FD8FDA29BB60AB59557DE61EDB0AECDB231134BE30E75B455F8E1B792FA9"
+    ],
+    "invalidInputs": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+      ""
+    ]
+  },
+  "pairingUri": {
+    "lanWithoutPin": {
+      "endpoint": "http://192.168.10.40:58627",
+      "code": "K9F2-7X4M",
+      "uri": "kiki://pair?endpoint=http%3A%2F%2F192.168.10.40%3A58627&code=K9F2-7X4M",
+      "expectedOrigin": "http://192.168.10.40:58627",
+      "expectedUpgradedOrigin": "http://192.168.10.40:58627"
+    },
+    "tailscaleWithPinUpgrade": {
+      "endpoint": "http://100.64.0.10:58627",
+      "code": "K9F2-7X4M",
+      "fingerprint": "06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9",
+      "uri": "kiki://pair?endpoint=http%3A%2F%2F100.64.0.10%3A58627&code=K9F2-7X4M&fp=06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9",
+      "expectedUpgradedOrigin": "https://100.64.0.10:58627",
+      "expectedUpgradedEntry": "https://100.64.0.10:58627/"
+    },
+    "implicitPort80WithPinUpgrade": {
+      "endpoint": "http://100.64.0.10",
+      "code": "K9F2-7X4M",
+      "fingerprint": "06E3FD8FDA29BB60AB59557DE61EDB0AECDB231134BE30E75B455F8E1B792FA9",
+      "expectedUpgradedOrigin": "https://100.64.0.10:80",
+      "expectedUpgradedEntry": "https://100.64.0.10:80/"
+    },
+    "publicHttpsWithPin": {
+      "endpoint": "https://studio.example.test",
+      "code": "K9F2-7X4M",
+      "fingerprint": "06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9",
+      "uri": "kiki://pair?endpoint=https%3A%2F%2Fstudio.example.test&code=K9F2-7X4M&fp=06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9",
+      "expectedUpgradedOrigin": "https://studio.example.test",
+      "expectedUpgradedEntry": "https://studio.example.test/"
+    }
+  },
+  "parsePairInput": [
+    {
+      "input": "kiki://pair?endpoint=http%3A%2F%2F100.64.0.10%3A58627&code=K9F2-7X4M&fp=06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9",
+      "kind": "pair",
+      "origin": "https://100.64.0.10:58627",
+      "endpoint": "https://100.64.0.10:58627",
+      "entry": "https://100.64.0.10:58627/",
+      "code": "K9F2-7X4M",
+      "fingerprint": "06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9"
+    },
+    {
+      "input": "k9f2 7x4m",
+      "kind": "code",
+      "code": "K9F2-7X4M"
+    },
+    {
+      "input": "192.168.10.40:58627",
+      "kind": "target",
+      "origin": "http://192.168.10.40:58627",
+      "entry": "http://192.168.10.40:58627/"
+    },
+    {
+      "input": "studio.example.test",
+      "kind": "target",
+      "origin": "https://studio.example.test",
+      "entry": "https://studio.example.test/"
+    }
+  ],
+  "ownerHandshake": {
+    "peerToken": "kiki-rfc-owner-peer-token-0123456789abcdef",
+    "grantDigest": "ae7f25c39e28d979b71fdaf8238ce36287ae922680982a418d23273023e6dcec",
+    "grantId": "22222222-2222-4222-8222-222222222222",
+    "nonce": "00112233445566778899aabbccddeeff",
+    "target": {
+      "homeId": "11111111-1111-4111-8111-111111111111",
+      "hostId": "studio-workstation-01",
+      "protocol": 1
+    },
+    "reqPreimage": "kiki-handshake-req-v1:00112233445566778899aabbccddeeff",
+    "reqProof": "0dba23c055c19e37f1908b063c1ef12e503b6bf9adf41800a0149558181d0e56",
+    "resPreimage": "kiki-handshake-res-v1:00112233445566778899aabbccddeeff:11111111-1111-4111-8111-111111111111:studio-workstation-01",
+    "resProof": "84fdd92e77ed1977de3d4ce0b4b14d95b030ca32200906e9e112d95fcd752d5b",
+    "revokedPreimage": "kiki-handshake-revoked-v1:00112233445566778899aabbccddeeff:11111111-1111-4111-8111-111111111111:studio-workstation-01",
+    "revokedProof": "4db0fdde640295b6eaab66afd51660328a524ab435aa3b14d22af52e5f068a54",
+    "disabledPreimage": "kiki-handshake-disabled-v1:00112233445566778899aabbccddeeff:11111111-1111-4111-8111-111111111111:studio-workstation-01",
+    "disabledProof": "5812d885261730fd048aea2b6fb6a4a6818e70df326b5ac6955e082ccf420066"
+  },
+  "invitedHandshake": {
+    "invitation": "kiki-rfc-invited-space-token-fedcba9876543210",
+    "invitationDigest": "e9bedeae90510e764965185fb05be7e56ec29c129d39390502075f094855530d",
+    "grantId": "33333333-3333-4333-8333-333333333333",
+    "nonce": "ffeeddccbbaa99887766554433221100",
+    "target": {
+      "homeId": "11111111-1111-4111-8111-111111111111",
+      "hostId": "studio-workstation-01",
+      "protocol": 1
+    },
+    "reqPreimage": "kiki-handshake-req-v1:ffeeddccbbaa99887766554433221100",
+    "reqProof": "a5837e27a695eb0c69ca25dfa06b76b9310aa7631db748bd675f676864a9e9a6",
+    "invitedPreimage": "kiki-handshake-invited-v1:ffeeddccbbaa99887766554433221100:11111111-1111-4111-8111-111111111111:studio-workstation-01",
+    "invitedProof": "f727789ed90730f97750be91130380e566ee2bf7f8cd5851bce4952acb2c2037",
+    "revokedProof": "22744154d9829bf79eb2ee4327db0c8fd666b6b1dee07968b218d1ab8f46f909",
+    "disabledProof": "f615c51c211406ba12a7ecf387ca71e60ad7c13bdde538dbf66988ee89fb30fa"
+  }
+}

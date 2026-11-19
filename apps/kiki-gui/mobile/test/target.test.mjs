@@ -6,12 +6,16 @@ import { stripTypeScriptTypes } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import vm from 'node:vm';
 
 import { chromium } from 'playwright';
 
-// Node ESM needs the extension to resolve the browser module.
-// oxlint-disable-next-line import/extensions
-import {
+const launcherBundlePath = resolve(import.meta.dirname, '../launcher/launcher.js');
+vm.runInThisContext(readFileSync(launcherBundlePath, 'utf8'), {
+  filename: launcherBundlePath,
+});
+
+const {
   STORE_ORIGIN_KEY,
   buildCommittedCredentialScript,
   claimPairingOrigin,
@@ -40,9 +44,10 @@ import {
   resolveVerifiedServerOpen,
   stripTokenFromEntry,
   updateSavedServerOrigin,
+  upgradeEndpointForTlsPin,
   upsertSavedServer,
   verifySavedServerOrigin,
-} from '../launcher/target.js';
+} = globalThis.__kikiLauncher;
 
 function createMemoryStorage(initial = {}) {
   const map = new Map(Object.entries(initial));
@@ -196,6 +201,21 @@ await test('kiki://pair URI round-trips endpoint and short code', () => {
   });
   assert.equal(parsePairingUri(`${uri}&fp=${'A'.repeat(64)}`), null);
   assert.throws(() => formatPairingUri({ endpoint: 'http://192.168.1.5:5494', code: '2345-6789', fingerprint: 'A'.repeat(64) }));
+  const dualStackHttpPinUri = formatPairingUri({
+    endpoint: 'http://100.64.0.10:5494',
+    code: '2345-6789',
+    fingerprint,
+  });
+  assert.equal(upgradeEndpointForTlsPin('http://100.64.0.10:5494', fingerprint), 'https://100.64.0.10:5494');
+  assert.deepEqual(readScanPayload(dualStackHttpPinUri), {
+    ok: true,
+    kind: 'pair',
+    origin: 'https://100.64.0.10:5494',
+    endpoint: 'https://100.64.0.10:5494',
+    code: '2345-6789',
+    entry: 'https://100.64.0.10:5494/',
+    fingerprint,
+  });
 });
 
 await test('readPastePayload, editableOrigin, and pinnedFingerprints round-trip self-signed HTTPS pairing cleanly', async () => {
@@ -1190,6 +1210,9 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.match(androidPluginSource, /x-kiki-handshake-grant/);
     assert.match(androidPluginSource, /kiki-handshake-req-v1:/);
     assert.match(androidPluginSource, /kiki-handshake-res-v1:/);
+    assert.match(androidPluginSource, /kiki-handshake-invited-v1:/);
+    assert.match(androidPluginSource, /upgradeOriginForTlsPin/);
+    assert.match(androidPluginSource, /handleWebPermissionRequest/);
     assert.match(androidPluginSource, /!hs\.mutualProofVerified/);
     assert.match(androidPluginSource, /clearPendingAuthIfCurrent\(callEpoch\)/);
     assert.equal(
@@ -1217,6 +1240,8 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
     assert.match(iosPluginSource, /x-kiki-handshake-grant/);
     assert.match(iosPluginSource, /kiki-handshake-req-v1:/);
     assert.match(iosPluginSource, /kiki-handshake-res-v1:/);
+    assert.match(iosPluginSource, /kiki-handshake-invited-v1:/);
+    assert.match(iosPluginSource, /upgradeOriginForTlsPin/);
     assert.match(iosPluginSource, /mutualVerified/);
     assert.match(iosPluginSource, /clearPendingAuthIfCurrent\(epoch:\s*callEpoch\)/);
     assert.equal(
@@ -1239,6 +1264,7 @@ await test('paired-origin cross-origin 302 redirect (including TOCTOU redirect) 
       'utf8',
     );
     assert.match(androidMainActivitySource, /onReceivedSslError/);
+    assert.match(androidMainActivitySource, /onPermissionRequest/);
     const iosPinningSource = readFileSync(
       join(mobileRoot, 'ios/App/App/KikiTlsPinning.swift'),
       'utf8',
@@ -1770,13 +1796,14 @@ test('Android KikiShellPlugin actual Java methods bind async handshake to exact 
     return source.slice(from, to);
   }
   const fields = section('    private static final SecureRandom NONCE_RANDOM', '    @Override\n    public void load()');
-  const load = section('    public void load() {', '    @PluginMethod\n    public void scanQr');
+  const load = section('    public void load() {', '    boolean handleWebPermissionRequest');
   const probeMethod = section('    @PluginMethod\n    public void probe(PluginCall call)', '    @PluginMethod\n    public void claimPair').replaceAll('    @PluginMethod\n', '');
   const openMethods = section('    @PluginMethod\n    public void open(PluginCall call)', '    @PluginMethod\n    public void forgetServer').replaceAll('    @PluginMethod\n', '');
   const clear = section('    private void clearPendingAuth() {', '    private void deliverCommittedToken');
   const deliver = section('    private void deliverCommittedToken', '    static String stripTokenFromEntry');
   const stripAndBuilder = section('    static String stripTokenFromEntry', '    private HandshakeResult fetchHandshake');
   const cryptoHelpers = section('    static String sha256Hex', '    private String resolveHandshakeKey');
+  const pinAndUpgrade = section('    static String normalizeFingerprint', '    static String certificateSpkiSha256Hex');
   const override = section('    @Override\n    public Boolean shouldOverrideLoad(Uri url)', '    @Override\n    protected void handleOnNewIntent').replace('    @Override\n', '');
   const origin = section('    private static boolean isWebOrigin(Uri uri)', '\n}');
   assert.ok(load.includes('new WebViewListener()'));
@@ -1802,6 +1829,7 @@ ${clear}
 ${deliver}
 ${stripAndBuilder}
 ${cryptoHelpers}
+${pinAndUpgrade}
 ${override}
 ${origin}
     private static final String TRUSTED_ORIGIN = "trustedOrigin";
@@ -3757,8 +3785,8 @@ await test('launcher Connect screen defaults to a centered scan-first hierarchy 
       });
       await unreachablePairedPage.waitForTimeout(200);
       assert.equal(await unreachablePairedPage.evaluate(() => document.querySelector('#view-computers').hidden), false);
-      const chromiumWildcardResult = await unreachablePairedPage.evaluate(async () => {
-        const mod = await import('/target.js');
+      const chromiumWildcardResult = await unreachablePairedPage.evaluate(() => {
+        const mod = window.__kikiLauncher;
         return {
           star: mod.readTarget('*'),
           httpStar: mod.readTarget('http://*'),

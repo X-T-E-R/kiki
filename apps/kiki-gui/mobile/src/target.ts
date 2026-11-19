@@ -1,484 +1,306 @@
-/**
- * What the person typed, pasted, or scanned into the launcher, read as a Kiki
- * server or a short-lived pairing URI (`kiki://pair?endpoint=...&code=...`).
- *
- * Accepts a bare address ("192.168.1.5:5494"), a full origin, a pairing URI,
- * or an entry link copied from Settings → Web access (`…/#access=<code >`).
- * The launcher stores server origins and computer identity metadata, while
- * one-time links, QR payloads, and bearer tokens are never written to web
- * storage, logs, or the clipboard.
- */
+import {
+  HANDSHAKE_HEADERS,
+  HANDSHAKE_HEX_PROOF_PATTERN,
+  PAIRING_CODE_ALPHABET,
+  PAIRING_URI_PREFIX,
+  TLS_FINGERPRINT_PATTERN,
+  classifyOrigin,
+  computeHandshakeProof,
+  constantTimeHexEqual,
+  createMutualHandshakeChallenge,
+  displayOrigin,
+  editableOrigin,
+  formatPairingCodeInput,
+  formatPairingUri,
+  handshakeDomainToStatus,
+  handshakeRequestPreimage,
+  handshakeResponsePreimage,
+  handshakeStatusToDomain,
+  hmacSha256Hex,
+  isDirectConnectionHost,
+  isLanHost,
+  isLocalDefaultHost,
+  isValidTargetHostname,
+  isValidTlsFingerprint,
+  isVpnHost,
+  normalizePairingCode as normalizePairingCodeCanonical,
+  normalizePairingEndpoint,
+  normalizeTlsFingerprint,
+  parsePairInput,
+  parsePairingUri as parsePairingUriCanonical,
+  readConnectInput,
+  readPastePayload,
+  readScanPayload,
+  readTarget,
+  sha256BytesHex,
+  sha256Hex,
+  stripTokenFromEntry,
+  upgradeEndpointForTlsPin,
+  type ConnectInputResult,
+  type HandshakeResponseDomain,
+  type HandshakeStatus,
+  type MutualHandshakeChallenge,
+  type MutualHandshakeChallengeInput,
+  type OriginClassification,
+  type PairInputResult,
+  type ParsedPairingUri,
+  type PastePayloadResult,
+  type ScanPayloadResult,
+  type TargetParseResult,
+} from '@kiki/protocol/pairing';
 
-const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-
-export const PAIRING_URI_PREFIX = 'kiki://pair';
-export const PAIRING_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-const PAIRING_CODE_PATTERN = new RegExp(`^[${PAIRING_CODE_ALPHABET}]{8}$`);
-const TLS_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/;
+export {
+  HANDSHAKE_HEADERS,
+  HANDSHAKE_HEX_PROOF_PATTERN,
+  PAIRING_CODE_ALPHABET,
+  PAIRING_URI_PREFIX,
+  TLS_FINGERPRINT_PATTERN,
+  classifyOrigin,
+  computeHandshakeProof,
+  constantTimeHexEqual,
+  createMutualHandshakeChallenge,
+  displayOrigin,
+  editableOrigin,
+  formatPairingCodeInput,
+  formatPairingUri,
+  handshakeDomainToStatus,
+  handshakeRequestPreimage,
+  handshakeResponsePreimage,
+  handshakeStatusToDomain,
+  hmacSha256Hex,
+  isDirectConnectionHost,
+  isLanHost,
+  isLocalDefaultHost,
+  isValidTargetHostname,
+  isValidTlsFingerprint,
+  isVpnHost,
+  normalizePairingEndpoint,
+  normalizeTlsFingerprint,
+  parsePairInput,
+  readConnectInput,
+  readPastePayload,
+  readScanPayload,
+  readTarget,
+  sha256BytesHex,
+  sha256Hex,
+  stripTokenFromEntry,
+  upgradeEndpointForTlsPin,
+  type ConnectInputResult,
+  type HandshakeResponseDomain,
+  type HandshakeStatus,
+  type MutualHandshakeChallenge,
+  type MutualHandshakeChallengeInput,
+  type OriginClassification,
+  type PairInputResult,
+  type ParsedPairingUri,
+  type PastePayloadResult,
+  type ScanPayloadResult,
+  type TargetParseResult,
+};
 
 export const STORE_ORIGIN_KEY = 'kiki.shell.origin';
 export const STORE_SERVERS_KEY = 'kiki.shell.servers';
 export const STORE_DEVICE_KEY = 'kiki.shell.device';
+export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
+export const SHELL_DOCUMENT_NAV_NONCE_PROP = '__kikiShellNavNonce';
 
-function parseIpv4Octets(hostname) {
-  const parts = String(hostname ?? '').split('.');
-  if (parts.length !== 4) return null;
-  const nums = [];
-  for (const part of parts) {
-    if (!/^(?:0|[1-9]\d{0,2})$/.test(part)) return null;
-    const n = Number(part);
-    if (n < 0 || n > 255) return null;
-    nums.push(n);
-  }
-  return nums;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export interface StorageLike {
+  getItem?(key: string): string | null;
+  setItem?(key: string, value: string): void;
+  removeItem?(key: string): void;
 }
 
-function isValidIpv6Address(raw) {
-  const value = String(raw ?? '').toLowerCase();
-  if (value === '' || /[^0-9a-f:.]/.test(value)) return false;
-  const doubleColonParts = value.split('::');
-  if (doubleColonParts.length > 2) return false;
-  const parseSide = (side, allowEmbeddedIpv4) => {
-    if (side === '') return { ok: true, groups: 0 };
-    const tokens = side.split(':');
-    let groups = 0;
-    for (let i = 0; i < tokens.length; i += 1) {
-      const token = tokens[i];
-      if (allowEmbeddedIpv4 && i === tokens.length - 1 && token.includes('.')) {
-        if (parseIpv4Octets(token) === null) return { ok: false, groups: 0 };
-        groups += 2;
-      } else {
-        if (!/^[0-9a-f]{1,4}$/.test(token)) return { ok: false, groups: 0 };
-        groups += 1;
-      }
+export interface DeviceIdentity {
+  homeId: string;
+  hostId: string;
+  label: string;
+}
+
+export interface SavedServer {
+  id: string;
+  label: string;
+  origin: string;
+  origins: string[];
+  verifiedOrigins: string[];
+  pinnedFingerprints?: Record<string, string>;
+  paired: boolean;
+  targetHomeId?: string;
+  targetHostId?: string;
+  grantId?: string;
+  updatedAt: number;
+}
+
+export interface UpsertSavedServerInput {
+  id?: string;
+  origin: string;
+  label?: string;
+  paired?: boolean;
+  targetHomeId?: string;
+  targetHostId?: string;
+  grantId?: string;
+  fingerprint?: string;
+  pinnedFingerprints?: Record<string, string>;
+  verified?: boolean;
+}
+
+export interface ProbeHandshakeOptions {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  handshakeKey?: string;
+  handshakeProof?: string;
+  peerToken?: string;
+  grantId?: string;
+  nonce?: string;
+  targetHomeId?: string;
+  targetHostId?: string;
+  serverId?: string;
+  fingerprint?: string;
+  requireMutualProof?: boolean;
+  expectedStatus?: 'approved' | 'invited';
+}
+
+export interface HandshakeProbeResult {
+  ok: boolean;
+  aborted?: boolean;
+  status?: number;
+  reason?: string;
+  authRejected?: boolean;
+  inboundEnabled?: boolean;
+  targetLabel?: string;
+  targetHomeId?: string;
+  targetHostId?: string;
+  handshakeStatus?: HandshakeStatus;
+  mutualProofVerified?: boolean;
+  mutualRevokedVerified?: boolean;
+  mutualDisabledVerified?: boolean;
+  mutualInvitedVerified?: boolean;
+  requireMutualProof?: boolean;
+}
+
+export interface NativeClaimParams {
+  endpoint: string;
+  origin: string;
+  code: string;
+  homeId: string;
+  hostId: string;
+  sourceLabel: string;
+  fingerprint?: string;
+}
+
+export interface NativeClaimResponse {
+  ok: boolean;
+  reason?: string;
+  origin?: string;
+  serverId?: string;
+  targetHomeId?: string;
+  targetHostId?: string;
+  targetLabel?: string;
+  grantId?: string;
+  revision?: number;
+}
+
+export interface ClaimPairingInput {
+  endpoint?: string;
+  origin?: string;
+  code?: string;
+  fingerprint?: string;
+  platform?: string;
+  identity?: DeviceIdentity;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  saveToken?: (serverId: string, token: string, origin: string) => void | Promise<void>;
+  nativeClaim?: (params: NativeClaimParams) => Promise<NativeClaimResponse>;
+}
+
+export type ClaimPairingResult =
+  | {
+      ok: true;
+      origin: string;
+      serverId: string;
+      targetHomeId: string;
+      targetHostId?: string;
+      targetLabel?: string;
+      grantId?: string;
+      revision?: number;
+      peerToken?: string;
+      fingerprint?: string;
+      server: SavedServer | null;
     }
-    return { ok: true, groups };
-  };
-  if (doubleColonParts.length === 1) {
-    const full = parseSide(doubleColonParts[0], true);
-    return full.ok && full.groups === 8;
-  }
-  const left = parseSide(doubleColonParts[0], false);
-  const right = parseSide(doubleColonParts[1], true);
-  return left.ok && right.ok && left.groups + right.groups < 8;
-}
-
-/** Validates an origin hostname (RFC 1123 domain/LAN label, strict IPv4, or bracketed IPv6). */
-export function isValidTargetHostname(hostname) {
-  const value = String(hostname ?? '');
-  if (value === '' || value.length > 255) return false;
-  if (value.startsWith('[') || value.endsWith(']')) {
-    if (!value.startsWith('[') || !value.endsWith(']')) return false;
-    return isValidIpv6Address(value.slice(1, -1));
-  }
-  if (value.startsWith('.')) return false;
-  if (/^[0-9.]+$/.test(value)) {
-    return parseIpv4Octets(value) !== null;
-  }
-  const dns = value.endsWith('.') ? value.slice(0, -1) : value;
-  if (dns === '' || dns.length > 253 || dns.endsWith('.')) return false;
-  const labels = dns.split('.');
-  for (const label of labels) {
-    if (!DNS_LABEL_PATTERN.test(label)) return false;
-  }
-  const lastLabel = labels[labels.length - 1];
-  if (/^\d+$/.test(lastLabel)) return false;
-  return true;
-}
-
-function parseRawAuthorityHost(authority) {
-  if (authority === '') return null;
-  let host;
-  let port;
-  if (authority.startsWith('[')) {
-    const match = authority.match(/^(\[[^\]]+\])(?::([^/?#]*))?$/);
-    if (!match) return null;
-    host = match[1];
-    port = match[2];
-  } else {
-    const match = authority.match(/^([^:]+)(?::([^/?#]*))?$/);
-    if (!match) return null;
-    host = match[1];
-    port = match[2];
-  }
-  if (port !== undefined) {
-    if (!/^\d{1,5}$/.test(port)) return null;
-    const portNum = Number(port);
-    if (portNum < 1 || portNum > 65535) return null;
-  }
-  if (!host.startsWith('[') && (host.startsWith('.') || host.endsWith('..') || host.includes('..') || host.includes('*'))) {
-    return null;
-  }
-  if (!host.startsWith('[') && /^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*\.?$/i.test(host)) {
-    if (parseIpv4Octets(host) === null) return null;
-  }
-  return host;
-}
-
-function isLocalDefaultHost(host) {
-  if (!isValidTargetHostname(host)) return false;
-  const lower = host.toLowerCase();
-  if (lower.startsWith('[')) return true;
-  if (parseIpv4Octets(lower) !== null) return true;
-  const bare = lower.endsWith('.') ? lower.slice(0, -1) : lower;
-  return bare === 'localhost' || !bare.includes('.') || bare.endsWith('.local');
-}
-
-/** @returns {{ ok: true, origin: string, entry: string } | { ok: false, reason: 'empty' | 'invalid' | 'scheme' | 'credentials' }} */
-export function readTarget(raw) {
-  const text = String(raw ?? '').trim();
-  if (text === '') return { ok: false, reason: 'empty' };
-  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
-  const schemeLower = hasScheme ? text.slice(0, text.indexOf(':')).toLowerCase() : '';
-  if (hasScheme && schemeLower !== 'http' && schemeLower !== 'https') {
-    return { ok: false, reason: 'scheme' };
-  }
-  const withoutScheme = hasScheme ? text.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '') : text;
-  const authority = withoutScheme.split(/[/?#]/, 1)[0];
-  if (authority.includes('@')) {
-    try {
-      const credCheck = new URL(hasScheme ? text : `http://${text}`);
-      if (credCheck.username !== '' || credCheck.password !== '') {
-        return { ok: false, reason: 'credentials' };
-      }
-    } catch {
-      return { ok: false, reason: 'invalid' };
-    }
-    return { ok: false, reason: 'invalid' };
-  }
-  const rawHost = parseRawAuthorityHost(authority);
-  if (rawHost === null) return { ok: false, reason: 'invalid' };
-  let url;
-  try {
-    if (hasScheme) {
-      url = new URL(text);
-    } else {
-      // A home machine on the LAN rarely has a certificate; a named public
-      // host almost always does.
-      url = new URL(`${isLocalDefaultHost(rawHost) ? 'http' : 'https'}://${text}`);
-    }
-  } catch {
-    return { ok: false, reason: 'invalid' };
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { ok: false, reason: 'scheme' };
-  if (url.username !== '' || url.password !== '') return { ok: false, reason: 'credentials' };
-  if (!isValidTargetHostname(url.hostname)) return { ok: false, reason: 'invalid' };
-  const carriesEntry = /(?:^#|&)access=/.test(url.hash) || url.searchParams.has('token');
-  return { ok: true, origin: url.origin, entry: carriesEntry ? url.href : `${url.origin}/` };
-}
-
-/** Host text for display: the origin without a default scheme's noise. */
-export function displayOrigin(origin) {
-  try {
-    const url = new URL(origin);
-    return url.protocol === 'https:' ? url.host : `${url.host} · http`;
-  } catch {
-    return origin;
-  }
-}
-
-/** Normalizes an 8-character pairing code into `XXXX-XXXX` or returns null. */
-export function normalizePairingCode(raw) {
-  const compact = String(raw ?? '')
-    .trim()
-    .toUpperCase()
-    .replaceAll(/[\s-]+/g, '');
-  if (!PAIRING_CODE_PATTERN.test(compact)) return null;
-  return `${compact.slice(0, 4)}-${compact.slice(4, 8)}`;
-}
-
-/** Formats user typing in the pairing code field into `XXXX-XXXX`. */
-export function formatPairingCodeInput(raw) {
-  const compact = String(raw ?? '')
-    .toUpperCase()
-    .replaceAll(/[^0-9A-Z]/g, '')
-    .slice(0, 8);
-  return compact.length > 4 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
-}
-
-function normalizePairingEndpoint(raw) {
-  const trimmed = String(raw ?? '').trim();
-  if (!/^https?:\/\//i.test(trimmed)) return null;
-  const target = readTarget(trimmed);
-  if (!target.ok) return null;
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    if (parsed.username !== '' || parsed.password !== '' || !isValidTargetHostname(parsed.hostname)) return null;
-    const pathname = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
-    return `${parsed.origin}${pathname}`;
-  } catch {
-    return null;
-  }
-}
-
-/** Formats a short-lived `kiki://pair?endpoint=<encoded>&code=<encoded>` URI. */
-export function formatPairingUri(input) {
-  const endpoint = normalizePairingEndpoint(input?.endpoint ?? '');
-  const code = normalizePairingCode(input?.code ?? '');
-  const fingerprint = input?.fingerprint;
-  if (!endpoint) throw new Error('Invalid pairing endpoint');
-  if (!code) throw new Error('Invalid pairing code');
-  if (fingerprint !== undefined && !TLS_FINGERPRINT_PATTERN.test(fingerprint)) {
-    throw new Error('Invalid TLS fingerprint');
-  }
-  const params = new URLSearchParams({
-    endpoint,
-    code,
-  });
-  if (fingerprint !== undefined) params.set('fp', fingerprint);
-  return `${PAIRING_URI_PREFIX}?${params.toString()}`;
-}
-
-/** Parses a pairing URI or returns null, preserving optional `fp` SPKI fingerprint. */
-export function parsePairingUri(raw) {
-  const trimmed = String(raw ?? '').trim();
-  if (!/^kiki:\/\/\/?pair(?:\?|$)/i.test(trimmed)) return null;
-  let parsed;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return null;
-  }
-  const host = parsed.hostname.toLowerCase();
-  const path = parsed.pathname.toLowerCase();
-  if (
-    parsed.protocol.toLowerCase() !== 'kiki:' ||
-    parsed.username !== '' ||
-    parsed.password !== '' ||
-    parsed.port !== '' ||
-    parsed.hash !== ''
-  ) {
-    return null;
-  }
-  if (!((host === 'pair' && (path === '' || path === '/')) || (host === '' && path === '/pair'))) {
-    return null;
-  }
-  const endpoint = normalizePairingEndpoint(parsed.searchParams.get('endpoint') ?? '');
-  const code = normalizePairingCode(parsed.searchParams.get('code') ?? '');
-  const fingerprint = parsed.searchParams.get('fp');
-  if (!endpoint || !code || (fingerprint !== null && !TLS_FINGERPRINT_PATTERN.test(fingerprint))) return null;
-  const result = {
-    endpoint,
-    code,
-  };
-  if (fingerprint !== null) {
-    result.fingerprint = fingerprint;
-  }
-  return result;
-}
-
-/**
- * Parses a QR scan payload (`kiki://pair?...` or an explicit `http(s)://` URL).
- * Rejects arbitrary plain text so a stray barcode never becomes a hostname.
- */
-export function readScanPayload(raw) {
-  const text = String(raw ?? '').trim();
-  if (text === '') return { ok: false, reason: 'invalid_qr' };
-  const pair = parsePairingUri(text);
-  if (pair !== null) {
-    const target = readTarget(pair.endpoint);
-    if (!target.ok) return { ok: false, reason: 'invalid_qr' };
-    const result = {
-      ok: true,
-      kind: 'pair',
-      origin: target.origin,
-      endpoint: pair.endpoint,
-      code: pair.code,
-      entry: `${target.origin}/`,
+  | {
+      ok: false;
+      reason: string;
     };
-    if (pair.fingerprint) {
-      result.fingerprint = pair.fingerprint;
-    }
-    return result;
-  }
-  if (!/^https?:\/\//i.test(text)) {
-    return { ok: false, reason: 'invalid_qr' };
-  }
-  const target = readTarget(text);
-  if (!target.ok) return { ok: false, reason: 'invalid_qr' };
-  try {
-    const url = new URL(text);
-    const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''));
-    const embeddedCode = normalizePairingCode(url.searchParams.get('code') ?? hashParams.get('code') ?? '');
-    if (embeddedCode !== null) {
-      const embeddedFp = url.searchParams.get('fp') ?? hashParams.get('fp');
-      const result = {
-        ok: true,
-        kind: 'pair',
-        origin: target.origin,
-        endpoint: target.origin,
-        code: embeddedCode,
-        entry: `${target.origin}/`,
-      };
-      if (embeddedFp !== null && TLS_FINGERPRINT_PATTERN.test(embeddedFp)) {
-        result.fingerprint = embeddedFp;
-      }
-      return result;
-    }
-  } catch {
-    /* already validated by readTarget */
-  }
-  return {
-    ok: true,
-    kind: 'target',
-    origin: target.origin,
-    entry: target.entry,
-  };
+
+export interface ResolveVerifiedOpenInput {
+  origin: string;
+  entry?: string;
+  endpoint?: string;
+  code?: string;
+  serverId?: string;
+  label?: string;
+  paired?: boolean;
+  targetHomeId?: string;
+  targetHostId?: string;
+  grantId?: string;
+  fingerprint?: string;
+  platform?: string;
+  identity?: DeviceIdentity;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  handshakeKey?: string;
+  handshakeProof?: string;
+  requireMutualProof?: boolean;
+  signal?: AbortSignal;
+  isStale?: () => boolean;
+  probe?: (origin: string, options?: ProbeHandshakeOptions) => Promise<HandshakeProbeResult>;
+  saveToken?: (serverId: string, token: string, origin: string) => void | Promise<void>;
+  getToken?: (serverId: string, origin: string) => Promise<string | null | undefined> | string | null | undefined;
+  nativeClaim?: (params: NativeClaimParams) => Promise<NativeClaimResponse>;
 }
 
-/**
- * Parses clipboard text from a 1-tap paste action: accepts a `kiki://pair?...` URI
- * (even embedded inside a copied message), an `http(s)://` link, an `address code`
- * pair separated by whitespace, or a bare server address.
- */
-export function readPastePayload(raw) {
-  const text = String(raw ?? '').trim();
-  if (text === '') return { ok: false, reason: 'empty' };
-  const directScan = readScanPayload(text);
-  if (directScan.ok) return directScan;
-  const embeddedPair = text.match(/kiki:\/\/\/?pair\?[^\s"'<>]+/i);
-  if (embeddedPair) {
-    const cleaned = embeddedPair[0].replace(/[),.;!?]+$/, '');
-    const scanned = readScanPayload(cleaned);
-    if (scanned.ok) return scanned;
-  }
-  const tokens = text.split(/\s+/).filter(Boolean);
-  if (tokens.length === 2) {
-    const combined = readConnectInput(tokens[0], tokens[1]);
-    if (combined.ok && combined.kind === 'pair') return combined;
-  }
-  const bare = readTarget(text);
-  if (bare.ok) {
-    return {
-      ok: true,
-      kind: 'target',
-      origin: bare.origin,
-      entry: bare.entry,
+export type ResolveVerifiedOpenResult =
+  | {
+      ok: true;
+      origin: string;
+      commitOrigin: string;
+      server: SavedServer | null;
+      serverId?: string;
+      finalEntry: string;
+      sessionToken?: string;
+      requireMutualProof: boolean;
+      tokenAttached: false;
+      targetHomeId?: string;
+      targetHostId?: string;
+      grantId?: string;
+      probe?: (origin: string, options?: ProbeHandshakeOptions) => Promise<HandshakeProbeResult>;
+    }
+  | {
+      ok: false;
+      stale?: boolean;
+      reason: string;
+      server?: SavedServer;
     };
-  }
-  return { ok: false, reason: 'invalid' };
+
+export interface PageTargetLike {
+  url?: () => string;
+  goto?: (url: string, options?: unknown) => Promise<unknown>;
+  evaluate?: <TResult, TArg = unknown>(fn: (arg: TArg) => TResult | Promise<TResult>, arg: TArg) => Promise<TResult>;
+  waitForLoadState?: (state: string) => Promise<unknown>;
+  name?: string;
 }
 
-/** Formats an origin for an editable address input without downgrading local HTTPS to HTTP. */
-export function editableOrigin(origin) {
-  try {
-    const url = new URL(origin);
-    if (url.protocol === 'https:' && isLocalDefaultHost(url.hostname)) {
-      return url.origin;
-    }
-    return url.host;
-  } catch {
-    return origin;
-  }
+export function normalizePairingCode(raw: string): string | null {
+  return normalizePairingCodeCanonical(raw) ?? null;
 }
 
-/**
- * Reads the manual address + optional pairing code fields together.
- * Also accepts a `kiki://pair?...` URI pasted directly into the address field.
- */
-export function readConnectInput(rawAddress, rawCode = '') {
-  const addressText = String(rawAddress ?? '').trim();
-  const codeText = String(rawCode ?? '').trim();
-  if (/^kiki:\/\//i.test(addressText)) {
-    const scanned = readScanPayload(addressText);
-    if (!scanned.ok) return { ok: false, reason: 'invalid' };
-    if (codeText !== '') {
-      const overrideCode = normalizePairingCode(codeText);
-      if (overrideCode === null) return { ok: false, reason: 'invalid_code' };
-      const result = {
-        ok: true,
-        kind: 'pair',
-        origin: scanned.origin,
-        endpoint: scanned.endpoint ?? scanned.origin,
-        code: overrideCode,
-        entry: `${scanned.origin}/`,
-      };
-      if (scanned.fingerprint) {
-        result.fingerprint = scanned.fingerprint;
-      }
-      return result;
-    }
-    return scanned;
-  }
-  const target = readTarget(addressText);
-  if (!target.ok) return target;
-  if (codeText !== '') {
-    const code = normalizePairingCode(codeText);
-    if (code === null) return { ok: false, reason: 'invalid_code' };
-    return {
-      ok: true,
-      kind: 'pair',
-      origin: target.origin,
-      endpoint: target.origin,
-      code,
-      entry: `${target.origin}/`,
-    };
-  }
-  return {
-    ok: true,
-    kind: 'target',
-    origin: target.origin,
-    entry: target.entry,
-  };
+export function parsePairingUri(raw: string): ParsedPairingUri | null {
+  return parsePairingUriCanonical(raw) ?? null;
 }
 
-function isVpnHost(hostname) {
-  if (!isValidTargetHostname(hostname)) return false;
-  const lower = hostname.toLowerCase().replaceAll(/^\[|\]$/g, '');
-  const bare = lower.endsWith('.') ? lower.slice(0, -1) : lower;
-  if (bare.endsWith('.ts.net') || bare.endsWith('.tailscale.net')) return true;
-  if (lower.startsWith('fd7a:115c:a1e0:')) return true;
-  const ipv4 = parseIpv4Octets(lower);
-  if (ipv4 !== null) {
-    return ipv4[0] === 100 && ipv4[1] >= 64 && ipv4[1] <= 127;
-  }
-  return false;
-}
-
-function isLanHost(hostname) {
-  if (!isValidTargetHostname(hostname)) return false;
-  const lower = hostname.toLowerCase().replaceAll(/^\[|\]$/g, '');
-  const bare = lower.endsWith('.') ? lower.slice(0, -1) : lower;
-  if (bare === 'localhost' || lower === '::1' || bare.endsWith('.local') || !bare.includes('.')) {
-    if (!lower.includes(':') && parseIpv4Octets(lower) === null) return true;
-  }
-  if (lower === '::1' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) {
-    return !lower.startsWith('fd7a:115c:a1e0:');
-  }
-  const ipv4 = parseIpv4Octets(lower);
-  if (ipv4 !== null) {
-    const [a, b] = ipv4;
-    if (a === 10 || a === 127) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 169 && b === 254) return true;
-  }
-  return false;
-}
-
-/**
- * Classifies a server origin or raw input into its transport layer:
- * `'lan'` (local network), `'vpn'` (Tailscale / CGNAT mesh), `'https'`, `'http'`, or `'invalid'`.
- */
-export function classifyOrigin(rawOrOrigin) {
-  const target = readTarget(rawOrOrigin);
-  if (!target.ok) {
-    return { layer: 'invalid', protocol: 'http', host: '' };
-  }
-  const url = new URL(target.origin);
-  const protocol = url.protocol === 'https:' ? 'https' : 'http';
-  const hostname = url.hostname;
-  if (isVpnHost(hostname)) {
-    return { layer: 'vpn', protocol, host: url.host };
-  }
-  if (isLanHost(hostname)) {
-    return { layer: 'lan', protocol, host: url.host };
-  }
-  return { layer: protocol === 'https' ? 'https' : 'http', protocol, host: url.host };
-}
-
-function randomUuid() {
+function randomUuid(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
     return globalThis.crypto.randomUUID();
   }
@@ -488,23 +310,20 @@ function randomUuid() {
   } else {
     for (let i = 0; i < 16; i += 1) bytes[i] = Math.floor(Math.random() * 256);
   }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-/**
- * Returns the persistent mobile device identity used for pairing claims
- * (`source: { homeId, hostId, protocol: 1 }`).
- */
-export function readDeviceIdentity(storage = globalThis.localStorage, platform = 'android') {
+export function readDeviceIdentity(
+  storage: StorageLike | undefined = globalThis.localStorage,
+  platform = 'android',
+): DeviceIdentity {
   try {
     const raw = storage?.getItem?.(STORE_DEVICE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as Partial<DeviceIdentity> | null;
       if (
         parsed &&
         typeof parsed.homeId === 'string' &&
@@ -520,22 +339,20 @@ export function readDeviceIdentity(storage = globalThis.localStorage, platform =
       }
     }
   } catch {
-    /* create fresh identity below */
   }
   const homeId = randomUuid();
   const cleanPlatform = String(platform || 'mobile').toLowerCase().replaceAll(/[^a-z0-9]/g, '') || 'mobile';
   const hostId = `kiki-${cleanPlatform}-${homeId.slice(0, 8)}`;
   const label = cleanPlatform === 'ios' ? 'Kiki iOS' : 'Kiki Android';
-  const identity = { homeId, hostId, label };
+  const identity: DeviceIdentity = { homeId, hostId, label };
   try {
     storage?.setItem?.(STORE_DEVICE_KEY, JSON.stringify(identity));
   } catch {
-    /* storage unavailable */
   }
   return identity;
 }
 
-function defaultLabelForOrigin(origin) {
+function defaultLabelForOrigin(origin: string): string {
   try {
     const url = new URL(origin);
     return url.hostname;
@@ -544,9 +361,9 @@ function defaultLabelForOrigin(origin) {
   }
 }
 
-function sanitizePinnedFingerprints(rawMap) {
+function sanitizePinnedFingerprints(rawMap: unknown): Record<string, string> | undefined {
   if (!rawMap || typeof rawMap !== 'object' || Array.isArray(rawMap)) return undefined;
-  const clean = {};
+  const clean: Record<string, string> = {};
   let count = 0;
   for (const [rawOrigin, rawFp] of Object.entries(rawMap)) {
     if (count >= 6) break;
@@ -560,8 +377,10 @@ function sanitizePinnedFingerprints(rawMap) {
   return count > 0 ? clean : undefined;
 }
 
-/** Returns the pinned SPKI SHA-256 fingerprint for `rawOrOrigin` on `server`, if any. */
-export function getServerFingerprint(server, rawOrOrigin) {
+export function getServerFingerprint(
+  server: SavedServer | null | undefined,
+  rawOrOrigin?: string,
+): string | undefined {
   if (!server || !server.pinnedFingerprints || typeof server.pinnedFingerprints !== 'object') {
     return undefined;
   }
@@ -571,35 +390,51 @@ export function getServerFingerprint(server, rawOrOrigin) {
   return typeof fp === 'string' && TLS_FINGERPRINT_PATTERN.test(fp) ? fp : undefined;
 }
 
-function sanitizeServerRecord(raw) {
+function sanitizeServerRecord(raw: unknown): SavedServer | null {
   if (!raw || typeof raw !== 'object') return null;
-  const target = readTarget(raw.origin ?? '');
+  const obj = raw as Record<string, unknown>;
+  const target = readTarget(typeof obj['origin'] === 'string' ? obj['origin'] : '');
   if (!target.ok) return null;
   const origin = target.origin;
-  const targetHomeId = typeof raw.targetHomeId === 'string' && raw.targetHomeId.trim() !== '' ? raw.targetHomeId.trim() : undefined;
-  const targetHostId = typeof raw.targetHostId === 'string' && raw.targetHostId.trim() !== '' ? raw.targetHostId.trim() : undefined;
-  const grantId = typeof raw.grantId === 'string' && raw.grantId.trim() !== '' ? raw.grantId.trim() : undefined;
-  const paired = Boolean(raw.paired || targetHomeId);
-  const rawVerified = Array.isArray(raw.verifiedOrigins) ? raw.verifiedOrigins : paired ? [origin] : [];
-  const verifiedOrigins = [];
+  const targetHomeId =
+    typeof obj['targetHomeId'] === 'string' && obj['targetHomeId'].trim() !== ''
+      ? obj['targetHomeId'].trim()
+      : undefined;
+  const targetHostId =
+    typeof obj['targetHostId'] === 'string' && obj['targetHostId'].trim() !== ''
+      ? obj['targetHostId'].trim()
+      : undefined;
+  const grantId =
+    typeof obj['grantId'] === 'string' && obj['grantId'].trim() !== ''
+      ? obj['grantId'].trim()
+      : undefined;
+  const paired = Boolean(obj['paired'] || targetHomeId);
+  const rawVerified = Array.isArray(obj['verifiedOrigins']) ? obj['verifiedOrigins'] : paired ? [origin] : [];
+  const verifiedOrigins: string[] = [];
   for (const item of rawVerified) {
-    const parsed = readTarget(item);
+    const parsed = readTarget(String(item ?? ''));
     if (parsed.ok && !verifiedOrigins.includes(parsed.origin) && verifiedOrigins.length < 6) {
       verifiedOrigins.push(parsed.origin);
     }
   }
-  const rawOrigins = Array.isArray(raw.origins) ? raw.origins : [];
-  const origins = [origin];
+  const rawOrigins = Array.isArray(obj['origins']) ? obj['origins'] : [];
+  const origins: string[] = [origin];
   for (const item of [...rawOrigins, ...verifiedOrigins]) {
-    const parsed = readTarget(item);
+    const parsed = readTarget(String(item ?? ''));
     if (parsed.ok && !origins.includes(parsed.origin) && origins.length < 6) {
       origins.push(parsed.origin);
     }
   }
-  const pinnedFingerprints = sanitizePinnedFingerprints(raw.pinnedFingerprints);
-  const id = typeof raw.id === 'string' && raw.id.trim() !== '' ? raw.id.trim() : (targetHomeId ?? `origin:${origin}`);
-  const label = typeof raw.label === 'string' && raw.label.trim() !== '' ? raw.label.trim() : defaultLabelForOrigin(origin);
-  const record = {
+  const pinnedFingerprints = sanitizePinnedFingerprints(obj['pinnedFingerprints']);
+  const id =
+    typeof obj['id'] === 'string' && obj['id'].trim() !== ''
+      ? obj['id'].trim()
+      : (targetHomeId ?? `origin:${origin}`);
+  const label =
+    typeof obj['label'] === 'string' && obj['label'].trim() !== ''
+      ? obj['label'].trim()
+      : defaultLabelForOrigin(origin);
+  const record: SavedServer = {
     id,
     label,
     origin,
@@ -609,7 +444,7 @@ function sanitizeServerRecord(raw) {
     targetHomeId,
     targetHostId,
     grantId,
-    updatedAt: typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0,
+    updatedAt: typeof obj['updatedAt'] === 'number' && Number.isFinite(obj['updatedAt']) ? obj['updatedAt'] : 0,
   };
   if (pinnedFingerprints !== undefined) {
     record.pinnedFingerprints = pinnedFingerprints;
@@ -617,30 +452,35 @@ function sanitizeServerRecord(raw) {
   return record;
 }
 
-function writeServers(storage, servers) {
+function writeServers(storage: StorageLike | undefined, servers: SavedServer[]): void {
   try {
     if (servers.length === 0) {
       storage?.removeItem?.(STORE_SERVERS_KEY);
       storage?.removeItem?.(STORE_ORIGIN_KEY);
     } else {
       storage?.setItem?.(STORE_SERVERS_KEY, JSON.stringify(servers));
-      storage?.setItem?.(STORE_ORIGIN_KEY, servers[0].origin);
+      storage?.setItem?.(STORE_ORIGIN_KEY, servers[0]!.origin);
     }
   } catch {
-    /* storage unavailable */
   }
 }
 
-/**
- * Reads saved computers from storage, migrating legacy `kiki.shell.origin`
- * seamlessly if present.
- */
-export function readSavedServers(storage = globalThis.localStorage) {
-  const list = [];
+export function isServerOriginVerified(
+  server: SavedServer | null | undefined,
+  rawOrOrigin: string,
+): boolean {
+  if (!server || !server.paired || !server.targetHomeId) return false;
+  const target = readTarget(rawOrOrigin);
+  if (!target.ok) return false;
+  return Array.isArray(server.verifiedOrigins) && server.verifiedOrigins.includes(target.origin);
+}
+
+export function readSavedServers(storage: StorageLike | undefined = globalThis.localStorage): SavedServer[] {
+  const list: SavedServer[] = [];
   try {
     const rawList = storage?.getItem?.(STORE_SERVERS_KEY);
     if (rawList) {
-      const parsed = JSON.parse(rawList);
+      const parsed = JSON.parse(rawList) as unknown;
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
           const clean = sanitizeServerRecord(item);
@@ -651,10 +491,9 @@ export function readSavedServers(storage = globalThis.localStorage) {
       }
     }
   } catch {
-    /* ignore malformed storage */
   }
 
-  let legacyOrigin = null;
+  let legacyOrigin: string | null = null;
   try {
     const rawOrigin = storage?.getItem?.(STORE_ORIGIN_KEY);
     if (rawOrigin) {
@@ -662,46 +501,44 @@ export function readSavedServers(storage = globalThis.localStorage) {
       if (parsed.ok) legacyOrigin = parsed.origin;
     }
   } catch {
-    /* ignore */
   }
 
   if (legacyOrigin !== null) {
     const existingIndex = list.findIndex(
       (item) =>
-        (!item.paired && (item.origin === legacyOrigin || item.origins.includes(legacyOrigin))) ||
-        (item.paired && isServerOriginVerified(item, legacyOrigin)),
+        (!item.paired && (item.origin === legacyOrigin || item.origins.includes(legacyOrigin!))) ||
+        (item.paired && isServerOriginVerified(item, legacyOrigin!)),
     );
     if (existingIndex === -1) {
       if (!list.some((item) => item.paired)) {
-        list.unshift(
-          sanitizeServerRecord({
-            id: `origin:${legacyOrigin}`,
-            label: defaultLabelForOrigin(legacyOrigin),
-            origin: legacyOrigin,
-            origins: [legacyOrigin],
-            verifiedOrigins: [],
-            paired: false,
-            updatedAt: Date.now(),
-          }),
-        );
+        const migrated = sanitizeServerRecord({
+          id: `origin:${legacyOrigin}`,
+          label: defaultLabelForOrigin(legacyOrigin),
+          origin: legacyOrigin,
+          origins: [legacyOrigin],
+          verifiedOrigins: [],
+          paired: false,
+          updatedAt: Date.now(),
+        });
+        if (migrated) list.unshift(migrated);
       }
     } else if (existingIndex > 0) {
       const [matched] = list.splice(existingIndex, 1);
-      matched.origin = legacyOrigin;
-      matched.origins = [legacyOrigin, ...matched.origins.filter((o) => o !== legacyOrigin)];
-      list.unshift(matched);
+      if (matched) {
+        matched.origin = legacyOrigin;
+        matched.origins = [legacyOrigin, ...matched.origins.filter((o) => o !== legacyOrigin)];
+        list.unshift(matched);
+      }
     }
   }
 
   return list;
 }
 
-/**
- * Adds or updates a saved computer. When paired (`targetHomeId` present), the
- * computer's identity is keyed by `targetHomeId` so switching networks or editing
- * its IP preserves device trust and previous endpoints.
- */
-export function upsertSavedServer(storage, input) {
+export function upsertSavedServer(
+  storage: StorageLike | undefined,
+  input: UpsertSavedServerInput,
+): SavedServer | null {
   const target = readTarget(input?.origin ?? '');
   if (!target.ok) return null;
   const origin = target.origin;
@@ -710,7 +547,8 @@ export function upsertSavedServer(storage, input) {
     typeof input?.targetHomeId === 'string' && input.targetHomeId.trim() !== ''
       ? input.targetHomeId.trim()
       : undefined;
-  const explicitId = typeof input?.id === 'string' && input.id.trim() !== '' ? input.id.trim() : undefined;
+  const explicitId =
+    typeof input?.id === 'string' && input.id.trim() !== '' ? input.id.trim() : undefined;
   const desiredId = targetHomeId ?? explicitId ?? `origin:${origin}`;
 
   const matchIndex = current.findIndex((item) => {
@@ -730,15 +568,17 @@ export function upsertSavedServer(storage, input) {
     );
   });
 
-  const existing = matchIndex >= 0 ? current[matchIndex] : null;
+  const existing = matchIndex >= 0 ? current[matchIndex]! : null;
   const resolvedHomeId = targetHomeId ?? existing?.targetHomeId;
-  const resolvedId = resolvedHomeId ?? (existing?.id && !existing.id.startsWith('origin:') ? existing.id : desiredId);
+  const resolvedId =
+    resolvedHomeId ??
+    (existing?.id && !existing.id.startsWith('origin:') ? existing.id : desiredId);
   const isPaired = Boolean(input?.paired || existing?.paired || resolvedHomeId);
   const markVerified = isPaired && input?.verified !== false;
   if (isPaired && !markVerified && existing && !isServerOriginVerified(existing, origin)) {
     return existing;
   }
-  const verifiedOrigins = markVerified ? [origin] : [];
+  const verifiedOrigins: string[] = markVerified ? [origin] : [];
   if (existing && Array.isArray(existing.verifiedOrigins)) {
     for (const prev of existing.verifiedOrigins) {
       if (!verifiedOrigins.includes(prev) && verifiedOrigins.length < 6) {
@@ -747,7 +587,7 @@ export function upsertSavedServer(storage, input) {
     }
   }
 
-  const origins = [origin];
+  const origins: string[] = [origin];
   if (existing) {
     for (const prev of existing.origins) {
       if (!origins.includes(prev) && origins.length < 6) origins.push(prev);
@@ -761,9 +601,9 @@ export function upsertSavedServer(storage, input) {
         ? existing.label
         : defaultLabelForOrigin(origin);
 
-  const mergedFingerprints = {
-    ...(existing?.pinnedFingerprints ?? {}),
-    ...(input?.pinnedFingerprints ?? {}),
+  const mergedFingerprints: Record<string, string> = {
+    ...existing?.pinnedFingerprints,
+    ...input?.pinnedFingerprints,
   };
   if (typeof input?.fingerprint === 'string' && TLS_FINGERPRINT_PATTERN.test(input.fingerprint.trim())) {
     mergedFingerprints[origin] = input.fingerprint.trim();
@@ -782,30 +622,18 @@ export function upsertSavedServer(storage, input) {
     grantId: input?.grantId ?? existing?.grantId,
     updatedAt: Date.now(),
   });
+  if (!updated) return null;
 
   const next = [updated, ...current.filter((_, idx) => idx !== matchIndex)];
   writeServers(storage, next);
   return updated;
 }
 
-/**
- * Returns whether `rawOrOrigin` has been verified via pairing to belong to
- * the paired computer `server`.
- */
-export function isServerOriginVerified(server, rawOrOrigin) {
-  if (!server || !server.paired || !server.targetHomeId) return false;
-  const target = readTarget(rawOrOrigin);
-  if (!target.ok) return false;
-  return Array.isArray(server.verifiedOrigins) && server.verifiedOrigins.includes(target.origin);
-}
-
-/**
- * Switches the active network address (`origin`) of an existing saved computer.
- * For paired computers, only origins already verified via pairing can be selected;
- * a new unpaired origin returns `reason: 'pairing_required'` without overwriting
- * the saved computer.
- */
-export function updateSavedServerOrigin(storage, serverId, rawNewOrigin) {
+export function updateSavedServerOrigin(
+  storage: StorageLike | undefined,
+  serverId: string,
+  rawNewOrigin: string,
+): { ok: true; server: SavedServer } | { ok: false; reason: string; origin?: string; server?: SavedServer } {
   const target = readTarget(rawNewOrigin);
   if (!target.ok) return { ok: false, reason: target.reason };
   const current = readSavedServers(storage);
@@ -813,7 +641,7 @@ export function updateSavedServerOrigin(storage, serverId, rawNewOrigin) {
     (item) => item.id === serverId || item.targetHomeId === serverId || item.origin === serverId,
   );
   if (index === -1) return { ok: false, reason: 'not_found' };
-  const existing = current[index];
+  const existing = current[index]!;
   const nextOrigin = target.origin;
 
   if ((existing.paired || existing.targetHomeId) && !isServerOriginVerified(existing, nextOrigin)) {
@@ -829,7 +657,8 @@ export function updateSavedServerOrigin(storage, serverId, rawNewOrigin) {
   const nextVerified = existing.verifiedOrigins.includes(nextOrigin)
     ? [nextOrigin, ...existing.verifiedOrigins.filter((o) => o !== nextOrigin)].slice(0, 6)
     : existing.verifiedOrigins;
-  const nextId = existing.id.startsWith('origin:') && !existing.paired ? `origin:${nextOrigin}` : existing.id;
+  const nextId =
+    existing.id.startsWith('origin:') && !existing.paired ? `origin:${nextOrigin}` : existing.id;
   const nextLabel =
     existing.label === defaultLabelForOrigin(existing.origin)
       ? defaultLabelForOrigin(nextOrigin)
@@ -844,13 +673,21 @@ export function updateSavedServerOrigin(storage, serverId, rawNewOrigin) {
     verifiedOrigins: nextVerified,
     updatedAt: Date.now(),
   });
+  if (!updated) return { ok: false, reason: 'invalid' };
   const next = [updated, ...current.filter((_, idx) => idx !== index)];
   writeServers(storage, next);
   return { ok: true, server: updated };
 }
 
-function rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, reason, keepVerified = false) {
-  const existing = current[index];
+function rollbackUnverifiedOrigin(
+  storage: StorageLike | undefined,
+  current: SavedServer[],
+  index: number,
+  candidateOrigin: string,
+  reason: string,
+  keepVerified = false,
+): { ok: false; reason: string; server: SavedServer } {
+  const existing = current[index]!;
   const verifiedOrigins = keepVerified
     ? existing.verifiedOrigins
     : existing.verifiedOrigins.filter((o) => o !== candidateOrigin);
@@ -862,7 +699,7 @@ function rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, reas
         : [existing.origin, ...existing.origins].slice(0, 6),
       verifiedOrigins: existing.verifiedOrigins.length > 0 ? existing.verifiedOrigins : [existing.origin],
       updatedAt: existing.updatedAt || Date.now(),
-    });
+    })!;
     const next = current.map((item, idx) => (idx === index ? preserved : item));
     writeServers(storage, next);
     return { ok: false, reason, server: preserved };
@@ -888,19 +725,18 @@ function rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, reas
     origins: nextOrigins,
     verifiedOrigins: verifiedOrigins.length > 0 ? verifiedOrigins : [fallbackOrigin],
     updatedAt: existing.updatedAt || Date.now(),
-  });
+  })!;
   const next = current.map((item, idx) => (idx === index ? restored : item));
   writeServers(storage, next);
   return { ok: false, reason, server: restored };
 }
 
-/**
- * Checks a candidate `rawOrigin` against a handshake probe result (`{ ok, targetHomeId, targetHostId }`).
- * Because `/api/remote-connections/handshake` is unauthenticated public metadata, a handshake probe
- * never promotes an unpaired origin into `verifiedOrigins`; new origins must be paired with a code
- * (`reason: 'pairing_required'`), while mismatched homes are rejected (`reason: 'identity_mismatch'`).
- */
-export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake) {
+export function verifySavedServerOrigin(
+  storage: StorageLike | undefined,
+  serverId: string,
+  rawOrigin: string,
+  handshake: HandshakeProbeResult | undefined,
+): { ok: true; verified: true; server: SavedServer } | { ok: false; reason: string; server?: SavedServer } {
   const target = readTarget(rawOrigin);
   if (!target.ok) return { ok: false, reason: target.reason };
   const current = readSavedServers(storage);
@@ -908,7 +744,7 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
     (item) => item.id === serverId || item.targetHomeId === serverId || item.origin === serverId,
   );
   if (index === -1) return { ok: false, reason: 'not_found' };
-  const existing = current[index];
+  const existing = current[index]!;
   const candidateOrigin = target.origin;
 
   const probeHomeId =
@@ -934,11 +770,18 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
     handshake?.reason === 'pairing_revoked' ||
     handshake?.authRejected === true ||
     handshake?.mutualRevokedVerified === true;
+  const isInvitedNotApproved =
+    handshake?.reason === 'pairing_required' ||
+    handshake?.mutualInvitedVerified === true ||
+    handshake?.handshakeStatus === 'invited';
   const isUnverifiedHandshakeProof = handshake?.reason === 'unverified_handshake_proof';
 
   if (!handshake?.ok) {
     if (isAuthRejected && isServerOriginVerified(existing, candidateOrigin)) {
       return { ok: false, reason: 'pairing_revoked', server: existing };
+    }
+    if (isInvitedNotApproved && isServerOriginVerified(existing, candidateOrigin)) {
+      return { ok: false, reason: 'pairing_required', server: existing };
     }
     if (isUnverifiedHandshakeProof && isServerOriginVerified(existing, candidateOrigin)) {
       return { ok: false, reason: 'unverified_handshake_proof', server: existing };
@@ -960,10 +803,13 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
     return rollbackUnverifiedOrigin(storage, current, index, candidateOrigin, 'pairing_required', true);
   }
 
-  if (handshake?.mutualRevokedVerified === true) {
+  if (handshake.mutualRevokedVerified === true) {
     return { ok: false, reason: 'pairing_revoked', server: existing };
   }
-  if (handshake?.mutualDisabledVerified === true || handshake?.inboundEnabled === false) {
+  if (handshake.mutualInvitedVerified === true || handshake.handshakeStatus === 'invited') {
+    return { ok: false, reason: 'pairing_required', server: existing };
+  }
+  if (handshake.mutualDisabledVerified === true || handshake.inboundEnabled === false) {
     return { ok: false, reason: 'unreachable', server: existing };
   }
   if (handshake.requireMutualProof && !handshake.mutualProofVerified) {
@@ -985,21 +831,23 @@ export function verifySavedServerOrigin(storage, serverId, rawOrigin, handshake)
     verifiedOrigins,
     targetHostId: existing.targetHostId ?? probeHostId,
     updatedAt: Date.now(),
-  });
+  })!;
   const next = [updated, ...current.filter((_, idx) => idx !== index)];
   writeServers(storage, next);
   return { ok: true, verified: true, server: updated };
 }
 
-/** Removes a saved computer and updates `kiki.shell.origin`. */
-export function removeSavedServer(storage, serverId) {
+export function removeSavedServer(
+  storage: StorageLike | undefined,
+  serverId: string,
+): SavedServer[] {
   const current = readSavedServers(storage);
   const next = current.filter((item) => item.id !== serverId && item.origin !== serverId);
   writeServers(storage, next);
   return next;
 }
 
-function isSameOriginResponse(res, expectedOrigin) {
+function isSameOriginResponse(res: Response | undefined, expectedOrigin: string): boolean {
   if (!res) return false;
   if (res.type === 'opaqueredirect' || res.redirected === true) return false;
   if (typeof res.status === 'number' && res.status >= 300 && res.status < 400) return false;
@@ -1013,155 +861,30 @@ function isSameOriginResponse(res, expectedOrigin) {
   return true;
 }
 
-function randomHex(byteLength = 16) {
-  const bytes = new Uint8Array(byteLength);
-  if (typeof globalThis.crypto?.getRandomValues === 'function') {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < byteLength; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+function readResponseHeader(res: Response, name: string): string | null {
+  const headers = res.headers as Headers | Record<string, string> | undefined;
+  if (!headers) return null;
+  if (typeof (headers as Headers).get === 'function') {
+    return (headers as Headers).get(name);
   }
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  const map = headers as Record<string, string>;
+  return map[name] ?? map[name.toLowerCase()] ?? null;
 }
 
-async function hmacSha256Hex(keyString, message) {
-  if (typeof keyString !== 'string' || keyString === '') return undefined;
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle || typeof subtle.importKey !== 'function' || typeof subtle.sign !== 'function') {
-    return undefined;
-  }
-  try {
-    const encoder = new TextEncoder();
-    const cryptoKey = await subtle.importKey(
-      'raw',
-      encoder.encode(keyString),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign'],
-    );
-    const sig = await subtle.sign('HMAC', cryptoKey, encoder.encode(message));
-    return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, '0')).join('');
-  } catch {
-    return undefined;
-  }
-}
-
-function constantTimeHexEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const cleanA = a.trim().toLowerCase();
-  const cleanB = b.trim().toLowerCase();
-  if (cleanA.length !== cleanB.length || cleanA.length === 0) return false;
-  let diff = 0;
-  for (let i = 0; i < cleanA.length; i += 1) {
-    diff |= (cleanA.codePointAt(i) ?? 0) ^ (cleanB.codePointAt(i) ?? 0);
-  }
-  return diff === 0;
-}
-
-/**
- * Computes the one-way SHA-256 hex digest of a peer token (`grant.digest`).
- * This digest is used locally as the HMAC key for mutual challenge-response
- * handshake proofs (`kiki-handshake-req-v1` / `kiki-handshake-res-v1`) and is
- * never transmitted over the network.
- */
-export async function computeHandshakeProof(peerToken, nonce = '') {
-  if (typeof peerToken !== 'string' || peerToken.trim() === '') return undefined;
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle || typeof subtle.digest !== 'function') return undefined;
-  try {
-    const bytes = new TextEncoder().encode(peerToken);
-    const buf = await subtle.digest('SHA-256', bytes);
-    const keyHex = Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
-    if (typeof nonce === 'string' && /^[a-f0-9]{32,128}$/i.test(nonce.trim())) {
-      return await hmacSha256Hex(keyHex, `kiki-handshake-req-v1:${nonce.trim().toLowerCase()}`);
-    }
-    return keyHex;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Creates a fresh-nonce, domain-separated mutual handshake challenge/verifier
- * keyed by `sha256(peerToken)` (`grant.digest`). Neither `peerToken` nor
- * `grant.digest` is sent on the wire:
- * - Request headers carry `x-kiki-handshake-nonce` and
- *   `x-kiki-handshake-proof = HMAC(grant.digest, "kiki-handshake-req-v1:<nonce>")`
- *   (plus optional `x-kiki-handshake-grant` for direct grant lookup).
- * - Response verification requires `x-kiki-handshake-proof` matching
- *   `HMAC(grant.digest, "kiki-handshake-res-v1:<nonce>:<homeId>:<hostId>")`
- *   in constant time.
- *
- * Security boundary: Prevents an unverified or replaced same-origin server from
- * spoofing a known `homeId`/`hostId` or replaying a previously captured response
- * to obtain `peerToken`. Does not protect against an attacker who already controls
- * the real domain/TLS endpoint and live-relays traffic to the legitimate server in
- * real time.
- */
-export async function createMutualHandshakeChallenge(input = {}) {
-  const rawKey =
-    typeof input.handshakeKey === 'string' && /^[a-f0-9]{64}$/i.test(input.handshakeKey.trim())
-      ? input.handshakeKey.trim().toLowerCase()
-      : typeof input.peerToken === 'string' && input.peerToken.trim() !== ''
-        ? await computeHandshakeProof(input.peerToken)
-        : undefined;
-  if (!rawKey) return undefined;
-  const nonce =
-    typeof input.nonce === 'string' && /^[a-f0-9]{32,128}$/i.test(input.nonce.trim())
-      ? input.nonce.trim().toLowerCase()
-      : randomHex(16);
-  const requestProof = await hmacSha256Hex(rawKey, `kiki-handshake-req-v1:${nonce}`);
-  if (!requestProof) return undefined;
-  const grantId =
-    typeof input.grantId === 'string' && input.grantId.trim() !== ''
-      ? input.grantId.trim()
-      : undefined;
-  const verifyDomainResponse = async (domainPrefix, responseProof, targetHomeId, targetHostId = '') => {
-    if (typeof responseProof !== 'string' || !/^[a-f0-9]{64}$/i.test(responseProof.trim())) {
-      return false;
-    }
-    if (typeof targetHomeId !== 'string' || targetHomeId.trim() === '') {
-      return false;
-    }
-    const expected = await hmacSha256Hex(
-      rawKey,
-      `${domainPrefix}:${nonce}:${targetHomeId.trim()}:${String(targetHostId ?? '').trim()}`,
-    );
-    if (!expected) return false;
-    return constantTimeHexEqual(responseProof, expected);
-  };
-  return {
-    nonce,
-    grantId,
-    requestProof,
-    verifyResponse(responseProof, targetHomeId, targetHostId = '') {
-      return verifyDomainResponse('kiki-handshake-res-v1', responseProof, targetHomeId, targetHostId);
-    },
-    verifyRevokedResponse(responseProof, targetHomeId, targetHostId = '') {
-      return verifyDomainResponse('kiki-handshake-revoked-v1', responseProof, targetHomeId, targetHostId);
-    },
-    verifyDisabledResponse(responseProof, targetHomeId, targetHostId = '') {
-      return verifyDomainResponse('kiki-handshake-disabled-v1', responseProof, targetHomeId, targetHostId);
-    },
-  };
-}
-
-/**
- * Probes a Kiki server's zero-token handshake (`/api/remote-connections/handshake`)
- * with fallback to `/api/meta` for unauthenticated reachability and hints.
- * Never follows redirects, never mutates saved computers, and never attaches credentials.
- * When a paired credential or `handshakeKey` is supplied, sends a fresh nonce +
- * domain-separated HMAC challenge and sets `mutualProofVerified: true` only if the
- * server returns a valid response HMAC bound to `(nonce, homeId, hostId)`.
- */
-export async function probeOriginHandshake(origin, options = {}) {
+export async function probeOriginHandshake(
+  origin: string,
+  options: ProbeHandshakeOptions = {},
+): Promise<HandshakeProbeResult> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 4500;
+  const expectedStatus = options.expectedStatus ?? 'approved';
   const externalSignal = options.signal;
-  if (externalSignal?.aborted === true) {
+  const isExternalAborted = (): boolean => externalSignal?.aborted === true;
+  if (isExternalAborted()) {
     return { ok: false, aborted: true, reason: 'aborted' };
   }
   const controller = new AbortController();
-  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+  const onExternalAbort = (): void => controller.abort(externalSignal?.reason);
   externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -1171,12 +894,12 @@ export async function probeOriginHandshake(origin, options = {}) {
       grantId: options.grantId,
       nonce: options.nonce,
     });
-    const headers = { Accept: 'application/json' };
+    const headers: Record<string, string> = { Accept: 'application/json' };
     if (challenge) {
-      headers['x-kiki-handshake-nonce'] = challenge.nonce;
-      headers['x-kiki-handshake-proof'] = challenge.requestProof;
+      headers[HANDSHAKE_HEADERS.nonce] = challenge.nonce;
+      headers[HANDSHAKE_HEADERS.proof] = challenge.requestProof;
       if (challenge.grantId) {
-        headers['x-kiki-handshake-grant'] = challenge.grantId;
+        headers[HANDSHAKE_HEADERS.grant] = challenge.grantId;
       }
     }
     const handshakeRes = await fetchImpl(`${origin}/api/remote-connections/handshake`, {
@@ -1188,12 +911,18 @@ export async function probeOriginHandshake(origin, options = {}) {
     if (!isSameOriginResponse(handshakeRes, origin)) {
       return { ok: false };
     }
-    const readHeader = (name) =>
-      typeof handshakeRes.headers?.get === 'function'
-        ? handshakeRes.headers.get(name)
-        : handshakeRes.headers?.[name];
+    const statusHeader = readResponseHeader(handshakeRes, HANDSHAKE_HEADERS.status);
+    const resProof = readResponseHeader(handshakeRes, HANDSHAKE_HEADERS.proof) ?? '';
+
     if (handshakeRes.ok) {
-      const payload = await handshakeRes.json().catch(() => null);
+      const payload = (await handshakeRes.json().catch(() => null)) as {
+        data?: {
+          identity?: { homeId?: string; hostId?: string };
+          target?: { homeId?: string; hostId?: string };
+          targetLabel?: string;
+          inboundEnabled?: boolean;
+        };
+      } | null;
       const data = payload?.data;
       const targetHomeId =
         typeof data?.identity?.homeId === 'string' && data.identity.homeId !== ''
@@ -1207,32 +936,24 @@ export async function probeOriginHandshake(origin, options = {}) {
           : typeof data?.target?.hostId === 'string' && data.target.hostId !== ''
             ? data.target.hostId
             : undefined;
+      const targetLabel =
+        typeof data?.targetLabel === 'string' && data.targetLabel !== '' ? data.targetLabel : undefined;
       const inboundEnabled = data?.inboundEnabled !== false;
-      let mutualProofVerified = false;
-      let mutualRevokedVerified = false;
-      let mutualDisabledVerified = false;
+
+      let verifiedStatus: HandshakeStatus | undefined;
       if (challenge && targetHomeId) {
-        const resProof = readHeader('x-kiki-handshake-proof') ?? '';
-        mutualProofVerified = await challenge.verifyResponse(
+        verifiedStatus = await challenge.verifyStatusResponse(
+          statusHeader,
           resProof,
           targetHomeId,
           targetHostId ?? '',
         );
-        if (!mutualProofVerified) {
-          mutualRevokedVerified = await challenge.verifyRevokedResponse(
-            resProof,
-            targetHomeId,
-            targetHostId ?? '',
-          );
-          if (!mutualRevokedVerified) {
-            mutualDisabledVerified = await challenge.verifyDisabledResponse(
-              resProof,
-              targetHomeId,
-              targetHostId ?? '',
-            );
-          }
-        }
       }
+      const mutualProofVerified = verifiedStatus === 'approved';
+      const mutualRevokedVerified = verifiedStatus === 'revoked';
+      const mutualDisabledVerified = verifiedStatus === 'inbound_disabled';
+      const mutualInvitedVerified = verifiedStatus === 'invited';
+
       if (mutualRevokedVerified) {
         return {
           ok: false,
@@ -1241,8 +962,11 @@ export async function probeOriginHandshake(origin, options = {}) {
           authRejected: true,
           targetHomeId,
           targetHostId,
+          handshakeStatus: 'revoked',
           mutualProofVerified: false,
           mutualRevokedVerified: true,
+          mutualDisabledVerified: false,
+          mutualInvitedVerified: false,
         };
       }
       if (challenge && (mutualDisabledVerified || !inboundEnabled)) {
@@ -1253,35 +977,89 @@ export async function probeOriginHandshake(origin, options = {}) {
           inboundEnabled: false,
           targetHomeId,
           targetHostId,
+          handshakeStatus: mutualDisabledVerified ? 'inbound_disabled' : undefined,
           mutualProofVerified: false,
+          mutualRevokedVerified: false,
           mutualDisabledVerified,
+          mutualInvitedVerified: false,
         };
       }
-      if (options.requireMutualProof && challenge && !mutualProofVerified) {
+      if (mutualInvitedVerified) {
+        if (expectedStatus === 'invited') {
+          return {
+            ok: true,
+            status: handshakeRes.status,
+            inboundEnabled,
+            targetLabel,
+            targetHomeId,
+            targetHostId,
+            handshakeStatus: 'invited',
+            mutualProofVerified: false,
+            mutualRevokedVerified: false,
+            mutualDisabledVerified: false,
+            mutualInvitedVerified: true,
+          };
+        }
         return {
           ok: false,
           status: handshakeRes.status,
-          reason: 'unverified_handshake_proof',
+          reason: 'pairing_required',
+          inboundEnabled,
+          targetLabel,
           targetHomeId,
           targetHostId,
+          handshakeStatus: 'invited',
           mutualProofVerified: false,
+          mutualRevokedVerified: false,
+          mutualDisabledVerified: false,
+          mutualInvitedVerified: true,
         };
+      }
+      if (challenge && expectedStatus === 'invited') {
+        return {
+          ok: false,
+          status: handshakeRes.status,
+          reason: 'pairing_required',
+          inboundEnabled,
+          targetLabel,
+          targetHomeId,
+          targetHostId,
+          handshakeStatus: mutualProofVerified ? 'approved' : undefined,
+          mutualProofVerified,
+          mutualRevokedVerified: false,
+          mutualDisabledVerified: false,
+          mutualInvitedVerified: false,
+        };
+      }
+      if (options.requireMutualProof && challenge) {
+        if (!mutualProofVerified) {
+          return {
+            ok: false,
+            status: handshakeRes.status,
+            reason: 'unverified_handshake_proof',
+            targetHomeId,
+            targetHostId,
+            mutualProofVerified: false,
+            mutualInvitedVerified: false,
+          };
+        }
       }
       return {
         ok: true,
         status: handshakeRes.status,
         inboundEnabled,
-        targetLabel:
-          typeof data?.targetLabel === 'string' && data.targetLabel !== ''
-            ? data.targetLabel
-            : undefined,
+        targetLabel,
         targetHomeId,
         targetHostId,
+        handshakeStatus: mutualProofVerified ? 'approved' : undefined,
         mutualProofVerified,
+        mutualRevokedVerified: false,
+        mutualDisabledVerified: false,
+        mutualInvitedVerified: false,
       };
     }
+
     if (challenge && (handshakeRes.status === 401 || handshakeRes.status === 403)) {
-      const resProof = readHeader('x-kiki-handshake-proof') ?? '';
       const expectedHomeId =
         typeof options.targetHomeId === 'string' && options.targetHomeId.trim() !== ''
           ? options.targetHomeId.trim()
@@ -1290,54 +1068,72 @@ export async function probeOriginHandshake(origin, options = {}) {
             : '';
       const expectedHostId =
         typeof options.targetHostId === 'string' ? options.targetHostId.trim() : '';
-      let mutualRevokedVerified = false;
-      let mutualDisabledVerified = false;
+      let verifiedStatus: HandshakeStatus | undefined;
       if (resProof && expectedHomeId) {
-        mutualRevokedVerified = await challenge.verifyRevokedResponse(
+        verifiedStatus = await challenge.verifyStatusResponse(
+          statusHeader,
           resProof,
           expectedHomeId,
           expectedHostId,
         );
-        if (!mutualRevokedVerified && expectedHostId) {
-          mutualRevokedVerified = await challenge.verifyRevokedResponse(
+        if (verifiedStatus === undefined && expectedHostId) {
+          verifiedStatus = await challenge.verifyStatusResponse(
+            statusHeader,
             resProof,
             expectedHomeId,
             '',
           );
         }
-        if (!mutualRevokedVerified) {
-          mutualDisabledVerified = await challenge.verifyDisabledResponse(
-            resProof,
-            expectedHomeId,
-            expectedHostId,
-          );
-          if (!mutualDisabledVerified && expectedHostId) {
-            mutualDisabledVerified = await challenge.verifyDisabledResponse(
-              resProof,
-              expectedHomeId,
-              '',
-            );
-          }
-        }
       }
-      if (mutualRevokedVerified) {
+      if (verifiedStatus === 'revoked') {
         return {
           ok: false,
           status: handshakeRes.status,
           reason: 'pairing_revoked',
           authRejected: true,
+          handshakeStatus: 'revoked',
           mutualProofVerified: false,
           mutualRevokedVerified: true,
+          mutualDisabledVerified: false,
+          mutualInvitedVerified: false,
         };
       }
-      if (mutualDisabledVerified) {
+      if (verifiedStatus === 'inbound_disabled') {
         return {
           ok: false,
           status: handshakeRes.status,
           reason: 'unreachable',
           inboundEnabled: false,
+          handshakeStatus: 'inbound_disabled',
           mutualProofVerified: false,
+          mutualRevokedVerified: false,
           mutualDisabledVerified: true,
+          mutualInvitedVerified: false,
+        };
+      }
+      if (verifiedStatus === 'invited') {
+        if (expectedStatus === 'invited') {
+          return {
+            ok: true,
+            status: handshakeRes.status,
+            targetHomeId: expectedHomeId || undefined,
+            targetHostId: expectedHostId || undefined,
+            handshakeStatus: 'invited',
+            mutualProofVerified: false,
+            mutualRevokedVerified: false,
+            mutualDisabledVerified: false,
+            mutualInvitedVerified: true,
+          };
+        }
+        return {
+          ok: false,
+          status: handshakeRes.status,
+          reason: 'pairing_required',
+          handshakeStatus: 'invited',
+          mutualProofVerified: false,
+          mutualRevokedVerified: false,
+          mutualDisabledVerified: false,
+          mutualInvitedVerified: true,
         };
       }
       return {
@@ -1346,10 +1142,19 @@ export async function probeOriginHandshake(origin, options = {}) {
         reason: 'unverified_handshake_proof',
         authRejected: false,
         mutualProofVerified: false,
+        mutualRevokedVerified: false,
+        mutualDisabledVerified: false,
+        mutualInvitedVerified: false,
       };
     }
+
     if (options.requireMutualProof && challenge) {
-      return { ok: false, status: handshakeRes.status, reason: 'unreachable', mutualProofVerified: false };
+      return {
+        ok: false,
+        status: handshakeRes.status,
+        reason: 'unreachable',
+        mutualProofVerified: false,
+      };
     }
     const metaRes = await fetchImpl(`${origin}/api/meta`, {
       method: 'GET',
@@ -1364,7 +1169,7 @@ export async function probeOriginHandshake(origin, options = {}) {
       ok: (status >= 200 && status < 300) || status === 401 || status === 403,
     };
   } catch {
-    if (externalSignal?.aborted === true) {
+    if (isExternalAborted()) {
       return { ok: false, aborted: true, reason: 'aborted' };
     }
     return { ok: false };
@@ -1374,12 +1179,10 @@ export async function probeOriginHandshake(origin, options = {}) {
   }
 }
 
-/**
- * Redeems a short-lived pairing code or `kiki://pair` URI at `input.endpoint`
- * (`POST /api/remote-connections/pair/claim`) without following redirects, stores
- * the issued peer token, and records the endpoint in the computer's `verifiedOrigins`.
- */
-export async function claimPairingOrigin(storage, input) {
+export async function claimPairingOrigin(
+  storage: StorageLike | undefined,
+  input: ClaimPairingInput,
+): Promise<ClaimPairingResult> {
   let rawEndpoint = input?.endpoint ?? input?.origin ?? '';
   let rawCode = input?.code ?? '';
   let rawFingerprint = typeof input?.fingerprint === 'string' ? input.fingerprint.trim() : '';
@@ -1390,19 +1193,22 @@ export async function claimPairingOrigin(storage, input) {
     if (!rawCode) rawCode = parsedUri.code;
     if (!rawFingerprint && parsedUri.fingerprint) rawFingerprint = parsedUri.fingerprint;
   }
+  const fingerprint = TLS_FINGERPRINT_PATTERN.test(rawFingerprint) ? rawFingerprint : undefined;
+  if (fingerprint !== undefined) {
+    rawEndpoint = upgradeEndpointForTlsPin(rawEndpoint, fingerprint);
+  }
   const normalizedEndpoint = normalizePairingEndpoint(rawEndpoint);
   const target = readTarget(normalizedEndpoint ?? rawEndpoint);
   const code = normalizePairingCode(rawCode);
   if (!target.ok) return { ok: false, reason: target.reason };
   if (!code) return { ok: false, reason: 'invalid_code' };
-  const fingerprint = TLS_FINGERPRINT_PATTERN.test(rawFingerprint) ? rawFingerprint : undefined;
 
   const origin = target.origin;
   const endpointBase = normalizedEndpoint ?? origin;
   const identity = input?.identity ?? readDeviceIdentity(storage, input?.platform);
 
   if (typeof input?.nativeClaim === 'function') {
-    const nativeParams = {
+    const nativeParams: NativeClaimParams = {
       endpoint: endpointBase,
       origin,
       code,
@@ -1413,9 +1219,12 @@ export async function claimPairingOrigin(storage, input) {
     };
     const res = await input.nativeClaim(nativeParams);
     if (res?.ok && res.targetHomeId) {
+      const resolvedOriginTarget =
+        typeof res.origin === 'string' && res.origin.trim() !== '' ? readTarget(res.origin) : null;
+      const finalOrigin = resolvedOriginTarget?.ok ? resolvedOriginTarget.origin : origin;
       const server = upsertSavedServer(storage, {
         id: res.serverId ?? res.targetHomeId,
-        origin,
+        origin: finalOrigin,
         label: res.targetLabel,
         paired: true,
         targetHomeId: res.targetHomeId,
@@ -1426,7 +1235,7 @@ export async function claimPairingOrigin(storage, input) {
       });
       return {
         ok: true,
-        origin,
+        origin: finalOrigin,
         serverId: server?.id ?? res.serverId ?? res.targetHomeId,
         targetHomeId: res.targetHomeId,
         targetHostId: res.targetHostId,
@@ -1476,7 +1285,15 @@ export async function claimPairingOrigin(storage, input) {
         reason: response.status >= 400 && response.status < 500 ? 'rejected' : 'unreachable',
       };
     }
-    const payload = await response.json().catch(() => null);
+    const payload = (await response.json().catch(() => null)) as {
+      data?: {
+        peerToken?: string;
+        grantId?: string;
+        revision?: number;
+        targetLabel?: string;
+        target?: { homeId?: string; hostId?: string };
+      };
+    } | null;
     const data = payload?.data;
     if (
       !data ||
@@ -1521,79 +1338,41 @@ export async function claimPairingOrigin(storage, input) {
   }
 }
 
-/**
- * Removes any `token` query or fragment parameter from `entry` while preserving
- * the rest of the path, query, and hash (such as `/settings#st-card-providers-add`).
- */
-export function stripTokenFromEntry(origin, entry) {
-  try {
-    const expectedOrigin = new URL(origin).origin;
-    const parsed = new URL(entry || `${expectedOrigin}/`, `${expectedOrigin}/`);
-    if (parsed.origin !== expectedOrigin) {
-      return `${expectedOrigin}/`;
-    }
-    if (parsed.searchParams.has('token')) {
-      parsed.searchParams.delete('token');
-    }
-    if (parsed.hash && /(?:^#|&)token=/.test(parsed.hash)) {
-      const rawHash = parsed.hash.slice(1);
-      if (rawHash.includes('=')) {
-        const hashParams = new URLSearchParams(rawHash);
-        if (hashParams.has('token')) {
-          hashParams.delete('token');
-          const nextHash = hashParams.toString();
-          parsed.hash = nextHash ? `#${nextHash}` : '';
-        }
-      }
-    }
-    return parsed.toString();
-  } catch {
-    return `${origin}/`;
-  }
-}
-
-export const SHELL_MANAGED_STORAGE_KEY = 'kiki.shell.managed';
-export const SHELL_DOCUMENT_NAV_NONCE_PROP = '__kikiShellNavNonce';
-
 let navNonceSequence = 0;
 
-/**
- * Builds a script that stamps a non-secret, one-shot navigation generation marker
- * (`document.__kikiShellNavNonce`) on the current document before an async
- * handshake starts, so a delayed handshake callback can verify that the exact
- * same document is still active before delivering credentials.
- */
-export function buildDocumentNavNonceScript(expectedOrigin, navNonce) {
+export function buildDocumentNavNonceScript(expectedOrigin: string, navNonce: string): string {
   const originJson = JSON.stringify(String(expectedOrigin ?? ''));
   const nonceJson = JSON.stringify(String(navNonce ?? ''));
   return `(function(){try{if(window.location.origin!==${originJson})return false;var doc=window.document||window;var n=${nonceJson};if(!n)return false;try{Object.defineProperty(doc,"__kikiShellNavNonce",{configurable:true,enumerable:false,writable:true,value:n});}catch(e){doc.__kikiShellNavNonce=n;}return true;}catch(e){return false;}})();`;
 }
 
-/**
- * Builds an origin- and document-nonce-checked credential delivery script that
- * stages the peer token only in the current document's memory
- * (`document.__kikiShellStagedCredential` + `kiki:shell-token` event) when
- * `window.location.origin === expectedOrigin` and (when `expectedNavNonce` is
- * provided) `document.__kikiShellNavNonce === expectedNavNonce` after navigation
- * commits. Never writes credentials to `localStorage`, `sessionStorage`, or
- * `window.name`, refuses to overwrite an existing non-shell owner connection,
- * and preserves the page's route path, query, non-credential hash, and history
- * state (`idx`).
- */
-export function buildCommittedCredentialScript(expectedOrigin, token, expectedNavNonce = '') {
+export function buildCommittedCredentialScript(
+  expectedOrigin: string,
+  token: string,
+  expectedNavNonce = '',
+): string {
   const originJson = JSON.stringify(String(expectedOrigin ?? ''));
   const tokenJson = JSON.stringify(String(token ?? ''));
   const nonceJson = JSON.stringify(String(expectedNavNonce ?? ''));
   return `(function(){try{if(window.location.origin!==${originJson})return false;var doc=window.document||window;var n=${nonceJson};if(n&&doc.__kikiShellNavNonce!==n)return false;var t=${tokenJson};if(!t)return false;try{var raw=window.localStorage.getItem("kiki.connection");var managed=window.localStorage.getItem("kiki.shell.managed")==="1";if(raw){var parsed=JSON.parse(raw);var pTok=parsed&&typeof parsed.token==="string"?parsed.token.trim():"";var pUrl=parsed&&typeof parsed.url==="string"?parsed.url.trim():"";if(pTok!==""&&(!managed||pUrl!=="")){try{window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}try{delete doc.__kikiShellStagedCredential;}catch(e){}return false;}}}catch(e){return false;}try{window.localStorage.removeItem("kiki.connection");window.localStorage.removeItem("kiki.shell.managed");}catch(e){}try{window.sessionStorage.removeItem("kiki.peer.token");}catch(e){}try{if(doc.__kikiShellDeliveredNonce&&doc.__kikiShellDeliveredNonce===n)return true;}catch(e){}try{var used=false;Object.defineProperty(doc,"__kikiShellStagedCredential",{configurable:true,enumerable:false,get:function(){if(used)return null;used=true;try{delete doc.__kikiShellStagedCredential;}catch(e){}return{origin:${originJson},token:t};}});}catch(e){try{doc.__kikiShellStagedCredential={origin:${originJson},token:t};}catch(e2){return false;}}try{if(n){try{Object.defineProperty(doc,"__kikiShellDeliveredNonce",{configurable:true,enumerable:false,writable:true,value:n});}catch(e){doc.__kikiShellDeliveredNonce=n;}}}catch(e){}try{window.dispatchEvent(new CustomEvent("kiki:shell-token",{detail:{origin:${originJson},token:t}}));}catch(e){}return true;}catch(e){return false;}})();`;
 }
 
-/**
- * Delivers `resolved.sessionToken` only after verifying that the target page
- * has committed at `resolved.commitOrigin` (`resolved.origin`) via a committed
- * WebView/page evaluation handle. Never stages tokens in `window.name` or URL,
- * and never overwrites an existing non-shell owner connection.
- */
-export async function deliverCommittedServerCredential(target, resolved, options = {}) {
+export async function deliverCommittedServerCredential(
+  target: PageTargetLike | null | undefined,
+  resolved: ResolveVerifiedOpenResult | null | undefined,
+  options: {
+    navNonce?: string;
+    probe?: (origin: string, options?: ProbeHandshakeOptions) => Promise<HandshakeProbeResult>;
+    fetchImpl?: typeof fetch;
+    requireMutualProof?: boolean;
+  } = {},
+): Promise<{
+  ok: boolean;
+  reason?: string;
+  committedOrigin?: string;
+  targetHomeId?: string;
+  tokenDelivered: boolean;
+}> {
   if (!resolved || !resolved.ok) {
     return {
       ok: false,
@@ -1621,7 +1400,8 @@ export async function deliverCommittedServerCredential(target, resolved, options
     if (target && typeof target === 'object' && 'name' in target) {
       try {
         target.name = '';
-      } catch {}
+      } catch {
+      }
     }
     if (!token) {
       return {
@@ -1681,11 +1461,12 @@ export async function deliverCommittedServerCredential(target, resolved, options
     typeof options.navNonce === 'string' && options.navNonce.trim() !== ''
       ? options.navNonce.trim()
       : `nav-${++navNonceSequence}-${Date.now()}`;
+
   try {
     const stamped = await target.evaluate(
       ({ expectedOrigin: exp, nonce }) => {
         if (window.location.origin !== exp || !nonce) return false;
-        const doc = window.document || window;
+        const doc = (window.document || window) as unknown as Record<string, unknown>;
         try {
           Object.defineProperty(doc, '__kikiShellNavNonce', {
             configurable: true,
@@ -1694,7 +1475,7 @@ export async function deliverCommittedServerCredential(target, resolved, options
             value: nonce,
           });
         } catch {
-          doc.__kikiShellNavNonce = nonce;
+          doc['__kikiShellNavNonce'] = nonce;
         }
         return true;
       },
@@ -1716,6 +1497,7 @@ export async function deliverCommittedServerCredential(target, resolved, options
       tokenDelivered: false,
     };
   }
+
   if (expectedHomeId) {
     const grantId =
       typeof resolved.server?.grantId === 'string' && resolved.server.grantId.trim() !== ''
@@ -1727,7 +1509,7 @@ export async function deliverCommittedServerCredential(target, resolved, options
     const probeFn =
       options.probe ??
       resolved.probe ??
-      ((targetOrigin, probeOptions) =>
+      ((targetOrigin: string, probeOptions?: ProbeHandshakeOptions) =>
         probeOriginHandshake(targetOrigin, {
           fetchImpl: options.fetchImpl,
           handshakeKey: probeOptions?.handshakeKey ?? probeOptions?.handshakeProof,
@@ -1773,6 +1555,18 @@ export async function deliverCommittedServerCredential(target, resolved, options
         tokenDelivered: false,
       };
     }
+    const probeInvited =
+      probe?.reason === 'pairing_required' ||
+      probe?.mutualInvitedVerified === true ||
+      probe?.handshakeStatus === 'invited';
+    if (probeInvited) {
+      return {
+        ok: false,
+        reason: 'pairing_required',
+        committedOrigin: expectedOrigin,
+        tokenDelivered: false,
+      };
+    }
     const probeProofUnverified =
       probe?.reason === 'unverified_handshake_proof' ||
       (mustVerifyMutualProof && probe?.ok && probe.mutualProofVerified === false);
@@ -1793,7 +1587,8 @@ export async function deliverCommittedServerCredential(target, resolved, options
       };
     }
   }
-  let delivered;
+
+  let delivered: { ok: boolean; reason?: string; committedOrigin?: string } | undefined;
   try {
     delivered = await target.evaluate(
       async ({ expectedOrigin: exp, token: tok, expectedNonce }) => {
@@ -1801,7 +1596,8 @@ export async function deliverCommittedServerCredential(target, resolved, options
           if (typeof window.name === 'string' && window.name !== '') {
             window.name = '';
           }
-        } catch {}
+        } catch {
+        }
         await new Promise((resolveTurn) => {
           setTimeout(resolveTurn, 0);
         });
@@ -1812,8 +1608,8 @@ export async function deliverCommittedServerCredential(target, resolved, options
             committedOrigin: window.location.origin,
           };
         }
-        const doc = window.document || window;
-        if (expectedNonce && doc.__kikiShellNavNonce !== expectedNonce) {
+        const doc = (window.document || window) as unknown as Record<string, unknown>;
+        if (expectedNonce && doc['__kikiShellNavNonce'] !== expectedNonce) {
           return {
             ok: false,
             reason: 'stale_document',
@@ -1824,19 +1620,23 @@ export async function deliverCommittedServerCredential(target, resolved, options
           const raw = window.localStorage.getItem('kiki.connection');
           const managed = window.localStorage.getItem('kiki.shell.managed') === '1';
           if (raw) {
-            const parsed = JSON.parse(raw);
-            const parsedToken = parsed && typeof parsed.token === 'string' ? parsed.token.trim() : '';
+            const parsed = JSON.parse(raw) as { token?: unknown; url?: unknown } | null;
+            const parsedToken =
+              parsed && typeof parsed.token === 'string' ? parsed.token.trim() : '';
             const parsedUrl = parsed && typeof parsed.url === 'string' ? parsed.url.trim() : '';
             if (parsedToken !== '' && (!managed || parsedUrl !== '')) {
               try {
                 window.localStorage.removeItem('kiki.shell.managed');
-              } catch {}
+              } catch {
+              }
               try {
                 window.sessionStorage.removeItem('kiki.peer.token');
-              } catch {}
+              } catch {
+              }
               try {
-                if (window.document) delete window.document.__kikiShellStagedCredential;
-              } catch {}
+                delete doc['__kikiShellStagedCredential'];
+              } catch {
+              }
               return {
                 ok: false,
                 reason: 'existing_owner_credential',
@@ -1854,12 +1654,13 @@ export async function deliverCommittedServerCredential(target, resolved, options
         try {
           window.localStorage.removeItem('kiki.connection');
           window.localStorage.removeItem('kiki.shell.managed');
-        } catch {}
+        } catch {
+        }
         try {
           window.sessionStorage.removeItem('kiki.peer.token');
-        } catch {}
+        } catch {
+        }
         try {
-          const doc = window.document || window;
           let used = false;
           Object.defineProperty(doc, '__kikiShellStagedCredential', {
             configurable: true,
@@ -1868,14 +1669,15 @@ export async function deliverCommittedServerCredential(target, resolved, options
               if (used) return null;
               used = true;
               try {
-                delete doc.__kikiShellStagedCredential;
-              } catch {}
+                delete doc['__kikiShellStagedCredential'];
+              } catch {
+              }
               return { origin: exp, token: tok };
             },
           });
         } catch {
           try {
-            (window.document || window).__kikiShellStagedCredential = { origin: exp, token: tok };
+            doc['__kikiShellStagedCredential'] = { origin: exp, token: tok };
           } catch {
             return {
               ok: false,
@@ -1888,7 +1690,8 @@ export async function deliverCommittedServerCredential(target, resolved, options
           window.dispatchEvent(
             new CustomEvent('kiki:shell-token', { detail: { origin: exp, token: tok } }),
           );
-        } catch {}
+        } catch {
+        }
         return { ok: true, committedOrigin: window.location.origin };
       },
       { expectedOrigin, token, expectedNonce: navNonce },
@@ -1901,7 +1704,8 @@ export async function deliverCommittedServerCredential(target, resolved, options
     if (typeof target.url === 'function') {
       try {
         committedOrigin = new URL(target.url()).origin;
-      } catch {}
+      } catch {
+      }
     }
     return {
       ok: false,
@@ -1925,16 +1729,23 @@ export async function deliverCommittedServerCredential(target, resolved, options
   };
 }
 
-/**
- * Resolves a verified server open, navigates `page` to the token-free `finalEntry`,
- * and delivers the credential only if the navigation commits at `resolved.origin`.
- */
-export async function openVerifiedServerNavigation(page, storage, input, options = {}) {
+export async function openVerifiedServerNavigation(
+  page: PageTargetLike,
+  storage: StorageLike | undefined,
+  input: ResolveVerifiedOpenInput,
+  options: {
+    gotoOptions?: unknown;
+    navNonce?: string;
+    probe?: (origin: string, options?: ProbeHandshakeOptions) => Promise<HandshakeProbeResult>;
+    fetchImpl?: typeof fetch;
+    requireMutualProof?: boolean;
+  } = {},
+): Promise<Record<string, unknown>> {
   const resolved = await resolveVerifiedServerOpen(storage, input);
   if (!resolved.ok) {
     return { ...resolved, tokenDelivered: false };
   }
-  await page.goto(resolved.finalEntry, options.gotoOptions);
+  await page.goto?.(resolved.finalEntry, options.gotoOptions);
   const delivery = await deliverCommittedServerCredential(page, resolved, options);
   if (!delivery.ok) {
     return {
@@ -1956,28 +1767,25 @@ export async function openVerifiedServerNavigation(page, storage, input, options
   };
 }
 
-/**
- * Opens `input.origin` only when it has established pairing trust (`verifiedOrigins`)
- * or redeems a pairing code (`input.code`) first. Never promotes an unpaired origin
- * via public handshake metadata, never follows cross-origin redirects, never
- * overwrites an existing paired computer before pairing succeeds, and never attaches
- * `#token=` to `finalEntry` before navigation commits.
- */
-export async function resolveVerifiedServerOpen(storage, input) {
+export async function resolveVerifiedServerOpen(
+  storage: StorageLike | undefined,
+  input: ResolveVerifiedOpenInput,
+): Promise<ResolveVerifiedOpenResult> {
   const signal = input?.signal;
   const isStale =
     typeof input?.isStale === 'function'
-      ? () => Boolean(input.isStale() || signal?.aborted === true)
+      ? () => Boolean(input.isStale?.() || signal?.aborted === true)
       : () => signal?.aborted === true;
   if (isStale()) {
     return { ok: false, stale: true, reason: 'aborted' };
   }
-  const parsedTarget = readTarget(input?.origin ?? '');
+  const rawOriginInput = upgradeEndpointForTlsPin(input?.origin ?? '', input?.fingerprint);
+  const parsedTarget = readTarget(rawOriginInput);
   if (!parsedTarget.ok) {
     return { ok: false, reason: parsedTarget.reason };
   }
   const origin = parsedTarget.origin;
-  const entry = input.entry ?? `${origin}/`;
+  const entry = upgradeEndpointForTlsPin(input.entry ?? `${origin}/`, input.fingerprint);
   let current = readSavedServers(storage);
   const requestedServerId = input.serverId ?? input.targetHomeId;
   let existing =
@@ -1989,7 +1797,7 @@ export async function resolveVerifiedServerOpen(storage, input) {
         (!item.paired && !item.targetHomeId && (item.origin === origin || item.origins.includes(origin))),
     ) ?? null;
 
-  let claimedToken;
+  let claimedToken: string | undefined;
   if (typeof input.code === 'string' && input.code.trim() !== '') {
     const claim = await claimPairingOrigin(storage, {
       endpoint: input.endpoint ?? origin,
@@ -2033,7 +1841,7 @@ export async function resolveVerifiedServerOpen(storage, input) {
       );
       const rawKey = input.handshakeKey ?? input.handshakeProof;
       const handshakeKey =
-        typeof rawKey === 'string' && /^[a-f0-9]{64}$/i.test(rawKey.trim())
+        typeof rawKey === 'string' && HANDSHAKE_HEX_PROOF_PATTERN.test(rawKey.trim())
           ? rawKey.trim().toLowerCase()
           : undefined;
       const grantId =
@@ -2050,7 +1858,7 @@ export async function resolveVerifiedServerOpen(storage, input) {
       const resolvedFingerprint = input.fingerprint ?? getServerFingerprint(existing, origin);
       const probeFn =
         input.probe ??
-        ((targetOrigin, probeOptions) =>
+        ((targetOrigin: string, probeOptions?: ProbeHandshakeOptions) =>
           probeOriginHandshake(targetOrigin, {
             fetchImpl: input.fetchImpl,
             handshakeKey: probeOptions?.handshakeKey ?? probeOptions?.handshakeProof ?? handshakeKey,

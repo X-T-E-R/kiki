@@ -193,19 +193,21 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         let serverId = call.getString("serverId")
         let grantId = call.getString("grantId")
         let fingerprint = KikiTlsPinning.normalizeFingerprint(call.getString("fingerprint"))
+        let expectInvited = call.getString("expectedStatus")?.lowercased() == "invited"
         guard let origin = call.getString("origin"),
               let originURL = URL(string: origin),
-              let normalized = Self.origin(of: originURL) else {
+              let parsedOrigin = Self.origin(of: originURL) else {
             call.resolve(["ok": false])
             return
         }
+        let normalized = Self.upgradeOriginForTlsPin(parsedOrigin, fingerprint: fingerprint)
         let pairedProbe: Bool
         if let serverId, !serverId.isEmpty {
             pairedProbe = Self.isOriginVerified(origin: normalized, for: serverId) && Self.hasStoredToken(for: serverId, origin: normalized)
         } else {
             pairedProbe = false
         }
-        let handleResult: (_ ok: Bool, _ redirected: Bool, _ statusCode: Int, _ homeId: String?, _ hostId: String?, _ label: String?, _ mutualVerified: Bool, _ mutualRevoked: Bool, _ mutualDisabled: Bool, _ inboundEnabled: Bool) -> Void = { ok, redirected, statusCode, homeId, hostId, label, mutualVerified, mutualRevoked, mutualDisabled, inboundEnabled in
+        let handleResult: (_ ok: Bool, _ redirected: Bool, _ statusCode: Int, _ homeId: String?, _ hostId: String?, _ label: String?, _ mutualVerified: Bool, _ mutualRevoked: Bool, _ mutualDisabled: Bool, _ mutualInvited: Bool, _ inboundEnabled: Bool) -> Void = { ok, redirected, statusCode, homeId, hostId, label, mutualVerified, mutualRevoked, mutualDisabled, mutualInvited, inboundEnabled in
             if redirected {
                 call.resolve(["ok": false])
                 return
@@ -223,8 +225,10 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                         "status": statusCode,
                         "reason": "pairing_revoked",
                         "authRejected": true,
+                        "handshakeStatus": "revoked",
                         "mutualProofVerified": false,
-                        "mutualRevokedVerified": true
+                        "mutualRevokedVerified": true,
+                        "mutualInvitedVerified": false
                     ]
                     if let homeId, !homeId.isEmpty { revokedOut["targetHomeId"] = homeId }
                     if let hostId, !hostId.isEmpty { revokedOut["targetHostId"] = hostId }
@@ -238,11 +242,49 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                         "reason": "unreachable",
                         "inboundEnabled": inboundEnabled,
                         "mutualProofVerified": false,
-                        "mutualDisabledVerified": mutualDisabled
+                        "mutualDisabledVerified": mutualDisabled,
+                        "mutualInvitedVerified": false
                     ]
+                    if mutualDisabled { disabledOut["handshakeStatus"] = "inbound_disabled" }
                     if let homeId, !homeId.isEmpty { disabledOut["targetHomeId"] = homeId }
                     if let hostId, !hostId.isEmpty { disabledOut["targetHostId"] = hostId }
                     call.resolve(disabledOut)
+                    return
+                }
+                if pairedProbe && identityMatches && mutualInvited {
+                    var invitedOut: [String: Any] = [
+                        "ok": expectInvited,
+                        "status": statusCode,
+                        "inboundEnabled": inboundEnabled,
+                        "handshakeStatus": "invited",
+                        "mutualProofVerified": false,
+                        "mutualRevokedVerified": false,
+                        "mutualDisabledVerified": false,
+                        "mutualInvitedVerified": true
+                    ]
+                    if !expectInvited { invitedOut["reason"] = "pairing_required" }
+                    if let label, !label.isEmpty { invitedOut["targetLabel"] = label }
+                    if let homeId, !homeId.isEmpty { invitedOut["targetHomeId"] = homeId }
+                    if let hostId, !hostId.isEmpty { invitedOut["targetHostId"] = hostId }
+                    call.resolve(invitedOut)
+                    return
+                }
+                if pairedProbe && expectInvited {
+                    var mismatchOut: [String: Any] = [
+                        "ok": false,
+                        "status": statusCode,
+                        "reason": "pairing_required",
+                        "inboundEnabled": inboundEnabled,
+                        "mutualProofVerified": mutualVerified,
+                        "mutualRevokedVerified": false,
+                        "mutualDisabledVerified": false,
+                        "mutualInvitedVerified": false
+                    ]
+                    if mutualVerified { mismatchOut["handshakeStatus"] = "approved" }
+                    if let label, !label.isEmpty { mismatchOut["targetLabel"] = label }
+                    if let homeId, !homeId.isEmpty { mismatchOut["targetHomeId"] = homeId }
+                    if let hostId, !hostId.isEmpty { mismatchOut["targetHostId"] = hostId }
+                    call.resolve(mismatchOut)
                     return
                 }
                 var out: [String: Any] = [
@@ -250,8 +292,13 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     "status": statusCode,
                     "inboundEnabled": inboundEnabled,
                     "mutualProofVerified": mutualVerified,
-                    "mutualDisabledVerified": mutualDisabled
+                    "mutualDisabledVerified": mutualDisabled,
+                    "mutualInvitedVerified": mutualInvited
                 ]
+                if mutualVerified { out["handshakeStatus"] = "approved" }
+                else if mutualRevoked { out["handshakeStatus"] = "revoked" }
+                else if mutualDisabled { out["handshakeStatus"] = "inbound_disabled" }
+                else if mutualInvited { out["handshakeStatus"] = "invited" }
                 if let label, !label.isEmpty { out["targetLabel"] = label }
                 if let homeId, !homeId.isEmpty { out["targetHomeId"] = homeId }
                 if let hostId, !hostId.isEmpty { out["targetHostId"] = hostId }
@@ -259,9 +306,23 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
             if pairedProbe && (statusCode == 401 || statusCode == 403) {
+                if mutualInvited && expectInvited {
+                    call.resolve([
+                        "ok": true,
+                        "status": statusCode,
+                        "handshakeStatus": "invited",
+                        "mutualProofVerified": false,
+                        "mutualRevokedVerified": false,
+                        "mutualDisabledVerified": false,
+                        "mutualInvitedVerified": true
+                    ])
+                    return
+                }
                 let reason = mutualRevoked
                     ? "pairing_revoked"
-                    : (mutualDisabled ? "unreachable" : "unverified_handshake_proof")
+                    : (mutualInvited
+                        ? "pairing_required"
+                        : (mutualDisabled ? "unreachable" : "unverified_handshake_proof"))
                 var errOut: [String: Any] = [
                     "ok": false,
                     "status": statusCode,
@@ -269,8 +330,12 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     "authRejected": mutualRevoked,
                     "mutualProofVerified": false,
                     "mutualRevokedVerified": mutualRevoked,
-                    "mutualDisabledVerified": mutualDisabled
+                    "mutualDisabledVerified": mutualDisabled,
+                    "mutualInvitedVerified": mutualInvited
                 ]
+                if mutualRevoked { errOut["handshakeStatus"] = "revoked" }
+                else if mutualInvited { errOut["handshakeStatus"] = "invited" }
+                else if mutualDisabled { errOut["handshakeStatus"] = "inbound_disabled" }
                 if mutualDisabled {
                     errOut["inboundEnabled"] = false
                 }
@@ -293,28 +358,32 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         if let fingerprint {
             Self.fetchHandshake(origin: normalized, serverId: serverId, explicitGrantId: grantId, explicitFingerprint: fingerprint) {
-                handleResult($0, $1, $2, $3, $4, $5, $6, $7, $8, $9)
+                handleResult($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             }
         } else {
             Self.fetchHandshake(origin: normalized, serverId: serverId, explicitGrantId: grantId) {
-                handleResult($0, $1, $2, $3, $4, $5, $6, $7, $8, $9)
+                handleResult($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             }
         }
     }
 
     @objc func claimPair(_ call: CAPPluginCall) {
+        let fingerprint = KikiTlsPinning.normalizeFingerprint(call.getString("fingerprint"))
         guard let endpoint = call.getString("endpoint"),
               let code = call.getString("code"), !code.isEmpty,
               let homeId = call.getString("homeId"), !homeId.isEmpty,
               let hostId = call.getString("hostId"), !hostId.isEmpty,
               let endpointURL = URL(string: endpoint),
-              let base = Self.origin(of: endpointURL),
-              let claimURL = URL(string: "\(base)/api/remote-connections/pair/claim") else {
+              let parsedBase = Self.origin(of: endpointURL) else {
+            call.resolve(["ok": false, "reason": "rejected"])
+            return
+        }
+        let base = Self.upgradeOriginForTlsPin(parsedBase, fingerprint: fingerprint)
+        guard let claimURL = URL(string: "\(base)/api/remote-connections/pair/claim") else {
             call.resolve(["ok": false, "reason": "rejected"])
             return
         }
         let sourceLabel = call.getString("sourceLabel") ?? "Kiki iOS"
-        let fingerprint = KikiTlsPinning.normalizeFingerprint(call.getString("fingerprint"))
         let body: [String: Any] = [
             "code": code,
             "source": [
@@ -369,6 +438,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             Self.recordVerifiedOrigin(origin: base, for: targetHomeId, hostId: targetHostId, grantId: grantId, fingerprint: fingerprint)
             call.resolve([
                 "ok": true,
+                "origin": base,
                 "serverId": targetHomeId,
                 "targetHomeId": targetHomeId,
                 "targetHostId": targetHostId,
@@ -382,10 +452,17 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func open(_ call: CAPPluginCall) {
-        guard let origin = call.getString("origin"), let entry = call.getString("entry"),
-              let originURL = URL(string: origin), let entryURL = URL(string: entry),
-              let normalized = Self.origin(of: originURL), normalized == origin,
-              Self.origin(of: entryURL) == origin else {
+        let fingerprint = KikiTlsPinning.normalizeFingerprint(call.getString("fingerprint"))
+        guard let rawOrigin = call.getString("origin"), let rawEntry = call.getString("entry"),
+              let originURL = URL(string: rawOrigin), let entryURL = URL(string: rawEntry),
+              let normalized = Self.origin(of: originURL), normalized == rawOrigin,
+              Self.origin(of: entryURL) == rawOrigin else {
+            call.reject("invalid_origin")
+            return
+        }
+        let origin = Self.upgradeOriginForTlsPin(rawOrigin, fingerprint: fingerprint)
+        let entry = Self.upgradeEntryForTlsPin(origin: rawOrigin, entry: rawEntry, fingerprint: fingerprint)
+        guard let resolvedEntryURL = URL(string: entry) else {
             call.reject("invalid_origin")
             return
         }
@@ -395,7 +472,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             DispatchQueue.main.async { [weak self] in
                 self?.clearPendingAuth()
                 self?.clearActiveAuth()
-                self?.webView?.load(URLRequest(url: entryURL))
+                self?.webView?.load(URLRequest(url: resolvedEntryURL))
                 call.resolve(["ok": true, "origin": origin])
             }
             return
@@ -413,7 +490,6 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let grantId = call.getString("grantId")
-        let fingerprint = KikiTlsPinning.normalizeFingerprint(call.getString("fingerprint"))
         let opId = call.getString("opId")
         if let fingerprint {
             KikiTlsPinning.saveFingerprint(fingerprint, for: serverId, origin: origin)
@@ -429,7 +505,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             let callEpoch = self.pendingAuthEpoch
             self.pendingOpenOpId = (opId?.isEmpty == false) ? opId : "open-\(callEpoch)"
             self.pendingOpenCommitted = false
-            Self.fetchHandshake(origin: origin, serverId: serverId, explicitGrantId: grantId) { [weak self] ok, redirected, statusCode, homeId, hostId, _, mutualVerified, mutualRevoked, mutualDisabled, inboundEnabled in
+            let handleOpenHandshake: (_ ok: Bool, _ redirected: Bool, _ statusCode: Int, _ homeId: String?, _ hostId: String?, _ label: String?, _ mutualVerified: Bool, _ mutualRevoked: Bool, _ mutualDisabled: Bool, _ mutualInvited: Bool, _ inboundEnabled: Bool) -> Void = { [weak self] ok, redirected, statusCode, homeId, hostId, _, mutualVerified, mutualRevoked, mutualDisabled, mutualInvited, inboundEnabled in
                 let hostMatches = Self.matchesStoredHostId(serverId: serverId, candidateHostId: hostId)
                 if let failureReason = Self.classifyPairedHandshakeFailure(
                     ok: ok,
@@ -441,6 +517,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     mutualProofVerified: mutualVerified,
                     mutualRevokedVerified: mutualRevoked,
                     mutualDisabledVerified: mutualDisabled,
+                    mutualInvitedVerified: mutualInvited,
                     inboundEnabled: inboundEnabled
                 ) {
                     DispatchQueue.main.async {
@@ -470,6 +547,15 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     self.activeAuthServerId = serverId
                     self.webView?.load(URLRequest(url: cleanURL))
                     call.resolve(["ok": true, "origin": origin])
+                }
+            }
+            if let fingerprint {
+                Self.fetchHandshake(origin: origin, serverId: serverId, explicitGrantId: grantId, explicitFingerprint: fingerprint) {
+                    handleOpenHandshake($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                }
+            } else {
+                Self.fetchHandshake(origin: origin, serverId: serverId, explicitGrantId: grantId) {
+                    handleOpenHandshake($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 }
             }
         }
@@ -597,7 +683,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             Self.buildDocumentNavNonceScript(expectedOrigin: targetOrigin, navNonce: expectedNavNonce),
             completionHandler: nil
         )
-        Self.fetchHandshake(origin: targetOrigin, serverId: targetServerId) { [weak self] ok, redirected, statusCode, homeId, hostId, _, mutualVerified, mutualRevoked, mutualDisabled, inboundEnabled in
+        Self.fetchHandshake(origin: targetOrigin, serverId: targetServerId) { [weak self] ok, redirected, statusCode, homeId, hostId, _, mutualVerified, mutualRevoked, mutualDisabled, mutualInvited, inboundEnabled in
             DispatchQueue.main.async {
                 guard let self,
                       let webView = self.webView,
@@ -615,6 +701,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     mutualProofVerified: mutualVerified,
                     mutualRevokedVerified: mutualRevoked,
                     mutualDisabledVerified: mutualDisabled,
+                    mutualInvitedVerified: mutualInvited,
                     inboundEnabled: inboundEnabled
                 ) {
                     if failureReason == "unreachable", finalize, self.deliveredDocumentNavNonce == expectedNavNonce {
@@ -756,6 +843,48 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         return UserDefaults.standard.string(forKey: hostIdPrefix + serverId) ?? ""
     }
 
+    private static func verifyHandshakeDomain(
+        statusHeader: String?,
+        resProof: String?,
+        handshakeKey: String,
+        suffix: String
+    ) -> String? {
+        guard let resProof, !resProof.isEmpty, !handshakeKey.isEmpty else { return nil }
+        if let rawStatus = statusHeader?.trimmingCharacters(in: .whitespacesAndNewlines), !rawStatus.isEmpty {
+            let normalizedStatus = rawStatus.lowercased()
+            let prefix: String
+            switch normalizedStatus {
+            case "approved":
+                prefix = "kiki-handshake-res-v1:"
+            case "revoked":
+                prefix = "kiki-handshake-revoked-v1:"
+            case "inbound_disabled":
+                prefix = "kiki-handshake-disabled-v1:"
+            case "invited":
+                prefix = "kiki-handshake-invited-v1:"
+            default:
+                return nil
+            }
+            return constantTimeHexEqual(
+                resProof,
+                hmacSha256Hex(keyAscii: handshakeKey, message: "\(prefix)\(suffix)")
+            ) ? normalizedStatus : nil
+        }
+        if constantTimeHexEqual(resProof, hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-res-v1:\(suffix)")) {
+            return "approved"
+        }
+        if constantTimeHexEqual(resProof, hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-revoked-v1:\(suffix)")) {
+            return "revoked"
+        }
+        if constantTimeHexEqual(resProof, hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-disabled-v1:\(suffix)")) {
+            return "inbound_disabled"
+        }
+        if constantTimeHexEqual(resProof, hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-invited-v1:\(suffix)")) {
+            return "invited"
+        }
+        return nil
+    }
+
     private static func classifyPairedHandshakeFailure(
         ok: Bool,
         redirected: Bool,
@@ -766,6 +895,7 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         mutualProofVerified: Bool,
         mutualRevokedVerified: Bool,
         mutualDisabledVerified: Bool,
+        mutualInvitedVerified: Bool = false,
         inboundEnabled: Bool = true
     ) -> String? {
         if redirected { return "unreachable" }
@@ -773,12 +903,14 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let targetHomeId, !targetHomeId.isEmpty else { return "unreachable" }
             if targetHomeId != expectedServerId || !hostMatches { return "identity_mismatch" }
             if mutualRevokedVerified { return "pairing_revoked" }
+            if mutualInvitedVerified { return "pairing_required" }
             if mutualDisabledVerified || !inboundEnabled { return "unreachable" }
             if !mutualProofVerified { return "unverified_handshake_proof" }
             return nil
         }
         if statusCode == 401 || statusCode == 403 {
             if mutualRevokedVerified { return "pairing_revoked" }
+            if mutualInvitedVerified { return "pairing_required" }
             if mutualDisabledVerified { return "unreachable" }
             return "unverified_handshake_proof"
         }
@@ -786,14 +918,15 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private static func fetchHandshake(
-        origin: String,
+        origin rawOrigin: String,
         serverId: String? = nil,
         explicitGrantId: String? = nil,
         explicitFingerprint: String? = nil,
-        completion: @escaping (_ ok: Bool, _ redirected: Bool, _ statusCode: Int, _ targetHomeId: String?, _ targetHostId: String?, _ targetLabel: String?, _ mutualProofVerified: Bool, _ mutualRevokedVerified: Bool, _ mutualDisabledVerified: Bool, _ inboundEnabled: Bool) -> Void
+        completion: @escaping (_ ok: Bool, _ redirected: Bool, _ statusCode: Int, _ targetHomeId: String?, _ targetHostId: String?, _ targetLabel: String?, _ mutualProofVerified: Bool, _ mutualRevokedVerified: Bool, _ mutualDisabledVerified: Bool, _ mutualInvitedVerified: Bool, _ inboundEnabled: Bool) -> Void
     ) {
+        let origin = upgradeOriginForTlsPin(rawOrigin, fingerprint: explicitFingerprint)
         guard let handshakeURL = URL(string: "\(origin)/api/remote-connections/handshake") else {
-            completion(false, false, 0, nil, nil, nil, false, false, false, true)
+            completion(false, false, 0, nil, nil, nil, false, false, false, false, true)
             return
         }
         var req = URLRequest(url: handshakeURL)
@@ -815,21 +948,21 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let task = noRedirectSession.dataTask(with: req) { data, response, _ in
             guard let http = response as? HTTPURLResponse else {
-                completion(false, false, 0, nil, nil, nil, false, false, false, true)
+                completion(false, false, 0, nil, nil, nil, false, false, false, false, true)
                 return
             }
             if (300..<400).contains(http.statusCode) {
-                completion(false, true, http.statusCode, nil, nil, nil, false, false, false, true)
+                completion(false, true, http.statusCode, nil, nil, nil, false, false, false, false, true)
                 return
             }
             if let finalURL = http.url, Self.origin(of: finalURL) != origin {
-                completion(false, true, http.statusCode, nil, nil, nil, false, false, false, true)
+                completion(false, true, http.statusCode, nil, nil, nil, false, false, false, false, true)
                 return
             }
             let resProof = http.value(forHTTPHeaderField: "x-kiki-handshake-proof")
+            let resStatus = http.value(forHTTPHeaderField: "x-kiki-handshake-status")
             guard (200..<300).contains(http.statusCode) else {
-                var mutualRevoked = false
-                var mutualDisabled = false
+                var verifiedStatus: String?
                 if (http.statusCode == 401 || http.statusCode == 403),
                    let handshakeKey,
                    let nonce,
@@ -837,18 +970,25 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                    !serverId.isEmpty {
                     let storedHostId = resolveStoredHostId(serverId: serverId)
                     let suffix = "\(nonce):\(serverId):\(storedHostId)"
-                    mutualRevoked = constantTimeHexEqual(
-                        resProof,
-                        hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-revoked-v1:\(suffix)")
+                    verifiedStatus = verifyHandshakeDomain(
+                        statusHeader: resStatus,
+                        resProof: resProof,
+                        handshakeKey: handshakeKey,
+                        suffix: suffix
                     )
-                    if !mutualRevoked {
-                        mutualDisabled = constantTimeHexEqual(
-                            resProof,
-                            hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-disabled-v1:\(suffix)")
+                    if verifiedStatus == nil, !storedHostId.isEmpty {
+                        verifiedStatus = verifyHandshakeDomain(
+                            statusHeader: resStatus,
+                            resProof: resProof,
+                            handshakeKey: handshakeKey,
+                            suffix: "\(nonce):\(serverId):"
                         )
                     }
                 }
-                completion(false, false, http.statusCode, nil, nil, nil, false, mutualRevoked, mutualDisabled, !mutualDisabled)
+                let mutualRevoked = verifiedStatus == "revoked"
+                let mutualDisabled = verifiedStatus == "inbound_disabled"
+                let mutualInvited = verifiedStatus == "invited"
+                completion(false, false, http.statusCode, nil, nil, nil, false, mutualRevoked, mutualDisabled, mutualInvited, !mutualDisabled)
                 return
             }
             var label: String?
@@ -866,29 +1006,29 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
                     inboundEnabled = enabledVal
                 }
             }
-            var mutualVerified = false
-            var mutualRevoked = false
-            var mutualDisabled = false
+            var verifiedStatus: String?
             if let handshakeKey, let nonce, let homeId, !homeId.isEmpty {
                 let suffix = "\(nonce):\(homeId):\(hostId ?? "")"
-                mutualVerified = constantTimeHexEqual(
-                    resProof,
-                    hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-res-v1:\(suffix)")
+                verifiedStatus = verifyHandshakeDomain(
+                    statusHeader: resStatus,
+                    resProof: resProof,
+                    handshakeKey: handshakeKey,
+                    suffix: suffix
                 )
-                if !mutualVerified {
-                    mutualRevoked = constantTimeHexEqual(
-                        resProof,
-                        hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-revoked-v1:\(suffix)")
-                    )
-                    if !mutualRevoked {
-                        mutualDisabled = constantTimeHexEqual(
-                            resProof,
-                            hmacSha256Hex(keyAscii: handshakeKey, message: "kiki-handshake-disabled-v1:\(suffix)")
-                        )
-                    }
-                }
             }
-            completion(true, false, http.statusCode, homeId, hostId, label, mutualVerified, mutualRevoked, mutualDisabled, inboundEnabled)
+            completion(
+                true,
+                false,
+                http.statusCode,
+                homeId,
+                hostId,
+                label,
+                verifiedStatus == "approved",
+                verifiedStatus == "revoked",
+                verifiedStatus == "inbound_disabled",
+                verifiedStatus == "invited",
+                inboundEnabled
+            )
         }
         pinnedSessionDelegate.register(taskId: task.taskIdentifier, fingerprint: explicitFingerprint, serverId: serverId)
         task.resume()
@@ -1128,6 +1268,29 @@ public class KikiShellPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         invalidateCurrentDocumentNavigation()
         return false
+    }
+
+    static func upgradeOriginForTlsPin(_ origin: String, fingerprint: String?) -> String {
+        guard KikiTlsPinning.normalizeFingerprint(fingerprint) != nil,
+              let url = URL(string: origin),
+              url.scheme?.lowercased() == "http",
+              let host = url.host?.lowercased(), !host.isEmpty,
+              url.user == nil, url.password == nil else {
+            return origin
+        }
+        let shownHost = host.contains(":") ? "[\(host)]" : host
+        let port = url.port ?? 80
+        return "https://\(shownHost):\(port)"
+    }
+
+    static func upgradeEntryForTlsPin(origin rawOrigin: String, entry rawEntry: String, fingerprint: String?) -> String {
+        guard KikiTlsPinning.normalizeFingerprint(fingerprint) != nil else { return rawEntry }
+        let upgradedOrigin = upgradeOriginForTlsPin(rawOrigin, fingerprint: fingerprint)
+        if upgradedOrigin == rawOrigin { return rawEntry }
+        if rawEntry.hasPrefix(rawOrigin) {
+            return upgradedOrigin + String(rawEntry.dropFirst(rawOrigin.count))
+        }
+        return "\(upgradedOrigin)/"
     }
 
     static func origin(of url: URL) -> String? {

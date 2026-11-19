@@ -99,7 +99,7 @@ function isUsableEndpointUrl(rawUrl: string): boolean {
     return false;
   }
 }
-export function directAddresses(interfaces = networkInterfaces()): string[] {
+function rankedDirectAddresses(interfaces = networkInterfaces()): readonly { address: string; rank: number }[] {
   const candidates = new Map<string, { rank: number; order: number }>();
   let order = 0;
   for (const [name, entries] of Object.entries(interfaces)) {
@@ -117,7 +117,10 @@ export function directAddresses(interfaces = networkInterfaces()): string[] {
   }
   return [...candidates.entries()]
     .sort((left, right) => left[1].rank - right[1].rank || left[1].order - right[1].order)
-    .map(([address]) => address);
+    .map(([address, meta]) => ({ address, rank: meta.rank }));
+}
+export function directAddresses(interfaces = networkInterfaces()): string[] {
+  return rankedDirectAddresses(interfaces).map(({ address }) => address);
 }
 export function directEndpoints(bound: { host: string; port: number } | number, extras: readonly string[] = [], interfaces = networkInterfaces()): string[] {
   const urls = new Map<string, { rank: number; order: number }>();
@@ -133,8 +136,8 @@ export function directEndpoints(bound: { host: string; port: number } | number, 
   const host = target.host.replace(/^::ffff:/i, '');
   if (target.port > 0) {
     if (host === '0.0.0.0' || host === '::' || host === '') {
-      for (const [index, address] of directAddresses(interfaces).entries()) {
-        add(`http://${address}:${target.port}`, directHostRank(address));
+      for (const [index, { address, rank }] of rankedDirectAddresses(interfaces).entries()) {
+        add(`http://${address}:${target.port}`, rank);
         order = Math.max(order, index + 1);
       }
     } else if (!isUnusableDirectHost(host) && isDirectConnectionHost(host)) {

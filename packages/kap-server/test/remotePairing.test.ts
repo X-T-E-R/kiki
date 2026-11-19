@@ -80,6 +80,19 @@ describe('direct endpoints', () => {
       'http://100.69.108.120:58627',
       'http://172.19.0.1:58627',
     ]);
+
+    const tunnelRankInterfaces = {
+      utun0: [{ address: '10.8.0.2', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '10.8.0.2/24' }],
+      wg0: [{ address: '192.168.250.2', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '192.168.250.2/24' }],
+      Tailscale: [{ address: '100.64.0.10', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.64.0.10/32' }],
+      en0: [{ address: '192.168.10.40', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:07', internal: false, cidr: '192.168.10.40/24' }],
+    };
+    expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, [], tunnelRankInterfaces)).toEqual([
+      'http://192.168.10.40:58627',
+      'http://100.64.0.10:58627',
+      'http://10.8.0.2:58627',
+      'http://192.168.250.2:58627',
+    ]);
   });
 
   it('formats and parses short-lived kiki://pair URIs without long-lived tokens', () => {

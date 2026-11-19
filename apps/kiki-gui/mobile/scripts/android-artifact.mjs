@@ -13,7 +13,7 @@ export const INPUT_NAME = 'android-release-input.json';
 export const RECEIPT_NAME = 'android-receipt.json';
 export const LAUNCHER_FILES = [
   'assets/public/index.html', 'assets/public/launcher.js', 'assets/public/launcher.css',
-  'assets/public/target.js', 'assets/public/fonts/newsreader-latin-opsz-normal.woff2',
+  'assets/public/fonts/newsreader-latin-opsz-normal.woff2',
   'assets/capacitor.config.json',
 ];
 

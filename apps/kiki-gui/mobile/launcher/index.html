@@ -45,6 +45,8 @@
           </div>
 
           <p id="scan-feedback" class="scan-feedback" role="status" hidden></p>
+          <button id="pick-qr-photo-fallback" type="button" class="secondary photo-fallback-button" hidden data-i18n="chooseQrPhoto">Choose QR photo</button>
+          <input id="qr-photo-input" type="file" accept="image/*" hidden />
 
           <div id="scanner-panel" class="scanner-panel" hidden>
             <div class="scanner-frame">
@@ -53,7 +55,10 @@
             </div>
             <div class="scanner-actions">
               <span class="scanner-caption" data-i18n="scannerPrompt">Point at the QR code on your computer</span>
-              <button id="scan-cancel" type="button" class="ghost-button" data-i18n="scanCancel">Enter manually</button>
+              <div class="scanner-action-buttons">
+                <button id="pick-qr-photo" type="button" class="ghost-button" data-i18n="choosePhoto">Choose photo</button>
+                <button id="scan-cancel" type="button" class="ghost-button" data-i18n="scanCancel">Enter manually</button>
+              </div>
             </div>
           </div>
 
@@ -147,6 +152,6 @@
         </div>
       </nav>
     </div>
-    <script type="module" src="./launcher.js"></script>
+    <script src="./launcher.js" defer></script>
   </body>
 </html>
