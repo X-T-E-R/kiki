@@ -527,7 +527,7 @@ export class SessionEventBroadcaster {
       signal: opts?.timing?.signal === undefined ? token.signal : AbortSignal.any([token.signal, opts.timing.signal]) };
     const fields = { sessionId, generation: timing.generation, viewId: timing.viewId };
     let acquiredLease: SessionLease | undefined;
-    let attached: { state: SessionState; generation: number } | undefined;
+    let attached: { state: SessionState; generation: number; prev: TargetSubscription | undefined; prevSeeded: boolean } | undefined;
     try {
       const pinnedState = this.sessions.get(sessionId);
       const existingLease = pinnedState?.targets.get(target)?.residencyLease;
@@ -543,6 +543,7 @@ export class SessionEventBroadcaster {
           this.sessions.get(sessionId) !== state ||
           (existingLease !== undefined && state !== pinnedState)) return false;
       const prev = state.targets.get(target);
+      const prevSeeded = state.transcriptSeeded.has(target);
       const residencyLease = prev?.residencyLease ?? acquiredLease;
       if (residencyLease !== undefined &&
           (state.sessionHandle !== residencyLease.handle ||
@@ -561,7 +562,7 @@ export class SessionEventBroadcaster {
         transcriptGeneration: generation,
         residencyLease,
       });
-      attached = { state, generation };
+      attached = { state, generation, prev, prevSeeded };
       if (transcriptGrades === undefined) {
         state.transcriptSeeded.delete(target);
         return true;
@@ -599,7 +600,19 @@ export class SessionEventBroadcaster {
       if (attached !== undefined && pending.get(target) === token &&
           this.sessions.get(sessionId) === attached.state &&
           attached.state.targets.get(target)?.transcriptGeneration === attached.generation) {
-        this.unsubscribe(sessionId, target);
+        if (attached.prev === undefined) {
+          this.unsubscribe(sessionId, target);
+        } else {
+          const restoredGeneration = this.nextTranscriptGeneration(attached.state, target);
+          attached.state.targets.set(target, {
+            agentFilter: attached.prev.agentFilter,
+            transcriptGrades: attached.prev.transcriptGrades,
+            transcriptGeneration: restoredGeneration,
+            residencyLease: attached.prev.residencyLease,
+          });
+          if (attached.prevSeeded) attached.state.transcriptSeeded.add(target);
+          else attached.state.transcriptSeeded.delete(target);
+        }
       }
       throw error;
     } finally {

@@ -1018,7 +1018,7 @@ class HttpEventSocket {
         const listen = this.listens.get(id);
         if (listen === undefined) return;
         this.listens.delete(id);
-        listen.onError?.(frameError(frame));
+        listen.onError?.(frameError(frame), true);
         return;
       }
       case 'stream_data':
@@ -1050,7 +1050,7 @@ class HttpEventSocket {
 
   private notifyDisconnect(error: Error): void {
     clearTimeout(this.establishmentTimer);
-    for (const listen of this.listens.values()) listen.onError?.(error);
+    for (const listen of this.listens.values()) listen.onError?.(error, false);
     this.sessionViews.disconnected(error);
     this.terminals.disconnected(error);
   }

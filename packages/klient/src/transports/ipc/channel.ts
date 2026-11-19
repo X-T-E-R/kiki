@@ -323,7 +323,7 @@ export class IpcChannel implements KlientChannel {
       this.send(frame);
     }, (error: unknown) => {
       if (!this.listens.delete(id)) return;
-      onError?.(error instanceof Error ? error : new Error(String(error)));
+      onError?.(error instanceof Error ? error : new Error(String(error)), true);
     });
     return {
       dispose: () => {
@@ -375,7 +375,7 @@ export class IpcChannel implements KlientChannel {
         const sub = this.listens.get(id);
         if (sub !== undefined) {
           this.listens.delete(id);
-          sub.onError?.(error);
+          sub.onError?.(error, true);
         }
         return;
       }
@@ -423,7 +423,7 @@ export class IpcChannel implements KlientChannel {
   }
 
   private failAll(err: Error): void {
-    for (const sub of this.listens.values()) sub.onError?.(err);
+    for (const sub of this.listens.values()) sub.onError?.(err, true);
     this.listens.clear();
     for (const p of this.pending.values()) {
       if (p.timer !== undefined) clearTimeout(p.timer);

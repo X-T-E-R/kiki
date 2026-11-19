@@ -27,7 +27,7 @@ class FakeChannel implements KlientChannel {
     source: EventSourceRef;
     dispose: ReturnType<typeof vi.fn>;
     onReady?: () => void;
-    onError?: (error: Error) => void;
+    onError?: (error: Error, terminal?: boolean) => void;
   }> = [];
   result: unknown;
   /** Keyed `${service}.${method}` result overrides. */
@@ -50,7 +50,7 @@ class FakeChannel implements KlientChannel {
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
-    onError?: (error: Error) => void,
+    onError?: (error: Error, terminal?: boolean) => void,
     onReady?: () => void,
   ): IDisposable {
     const id = this.nextSub;
@@ -1451,6 +1451,45 @@ describe('event hub', () => {
     expect(seen.completed).toEqual([completed]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(KlientValidationError);
+  });
+
+  it('evicts a shared subscription after a terminal error frame so subsequent subscribers re-attach and settle ready', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const errors: Error[] = [];
+    klient.events.onError((err) => errors.push(err));
+
+    const first = klient.events.on('session.metaUpdated', () => {});
+    expect(channel.subscriptions).toHaveLength(1);
+    channel.subscriptions[0]!.onError?.(new Error('server rejected subscription'), true);
+    await expect(first.ready).rejects.toThrow('server rejected subscription');
+    expect(channel.subscriptions[0]!.dispose).toHaveBeenCalledTimes(1);
+
+    const received: unknown[] = [];
+    const second = klient.events.on('session.metaUpdated', (payload) => received.push(payload));
+    expect(channel.subscriptions).toHaveLength(2);
+    channel.subscriptions[1]!.onReady?.();
+    await expect(second.ready).resolves.toBeUndefined();
+
+    // Disposing the evicted first handle must not release the replacement subscription.
+    first.dispose();
+    expect(channel.subscriptions[1]!.dispose).not.toHaveBeenCalled();
+
+    channel.emit(1, {
+      type: 'session.meta.updated',
+      payload: {
+        agentId: 'main',
+        sessionId: 's1',
+        title: 'hi',
+        patch: { title: 'hi', isCustomTitle: false },
+      },
+    });
+    await tick();
+    expect(received).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+
+    second.dispose();
+    expect(channel.subscriptions[1]!.dispose).toHaveBeenCalledTimes(1);
   });
 });
 
