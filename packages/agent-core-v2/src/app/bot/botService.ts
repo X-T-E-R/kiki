@@ -9,7 +9,7 @@ import { IRoomService } from '#/app/room/room';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { readPersistedAgentProfileSnapshot, type AgentProfileSnapshotHost } from '#/session/agentProfileSnapshot';
+import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot, type AgentProfileSnapshotHost } from '#/session/agentProfileSnapshot';
 import type { PersonaState } from '#/app/persona/personaStore';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { LifecycleScope } from '#/app/scopes';
@@ -145,7 +145,9 @@ export class BotService extends Disposable implements IBotService {
     const bound = main?.accessor.get(IAgentProfileService).data().personaId ?? session.personaId;
     if (bound !== undefined) return bound;
     const persisted = main === undefined
-      ? await readPersistedAgentProfileSnapshot(this.snapshotHost, session.workspaceId, session.id, 'main', undefined)
+      ? await readPersistedAgentProfileSnapshot(this.snapshotHost, session.workspaceId, session.id, 'main', undefined, undefined, {
+          inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+        })
       : undefined;
     if (persisted?.personaId !== undefined) return persisted.personaId;
     const legacy = session.custom?.['bot_persona_id'] ?? session.custom?.['room_persona_id'];

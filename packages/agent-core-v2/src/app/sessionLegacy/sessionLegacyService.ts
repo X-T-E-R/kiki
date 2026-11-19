@@ -8,7 +8,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { PersistedStatusReader } from './persistedStatus';
-import { readPersistedAgentProfileSnapshot } from '#/session/agentProfileSnapshot';
+import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '#/session/agentProfileSnapshot';
 import { createUnscopedAgentProfileCatalog } from '#/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
 import { TOKEN_COUNTING_SECTION, type TokenCountingConfig } from '#/agent/tokenCounting/configSection';
 import { mergeModelParameters, resolveModelProfileEntry } from '#/app/agentProfileCatalog/modelProfileOverlay';
@@ -66,7 +66,9 @@ export class SessionLegacyService implements ISessionLegacyService {
     if (summary === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     const scope = `sessions/${summary.workspaceId}/${sessionId}`;
     const metadata = await this.services.get(IAtomicDocumentStore).get<SessionMeta>(scope, 'state.json');
-    const profile = await readPersistedAgentProfileSnapshot(this.profileHost, summary.workspaceId, sessionId, 'main', metadata?.agents?.['main']);
+    const profile = await readPersistedAgentProfileSnapshot(this.profileHost, summary.workspaceId, sessionId, 'main', metadata?.agents?.['main'], undefined, {
+      inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+    });
     const preview = createUnscopedAgentProfileCatalog(this.instantiation, metadata?.cwd ?? summary.cwd, summary.workspaceId, false);
     try {
       await preview.catalog.ready;
