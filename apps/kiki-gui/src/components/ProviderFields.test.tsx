@@ -1231,6 +1231,42 @@ describe('Connections list', () => {
     expect(row.querySelector('summary')!.textContent).toContain('Connected');
     await act(async () => { panel.querySelector<HTMLButtonElement>('[data-connection-sign-out]')!.click(); });
     expect(logoutOAuth).toHaveBeenCalledWith({ provider: 'kimi-code' });
+    const removeBtn = row.querySelector<HTMLButtonElement>('[data-provider-remove="managed:kimi-code"]')!;
+    expect(removeBtn).not.toBeNull();
+    await act(async () => { removeBtn.click(); });
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"], [role="alertdialog"]')!;
+    expect(dialog).not.toBeNull();
+    expect(dialog.textContent).toContain('Local Kiki credentials for Kimi Code will be signed out and cleared.');
+    expect(dialog.textContent).toContain('You can connect this account again later from Add connection.');
+    await act(async () => { buttonByText(dialog, 'Remove provider').click(); });
+    expect(deleteProviderEntity).toHaveBeenCalledWith('managed:kimi-code');
+  });
+
+  it('lets the user remove an unauthenticated managed:kimi-code OAuth connection', async () => {
+    const unauthKimi: ProviderCatalogItem = { ...MANAGED_PROVIDER, id: 'managed:kimi-code', status: 'unconfigured', models: ['kimi-code/kimi-k2'] };
+    listOAuthMethods.mockResolvedValue([
+      { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: false,
+        connection_state: 'signed_out', account: { state: 'unknown' }, quota: { state: 'unknown' } },
+    ]);
+    listProviders.mockResolvedValue({ items: [unauthKimi] });
+    getProviderEntity.mockResolvedValue({ ...unauthKimi, revision: 'provider-rev-1', custom_header_keys: [], env_keys: [] });
+    const { container } = await renderSurface(<ConnectionsTab />);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:kimi-code"]')!;
+    await act(async () => { row.open = true; });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(row.querySelector('[data-connection-sign-out]')).toBeNull();
+    expect(row.querySelector('[data-connection-sign-in]')).not.toBeNull();
+    const removeBtn = row.querySelector<HTMLButtonElement>('[data-provider-remove="managed:kimi-code"]')!;
+    expect(removeBtn).not.toBeNull();
+    await act(async () => { removeBtn.click(); });
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"], [role="alertdialog"]')!;
+    expect(dialog).not.toBeNull();
+    expect(dialog.textContent).toContain('You can connect this account again later from Add connection.');
+    await act(async () => { buttonByText(dialog, 'Remove provider').click(); });
+    expect(deleteProviderEntity).toHaveBeenCalledWith('managed:kimi-code');
   });
 
   it('states a cancelled sign-in once, and leaves no connection behind', async () => {

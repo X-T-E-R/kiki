@@ -4402,6 +4402,14 @@ export const en = {
     'This provider has no refreshable catalog source. Choose a directory model below or enter an ID.',
   'st.providers.managedHint':
     'This provider is signed in through OAuth. Its ID, protocol, and credentials follow the Sign in / Sign out controls above. Everything else below stays editable.',
+  'st.providers.removeOAuthBody':
+    'This removes the account connection and its model aliases from Kiki.',
+  'st.providers.removeOAuthSignedInC1':
+    'Local Kiki credentials for {id} will be signed out and cleared.',
+  'st.providers.removeOAuthOriginalC1':
+    'Kiki will stop using the machine sign-in for {id}; the other app stays signed in.',
+  'st.providers.removeOAuthReaddC2':
+    'You can connect this account again later from Add connection.',
   'st.chips.capabilities': 'Capabilities',
   'st.chips.efforts': 'Supported effort levels',
   'st.chips.addPlaceholder': 'custom value + Enter',

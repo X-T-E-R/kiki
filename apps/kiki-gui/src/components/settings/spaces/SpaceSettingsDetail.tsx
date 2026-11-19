@@ -128,7 +128,7 @@ function SpaceSettingsDetailContext({ target, name, onDetailChange }: SpaceSetti
     }
   };
 
-  const useDeviceAppearance = async () => {
+  const applyDeviceAppearance = async () => {
     if (!ownsAppearance || identity === null || client === null || busy) return;
     setBusy(true);
     setFeedback(null);
@@ -219,7 +219,7 @@ function SpaceSettingsDetailContext({ target, name, onDetailChange }: SpaceSetti
             <button type="button" data-space-device-keep className={SECONDARY_BUTTON} onClick={() => { if (ownsAppearance && identity !== null) resolveSpaceDeviceConflict(identity); }}>
               {t('st.spaces.device.keep')}
             </button>
-            <button type="button" data-space-device-use className={PRIMARY_BUTTON} disabled={busy} onClick={() => { void useDeviceAppearance(); }}>
+            <button type="button" data-space-device-use className={PRIMARY_BUTTON} disabled={busy} onClick={() => { void applyDeviceAppearance(); }}>
               {t('st.spaces.device.use')}
             </button>
           </div>

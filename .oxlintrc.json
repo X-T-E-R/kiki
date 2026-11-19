@@ -113,6 +113,19 @@
     },
     {
       "files": [
+        "apps/kiki-gui/src/**/*.ts",
+        "apps/kiki-gui/src/**/*.tsx",
+        "packages/session-core/src/**/*.ts",
+        "packages/session-core/src/**/*.tsx"
+      ],
+      "plugins": ["react"],
+      "rules": {
+        "react/react-in-jsx-scope": "off",
+        "react-hooks/rules-of-hooks": "error"
+      }
+    },
+    {
+      "files": [
         "**/*.test.ts",
         "**/*.test.tsx",
         "**/*.spec.ts",
