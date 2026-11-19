@@ -62,7 +62,7 @@ export function UsageNavigation({ panel, onChange }: { panel: UsagePanel; onChan
   };
 
   return (
-    <div data-usage-nav role="tablist" aria-label={t('usage.title')} className="flex gap-1 overflow-x-auto border-b border-hairline">
+    <div ref={tabsRef} data-usage-nav role="tablist" aria-label={t('usage.title')} className="flex gap-2 overflow-x-auto border-b border-hairline">
       {NAV_ITEMS.map(({ id, labelKey }, index) => {
         const active = panel === id;
         return (
@@ -77,10 +77,10 @@ export function UsageNavigation({ panel, onChange }: { panel: UsagePanel; onChan
             data-usage-nav-item={id}
             onClick={() => { select(id); }}
             onKeyDown={(event) => { onKeyDown(event, index); }}
-            className={`-mb-px min-h-9 shrink-0 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+            className={`-mb-px min-h-9 shrink-0 border-b-2 px-3 py-1.5 text-[13.5px] tracking-[-0.01em] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
               active
                 ? 'border-ink font-medium text-ink'
-                : 'border-transparent text-ink-soft hover:text-ink'
+                : 'border-transparent text-ink-soft hover:border-hairline-strong hover:text-ink'
             }`}
           >
             {t(labelKey as I18nKey)}

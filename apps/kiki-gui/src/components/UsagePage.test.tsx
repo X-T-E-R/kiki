@@ -249,8 +249,15 @@ async function renderPage(entry = '/usage?panel=history', options: { flush?: boo
   return { container, root, queryClient };
 }
 
-async function openLiveStrip(_container: HTMLElement) {
-  // Burn rate and current session are now rendered inline in the Activity & Pace KPI column.
+async function openCalendar(container: HTMLElement): Promise<HTMLElement> {
+  const trigger = container.querySelector<HTMLButtonElement>('[data-usage-custom-range-trigger]')!;
+  expect(trigger).not.toBeNull();
+  if (document.body.querySelector('[data-usage-calendar-popover]') === null) {
+    await act(async () => { trigger.click(); });
+  }
+  const popover = document.body.querySelector<HTMLElement>('[data-usage-calendar-popover]')!;
+  expect(popover).not.toBeNull();
+  return popover;
 }
 
 async function openReliability(container: HTMLElement) {
@@ -298,7 +305,7 @@ beforeEach(() => {
 });
 
 describe('UsagePage (V2)', () => {
-  it('opens today with one request and shares its real summary with the strip', async () => {
+  it('opens today with one primary usage request and no cross-tab strip, session, or quota reads', async () => {
     let complete!: (response: UsageResponseWire) => void;
     getUsage.mockImplementation(() => new Promise<UsageResponseWire>((resolve) => { complete = resolve; }));
     const { container, root, queryClient } = await renderPage('/usage?panel=history', { flush: false });
@@ -309,29 +316,11 @@ describe('UsagePage (V2)', () => {
     await act(async () => { complete(usageResponse({ summaryCost: 8.75 })); });
     for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(getSession).not.toHaveBeenCalled();
+    expect(getProviderQuotas).not.toHaveBeenCalled();
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('8.75');
-    await openLiveStrip(container);
-    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('8.75');
-    await act(async () => { root.unmount(); });
-    queryClient.clear();
-  });
-
-  it('defers a separate today strip until the filtered dashboard has arrived', async () => {
-    let complete!: (response: UsageResponseWire) => void;
-    getUsage.mockImplementation((query: Record<string, unknown>) => query['page_size'] === 1
-      ? Promise.resolve(usageResponse({ summaryCost: 4.5 }))
-      : new Promise<UsageResponseWire>((resolve) => { complete = resolve; }));
-    const { container, root, queryClient } = await renderPage('/usage?range=last_7_days', { flush: false });
-    expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(getUsage.mock.calls[0]?.[0]).toMatchObject({ range: 'last_7_days' });
-    expect(getUsage.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
-    await act(async () => { complete(usageResponse({ summaryCost: 12 })); });
-    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(getUsage).toHaveBeenCalledTimes(2);
-    expect(getUsage.mock.calls[1]?.[0]).toMatchObject({ range: 'today', page_size: 1 });
-    expect(getUsage.mock.calls[1]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
-    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('12.00');
-    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('4.50');
+    expect(container.querySelector('[data-usage-quota-strip]')).toBeNull();
+    expect(container.querySelector('[data-usage-strip]')).toBeNull();
     await act(async () => { root.unmount(); });
     queryClient.clear();
   });
@@ -339,7 +328,7 @@ describe('UsagePage (V2)', () => {
   it.each([
     ['en', 'Counting 2/5'],
     ['zh', '统计中 2/5'],
-  ])('shows the localized counting progress instead of zeroes for an empty partial shared today strip (%s)', async (locale, counting) => {
+  ])('shows the localized counting progress instead of zeroes for an empty partial scan (%s)', async (locale, counting) => {
     localStorage.setItem('kiki.locale', locale);
     getUsage.mockResolvedValue(usageResponse({
       summaryTokens: tokens(0),
@@ -350,14 +339,7 @@ describe('UsagePage (V2)', () => {
     const { container, root } = await renderPage('/usage?panel=history');
     expect(container.querySelector('[data-usage-scan-counting]')?.textContent).toContain(counting);
     expect(container.querySelector('[data-usage-scan-bytes]')?.textContent).toBe('2.0 KB / 4.0 KB');
-    await openLiveStrip(container);
-    const today = container.querySelector('[data-usage-strip-tokens]');
-    const burnRate = container.querySelector('[data-usage-strip-burn-rate]');
-    expect(today?.textContent).toContain(counting);
-    expect(today?.textContent).not.toContain('$0.00');
-    expect(burnRate?.textContent).toContain(counting);
-    expect(burnRate?.textContent).not.toContain('tok/h');
-    expect(container.querySelector('[data-usage-strip-incomplete]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toBe('—');
     await act(async () => { root.unmount(); });
   });
 
@@ -370,13 +352,10 @@ describe('UsagePage (V2)', () => {
     const { container, root } = await renderPage('/usage?panel=history');
     expect(container.querySelector('[data-usage-scan-counting]')?.textContent).toBe('Counting…');
     expect(container.querySelector('[data-usage-scan-bytes]')).toBeNull();
-    await openLiveStrip(container);
-    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toBe('Counting…');
-    expect(container.querySelector('[data-usage-strip-burn-rate]')?.textContent).toBe('Counting…');
     await act(async () => { root.unmount(); });
   });
 
-  it('removes the pending progress and strip marker after a shared partial completes', async () => {
+  it('removes the pending progress pill after a partial scan completes', async () => {
     let mainCallsCount = 0;
     getUsage.mockImplementation(async (query: Record<string, unknown>) => {
       if (query['page_size'] === 25) {
@@ -393,65 +372,21 @@ describe('UsagePage (V2)', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(container.querySelector('[data-usage-scan-pending]')).toBeNull();
-    await openLiveStrip(container);
-    expect(container.querySelector('[data-usage-strip]')?.textContent).not.toContain('Counting 4/9');
     await act(async () => { root.unmount(); });
   });
 
-  it('keeps known numbers on a partial independent today strip until it completes', async () => {
-    let todayCalls = 0;
-    const partial = usageResponse({
-      summaryTokens: tokens(100),
-      summaryCost: 2,
-      incompleteReason: 'record_budget',
-      importProgress: { verified_sources: 3, total_sources: 7, read_bytes: 3072, total_bytes: 8192 },
-    });
-    const complete = usageResponse({
-      summaryTokens: tokens(200),
-      summaryCost: 4,
-    });
-    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
-      if (query['page_size'] === 1) {
-        todayCalls += 1;
-        return todayCalls === 1 ? partial : complete;
-      }
-      return usageResponse();
-    });
-    const { container, root } = await renderPage('/usage?range=last_7_days');
-    await openLiveStrip(container);
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(todayCalls).toBe(1);
-    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('11');
-    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('$2.00');
-    expect(container.querySelector('[data-usage-strip-incomplete]')?.textContent).toBe('Counting 3/7');
-    expect(container.querySelector('[data-usage-strip-burn-rate]')?.textContent).toContain('tok/h');
-
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(todayCalls).toBe(2);
-    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('$4.00');
-    expect(container.querySelector('[data-usage-strip]')?.textContent).not.toContain('Counting 3/7');
-
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
-    expect(todayCalls).toBe(2);
-    await act(async () => { root.unmount(); });
-  });
-
-  it('recovers an initial failure without starting a competing today request', async () => {
+  it('recovers an initial failure without starting competing secondary requests', async () => {
     getUsage.mockRejectedValueOnce(new Error('usage read unavailable')).mockResolvedValue(usageResponse({ summaryCost: 2.5 }));
     const { container, root, queryClient } = await renderPage('/usage?panel=history');
     expect(getUsage).toHaveBeenCalledTimes(1);
     const retry = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Reload')!;
     expect(container.textContent).toContain('Your time range and filters are kept');
-    // No raw diagnostics next to the recovery action.
     expect(container.textContent).not.toContain('usage read unavailable');
     expect(retry).toBeDefined();
     await act(async () => { retry.click(); });
     for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(getUsage).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('2.50');
-    await openLiveStrip(container);
-    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('2.50');
     await act(async () => { root.unmount(); });
     queryClient.clear();
   });
@@ -490,11 +425,10 @@ describe('UsagePage (V2)', () => {
     expect(mainCalls()).toHaveLength(1);
   });
 
-  it('refreshes the current dashboard, strip and session automatically on settled usage', async () => {
+  it('refreshes the current dashboard automatically on settled usage', async () => {
     writeLastSessionId('usage-session');
     let cost = 3.25;
     getUsage.mockImplementation(async () => usageResponse({ summaryCost: cost }));
-    getSession.mockImplementation(async () => ({ id: 'usage-session', title: 'Usage session', usage: { total_cost_usd: cost } }));
     const { container, root, queryClient } = await renderPage();
     let notify!: (payload: { sessionId: string; agentId: string }) => void;
     const dispose = vi.fn();
@@ -505,14 +439,10 @@ describe('UsagePage (V2)', () => {
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(on).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('3.25');
-    await openLiveStrip(container);
-    const priorSessionReads = getSession.mock.calls.length;
     cost = 7.5;
     await act(async () => { notify({ sessionId: 'usage-session', agentId: 'main' }); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('7.50');
-    expect(container.querySelector('[data-usage-strip]')?.textContent).toContain('7.50');
-    expect(getSession.mock.calls.length).toBeGreaterThan(priorSessionReads);
     expect(on).toHaveBeenCalledTimes(1);
     off();
     expect(dispose).toHaveBeenCalledTimes(1);
@@ -522,115 +452,6 @@ describe('UsagePage (V2)', () => {
     expect(getUsage).toHaveBeenCalledTimes(afterDispose);
     await act(async () => { root.unmount(); });
     queryClient.clear();
-  });
-  it('keeps live session usage errors honest and follows last-session writes in the active space', async () => {
-    configureSpaceStorage({ homeId: 'space-a' });
-    writeLastSessionId('session-a');
-    getSession.mockImplementation(async (id: string) => id === 'session-a'
-      ? {
-          id,
-          title: 'Failed session',
-          usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0 },
-          usage_error: 'read-failed',
-        }
-      : {
-          id,
-          title: 'Partial session',
-          usage: { input_tokens: 200, output_tokens: 20, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 1.25 },
-          usage_error: 'agent-read-failed',
-        });
-    const { container, root } = await renderPage('/usage?panel=history');
-    await openLiveStrip(container);
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-usage-strip-current-cost]')?.textContent).toContain('—');
-    expect(container.querySelector('[data-usage-strip-current-cost]')?.textContent).not.toContain('$0.00');
-
-    configureSpaceStorage({ homeId: 'space-b' });
-    writeLastSessionId('session-b');
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(getSession.mock.calls.at(-1)?.[0]).toBe('session-b');
-    expect(getSession.mock.calls.at(-1)?.[1]).toEqual({ signal: expect.any(AbortSignal) });
-    expect(container.querySelector('[data-usage-strip]')?.textContent).toContain('Partial session');
-    expect(container.querySelector('[data-usage-strip-current-cost]')?.textContent).toContain('$1.25');
-    expect(container.querySelector('[data-usage-strip-current-cost] [data-usage-accounting-known-subtotal]')).not.toBeNull();
-    await act(async () => { root.unmount(); });
-    configureSpaceStorage(null);
-  });
-
-  it('keeps live accounting subtotal and cost unknown independent', async () => {
-    writeLastSessionId('accounting-session');
-    getSession.mockResolvedValue({
-      id: 'accounting-session',
-      title: 'Accounting session',
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        total_cost_usd: 0,
-        accounting: {
-          version: 2,
-          subject: { session_id: 'accounting-session', scope: 'session' },
-          covered_at: 1,
-          complete: true,
-          tokens: { input_other: 10, output: 0, input_cache_read: 0, input_cache_creation: 0 },
-          tokens_unknown: true,
-          cost_usd_estimated: 1.25,
-          cost_unknown: true,
-        },
-      },
-    });
-    const { container, root } = await renderPage('/usage?panel=history');
-    await openLiveStrip(container);
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const currentCost = container.querySelector('[data-usage-strip-current-cost]');
-    expect(currentCost?.textContent).toContain('$1.25');
-    expect(currentCost?.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
-    await act(async () => { root.unmount(); });
-  });
-
-  it('aborts a superseded live session read and ignores its late result', async () => {
-    writeLastSessionId('session-a');
-    const first = deferred<Record<string, unknown>>();
-    const second = deferred<Record<string, unknown>>();
-    const signals = new Map<string, AbortSignal>();
-    getSession.mockImplementation((id: string, options?: { signal?: AbortSignal }) => {
-      if (options?.signal !== undefined) signals.set(id, options.signal);
-      return id === 'session-a' ? first.promise : second.promise;
-    });
-    const { container, root } = await renderPage('/usage?panel=history');
-    await openLiveStrip(container);
-    expect(getSession).toHaveBeenCalledTimes(1);
-    writeLastSessionId('session-b');
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(signals.get('session-a')?.aborted).toBe(true);
-    expect(signals.get('session-b')?.aborted).toBe(false);
-    first.resolve({ id: 'session-a', title: 'Old session', usage: { total_cost_usd: 1 } });
-    second.resolve({ id: 'session-b', title: 'New session', usage: { total_cost_usd: 2 } });
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-usage-strip]')?.textContent).toContain('New session');
-    expect(container.querySelector('[data-usage-strip]')?.textContent).not.toContain('Old session');
-    expect(container.querySelector('[data-usage-strip-current-cost]')?.textContent).toContain('$2.00');
-    await act(async () => { root.unmount(); });
-  });
-
-  it('aborts the live session read when leaving the history panel', async () => {
-    writeLastSessionId('session-a');
-    let signal: AbortSignal | undefined;
-    getSession.mockImplementation((_id: string, options?: { signal?: AbortSignal }) => {
-      signal = options?.signal;
-      return new Promise<Record<string, unknown>>(() => {});
-    });
-    const { container, root } = await renderPage('/usage?panel=history');
-    await openLiveStrip(container);
-    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(signal?.aborted).toBe(false);
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-usage-panel="realtime"]')!.click();
-      await Promise.resolve();
-    });
-    expect(signal?.aborted).toBe(true);
-    await act(async () => { root.unmount(); });
   });
 
   it('opens Live when no panel is given, with Usage and Quotas as the other views', async () => {
@@ -946,12 +767,13 @@ describe('UsagePage (V2)', () => {
     const toggle = container.querySelector<HTMLButtonElement>('[data-usage-reliability-toggle]')!;
     expect(toggle.textContent).toBe('');
     expect(toggle.getAttribute('aria-label')).toContain(label);
-    expect(container.querySelector('[data-usage-rescan-start]')?.textContent).toBe(action);
+    expect(container.querySelector('[data-usage-filters] [data-usage-rescan-start]')).toBeNull();
     expect(container.textContent).not.toContain('example-model-a');
     expect(container.querySelector('[data-usage-incomplete]')).toBeNull();
     expect(container.querySelector('[data-usage-accounting-missing]')).toBeNull();
     expect(container.querySelector('[data-usage-accounting-notices]')).toBeNull();
     await openReliability(container);
+    expect(document.body.querySelector('[data-usage-reliability] [data-usage-rescan-start]')?.textContent).toBe(action);
     expect(document.body.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('example-model-a');
     expect(document.body.querySelector('[data-usage-incomplete]')).toBeNull();
     expect(document.body.querySelector('[data-usage-accounting-missing]')).not.toBeNull();
@@ -988,8 +810,6 @@ describe('UsagePage (V2)', () => {
       const { container } = await renderPage();
       const summaryTokens = container.querySelector('[data-usage-summary-tokens]')?.textContent;
       const summaryCost = container.querySelector('[data-usage-summary-cost]')?.textContent;
-      await openLiveStrip(container);
-      const stripTokens = container.querySelector('[data-usage-strip-tokens]')?.textContent;
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="sessions"]')!.click(); });
       const sessionTokens = container.querySelector('[data-usage-session-tokens="s_accounting"]')?.textContent;
       const sessionCost = container.querySelector('[data-usage-session-cost="s_accounting"]')?.textContent;
@@ -998,7 +818,6 @@ describe('UsagePage (V2)', () => {
         // A recorded cost of zero is a real zero, not a missing figure: the
         // price side is judged on its own flag, not on the token total.
         expect(summaryCost).not.toContain('—');
-        expect(stripTokens).toContain('—');
         expect(sessionTokens).toContain('—');
         expect(sessionCost).not.toContain('—');
         expect(container.querySelector('[data-usage-trend] [data-bucket]')?.getAttribute('title')).toContain('—');
@@ -1008,7 +827,6 @@ describe('UsagePage (V2)', () => {
         expect(summaryTokens).not.toContain('—');
         expect(summaryTokens).toContain('0');
         expect(summaryCost).not.toContain('—');
-        expect(stripTokens).not.toContain('—');
         expect(sessionTokens).not.toContain('—');
         expect(sessionCost).not.toContain('—');
         expect(document.body.querySelector('[data-usage-accounting-missing]')).toBeNull();
@@ -1087,7 +905,11 @@ describe('UsagePage (V2)', () => {
     expect(container.textContent).not.toContain('partially unknown');
     expect(container.textContent).not.toContain('Some records have no price');
     expect(container.textContent).toContain('Estimated cost');
-    expect(container.querySelector('[data-usage-unpriced-trigger]')?.textContent).toContain('1 unpriced model');
+    const unpricedBtn = container.querySelector<HTMLButtonElement>('[data-usage-unpriced-trigger]')!;
+    expect(unpricedBtn).not.toBeNull();
+    expect(unpricedBtn.textContent).toBe('');
+    expect(unpricedBtn.getAttribute('title')).toContain('1 unpriced model');
+    expect(unpricedBtn.getAttribute('aria-label')).toContain('1 unpriced model');
     await openReliability(container);
     expect(document.body.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('mystery-1');
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
@@ -1254,7 +1076,8 @@ describe('UsagePage (V2)', () => {
     expect(getUsage.mock.calls.every(([query]) => (query as Record<string, unknown>)['start_at'] === undefined)).toBe(true);
     expect(container.querySelector('[data-usage-compare="delta"]')).toBeNull();
 
-    await act(async () => { container.querySelector<HTMLElement>('[data-usage-compare]')!.click(); });
+    const cal = await openCalendar(container);
+    await act(async () => { cal.querySelector<HTMLElement>('[data-usage-compare]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const priorCall = getUsage.mock.calls.find(([query]) => (query as Record<string, unknown>)['start_at'] !== undefined);
     expect(priorCall).toBeDefined();
@@ -1289,7 +1112,8 @@ describe('UsagePage (V2)', () => {
         : usageResponse({ summaryTokens: tokens(2400, 1600), trendTokens: tokens(2400, 1600) }),
     );
     const { container, root } = await renderPage('/usage?range=last_7_days&metric=cache');
-    await act(async () => { container.querySelector<HTMLElement>('[data-usage-compare]')!.click(); });
+    const cal = await openCalendar(container);
+    await act(async () => { cal.querySelector<HTMLElement>('[data-usage-compare]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     const points = container.querySelector('[data-usage-kpi="cache"] [data-usage-compare="delta"]');
@@ -1318,8 +1142,9 @@ describe('UsagePage (V2)', () => {
 
   it('refuses a comparison for unbounded all-history via disabled tooltip only', async () => {
     const { container, root } = await renderPage('/usage?range=all');
-    const toggle = container.querySelector<HTMLElement>('[data-usage-compare]')!;
-    const wrap = container.querySelector<HTMLElement>('[data-usage-compare-wrap]')!;
+    const cal = await openCalendar(container);
+    const toggle = cal.querySelector<HTMLElement>('[data-usage-compare]')!;
+    const wrap = cal.querySelector<HTMLElement>('[data-usage-compare-wrap]')!;
     expect(toggle.getAttribute('aria-disabled')).toBe('true');
     expect(wrap.getAttribute('title')).toContain('Comparison needs a bounded range');
     expect(container.textContent).not.toContain('Comparison needs a bounded range');
@@ -1509,16 +1334,15 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('keeps the page filters when the trace is opened without a row for a selected bucket, and switches whole-range View sessions directly to the Sessions tab', async () => {
+  it('switches to Sessions via the flat tab bar, and opens the SidePanel trace with base filters preserved when a bucket is selected', async () => {
     const { container, root } = await renderPage('/usage?range=last_7_days&provider=kimi&model=k2-thinking');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    // Whole-range View sessions switches to view=sessions without opening a duplicate trace sheet.
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="sessions"]')!.click(); });
     expect(container.querySelector('[data-usage-sessions]')).not.toBeNull();
     expect(document.body.querySelector('[data-usage-session-panel]')).toBeNull();
 
-    // Back on Sources with a selected bucket, View sessions in this period opens the SidePanel trace with base filters preserved.
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="sources"]')!.click(); });
+    // Back on Model with a selected bucket, View sessions in this period opens the SidePanel trace with base filters preserved.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-tab="model"]')!.click(); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!.click(); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -1601,34 +1425,20 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('does not reuse the today summary for a model-filtered read', async () => {
-    const { container, root } = await renderPage('/usage?model=k2-thinking');
+  it('filters directly in Plausible style when clicking a source row name and toggles off on second click', async () => {
+    const { container, root } = await renderPage('/usage?range=last_7_days');
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    // A summary narrowed to one model is not "all of today", so opening the
-    // strip reads on its own instead of borrowing the main result.
-    await openLiveStrip(container);
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const strip = getUsage.mock.calls.find(([query]) => (query as Record<string, unknown>)['page_size'] === 1);
-    expect(strip).toBeDefined();
-    expect((strip![0] as Record<string, unknown>)['model']).toBeUndefined();
-    expect(container.querySelector('[data-usage-strip-tokens]')).not.toBeNull();
-    await act(async () => { root.unmount(); });
-  });
+    const rowNameBtn = container.querySelector<HTMLButtonElement>('[data-usage-row-name-filter="k2-thinking"]')!;
+    expect(rowNameBtn).not.toBeNull();
+    await act(async () => { rowNameBtn.click(); });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mainCalls().at(-1)?.[0]).toMatchObject({ model: 'k2-thinking' });
+    expect(container.querySelector('[data-usage-filter-chip="model"]')?.textContent).toContain('k2-thinking');
 
-  it('still reuses the today summary for a grouped but unscoped read', async () => {
-    const { container, root } = await renderPage('/usage?group_by=profile&granularity=day');
-    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    // Grouping and granularity do not narrow records, so no separate today-strip
-    // request is issued (only the model-attribution check when grouped by profile).
-    await openLiveStrip(container);
-    expect(
-      getUsage.mock.calls.filter(
-        ([query]) =>
-          (query as Record<string, unknown>)['page_size'] === 1 &&
-          (query as Record<string, unknown>)['dimension'] !== 'model',
-      ),
-    ).toHaveLength(0);
-    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('3.25');
+    const toggleOffBtn = container.querySelector<HTMLButtonElement>('[data-usage-row-name-filter="k2-thinking"]')!;
+    await act(async () => { toggleOffBtn.click(); });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect((mainCalls().at(-1)?.[0] as Record<string, unknown>)['model']).toBeUndefined();
     await act(async () => { root.unmount(); });
   });
 
@@ -1708,10 +1518,11 @@ describe('UsagePage (V2)', () => {
     expect(JSON.parse(stored!)).toMatchObject({ range: 'this_month' });
   });
 
-  it('consolidates detail tabs to Sources and Sessions and degrades legacy ?view=five_hour gracefully', async () => {
+  it('flattens detail tabs to Model, Provider, Workspace, Agent profile, and Sessions and degrades legacy ?view=five_hour gracefully', async () => {
     const { container } = await renderPage('/usage?view=five_hour&granularity=day');
     const tabs = [...container.querySelectorAll<HTMLElement>('[data-usage-tab]')].map((el) => el.dataset['usageTab']);
-    expect(tabs).toEqual(['sources', 'sessions']);
+    expect(tabs).toEqual(['model', 'provider', 'workspace', 'profile', 'sessions']);
+    expect(container.querySelector('[data-usage-tab="model"]')?.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('[data-usage-fivehour-hint]')).toBeNull();
     expect(container.querySelector('[data-usage-sources]')).not.toBeNull();
   });
@@ -1723,29 +1534,32 @@ describe('UsagePage (V2)', () => {
       expect(mainCalls()[0]?.[0]).toMatchObject({ dimension });
       const breakdownTab = container.querySelector('[data-usage-tab="breakdown"]');
       expect(breakdownTab?.getAttribute('aria-selected')).toBe('true');
-      // The breakdown view is on screen, not the sessions list.
       expect(container.querySelector('[data-usage-sessions]')).toBeNull();
       expect(container.textContent).toContain('k2-thinking');
     },
   );
 
-  it.each(['model', 'provider', 'profile'])(
-    'reads ?dimension=%s as the source axis, not the agent tree',
-    async (dimension) => {
+  it.each([
+    ['model', 'k2-thinking'],
+    ['provider', 'kimi'],
+    ['profile', 'general'],
+  ] as const)(
+    'reads ?dimension=%s as the flat source axis tab without nested sub-tabs',
+    async (dimension, expectedRowLabel) => {
       const { container } = await renderPage(`/usage?dimension=${dimension}`);
       expect(mainCalls()[0]?.[0]).toMatchObject({ dimension });
-      // The axis is on screen as the source table, with no advanced tab.
       expect(container.querySelector(`[data-usage-sources="${dimension}"]`)).not.toBeNull();
+      expect(container.querySelector(`[data-usage-tab="${dimension}"]`)?.getAttribute('aria-selected')).toBe('true');
       expect(container.querySelector('[data-usage-tab="breakdown"]')).toBeNull();
-      expect(container.textContent).toContain('k2-thinking');
+      expect(container.textContent).toContain(expectedRowLabel);
     },
   );
 
   it('writes the detail tab into the URL so the view is shareable', async () => {
     const { container } = await renderPage('/usage?dimension=agent');
-    // A bare advanced-dimension link still opens on the source table.
+    // A bare advanced-dimension link still opens on the Model source table.
     expect(
-      container.querySelector('[data-usage-tab="sources"]')?.getAttribute('aria-selected'),
+      container.querySelector('[data-usage-tab="model"]')?.getAttribute('aria-selected'),
     ).toBe('true');
     const probe = () => container.querySelector('[data-location-probe]')?.textContent ?? '';
     await act(async () => {
@@ -1803,55 +1617,41 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-location-probe]')?.textContent).toMatch(/bucket=\d+/);
   });
 
-  it('rejects an inverted custom date range locally instead of querying', async () => {
+  it('selects custom date ranges via the 2-month calendar popover and auto-orders reversed clicks without error', async () => {
     const startAt = new Date(2026, 7, 20).getTime();
     const endAt = new Date(2026, 7, 26).getTime();
-    const { container } = await renderPage(
+    const { container, root } = await renderPage(
       `/usage?range=custom&start_at=${startAt}&end_at=${endAt}`,
     );
-    const endInput = container.querySelector<HTMLInputElement>(
-      'input[aria-label="End date"]',
-    );
-    const startInput = container.querySelector<HTMLInputElement>(
-      'input[aria-label="Start date"]',
-    );
-    expect(endInput).not.toBeNull();
-    // Mutual constraints keep the picker from forming an inverted pair.
-    expect(endInput!.min).toBe('2026-08-20');
-    expect(startInput!.max).toBe('2026-08-25');
+    expect(container.querySelector('input[type="date"]')).toBeNull();
 
-    const setDateValue = (input: HTMLInputElement, value: string) => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        'value',
-      )!.set!;
-      setter.call(input, value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    };
+    const cal = await openCalendar(container);
+    const laterDay = cal.querySelector<HTMLButtonElement>('[data-calendar-day="2026-08-26"]')!;
+    const earlierDay = cal.querySelector<HTMLButtonElement>('[data-calendar-day="2026-08-18"]')!;
+    expect(laterDay).not.toBeNull();
+    expect(earlierDay).not.toBeNull();
 
-    // An end before the start is blocked: field-level error, no new query.
     const callsBefore = mainCalls().length;
-    await act(async () => { setDateValue(endInput!, '2026-08-19'); });
-    expect(container.querySelector('[data-usage-range-error]')?.textContent).toContain(
-      'earlier than the end date',
-    );
-    expect(endInput!.getAttribute('aria-invalid')).toBe('true');
+    // First click starts selection without firing an intermediate query.
+    await act(async () => { laterDay.click(); });
     expect(mainCalls().length).toBe(callsBefore);
 
-    // A valid end clears the error and issues the query with the new bounds.
-    await act(async () => { setDateValue(endInput!, '2026-08-27'); });
+    // Second click on an earlier date automatically swaps start/end instead of showing a validation error.
+    await act(async () => { earlierDay.click(); });
     for (let i = 0; i < 5; i += 1) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
     expect(container.querySelector('[data-usage-range-error]')).toBeNull();
     const last = mainCalls().at(-1)?.[0] as Record<string, unknown>;
     expect(last['range']).toBe('custom');
-    expect(last['end_at']).toBe(new Date(2026, 7, 28).getTime());
+    expect(last['start_at']).toBe(new Date(2026, 7, 18).getTime());
+    expect(last['end_at']).toBe(new Date(2026, 7, 27).getTime());
+    await act(async () => { root.unmount(); });
   });
 });
 
 describe('UsagePage manual full rescan', () => {
-  it('places view tabs under the page header, granularity in TrendChart, and rescan + reliability in the 1-row filter bar', async () => {
+  it('places view tabs under the page header, granularity in TrendChart, and tucks rescan inside the reliability popover', async () => {
     const { container, root } = await renderPage();
     const header = container.querySelector('[data-page-header-inner="dashboard"]')!;
     expect(header).not.toBeNull();
@@ -1863,7 +1663,7 @@ describe('UsagePage manual full rescan', () => {
     expect(nav.querySelector('[data-usage-panel="history"]')).not.toBeNull();
 
     expect(container.querySelector('[data-usage-filters] [data-usage-reliability-toggle]')).not.toBeNull();
-    expect(container.querySelector('[data-usage-filters] [data-usage-rescan]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-filters] [data-usage-rescan]')).toBeNull();
     expect(container.querySelector('[data-usage-summary-activity]')).not.toBeNull();
     expect(container.querySelector('[data-usage-filters] [data-axis="granularity"]')).toBeNull();
     expect(container.querySelector('[data-usage-trend-card] [data-axis="granularity"]')).toBeNull();
@@ -1871,42 +1671,45 @@ describe('UsagePage manual full rescan', () => {
     await act(async () => { root.unmount(); });
   });
 
-  it('keeps the rescan action in the utility slot outside filter chips without a standalone hint', async () => {
+  it('exposes the rescan action inside the reliability popover without a standalone hint', async () => {
     const { container, root } = await renderPage();
-    const control = container.querySelector('[data-usage-filters] [data-usage-rescan]')!;
+    await openReliability(container);
+    const control = document.body.querySelector('[data-usage-reliability] [data-usage-rescan]')!;
     expect(control.querySelector('[data-usage-rescan-start]')?.textContent).toBe('Rescan all');
-    expect(container.querySelectorAll('[data-usage-rescan-start]')).toHaveLength(1);
-    expect(container.textContent).not.toContain('this may take a while');
+    expect(document.body.querySelectorAll('[data-usage-rescan-start]')).toHaveLength(1);
+    expect(document.body.textContent).not.toContain('this may take a while');
     await act(async () => { root.unmount(); });
   });
 
-  it('starts without a confirmation, polls progress and refreshes history on completion', async () => {
+  it('starts without a confirmation, shows active progress badge, polls progress and refreshes history on completion', async () => {
     vi.useFakeTimers();
     try {
       const running = { state: 'running', scanned_sessions: 3, total_sessions: 10, scanned_records: 900, started_at: 1, finished_at: null, error: null };
       startUsageRescan.mockResolvedValue(running);
       const { container, root } = await renderPage('/usage?panel=history', { flush: false });
       for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      const button = container.querySelector<HTMLButtonElement>('[data-usage-rescan-start]')!;
+      await openReliability(container);
+      const popover = document.body.querySelector('[data-usage-reliability]')!;
+      const button = popover.querySelector<HTMLButtonElement>('[data-usage-rescan-start]')!;
       expect(button.title).toContain('all historical');
       await act(async () => { button.click(); });
       for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(startUsageRescan).toHaveBeenCalledTimes(1);
       expect(button.disabled).toBe(true);
       expect(button.textContent).toBe('Rescanning…');
-      expect(container.querySelector('[data-usage-filters] progress')?.getAttribute('value')).toBe('3');
-      expect(container.querySelector('progress')?.max).toBe(10);
-      expect(container.textContent).toContain('3/10 sessions');
-      expect(container.textContent).not.toContain('900 records read');
-      expect(container.querySelector('[data-usage-rescan] [role="status"]')?.getAttribute('title')).toBe('900 records read');
-      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect(container.querySelector('[data-usage-rescan-running] progress')?.getAttribute('value')).toBe('3');
+      expect(popover.querySelector('progress')?.max).toBe(10);
+      expect(popover.textContent).toContain('3/10 sessions');
+      expect(popover.textContent).not.toContain('900 records read');
+      expect(popover.querySelector('[data-usage-rescan] [role="status"]')?.getAttribute('title')).toBe('900 records read');
       const beforeCompletion = mainCalls().length;
       getUsageRescan.mockResolvedValue({ ...running, state: 'completed', scanned_sessions: 10, finished_at: 2 });
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
       await act(async () => { await Promise.resolve(); });
       for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(100); });
-      expect(container.textContent).toContain('Rescanned 10 sessions');
-      expect(container.querySelector('progress')).toBeNull();
+      expect(popover.textContent).toContain('Rescanned 10 sessions');
+      expect(popover.querySelector('progress')).toBeNull();
+      expect(container.querySelector('[data-usage-rescan-running]')).toBeNull();
       expect(button.disabled).toBe(false);
       expect(mainCalls().length).toBeGreaterThan(beforeCompletion);
       const statusCalls = getUsageRescan.mock.calls.length;
@@ -1919,10 +1722,13 @@ describe('UsagePage manual full rescan', () => {
   it('shows a human failure message without raw diagnostics and allows another attempt', async () => {
     getUsageRescan.mockResolvedValue({ state: 'failed', scanned_sessions: 2, total_sessions: 5, scanned_records: 12, started_at: 1, finished_at: 2, error: 'Checkpoint unavailable for instance-example' });
     const { container, root } = await renderPage();
-    expect(container.querySelector('[data-usage-rescan] [role="alert"]')?.textContent).toBe('Rescan failed. Try again.');
-    expect(container.textContent).not.toContain('Checkpoint');
-    expect(container.textContent).not.toContain('instance-example');
-    expect(container.querySelector<HTMLButtonElement>('[data-usage-rescan-start]')?.disabled).toBe(false);
+    expect(container.querySelector('[data-usage-rescan-alert]')?.textContent).toBe('Rescan failed. Try again.');
+    await openReliability(container);
+    const popover = document.body.querySelector('[data-usage-reliability]')!;
+    expect(popover.querySelector('[data-usage-rescan] [role="alert"]')?.textContent).toBe('Rescan failed. Try again.');
+    expect(document.body.textContent).not.toContain('Checkpoint');
+    expect(document.body.textContent).not.toContain('instance-example');
+    expect(popover.querySelector<HTMLButtonElement>('[data-usage-rescan-start]')?.disabled).toBe(false);
     await act(async () => { root.unmount(); });
   });
 
@@ -1932,14 +1738,18 @@ describe('UsagePage manual full rescan', () => {
       getUsageRescan.mockRejectedValueOnce(new Error('Connection unavailable'));
       const { container, root } = await renderPage('/usage?panel=history', { flush: false });
       for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      const alert = container.querySelector('[data-usage-rescan] [role="alert"]')?.textContent;
+      expect(container.querySelector('[data-usage-rescan-alert]')?.textContent).toBe('Progress unavailable. Reconnecting…');
+      await openReliability(container);
+      const popover = document.body.querySelector('[data-usage-reliability]')!;
+      const alert = popover.querySelector('[data-usage-rescan] [role="alert"]')?.textContent;
       expect(alert).toBe('Progress unavailable. Reconnecting…');
       expect(alert).not.toContain('Rescan failed');
       await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
       await act(async () => { await Promise.resolve(); });
       for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(100); });
       expect(getUsageRescan).toHaveBeenCalledTimes(2);
-      expect(container.querySelector('[data-usage-rescan] [role="alert"]')).toBeNull();
+      expect(popover.querySelector('[data-usage-rescan] [role="alert"]')).toBeNull();
+      expect(container.querySelector('[data-usage-rescan-alert]')).toBeNull();
       await act(async () => { root.unmount(); });
     } finally { vi.useRealTimers(); }
   });
@@ -1960,7 +1770,7 @@ describe('UsagePage manual full rescan', () => {
 });
 
 describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defensive prose', () => {
-  it('supports unified searchable + Filter popover, multi-select chips, URL sync and 1-click Clear', async () => {
+  it('supports 2-stage usage-ranked Filter popover, instant cross-category search, multi-select chips, URL sync and 1-click Clear', async () => {
     listModels.mockResolvedValue({
       items: [
         { id: 'acme/model-alpha', provider_id: 'acme', display_name: 'Model Alpha' },
@@ -1970,35 +1780,58 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     listProviders.mockResolvedValue({ items: [{ id: 'acme' }, { id: 'kimi' }] });
     const { container, root } = await renderPage('/usage?panel=history');
 
-    // Open + Filter composer
+    // Stage 1: Open + Filter composer -> clean 4-category list
     const addBtn = container.querySelector<HTMLButtonElement>('[data-usage-add-filter]')!;
     expect(addBtn).not.toBeNull();
     await act(async () => { addBtn.click(); });
     const popover = document.body.querySelector('[data-usage-filter-popover]')!;
     expect(popover).not.toBeNull();
+    expect(
+      [...popover.querySelectorAll<HTMLElement>('[data-usage-filter-category]')].map((el) => el.dataset['usageFilterCategory']),
+    ).toEqual(['model', 'provider', 'workspace', 'profile']);
 
-    // Instant unified search across Model / Provider / Profile / Workspace without firing API calls
+    // Stage 2: Drill into Model -> ranked by actual spend ($2.40 k2-thinking first), unused catalog folded
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('[data-usage-filter-category="model"]')!.click();
+    });
+    const rankedOptions = [...popover.querySelectorAll<HTMLElement>('[data-usage-facet-option]')];
+    expect(rankedOptions[0]?.dataset['usageFacetOption']).toBe('model:k2-thinking');
+    expect(rankedOptions[0]?.textContent).toContain('$2.40');
+    expect(popover.querySelector('[data-usage-facet-option="model:acme/model-alpha"]')).toBeNull();
+    const unusedToggle = popover.querySelector<HTMLButtonElement>('[data-usage-filter-unused-toggle]')!;
+    expect(unusedToggle).not.toBeNull();
+    await act(async () => { unusedToggle.click(); });
+    const alphaOption = popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:acme/model-alpha"]')!;
+    expect(alphaOption).not.toBeNull();
+    // Unused toggle stays above expanded unused options rather than getting pushed below them.
+    expect(unusedToggle.compareDocumentPosition(alphaOption) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => { alphaOption.click(); });
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:k2-thinking"]')!.click();
+    });
+
+    // Workspace facet on default groupBy=model does not fabricate partial $ sums or fold workspaces into unused.
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('[data-usage-filter-back]')!.click();
+    });
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('[data-usage-filter-category="workspace"]')!.click();
+    });
+    expect(popover.querySelector('[data-usage-filter-unused-toggle]')).toBeNull();
+    expect(popover.querySelector('[data-usage-facet-option="workspace:wd_1"]')?.textContent).not.toContain('$');
+
+    // Return to Stage 1 and run instant cross-category search without firing extra API calls
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('[data-usage-filter-back]')!.click();
+    });
     const callsBeforeSearch = getUsage.mock.calls.length;
     const search = popover.querySelector<HTMLInputElement>('[data-usage-filter-search]')!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      setter.call(search, 'alpha');
+      setter.call(search, 'explore');
       search.dispatchEvent(new Event('input', { bubbles: true }));
     });
     expect(getUsage.mock.calls.length).toBe(callsBeforeSearch);
-
-    const modelOption = popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:acme/model-alpha"]')!;
-    expect(modelOption).not.toBeNull();
-    await act(async () => { modelOption.click(); });
-
-    // Clear search and select a second model + an observed profile
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      setter.call(search, '');
-      search.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    const k2Option = popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:k2-thinking"]')!;
-    await act(async () => { k2Option.click(); });
     const profileOption = popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="profile:explore"]')!;
     await act(async () => { profileOption.click(); });
 
@@ -2014,7 +1847,7 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
       profile: ['explore'],
     });
 
-    // 3-part interactive chips rendered
+    // Interactive chips rendered
     const modelChip = container.querySelector('[data-usage-filter-chip="model"]')!;
     expect(modelChip.textContent).toContain('Model Alpha +1');
     expect(container.querySelector('[data-usage-filter-chip="profile"]')?.textContent).toContain('explore');
@@ -2165,46 +1998,11 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     await act(async () => { second.root.unmount(); });
   });
 
-  it('renders QuotaHeadroomStrip sorted by lowest remaining and navigates to quota panel on click', async () => {
-    getProviderQuotas.mockResolvedValue({
-      schema_version: '1',
-      generated_at: '2026-01-01T00:00:00Z',
-      sources: [
-        {
-          id: 'src_high',
-          label: 'HighQuota',
-          kind: 'provider',
-          enabled: true,
-          supported: true,
-          status: 'ready',
-          refreshing: false,
-          refresh_mode: 'explicit',
-          auth: { action: 'none' },
-          source: { label: 'API' },
-          meters: [{ id: 'm1', label: 'Daily', unit: 'percent', used: 20, limit: 100, remaining: 80, scope: 'account', window: { duration_seconds: 86400 } }],
-        },
-        {
-          id: 'src_low',
-          label: 'LowQuota',
-          kind: 'provider',
-          enabled: true,
-          supported: true,
-          status: 'ready',
-          refreshing: false,
-          refresh_mode: 'explicit',
-          auth: { action: 'none' },
-          source: { label: 'API' },
-          meters: [{ id: 'm2', label: '5h', unit: 'percent', used: 95, limit: 100, remaining: 5, scope: 'account', window: { duration_seconds: 18000 } }],
-        },
-      ],
-    });
+  it('keeps QuotaHeadroomStrip out of the Usage history tab so Live, Usage, and Quotas stay cleanly separated', async () => {
     const { container, root } = await renderPage('/usage?panel=history');
-    const strip = container.querySelector('[data-usage-quota-strip]');
-    expect(strip).not.toBeNull();
-    const pills = [...strip!.querySelectorAll<HTMLButtonElement>('[data-usage-quota-pill]')];
-    expect(pills.map((el) => el.getAttribute('data-usage-quota-pill'))).toEqual(['src_low:m2', 'src_high:m1']);
-    await act(async () => { pills[0]!.click(); });
-    expect(container.querySelector('[data-location-probe]')?.textContent).toContain('panel=quota');
+    expect(container.querySelector('[data-usage-quota-strip]')).toBeNull();
+    expect(container.querySelector('[data-usage-live-band]')).toBeNull();
+    expect(getProviderQuotas).not.toHaveBeenCalled();
     await act(async () => { root.unmount(); });
   });
 
@@ -2320,8 +2118,13 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     const search = document.body.querySelector<HTMLInputElement>('[data-usage-filter-search]')!;
     expect(document.activeElement).toBe(search);
 
+    // Stage 1 Enter drills into Model; Stage 2 Enter selects the top-ranked model, then Escape returns focus to + Filter
     await act(async () => {
       search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    const stage2Search = document.body.querySelector<HTMLInputElement>('[data-usage-filter-search]')!;
+    await act(async () => {
+      stage2Search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
@@ -2381,6 +2184,10 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
       expect(document.activeElement).toBe(sheet);
       expect(document.activeElement).not.toBe(addBtn);
 
+      // Stage 1 Enter drills into Model; Stage 2 Enter selects the top-ranked model
+      await act(async () => {
+        sheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      });
       await act(async () => {
         sheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
       });
@@ -2415,125 +2222,6 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: originalMatchMedia });
     }
-  });
-
-  it('formats QuotaHeadroomStrip without duplicate left/expired text, highlights <=0 money meters first, and sorts ties by duration_seconds ascending', async () => {
-    const pastIso = new Date(Date.now() - 10 * 60_000).toISOString();
-    const futureIso = new Date(Date.now() + 2 * 3600_000).toISOString();
-    getProviderQuotas.mockResolvedValue({
-      schema_version: '1',
-      generated_at: new Date().toISOString(),
-      sources: [
-        {
-          id: 'src_wallet',
-          label: 'Zero Wallet',
-          kind: 'provider',
-          enabled: true,
-          supported: true,
-          status: 'ready',
-          refreshing: false,
-          refresh_mode: 'explicit',
-          auth: { action: 'none' },
-          source: { label: 'API' },
-          meters: [
-            {
-              id: 'balance',
-              label: 'Balance',
-              unit: 'money',
-              currency: 'USD',
-              used: 10,
-              limit: null,
-              remaining: 0,
-              scope: 'account',
-            },
-          ],
-        },
-        {
-          id: 'src_windows',
-          label: 'Rate Windows',
-          kind: 'provider',
-          enabled: true,
-          supported: true,
-          status: 'ready',
-          refreshing: false,
-          refresh_mode: 'explicit',
-          auth: { action: 'none' },
-          source: { label: 'API' },
-          meters: [
-            {
-              id: 'daily',
-              label: 'Daily',
-              unit: 'percent',
-              used: 50,
-              limit: 100,
-              remaining: 50,
-              scope: 'account',
-              window: { duration_seconds: 86_400, label: '1d', reset_at: futureIso },
-            },
-            {
-              id: 'minute',
-              label: 'Minute',
-              unit: 'percent',
-              used: 50,
-              limit: 100,
-              remaining: 50,
-              scope: 'account',
-              window: { duration_seconds: 60, label: '1m', reset_at: pastIso },
-            },
-            {
-              id: 'five_hour',
-              label: '5h',
-              unit: 'percent',
-              used: 50,
-              limit: 100,
-              remaining: 50,
-              scope: 'account',
-              window: { duration_seconds: 18_000, label: '5h', reset_at: futureIso },
-            },
-            {
-              id: 'unwindowed',
-              label: 'Total',
-              unit: 'percent',
-              used: 50,
-              limit: 100,
-              remaining: 50,
-              scope: 'account',
-            },
-          ],
-        },
-      ],
-    });
-
-    const { container, root } = await renderPage('/usage?panel=history');
-    const strip = container.querySelector('[data-usage-quota-strip]')!;
-    expect(strip).not.toBeNull();
-    const pills = [...strip.querySelectorAll<HTMLButtonElement>('[data-usage-quota-pill]')];
-
-    // QuotaHeadroomStrip renders up to 4 pills: $0 money balance is exhausted (sorted first),
-    // followed by 50% ties ordered 1m (60s) -> 5h (18000s) -> 1d (86400s), pushing unwindowed out of the top 4.
-    expect(pills.map((el) => el.getAttribute('data-usage-quota-pill'))).toEqual([
-      'src_wallet:balance',
-      'src_windows:minute',
-      'src_windows:five_hour',
-      'src_windows:daily',
-    ]);
-    expect(pills[0]!.className).toContain('border-danger/40');
-
-    for (const pill of pills) {
-      const text = pill.textContent ?? '';
-      expect(text).not.toMatch(/left.*left/i);
-      expect(text).not.toMatch(/expired|已过期/i);
-    }
-
-    // Expired reset_at omits tooltip/reset suffix; future reset_at places reset hint in title & aria-label.
-    const expiredMinutePill = pills[1]!;
-    expect(expiredMinutePill.getAttribute('title')).toBeNull();
-    expect(expiredMinutePill.getAttribute('aria-label')).not.toMatch(/Resets in|expired/i);
-
-    const futureFiveHourPill = pills[2]!;
-    expect(futureFiveHourPill.getAttribute('title')).toMatch(/^Resets in /);
-    expect(futureFiveHourPill.getAttribute('aria-label')).toContain('Resets in ');
-    await act(async () => { root.unmount(); });
   });
 
   it('keeps cache savings badge steady without flicker or redundant model queries when switching Group by tabs', async () => {
@@ -2599,6 +2287,9 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     await act(async () => {
       spaceRender.container.querySelector<HTMLButtonElement>('[data-usage-add-filter]')!.click();
     });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-usage-filter-category="model"]')!.click();
+    });
     expect(document.body.querySelector('[data-usage-filter-popover]')?.textContent).toContain('space-a-exclusive-model');
 
     // Switch Space scopeId and rerender in place: stale observed facets from space-a are purged.
@@ -2631,12 +2322,12 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     expect(modelChipBtn.textContent).toContain('模型：');
     expect(modelChipBtn.getAttribute('title')).toBe('模型：k2-thinking');
 
-    const archivedChipBtn = container.querySelector<HTMLButtonElement>('[data-usage-filter-chip="archived"] button')!;
-    expect(archivedChipBtn.textContent).toBe('归档：已排除');
+    // Archived toggle stays quietly inside the Filter menu and never poses as a fake filter pill.
+    expect(container.querySelector('[data-usage-filter-chip="archived"]')).toBeNull();
     await act(async () => { root.unmount(); });
   });
 
-  it('pauses secondary today, compare, and model-attribution queries while main usageQuery is still importing', async () => {
+  it('pauses secondary compare and model-attribution queries while main usageQuery is still importing', async () => {
     let mainReady = false;
     getUsage.mockImplementation(async (query: Record<string, unknown>) => {
       if (query['page_size'] === 25) {
@@ -2655,7 +2346,7 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     expect(secondaryWhileImporting).toHaveLength(0);
     expect(container.querySelector('[data-usage-scan-pending]')).not.toBeNull();
 
-    // Advance main query to complete: secondary today, compare, and model-attribution queries now fire.
+    // Advance main query to complete: secondary compare and model-attribution queries now fire.
     mainReady = true;
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     for (let i = 0; i < 6; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -2663,7 +2354,7 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     const secondaryAfterReady = getUsage.mock.calls.filter(
       ([q]) => (q as Record<string, unknown>)['page_size'] === 1,
     );
-    expect(secondaryAfterReady.length).toBeGreaterThanOrEqual(3);
+    expect(secondaryAfterReady.length).toBeGreaterThanOrEqual(2);
     expect(container.querySelector('[data-usage-scan-pending]')).toBeNull();
     await act(async () => { root.unmount(); });
   });
@@ -2693,6 +2384,42 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     expect(container.querySelector('[data-usage-locating]')?.textContent)
       .toContain('outside the current result set');
     expect(container.querySelector('[data-usage-load-more]')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('renders 1-decimal cache hit %, instant floating trend tooltip on focus/hover, and single-column detail layout with 0 extra queries', async () => {
+    const rawWsId = 'wd_orphan_workspace_9f8e7d6c5b4a';
+    const rawSessionId = 'session_afecd3f8-d450-434a-ae3a-d9e35f728b9d';
+    const base = usageResponse({
+      summaryTokens: { input_other: 58, output: 200, input_cache_read: 942, input_cache_creation: 0 },
+      sessions: [
+        { id: rawSessionId, title: undefined, cost: 2.75 },
+      ],
+    });
+    base.sessions.items[0]!.title = null;
+    base.sessions.items[0]!.workspace_id = rawWsId;
+    base.sessions.items[0]!.primary_model = 'k2-thinking';
+    getUsage.mockResolvedValue(base);
+
+    const { container, root } = await renderPage('/usage?panel=history');
+    expect(getUsage).toHaveBeenCalledTimes(1);
+
+    // 942 / (942 + 58) = 94.2%
+    expect(container.querySelector('[data-usage-summary-cache]')?.textContent).toBe('94.2%');
+    expect(container.querySelector('[data-usage-top-sessions]')).toBeNull();
+    expect(container.querySelector('[data-usage-sessions]')).toBeNull();
+
+    // Hover/focus on a TrendChart bucket surfaces the floating readout card immediately
+    expect(container.querySelector('[data-usage-trend-tooltip]')).toBeNull();
+    const bucketBtn = container.querySelector<HTMLButtonElement>('[data-usage-trend] [data-bucket]')!;
+    await act(async () => {
+      bucketBtn.focus();
+      bucketBtn.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    const tooltip = container.querySelector('[data-usage-trend-tooltip]');
+    expect(tooltip).not.toBeNull();
+    expect(tooltip?.textContent).toContain('k2-thinking');
+
     await act(async () => { root.unmount(); });
   });
 });

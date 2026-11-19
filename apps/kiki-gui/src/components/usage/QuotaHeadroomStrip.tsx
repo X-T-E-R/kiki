@@ -3,7 +3,12 @@ import { useQuery } from '@tanstack/react-query';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { formatWindowPeriod, meterUtilization, meterValue } from '../../lib/providerQuota';
+import {
+  formatWindowPeriod,
+  meterRemainingPercent,
+  meterValue,
+  quotaFuelTier,
+} from '../../lib/providerQuota';
 
 interface HeadroomPill {
   readonly id: string;
@@ -47,13 +52,7 @@ export function QuotaHeadroomStrip({
       for (const meter of source.meters) {
         const reading = meterValue(meter);
         if (reading.kind === 'unknown') continue;
-        const util = meterUtilization(meter);
-        const remainingPercent =
-          meter.unit === 'percent' && meter.remaining !== null
-            ? Math.min(100, Math.max(0, Math.round(meter.remaining)))
-            : util !== undefined
-              ? Math.min(100, Math.max(0, 100 - Math.round(util)))
-              : undefined;
+        const remainingPercent = meterRemainingPercent(meter);
         const exhausted =
           (remainingPercent !== undefined && remainingPercent <= 0) ||
           (meter.remaining !== null && meter.remaining <= 0);
@@ -104,12 +103,15 @@ export function QuotaHeadroomStrip({
     >
       {pills.map((pill) => {
         const exhausted = pill.exhausted;
-        const low = !exhausted && pill.remainingPercent !== undefined && pill.remainingPercent < 10;
-        const toneClass = exhausted
+        const tier = pill.remainingPercent !== undefined ? quotaFuelTier(pill.remainingPercent) : 'healthy';
+        const critical = exhausted || tier === 'critical';
+        const warn = !critical && tier === 'low';
+        const toneClass = critical
           ? 'border-danger/40 bg-danger/5 text-danger hover:border-danger/60'
-          : low
+          : warn
             ? 'border-amber-rule/50 bg-amber-card/70 text-amber-ink hover:border-amber-rule'
             : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong hover:text-ink';
+        const dotClass = critical ? 'bg-danger' : warn ? 'bg-amber-rule' : 'bg-ink/45';
         const leftText = t('usage.quota.stripLeft', { value: pill.remainingText });
         const resetMs = pill.resetAt !== undefined ? Date.parse(pill.resetAt) : Number.NaN;
         const futureResetHint =
@@ -131,6 +133,7 @@ export function QuotaHeadroomStrip({
             onClick={onOpenQuota}
             className={`inline-flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11.5px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink ${toneClass}`}
           >
+            <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
             <span className="max-w-32 truncate font-medium text-ink">{pill.label}</span>
             {pill.window !== undefined ? (
               <span className="font-mono text-[10.5px] text-ink-faint">{pill.window}</span>

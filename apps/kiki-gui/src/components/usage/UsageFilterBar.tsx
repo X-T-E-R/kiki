@@ -9,32 +9,54 @@ import {
 } from 'react';
 
 import type { ModelCatalogItem, WorkspaceCatalogEntry } from '@kiki/protocol';
+import { formatCostUsd } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
 import { usePhoneMode } from '../../lib/layoutHooks';
 import {
-  USAGE_RANGE_PRESETS,
+  totalTokensOf,
+  USAGE_SOURCE_KEY_UNKNOWN,
   type UsageRangePreset,
   type UsageResponseWire,
 } from '../../lib/usageV2';
 import { useConnection } from '../../state/connection';
 import { Toggle } from '../controls';
-import { Icon } from '../icons';
+import { DisclosureChevron, Icon, type IconName } from '../icons';
 import { ActionSheet } from '../overlays/ActionSheet';
 import { AnchoredPopover } from '../overlays/AnchoredPopover';
-import { SettingsSelect } from '../settings/SettingsPrimitives';
+import {
+  CalendarIcon,
+  formatCompactDateRange,
+  nextLocalDayStart,
+  startOfLocalDay,
+  UsageCalendarPopover,
+} from './UsageCalendarPopover';
 import {
   buildFacetCatalog,
   clearScopeFilters,
   countActiveScopeFilters,
   toggleFacetValue,
+  type FacetOption,
   type NamedProfileSummary,
   type UsageFacetKind,
   type UsageMultiFilters,
 } from './usageFilterModel';
-import { AxisGroup } from './usageShared';
 
-type PopoverFacetTab = 'all' | UsageFacetKind;
+const FACET_ORDER: readonly UsageFacetKind[] = ['model', 'provider', 'workspace', 'profile'];
+
+const FACET_ICON: Record<UsageFacetKind, IconName> = {
+  model: 'usage',
+  provider: 'web',
+  workspace: 'folder',
+  profile: 'agent',
+};
+
+const QUICK_RANGE_PRESETS: readonly Exclude<UsageRangePreset, 'custom' | 'this_week'>[] = [
+  'today',
+  'last_7_days',
+  'this_month',
+  'all',
+];
 
 export function toDateInputValue(ms: number | undefined): string {
   if (ms === undefined) return '';
@@ -109,6 +131,115 @@ function emptyObserved(scopeId: string): ObservedScopeFacets {
   return { scopeId, models: [], providers: [], profiles: [], workspaceIds: [] };
 }
 
+interface FacetMetric {
+  costUsd: number;
+  tokens: number;
+}
+
+interface FacetSignals {
+  readonly metrics: ReadonlyMap<string, Readonly<FacetMetric>>;
+  readonly completeFacets: ReadonlySet<UsageFacetKind>;
+  readonly workspaceActivity: ReadonlyMap<string, { hits: number; latestAt: number }>;
+}
+
+function computeFacetSignals(
+  response: UsageResponseWire | undefined,
+  modelResponse: UsageResponseWire | undefined,
+): FacetSignals {
+  const metrics = new Map<string, FacetMetric>();
+  const completeFacets = new Set<UsageFacetKind>();
+  const workspaceActivity = new Map<string, { hits: number; latestAt: number }>();
+
+  const add = (facet: UsageFacetKind, value: string | null | undefined, cost: number, tokens: number) => {
+    if (!value || value === 'unknown' || value === USAGE_SOURCE_KEY_UNKNOWN) return;
+    const key = `${facet}:${value}`;
+    const prev = metrics.get(key);
+    if (prev !== undefined) {
+      prev.costUsd += cost;
+      prev.tokens += tokens;
+    } else {
+      metrics.set(key, { costUsd: cost, tokens });
+    }
+  };
+
+  // Model attribution prefers dedicated modelResponse when groupBy !== 'model'
+  const modelSrc = modelResponse ?? response;
+  if (modelSrc !== undefined) {
+    if (modelSrc.query.dimension === 'model') completeFacets.add('model');
+    for (const bucket of modelSrc.trend) {
+      for (const group of bucket.groups) {
+        const modelKey =
+          group.model_alias ??
+          (modelSrc.query.dimension === 'model' &&
+          !group.key.startsWith('provider:') &&
+          !group.key.startsWith('profile:')
+            ? group.key
+            : null);
+        add('model', modelKey, group.cost_usd_estimated, totalTokensOf(group));
+      }
+    }
+  }
+
+  if (response !== undefined) {
+    const dim = response.query.dimension;
+    if (dim === 'provider') completeFacets.add('provider');
+    if (dim === 'profile') completeFacets.add('profile');
+    if (dim === 'project') completeFacets.add('workspace');
+
+    let sawProvider = false;
+    let sawProfile = false;
+    for (const bucket of response.trend) {
+      for (const group of bucket.groups) {
+        const tokens = totalTokensOf(group);
+        const providerKey =
+          group.provider ??
+          (dim === 'provider' && group.key.startsWith('provider:')
+            ? group.key.slice('provider:'.length)
+            : dim === 'provider'
+              ? group.key
+              : null);
+        if (providerKey) sawProvider = true;
+        add('provider', providerKey, group.cost_usd_estimated, tokens);
+
+        const profileKey =
+          group.profile_name ??
+          (dim === 'profile' && group.key.startsWith('profile:')
+            ? group.key.slice('profile:'.length)
+            : dim === 'profile'
+              ? group.key
+              : null);
+        if (profileKey) sawProfile = true;
+        add('profile', profileKey, group.cost_usd_estimated, tokens);
+
+        if (dim === 'project' && group.key !== 'unknown') {
+          add('workspace', group.key, group.cost_usd_estimated, tokens);
+        }
+      }
+    }
+
+    if (sawProvider) completeFacets.add('provider');
+    if (sawProfile) completeFacets.add('profile');
+
+    // When dimension !== 'project', response.sessions.items is only a partial page (first 25 sessions).
+    // Never fabricate partial $ totals or fold remaining workspaces into "unused"; only float recently active ones.
+    if (dim !== 'project') {
+      for (const session of response.sessions.items) {
+        if (!session.workspace_id) continue;
+        const prev = workspaceActivity.get(session.workspace_id);
+        const ts = session.updated_at ?? session.created_at ?? 0;
+        if (prev !== undefined) {
+          prev.hits += 1;
+          if (ts > prev.latestAt) prev.latestAt = ts;
+        } else {
+          workspaceActivity.set(session.workspace_id, { hits: 1, latestAt: ts });
+        }
+      }
+    }
+  }
+
+  return { metrics, completeFacets, workspaceActivity };
+}
+
 export function UsageFilterBar({
   filters,
   workspaces,
@@ -138,19 +269,24 @@ export function UsageFilterBar({
   readonly reliabilitySlot?: ReactNode;
   readonly utilitySlot?: ReactNode;
 }) {
-  const { t, locale } = useI18n();
+  const { t, time, locale } = useI18n();
   const { scopeId } = useConnection();
   const phone = usePhoneMode();
-  const [rangeInvalid, setRangeInvalid] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<PopoverFacetTab>('all');
+  const [selectedFacet, setSelectedFacet] = useState<UsageFacetKind | null>(null);
+  const [unusedOpen, setUnusedOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
+
+  const calendarTriggerRef = useRef<HTMLButtonElement>(null);
   const addFilterRef = useRef<HTMLButtonElement>(null);
   const activeTriggerRef = useRef<HTMLElement | null>(null);
   const chipTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const calendarId = `usage-calendar-${useId().replace(/:/g, '')}`;
   const composerId = `usage-filter-composer-${useId().replace(/:/g, '')}`;
+
   const [observedState, setObservedState] = useState<ObservedScopeFacets>(() => emptyObserved(scopeId));
   const observed = observedState.scopeId === scopeId ? observedState : emptyObserved(scopeId);
 
@@ -224,6 +360,11 @@ export function UsageFilterBar({
     [workspaces, models, providers, namedProfiles, response, filters, observed],
   );
 
+  const { metrics: facetMetrics, completeFacets, workspaceActivity } = useMemo(
+    () => computeFacetSignals(response, modelResponse),
+    [response, modelResponse],
+  );
+
   const labelLookup = useMemo(() => {
     const map = new Map<string, string>();
     for (const option of catalog.all) {
@@ -234,9 +375,10 @@ export function UsageFilterBar({
 
   const activeScopeCount = countActiveScopeFilters(filters);
 
-  const openFacetPopover = (tab: PopoverFacetTab, trigger?: HTMLElement | null) => {
+  const openFacetPopover = (facet: UsageFacetKind | null, trigger?: HTMLElement | null) => {
     activeTriggerRef.current = trigger ?? addFilterRef.current;
-    setActiveTab(tab);
+    setSelectedFacet(facet);
+    setUnusedOpen(false);
     setQuery('');
     setActiveIndex(0);
     setComposerOpen(true);
@@ -248,6 +390,7 @@ export function UsageFilterBar({
     }
     setComposerOpen(false);
     setQuery('');
+    setUnusedOpen(false);
     setActiveIndex(0);
   };
 
@@ -265,6 +408,19 @@ export function UsageFilterBar({
         return filters.providers.includes(value);
       case 'profile':
         return filters.profiles.includes(value);
+    }
+  };
+
+  const selectedCountForFacet = (facet: UsageFacetKind): number => {
+    switch (facet) {
+      case 'workspace':
+        return filters.workspaceIds.length;
+      case 'model':
+        return filters.models.length;
+      case 'provider':
+        return filters.providers.length;
+      case 'profile':
+        return filters.profiles.length;
     }
   };
 
@@ -287,18 +443,77 @@ export function UsageFilterBar({
 
   const trimmedQuery = query.trim();
   const needle = trimmedQuery.toLocaleLowerCase();
-  const visibleOptions = useMemo(() => {
-    const pool = needle !== '' || activeTab === 'all' ? catalog.all : catalog[activeTab];
-    if (needle === '') return pool;
-    return pool.filter((option) => {
-      const hay = `${option.label} ${option.value} ${option.hint ?? ''} ${option.keywords ?? ''}`.toLocaleLowerCase();
-      return hay.includes(needle);
-    });
-  }, [activeTab, catalog, needle]);
+  const isCategoryStage = selectedFacet === null && needle === '';
+
+  const { primaryOptions, unusedOptions } = useMemo(() => {
+    if (isCategoryStage) {
+      return { primaryOptions: [] as readonly FacetOption[], unusedOptions: [] as readonly FacetOption[] };
+    }
+    const basePool = selectedFacet !== null ? catalog[selectedFacet] : catalog.all;
+    const filtered = needle === ''
+      ? basePool
+      : basePool.filter((option) => {
+          const hay = `${option.label} ${option.value} ${option.hint ?? ''} ${option.keywords ?? ''}`.toLocaleLowerCase();
+          return hay.includes(needle);
+        });
+
+    const rankOption = (a: FacetOption, b: FacetOption) => {
+      const aComplete = completeFacets.has(a.facet);
+      const bComplete = completeFacets.has(b.facet);
+      const mA = aComplete ? facetMetrics.get(`${a.facet}:${a.value}`) : undefined;
+      const mB = bComplete ? facetMetrics.get(`${b.facet}:${b.value}`) : undefined;
+      const usedA = (mA?.costUsd ?? 0) > 0 || (mA?.tokens ?? 0) > 0 ? 1 : 0;
+      const usedB = (mB?.costUsd ?? 0) > 0 || (mB?.tokens ?? 0) > 0 ? 1 : 0;
+      if (usedA !== usedB) return usedB - usedA;
+      const costDiff = (mB?.costUsd ?? 0) - (mA?.costUsd ?? 0);
+      if (Math.abs(costDiff) > 1e-9) return costDiff;
+      const tokDiff = (mB?.tokens ?? 0) - (mA?.tokens ?? 0);
+      if (tokDiff !== 0) return tokDiff;
+      if (a.facet === 'workspace' && b.facet === 'workspace' && !aComplete) {
+        const wA = workspaceActivity.get(a.value);
+        const wB = workspaceActivity.get(b.value);
+        const hitsDiff = (wB?.hits ?? 0) - (wA?.hits ?? 0);
+        if (hitsDiff !== 0) return hitsDiff;
+        const tsDiff = (wB?.latestAt ?? 0) - (wA?.latestAt ?? 0);
+        if (tsDiff !== 0) return tsDiff;
+      }
+      return a.label.localeCompare(b.label);
+    };
+
+    const sorted = [...filtered].sort(rankOption);
+    if (needle !== '' || selectedFacet === null || !completeFacets.has(selectedFacet)) {
+      return { primaryOptions: sorted, unusedOptions: [] as readonly FacetOption[] };
+    }
+
+    const withActivity: FacetOption[] = [];
+    const idle: FacetOption[] = [];
+    for (const opt of sorted) {
+      const m = facetMetrics.get(`${opt.facet}:${opt.value}`);
+      const hasUsage = (m?.costUsd ?? 0) > 0 || (m?.tokens ?? 0) > 0;
+      const checked =
+        (opt.facet === 'workspace' && filters.workspaceIds.includes(opt.value)) ||
+        (opt.facet === 'model' && filters.models.includes(opt.value)) ||
+        (opt.facet === 'provider' && filters.providers.includes(opt.value)) ||
+        (opt.facet === 'profile' && filters.profiles.includes(opt.value));
+      if (hasUsage || checked) withActivity.push(opt);
+      else idle.push(opt);
+    }
+
+    // If nothing in this facet has recorded usage yet, show all options directly rather than hiding everything.
+    if (withActivity.length === 0) {
+      return { primaryOptions: idle, unusedOptions: [] as readonly FacetOption[] };
+    }
+    return { primaryOptions: withActivity, unusedOptions: idle };
+  }, [catalog, completeFacets, facetMetrics, filters, isCategoryStage, needle, selectedFacet, workspaceActivity]);
+
+  const displayedOptions = useMemo(
+    () => (unusedOpen ? [...primaryOptions, ...unusedOptions] : primaryOptions),
+    [primaryOptions, unusedOpen, unusedOptions],
+  );
 
   const showCustomProfile =
     trimmedQuery !== '' &&
-    (activeTab === 'all' || activeTab === 'profile') &&
+    (selectedFacet === null || selectedFacet === 'profile') &&
     !catalog.profile.some((option) => option.value === trimmedQuery);
 
   const facetLabel = (facet: UsageFacetKind) => t(`usage.filter.facet.${facet}`);
@@ -327,7 +542,7 @@ export function UsageFilterBar({
       list.push({
         key: facet,
         facet,
-        label: facetLabel(facet),
+        label: t(`usage.filter.facet.${facet}`),
         valueText,
         title,
         clear,
@@ -336,48 +551,31 @@ export function UsageFilterBar({
 
     summarize('model', filters.models, () => { onChange({ ...filters, models: [] }); });
     summarize('provider', filters.providers, () => { onChange({ ...filters, providers: [] }); });
-    summarize('profile', filters.profiles, () => { onChange({ ...filters, profiles: [] }); });
     summarize('workspace', filters.workspaceIds, () => { onChange({ ...filters, workspaceIds: [] }); });
+    summarize('profile', filters.profiles, () => { onChange({ ...filters, profiles: [] }); });
 
-    if (!filters.includeArchived) {
-      list.push({
-        key: 'archived',
-        label: t('usage.filter.archivedLabel'),
-        valueText: t('usage.filter.archivedValue'),
-        title: t('usage.filter.archivedChip'),
-        clear: () => { onChange({ ...filters, includeArchived: true }); },
-      });
-    }
     return list;
   }, [filters, labelLookup, locale, onChange, t]);
 
-  const changeRange = (range: UsageRangePreset) => {
-    setRangeInvalid(false);
+  const selectPresetRange = (range: UsageRangePreset) => {
     if (range === 'custom') {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
-      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      const today = startOfLocalDay(Date.now());
+      const defaultStart = today - 6 * 86_400_000;
       onChange({
         ...filters,
-        range,
-        startAt: filters.startAt ?? start.getTime(),
-        endAt: filters.endAt ?? end.getTime(),
+        range: 'custom',
+        startAt: filters.startAt ?? defaultStart,
+        endAt: filters.endAt ?? nextLocalDayStart(today),
       });
-    } else {
-      onChange({ ...filters, range, startAt: undefined, endAt: undefined });
+      return;
     }
+    onChange({ ...filters, range, startAt: undefined, endAt: undefined });
   };
 
-  const facetTabs: readonly { readonly id: PopoverFacetTab; readonly label: string; readonly count: number }[] = [
-    { id: 'all', label: t('usage.filter.allFacets'), count: activeScopeCount },
-    { id: 'model', label: facetLabel('model'), count: filters.models.length },
-    { id: 'provider', label: facetLabel('provider'), count: filters.providers.length },
-    { id: 'profile', label: facetLabel('profile'), count: filters.profiles.length },
-    { id: 'workspace', label: facetLabel('workspace'), count: filters.workspaceIds.length },
-  ];
-
-  const totalOptions = visibleOptions.length + (showCustomProfile ? 1 : 0);
-  const clampedIndex = totalOptions === 0 ? -1 : Math.min(activeIndex, totalOptions - 1);
+  const navItemCount = isCategoryStage
+    ? FACET_ORDER.length
+    : displayedOptions.length + (showCustomProfile ? 1 : 0);
+  const clampedIndex = navItemCount === 0 ? -1 : Math.min(activeIndex, navItemCount - 1);
 
   const handleComposerKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     const target = event.target as HTMLElement | null;
@@ -386,18 +584,33 @@ export function UsageFilterBar({
       (target.hasAttribute('data-usage-filter-search') ||
         target.getAttribute('role') === 'dialog' ||
         target.closest('[role="listbox"]') !== null);
-    if (!drivesListbox || totalOptions === 0) return;
+    if (!drivesListbox) return;
+
+    if (
+      (event.key === 'Backspace' || event.key === 'ArrowLeft') &&
+      query === '' &&
+      selectedFacet !== null
+    ) {
+      event.preventDefault();
+      const idx = FACET_ORDER.indexOf(selectedFacet);
+      setSelectedFacet(null);
+      setUnusedOpen(false);
+      setActiveIndex(Math.max(0, idx));
+      return;
+    }
+
+    if (navItemCount === 0) return;
 
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      const next = (clampedIndex + 1) % totalOptions;
+      const next = (clampedIndex + 1) % navItemCount;
       setActiveIndex(next);
       optionRefs.current[next]?.scrollIntoView?.({ block: 'nearest' });
       return;
     }
     if (event.key === 'ArrowUp') {
       event.preventDefault();
-      const next = (clampedIndex - 1 + totalOptions) % totalOptions;
+      const next = (clampedIndex - 1 + navItemCount) % navItemCount;
       setActiveIndex(next);
       optionRefs.current[next]?.scrollIntoView?.({ block: 'nearest' });
       return;
@@ -410,15 +623,24 @@ export function UsageFilterBar({
     }
     if (event.key === 'End') {
       event.preventDefault();
-      const last = totalOptions - 1;
+      const last = navItemCount - 1;
       setActiveIndex(last);
       optionRefs.current[last]?.scrollIntoView?.({ block: 'nearest' });
       return;
     }
-    if (event.key === 'Enter' && clampedIndex >= 0) {
+    if ((event.key === 'Enter' || (event.key === 'ArrowRight' && isCategoryStage)) && clampedIndex >= 0) {
       event.preventDefault();
-      if (clampedIndex < visibleOptions.length) {
-        const option = visibleOptions[clampedIndex]!;
+      if (isCategoryStage) {
+        const facet = FACET_ORDER[clampedIndex];
+        if (facet !== undefined) {
+          setSelectedFacet(facet);
+          setUnusedOpen(false);
+          setActiveIndex(0);
+        }
+        return;
+      }
+      if (clampedIndex < displayedOptions.length) {
+        const option = displayedOptions[clampedIndex]!;
         toggleOption(option.facet, option.value);
       } else if (showCustomProfile) {
         toggleOption('profile', trimmedQuery);
@@ -434,14 +656,32 @@ export function UsageFilterBar({
       onKeyDown={phone ? undefined : handleComposerKeyDown}
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-2.5 pb-2">
-        <Icon name="search" size={14} className="text-ink-faint" />
+        {selectedFacet !== null && needle === '' ? (
+          <button
+            type="button"
+            data-usage-filter-back
+            aria-label={t('usage.filter.back')}
+            onClick={() => {
+              const idx = FACET_ORDER.indexOf(selectedFacet);
+              setSelectedFacet(null);
+              setUnusedOpen(false);
+              setActiveIndex(Math.max(0, idx));
+            }}
+            className="inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[12px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
+          >
+            <Icon name="arrowLeft" size={12} />
+            <span>{facetLabel(selectedFacet)}</span>
+          </button>
+        ) : (
+          <Icon name="search" size={14} className="shrink-0 text-ink-faint" />
+        )}
         <input
           type="text"
           data-autofocus
           data-usage-filter-search
           aria-activedescendant={clampedIndex >= 0 ? `${composerId}-opt-${clampedIndex}` : undefined}
           value={query}
-          placeholder={t('usage.filter.searchPlaceholder')}
+          placeholder={selectedFacet !== null ? t('usage.filter.searchShort') : t('usage.filter.searchPlaceholder')}
           onChange={(event) => {
             setQuery(event.target.value);
             setActiveIndex(0);
@@ -463,99 +703,157 @@ export function UsageFilterBar({
         ) : null}
       </div>
 
-      {needle === '' ? (
-        <div className="flex shrink-0 flex-wrap gap-1 border-b border-hairline px-2 py-1.5" role="group" aria-label={t('usage.filter.open')}>
-          {facetTabs.map((tab) => {
-            const active = activeTab === tab.id;
+      <div className="min-h-0 flex-1 overflow-y-auto py-1" role="listbox" aria-multiselectable={!isCategoryStage}>
+        {isCategoryStage ? (
+          FACET_ORDER.map((facet, idx) => {
+            const selectedCount = selectedCountForFacet(facet);
+            const activeUsedCount = completeFacets.has(facet)
+              ? catalog[facet].filter((opt) => {
+                  const m = facetMetrics.get(`${facet}:${opt.value}`);
+                  return (m?.costUsd ?? 0) > 0 || (m?.tokens ?? 0) > 0;
+                }).length
+              : 0;
+            const highlighted = idx === clampedIndex;
+
             return (
               <button
-                key={tab.id}
+                key={facet}
+                id={`${composerId}-opt-${idx}`}
+                ref={(el) => { optionRefs.current[idx] = el; }}
                 type="button"
-                aria-pressed={active}
-                data-usage-filter-tab={tab.id}
+                role="option"
+                aria-selected={selectedCount > 0}
+                data-usage-filter-category={facet}
+                onMouseEnter={() => { setActiveIndex(idx); }}
                 onClick={() => {
-                  setActiveTab(tab.id);
+                  setSelectedFacet(facet);
+                  setUnusedOpen(false);
                   setActiveIndex(0);
                 }}
-                className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[11.5px] transition-colors ${
-                  active ? 'bg-selected font-medium text-selected-ink' : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+                className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13px] transition-colors pointer-coarse:min-h-11 ${
+                  highlighted ? 'bg-ink/[0.06]' : 'hover:bg-ink/[0.04]'
                 }`}
               >
-                <span>{tab.label}</span>
-                {tab.count > 0 ? <span className="tabular-nums opacity-75">{tab.count}</span> : null}
+                <Icon name={FACET_ICON[facet]} size={14} className="shrink-0 text-ink-soft" />
+                <span className="min-w-0 flex-1 font-medium text-ink">{facetLabel(facet)}</span>
+                {selectedCount > 0 ? (
+                  <span className="rounded-full bg-selected px-1.5 py-px text-[11px] font-medium text-selected-ink tabular-nums">
+                    {selectedCount}
+                  </span>
+                ) : activeUsedCount > 0 ? (
+                  <span className="text-[11.5px] text-ink-faint tabular-nums">{activeUsedCount}</span>
+                ) : null}
+                <DisclosureChevron open={false} className="text-ink-faint" />
               </button>
             );
-          })}
-        </div>
-      ) : null}
-
-      <div className="min-h-0 flex-1 overflow-y-auto py-1" role="listbox" aria-multiselectable="true">
-        {visibleOptions.length === 0 && !showCustomProfile ? (
+          })
+        ) : displayedOptions.length === 0 && !showCustomProfile ? (
           <p className="px-3 py-5 text-center text-[12px] text-ink-faint">
             {trimmedQuery === '' ? t('select.empty') : t('select.noMatches', { query: trimmedQuery })}
           </p>
         ) : (
           <>
-            {visibleOptions.map((option, index) => {
-              const checked = isSelected(option.facet, option.value);
-              const highlighted = index === clampedIndex;
-              return (
-                <button
-                  key={`${option.facet}:${option.value}`}
-                  id={`${composerId}-opt-${index}`}
-                  ref={(el) => { optionRefs.current[index] = el; }}
-                  type="button"
-                  role="option"
-                  aria-selected={checked}
-                  data-usage-facet-option={`${option.facet}:${option.value}`}
-                  onMouseEnter={() => { setActiveIndex(index); }}
-                  onClick={() => { toggleOption(option.facet, option.value); }}
-                  className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors pointer-coarse:min-h-11 ${
-                    highlighted ? 'bg-ink/[0.06]' : checked ? 'bg-ink/[0.03]' : 'hover:bg-ink/[0.04]'
-                  }`}
-                >
-                  <span
-                    aria-hidden
-                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
-                      checked ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
+            {(() => {
+              const renderOptionButton = (option: FacetOption, index: number) => {
+                const checked = isSelected(option.facet, option.value);
+                const highlighted = index === clampedIndex;
+                const usage = completeFacets.has(option.facet)
+                  ? facetMetrics.get(`${option.facet}:${option.value}`)
+                  : undefined;
+                const usageText =
+                  usage !== undefined && usage.costUsd > 0
+                    ? formatCostUsd(usage.costUsd)
+                    : usage !== undefined && usage.tokens > 0
+                      ? time.formatTokens(usage.tokens)
+                      : undefined;
+
+                return (
+                  <button
+                    key={`${option.facet}:${option.value}`}
+                    id={`${composerId}-opt-${index}`}
+                    ref={(el) => { optionRefs.current[index] = el; }}
+                    type="button"
+                    role="option"
+                    aria-selected={checked}
+                    data-usage-facet-option={`${option.facet}:${option.value}`}
+                    onMouseEnter={() => { setActiveIndex(index); }}
+                    onClick={() => { toggleOption(option.facet, option.value); }}
+                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors pointer-coarse:min-h-11 ${
+                      highlighted ? 'bg-ink/[0.06]' : checked ? 'bg-ink/[0.03]' : 'hover:bg-ink/[0.04]'
                     }`}
                   >
-                    <Icon name="check" size={12} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className={`block truncate ${checked ? 'font-medium text-ink' : 'text-ink'}`}>
-                      {option.label}
+                    <span
+                      aria-hidden
+                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                        checked ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
+                      }`}
+                    >
+                      <Icon name="check" size={12} />
                     </span>
-                    {option.hint !== undefined ? (
-                      <span className="block truncate font-mono text-[10.5px] text-ink-faint">
-                        {option.hint}
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate ${checked ? 'font-medium text-ink' : 'text-ink'}`}>
+                        {option.label}
+                      </span>
+                      {option.hint !== undefined && option.hint !== option.label ? (
+                        <span className="block truncate font-mono text-[10.5px] text-ink-faint">
+                          {option.hint}
+                        </span>
+                      ) : null}
+                    </span>
+                    {selectedFacet === null ? (
+                      <span className="shrink-0 rounded bg-ink/[0.04] px-1.5 py-px text-[10.5px] text-ink-faint">
+                        {facetLabel(option.facet)}
                       </span>
                     ) : null}
-                  </span>
-                  {(needle !== '' || activeTab === 'all') ? (
-                    <span className="shrink-0 rounded bg-ink/[0.04] px-1.5 py-px text-[10.5px] text-ink-faint">
-                      {facetLabel(option.facet)}
-                    </span>
+                    {usageText !== undefined ? (
+                      <span className="shrink-0 text-[11.5px] text-ink-soft tabular-nums">
+                        {usageText}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              };
+
+              return (
+                <>
+                  {primaryOptions.map((option, index) => renderOptionButton(option, index))}
+
+                  {unusedOptions.length > 0 && needle === '' ? (
+                    <button
+                      type="button"
+                      data-usage-filter-unused-toggle
+                      aria-expanded={unusedOpen}
+                      onClick={() => { setUnusedOpen((prev) => !prev); }}
+                      className="mt-1 flex w-full items-center gap-1.5 border-t border-hairline/70 px-2.5 pt-2 pb-1 text-left text-[11.5px] text-ink-faint transition-colors hover:text-ink"
+                    >
+                      <DisclosureChevron open={unusedOpen} />
+                      <span>{t('usage.filter.unusedInPeriod', { count: unusedOptions.length })}</span>
+                    </button>
                   ) : null}
-                </button>
+
+                  {unusedOpen && needle === ''
+                    ? unusedOptions.map((option, offset) => renderOptionButton(option, primaryOptions.length + offset))
+                    : null}
+                </>
               );
-            })}
+            })()}
+
             {showCustomProfile ? (
               <button
-                id={`${composerId}-opt-${visibleOptions.length}`}
-                ref={(el) => { optionRefs.current[visibleOptions.length] = el; }}
+                id={`${composerId}-opt-${displayedOptions.length}`}
+                ref={(el) => { optionRefs.current[displayedOptions.length] = el; }}
                 type="button"
                 role="option"
                 aria-selected={isSelected('profile', trimmedQuery)}
                 data-usage-facet-custom-profile={trimmedQuery}
-                onMouseEnter={() => { setActiveIndex(visibleOptions.length); }}
+                onMouseEnter={() => { setActiveIndex(displayedOptions.length); }}
                 onClick={() => {
                   toggleOption('profile', trimmedQuery);
                   setQuery('');
                   setActiveIndex(0);
                 }}
                 className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left font-mono text-[12px] text-ink transition-colors pointer-coarse:min-h-11 ${
-                  clampedIndex === visibleOptions.length ? 'bg-ink/[0.06]' : 'hover:bg-ink/[0.04]'
+                  clampedIndex === displayedOptions.length ? 'bg-ink/[0.06]' : 'hover:bg-ink/[0.04]'
                 }`}
               >
                 <Icon name="plus" size={12} className="text-ink-faint" />
@@ -569,11 +867,15 @@ export function UsageFilterBar({
       </div>
 
       <div className="flex shrink-0 items-center justify-between gap-3 border-t border-hairline px-2.5 pt-2">
-        <Toggle
-          label={t('usage.includeArchived')}
-          checked={filters.includeArchived}
-          onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
-        />
+        <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-soft">
+          <Toggle
+            layout="bare"
+            label={t('usage.includeArchived')}
+            checked={filters.includeArchived}
+            onChange={(includeArchived) => { onChange({ ...filters, includeArchived }); }}
+          />
+          <span>{t('usage.includeArchived')}</span>
+        </span>
         {activeScopeCount > 0 ? (
           <button
             type="button"
@@ -587,81 +889,70 @@ export function UsageFilterBar({
     </div>
   );
 
-  const dateInput = 'h-8 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink tabular-nums outline-none focus:border-selected-ink aria-[invalid=true]:border-danger pointer-coarse:min-h-11';
+  const customRangeLabel =
+    filters.range === 'custom'
+      ? (formatCompactDateRange(filters.startAt, filters.endAt, locale) ?? t('usage.range.custom'))
+      : filters.range === 'this_week'
+        ? t('usage.rangeShort.this_week')
+        : t('usage.range.custom');
+  const isCustomOrCalendarPreset = filters.range === 'custom' || filters.range === 'this_week';
 
   return (
-    <div data-anchor="usage-filter" data-usage-filters className="space-y-2 border-b border-hairline pt-1 pb-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        {phone ? (
-          <label className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 text-[13px] text-ink">{t('usage.axis.range')}</span>
-            <span className="min-w-0 max-w-44">
-              <SettingsSelect<UsageRangePreset>
-                ariaLabel={t('usage.axis.range')}
-                value={filters.range}
-                dataAttr="data-usage-range-select"
-                onChange={changeRange}
-                choices={USAGE_RANGE_PRESETS.map((option) => ({ value: option, label: t(`usage.range.${option}`) }))}
-              />
-            </span>
-          </label>
-        ) : (
-          <AxisGroup
-            label={t('usage.axis.range')}
-            dataAxis="range"
-            options={USAGE_RANGE_PRESETS}
-            value={filters.range}
-            onChange={changeRange}
-            labelFor={(option) => t(`usage.range.${option}`)}
-          />
-        )}
+    <div data-anchor="usage-filter" data-usage-filters className="space-y-2 pt-0.5">
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+        <div
+          role="group"
+          aria-label={t('usage.axis.range')}
+          data-axis="range"
+          className="inline-flex max-w-full flex-wrap items-center rounded-lg border border-hairline bg-panel/60 p-0.5"
+        >
+          {QUICK_RANGE_PRESETS.map((preset) => {
+            const active = filters.range === preset;
+            return (
+              <button
+                key={preset}
+                type="button"
+                data-axis-value={preset}
+                aria-pressed={active}
+                onClick={() => { selectPresetRange(preset); }}
+                className={`inline-flex h-7 items-center rounded-md px-2 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-10 ${
+                  active
+                    ? 'bg-paper font-medium text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'
+                    : 'text-ink-soft hover:text-ink'
+                }`}
+              >
+                {t(`usage.rangeShort.${preset}`)}
+              </button>
+            );
+          })}
 
-        {filters.range === 'custom' ? (
-          <div className="flex flex-wrap items-center gap-1.5" data-usage-custom-range>
-            <input
-              type="date"
-              aria-label={t('usage.customRange.start')}
-              aria-invalid={rangeInvalid}
-              value={toDateInputValue(filters.startAt)}
-              max={toInclusiveEndDateInputValue(filters.endAt)}
-              onChange={(event) => {
-                const startAt = fromDateInputStart(event.target.value);
-                if (startAt === undefined) return;
-                if (filters.endAt !== undefined && startAt >= filters.endAt) {
-                  setRangeInvalid(true);
-                  return;
-                }
-                setRangeInvalid(false);
-                onChange({ ...filters, startAt });
-              }}
-              className={dateInput}
-            />
-            <Icon name="arrowRight" size={12} className="text-ink-faint" />
-            <input
-              type="date"
-              aria-label={t('usage.customRange.end')}
-              aria-invalid={rangeInvalid}
-              value={toInclusiveEndDateInputValue(filters.endAt)}
-              min={toDateInputValue(filters.startAt)}
-              onChange={(event) => {
-                const endAt = fromDateInputExclusiveEnd(event.target.value);
-                if (endAt === undefined) return;
-                if (filters.startAt !== undefined && endAt <= filters.startAt) {
-                  setRangeInvalid(true);
-                  return;
-                }
-                setRangeInvalid(false);
-                onChange({ ...filters, endAt });
-              }}
-              className={dateInput}
-            />
-            {rangeInvalid ? (
-              <p role="alert" data-usage-range-error className="text-[12px] text-danger">
-                {t('usage.customRange.invalid')}
-              </p>
+          <span aria-hidden className="mx-0.5 h-4 w-px bg-hairline" />
+
+          <button
+            ref={calendarTriggerRef}
+            type="button"
+            data-axis-value="custom"
+            data-usage-custom-range-trigger
+            aria-label={customRangeLabel}
+            aria-haspopup="dialog"
+            aria-expanded={calendarOpen}
+            aria-pressed={isCustomOrCalendarPreset}
+            onClick={() => { setCalendarOpen((open) => !open); }}
+            className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-10 ${
+              isCustomOrCalendarPreset
+                ? 'bg-paper font-medium text-ink shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06)]'
+                : 'text-ink-soft hover:text-ink'
+            }`}
+          >
+            <CalendarIcon className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+            <span className={isCustomOrCalendarPreset ? undefined : 'hidden sm:inline'}>{customRangeLabel}</span>
+            {comparing ? (
+              <span className="rounded bg-selected px-1 py-px text-[10.5px] font-medium text-selected-ink">
+                {t('usage.compare.short')}
+              </span>
             ) : null}
-          </div>
-        ) : null}
+          </button>
+        </div>
 
         <button
           ref={addFilterRef}
@@ -672,15 +963,15 @@ export function UsageFilterBar({
           aria-controls={composerOpen ? composerId : undefined}
           onClick={() => {
             if (composerOpen) closeComposer();
-            else openFacetPopover('all', addFilterRef.current);
+            else openFacetPopover(null, addFilterRef.current);
           }}
-          className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+          className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-[12.5px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink sm:px-2.5 pointer-coarse:min-h-11 ${
             activeScopeCount > 0
               ? 'border-selected-ink/40 bg-panel font-medium text-ink'
               : 'border-hairline bg-paper text-ink-soft hover:border-hairline-strong hover:text-ink'
           }`}
         >
-          <Icon name="plus" size={12} />
+          <Icon name="filter" size={12} />
           <span>{t('usage.filter.add')}</span>
           {activeScopeCount > 0 ? (
             <span className="rounded-full bg-selected px-1.5 text-[11px] text-selected-ink tabular-nums">
@@ -689,49 +980,33 @@ export function UsageFilterBar({
           ) : null}
         </button>
 
-        <div className="flex w-full max-w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:ml-auto sm:w-auto sm:shrink-0 sm:justify-end">
-          <span
-            data-usage-compare-wrap
-            title={compareAvailable ? undefined : t('usage.compare.unavailable')}
-            className="inline-flex min-h-8 items-center gap-1.5 text-[12.5px] text-ink-soft pointer-coarse:min-h-11"
-          >
-            <Toggle
-              layout="bare"
-              label={t('usage.compare.enable')}
-              checked={comparing}
-              disabled={!compareAvailable}
-              onChange={onCompareChange}
-              dataAttr="data-usage-compare"
-            />
-            <span className={!compareAvailable ? 'text-ink-faint' : undefined}>
-              {t('usage.compare.short')}
-            </span>
-          </span>
-          <div className="flex items-center gap-2">
-            {reliabilitySlot}
-            {utilitySlot}
-          </div>
+        <div className="ml-auto flex items-center gap-1.5">
+          {utilitySlot}
+          {reliabilitySlot}
         </div>
       </div>
 
-      {chips.length > 0 ? (
-        <ul data-usage-filter-chips className="flex flex-wrap items-center gap-1.5 pt-0.5">
+      {chips.length > 0 || comparing ? (
+        <ul data-usage-filter-chips className="flex flex-wrap items-center gap-1.5">
           {chips.map((chip) => (
             <li key={chip.key} className="inline-flex items-center">
               <div
                 data-usage-filter-chip={chip.key}
                 title={chip.title}
-                className="inline-flex h-7 items-center overflow-hidden rounded-full border border-selected-ink/35 bg-panel text-[12px] text-ink"
+                className="inline-flex h-7 items-center overflow-hidden rounded-md border border-hairline-strong bg-panel text-[12px] text-ink"
               >
                 <button
                   ref={(el) => { chipTriggerRefs.current[chip.key] = el; }}
                   type="button"
                   title={chip.title}
                   onClick={() => {
-                    if (chip.facet !== undefined) openFacetPopover(chip.facet, chipTriggerRefs.current[chip.key]);
-                    else chip.clear();
+                    if (chip.facet !== undefined) {
+                      openFacetPopover(chip.facet, chipTriggerRefs.current[chip.key]);
+                    } else {
+                      chip.clear();
+                    }
                   }}
-                  className={`inline-flex h-full items-center pr-1.5 pl-2.5 transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-selected-ink ${
+                  className={`inline-flex h-full items-center pr-2 pl-2.5 transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-selected-ink ${
                     locale === 'zh' ? '' : 'gap-1'
                   }`}
                 >
@@ -749,18 +1024,58 @@ export function UsageFilterBar({
               </div>
             </li>
           ))}
-          <li>
-            <button
-              type="button"
-              data-usage-clear-filters
-              onClick={() => { onChange(clearScopeFilters(filters)); }}
-              className="inline-flex h-7 items-center rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-            >
-              {t('usage.filter.clearAll')}
-            </button>
-          </li>
+
+          {comparing ? (
+            <li className="inline-flex items-center">
+              <div
+                data-usage-filter-chip="compare"
+                className="inline-flex h-7 items-center overflow-hidden rounded-md border border-hairline-strong bg-panel text-[12px] text-ink"
+              >
+                <span className="px-2.5 text-ink-soft">{t('usage.compare.enable')}</span>
+                <button
+                  type="button"
+                  aria-label={`${t('usage.filter.clearAll')} ${t('usage.compare.short')}`}
+                  onClick={() => { onCompareChange(false); }}
+                  className="inline-flex h-full items-center border-l border-hairline px-1.5 text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+            </li>
+          ) : null}
+
+          {chips.length > 0 ? (
+            <li>
+              <button
+                type="button"
+                data-usage-clear-filters
+                onClick={() => { onChange(clearScopeFilters(filters)); }}
+                className="inline-flex h-7 items-center rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {t('usage.filter.clearAll')}
+              </button>
+            </li>
+          ) : null}
         </ul>
       ) : null}
+
+      <UsageCalendarPopover
+        id={calendarId}
+        open={calendarOpen}
+        phone={phone}
+        anchorRef={calendarTriggerRef}
+        range={filters.range}
+        startAt={filters.startAt}
+        endAt={filters.endAt}
+        comparing={comparing}
+        compareAvailable={compareAvailable}
+        onSelectPreset={selectPresetRange}
+        onSelectCustomRange={(startAt, endAt) => {
+          onChange({ ...filters, range: 'custom', startAt, endAt });
+        }}
+        onCompareChange={onCompareChange}
+        onClose={() => { setCalendarOpen(false); }}
+      />
 
       {phone && composerOpen ? (
         <ActionSheet
@@ -784,7 +1099,7 @@ export function UsageFilterBar({
           onClose={closeComposer}
           anchorRef={activeTriggerRef}
           label={t('usage.filter.open')}
-          widthClassName="w-[22rem]"
+          widthClassName="w-[21rem]"
           className="!overflow-hidden flex flex-col"
           data={{ 'data-usage-filter-popover': '' }}
         >

@@ -123,32 +123,38 @@ function QuotaBar({ row, first }: { row: UsageRow; first: boolean }) {
   // A zero limit is "no allowance reported", not "100% used".
   const share = row.limit > 0 ? Math.min(1, Math.max(0, row.used / row.limit)) : null;
   const near = share !== null && share >= NEAR_LIMIT;
+  const exhausted = share !== null && share >= 1;
   const name = row.name ?? (first ? t('st.quota.summary') : t('st.quota.limit'));
   const window = row.window === undefined ? null : t(WINDOW_KEYS[row.window.unit], { n: row.window.duration });
   const reset = resetText(row.reset_at, locale);
   const percent = share === null ? null : Math.round(share * 100);
+  const remainingPercent = percent === null ? null : Math.max(0, 100 - percent);
   return (
     <li data-quota-row data-quota-near={near ? 'true' : undefined} className="space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
         <span className="font-medium text-ink">{name}</span>
-        {window !== null ? <span className="text-ink-faint">{window}</span> : null}
+        {window !== null ? <span className="font-mono text-[10.5px] text-ink-faint">{window}</span> : null}
         <span className="ml-auto tabular-nums text-ink-soft">
           {row.limit > 0 ? t('st.quota.usedOf', { used: row.used.toLocaleString(), limit: row.limit.toLocaleString() }) : t('st.quota.usedOnly', { used: row.used.toLocaleString() })}
-          {percent !== null ? <span className={`ml-2 font-medium ${near ? 'text-amber-ink' : 'text-ink'}`}>{percent}%</span> : null}
+          {remainingPercent !== null ? (
+            <span className={`ml-2 font-medium ${exhausted ? 'text-danger' : near ? 'text-amber-ink' : 'text-ink'}`}>
+              {t('st.quota.remainingPercent', { n: remainingPercent })}
+            </span>
+          ) : null}
         </span>
       </div>
-      {share !== null ? (
+      {remainingPercent !== null ? (
         <div
           role="progressbar"
           aria-label={name}
           aria-valuemin={0}
           aria-valuemax={row.limit}
-          aria-valuenow={Math.min(row.used, row.limit)}
-          className="h-1.5 overflow-hidden rounded-full bg-hairline"
+          aria-valuenow={Math.max(0, row.limit - Math.min(row.used, row.limit))}
+          className="h-1.5 overflow-hidden rounded-full bg-ink/[0.07]"
         >
           <div
-            className={`h-full rounded-full ${near ? 'bg-amber-ink' : 'bg-selected-ink'}`}
-            style={{ width: `${Math.max(share * 100, share > 0 ? 2 : 0)}%` }}
+            className={`h-full rounded-full transition-all duration-200 ${exhausted ? 'bg-danger' : near ? 'bg-amber-rule' : 'bg-ink/60'}`}
+            style={{ width: `${remainingPercent}%` }}
           />
         </div>
       ) : null}
