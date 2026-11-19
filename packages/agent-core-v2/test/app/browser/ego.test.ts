@@ -14,6 +14,7 @@ import { browserConnectionRecord, type BrowserResolvedConnection } from '#/app/b
 import { BrowserError } from '#/app/browser/errors';
 import type { BrowserRequestContext } from '#/app/browser/codexBrowser';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { HostFsError } from '#/os/interface/hostFsErrors';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { AgentBrowserService, BrowserEgoRunTool, IAgentBrowserService, egoRunExecution } from '#/agent/tools/browser/browserTools';
 import { toolApprovalRule } from '#/agent/tools/os/sshToolTarget';
@@ -67,7 +68,7 @@ describe('Ego Lite CLI resolution', () => {
     expect(resolveEgoCli({ cliPath: saved, exists: exists([saved, versioned, other]), children, records: [record()], pathHits: [other] })).toEqual({ kind: 'found', path: saved });
     expect(resolveEgoCli({ exists: exists([versioned, child, other]), children, records: [record()], pathHits: [other] })).toEqual({ kind: 'found', path: versioned });
     expect(resolveEgoCli({ exists: exists([child]), children, records: [record({ displayVersion: undefined })], pathHits: [] })).toEqual({ kind: 'found', path: child });
-    expect(resolveEgoCli({ exists: exists([child, other]), children, records: [record({ displayVersion: undefined })], pathHits: [other] })).toEqual({ kind: 'choose', paths: [child, other].sort() });
+    expect(resolveEgoCli({ exists: exists([child, other]), children, records: [record({ displayVersion: undefined })], pathHits: [other] })).toEqual({ kind: 'choose', paths: [child, other].toSorted() });
     expect(resolveEgoCli({ exists: exists([]), children: () => [], records: [record({ displayName: 'Ego Lite', publisher: 'Citro Labs' })], pathHits: [] })).toEqual({ kind: 'missing' });
     expect(resolveEgoCli({ exists: exists([versioned]), children, records: [record({ publisher: 'Other' })], pathHits: [] })).toEqual({ kind: 'missing' });
   });
@@ -92,8 +93,8 @@ describe('Ego Lite CLI resolution', () => {
 
   it('extracts concise diagnostics without terminal noise, ready markers, or internal script paths', () => {
     const output = [
-      '\u001b]0;probe\u0007\u001b[31mkiki-ego-ready\u001b[0m\r',
-      `\u0000\u001b[31m${administratorDiagnostic}\u001b[0m\u0007`,
+      '\u001B]0;probe\u0007\u001B[31mkiki-ego-ready\u001B[0m\r',
+      `\u0000\u001B[31m${administratorDiagnostic}\u001B[0m\u0007`,
       administratorDiagnostic,
       '    at execute (file:///C:/Temp/ego-scripts/probe.mjs:1:1)',
       'C:\\Temp Folder\\ego-scripts\\probe.mjs:1',
@@ -106,7 +107,7 @@ describe('Ego Lite CLI resolution', () => {
     ].join('\n');
     expect(extractEgoDiagnostic(output)).toBe(administratorDiagnostic);
     expect(egoNotReadyMessage(output)).toBe(`Ego Lite is not ready: ${administratorDiagnostic}`);
-    expect(extractEgoDiagnostic('\n\u001b[32mkiki-ego-ready\u001b[0m\n\u0000')).toBeUndefined();
+    expect(extractEgoDiagnostic('\n\u001B[32mkiki-ego-ready\u001B[0m\n\u0000')).toBeUndefined();
     expect(egoNotReadyMessage('')).toBe('Ego Lite is not ready');
     const long = extractEgoDiagnostic(`${'x'.repeat(398)}😀${'y'.repeat(20)}`);
     expect(long).toBe(`${'x'.repeat(398)}…`);
@@ -129,8 +130,8 @@ describe('Ego Lite CLI resolution', () => {
   });
 
   it('replaces lone surrogates before returning or truncating diagnostic text', () => {
-    expect(extractEgoDiagnostic('Error: \ud800bad \udc00input')).toBe('Error: �bad �input');
-    const output = extractEgoDiagnostic(`${'x'.repeat(398)}\ud800tail`);
+    expect(extractEgoDiagnostic('Error: \uD800bad \uDC00input')).toBe('Error: �bad �input');
+    const output = extractEgoDiagnostic(`${'x'.repeat(398)}\uD800tail`);
     expect(output).toBe(`${'x'.repeat(398)}�…`);
     expect(output?.isWellFormed()).toBe(true);
     expect(output?.length).toBeLessThanOrEqual(400);
@@ -152,10 +153,16 @@ function memoryFs(present: readonly string[]) {
   const fs = {
     readText: async (path: string) => {
       const value = files.get(path);
-      if (value === undefined) throw new Error(`missing ${path}`);
+      if (value === undefined) throw new HostFsError('os.fs.not_found', `missing ${path}`);
       return value;
     },
     writeText: async (path: string, data: string) => { files.set(path, data); },
+    replaceText: async (path: string, data: string) => { files.set(path, data); },
+    createExclusive: async (path: string, data: Uint8Array) => {
+      if (files.has(path)) return false;
+      files.set(path, new TextDecoder().decode(data));
+      return true;
+    },
     stat: async (path: string) => ({ isFile: known.has(path) || files.has(path), isDirectory: false, size: 0 }),
     readdir: async () => [],
     mkdir: async () => undefined,
@@ -220,9 +227,9 @@ describe('Ego Lite runtime', () => {
     try {
       await vi.advanceTimersByTimeAsync(0);
       const target = stream === 'stdout' ? stdout : stderr;
-      target.write('\u001b[31m');
+      target.write('\u001B[31m');
       target.write(administratorDiagnostic.slice(0, 65));
-      target.write(`${administratorDiagnostic.slice(65)}\u001b[0m\n    at file:///C:/Temp/ego-scripts/probe.mjs:1:1`);
+      target.write(`${administratorDiagnostic.slice(65)}\u001B[0m\n    at file:///C:/Temp/ego-scripts/probe.mjs:1:1`);
       await vi.advanceTimersByTimeAsync(4_999);
       expect(kill).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
@@ -373,6 +380,29 @@ describe('Ego Lite runtime', () => {
     const failed = await noisyRuntime.runAgent({ connection, sessionDir, sessionId: 's', agentId: 'a', body: 'x' });
     expect(failed.result.code).toBe(1);
     expect(JSON.parse(files.get(spaceFile) ?? '{}')).toMatchObject({ a: { spaceId: 'old' } });
+  });
+
+  it('preserves a corrupt bindings file before rewriting and refuses to overwrite after an unreadable read', async () => {
+    const { files, fs } = memoryFs([versioned]);
+    const sessionDir = 'C:/session';
+    const spaceFile = join(sessionDir, 'browser-ego-spaces.json');
+    const truncated = '{"other":{"connectionId":"ego-lite","name":"kiki-other","spaceId":"9"';
+    files.set(spaceFile, truncated);
+    const warn = vi.fn();
+    const proc = scripted(() => ({ code: 0, stdout: marked('space-1') }));
+    const runtime = new EgoBrowserRuntime(proc.service, fs, { PATH: '' }, 'linux', { warn });
+    await runtime.runAgent({ connection, sessionDir, sessionId: 's', agentId: 'a', body: 'x' });
+    const backups = [...files.keys()].filter((path) => path.startsWith(`${spaceFile}.corrupt-`));
+    expect(backups).toHaveLength(1);
+    expect(files.get(backups[0]!)).toBe(truncated);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(JSON.parse(files.get(spaceFile) ?? '{}')).toMatchObject({ a: { spaceId: 'space-1' } });
+
+    const before = files.get(spaceFile);
+    const denied = { ...fs, readText: async () => { throw new HostFsError('os.fs.permission_denied', 'denied'); } } as IHostFileSystem;
+    const deniedRuntime = new EgoBrowserRuntime(scripted(() => ({ code: 0, stdout: marked('space-2') })).service, denied, { PATH: '' }, 'linux');
+    await deniedRuntime.runAgent({ connection, sessionDir, sessionId: 's', agentId: 'b', body: 'x' }).catch(() => undefined);
+    expect(files.get(spaceFile)).toBe(before);
   });
 
   it('serializes one space and lets two spaces run together', async () => {
@@ -532,7 +562,7 @@ describe('Ego Lite control', () => {
     const previous = process.env['PATH'];
     process.env['PATH'] = join(root, '0.6.0.16');
     const { fs } = memoryFs([versioned]);
-    const proc = scripted((_command, args) => args.includes('nodejs') ? { code: 1, stderr: `\u001b[31m${administratorDiagnostic}\u001b[0m` } : {});
+    const proc = scripted((_command, args) => args.includes('nodejs') ? { code: 1, stderr: `\u001B[31m${administratorDiagnostic}\u001B[0m` } : {});
     const ix = new TestInstantiationService();
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IHostProcessService, proc.service);

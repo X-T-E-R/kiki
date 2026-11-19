@@ -1,6 +1,7 @@
 import { hostname } from 'node:os';
 
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { ILogService } from '#/_base/log/log';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { sliceUtf16 } from '#/_base/text/utf16';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
@@ -69,7 +70,7 @@ function webbridgeResult(data: Record<string, unknown>): MCPToolResult {
 
 function webbridgeFailureText(error: unknown): string {
   const message = error instanceof Error ? error.message : 'Kimi WebBridge request failed';
-  return sliceUtf16(message.replace(/https?:\/\/\S+/gi, '').replace(/\s+/g, ' ').trim(), 0, 240);
+  return sliceUtf16(message.replaceAll(/https?:\/\/\S+/gi, '').replaceAll(/\s+/g, ' ').trim(), 0, 240);
 }
 
 function assertWebbridgeAvailable(status: Awaited<ReturnType<typeof readWebbridgeStatus>>): asserts status is NonNullable<typeof status> {
@@ -88,7 +89,7 @@ function rejectedCdpError(message: string, endpoint: string): string {
   try { host = new URL(endpoint).host; } catch { host = ''; }
   let detail = endpoint === '' ? message : message.split(endpoint).join('');
   if (host !== '') detail = detail.split(host).join('');
-  detail = detail.replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, '').replace(/\s+/g, ' ').trim();
+  detail = detail.replaceAll(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, '').replaceAll(/\s+/g, ' ').trim();
   if (detail.length < 12 || detail.length > 180) return CDP_HANDSHAKE_REJECTED;
   return `${CDP_HANDSHAKE_REJECTED} ${detail}`;
 }
@@ -155,7 +156,15 @@ export class BrowserControlService implements IBrowserControlService {
     @IHostFileSystem files: IHostFileSystem,
     @IInstantiationService private readonly instantiation?: IInstantiationService,
   ) {
-    this.ego = new EgoBrowserRuntime(processes, files);
+    this.ego = new EgoBrowserRuntime(processes, files, process.env, process.platform, { warn: (message, payload) => this.warn(message, payload) });
+  }
+
+  private warn(message: string, payload: unknown): void {
+    try {
+      this.instantiation?.invokeFunction((accessor) => accessor.get(ILogService)).warn(message, payload);
+    } catch {
+      return;
+    }
   }
 
   private featureEnabled(): boolean {

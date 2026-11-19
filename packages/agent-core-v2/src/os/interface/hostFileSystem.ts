@@ -27,6 +27,8 @@ export interface IHostFileSystem {
     options?: { encoding?: BufferEncoding; errors?: TextDecodeErrors },
   ): Promise<string>;
   writeText(path: string, data: string): Promise<void>;
+  /** Replace a file atomically: write and fsync a sibling temporary file, then rename it over the target. */
+  replaceText?(path: string, data: string): Promise<void>;
   appendText(path: string, data: string): Promise<void>;
   readBytes(path: string, n?: number, offset?: number): Promise<Uint8Array>;
   writeBytes(path: string, data: Uint8Array): Promise<void>;
