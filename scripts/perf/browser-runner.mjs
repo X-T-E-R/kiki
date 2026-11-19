@@ -15,8 +15,11 @@ import {
 import {
   attachBrowserRuntimeGuards,
   runAppRoutesWalk,
+  verifyAddMenuSecondaryScrollable,
   verifyColdContextMeter,
   verifyComposerFooterDrain,
+  verifyRightRailMergedBranchesFolded,
+  verifyScrollUpNoSnapBack,
 } from './browser-invariants.mjs';
 import { EventLoopWindowMonitor, quantiles, roundMs } from './metrics.mjs';
 
@@ -262,6 +265,9 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
 
         const coldVisibility = await inspectTranscriptVisibility(page, 'main');
         const contextMeter = await verifyColdContextMeter(page);
+        const addMenuScroll = await verifyAddMenuSecondaryScrollable(page);
+        const mergedBranchesFolded = await verifyRightRailMergedBranchesFolded(page);
+        const scrollUpNoSnapBack = await verifyScrollUpNoSnapBack(page);
         await guards.assertNoErrorBoundary('context-meter');
 
         phaseApiRequests = 0;
@@ -388,6 +394,9 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
           branchSwitch,
           invariants: {
             contextMeter,
+            addMenuScroll,
+            mergedBranchesFolded,
+            scrollUpNoSnapBack,
             footerDrain,
             coldVisibility,
             scrollVisibility,
@@ -408,6 +417,7 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
       viewport: { width: 1440, height: 900 },
       reducedMotion: 'reduce',
     });
+    let capabilitiesToggle = null;
     try {
       await walkContext.addInitScript(() => {
         try {
@@ -419,7 +429,9 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
       });
       const walkPage = await walkContext.newPage();
       const walkGuards = attachBrowserRuntimeGuards(walkPage, { endpoint, rpcSlowBudgetMs: 1_500 });
-      routesWalk = await runAppRoutesWalk(walkPage, { deepLink, guards: walkGuards });
+      const walkResult = await runAppRoutesWalk(walkPage, { deepLink, guards: walkGuards });
+      routesWalk = walkResult.visited;
+      capabilitiesToggle = walkResult.capabilitiesToggle;
       routesWalkGuards = walkGuards.snapshot();
     } finally {
       await walkContext.close().catch(() => undefined);
@@ -442,6 +454,16 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
     const contextMeterFailures = results.filter(
       (r) => r.invariants?.contextMeter?.applicable && !r.invariants.contextMeter.ok,
     ).length;
+    const addMenuScrollFailures = results.filter(
+      (r) => r.invariants?.addMenuScroll?.applicable && !r.invariants.addMenuScroll.ok,
+    ).length;
+    const mergedBranchesFoldedFailures = results.filter(
+      (r) => r.invariants?.mergedBranchesFolded?.applicable && !r.invariants.mergedBranchesFolded.ok,
+    ).length;
+    const scrollUpSnapBackFailures = results.filter(
+      (r) => r.invariants?.scrollUpNoSnapBack?.applicable && !r.invariants.scrollUpNoSnapBack.ok,
+    ).length;
+    const capabilitiesToggleFailures = capabilitiesToggle?.applicable && !capabilitiesToggle.ok ? 1 : 0;
     const footerDrainFailures = results.filter((r) => r.invariants?.footerDrain && !r.invariants.footerDrain.ok).length;
     const hiddenUserTurns = results.reduce((acc, r) => acc + (r.invariants?.hiddenUserTurnCount ?? 0), 0);
     const transcriptMountFailures = results.reduce((acc, r) => {
@@ -457,6 +479,7 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
       sampleResults: results,
       routesWalk: {
         visited: routesWalk,
+        capabilitiesToggle,
         pageErrors: routesWalkGuards?.pageErrors ?? [],
         reactConsoleErrors: routesWalkGuards?.reactConsoleErrors ?? [],
         failedApiResponses: routesWalkGuards?.failedApiResponses ?? [],
@@ -474,6 +497,10 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
         totalSlowColdApiResponses,
         maxColdRpcMs,
         contextMeterFailures,
+        addMenuScrollFailures,
+        mergedBranchesFoldedFailures,
+        scrollUpSnapBackFailures,
+        capabilitiesToggleFailures,
         footerDrainFailures,
         hiddenUserTurns,
         transcriptMountFailures,

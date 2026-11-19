@@ -312,14 +312,249 @@ const APP_WALK_ROUTES = [
   },
 ];
 
+export async function verifyAddMenuSecondaryScrollable(page) {
+  const trigger = page.locator('[data-add-menu-trigger]').first();
+  const visible = await trigger.isVisible().catch(() => false);
+  if (!visible) {
+    return { applicable: false, ok: true, reason: 'no_add_menu_trigger', view: null, scrollable: null, overflowed: false };
+  }
+
+  await trigger.click();
+  await page.waitForTimeout(150);
+
+  const secondaryOrder = [
+    ['skills', '[data-add-menu-skills]'],
+    ['plugins', '[data-add-menu-plugins]'],
+    ['mcp', '[data-add-menu-mcp]'],
+    ['ssh', '[data-add-menu-ssh]'],
+    ['mode', '[data-add-menu-mode]'],
+  ];
+  let pickedView = null;
+  for (const [name, selector] of secondaryOrder) {
+    const row = page.locator(selector).first();
+    if (await row.isVisible().catch(() => false)) {
+      await row.click();
+      pickedView = name;
+      break;
+    }
+  }
+
+  if (pickedView === null) {
+    await page.keyboard.press('Escape').catch(() => undefined);
+    return { applicable: false, ok: true, reason: 'no_secondary_view_entry', view: null, scrollable: null, overflowed: false };
+  }
+
+  await page.waitForTimeout(200);
+  const check = await page.evaluate(() => {
+    const menuRoot = document.querySelector('[data-add-menu]');
+    const candidates = [
+      ...(menuRoot ? Array.from(menuRoot.querySelectorAll('div')) : []),
+      ...Array.from(document.querySelectorAll('[role="dialog"], [role="menu"]')),
+    ];
+    let bestScroller = null;
+    for (const el of candidates) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 120 || rect.height < 40) continue;
+      const style = getComputedStyle(el);
+      if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        if (!bestScroller || el.scrollHeight > bestScroller.scrollHeight) {
+          bestScroller = el;
+        }
+      }
+    }
+    const panel = bestScroller?.closest('[role="menu"], [role="dialog"], [data-add-menu] > div') ?? bestScroller;
+    const panelRect = panel ? panel.getBoundingClientRect() : null;
+    const clipsViewport = panelRect !== null && (panelRect.bottom > window.innerHeight + 4 || panelRect.top < -4);
+    if (!bestScroller) {
+      return { foundScroller: false, overflowed: false, moved: false, clipsViewport };
+    }
+    const overflowed = bestScroller.scrollHeight > bestScroller.clientHeight + 2;
+    let moved = true;
+    if (overflowed) {
+      const before = bestScroller.scrollTop;
+      bestScroller.scrollTop = Math.min(bestScroller.scrollHeight - bestScroller.clientHeight, 120);
+      moved = bestScroller.scrollTop > before;
+      bestScroller.scrollTop = before;
+    }
+    return { foundScroller: true, overflowed, moved, clipsViewport };
+  });
+
+  await page.keyboard.press('Escape').catch(() => undefined);
+  await page.waitForTimeout(100);
+  const ok = !check.clipsViewport && (!check.overflowed || (check.foundScroller && check.moved));
+  return {
+    applicable: true,
+    ok,
+    reason: ok ? null : check.clipsViewport ? 'panel_clips_viewport' : 'secondary_view_not_scrollable',
+    view: pickedView,
+    scrollable: check.foundScroller && check.moved,
+    overflowed: check.overflowed,
+  };
+}
+
+export async function verifyCapabilitiesToggleNoJumpNoOverlap(page) {
+  const ready = await page.evaluate(() => {
+    const hasPage = document.querySelector('[data-capabilities-page]') !== null;
+    const switches = Array.from(document.querySelectorAll('button[role="switch"]:not([disabled])'));
+    return { hasPage, switchCount: switches.length };
+  });
+  if (!ready.hasPage || ready.switchCount === 0) {
+    return { applicable: false, ok: true, reason: 'no_capability_switches', scrollDeltaPx: 0, overlapCount: 0 };
+  }
+
+  const beforeState = await page.evaluate(() => {
+    const findScroller = () => {
+      const marked = document.querySelector('[data-settings-scroll]');
+      if (marked) return marked;
+      const pageEl = document.querySelector('[data-capabilities-page]');
+      for (let el = pageEl; el; el = el.parentElement) {
+        const s = getComputedStyle(el);
+        if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 20) {
+          return el;
+        }
+      }
+      return document.scrollingElement || document.documentElement;
+    };
+    const scroller = findScroller();
+    const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (maxScroll > 80) {
+      scroller.scrollTop = Math.min(maxScroll, 200);
+    }
+    const switches = Array.from(document.querySelectorAll('button[role="switch"]:not([disabled])'));
+    const targetIdx = switches.findIndex((el) => {
+      const r = el.getBoundingClientRect();
+      return r.top >= 40 && r.bottom <= window.innerHeight - 20;
+    });
+    return {
+      scrollTop: scroller.scrollTop,
+      targetIdx: targetIdx >= 0 ? targetIdx : 0,
+    };
+  });
+
+  await page.waitForTimeout(120);
+  const toggleBtn = page.locator('button[role="switch"]:not([disabled])').nth(beforeState.targetIdx);
+  await toggleBtn.click();
+  await page.waitForTimeout(300);
+
+  const afterState = await page.evaluate(() => {
+    const findScroller = () => {
+      const marked = document.querySelector('[data-settings-scroll]');
+      if (marked) return marked;
+      const pageEl = document.querySelector('[data-capabilities-page]');
+      for (let el = pageEl; el; el = el.parentElement) {
+        const s = getComputedStyle(el);
+        if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 20) {
+          return el;
+        }
+      }
+      return document.scrollingElement || document.documentElement;
+    };
+    const scroller = findScroller();
+    let overlapCount = 0;
+    for (const body of document.querySelectorAll('[data-list-body]')) {
+      const rows = Array.from(body.querySelectorAll('[role="listitem"]'))
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.height > 0 && r.width > 0)
+        .sort((a, b) => a.top - b.top);
+      for (let i = 1; i < rows.length; i += 1) {
+        if (rows[i].top < rows[i - 1].bottom - 1.5) {
+          overlapCount += 1;
+        }
+      }
+    }
+    return { scrollTop: scroller.scrollTop, overlapCount };
+  });
+
+  // Restore original toggle state cleanly.
+  await toggleBtn.click().catch(() => undefined);
+  await page.waitForTimeout(150);
+
+  const scrollDeltaPx = Math.round(Math.abs(afterState.scrollTop - beforeState.scrollTop));
+  const ok = scrollDeltaPx <= 48 && afterState.overlapCount === 0;
+  return {
+    applicable: true,
+    ok,
+    reason: ok ? null : afterState.overlapCount > 0 ? 'list_rows_overlap' : `scroll_jumped_${scrollDeltaPx}px`,
+    scrollDeltaPx,
+    overlapCount: afterState.overlapCount,
+  };
+}
+
+export async function verifyRightRailMergedBranchesFolded(page) {
+  const result = await page.evaluate(() => {
+    const list = document.querySelector('[data-branches-list]');
+    if (!list) return { applicable: false, ok: true, reason: 'no_branches_list', expanded: null, visibleMerged: 0 };
+    const moreToggle = list.querySelector('[data-branches-more]');
+    if (!moreToggle) {
+      return { applicable: false, ok: true, reason: 'no_open_and_merged_mix', expanded: null, visibleMerged: 0 };
+    }
+    const expanded = moreToggle.getAttribute('aria-expanded') === 'true';
+    const visibleMerged = list.querySelectorAll('[data-branch-row][data-branch-state="merged"]').length;
+    const focusedMerged = list.querySelector('[data-branch-row][data-branch-state="merged"][data-branch-focused]') !== null;
+    if (focusedMerged) {
+      return { applicable: false, ok: true, reason: 'focused_branch_is_merged', expanded, visibleMerged };
+    }
+    const ok = !expanded && visibleMerged === 0;
+    return {
+      applicable: true,
+      ok,
+      reason: ok ? null : 'merged_branches_not_folded_by_default',
+      expanded,
+      visibleMerged,
+    };
+  });
+  return result;
+}
+
+export async function verifyScrollUpNoSnapBack(page, { settleMs = 700 } = {}) {
+  const setup = await page.evaluate(() => {
+    const scroller = document.querySelector('[data-transcript-scroll]');
+    if (!scroller) return { applicable: false, reason: 'no_transcript_scroller' };
+    const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+    if (maxScroll < 400) return { applicable: false, reason: 'short_transcript' };
+    const targetTop = Math.floor(maxScroll * 0.25);
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
+    scroller.scrollTop = targetTop;
+    scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return { applicable: true, targetTop, maxScroll, scrollTopImmediately: scroller.scrollTop };
+  });
+  if (!setup.applicable) {
+    return { applicable: false, ok: true, reason: setup.reason, snappedToBottom: false, distanceFromBottomPx: null };
+  }
+
+  await page.waitForTimeout(settleMs);
+  const settled = await page.evaluate(() => {
+    const scroller = document.querySelector('[data-transcript-scroll]');
+    if (!scroller) return null;
+    const distanceFromBottomPx = Math.round(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
+    return { scrollTop: Math.round(scroller.scrollTop), distanceFromBottomPx };
+  });
+
+  if (settled === null) {
+    return { applicable: true, ok: false, reason: 'scroller_unmounted', snappedToBottom: true, distanceFromBottomPx: 0 };
+  }
+  const snappedToBottom = settled.distanceFromBottomPx < 120;
+  return {
+    applicable: true,
+    ok: !snappedToBottom,
+    reason: snappedToBottom ? `snapped_back_distance_${settled.distanceFromBottomPx}px` : null,
+    snappedToBottom,
+    distanceFromBottomPx: settled.distanceFromBottomPx,
+  };
+}
+
 export async function runAppRoutesWalk(page, { deepLink, guards }) {
   const visited = [];
+  let capabilitiesToggle = null;
   for (const spec of APP_WALK_ROUTES) {
     const started = performance.now();
     guards.setPhase(`route:${spec.route}`, { coldOpen: false });
     await page.goto(deepLink(spec.route), { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await page.waitForSelector(spec.readySelector, { timeout: 15_000 }).catch(() => undefined);
     await page.waitForTimeout(400);
+    if (spec.route === '/capabilities') {
+      capabilitiesToggle = await verifyCapabilitiesToggleNoJumpNoOverlap(page);
+    }
     const boundary = await guards.assertNoErrorBoundary(`route:${spec.route}`);
     visited.push({
       route: spec.route,
@@ -327,5 +562,5 @@ export async function runAppRoutesWalk(page, { deepLink, guards }) {
       boundaryHit: boundary?.kind ?? null,
     });
   }
-  return visited;
+  return { visited, capabilitiesToggle };
 }

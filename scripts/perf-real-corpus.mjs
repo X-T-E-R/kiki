@@ -134,6 +134,10 @@ const ENFORCED_SLOS = {
   browserFailedApiResponses: 0,
   browserColdRpcMaxMs: 1_500,
   browserContextMeterFailures: 0,
+  browserAddMenuScrollFailures: 0,
+  browserMergedBranchesFoldedFailures: 0,
+  browserScrollUpSnapBackFailures: 0,
+  browserCapabilitiesToggleFailures: 0,
   browserFooterDrainFailures: 0,
   browserHiddenUserTurns: 0,
   browserLayoutViolations: 0,
@@ -174,6 +178,18 @@ function evaluateSlos(report) {
     }
     if ((b.contextMeterFailures ?? 0) > ENFORCED_SLOS.browserContextMeterFailures) {
       breaches.push(`browser.contextMeterFailures=${b.contextMeterFailures} > 0`);
+    }
+    if ((b.addMenuScrollFailures ?? 0) > ENFORCED_SLOS.browserAddMenuScrollFailures) {
+      breaches.push(`browser.addMenuScrollFailures=${b.addMenuScrollFailures} > 0`);
+    }
+    if ((b.mergedBranchesFoldedFailures ?? 0) > ENFORCED_SLOS.browserMergedBranchesFoldedFailures) {
+      breaches.push(`browser.mergedBranchesFoldedFailures=${b.mergedBranchesFoldedFailures} > 0`);
+    }
+    if ((b.scrollUpSnapBackFailures ?? 0) > ENFORCED_SLOS.browserScrollUpSnapBackFailures) {
+      breaches.push(`browser.scrollUpSnapBackFailures=${b.scrollUpSnapBackFailures} > 0`);
+    }
+    if ((b.capabilitiesToggleFailures ?? 0) > ENFORCED_SLOS.browserCapabilitiesToggleFailures) {
+      breaches.push(`browser.capabilitiesToggleFailures=${b.capabilitiesToggleFailures} > 0`);
     }
     if ((b.footerDrainFailures ?? 0) > ENFORCED_SLOS.browserFooterDrainFailures) {
       breaches.push(`browser.footerDrainFailures=${b.footerDrainFailures} > 0`);
@@ -223,7 +239,7 @@ function formatSummaryText(report) {
       `[perf:browser:agg] guiBuild=${report.browser.guiBuild.buildMs}ms(cached=${report.browser.guiBuild.reusedCache}) coldOpen(p50=${bagg.coldOpenTtfcMs.p50}ms,p95=${bagg.coldOpenTtfcMs.p95}ms) scrollMaxLongTask(p50=${bagg.scrollMaxLongTaskMs.p50}ms,p95=${bagg.scrollMaxLongTaskMs.p95}ms) subSwitch(p50=${bagg.subagentSwitchMs.p50}ms,p95=${bagg.subagentSwitchMs.p95}ms) layoutViolations=${bagg.totalLayoutViolations}`,
     );
     lines.push(
-      `[perf:browser:invariants] pageErr=${bagg.totalPageErrors ?? 0} reactErr=${bagg.totalReactErrors ?? 0} apiFail=${bagg.totalFailedApiResponses ?? 0} coldRpcMax=${bagg.maxColdRpcMs ?? 0}ms ctxMeterFail=${bagg.contextMeterFailures ?? 0} footerFail=${bagg.footerDrainFailures ?? 0} hiddenUserTurns=${bagg.hiddenUserTurns ?? 0} mountFail=${bagg.transcriptMountFailures ?? 0}`,
+      `[perf:browser:invariants] pageErr=${bagg.totalPageErrors ?? 0} reactErr=${bagg.totalReactErrors ?? 0} apiFail=${bagg.totalFailedApiResponses ?? 0} coldRpcMax=${bagg.maxColdRpcMs ?? 0}ms ctxMeterFail=${bagg.contextMeterFailures ?? 0} addMenuFail=${bagg.addMenuScrollFailures ?? 0} branchFoldFail=${bagg.mergedBranchesFoldedFailures ?? 0} scrollSnapFail=${bagg.scrollUpSnapBackFailures ?? 0} capToggleFail=${bagg.capabilitiesToggleFailures ?? 0} footerFail=${bagg.footerDrainFailures ?? 0} hiddenUserTurns=${bagg.hiddenUserTurns ?? 0} mountFail=${bagg.transcriptMountFailures ?? 0}`,
     );
     for (const brow of report.browser.sampleResults) {
       const swTxt = brow.subagentSwitch
