@@ -1572,7 +1572,7 @@ async function sealUnlocked(
     });
   }
   requireCut(sealedCut, size);
-  const codec: ColdSealCodec = options.codec ?? 'deflate-raw';
+  const codec: ColdSealCodec = options.codec ?? 'zstd';
   const reclaim = options.reclaim === true;
   const format: 1 | 2 = codec === 'deflate-raw' && !reclaim && options.level === undefined ? 1 : 2;
   const level = requireCodecLevel(codec, options.level ?? (codec === 'zstd' ? COLD_ZSTD_LEVEL : COLD_DEFLATE_LEVEL));

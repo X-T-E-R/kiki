@@ -836,15 +836,15 @@ describe('agent profile loaders + session catalog', () => {
           });
 
           const profileText = await readFile(profilePath, 'utf8');
-          expect(profileText).toContain('description: "Updated description"\r\n');
-          expect(profileText).toContain('model_alias: "provider/profile"\r\n');
+          expect(profileText).toContain('description: Updated description\r\n');
+          expect(profileText).toContain('model_alias: provider/profile\r\n');
           expect(profileText).not.toContain('model_preference:');
           expect(profileText).toContain('tools: [Read, Bash]\r\nwhenToUse: keep this field\r\n');
           expect(profileText.endsWith('\r\nKeep this prompt body exactly.\r\n')).toBe(true);
 
           const routeText = await readFile(routePath, 'utf8');
-          expect(routeText).toContain('description: "Updated route"\n');
-          expect(routeText).toContain('model_alias: "provider/route"\n');
+          expect(routeText).toContain('description: Updated route\n');
+          expect(routeText).toContain('model_alias: provider/route\n');
           expect(routeText).not.toContain('model_preference:');
           expect(routeText.endsWith('\n\nKEEP ROUTE BODY\n')).toBe(true);
           expect(writes).toEqual([profilePath, routePath]);
@@ -852,6 +852,49 @@ describe('agent profile loaders + session catalog', () => {
           expect((await readdir(join(root, '.routes', 'reviewer'))).some((name) => name.includes('.tmp.'))).toBe(false);
         },
       );
+    });
+  });
+
+  it('preserves YAML comments and tab-fenced frontmatter when patching structured fields', async () => {
+    await withFixture(async (fixture) => {
+      const profilePath = await writeAgent(
+        join(fixture.homeDir, 'agents'),
+        'commented.md',
+        [
+          '---\t',
+          '# 角色说明注释',
+          'name: commented',
+          '# 描述注释',
+          'description: Original # 行尾注释',
+          'model_profiles:',
+          '  - alias: model/a # 保留条目注释',
+          '    when: fast',
+          '---\t',
+          '',
+          'Keep prompt.',
+          '',
+        ].join('\n'),
+      );
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const result = await stack.writer.update({
+          name: 'commented',
+          scope: 'user',
+          description: 'Updated',
+          spawnConstraints: { allowedModels: ['model/a'], disallowedTools: ['Bash'] },
+        });
+        expect(result.profile.description).toBe('Updated');
+        expect(result.profile.spawnConstraints).toEqual({
+          allowedModels: ['model/a'],
+          disallowedTools: ['Bash'],
+        });
+        const text = await readFile(profilePath, 'utf8');
+        expect(text).toContain('# 角色说明注释\n');
+        expect(text).toContain('# 描述注释\n');
+        expect(text).toContain('description: Updated # 行尾注释\n');
+        expect(text).toContain('- alias: model/a # 保留条目注释\n');
+        expect(text).toContain('spawn_constraints:\n  allowed_models:\n    - model/a\n');
+      });
     });
   });
 
@@ -883,8 +926,8 @@ describe('agent profile loaders + session catalog', () => {
         });
         expect(selected.profile).toMatchObject({ recipe: 'installation:example-installed-id', recipeOptions: { research: true, 'citations.v2': false } });
         let text = await readFile(profilePath, 'utf8');
-        expect(text).toContain('recipe: "installation:example-installed-id"');
-        expect(text).toContain('recipe_options: {"research":true,"citations.v2":false}');
+        expect(text).toContain('recipe: installation:example-installed-id');
+        expect(text).toContain('recipe_options:\n  research: true\n  citations.v2: false');
         expect((await stack.writer.update({ name: 'reviewer', scope: 'user', description: 'Edited' })).profile.recipeOptions).toEqual({ research: true, 'citations.v2': false });
         const beforeInvalid = await readFile(profilePath, 'utf8');
         await expect(stack.writer.update({ name: 'reviewer', scope: 'user', recipeOptions: { 'Bad ID': true } })).rejects.toMatchObject({ code: 'validation.failed' });
@@ -899,7 +942,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(text).not.toContain('recipe:');
         const created = await stack.writer.create({ name: 'created-recipe', scope: 'user', description: 'Created', prompt: 'body', recipe: 'example', recipeOptions: { research: false } });
         expect(created.profile).toMatchObject({ recipe: 'example', recipeOptions: { research: false } });
-        expect(await readFile(join(fixture.homeDir, 'agents', 'created-recipe.md'), 'utf8')).toContain('recipe_options: {"research":false}');
+        expect(await readFile(join(fixture.homeDir, 'agents', 'created-recipe.md'), 'utf8')).toContain('recipe_options:\n  research: false');
       });
     });
   });
@@ -935,12 +978,12 @@ describe('agent profile loaders + session catalog', () => {
           executorLaunch: { env: { EXAMPLE_FLAG: '1' } },
         });
         const text = await readFile(profilePath, 'utf8');
-        expect(text).toContain('whenToUse: "Use for focused reviews"');
-        expect(text).toContain('thinking_effort: "high"');
-        expect(text).toContain('service_tier: "priority"');
-        expect(text).toContain('tools: ["Read","Bash"]');
-        expect(text).toContain('disallowedTools: ["Write"]');
-        expect(text).toContain('executor_instance: "auto"');
+        expect(text).toContain('whenToUse: Use for focused reviews');
+        expect(text).toContain('thinking_effort: high');
+        expect(text).toContain('service_tier: priority');
+        expect(text).toContain('tools:\n  - Read\n  - Bash');
+        expect(text).toContain('disallowedTools:\n  - Write');
+        expect(text).toContain('executor_instance: auto');
 
         await expect(stack.writer.update({
           name: 'reviewer',
@@ -1145,7 +1188,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(result.profile.modelProfiles?.[1]?.contextStrategy).toBe('summarize');
         expect(result.profile.modelProfiles?.[1]?.requestParams).toEqual({ temperature: 0.2 });
         const text = await readFile(profilePath, 'utf8');
-        expect(text).toContain('"source":"./_private/worker.md"');
+        expect(text).toContain('source: ./_private/worker.md');
         expect(text).toContain('main: true');
         expect(text.endsWith('\nLead body.\n')).toBe(true);
 
@@ -1358,7 +1401,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(copy.profile.fileDefinition?.prompt).toBe('Inspect changes carefully.');
         expect(copy.profile.description).toBe('Duplicated reviewer');
         expect(await readFile(join(fixture.workDir, '.kiki', 'agents', 'new-reviewer-copy.md'), 'utf8'))
-          .toContain('tools: ["Read"]');
+          .toContain('tools:\n  - Read');
         const example = await stack.writer.create({
           name: 'example-reviewer', scope: 'project', template: 'reviewer',
         });
@@ -1485,8 +1528,8 @@ describe('agent profile loaders + session catalog', () => {
           expect(project.profile.description).toBe('project updated');
           expect(extra.sourceId).toBe('extra');
           expect(extra.profile.description).toBe('extra updated');
-          expect(await readFile(projectPath, 'utf8')).toContain('description: "project updated"');
-          expect(await readFile(extraPath, 'utf8')).toContain('description: "extra updated"');
+          expect(await readFile(projectPath, 'utf8')).toContain('description: project updated');
+          expect(await readFile(extraPath, 'utf8')).toContain('description: extra updated');
         },
       );
     });

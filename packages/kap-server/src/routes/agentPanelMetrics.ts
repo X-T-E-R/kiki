@@ -1,3 +1,5 @@
+import { LRUCache } from 'lru-cache';
+import pLimit from 'p-limit';
 import {
   IAgentStateService,
   IAgentProfileService,
@@ -52,7 +54,6 @@ const EMPTY_PERSISTED_CONTEXT: PersistedAgentContext = {
 };
 
 interface PersistedMetricsCacheEntry {
-  readonly expiresAt: number;
   readonly liveRecords?: number;
   readonly usage: PersistedUsage;
   readonly context: PersistedAgentContext;
@@ -75,7 +76,7 @@ interface PersistedMetricsFlight {
 }
 
 interface PersistedMetricsState {
-  readonly cache: Map<string, PersistedMetricsCacheEntry>;
+  readonly cache: LRUCache<string, PersistedMetricsCacheEntry>;
   readonly flights: Map<string, PersistedMetricsFlight>;
   readonly activeFlights: Set<PersistedMetricsFlight>;
   readonly reads: Set<Set<string>>;
@@ -114,17 +115,8 @@ async function mapBounded<T, R>(
   worker: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   if (items.length === 0) return [];
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-  const laneCount = Math.min(Math.max(1, limit), items.length);
-  await Promise.all(Array.from({ length: laneCount }, async () => {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      results[index] = await worker(items[index]!, index);
-    }
-  }));
-  return results;
+  const limiter = pLimit(Math.max(1, limit));
+  return limiter.map(items, (item, index) => worker(item, index));
 }
 
 export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelPricingService, isPrivate = false): AgentPanelMetrics {
@@ -236,13 +228,10 @@ export async function readPersistedAgentPanelMetrics(
   })));
   try {
     const missing: string[] = [];
-    const now = Date.now();
     for (const agentId of wanted) {
       const sourceKey = sourceFor(agentId);
       const cached = state.cache.get(sourceKey);
-      if (cached !== undefined && cached.expiresAt > now && cached.liveRecords === options.mutableUsageRecords?.[agentId]) {
-        state.cache.delete(sourceKey);
-        state.cache.set(sourceKey, cached);
+      if (cached !== undefined && cached.liveRecords === options.mutableUsageRecords?.[agentId]) {
         result.set(agentId, toPersistedMetrics(cached.usage, pricing));
         contexts.set(agentId, cached.context);
       } else {
@@ -342,12 +331,11 @@ export async function readPersistedAgentPanelMetrics(
           const ttl = mutable.has(id)
             ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
             : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
-          cachePersistedMetrics(state, sourceKey, {
-            expiresAt: Date.now() + ttl,
+          state.cache.set(sourceKey, {
             liveRecords: options.mutableUsageRecords?.[id],
             usage,
             context: runtime.get(id)?.context ?? EMPTY_PERSISTED_CONTEXT,
-          });
+          }, { ttl });
         }
       }
       for (let index = missing.length - 1; index >= 0; index--) if (result.has(missing[index]!)) missing.splice(index, 1);
@@ -393,12 +381,11 @@ export async function readPersistedAgentPanelMetrics(
           const ttl = mutable.has(agentId)
             ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
             : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
-          cachePersistedMetrics(state, sourceFor(agentId), {
-            expiresAt: Date.now() + ttl,
+          state.cache.set(sourceFor(agentId), {
             liveRecords: options.mutableUsageRecords?.[agentId],
             usage,
             context: runtime.get(agentId)?.context ?? EMPTY_PERSISTED_CONTEXT,
-          });
+          }, { ttl });
         }
         return { usages, budgetCapped: Object.values(usages).some((usage) => !usage.complete) };
       }).finally(() => {
@@ -442,27 +429,13 @@ function agentMetricsCacheKey(workspaceId: string, sessionId: string, agentId: s
   return `${workspaceId}\0${sessionId}\0${agentId}`;
 }
 
-function cachePersistedMetrics(
-  state: PersistedMetricsState,
-  key: string,
-  entry: PersistedMetricsCacheEntry,
-): void {
-  if (state.cache.has(key)) {
-    state.cache.delete(key);
-  } else if (state.cache.size >= PERSISTED_METRICS_CACHE_MAX_ENTRIES) {
-    const oldest = state.cache.keys().next().value;
-    if (oldest !== undefined) state.cache.delete(oldest);
-  }
-  state.cache.set(key, entry);
-}
-
 function invalidatePersistedMetrics(state: PersistedMetricsState, sourceKey?: string, sessionKey?: string): void {
   if (sourceKey !== undefined) {
     state.cache.delete(sourceKey);
     for (const read of state.reads) read.delete(sourceKey);
   } else if (sessionKey !== undefined) {
     const prefix = `${sessionKey}\0`;
-    for (const key of state.cache.keys()) if (key.startsWith(prefix)) state.cache.delete(key);
+    for (const key of [...state.cache.keys()]) if (key.startsWith(prefix)) state.cache.delete(key);
     for (const read of state.reads) for (const key of read) if (key.startsWith(prefix)) read.delete(key);
   } else {
     state.cache.clear();
@@ -473,7 +446,18 @@ function invalidatePersistedMetrics(state: PersistedMetricsState, sourceKey?: st
 function persistedMetricsState(core: Scope): PersistedMetricsState {
   let state = persistedMetricsStates.get(core);
   if (state === undefined) {
-    state = { cache: new Map(), flights: new Map(), activeFlights: new Set(), reads: new Set(), liveSeen: new Map() };
+    state = {
+      cache: new LRUCache<string, PersistedMetricsCacheEntry>({
+        max: PERSISTED_METRICS_CACHE_MAX_ENTRIES,
+        ttl: PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS,
+        ttlResolution: 0,
+        perf: { now: () => Date.now() + 1 },
+      }),
+      flights: new Map(),
+      activeFlights: new Set(),
+      reads: new Set(),
+      liveSeen: new Map(),
+    };
     persistedMetricsStates.set(core, state);
     const captured = state;
     const { sources } = usageRuntime(core);

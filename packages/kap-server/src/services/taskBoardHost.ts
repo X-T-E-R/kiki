@@ -1,5 +1,6 @@
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
+import pLimit from 'p-limit';
 import { z } from 'zod';
 import * as ownWork from 'own-work/tasks';
 import { IBootstrapService, IConfigService, IWorkspaceService, IAtomicDocumentStore, type Scope } from '@kiki/agent-core-v2';
@@ -25,17 +26,9 @@ function failed<T>(error: unknown): BoardResult<T> {
   return { ok: false, error: { code, message: error instanceof Error ? error.message : 'The task board is unavailable.' } };
 }
 async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = [];
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await fn(items[index]!);
-    }
-  });
-  await Promise.all(workers);
-  return results;
+  if (items.length === 0) return [];
+  const limiter = pLimit(Math.max(1, limit));
+  return limiter.map(items, (item) => fn(item));
 }
 async function canonical(root: string): Promise<string> {
   try { return normalize(await realpath(root)); }

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { load } from 'js-yaml';
+import { parse as parseYaml } from 'yaml';
 import { memoryQueryCursor, memoryQueryPage, memoryQueryRequest, rankMemoryEntries } from './memoryQuery';
 import { createDecorator } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
@@ -177,7 +177,7 @@ function metadataText(value: unknown): string {
 export function decodeMemoryEntry(raw: string): MemoryEntry {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(raw);
   if (match === null) throw new Error('Invalid memory frontmatter');
-  const meta = load(match[1]!) as Record<string, unknown>;
+  const meta = parseYaml(match[1]!, { customTags: ['timestamp'] }) as Record<string, unknown>;
   if (meta === null || typeof meta !== 'object' || typeof meta['id'] !== 'string' || !/^m_[a-zA-Z0-9_]+$/.test(meta['id']) || !TYPES.includes(meta['type'] as MemoryType) || typeof meta['title'] !== 'string' || !['active', 'pending', 'superseded', 'archived'].includes(meta['status'] as string)) throw new Error('Invalid memory metadata');
   const body = match[2]!.replace(/\r?\n$/, '');
   const source = meta['source'] as MemorySource;

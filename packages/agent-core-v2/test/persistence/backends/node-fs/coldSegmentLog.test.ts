@@ -42,6 +42,7 @@ import {
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import {
   COLD_SEGMENT_BYTES,
+  COLD_ZSTD_SEGMENT_BYTES,
   openPinnedLogicalRead,
   readColdManifestSummary,
   readLogicalBytes,
@@ -101,6 +102,8 @@ class RecordingStorage extends InMemoryStorageService {
   }
 }
 
+const isSegmentKey = (key: string): boolean => key.endsWith('.zst') || key.endsWith('.deflate');
+
 class FailOnSecondSegment extends InMemoryStorageService {
   private segmentWrites = 0;
   readonly writtenSegments: string[] = [];
@@ -111,9 +114,9 @@ class FailOnSecondSegment extends InMemoryStorageService {
     data: Uint8Array,
     options?: { atomic?: boolean; signal?: AbortSignal },
   ): Promise<void> {
-    if (key.includes('.segments/') && key.endsWith('.deflate') && ++this.segmentWrites === 2) throw new Error('disk full');
+    if (key.includes('.segments/') && isSegmentKey(key) && ++this.segmentWrites === 2) throw new Error('disk full');
     await super.write(scope, key, data, options);
-    if (key.endsWith('.deflate')) this.writtenSegments.push(key);
+    if (isSegmentKey(key)) this.writtenSegments.push(key);
   }
 }
 
@@ -211,9 +214,9 @@ describe('cold segment journal', () => {
     const sealed = await log.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
 
     expect(sealed).toMatchObject({
-      format: 1,
-      codec: 'deflate-raw',
-      level: 6,
+      format: 2,
+      codec: 'zstd',
+      level: 3,
       segmentBytes: SEGMENT_BYTES,
       sealedCut: journal.sealedCut,
       logicalSize: journal.bytes.byteLength,
@@ -229,15 +232,15 @@ describe('cold segment journal', () => {
     storage.opened.length = 0;
     const page = await concatBytes(readLogicalBytes(storage, SCOPE, KEY, { start: SEGMENT_BYTES, end: SEGMENT_BYTES + 40 }));
     expect(page).toEqual(journal.bytes.subarray(SEGMENT_BYTES, SEGMENT_BYTES + 41));
-    expect(storage.opened.filter((key) => key.endsWith('.deflate'))).toEqual([
-      expect.stringMatching(/\.segments\/[0-9a-f-]{36}\/000001\.deflate$/),
+    expect(storage.opened.filter((key) => key.endsWith('.zst'))).toEqual([
+      expect.stringMatching(/\.segments\/[0-9a-f-]{36}\/000001\.zst$/),
     ]);
     expect(storage.opened).not.toContain(KEY);
 
     storage.opened.length = 0;
     const tail = await concatBytes(readLogicalBytes(storage, SCOPE, KEY, { start: journal.sealedCut, end: journal.bytes.byteLength - 1 }));
     expect(tail).toEqual(journal.bytes.subarray(journal.sealedCut));
-    expect(storage.opened.filter((key) => key.endsWith('.deflate'))).toEqual([]);
+    expect(storage.opened.filter((key) => key.endsWith('.zst'))).toEqual([]);
     expect(storage.opened).toContain(KEY);
 
     const windowStart = Math.max(0, journal.sealedCut - 4096);
@@ -252,7 +255,33 @@ describe('cold segment journal', () => {
     expect(await storage.read(OTHER, coldManifestKey(KEY))).toBeUndefined();
   });
 
-  it('keeps an exact generation string and uses the 8MiB default for an empty cold prefix', async () => {
+  it('reads and unseals legacy format-1 deflate-raw segments seamlessly after zstd becomes default', async () => {
+    const storage = new RecordingStorage();
+    const log = createTestAppendLogStore(storage);
+    disposables.add(log);
+    const journal = buildJournal();
+    await storage.write(SCOPE, KEY, journal.bytes);
+
+    const legacySeal = await log.sealCold(SCOPE, KEY, journal.sealedCut, {
+      codec: 'deflate-raw',
+      segmentBytes: SEGMENT_BYTES,
+    });
+    expect(legacySeal).toMatchObject({ format: 1, codec: 'deflate-raw', level: 6, segmentBytes: SEGMENT_BYTES });
+    expect(await readColdManifestSummary(storage, SCOPE, KEY)).toMatchObject({ format: 1, codec: 'deflate-raw' });
+
+    storage.opened.length = 0;
+    const page = await concatBytes(readLogicalBytes(storage, SCOPE, KEY, { start: SEGMENT_BYTES, end: SEGMENT_BYTES + 40 }));
+    expect(page).toEqual(journal.bytes.subarray(SEGMENT_BYTES, SEGMENT_BYTES + 41));
+    expect(storage.opened.filter((key) => key.endsWith('.deflate'))).toHaveLength(1);
+    expect(await concatBytes(readLogicalBytes(storage, SCOPE, KEY))).toEqual(journal.bytes);
+
+    const unsealed = await unsealColdSegments(storage, SCOPE, KEY, { forceRestoreOriginal: true });
+    expect(unsealed.hadManifest).toBe(true);
+    expect(unsealed.verifiedSegments).toBe(legacySeal.segmentCount);
+    expect(Buffer.from((await storage.read(SCOPE, KEY))!)).toEqual(journal.bytes);
+  });
+
+  it('keeps an exact generation string and uses the 4MiB zstd default for an empty cold prefix', async () => {
     const storage = new InMemoryStorageService();
     const log = createTestAppendLogStore(storage);
     disposables.add(log);
@@ -262,7 +291,9 @@ describe('cold segment journal', () => {
 
     const sealed = await log.sealCold(SCOPE, KEY, 0);
 
-    expect(sealed.segmentBytes).toBe(COLD_SEGMENT_BYTES);
+    expect(sealed.codec).toBe('zstd');
+    expect(sealed.segmentBytes).toBe(COLD_ZSTD_SEGMENT_BYTES);
+    expect(sealed.segmentBytes).toBeLessThan(COLD_SEGMENT_BYTES);
     expect(sealed.segmentCount).toBe(0);
     expect(sealed.generation).toBe('gen-1\n');
     expect(await log.generation(SCOPE, KEY)).toBe('gen-1\n');
@@ -401,7 +432,7 @@ describe('cold segment journal', () => {
     disposables.add(log);
     const journal = buildJournal();
     await storage.write(SCOPE, KEY, journal.bytes);
-    await log.sealCold(SCOPE, KEY, journal.sealedCut, { segmentBytes: SEGMENT_BYTES });
+    await log.sealCold(SCOPE, KEY, journal.sealedCut, { codec: 'deflate-raw', segmentBytes: SEGMENT_BYTES });
     const manifest = JSON.parse(Buffer.from((await storage.read(SCOPE, coldManifestKey(KEY)))!).toString('utf8')) as {
       segments: Array<{ key: string }>;
     };
@@ -427,7 +458,7 @@ describe('cold segment journal', () => {
       code: StorageErrors.codes.STORAGE_CORRUPTED,
       details: { reason: 'segment' },
     });
-    expect(bulky.opened.filter((key) => key.endsWith('.deflate'))).toEqual([]);
+    expect(bulky.opened.filter(isSegmentKey)).toEqual([]);
     expect(Buffer.from((await bulky.read(SCOPE, KEY))!)).toEqual(journal.bytes);
   });
 
@@ -441,7 +472,7 @@ describe('cold segment journal', () => {
         data: Uint8Array,
         options?: { atomic?: boolean; signal?: AbortSignal },
       ): Promise<void> {
-        if (armCancel && key.endsWith('.deflate')) throw new DOMException('The operation was aborted', 'AbortError');
+        if (armCancel && isSegmentKey(key)) throw new DOMException('The operation was aborted', 'AbortError');
         await super.write(scope, key, data, options);
       }
     })();
@@ -474,7 +505,7 @@ describe('cold segment journal', () => {
         data: Uint8Array,
         options?: { atomic?: boolean; signal?: AbortSignal },
       ): Promise<void> {
-        if (heldNow && key.endsWith('.deflate')) deflatesWhileHeld += 1;
+        if (heldNow && isSegmentKey(key)) deflatesWhileHeld += 1;
         if (key.endsWith('.segments.json')) {
           manifestWrites += 1;
           if (manifestWrites === 2) {
@@ -517,7 +548,7 @@ describe('cold segment journal', () => {
     let blocked = false;
     const storage = new (class extends InMemoryStorageService {
       override async read(scope: string, key: string): Promise<Uint8Array | undefined> {
-        if (!blocked && key.endsWith('.deflate')) {
+        if (!blocked && isSegmentKey(key)) {
           blocked = true;
           markRead();
           await gate;
@@ -562,7 +593,7 @@ describe('cold segment journal', () => {
         data: Uint8Array,
         options?: { atomic?: boolean; signal?: AbortSignal },
       ): Promise<void> {
-        if (heldNow && key.endsWith('.deflate')) deflatesWhileHeld += 1;
+        if (heldNow && isSegmentKey(key)) deflatesWhileHeld += 1;
         if (arm && key === KEY) {
           arm = false;
           heldNow = true;
@@ -619,7 +650,7 @@ describe('cold segment journal', () => {
         options?: { atomic?: boolean; signal?: AbortSignal },
       ): Promise<void> {
         await super.write(scope, key, data, options);
-        if (key.endsWith('.deflate')) fresh.push(key);
+        if (isSegmentKey(key)) fresh.push(key);
       }
     })();
     const swappingLog = createTestAppendLogStore(swapping);
@@ -716,7 +747,7 @@ describe('cold segment journal', () => {
     let blocked = false;
     const narrow = new (class extends FileStorageService {
       override async read(scope: string, key: string, options: StorageReadOptions = {}): Promise<Uint8Array | undefined> {
-        if (!blocked && key.endsWith('.deflate')) {
+        if (!blocked && isSegmentKey(key)) {
           blocked = true;
           markRead();
           await gate;
