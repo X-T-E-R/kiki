@@ -165,7 +165,7 @@ export function InspectorComms({ sessionId }: { readonly sessionId: string }) {
             {showAll ? t('comms.showFewer') : t('comms.showAllPeers', { count: groups.length })}
           </button>
         ) : null}
-        {query.hasNextPage ? <LoadOlder busy={query.isFetchingNextPage} onLoad={() => { void query.fetchNextPage(); }} /> : null}
+        {query.hasNextPage ? <LoadOlder busy={query.isFetchingNextPage} error={query.isFetchNextPageError} onLoad={() => { void query.fetchNextPage(); }} /> : null}
       </div>
       {openPeer !== null ? (
         <ThreadConversationDialog

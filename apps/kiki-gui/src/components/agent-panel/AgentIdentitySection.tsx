@@ -1,5 +1,6 @@
 import { memo, useId, useState, type ReactNode } from 'react';
 import type { AgentCapabilityTarget } from '@kiki/protocol';
+import { formatThinkingEffort } from '../../lib/thinkingEffort';
 import { useI18n } from '../../i18n';
 import { resolveProfileIcon } from '../../lib/profileIcon';
 import { DisclosureChevron, Icon } from '../icons';
@@ -297,7 +298,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   const source = capabilitySourceLabel(t, { source: identity.source, sourceFile: identity.sourceFile });
   const modelLine = [
     identity.model,
-    effortValue ? t('subagent.effort', { effort: String(effortValue) }) : undefined,
+    effortValue ? formatThinkingEffort(String(effortValue), t) : undefined,
   ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
   const profileCard = (
     <div data-profile-card data-expanded={expanded ? '' : undefined} className="rounded-xl bg-paper/80 ring-1 ring-hairline">

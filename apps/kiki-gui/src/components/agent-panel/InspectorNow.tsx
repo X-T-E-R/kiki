@@ -130,13 +130,14 @@ export const InspectorNow = memo(function InspectorNow({
   const phrase = tool === undefined ? undefined : stepPhrase(tool, summary);
   // A bare verb ("Agent") says less than the state word; it needs its object.
   const step = phrase?.object === undefined ? undefined : phrase;
+  const knownSubStatus = subStatus !== undefined && subStatus !== 'unknown' ? subStatus : undefined;
   const word = pendingCount > 0
     ? t('inspector.nowWaiting')
-    : subStatus !== undefined && !running
-      ? t(`subagent.status.${subStatus}` as I18nKey)
+    : knownSubStatus !== undefined && !running
+      ? t(`subagent.status.${knownSubStatus}` as I18nKey)
       : running ? t('inspector.nowWorking') : t('inspector.nowIdle');
-  const failed = subStatus === 'failed';
-  const result = subStatus === 'completed' ? subagent?.result : undefined;
+  const failed = knownSubStatus === 'failed';
+  const result = knownSubStatus === 'completed' ? subagent?.result : undefined;
   // The excerpt: a failure (one plain sentence, never a payload), a result,
   // the brief of a subagent that has not spoken yet, or the last thing a
   // running agent said. One of them, never a stack of three.
@@ -147,7 +148,8 @@ export const InspectorNow = memo(function InspectorNow({
       : running && said !== undefined
         ? said
         : subagent?.brief;
-  const quiet = state === 'idle' && subStatus === undefined;
+  const quiet = state === 'idle' && knownSubStatus === undefined;
+  const hasMark = life !== 'idle';
   return (
     <section data-inspector-now={state} className="space-y-3">
       {listPending && pending.length > 0 ? (
@@ -178,9 +180,11 @@ export const InspectorNow = memo(function InspectorNow({
 
       <div>
         <div className="flex min-w-0 items-start">
-          <span className={RAIL_MARK}>
-            <LifeMark markId="inspector-now" life={life} tone={life === 'working' ? 'bg-success' : life === 'failed' ? 'bg-ink-faint' : undefined} />
-          </span>
+          {hasMark ? (
+            <span className={RAIL_MARK}>
+              <LifeMark markId="inspector-now" life={life} tone={life === 'working' ? 'bg-success' : life === 'failed' ? 'bg-ink-faint' : undefined} />
+            </span>
+          ) : null}
           <p
             data-agent-status={subStatus}
             data-needs-input={subagent !== undefined && subagent.pendingCount > 0 ? '' : undefined}
@@ -205,7 +209,7 @@ export const InspectorNow = memo(function InspectorNow({
         {excerpt !== undefined && excerpt !== '' ? (
           <p
             data-inspector-said
-            className="mt-1 ml-3 line-clamp-2 text-[13px] leading-[19px] text-ink-soft"
+            className={`mt-1 ${hasMark ? 'ml-3 ' : ''}line-clamp-2 text-[13px] leading-[19px] text-ink-soft`}
             // A result or a live excerpt stands in for the brief; the brief
             // stays one hover away.
             title={subagent?.brief !== undefined && subagent.brief !== excerpt ? `${excerpt}\n\n${subagent.brief}` : excerpt}

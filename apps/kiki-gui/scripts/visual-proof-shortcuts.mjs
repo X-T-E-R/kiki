@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const root = resolve(fileURLToPath(import.meta.url), '..', '..');
 const output = join(root, '.tmp', 'shortcuts-proof', String(Date.now()));
@@ -75,13 +76,7 @@ await page.addInitScript(() => {
   localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light' }));
 });
 
-async function settle() {
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-    await Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {})));
-  });
-  await page.waitForTimeout(200);
-}
+const settle = () => settlePage(page, { parkPointer: false, waitMs: 200 });
 
 async function shot(name) {
   await settle();

@@ -351,6 +351,8 @@ interface PluginPromptInsertSubscription {
 }
 
 const promptInsertListeners = new Map<string, Set<PluginPromptInsertSubscription>>();
+const pendingPromptInserts = new Map<string, { readonly request: PluginPromptInsertRequest; readonly createdAt: number }>();
+const PENDING_PROMPT_INSERT_TTL_MS = 15_000;
 
 function normalizeComposerTarget(targetKey: string | undefined): string {
   return targetKey ?? DRAFT_COMPOSER_TARGET;
@@ -365,6 +367,13 @@ export function subscribePluginPromptInserts(
   const listeners = promptInsertListeners.get(target) ?? new Set<PluginPromptInsertSubscription>();
   listeners.add(subscription);
   promptInsertListeners.set(target, listeners);
+  const pending = pendingPromptInserts.get(target);
+  if (pending !== undefined) {
+    pendingPromptInserts.delete(target);
+    if (Date.now() - pending.createdAt <= PENDING_PROMPT_INSERT_TTL_MS) {
+      listener(pending.request);
+    }
+  }
   return () => {
     listeners.delete(subscription);
     if (listeners.size === 0) promptInsertListeners.delete(target);
@@ -374,14 +383,22 @@ export function subscribePluginPromptInserts(
 export function requestPluginPromptInsert(
   targetKey: string | undefined,
   request: PluginPromptInsertRequest,
+  options?: { readonly queueIfUnhandled?: boolean },
 ): boolean {
-  const listeners = promptInsertListeners.get(normalizeComposerTarget(targetKey));
-  if (listeners === undefined) return false;
-  let handled = false;
-  for (const { listener } of [...listeners]) {
-    if (listener(request)) handled = true;
+  const target = normalizeComposerTarget(targetKey);
+  const listeners = promptInsertListeners.get(target);
+  if (listeners !== undefined) {
+    let handled = false;
+    for (const { listener } of [...listeners]) {
+      if (listener(request)) handled = true;
+    }
+    if (handled) return true;
   }
-  return handled;
+  if (options?.queueIfUnhandled) {
+    pendingPromptInserts.set(target, { request, createdAt: Date.now() });
+    return true;
+  }
+  return false;
 }
 
 export function interpolatePluginPromptText(template: string, args?: string): string {

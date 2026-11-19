@@ -27,6 +27,7 @@ import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import { collectFrames } from './marketing-collect.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = join(ROOT, '..', '..');
@@ -163,11 +164,7 @@ function deepLink(path, fixtureUrl = FIXTURE_URL) {
 
 /** Park the pointer away from every hover target and settle paint. */
 async function settle() {
-  await page.mouse.move(4, 4);
-  await page.evaluate(() => document.fonts.ready);
-  await page.waitForTimeout(450);
-  await page.mouse.move(1, 1);
-  await page.waitForTimeout(250);
+  await settlePage(page, { waitMs: 450, afterParkMs: 250 });
 }
 
 async function shot(name) {

@@ -52,7 +52,7 @@ import { isImeKeyEvent } from '../lib/shortcuts';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE, permissionModeDef } from '../lib/permissionModes';
 import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { Toggle } from './controls';
-import { Icon } from './icons';
+import { Icon, Spinner, type IconName } from './icons';
 import { TIMING_HINT_KEY, TIMING_SHORT_KEY } from './QueueStrip';
 
 /**
@@ -467,7 +467,25 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
  * The panel floats above the whole composer card (useComposerPanelAnchor),
  * never over the card's own chips or header.
  */
-export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention' | 'timing' | 'plugins' | 'mcp' | 'optional';
+export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention' | 'timing' | 'plugins' | 'mcp' | 'optional' | 'permission';
+
+export interface AddMenuExtensionItem {
+  readonly key: string;
+  readonly pluginId: string;
+  readonly slotId: string;
+  readonly label: string;
+  readonly tooltip?: string;
+  readonly badgeText?: string;
+  readonly iconName: IconName;
+  readonly actionKind: string;
+  readonly onTrigger: () => void;
+}
+
+export interface AddMenuExtensions {
+  readonly items: readonly AddMenuExtensionItem[];
+  readonly busyKey?: string | null;
+  readonly disabled?: boolean;
+}
 
 /** One SSH host as the ＋ search lists it (the SSH view owns the full panel). */
 export interface AddMenuHost {
@@ -944,6 +962,8 @@ export function AddMenu({
   mcp,
   optional,
   files,
+  extensions,
+  permission,
 }: {
   readonly view: AddMenuView;
   readonly onViewChange: (view: AddMenuView) => void;
@@ -980,8 +1000,15 @@ export function AddMenu({
   readonly optional?: { readonly sessionId?: string };
   /** Mention-a-file row + view (the `@` picker's search); absent hides it. */
   readonly files?: AddMenuFiles;
+  /** Plugin workbench & extension slot actions (all 4 action kinds). */
+  readonly extensions?: AddMenuExtensions;
+  /** Mobile-accessible permission mode picker inside the `+` menu. */
+  readonly permission?: {
+    readonly value: PermissionMode;
+    readonly onChange: (mode: PermissionMode) => void;
+  };
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const open = view !== 'closed';
@@ -1013,10 +1040,12 @@ export function AddMenu({
   // one pointless extra click: ＋ attaches directly.
   const attachOnly =
     runMode === undefined && timing === undefined && onRebuild === undefined && ssh === undefined && skills === undefined
-    && plugins === undefined && mcp === undefined && optional === undefined && files === undefined;
+    && plugins === undefined && mcp === undefined && optional === undefined && files === undefined
+    && (extensions === undefined || extensions.items.length === 0) && permission === undefined;
   // A root search is only worth the space when something is searchable: skills,
-  // files, plugins, MCP servers and SSH hosts each answer it.
+  // files, plugins, MCP servers, extensions, and SSH hosts each answer it.
   const searchable = skills !== undefined || plugins !== undefined || mcp !== undefined || files !== undefined
+    || (extensions !== undefined && extensions.items.length > 0)
     || (ssh?.hosts !== undefined && ssh.hosts.length > 0);
 
   const trimmed = query.trim();
@@ -1036,6 +1065,7 @@ export function AddMenu({
     : view === 'mcp' ? mcp !== undefined
     : view === 'optional' ? optional !== undefined
     : view === 'mention' ? files !== undefined
+    : view === 'permission' ? permission !== undefined
     : true;
   const resolvedView: AddMenuView = sourceAvailable ? view : 'root';
   const fileQuery = useDebounced(trimmed, FILE_DEBOUNCE_MS);
@@ -1069,6 +1099,14 @@ export function AddMenu({
     : trimmed === ''
       ? mcp.items
       : mcp.items.filter((row) => mcpRowMatches(row, needle));
+  const extensionMatches = extensions === undefined
+    ? []
+    : trimmed === ''
+      ? extensions.items
+      : extensions.items.filter((item) =>
+        item.label.toLowerCase().includes(needle)
+        || (item.tooltip ?? '').toLowerCase().includes(needle)
+        || item.pluginId.toLowerCase().includes(needle));
 
   const onShowSkills = skills?.onShow;
   const onShowPlugins = plugins?.onShow;
@@ -1321,7 +1359,36 @@ export function AddMenu({
           ))}
         </>
       ) : null}
-      {skillMatches.length === 0 && hostMatches.length === 0 && pluginMatches.length === 0 && mcpMatches.length === 0
+      {extensionMatches.length > 0 && extensions !== undefined ? (
+        <>
+          <GroupLabel>{locale === 'zh' ? '工作台与扩展' : 'Extensions'}</GroupLabel>
+          {extensionMatches.slice(0, SEARCH_ROW_LIMIT).map((item) => {
+            const isBusy = extensions.busyKey === item.key;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                role="menuitem"
+                data-menu-row
+                data-add-result
+                data-add-extension={item.key}
+                data-plugin-composer-slot={item.key}
+                disabled={extensions.disabled || isBusy}
+                title={item.tooltip ?? item.label}
+                onClick={() => { close(); item.onTrigger(); }}
+                className={MENU_ROW_CLASS}
+              >
+                {isBusy ? <Spinner label={item.label} /> : <Icon name={item.iconName} size={14} className="shrink-0 text-ink-soft" />}
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.badgeText !== undefined && item.badgeText !== '' ? (
+                  <span className="shrink-0 font-mono text-[11px] text-ink-faint tabular-nums">{item.badgeText}</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </>
+      ) : null}
+      {skillMatches.length === 0 && hostMatches.length === 0 && pluginMatches.length === 0 && mcpMatches.length === 0 && extensionMatches.length === 0
         && (files === undefined || (fileCurrent && fileItems.length === 0 && fileFeed.exhausted && !fileFeed.failed && !fileWaiting))
         ? note(t('composer.addMenu.noMatch', { query: trimmed }))
         : null}
@@ -1363,9 +1430,42 @@ export function AddMenu({
               ssh.count > 0 ? <span className="text-[12px] text-ink-faint tabular-nums">{ssh.count}</span> : undefined, { 'data-add-menu-ssh': '' })
           : null}
       </div>
-      {runMode !== undefined || onRebuild !== undefined || timing !== undefined ? (
+      {extensions !== undefined && extensions.items.length > 0 ? (
+        <div role="group" aria-label={locale === 'zh' ? '工作台与扩展' : 'Extensions'} data-add-menu-extensions className="mt-1 border-t border-hairline pt-1">
+          <GroupLabel>{locale === 'zh' ? '工作台与扩展' : 'Extensions'}</GroupLabel>
+          {extensions.items.map((item) => {
+            const isBusy = extensions.busyKey === item.key;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                role="menuitem"
+                data-menu-row
+                data-add-extension={item.key}
+                data-plugin-composer-slot={item.key}
+                disabled={extensions.disabled || isBusy}
+                title={item.tooltip ?? item.label}
+                onClick={() => { close(); item.onTrigger(); }}
+                className={MENU_ROW_CLASS}
+              >
+                {isBusy ? <Spinner label={item.label} /> : <Icon name={item.iconName} size={14} className="shrink-0 text-ink-soft" />}
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.badgeText !== undefined && item.badgeText !== '' ? (
+                  <span className="shrink-0 font-mono text-[11px] text-ink-faint tabular-nums">{item.badgeText}</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {runMode !== undefined || permission !== undefined || onRebuild !== undefined || timing !== undefined ? (
         <div role="group" aria-label={t('composer.addMenu.sessionGroup')} className="mt-1 border-t border-hairline pt-1">
           <GroupLabel>{t('composer.addMenu.sessionGroup')}</GroupLabel>
+          {permission !== undefined
+            ? drillRow('permission', <Icon name="lock" size={14} className="shrink-0 text-ink-soft" />, t('composer.permAria'),
+                <span className="text-[12px] text-ink-faint">{t((permissionModeDef(permission.value) ?? PERMISSION_MODES[0]!).labelKey)}</span>,
+                { 'data-add-menu-permission': '' })
+            : null}
           {plugins !== undefined
             ? drillRow('plugins', <Icon name="skill" size={14} className="shrink-0 text-ink-soft" />, t('composer.addMenu.plugins'),
                 plugins.items.filter((plugin) => plugin.enabled).length > 0
@@ -1546,6 +1646,7 @@ export function AddMenu({
               : resolvedView === 'optional' ? t('composer.addMenu.optional')
               : resolvedView === 'mcp' ? t('composer.addMenu.mcp')
               : resolvedView === 'mention' ? t('composer.addMenu.mention')
+              : resolvedView === 'permission' ? t('composer.permAria')
               : t('composer.addMenuAria')
           }
           // Bounded by the room above the card (`--cp-max-h`) and laid out as
@@ -1589,6 +1690,33 @@ export function AddMenu({
                   busySendsNow={timing.busySendsNow}
                   onPick={(choice) => { close(); timing.onPick(choice); }}
                 />
+              </div>
+            </div>
+          ) : resolvedView === 'permission' && permission !== undefined ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-add-permission-view>
+              {backRow(t('composer.permAria'))}
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {PERMISSION_MODES.map((mode) => {
+                  const selected = mode.id === permission.value;
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      data-menu-row
+                      data-add-permission-option={mode.id}
+                      onClick={() => { permission.onChange(mode.id); close(); }}
+                      className={MENU_ROW_CLASS}
+                    >
+                      <Check on={selected} />
+                      <span className="min-w-0 flex-1">
+                        <span className={`block truncate ${mode.tone === 'danger' ? 'text-danger' : 'text-ink'}`}>{t(mode.labelKey)}</span>
+                        <span className="block truncate text-[11.5px] leading-4 text-ink-faint">{t(mode.hintKey)}</span>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ) : runMode !== undefined ? (

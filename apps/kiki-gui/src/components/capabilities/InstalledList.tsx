@@ -4,7 +4,7 @@
  * Reload actions, update CTA, enable/disable Toggle, and confirmed Remove.
  */
 
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { copyTextToClipboard } from '../../lib/clipboard';
@@ -95,6 +95,7 @@ export function InstalledList({
   const [busyCounts, setBusyCounts] = useState<Readonly<Record<string, number>>>({});
   const toggleSeqRef = useRef<Record<string, number>>({});
   const [optimisticEnabled, setOptimisticEnabled] = useState<Readonly<Record<string, boolean>>>({});
+  const [pinnedGroupById, setPinnedGroupById] = useState<Readonly<Record<string, InstalledGroup>>>({});
   const [failure, setFailure] = useState<unknown>(null);
   const [removing, setRemoving] = useState<PluginSummary | null>(null);
   const canReload = typeof client.reloadPlugin === 'function';
@@ -137,6 +138,11 @@ export function InstalledList({
   };
 
   const togglePluginEnabled = async (id: string, enabled: boolean) => {
+    const current = displayPlugins.find((entry) => entry.id === id);
+    if (current !== undefined) {
+      const stableGroup = pinnedGroupById[id] ?? rawGroupOf(current);
+      setPinnedGroupById((prev) => (prev[id] === stableGroup ? prev : { ...prev, [id]: stableGroup }));
+    }
     const seq = (toggleSeqRef.current[id] ?? 0) + 1;
     toggleSeqRef.current[id] = seq;
     setOptimisticEnabled((prev) => ({ ...prev, [id]: enabled }));
@@ -161,8 +167,13 @@ export function InstalledList({
   };
 
   const broken = (plugin: PluginSummary) => plugin.state === 'error' || plugin.hasErrors;
-  const groupOf = (plugin: PluginSummary): InstalledGroup =>
+  const rawGroupOf = (plugin: PluginSummary): InstalledGroup =>
     broken(plugin) ? 'attention' : updates.has(plugin.id) ? 'updates' : plugin.enabled ? 'on' : 'off';
+  const groupOf = (plugin: PluginSummary): InstalledGroup => {
+    if (broken(plugin)) return 'attention';
+    if (updates.has(plugin.id)) return 'updates';
+    return pinnedGroupById[plugin.id] ?? (plugin.enabled ? 'on' : 'off');
+  };
 
   const keyOf = (plugin: PluginSummary) => plugin.id;
   const textOf = (plugin: PluginSummary) => [plugin.displayName, plugin.id, plugin.originalSource];
@@ -174,6 +185,9 @@ export function InstalledList({
   ], [t, updates]);
 
   const view = useListView({ listId: 'cap-plugins-installed', items: displayPlugins, keyOf, textOf, filters });
+  useEffect(() => {
+    setPinnedGroupById((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+  }, [view.query, view.filter]);
   const toolbarView = useMemo(() => {
     const activeFilterIds = filters
       .filter((spec) => {
@@ -197,7 +211,7 @@ export function InstalledList({
       const id = groupOf(plugin);
       return [{ key: id, label: t(GROUP_KEYS[id]) }];
     }, GROUP_ORDER),
-    [displayPlugins, t, updates, view.visible],
+    [displayPlugins, pinnedGroupById, t, updates, view.visible],
   );
 
   if (loading) return <p className="py-3 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>;
@@ -248,34 +262,6 @@ export function InstalledList({
           title={t('cap.plugins.noMatchTitle')}
           body={view.query.trim() !== '' ? t('cap.plugins.noMatch', { query: view.query.trim() }) : undefined}
           onClear={view.clear}
-        />
-      ) : groups.length === 1 && !view.narrowed ? (
-        <ListBody
-          items={groups[0]!.items}
-          keyOf={keyOf}
-          density={view.density}
-          label={groups[0]!.label}
-          renderRow={(plugin) => (
-            <InstalledRow
-              plugin={plugin}
-              density={view.density}
-              origin={pluginOrigin(plugin, entries)}
-              entry={entries.find((entry) => entry.id === plugin.id)}
-              update={updates.get(plugin.id)}
-              busy={isPluginBusy(plugin.id)}
-              onOpen={() => { onOpen(plugin.id); }}
-              onOpenSettings={onOpenSettings === undefined ? undefined : () => { onOpenSettings(plugin.id); }}
-              onReload={canReload ? () => {
-                void act(plugin.id, async () => {
-                  await client.reloadPlugin(plugin.id);
-                  pushToast({ tone: 'info', text: t('cap.plugins.reloaded', { name: plugin.displayName }) });
-                });
-              } : undefined}
-              onToggle={(enabled) => { void togglePluginEnabled(plugin.id, enabled); }}
-              onUpdate={(update) => { onUpdate(plugin, update); }}
-              onRemove={() => { setRemoving(plugin); }}
-            />
-          )}
         />
       ) : (
         groups.map((group) => (

@@ -44,7 +44,7 @@ export interface ContextCompactSectionProps {
   readonly status: AutoCompactStatus;
   /** Default without the session override, when known. */
   readonly defaultStatus?: AutoCompactStatus;
-  readonly used: number;
+  readonly used?: number;
   /** The model's configured window (W); the usable limit comes from `status`. */
   readonly windowTokens: number;
   /** A turn is running: the point applies before the next step, not the next message. */
@@ -200,15 +200,19 @@ export function ContextCompactSection({
   const sourceLabel = onSession
     ? t('context.compact.sourceSession', { tokens: formatCompactTokens(status.tokens) })
     : t('context.compact.sourceDefault', { tokens: formatCompactTokens(status.tokens), layer: layerName(status.source) });
-  const below = point <= used;
-  const statusLine = below
-    ? t(running ? 'context.compact.belowRunning' : 'context.compact.belowIdle')
-    : t('context.compact.remaining', { tokens: formatCompactTokens(point - used) });
+  const measuredUsed = used !== undefined;
+  const effectiveUsed = used ?? 0;
+  const below = measuredUsed && point <= effectiveUsed;
+  const statusLine = !measuredUsed
+    ? t('context.compact.limitTick', { tokens: formatCompactTokens(point) })
+    : below
+      ? t(running ? 'context.compact.belowRunning' : 'context.compact.belowIdle')
+      : t('context.compact.remaining', { tokens: formatCompactTokens(point - effectiveUsed) });
   // Fill reads "how close to the point": amber inside the last 10%, and any
   // part already past the point turns danger.
-  const fillTone = used < point && used >= point * 0.9 ? 'bg-amber-rule' : 'bg-ink-soft';
-  const fillEnd = Math.min(used, point);
-  const overflow = Math.max(0, used - point);
+  const fillTone = measuredUsed && effectiveUsed < point && effectiveUsed >= point * 0.9 ? 'bg-amber-rule' : 'bg-ink-soft';
+  const fillEnd = measuredUsed ? Math.min(effectiveUsed, point) : 0;
+  const overflow = measuredUsed ? Math.max(0, effectiveUsed - point) : 0;
   const limitLabel = usable < windowTokens
     ? t('context.compact.usableOfWindow', { usable: formatCompactTokens(usable), window: formatCompactTokens(windowTokens) })
     : t('context.compact.limitTick', { tokens: formatCompactTokens(usable) });

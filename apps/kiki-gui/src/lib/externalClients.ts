@@ -47,7 +47,7 @@ export type {
  * The facade, or undefined when the connection has no HTTP REST surface.
  */
 export function externalClientsFacade(klient: Klient | undefined): ExternalClientsFacade | undefined {
-  return (klient?.rest as unknown as { externalClients?: ExternalClientsFacade })?.externalClients;
+  return klient?.rest?.externalClients;
 }
 
 /** The mode a connection runs under, narrowed to what the composer offers. */

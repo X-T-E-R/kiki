@@ -158,9 +158,3 @@ export function compactUsageLevel(used: number, point: number): 'ok' | 'warn' | 
   if (used >= point * 0.8) return 'warn';
   return 'ok';
 }
-
-/** Legacy default the engine uses when no layer sets `auto_compact`. */
-export function legacyCompactDefault(usable: number, ratio = 0.85, reserved = 50_000): number {
-  const byRatio = usable * ratio;
-  return reserved > 0 && reserved < usable ? Math.min(byRatio, usable - reserved) : byRatio;
-}

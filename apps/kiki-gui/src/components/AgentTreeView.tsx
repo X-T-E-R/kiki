@@ -13,6 +13,7 @@ import {
   type AgentStatus,
   type AgentTreeNode,
 } from '@kiki/session-core/session';
+import { formatThinkingEffort } from '../lib/thinkingEffort';
 import { useI18n } from '../i18n';
 import { DisclosureChevron, Icon } from './icons';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
@@ -181,7 +182,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
                     {t(refreshing ? 'subagent.status.refreshing' : STATUS_I18N[node.status])}
                     {node.model !== undefined ? ` · ${node.model}` : ''}
                     {node.thinkingEffort !== undefined && (node.thinkingEffort.toLowerCase() !== 'off' || node.thinkingEffortExplicit === true)
-                      ? ` · ${t('subagent.effort', { effort: node.thinkingEffort })}`
+                      ? ` · ${formatThinkingEffort(node.thinkingEffort, t)}`
                       : ''}
                     {node.toolCallCountKnown === true
                       ? ` · ${t('subagent.tools', { count: node.toolCallCount })}`

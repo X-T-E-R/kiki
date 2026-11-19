@@ -9,7 +9,6 @@ import {
   compactPresetsFor,
   compactUsageLevel,
   formatCompactTokens,
-  legacyCompactDefault,
   parseCompactInput,
   shortPercent,
   snapCompactTokens,
@@ -116,11 +115,5 @@ describe('display helpers', () => {
     expect(compactUsageLevel(300_000, 400_000)).toBe('ok');
     expect(compactUsageLevel(320_000, 400_000)).toBe('warn');
     expect(compactUsageLevel(400_000, 400_000)).toBe('danger');
-  });
-
-  it('keeps the legacy default formula', () => {
-    expect(legacyCompactDefault(550_000)).toBe(467_500);
-    expect(legacyCompactDefault(200_000)).toBe(150_000);
-    expect(legacyCompactDefault(1_000_000)).toBe(850_000);
   });
 });

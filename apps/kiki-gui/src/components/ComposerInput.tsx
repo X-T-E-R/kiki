@@ -8,19 +8,32 @@ import { normalizeComposerText, registerComposerInput, type ComposerInputHandle 
 export interface ComposerReferenceLabel {
   readonly raw: string;
   readonly label: string;
+  readonly unresolved?: boolean;
 }
 
 class ReferenceWidget extends WidgetType {
-  constructor(readonly raw: string, readonly label: string, readonly kind: string) { super(); }
+  constructor(
+    readonly raw: string,
+    readonly label: string,
+    readonly kind: string,
+    readonly unresolved: boolean = false,
+  ) { super(); }
   override eq(other: ReferenceWidget): boolean {
-    return this.raw === other.raw && this.label === other.label && this.kind === other.kind;
+    return this.raw === other.raw
+      && this.label === other.label
+      && this.kind === other.kind
+      && this.unresolved === other.unresolved;
   }
   toDOM(): HTMLElement {
     const chip = document.createElement('span');
-    chip.className = 'composer-reference';
+    chip.className = this.unresolved ? 'composer-reference composer-reference-unresolved' : 'composer-reference';
     chip.dataset['threadRefToken'] = '';
     chip.dataset['threadRefOverlayToken'] = '';
     chip.dataset['refKind'] = this.kind;
+    if (this.unresolved) {
+      chip.dataset['refUnresolved'] = '';
+      chip.style.borderStyle = 'dashed';
+    }
     chip.title = `${this.label}\n${this.raw}`;
     chip.textContent = this.label;
     chip.setAttribute('aria-label', `${this.label}: ${this.raw}`);
@@ -56,7 +69,7 @@ function skillTokenDecorations(state: EditorState, spans: readonly ComposerSkill
 
 /** Adapt CodeMirror's replace-decoration/atomicRanges pattern; raw links remain in the document. */
 function referenceDecorations(state: EditorState, labels: readonly ComposerReferenceLabel[]): DecorationSet {
-  const names = new Map(labels.map(({ raw, label }) => [raw, label]));
+  const byRaw = new Map(labels.map((entry) => [entry.raw, entry]));
   const refs = [
     ...findConversationRefs(state.sliceDoc()),
     ...findAgentRefs(state.sliceDoc()).map((ref) => ({ ...ref, kind: 'agent' })),
@@ -64,9 +77,13 @@ function referenceDecorations(state: EditorState, labels: readonly ComposerRefer
   const selection = state.selection.main;
   return Decoration.set(refs.map((ref) => {
     const inside = selection.empty && selection.head > ref.start && selection.head < ref.end;
+    const entry = byRaw.get(ref.raw);
     return inside
       ? Decoration.mark({ class: 'composer-reference-source', attributes: { 'data-ref-kind': ref.kind, 'data-thread-ref-token': '' } }).range(ref.start, ref.end)
-      : Decoration.replace({ widget: new ReferenceWidget(ref.raw, names.get(ref.raw) ?? ref.raw, ref.kind), inclusive: false }).range(ref.start, ref.end);
+      : Decoration.replace({
+          widget: new ReferenceWidget(ref.raw, entry?.label ?? ref.raw, ref.kind, entry?.unresolved === true),
+          inclusive: false,
+        }).range(ref.start, ref.end);
   }));
 }
 

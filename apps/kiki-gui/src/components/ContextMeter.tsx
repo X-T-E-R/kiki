@@ -170,7 +170,7 @@ export function ContextMeter({
   autoCompact,
   compactAvailability,
 }: {
-  used: number;
+  used?: number;
   limit: number;
   /** Lifetime cumulative usage for the detail card (session record, or an agent's projected totals). */
   usage?: ContextMeterUsage;
@@ -260,21 +260,28 @@ export function ContextMeter({
   useComposerPanelAnchor(rootRef, open);
   // The percent answers "how full is the usable window"; colour answers
   // "is compaction close", so it keys on the point once one is known.
+  // When `used` is temporarily unmeasured on a cold session with a known limit,
+  // keep the ring clickable and neutral ("—") rather than faking 0% or hiding
+  // the panel.
+  const measured = used !== undefined;
   const usable = autoCompact?.status.effectiveMaxContextTokens ?? limit;
-  const percent = contextUsagePercent(used, usable);
-  const level = autoCompact !== undefined
-    ? compactUsageLevel(used, autoCompact.status.tokens)
-    : contextUsageLevel(used, limit);
+  const percent = measured ? contextUsagePercent(used, usable) : undefined;
+  const level: ContextUsageLevel = !measured
+    ? 'ok'
+    : autoCompact !== undefined
+      ? compactUsageLevel(used, autoCompact.status.tokens)
+      : contextUsageLevel(used, limit);
   const warn = level !== 'ok';
-  const remaining = Math.max(0, limit - used);
-  const label = t('context.meter', { percent });
+  const remaining = measured ? Math.max(0, limit - used) : undefined;
+  const label = percent !== undefined ? t('context.meter', { percent }) : '—';
+  const usedLabel = measured ? time.formatTokens(used) : '—';
   const compactReason = compactAvailability !== undefined && !compactAvailability.available
     ? compactAvailability.reason
     : undefined;
   const baseTitle = autoCompact !== undefined ? t(
     level === 'danger' ? 'context.meterCompactDueTitle' : 'context.meterCompactTitle',
     {
-      used: time.formatTokens(used),
+      used: usedLabel,
       limit: time.formatTokens(usable),
       point: time.formatTokens(autoCompact.status.tokens),
     },
@@ -284,7 +291,7 @@ export function ContextMeter({
       : warn
         ? 'context.meterWarnTitle'
         : 'context.meterTitle',
-    { used: time.formatTokens(used), limit: time.formatTokens(limit) },
+    { used: usedLabel, limit: time.formatTokens(limit) },
   );
   const title = compactReason === undefined ? baseTitle : `${baseTitle}\n${compactReason}`;
 
@@ -307,6 +314,7 @@ export function ContextMeter({
         type="button"
         data-context-meter
         data-context-level={level}
+        data-context-unmeasured={!measured ? '' : undefined}
         onClick={() => {
           if (!open) autoCompact?.onOpen?.();
           setOpen((value) => !value);
@@ -335,19 +343,21 @@ export function ContextMeter({
               strokeWidth="2.25"
               stroke="var(--color-hairline)"
             />
-            <circle
-              cx="12"
-              cy="12"
-              r="9.5"
-              fill="none"
-              strokeWidth="2.25"
-              strokeLinecap="round"
-              pathLength="100"
-              strokeDasharray="100"
-              strokeDashoffset={100 - percent}
-              stroke={LEVEL_STROKE[level]}
-              className="transition-[stroke-dashoffset,stroke] duration-[var(--kiki-motion-base)]"
-            />
+            {percent !== undefined ? (
+              <circle
+                cx="12"
+                cy="12"
+                r="9.5"
+                fill="none"
+                strokeWidth="2.25"
+                strokeLinecap="round"
+                pathLength="100"
+                strokeDasharray="100"
+                strokeDashoffset={100 - percent}
+                stroke={LEVEL_STROKE[level]}
+                className="transition-[stroke-dashoffset,stroke] duration-[var(--kiki-motion-base)]"
+              />
+            ) : null}
           </svg>
         </span>
         {/* On a narrow composer the calm ring alone carries "ok"; the percent
@@ -373,7 +383,9 @@ export function ContextMeter({
         >
           <div className="flex items-baseline justify-between gap-3">
             <p className="font-display text-[15px] font-semibold text-ink">{t('context.detailsTitle')}</p>
-            <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-soft tabular-nums">{label} · {time.formatTokens(used)}</span>
+            <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-soft tabular-nums">
+              {measured ? `${label} · ${usedLabel}` : `— · ${time.formatTokens(usable)}`}
+            </span>
           </div>
           {/* §9.5 split: the ring answers "how much context is left right now";
               the cumulative block below answers "what has this session spent". */}
@@ -400,28 +412,30 @@ export function ContextMeter({
                   strokeWidth="2.25"
                   stroke="var(--color-hairline)"
                 />
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="9.5"
-                  fill="none"
-                  strokeWidth="2.25"
-                  strokeLinecap="round"
-                  pathLength="100"
-                  strokeDasharray="100"
-                  strokeDashoffset={100 - percent}
-                  stroke={LEVEL_STROKE[level]}
-                  className="transition-[stroke-dashoffset,stroke] duration-[var(--kiki-motion-base)]"
-                />
+                {percent !== undefined ? (
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="9.5"
+                    fill="none"
+                    strokeWidth="2.25"
+                    strokeLinecap="round"
+                    pathLength="100"
+                    strokeDasharray="100"
+                    strokeDashoffset={100 - percent}
+                    stroke={LEVEL_STROKE[level]}
+                    className="transition-[stroke-dashoffset,stroke] duration-[var(--kiki-motion-base)]"
+                  />
+                ) : null}
               </svg>
               <span className="absolute font-mono text-[11px] leading-none font-medium tabular-nums">
-                {percent}
+                {percent !== undefined ? percent : '—'}
               </span>
             </span>
             <dl className="min-w-0 flex-1 space-y-1 text-[12px]">
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-ink-faint">{t('context.used')}</dt>
-                <dd className="font-mono text-ink tabular-nums">{time.formatTokens(used)}</dd>
+                <dd className="font-mono text-ink tabular-nums">{usedLabel}</dd>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-ink-faint">{t('context.limit')}</dt>
@@ -429,7 +443,7 @@ export function ContextMeter({
               </div>
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-ink-faint">{t('context.available')}</dt>
-                <dd className="font-mono text-ink tabular-nums">{time.formatTokens(remaining)}</dd>
+                <dd className="font-mono text-ink tabular-nums">{remaining !== undefined ? time.formatTokens(remaining) : '—'}</dd>
               </div>
             </dl>
           </div>

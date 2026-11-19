@@ -37,12 +37,14 @@ export function ComposerNotes({
   onRemove,
   onUpdate,
   onLocate,
+  variant = 'compact',
 }: {
   readonly annotations: readonly SelectionAnnotation[];
   readonly onRemove?: (id: string) => void;
   readonly onUpdate?: (id: string, comment: string) => void;
   /** Scroll the timeline to the passage a note quotes. */
   readonly onLocate?: (annotation: SelectionAnnotation) => void;
+  readonly variant?: 'compact' | 'shelf';
 }) {
   const { t, tp } = useI18n();
   const panelId = useId();
@@ -126,9 +128,14 @@ export function ComposerNotes({
           clearTimer();
           setOpen((current) => (current === 'pinned' ? null : 'pinned'));
         }}
-        className={`context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
-          open !== null ? 'bg-ink/[0.08] text-ink' : 'bg-ink/[0.05] hover:bg-ink/[0.08] hover:text-ink'
-        }`}
+        className={variant === 'shelf'
+          ? `context-chip anim-enter flex h-11 shrink-0 items-center gap-2 rounded-[10px] border border-hairline px-2.5 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
+            open !== null ? 'bg-canvas text-ink' : 'bg-canvas/65 hover:bg-canvas'
+          }`
+          : `context-chip anim-enter flex h-7 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 ${
+            open !== null ? 'bg-ink/[0.08] text-ink' : 'bg-ink/[0.05] hover:bg-ink/[0.08] hover:text-ink'
+          }`
+        }
       >
         <Icon name="edit" size={12} className="text-accent-ink/80" />
         <span className="tabular-nums">{tp('composer.notes.pill', annotations.length)}</span>

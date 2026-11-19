@@ -901,25 +901,15 @@ describe('Spaces & Access IA (#16)', () => {
     await click('[data-remote-verify-fingerprint="pair-b"]');
     expect(connections.verifyFingerprint).toHaveBeenCalledExactlyOnceWith('pair-b');
     expect(document.querySelector('#st-card-remote-connections')?.textContent).toContain('Spaces on other computers · openable from “Main space”');
-    const sshRow = document.querySelector('[data-ssh-profile-row="ssh-build"]')!;
-    expect(sshRow).not.toBeNull();
-    expect(sshRow.textContent).toContain('Build box');
-    expect(sshRow.textContent).toContain('Owner (SSH)');
+    // Legacy Owner (SSH) manual 43-char bearer token form is excluded from primary Spaces UI;
+    // SSH pairings route through the zero-token PairSheet / AddConnectionBySshDialog flow.
+    expect(document.querySelector('[data-ssh-profile-row="ssh-build"]')).toBeNull();
+    expect(document.querySelector('[data-owner-ssh-manage]')).toBeNull();
+    expect(document.querySelector('[data-owner-ssh-dialog]')).toBeNull();
 
     // Window mode card sits at the bottom after local and remote lists.
     const cardIds = [...document.querySelectorAll('section[id^="st-card-"]')].map((el) => el.id);
     expect(cardIds).toEqual(['st-card-spaces', 'st-card-remote-connections', 'st-card-space-window']);
-
-    // Connect… on Owner (SSH) opens the token dialog and connects with the typed bearer token.
-    await click('[data-ssh-profile-connect="ssh-build"]');
-    expect(document.querySelector('[data-owner-ssh-dialog]')).not.toBeNull();
-    const token = 'a'.repeat(43);
-    await type('[data-owner-ssh-dialog] input[type="password"]', token);
-    const connectButton = [...document.querySelectorAll<HTMLButtonElement>('[data-owner-ssh-dialog] button')]
-      .find((btn) => btn.textContent === 'Connect to running server')!;
-    await act(async () => { connectButton.click(); });
-    await flush();
-    expect(connection.activateSshProfile).toHaveBeenCalledWith('ssh-build', token);
   });
 
   it('lists local spaces read-only in a browser host without New space or Add existing space buttons', async () => {

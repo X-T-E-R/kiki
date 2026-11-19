@@ -25,7 +25,7 @@ import { activateSkillWithConditionalClear, canAbortActiveTurn } from './Session
 
 const { selectFilesNative, selectFilePathNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   readClipboardFiles: vi.fn(),
-  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234', serverId: 'server-a', startedAt: 'generation-one' },
+  connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234', serverId: 'server-a', startedAt: 'generation-one', pluginSlots: false },
   selectFilesNative: vi.fn(),
   selectFilePathNative: vi.fn(),
   onFileDrop: vi.fn(),
@@ -162,7 +162,11 @@ vi.mock('../state/connection', () => ({
     },
   }),
   // The picker only needs connection provenance; media surfaces are mocked separately.
-  useOptionalConnection: () => ({ connectionSource: connectionScope.source }),
+  useOptionalConnection: () => (
+    connectionScope.pluginSlots
+      ? { connectionSource: connectionScope.source, connectionId: connectionScope.id, scopeId: connectionScope.source, config: { url: connectionScope.url, token: '' } }
+      : { connectionSource: connectionScope.source }
+  ),
 }));
 vi.mock('../host', () => ({
   useHost: () =>
@@ -888,7 +892,7 @@ describe('Composer execution control', () => {
     const trigger = await waitForTrigger(container);
     expect(trigger.hasAttribute('data-model-picker')).toBe(true);
     const label = trigger.querySelector<HTMLElement>(':scope > span.truncate');
-    expect(label?.textContent).toContain('fixture/kiki-pro');
+    expect(label?.textContent).toContain('kiki-pro');
     expect(label?.className).toContain('@max-[16rem]/toolbar:sr-only');
     expect(trigger.title).not.toBe('');
   });
@@ -1916,10 +1920,12 @@ describe('Composer goal mode', () => {
     await settle();
     expect(onSend).not.toHaveBeenCalled();
     expect(container.querySelector('[data-goal-objective]')).not.toBeNull();
-    expect(container.querySelector('[data-goal-armed]')).not.toBeNull();
+    expect(container.querySelector('[data-goal-armed]')).toBeNull();
+    expect(container.querySelector('[data-composer-card]')?.getAttribute('data-run-mode')).toBe('goal');
+    expect(container.querySelector('[data-run-mode-chip]')?.getAttribute('data-run-mode-chip')).toBe('goal');
   });
 
-  it('arms goal from the Mode panel, flags the next message, and disarms from the chip', async () => {
+  it('arms goal from the Mode panel, flags the next message, and disarms from the RunModeChip', async () => {
     const onSend = vi.fn();
     const onChangeGoalMode = vi.fn();
     const { container, rerender } = await renderComposer({ onSend, onChangeGoalMode });
@@ -1931,9 +1937,8 @@ describe('Composer goal mode', () => {
 
     // The parent owns the flag; rerender with the armed state it would set.
     await rerender({ onSend, onChangeGoalMode, goalMode: true, value: 'fix the flaky suite' });
-    expect(container.querySelector('[data-goal-armed]')?.textContent).toContain(
-      'this message becomes the objective',
-    );
+    expect(container.querySelector('[data-goal-armed]')).toBeNull();
+    expect(container.querySelector('[data-composer-card]')?.getAttribute('data-run-mode')).toBe('goal');
     expect(container.querySelector('[data-run-mode-chip]')?.getAttribute('data-run-mode-chip')).toBe('goal');
     const textarea = composerInput(container);
     await act(async () => {
@@ -1942,7 +1947,7 @@ describe('Composer goal mode', () => {
     await settle();
     expect(onSend).toHaveBeenCalledWith('fix the flaky suite', [], { goalObjective: 'fix the flaky suite' });
 
-    const disarm = container.querySelector<HTMLButtonElement>('[data-goal-armed] button')!;
+    const disarm = container.querySelector<HTMLButtonElement>('[data-run-mode-chip="goal"] button:last-of-type')!;
     await act(async () => { disarm.click(); });
     expect(onChangeGoalMode).toHaveBeenLastCalledWith(false);
   });
@@ -1994,7 +1999,7 @@ describe('Composer model chip', () => {
       value: 'Synthetic continuation',
       onSend,
     });
-    expect(container.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    expect(container.querySelector('[data-effort-label]')?.textContent).toBe('High');
     await click(container.querySelector('#composer-model-select')!);
     expect(container.querySelector('[data-effort="high"]')?.getAttribute('aria-checked')).toBe('true');
     expect(onSend).not.toHaveBeenCalled();
@@ -2011,7 +2016,7 @@ describe('Composer model chip', () => {
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
     expect(trigger.hasAttribute('data-model-picker')).toBe(true);
     expect(trigger.textContent).toContain('Kiki Pro');
-    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('High');
     // The gauge draws the depth: high is the top of two levels, all bars lit.
     expect(trigger.querySelector('[data-effort-gauge]')?.getAttribute('data-effort-gauge')).toBe('3');
     const label = trigger.querySelector('span.truncate')!;
@@ -2027,7 +2032,7 @@ describe('Composer model chip', () => {
     for (let index = 0; index < 5; index += 1) await settle();
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
     expect(trigger.querySelector('[data-effort-gauge]')?.getAttribute('data-effort-gauge')).toBe('2');
-    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('High');
     await click(trigger);
     expect([...container.querySelectorAll('[data-effort]')].map((node) => node.getAttribute('data-effort')))
       .toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -2103,7 +2108,7 @@ describe('Composer model chip', () => {
     });
     for (let index = 0; index < 5; index += 1) await settle();
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
-    expect(trigger.textContent).toContain('fixture/kiki-pro');
+    expect(trigger.textContent).toContain('kiki-pro');
     await click(trigger);
     // No catalog means no filter input and no option list — just the rows.
     expect(container.querySelector('#composer-model-select-list')).toBeNull();
@@ -2236,7 +2241,7 @@ describe('Composer attachment button', () => {
       label: 'oversized desktop pick',
       pick: { name: 'huge.bin', size: 51 * 1024 * 1024, type: '' },
       attachments: [],
-      error: '"huge.bin" is 51.0 MB — files are capped at 50.0 MB each.',
+      error: '"huge.bin" is 51 MB — files are capped at 50 MB each.',
     },
     {
       label: 'desktop pick at the attachment count cap',
@@ -2354,7 +2359,7 @@ describe('Composer file clipboard policy', () => {
     await typeText(textarea, 'keep this draft');
     selectFilesNative.mockResolvedValue([{ name: 'huge.bin', size: 60 * 1024 * 1024, type: '', read: vi.fn() }]);
     await clickAttach(container);
-    expect(container.querySelector('[data-attachment-error]')?.textContent).toContain('50.0 MB');
+    expect(container.querySelector('[data-attachment-error]')?.textContent).toContain('50 MB');
     readClipboardFiles.mockResolvedValue({ paths: ['C:/fixtures/success.txt'], media: [] });
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     await dispatchClipboardPaste(textarea);
@@ -4070,7 +4075,7 @@ describe('Composer restored selection diagnostics', () => {
     expect(onChangeEffort).toHaveBeenCalledWith('high');
     expect(onChangeExecution).not.toHaveBeenCalled();
     expect(trigger.textContent).toContain('vendor/sonnet');
-    expect(trigger.textContent).toContain('high');
+    expect(trigger.textContent).toContain('High');
   });
   it.each([
     { catalog: 'model', code: API_CODES.TIMEOUT },
@@ -4882,11 +4887,13 @@ describe('session SSH stays resident and rides no message', () => {
     await click(container.querySelector('[data-composer-ssh-host="example-host"] button')!);
     expect(sshAdd).not.toHaveBeenCalled();
     expect(sshSessionHosts).not.toHaveBeenCalled();
-    // The draft strip and the session strip say the same word: both are this
-    // conversation's SSH context, and the scope is what the placement means.
-    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).toContain('SSH');
-    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).not.toContain('to join');
-    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    // External bare ContextStrip shows the summary trigger outside the card.
+    const statusLine = container.querySelector('[data-composer-status-line]')!;
+    const sshStrip = statusLine.querySelector('[data-composer-ssh-strip]')!;
+    expect(sshStrip).not.toBeNull();
+    expect(sshStrip.textContent).toContain('Example host');
+    expect(sshStrip.textContent).not.toContain('to join');
+    expect(container.querySelector('[data-composer-card] [data-composer-ssh-strip]')).toBeNull();
     await click(container.querySelector('[data-add-menu-trigger]')!);
     await click(container.querySelector('button[aria-label="Send message"]')!);
     // No session exists yet, so the host travels to the draft, which joins it
@@ -4920,7 +4927,7 @@ describe('session SSH stays resident and rides no message', () => {
     const { container, rerender } = await renderComposer({
       sessionId: 'session-example', value: 'Inspect the host', onSend, onActivateSkill,
     });
-    expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).toContain('SSH');
+    expect(container.querySelector('[data-composer-status-line] [data-composer-ssh-strip]')?.textContent).toContain('Example host');
     expect(container.querySelector('[data-composer-ssh-strip]')?.textContent).not.toContain('Session');
     await click(container.querySelector('button[aria-label="Send message"]')!);
     await settle();
@@ -4933,28 +4940,27 @@ describe('session SSH stays resident and rides no message', () => {
     await pressKey(textarea, { key: 'Enter' });
     expect(onSend.mock.calls.map((call) => call[1])).toEqual([[], []]);
     expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [], '/review --fix');
-    // Still there after all of it, and never removed behind the user's back.
-    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    // Still resident in the external ContextStrip after all of it.
+    expect(container.querySelector('[data-composer-status-line] [data-composer-ssh-toggle]')?.textContent).toContain('Example host');
     expect(container.querySelector('[data-context-tray] [data-composer-ssh-chip]')).toBeNull();
     expect(sshRemove).not.toHaveBeenCalled();
   });
 
-  it('leaves the session immediately and reads the server list back', async () => {
+  it('leaves the session immediately from the upward SSH popover and reads the server list back', async () => {
     meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
     sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
     const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect the host', onSend: vi.fn() });
-    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    await click(container.querySelector('[data-composer-ssh-toggle]')!);
+    expect(document.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
     sshSessionHosts.mockResolvedValue({ hosts: [] });
-    await click(container.querySelector('[data-composer-ssh-chip-remove]')!);
+    await click(document.querySelector('[data-composer-ssh-chip-remove]')!);
     await settle();
     expect(sshRemove).toHaveBeenCalledWith('session-example', 'example-host');
     // The server's read is the only thing that decides what the strip shows.
     for (let index = 0; index < 4; index += 1) await settle();
     expect(sshSessionHosts.mock.calls.at(-1)).toEqual(['session-example']);
-    expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
-    // The last host leaving takes the whole strip with it: with no SSH context
-    // this session is not in, and an "SSH 0" line beside the input would be a
-    // control to clear rather than a fact about the session.
+    expect(document.querySelector('[data-composer-ssh-chip]')).toBeNull();
+    // The last host leaving takes the whole strip with it.
     expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
     // The way back in is untouched — the ＋ menu still opens the host list.
     await openAddMenu(container);
@@ -4983,37 +4989,35 @@ describe('session SSH stays resident and rides no message', () => {
     const { container, rerender } = await renderComposer({ sessionId: 'session-example', value: 'Inspect', onSend });
     await click(container.querySelector('button[aria-label="Send message"]')!);
     await settle();
-    // The turn is over and nothing is in flight; the host is still joined, so
-    // the strip is still the session's SSH context.
     await rerender({ sessionId: 'session-example', value: 'Again', onSend });
     for (let index = 0; index < 4; index += 1) await settle();
-    expect(container.querySelector('[data-composer-ssh-strip]')).not.toBeNull();
-    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-status-line] [data-composer-ssh-strip]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-ssh-toggle]')?.textContent).toContain('Example host');
   });
 
   it('re-reads the joined list when another session opens', async () => {
     meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
     sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
     const { container, rerender } = await renderComposer({ sessionId: 'session-example', value: 'a', onSend: vi.fn() });
-    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-ssh-toggle]')?.textContent).toContain('Example host');
     sshSessionHosts.mockResolvedValue({ hosts: [] });
     await rerender({ sessionId: 'session-other', value: 'a', onSend: vi.fn() });
     await settle();
     expect(sshSessionHosts).toHaveBeenCalledWith('session-other');
-    expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
+    expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
   });
 
-  it('opens its own host list from the strip, and closes on Escape', async () => {
+  it('opens its own host list upwards from the external strip, and closes on Escape', async () => {
     meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
     sshSessionHosts.mockResolvedValue({ hosts: [{ host: sshHost }] });
     const { container } = await renderComposer({ sessionId: 'session-example', value: 'Inspect', onSend: vi.fn() });
     const toggle = container.querySelector('[data-composer-ssh-toggle]')!;
     await click(toggle);
-    expect(container.querySelector('[data-composer-ssh-list] [data-composer-ssh-panel]')).not.toBeNull();
+    expect(document.querySelector('[data-composer-ssh-list] [data-composer-ssh-panel]')).not.toBeNull();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
-    expect(container.querySelector('[data-composer-ssh-list]')).toBeNull();
+    expect(document.querySelector('[data-composer-ssh-list]')).toBeNull();
   });
 
   it('resets /new preselection on a session transition, without deleting persistent hosts', async () => {
@@ -5022,10 +5026,10 @@ describe('session SSH stays resident and rides no message', () => {
     await openAddMenu(container);
     await click(container.querySelector('[data-add-menu-ssh]')!);
     await click(container.querySelector('[data-composer-ssh-host="example-host"] button')!);
-    expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-ssh-toggle]')?.textContent).toContain('Example host');
     await rerender({ sessionId: 'session-example' });
     await rerender({});
-    expect(container.querySelector('[data-composer-ssh-chip]')).toBeNull();
+    expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
     expect(sshRemove).not.toHaveBeenCalled();
   });
 
@@ -5036,7 +5040,7 @@ describe('session SSH stays resident and rides no message', () => {
     expect(container.querySelector('[data-binding-setting]')?.textContent).toBe(state === 'applying' ? 'Applying…' : state === 'next_step' ? 'Applies from the next step' : 'Applies from the next message');
     expect(container.querySelector('[data-model-switch-pending]')).toBeNull();
     expect(container.querySelector('[data-model-switch-pending-line]')).toBeNull();
-    expect(container.querySelector('#composer-model-select')?.textContent).toContain('max');
+    expect(container.querySelector('#composer-model-select')?.textContent).toContain('Max');
   });
 
   it('names a queued switch in words above the input and keeps the row chip for wide toolbars', async () => {
@@ -5294,4 +5298,132 @@ it('renders and removes multiple quote chips while preserving the legacy quote c
   expect(removeLegacy).toHaveBeenCalledTimes(1);
   await rerender({ quotes: [], quote: 'Legacy passage' });
   expect(container.querySelector('[data-quote-chip]')).toBeNull();
+});
+
+describe('Canonical 4-Layer Composer Slot Standard (Max-Loaded State)', () => {
+  it('enforces Layer 1 (SSH + plugin slots) -> Layer 2 (media -> chips) -> Layer 3 (editor) -> Layer 4 (toolbar) with nothing severing tray from editor', async () => {
+    connectionScope.pluginSlots = true;
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    sshSessionHosts.mockResolvedValue({
+      hosts: [
+        { host: { ...sshHost, id: 'build-box', name: 'build-box' }, status: { state: 'ready' } },
+        { host: { ...sshHost, id: 'staging-box', name: 'staging-box' }, status: { state: 'ready' } },
+      ],
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/api/plugins/gui-slots')) {
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            msg: 'ok',
+            data: {
+              slots: [
+                {
+                  pluginId: 'kiki-v42',
+                  id: 'remote-seat',
+                  slot: 'composer-toolbar',
+                  label: { default: 'Remote Seat', zh: '远端工位' },
+                  icon: 'terminal',
+                  tone: 'neutral',
+                  order: 10,
+                  action: { kind: 'open_plugin_panel', panelId: 'workbench' },
+                },
+                {
+                  pluginId: 'kiki-phone',
+                  id: 'phone-preview',
+                  slot: 'composer-toolbar',
+                  label: { default: 'Phone Preview', zh: '手机预览' },
+                  icon: 'smartphone',
+                  tone: 'neutral',
+                  order: 20,
+                  action: { kind: 'open_plugin_panel', panelId: 'phone' },
+                },
+                {
+                  pluginId: 'kiki-uu-remote',
+                  id: 'uu-remote',
+                  slot: 'composer-toolbar',
+                  label: { default: 'UU Remote', zh: 'UU远程' },
+                  icon: 'monitor',
+                  tone: 'neutral',
+                  order: 30,
+                  action: { kind: 'open_plugin_panel', panelId: 'uu' },
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ code: 0, msg: 'ok', data: {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+
+    try {
+      const { container } = await renderComposer({
+        sessionId: 'session-max-loaded',
+        value: 'Check the attached screenshot and file',
+        quotes: [{ id: 'q1', quote: 'Quoted snippet from earlier turn' }],
+        attachments: [
+          { kind: 'file', path: 'src/components/Composer.tsx', name: 'Composer.tsx', isDir: false },
+          {
+            kind: 'image',
+            name: 'screenshot.png',
+            mediaType: 'image/png',
+            data: 'iVBORw0KGgo=',
+            previewUrl: 'data:image/png;base64,iVBORw0KGgo=',
+            size: 12_400,
+          },
+        ],
+      });
+      await settle();
+      await settle();
+
+      const card = container.querySelector<HTMLElement>('[data-composer-card]');
+      const tray = container.querySelector<HTMLElement>('[data-context-tray]');
+      const shelf = container.querySelector<HTMLElement>('[data-context-shelf]');
+      const editor = container.querySelector<HTMLElement>('[data-composer-editor]');
+      const toolbar = container.querySelector<HTMLElement>('[data-composer-toolbar]');
+      const statusLine = container.querySelector<HTMLElement>('[data-composer-status-line]');
+      const sshStrip = statusLine?.querySelector<HTMLElement>('[data-composer-ssh-strip]') ?? null;
+
+      expect(card).not.toBeNull();
+      expect(tray).not.toBeNull();
+      expect(shelf).not.toBeNull();
+      expect(editor).not.toBeNull();
+      expect(toolbar).not.toBeNull();
+      expect(statusLine).not.toBeNull();
+      expect(sshStrip).not.toBeNull();
+
+      // Subtraction-first invariants: zero env-strip, zero plugin slots, zero SSH chips inside card!
+      expect(container.querySelector('[data-composer-env-strip]')).toBeNull();
+      expect(container.querySelector('[data-composer-env-divider]')).toBeNull();
+      expect(card!.querySelector('[data-plugin-composer-slots]')).toBeNull();
+      expect(card!.querySelector('[data-composer-ssh-strip]')).toBeNull();
+
+      // SSH lives outside the card in the bare ContextStrip as `build-box +1`.
+      expect(sshStrip!.querySelector('[data-composer-ssh-toggle]')?.textContent).toContain('build-box +1');
+
+      // Card interior strictly holds 3 rows: 44px shelf -> editor -> toolbar, with zero elements between shelf & editor.
+      const isBefore = (a: Element, b: Element) =>
+        Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(isBefore(tray!, editor!)).toBe(true);
+      expect(isBefore(editor!, toolbar!)).toBe(true);
+      expect(tray!.nextElementSibling).toBe(editor);
+
+      // Inside single-row h-11 shelf: Image, File, and Quote share one horizontal track.
+      expect(shelf!.querySelector('[data-image-tile][data-chip-variant="shelf"]')).not.toBeNull();
+      expect(shelf!.querySelector('[title="src/components/Composer.tsx"][data-chip-variant="shelf"]')).not.toBeNull();
+      expect(shelf!.querySelector('[data-quote-chip][data-chip-variant="shelf"]')).not.toBeNull();
+
+      // All 3 plugin slots are cleanly available inside `+` (AddMenu) Extensions!
+      await openAddMenu(container);
+      expect(container.querySelectorAll('[data-add-menu-extensions] [data-add-extension]').length).toBe(3);
+    } finally {
+      connectionScope.pluginSlots = false;
+      fetchSpy.mockRestore();
+    }
+  });
 });

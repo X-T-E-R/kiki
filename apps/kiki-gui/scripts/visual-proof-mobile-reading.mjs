@@ -21,6 +21,7 @@ import { build as viteBuild } from 'vite';
 import { assistantMsg, sessionRecord, userMsg } from '../fixtures/helpers.mjs';
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import { applyFixtureTheme } from './lib/theme-preference.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const guiRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distDir = join(guiRoot, 'dist');
@@ -172,18 +173,7 @@ function check(condition, message) {
   if (!condition) report.errors.push(message);
 }
 
-async function settle(page) {
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-    await Promise.all(
-      document
-        .getAnimations()
-        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
-        .map((animation) => animation.finished.catch(() => {})),
-    );
-  });
-  await page.waitForTimeout(250);
-}
+const settle = (page) => settlePage(page, { parkPointer: false, waitMs: 200 });
 
 async function waitForMarkdownReady(page) {
   await page.waitForSelector('[data-transcript-scroll]', { timeout: STEP_TIMEOUT });

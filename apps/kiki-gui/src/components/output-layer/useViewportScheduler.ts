@@ -15,18 +15,17 @@ import {
   OutputLayerClient,
   OUTPUT_LAYER_DEFAULT_SETTINGS,
 } from './types';
-import { getActiveOutputLayerClient } from './useOutputLayerClient';
+import { getActiveOutputLayerClient, setActiveOutputLayerClient } from './useOutputLayerClient';
 
 // Global processor adapter that can be registered for testing or custom overrides
 let globalChunkProcessor: ((options: StreamProcessChunkOptions) => Promise<string>) | null = null;
-let defaultBackendClient: OutputLayerClient | null = null;
 
 export function registerChunkProcessor(processor: ((options: StreamProcessChunkOptions) => Promise<string>) | null) {
   globalChunkProcessor = processor;
 }
 
 export function bindOutputLayerBackendClient(client: OutputLayerClient | null) {
-  defaultBackendClient = client;
+  setActiveOutputLayerClient(client);
 }
 
 export function getChunkProcessor() {
@@ -43,6 +42,7 @@ export interface QueuedChunk {
   settings?: OutputLayerSettings;
   priority: number; // Higher number = higher priority (visible = 100, preloaded = 50, retry = 150)
   onUpdate?: (result: OutputLayerResult) => void;
+  client?: OutputLayerClient | null;
 }
 
 class SchedulerQueue {
@@ -73,7 +73,7 @@ class SchedulerQueue {
       return;
     }
 
-    this.queue.push(item);
+    this.queue.push({ ...item, client: item.client ?? getActiveOutputLayerClient() });
     this.sortQueue();
     this.pump();
   }
@@ -98,7 +98,7 @@ class SchedulerQueue {
         : !(q.sessionId === sessionId && q.messageId === messageId && q.chunkIndex === chunkIndex),
     );
 
-    const client = defaultBackendClient ?? getActiveOutputLayerClient();
+    const client = getActiveOutputLayerClient();
     client?.cancel(sessionId, sourceId);
   }
 
@@ -111,14 +111,14 @@ class SchedulerQueue {
     }
     this.queue = this.queue.filter((q) => q.sessionId !== sessionId);
 
-    const client = defaultBackendClient ?? getActiveOutputLayerClient();
+    const client = getActiveOutputLayerClient();
     client?.cancel(sessionId);
   }
 
   public invalidateSource(sessionId: string, messageId: string, chunkIndex: number) {
     const sourceId = `${messageId}:${chunkIndex}`;
     this.cancel(sessionId, messageId, chunkIndex);
-    const client = defaultBackendClient ?? getActiveOutputLayerClient();
+    const client = getActiveOutputLayerClient();
     client?.invalidateSource(sessionId, sourceId);
   }
 
@@ -194,7 +194,7 @@ class SchedulerQueue {
       return;
     }
 
-    const client = defaultBackendClient ?? getActiveOutputLayerClient();
+    const client = next.client ?? getActiveOutputLayerClient();
     if (client) {
       client
         .process(source, next.preset, effectiveSettings, (update) => {

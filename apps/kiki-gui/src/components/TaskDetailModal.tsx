@@ -27,6 +27,7 @@ import { useI18n } from '../i18n';
 import { DisclosureChevron, Icon } from './icons';
 import { startVisiblePoll } from '../lib/visiblePoll';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from './Dialog';
 import { useNow } from './RelativeTime';
@@ -313,7 +314,9 @@ export function TaskDetailModal({
                       setOutputCopied(true);
                       if (outputCopyTimerRef.current !== null) clearTimeout(outputCopyTimerRef.current);
                       outputCopyTimerRef.current = setTimeout(() => { setOutputCopied(false); }, 1500);
-                    }).catch(() => undefined);
+                    }).catch(() => {
+                      pushToast({ tone: 'error', text: t('transcript.copyFailed') });
+                    });
                   }}
                   className="flex min-h-7 items-center gap-1 rounded-md border border-shell-hairline px-2 py-0.5 font-mono text-[10.5px] text-shell-ink transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                 >

@@ -22,7 +22,7 @@ import type { ModelCatalogItem, RequestGovernanceSnapshot } from '@kiki/protocol
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
-import { replaceConcurrencyResourceRules } from '../../lib/liveAgentGovernance';
+import { replaceConcurrencyResourceRules, type ConcurrencyRule } from '../../lib/liveAgentGovernance';
 import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Toggle } from '../controls';
@@ -103,7 +103,7 @@ interface RuleDraft {
 }
 
 function draftOf(rule: GovernanceRule): RuleDraft {
-  const resource = (rule.resource as any) === 'live_agent' ? 'agent_execution' : (rule.resource ?? 'model_request');
+  const resource = resourceOf(rule);
   const roles: ExecutionRole[] = rule.roles ? [...rule.roles] : [];
   if (roles.length === 0) {
     const legacyScope = (rule as { role_scope?: string }).role_scope;
@@ -204,7 +204,8 @@ function ruleFromDraft(draft: RuleDraft, otherIds: ReadonlySet<string>): { rule:
 }
 
 function ruleSummary(rule: GovernanceRule, t: (key: I18nKey, params?: Record<string, string | number>) => string): string {
-  const isAgent = rule.resource === 'agent_execution' || (rule.resource as any) === 'live_agent';
+  const isAgent = resourceOf(rule) === 'agent_execution';
+  const legacyRoleScope = (rule as { readonly role_scope?: string }).role_scope;
 
   let target: string;
   if (isAgent) {
@@ -213,9 +214,9 @@ function ruleSummary(rule: GovernanceRule, t: (key: I18nKey, params?: Record<str
       rule.profiles !== undefined ? rule.profiles.join(', ') : undefined,
       rule.models !== undefined ? rule.models.join(', ') : undefined,
       rule.roles !== undefined ? rule.roles.join(', ') : (
-        (rule as any).role_scope === 'main_only' ? t('usage.governance.roleScopeMain') :
-        ((rule as any).role_scope === 'subagent_only' || rule.subagentsOnly) ? t('usage.governance.roleScopeSub') :
-        (rule as any).role_scope === 'independent_only' ? t('usage.governance.roleScopeIndependent') : undefined
+        legacyRoleScope === 'main_only' ? t('usage.governance.roleScopeMain') :
+        (legacyRoleScope === 'subagent_only' || rule.subagentsOnly) ? t('usage.governance.roleScopeSub') :
+        legacyRoleScope === 'independent_only' ? t('usage.governance.roleScopeIndependent') : undefined
       ),
     ].filter((part) => part !== undefined);
     target = parts.length > 0 ? parts.join(' · ') : t('usage.governance.all');
@@ -522,12 +523,41 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
   const providerIds = useMemo(() => (providerOptions.data?.items ?? []).map((item) => item.id), [providerOptions.data]);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-governance'] });
+  const isAncestorLimitError = (error: unknown): boolean => {
+    if (typeof error !== 'object' || error === null || !('details' in error)) return false;
+    const details = (error as { details?: unknown }).details;
+    return typeof details === 'object' && details !== null && 'action' in details
+      && (details as { action?: unknown }).action === 'separate_main_subagent_rules_or_raise_limit';
+  };
   const writeError = (error: unknown) => {
     const errorStr = error instanceof Error ? error.message : String(error);
-    const isAncestorLimit = errorStr.includes('agent_ancestor_limit') || (error as any)?.details?.action === 'separate_main_subagent_rules_or_raise_limit';
+    const isAncestorLimit = errorStr.includes('agent_ancestor_limit') || isAncestorLimitError(error);
     const text = isAncestorLimit ? t('usage.governance.ancestorLimitTitle') : t('usage.governance.saveFailed');
     const detail = isAncestorLimit ? t('usage.governance.ancestorLimitMessage') : errorStr;
     pushToast({ tone: 'error', text, detail });
+  };
+
+  const toConcurrencyRule = (rule: GovernanceRule): ConcurrencyRule => ({
+    ...rule,
+    resource: resourceOf(rule),
+  });
+  const toGovernanceRule = (rule: ConcurrencyRule): GovernanceRule => {
+    const out: GovernanceRule = {
+      id: rule.id,
+      resource: rule.resource,
+      scope: rule.scope,
+      subagentsOnly: rule.subagentsOnly ?? false,
+      maxConcurrent: rule.maxConcurrent ?? 1,
+      overflow: rule.overflow,
+      enabled: rule.enabled,
+    };
+    if (rule.models !== undefined) out.models = [...rule.models];
+    if (rule.providers !== undefined) out.providers = [...rule.providers];
+    if (rule.executors !== undefined) out.executors = [...rule.executors];
+    if (rule.profiles !== undefined) out.profiles = [...rule.profiles];
+    if (rule.roles !== undefined) out.roles = [...rule.roles];
+    if (rule.maxWaitMs !== undefined) out.maxWaitMs = rule.maxWaitMs;
+    return out;
   };
 
   const toggle = useMutation({
@@ -539,15 +569,11 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
 
   const remove = useMutation({
     mutationFn: (rule: GovernanceRule) => {
-      const rawResource = (rule.resource as any) === 'live_agent' ? 'agent_execution' : (rule.resource ?? 'model_request');
-      const resourceRules = rules
-        .filter((r) => ((r.resource as any) === 'live_agent' ? 'agent_execution' : (r.resource ?? 'model_request')) === rawResource && r.id !== rule.id);
-      const next = replaceConcurrencyResourceRules(
-        rules.map((r) => ({ ...r, resource: ((r.resource as any) === 'live_agent' ? 'agent_execution' : (r.resource ?? 'model_request')) as any })),
-        rawResource as any,
-        resourceRules as any,
-      );
-      return client.setRequestGovernanceRules(next as any);
+      const resource = resourceOf(rule);
+      const normalizedRules = rules.map(toConcurrencyRule);
+      const resourceRules = normalizedRules.filter((r) => r.resource === resource && r.id !== rule.id);
+      const next = replaceConcurrencyResourceRules(normalizedRules, resource, resourceRules).map(toGovernanceRule);
+      return client.setRequestGovernanceRules(next);
     },
     // Deleting a rule is reversible: the full list before the delete is kept
     // and written back by the toast's Undo, so there is no confirm step.
@@ -565,20 +591,16 @@ export function ConcurrencyRulesEditor({ rules, showHeading = true }: Concurrenc
   });
 
   const saveEdited = (originalId: string | null) => async (rule: GovernanceRule) => {
-    const rawResource = (rule.resource as any) === 'live_agent' ? 'agent_execution' : (rule.resource ?? 'model_request');
-    const updatedRule = { ...rule, resource: rawResource };
-    const resourceRules = rules
-      .filter((r) => ((r.resource as any) === 'live_agent' ? 'agent_execution' : (r.resource ?? 'model_request')) === rawResource);
+    const resource = resourceOf(rule);
+    const updatedRule: ConcurrencyRule = { ...rule, resource };
+    const normalizedRules = rules.map(toConcurrencyRule);
+    const resourceRules = normalizedRules.filter((r) => r.resource === resource);
     const updatedResourceRules = originalId === null
       ? [...resourceRules, updatedRule]
       : resourceRules.map((r) => (r.id === originalId ? updatedRule : r));
 
-    const next = replaceConcurrencyResourceRules(
-      rules.map((r) => ({ ...r, resource: ((r.resource as any) === 'live_agent' ? 'agent_execution' : (r.resource ?? 'model_request')) as any })),
-      rawResource as any,
-      updatedResourceRules as any,
-    );
-    await client.setRequestGovernanceRules(next as any);
+    const next = replaceConcurrencyResourceRules(normalizedRules, resource, updatedResourceRules).map(toGovernanceRule);
+    await client.setRequestGovernanceRules(next);
     setEditorFor(null);
     await refresh();
   };

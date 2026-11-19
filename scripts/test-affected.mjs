@@ -267,6 +267,9 @@ function focusedCommands(changes, selected, affected) {
     commands.push(command('documentation build', ['-C', 'docs', 'run', 'build']));
     commands.push(command('documentation IA node:test suite', ['-C', 'docs', 'run', 'test:ia']));
   }
+  if (changes.some((change) => /^(?:apps\/kiki-gui\/(?:scripts|proof)\/)/.test(change.path))) {
+    commands.push(command('kiki-gui scripts node:test suite', ['--filter', '@kiki/gui', 'run', 'scripts:test']));
+  }
   const typecheckable = affected.filter(pkg => pkg.scripts.typecheck).map(pkg => pkg.name);
   if (typecheckable.length > 0) {
     const args = typecheckable.flatMap(name => ['--filter', name]);
@@ -352,6 +355,7 @@ export function fullCommands() {
     command('auth-native offline Nix fixture', ['--filter', '@kiki/auth-native', 'run', 'test:nix-env']),
     command('plugin SDK build', ['--filter', '@kiki/plugin-sdk', 'run', 'build']),
     command('plugin SDK node:test suite', ['exec', 'node', '--test', '--test-concurrency=2', 'packages/plugin-sdk/test/media-download.test.mjs']),
+    command('kiki-gui scripts node:test suite', ['--filter', '@kiki/gui', 'run', 'scripts:test']),
     command('documentation governance check', ['exec', 'node', 'scripts/check-docs-governance.mjs']),
     command('CLI bundle smoke', ['-C', 'apps/kimi-code', 'run', 'smoke']),
   ];

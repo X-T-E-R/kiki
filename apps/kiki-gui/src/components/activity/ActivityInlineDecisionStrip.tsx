@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type {
@@ -12,6 +12,7 @@ import type {
 import type { SessionListData } from '@kiki/session-core/sessions';
 
 import { useI18n } from '../../i18n';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import { pushToast } from '../../lib/toasts';
 import { useOptionalConnection } from '../../state/connection';
 import { Icon } from '../icons';
@@ -236,6 +237,7 @@ function QuestionDecisionRow({
   const [busy, setBusy] = useState(false);
   const [selectedByQuestion, setSelectedByQuestion] = useState<Readonly<Record<string, readonly string[]>>>({});
   const [otherByQuestion, setOtherByQuestion] = useState<Readonly<Record<string, string>>>({});
+  const otherComposingRef = useRef(false);
 
   const singleImmediate =
     request.questions.length === 1 && request.questions[0]?.multi_select !== true;
@@ -362,8 +364,10 @@ function QuestionDecisionRow({
                     const value = event.target.value;
                     setOtherByQuestion((prev) => ({ ...prev, [item.id]: value }));
                   }}
+                  onCompositionStart={() => { otherComposingRef.current = true; }}
+                  onCompositionEnd={() => { otherComposingRef.current = false; }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' && singleImmediate && otherText.trim() !== '') {
+                    if (event.key === 'Enter' && !otherComposingRef.current && !isImeKeyEvent(event) && singleImmediate && otherText.trim() !== '') {
                       event.preventDefault();
                       void submitAnswers({ [item.id]: { kind: 'other', text: otherText.trim() } });
                     }

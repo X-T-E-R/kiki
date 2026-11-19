@@ -190,8 +190,7 @@
  * ground is the translucent sheet, not a second opaque band. */
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center > header.bg-paper,
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center > * > header.bg-paper,
-:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-agent-tab-workspace] header.bg-paper,
-:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-agent-relations-surface] {
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-agent-tab-workspace] header.bg-paper {
   background-color: transparent;
 }
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell {
@@ -250,7 +249,7 @@
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .composer-header-queue[data-slivers='2']::after {
   background-color: color-mix(in srgb, var(--kiki-surface-panel) 70%, transparent);
 }
-:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-resync-status] > div, [data-submission-recovery], [data-goal-armed]) {
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-resync-status] > div, [data-submission-recovery]) {
   background-color: var(--kiki-surface-panel);
 }
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-recovery-hold] {

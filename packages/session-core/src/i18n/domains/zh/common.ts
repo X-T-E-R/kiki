@@ -809,6 +809,7 @@ export const commonZh = {
   'workHome.task.tablesBody': '按主键匹配 CSV 或 .xlsx，报告差异。',
   'workMode.appliesToWindow': '只作用于当前窗口。此空间的其他窗口保持各自模式。',
   'workMode.aria': '窗口模式',
+  'workMode.empty': '暂无已保存的模式。',
   'workMode.enabled': '已就绪',
   'workMode.loadFailed': '无法读取此空间的模式。',
   'workMode.menu': '切换窗口模式',

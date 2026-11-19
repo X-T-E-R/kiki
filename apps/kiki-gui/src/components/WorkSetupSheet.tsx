@@ -12,7 +12,7 @@
  * succeeded stays, the rest is named, and retrying is the same one action.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { WorkPresetItem } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -64,19 +64,22 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
     ? missing.filter((plugin) => phase.completed.includes(plugin.id) && phase.failures.every((failure) => failure.plugin_id !== plugin.id))
     : [];
 
+  const onEnabledRef = useRef(onEnabled);
+  onEnabledRef.current = onEnabled;
+
   useEffect(() => {
     if (phase.kind !== 'working') return;
     let cancelled = false;
     client.enableWorkPreset(mode.id, installPrerequisites).then((response) => {
       if (cancelled) return;
       setPhase(response.failures.length === 0 ? { kind: 'done' } : { kind: 'partial', completed: response.completed, failures: response.failures });
-      onEnabled(response.preset);
+      onEnabledRef.current(response.preset);
     }, (error: unknown) => {
       if (cancelled) return;
       setPhase({ kind: 'partial', completed: [], failures: [{ plugin_id: mode.id, message: errorText(locale, error) }] });
     });
     return () => { cancelled = true; };
-  }, [client, installPrerequisites, locale, mode.id, onEnabled, phase.kind]);
+  }, [client, installPrerequisites, locale, mode.id, phase.kind]);
 
   const start = (): void => { setPhase({ kind: 'working' }); };
 

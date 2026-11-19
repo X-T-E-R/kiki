@@ -36,6 +36,7 @@ import {
 } from '../spaceAuthority';
 import type { ResolvedTheme } from '../theme';
 import { spaceStorage } from '../spaceStorage';
+import { pruneMedia } from './mediaStore';
 
 /** A media file held in the local media store. */
 export interface BackgroundMediaRef {
@@ -295,7 +296,53 @@ export function writeBackgroundPrefs(next: Omit<BackgroundPrefs, 'assist'> & { r
   persistBackgroundPrefs(normalized);
 }
 
+function collectLocalMediaIdsAcrossSpaces(currentNormalized: BackgroundPrefs): Set<string> {
+  const keep = new Set<string>();
+  const addFrom = (prefs: BackgroundPrefs | null | undefined) => {
+    if (!prefs) return;
+    for (const ref of prefs.light?.media ?? []) {
+      if (ref.id.startsWith('local-')) keep.add(ref.id);
+    }
+    for (const ref of prefs.dark?.media ?? []) {
+      if (ref.id.startsWith('local-')) keep.add(ref.id);
+    }
+  };
+  addFrom(currentNormalized);
+  if (typeof localStorage !== 'undefined') {
+    try {
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (key === null) continue;
+        if (key === STORAGE_KEY || (key.startsWith('kiki.space.') && key.endsWith(`.${STORAGE_KEY}`))) {
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          try {
+            addFrom(normalizeBackgroundPrefs(JSON.parse(raw)));
+          } catch {
+            // ignore corrupted space background pref
+          }
+        }
+      }
+    } catch {
+      // ignore storage enumeration failure
+    }
+  }
+  return keep;
+}
+
+function localIdsOf(prefs: BackgroundPrefs | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const ref of prefs?.light?.media ?? []) {
+    if (ref.id.startsWith('local-')) ids.add(ref.id);
+  }
+  for (const ref of prefs?.dark?.media ?? []) {
+    if (ref.id.startsWith('local-')) ids.add(ref.id);
+  }
+  return ids;
+}
+
 function persistBackgroundPrefs(normalized: BackgroundPrefs): void {
+  const previousLocalIds = localIdsOf(stored);
   try {
     if (normalized.light === null && normalized.dark === null && normalized.linked && normalized.assist) spaceStorage.removeItem(STORAGE_KEY);
     else spaceStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
@@ -303,6 +350,14 @@ function persistBackgroundPrefs(normalized: BackgroundPrefs): void {
     // Storage is a convenience; the in-memory prefs still apply.
   }
   if (JSON.stringify(normalized) !== JSON.stringify(stored)) stored = normalized;
+  const nextLocalIds = localIdsOf(normalized);
+  let droppedLocal = false;
+  for (const id of previousLocalIds) {
+    if (!nextLocalIds.has(id)) { droppedLocal = true; break; }
+  }
+  if (droppedLocal) {
+    void pruneMedia(collectLocalMediaIdsAcrossSpaces(normalized));
+  }
   for (const listener of listeners) listener();
 }
 

@@ -15,7 +15,8 @@
  */
 
 import { useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';import type { PersonaSummary, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { PersonaSummary, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 import { errorText } from '@kiki/session-core/i18n';
@@ -60,7 +61,6 @@ export function PersonaConversationsSection({
 
   const [workspaceFilter, setWorkspaceFilter] = useState('');
   const [search, setSearch] = useState('');
-  const [pages, setPages] = useState(INITIAL_PAGES);
 
   const workspaceMap = useMemo(() => new Map(workspaceOptions.map((w) => [w.id, w.name])), [workspaceOptions]);
   // A room seat's own session title is generated, not the room's name; the row
@@ -84,13 +84,15 @@ export function PersonaConversationsSection({
     ...workspaceOptions.map((workspace) => ({ value: workspace.id, label: workspace.name, hint: workspace.root })),
   ], [t, workspaceOptions]);
 
-  const conversationsQuery = useQuery({
-    queryKey: ['sessions', 'persona', persona.id, workspaceFilter, pages],
-    queryFn: async (): Promise<PersonaConversations> => {
+  const conversationsQuery = useInfiniteQuery({
+    queryKey: ['sessions', 'persona', persona.id, workspaceFilter],
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }): Promise<PersonaConversations & { readonly nextBefore?: string }> => {
       const items: Session[] = [];
-      let before: string | undefined;
+      let before = pageParam;
       let truncated = false;
-      for (let page = 0; page < pages; page += 1) {
+      const pagesPerFetch = pageParam === undefined ? INITIAL_PAGES : 1;
+      for (let page = 0; page < pagesPerFetch; page += 1) {
         const result = await client.listSessions({
           persona: persona.id,
           page_size: PAGE_SIZE,
@@ -102,15 +104,30 @@ export function PersonaConversationsSection({
         items.push(...result.items);
         before = result.items.at(-1)?.id;
         truncated = result.has_more;
-        if (!truncated) break;
+        if (!truncated || result.items.length === 0) break;
       }
-      return { items, truncated };
+      return { items, truncated, nextBefore: truncated ? before : undefined };
     },
+    getNextPageParam: (lastPage) => lastPage.nextBefore,
     staleTime: 15_000,
   });
 
+  const allItems = useMemo(() => {
+    const pagesData = conversationsQuery.data?.pages ?? [];
+    const seenIds = new Set<string>();
+    const deduped: Session[] = [];
+    for (const page of pagesData) {
+      for (const item of page.items) {
+        if (seenIds.has(item.id)) continue;
+        seenIds.add(item.id);
+        deduped.push(item);
+      }
+    }
+    return deduped;
+  }, [conversationsQuery.data]);
+
   const rows = useMemo(() => {
-    const items = [...(conversationsQuery.data?.items ?? [])];
+    const items = [...allItems];
     const needle = search.trim().toLocaleLowerCase();
     const matched = needle === ''
       ? items
@@ -122,7 +139,7 @@ export function PersonaConversationsSection({
       if (b.id === persona.homeSessionId) return 1;
       return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
     });
-  }, [conversationsQuery.data, persona.homeSessionId, search]);
+  }, [allItems, persona.homeSessionId, search]);
 
   // The home id the inverse needs, captured before the write lands.
   const previousHomeRef = useRef<string | undefined>(persona.homeSessionId);
@@ -160,7 +177,7 @@ export function PersonaConversationsSection({
     },
   });
 
-  const total = conversationsQuery.data?.items.length ?? 0;
+  const total = allItems.length;
 
   return (
     <div data-persona-conversations className="flex min-w-0 flex-col">
@@ -201,9 +218,9 @@ export function PersonaConversationsSection({
         </button>
       </div>
 
-      {conversationsQuery.isPending ? (
+      {conversationsQuery.isPending && conversationsQuery.data === undefined ? (
         <p role="status" className="py-10 text-center text-[13px] text-ink-faint">{t('persona.conversationsLoading')}</p>
-      ) : conversationsQuery.isError ? (
+      ) : conversationsQuery.isError && conversationsQuery.data === undefined ? (
         <div className="py-10 text-center">
           <p role="alert" className="text-[13px] text-ink-soft">
             {t('persona.conversationsLoadFailed', { detail: errorText(locale, conversationsQuery.error) })}
@@ -298,16 +315,25 @@ export function PersonaConversationsSection({
         </ul>
       )}
 
-      {conversationsQuery.data?.truncated === true ? (
-        <button
-          type="button"
-          data-persona-conversations-more
-          onClick={() => { setPages((value) => value + INITIAL_PAGES); }}
-          disabled={conversationsQuery.isFetching}
-          className="mt-2 self-center rounded-md px-3 py-1.5 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {t('sidebar.loadMore')} · {t('persona.conversationsShown', { count: total })}
-        </button>
+      {conversationsQuery.hasNextPage ? (
+        <div className="mt-2 flex flex-col items-center gap-1.5">
+          {conversationsQuery.isFetchNextPageError ? (
+            <p role="alert" className="text-[12px] text-danger">
+              {t('persona.conversationsLoadFailed', { detail: errorText(locale, conversationsQuery.error) })}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            data-persona-conversations-more
+            onClick={() => { void conversationsQuery.fetchNextPage(); }}
+            disabled={conversationsQuery.isFetchingNextPage}
+            className="self-center rounded-md px-3 py-1.5 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {conversationsQuery.isFetchNextPageError
+              ? t('common.retry')
+              : `${t('sidebar.loadMore')} · ${t('persona.conversationsShown', { count: total })}`}
+          </button>
+        </div>
       ) : null}
     </div>
   );

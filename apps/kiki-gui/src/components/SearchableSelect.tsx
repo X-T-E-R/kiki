@@ -15,7 +15,7 @@
  */
 
 import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { Dialog as BaseDialog } from '@base-ui/react/dialog';
 import { Popover } from '@base-ui/react/popover';
 
 import { filterSelectOptions } from '@kiki/session-core/sessions';
@@ -36,6 +36,11 @@ import {
 } from '../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from './Dialog';
 import { Icon } from './icons';
+import {
+  handleFloatingSelectOpenChange,
+  SELECT_SCROLL_LIST_CLASS,
+  useFloatingOutsidePointerDown,
+} from './select/selectPrimitives';
 import { LIST_TOOLS_MIN_ITEMS } from './settings/list/listState';
 
 /**
@@ -384,15 +389,22 @@ export function SearchableSelect(props: SearchableSelectProps) {
     listRef.current?.focus();
   }, [open, showFilter, asSheet]);
 
+  useFloatingOutsidePointerDown(open, {
+    enabled: !asSheet,
+    surfaceOwnerId,
+    rootRef,
+    triggerRef,
+    panelRef,
+    onDismiss: close,
+  });
+
   useEffect(() => {
     if (!open) return;
     const release = registerOverlay(surfaceOwnerId);
-    const onPointerDown = (event: PointerEvent) => {
-      if (asSheet) return;
-      if (event.target instanceof Node && rootRef.current?.contains(event.target) === true) return;
-      if (containsOrOwnsFloatingTarget(panelRef.current, event.target, surfaceOwnerId)) return;
-      close();
-    };
+    // Portaled popovers and phone sheets rely on Base UI Popover/Dialog for
+    // Escape dismissal; only inline `panelClassName` panels attach a document
+    // Escape listener.
+    if (isPortaled) return release;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       if (
@@ -408,14 +420,12 @@ export function SearchableSelect(props: SearchableSelectProps) {
       close();
       triggerRef.current?.focus();
     };
-    document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
     return () => {
       release();
-      document.removeEventListener('pointerdown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open, surfaceOwnerId, asSheet]);
+  }, [open, surfaceOwnerId, isPortaled]);
 
   const estRowHeight = asSheet ? 52 : density === 'compact' ? 40 : 52;
 
@@ -581,7 +591,7 @@ export function SearchableSelect(props: SearchableSelectProps) {
           aria-activedescendant={!showFilter && rowEnabled(activeIndex) ? `${listId}-option-${activeIndex}` : undefined}
           onKeyDown={showFilter ? undefined : onNavKeyDown}
           onScroll={isVirtualized ? onListScroll : undefined}
-          className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5 outline-none ${
+          className={`${SELECT_SCROLL_LIST_CLASS} p-1.5 outline-none ${
             isPortaled ? '' : 'max-h-[min(340px,55vh)]'
           }`}
         >
@@ -801,41 +811,79 @@ export function SearchableSelect(props: SearchableSelectProps) {
       </button>
       {open
         ? asSheet
-          ? createPortal(
-            <div
-              data-select-sheet
-              className="kiki-action-sheet-layer"
-              style={{ zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
-              onClick={(event) => { event.stopPropagation(); }}
-            >
-              <div
-                aria-hidden
-                data-select-scrim
-                className="kiki-action-sheet-scrim"
-                onClick={() => { close(); triggerRef.current?.focus(); }}
-              />
-              <div
-                ref={panelRef}
-                data-select-panel
-                {...panelData}
-                {...{
-                  [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
-                  [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
-                  [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
-                  event.preventDefault();
-                  event.stopPropagation();
+          ? (
+            <BaseDialog.Root
+              open
+              modal={false}
+              disablePointerDismissal={false}
+              onOpenChange={(nextOpen, eventDetails) => {
+                if (nextOpen) return;
+                if (eventDetails.reason === 'escape-key') {
+                  if (
+                    (eventDetails.event instanceof KeyboardEvent && isImeKeyEvent(eventDetails.event)) ||
+                    hasOpenOwnedFloatingPortal(surfaceOwnerId)
+                  ) {
+                    eventDetails.cancel();
+                    return;
+                  }
                   close();
                   triggerRef.current?.focus();
-                }}
-                className="kiki-action-sheet flex flex-col overflow-hidden"
-              >
-                {renderPanel()}
-              </div>
-            </div>,
-            document.body,
+                  return;
+                }
+                if (eventDetails.reason === 'outside-press') {
+                  const target = eventDetails.event?.target ?? null;
+                  if (containsOrOwnsFloatingTarget(panelRef.current, target, surfaceOwnerId)) {
+                    eventDetails.cancel();
+                    return;
+                  }
+                  close();
+                  triggerRef.current?.focus();
+                  return;
+                }
+                close();
+                triggerRef.current?.focus();
+              }}
+            >
+              <BaseDialog.Portal>
+                <div
+                  data-select-sheet
+                  className="kiki-action-sheet-layer"
+                  style={{ zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
+                  onClick={(event) => { event.stopPropagation(); }}
+                >
+                  <BaseDialog.Backdrop
+                    forceRender
+                    aria-hidden
+                    data-select-scrim
+                    className="kiki-action-sheet-scrim"
+                    onClick={() => { close(); triggerRef.current?.focus(); }}
+                  />
+                  <BaseDialog.Popup
+                    ref={panelRef}
+                    role="presentation"
+                    initialFocus={false}
+                    finalFocus={false}
+                    data-select-panel
+                    {...panelData}
+                    {...{
+                      [FLOATING_OWNER_ATTRIBUTE]: surfaceOwnerId,
+                      [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
+                      [MODAL_ESCAPE_ATTRIBUTE]: ownerId,
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      close();
+                      triggerRef.current?.focus();
+                    }}
+                    className="kiki-action-sheet flex flex-col overflow-hidden"
+                  >
+                    {renderPanel()}
+                  </BaseDialog.Popup>
+                </div>
+              </BaseDialog.Portal>
+            </BaseDialog.Root>
           )
           : ownsPanel
             ? (
@@ -843,20 +891,16 @@ export function SearchableSelect(props: SearchableSelectProps) {
                 open
                 modal={false}
                 onOpenChange={(nextOpen, eventDetails) => {
-                  if (nextOpen) return;
-                  if (eventDetails.reason === 'escape-key') {
-                    if (
-                      (eventDetails.event instanceof KeyboardEvent && isImeKeyEvent(eventDetails.event)) ||
-                      hasOpenOwnedFloatingPortal(surfaceOwnerId)
-                    ) {
-                      eventDetails.cancel();
-                      return;
-                    }
-                    close();
-                    triggerRef.current?.focus();
-                    return;
-                  }
-                  eventDetails.cancel();
+                  handleFloatingSelectOpenChange(nextOpen, eventDetails, {
+                    surfaceOwnerId,
+                    triggerEl: triggerRef.current,
+                    panelEl: panelRef.current,
+                    rootEl: rootRef.current,
+                    onDismiss: (refocusTrigger) => {
+                      close();
+                      if (refocusTrigger) triggerRef.current?.focus();
+                    },
+                  });
                 }}
               >
                 <Popover.Portal>

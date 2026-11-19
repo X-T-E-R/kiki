@@ -40,6 +40,7 @@ import { lazyPage } from './LazyPage';
 import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, isAutoCreatedWorkspace, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { PhoneRemoteSpaceLine } from './PageChrome';
+import { WorkspacePanelsControl } from './PreviewToggleButton';
 import { WorktreeOption } from './WorktreeOption';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { usePersonaList } from './persona/usePersonas';
@@ -442,6 +443,7 @@ function NewSessionPageContent({
                 </h1>
                 <PhoneRemoteSpaceLine />
               </div>
+              <WorkspacePanelsControl workspaceId={cwd === '' ? state.effectiveWorkspace?.id : undefined} />
             </header>,
             slots.header,
           )

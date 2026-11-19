@@ -237,15 +237,18 @@ export function GoalCard({
         if (error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID) {
           // Version conflict: reload the form from the authoritative snapshot
           // and let the user review before saving again.
-          setConflict(true);
           void onRefresh()
             .then((snapshot) => {
               if (snapshot !== null) {
                 setBaseline({ goalId: snapshot.goalId, controlRevision: snapshot.controlRevision });
                 seedForm(snapshot);
+                setConflict(true);
               }
             })
-            .catch(() => undefined);
+            .catch((refreshError: unknown) => {
+              setConflict(false);
+              setActionError(errorDetail(refreshError));
+            });
           return;
         }
         setActionError(errorDetail(error));

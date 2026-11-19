@@ -398,17 +398,21 @@ export function DecisionConnectionEditor({
     setBaseline(read); setDraft(read); setRevision(undefined); setConflicts(null);
   }, [readKey, seenRead, dirty, saving]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const [revisionRetry, setRevisionRetry] = useState(0);
+  const [revisionLoadError, setRevisionLoadError] = useState(false);
   const live = useRef({ draft, baseline });
   live.current = { draft, baseline };
   const baselineKey = JSON.stringify(baseline);
   useEffect(() => {
     if (!shouldMountBody || revision !== undefined) return;
     let current = true;
+    setRevisionLoadError(false);
     void client.getProviderEntity(provider.id).then((entity) => {
       if (!current) return;
       const snapshot = draftOf(entity);
       const { draft: editing, baseline: from } = live.current;
       setRevision(entity.revision);
+      setRevisionLoadError(false);
       if (sameDraft(snapshot, from)) return;
       const rebased = rebaseDraft(editing, from, snapshot);
       setBaseline(snapshot);
@@ -417,9 +421,13 @@ export function DecisionConnectionEditor({
         setConflicts({ fields: rebased.conflicts, saved: snapshot });
         setFeedback({ tone: 'error', text: t('st.decision.conflict') });
       }
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      if (!current) return;
+      setRevisionLoadError(true);
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    });
     return () => { current = false; };
-  }, [shouldMountBody, baselineKey, revision, provider.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [shouldMountBody, baselineKey, revision, revisionRetry, provider.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!defaultOpen) return;
@@ -615,6 +623,18 @@ export function DecisionConnectionEditor({
               saveDisabled={!draftValid(draft) || revision === undefined} saveLabel={t('st.decision.save')}
               onSave={() => void save()} onDiscard={() => { setDraft(baseline); setKey(KEEP_SECRET); setFeedback(null); setConflicts(null); }} />
             <FeedbackLine feedback={feedback} />
+            {revisionLoadError && revision === undefined ? (
+              <div>
+                <button
+                  type="button"
+                  data-decision-revision-retry
+                  className={SECONDARY_BUTTON}
+                  onClick={() => { setFeedback(null); setRevisionRetry((count) => count + 1); }}
+                >
+                  {t('common.retry')}
+                </button>
+              </div>
+            ) : null}
             {conflicts !== null ? (
               <p data-decision-conflict={conflicts.fields.join(' ')} role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">
                 {t('st.decision.conflictFields', {

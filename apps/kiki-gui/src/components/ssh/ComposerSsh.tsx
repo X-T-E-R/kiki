@@ -25,6 +25,7 @@
  */
 
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import type { SshHostAttachment } from '@kiki/session-core/composer';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -99,7 +100,6 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<readonly SshHost[]>([]);
   const [listOpen, setListOpen] = useState(false);
-  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -107,7 +107,6 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   }, []);
   useEffect(() => {
     setSelected([]);
-    setUserExpanded(null);
   }, [sessionId]);
 
   const pending = sessionId === undefined ? NO_INFLIGHT_HOSTS : inflightBySession.get(sessionId) ?? NO_INFLIGHT_HOSTS;
@@ -273,116 +272,97 @@ export function useComposerSsh(sessionId: string | undefined, enabled: boolean):
   const listId = useId();
   useEffect(() => {
     if (!listOpen) return;
-    const unregister = registerOverlay('composer-ssh-strip');
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof HTMLElement && event.target.closest('[data-composer-ssh-strip]') === null) setListOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setListOpen(false); };
-    window.addEventListener('pointerdown', onPointerDown, true);
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      unregister();
-      window.removeEventListener('pointerdown', onPointerDown, true);
-      window.removeEventListener('keydown', onKeyDown);
-    };
+    return registerOverlay('composer-ssh-strip');
   }, [listOpen]);
 
-  // The strip is a session-context control, so it stands only while this
-  // session has SSH context. A session whose host list has not been read yet
-  // is not an empty session: the strip waits for that read rather than
-  // flashing a zero line and then growing one chip. On /new the picks are
-  // local state, so an empty pick is genuinely empty.
+  // Bare external ContextStrip trigger below the composer card:
+  // `>_ GPU box +2 ▾` opening the host-management Popover upwards (`side="top"`).
   const contextKnown = sessionId === undefined || sessionQuery.data !== undefined;
-  const isExpanded = joined.length <= 3 ? true : (userExpanded ?? false);
+  const primaryJoined = joined[0];
+  const primaryState = primaryJoined === undefined
+    ? undefined
+    : joined.map((entry) => visibleState(entry.status)).find((s) => s === 'failed' || s === 'disconnected')
+      ?? visibleState(primaryJoined.status);
+  const summaryLabel = primaryJoined === undefined
+    ? t('composer.ssh.hosts')
+    : joined.length > 1
+      ? `${primaryJoined.host.name} +${joined.length - 1}`
+      : primaryJoined.host.name;
 
   const resident = available && contextKnown && joined.length > 0 ? (
     <div
       data-composer-ssh-strip
       data-composer-ssh-open={listOpen ? '' : undefined}
-      className="mx-3 mt-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1"
+      className="inline-flex shrink-0 items-center"
     >
-      <button
-        type="button"
-        data-composer-ssh-toggle
-        aria-expanded={listOpen}
-        aria-controls={listId}
-        title={t(sessionId === undefined ? 'composer.ssh.draftHint' : 'composer.ssh.sessionHint')}
-        onClick={() => { setListOpen((open) => !open); }}
-        className={`inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md pl-1.5 pr-1.5 text-[11px] font-medium tracking-wide text-ink-faint uppercase transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 ${listOpen ? 'bg-ink/[0.05] text-ink-soft' : ''}`}
-      >
-        <Icon name="terminal" size={12} className="shrink-0" />
-        {/* Just "SSH": the strip only ever draws a session's own hosts, so the
-            scope is what it means rather than something to spell out. */}
-        <span className="shrink-0">{t('composer.ssh.hosts')}</span>
-        <span className="shrink-0 tabular-nums">{joined.length}</span>
-        <Icon name="chevron" size={12} className={`shrink-0 transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${listOpen ? 'rotate-90' : ''}`} />
-      </button>
-
-      {joined.length > 3 ? (
-        <button
+      <Popover.Root open={listOpen} onOpenChange={setListOpen}>
+        <Popover.Trigger
           type="button"
-          data-composer-ssh-expand
-          aria-expanded={isExpanded}
-          onClick={() => { setUserExpanded(!isExpanded); }}
-          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8"
+          data-composer-ssh-toggle
+          data-composer-ssh-summary=""
+          aria-controls={listId}
+          title={t(sessionId === undefined ? 'composer.ssh.draftHint' : 'composer.ssh.sessionHint')}
+          className={`inline-flex h-6 max-w-52 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[12px] leading-4 text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 ${listOpen ? 'bg-ink/[0.06] text-ink' : ''}`}
         >
-          <span>
-            {isExpanded
-              ? t('composer.ssh.collapse')
-              : t('composer.ssh.expand', { count: joined.length })}
-          </span>
+          <Icon name="terminal" size={12} className="shrink-0 text-ink-faint" />
+          <span className="min-w-0 truncate">{summaryLabel}</span>
+          {primaryState !== undefined ? (
+            <span aria-label={t(`st.ssh.state.${primaryState}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(primaryState)}`} />
+          ) : null}
           <Icon
             name="chevron"
             size={12}
-            className={`shrink-0 transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
-              isExpanded ? '-rotate-90' : 'rotate-90'
-            }`}
+            className={`shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${listOpen ? '-rotate-90' : 'rotate-90'}`}
           />
-        </button>
-      ) : null}
-
-      {isExpanded ? joined.map(({ host, status }) => {
-        const state = visibleState(status);
-        const target = sshTargetLabel(host);
-        return (
-          <span
-            key={host.id}
-            role="listitem"
-            data-composer-ssh-chip={host.id}
-            title={target === undefined ? host.id : `${host.id} · ${target}`}
-            className={`anim-enter ${SSH_HOST_CHIP_CLASS} pr-0.5 pl-2`}
-          >
-            <Icon name="terminal" size={12} className="text-ink-faint" />
-            <span className="min-w-0 truncate">{host.name}</span>
-            {state !== undefined ? (
-              <span aria-label={t(`st.ssh.state.${state}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(state)}`} />
-            ) : null}
-            <button
-              type="button"
-              data-composer-ssh-chip-remove
-              aria-label={t('composer.ssh.removeChip', { name: host.name })}
-              title={t('composer.ssh.removeChip', { name: host.name })}
-              disabled={pending.has(host.id)}
-              onClick={() => void toggle(host, false)}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:ml-1.5 pointer-coarse:min-h-10 pointer-coarse:min-w-10 pointer-coarse:h-10 pointer-coarse:w-10"
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Positioner side="top" align="start" sideOffset={6} className="z-50 outline-none">
+            <Popover.Popup
+              id={listId}
+              data-composer-ssh-list
+              role="group"
+              aria-label={t('composer.ssh.heading')}
+              className={`anim-enter flex w-72 max-h-[min(22rem,var(--available-height,60vh))] flex-col overflow-hidden rounded-[10px] p-1 outline-none ${POPOVER_SURFACE_CLASS}`}
             >
-              <Icon name="close" size={12} />
-            </button>
-          </span>
-        );
-      }) : null}
-
-      {listOpen ? (
-        <div
-          id={listId}
-          data-composer-ssh-list
-          role="group"
-          aria-label={t('composer.ssh.heading')}
-          className={`anim-enter mt-1 w-full min-w-0 rounded-[10px] p-1 ${POPOVER_SURFACE_CLASS}`}
-        >
-          {renderPanel(() => { setListOpen(false); })}
-        </div>
-      ) : null}
+              <div className="flex flex-wrap items-center gap-1 border-b border-hairline/70 px-1.5 pt-1 pb-1.5" role="list">
+                {joined.map(({ host, status }) => {
+                  const state = visibleState(status);
+                  const target = sshTargetLabel(host);
+                  return (
+                    <span
+                      key={host.id}
+                      role="listitem"
+                      data-composer-ssh-chip={host.id}
+                      title={target === undefined ? host.id : `${host.id} · ${target}`}
+                      className={`anim-enter ${SSH_HOST_CHIP_CLASS} pr-0.5 pl-2`}
+                    >
+                      <Icon name="terminal" size={12} className="text-ink-faint" />
+                      <span className="min-w-0 truncate">{host.name}</span>
+                      {state !== undefined ? (
+                        <span aria-label={t(`st.ssh.state.${state}`)} role="img" className={`h-1.5 w-1.5 shrink-0 rounded-full ${stateDotClass(state)}`} />
+                      ) : null}
+                      <button
+                        type="button"
+                        data-composer-ssh-chip-remove
+                        aria-label={t('composer.ssh.removeChip', { name: host.name })}
+                        title={t('composer.ssh.removeChip', { name: host.name })}
+                        disabled={pending.has(host.id)}
+                        onClick={() => void toggle(host, false)}
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:ml-1 pointer-coarse:h-8 pointer-coarse:w-8"
+                      >
+                        <Icon name="close" size={12} />
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto pt-1">
+                {renderPanel(() => { setListOpen(false); })}
+              </div>
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
+      </Popover.Root>
     </div>
   ) : null;
 

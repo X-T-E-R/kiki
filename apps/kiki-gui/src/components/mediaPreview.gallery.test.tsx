@@ -10,8 +10,7 @@ import { LazyMediaLightbox, LazyPreviewWorkspace } from './preview/PreviewLoadBo
 import { MediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import { agentTranscriptToBlocks, type MediaRun, type SessionViewState, type ToolBlock } from '@kiki/session-core/session';
-import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '@kiki/transcript';
-import { boundedTranscriptSnapshot } from '../../../../packages/kap-server/src/transport/klient/boundedTranscript';
+import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter, type AgentTranscriptSnapshot } from '@kiki/transcript';
 import { MediaRunRow } from './timeline/FoldRows';
 
 vi.mock('../state/connection', () => ({ useOptionalConnection: () => ({ client: undefined, scopeId: 'gallery' }) }));
@@ -178,7 +177,38 @@ describe('image gallery', () => {
       { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', toolCallId: 'call-2', name: 'ReadMediaFile' } },
       { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'call-2', result: { output: [image[0]] } } },
     ]) reducer.apply(adapter.add(record));
-    const projected = boundedTranscriptSnapshot(transcript.snapshot(), 'main');
+    const rawSnapshot = transcript.snapshot();
+    const projected: AgentTranscriptSnapshot = {
+      ...rawSnapshot,
+      attachments: rawSnapshot.attachments.map((att, index) => ({
+        ...att,
+        source: att.source?.kind === 'file' ? att.source : { kind: 'file' as const, fileId: `blobref:main:img-${index}` },
+      })),
+      items: rawSnapshot.items.map((item) => {
+        if (item.kind !== 'turn') return item;
+        return {
+          ...item,
+          steps: item.steps.map((step) => ({
+            ...step,
+            frames: step.frames.map((frame) => {
+              if (frame.kind !== 'tool' || frame.toolCallId !== 'call-1') return frame;
+              return {
+                ...frame,
+                output: undefined,
+                contentRefs: [{
+                  source: { kind: 'frame' as const, id: frame.frameId, turnId: item.turnId, stepId: step.stepId },
+                  path: ['output'],
+                  kind: 'text' as const,
+                  offset: 9,
+                  total: 4096,
+                  revision: 'rev-call-1',
+                }],
+              };
+            }),
+          })),
+        };
+      }),
+    };
     const blocks = agentTranscriptToBlocks({ agent_id: 'main', ...projected });
     const tools = blocks.filter((block): block is ToolBlock => block.kind === 'tool');
     expect(tools).toHaveLength(2);

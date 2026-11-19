@@ -156,7 +156,7 @@ describe('ComposerSsh', () => {
     expect(container.querySelector('[data-composer-ssh-strip]')).toBeNull();
   });
 
-  it('1–3 hosts: directly shows all chips without folding or expand button', async () => {
+  it('2 hosts: renders compact bare summary trigger and shows host chips inside upward popover', async () => {
     ssh.sessionHosts.mockResolvedValue({
       hosts: [
         { host: HOSTS[0]!, status: { hostId: 'h1', state: 'ready', generation: 1 } },
@@ -166,23 +166,21 @@ describe('ComposerSsh', () => {
     const { container } = await renderHook('sess-1');
     const strip = container.querySelector('[data-composer-ssh-strip]');
     expect(strip).not.toBeNull();
-    // 2 chips should be rendered directly
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(2);
-    // Expand/collapse button must not appear for <= 3 hosts
-    expect(container.querySelector('[data-composer-ssh-expand]')).toBeNull();
-    // Desktop keeps 20x20 remove button on a 24px chip; touch grows remove to 40x40 separated from name
-    const chip = container.querySelector('[data-composer-ssh-chip="h1"]')!;
+    const toggle = strip!.querySelector<HTMLButtonElement>('[data-composer-ssh-toggle]')!;
+    expect(toggle.textContent).toContain('Host One +1');
+    // Popover is closed at rest: zero host chips mounted in the bar.
+    expect(document.querySelectorAll('[data-composer-ssh-chip]').length).toBe(0);
+    await act(async () => { toggle.click(); });
+    await flush();
+    expect(document.querySelectorAll('[data-composer-ssh-chip]').length).toBe(2);
+    const chip = document.querySelector('[data-composer-ssh-chip="h1"]')!;
     const removeBtn = chip.querySelector('[data-composer-ssh-chip-remove]')!;
     expect(chip.className).toContain('h-6');
-    expect(chip.className).toContain('pointer-coarse:min-h-10');
     expect(removeBtn.className).toContain('h-5');
     expect(removeBtn.className).toContain('w-5');
-    expect(removeBtn.className).toContain('pointer-coarse:h-10');
-    expect(removeBtn.className).toContain('pointer-coarse:w-10');
-    expect(removeBtn.className).toContain('pointer-coarse:ml-1.5');
   });
 
-  it('3 hosts: still directly shows all chips without folding', async () => {
+  it('3 hosts: shows Host One +2 summary trigger and opens all 3 chips in popover', async () => {
     ssh.sessionHosts.mockResolvedValue({
       hosts: [
         { host: HOSTS[0]!, status: idleStatus('h1') },
@@ -191,11 +189,14 @@ describe('ComposerSsh', () => {
       ],
     });
     const { container } = await renderHook('sess-1');
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(3);
-    expect(container.querySelector('[data-composer-ssh-expand]')).toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>('[data-composer-ssh-toggle]')!;
+    expect(toggle.textContent).toContain('Host One +2');
+    await act(async () => { toggle.click(); });
+    await flush();
+    expect(document.querySelectorAll('[data-composer-ssh-chip]').length).toBe(3);
   });
 
-  it('>3 hosts: default folded, shows expand button, expands and collapses on click', async () => {
+  it('4 hosts: shows Host One +3 summary trigger and opens/closes all 4 chips via popover', async () => {
     ssh.sessionHosts.mockResolvedValue({
       hosts: [
         { host: HOSTS[0]!, status: idleStatus('h1') },
@@ -205,46 +206,30 @@ describe('ComposerSsh', () => {
       ],
     });
     const { container } = await renderHook('sess-1');
-    const expandBtn = container.querySelector('[data-composer-ssh-expand]') as HTMLButtonElement | null;
-    expect(expandBtn).not.toBeNull();
-    // Default folded: 0 chips shown
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(0);
-    expect(expandBtn?.textContent).toContain('4');
+    const toggle = container.querySelector<HTMLButtonElement>('[data-composer-ssh-toggle]')!;
+    expect(toggle.textContent).toContain('Host One +3');
+    expect(document.querySelectorAll('[data-composer-ssh-chip]').length).toBe(0);
 
-    // Click expand
-    await act(async () => {
-      expandBtn?.click();
-    });
+    await act(async () => { toggle.click(); });
     await flush();
+    expect(document.querySelectorAll('[data-composer-ssh-chip]').length).toBe(4);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
 
-    // Now all 4 chips shown
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(4);
-    expect(expandBtn?.getAttribute('aria-expanded')).toBe('true');
-
-    // Click collapse
-    await act(async () => {
-      expandBtn?.click();
-    });
+    await act(async () => { toggle.click(); });
     await flush();
-
-    // Folded again
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(0);
+    expect(document.querySelectorAll('[data-composer-ssh-chip]').length).toBe(0);
   });
 
-  it('5 hosts: folded by default, expands to all 5 chips', async () => {
+  it('5 hosts: shows Host One +4 summary trigger and opens all 5 chips in popover', async () => {
     ssh.sessionHosts.mockResolvedValue({
       hosts: HOSTS.map((h) => ({ host: h, status: idleStatus(h.id) })),
     });
     const { container } = await renderHook('sess-1');
-    const expandBtn = container.querySelector('[data-composer-ssh-expand]') as HTMLButtonElement | null;
-    expect(expandBtn).not.toBeNull();
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(0);
-
-    await act(async () => {
-      expandBtn?.click();
-    });
+    const toggle = container.querySelector<HTMLButtonElement>('[data-composer-ssh-toggle]')!;
+    expect(toggle.textContent).toContain('Host One +4');
+    await act(async () => { toggle.click(); });
     await flush();
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(5);
+    expect(document.querySelectorAll('[data-composer-ssh-chip]').length).toBe(5);
   });
 
   it('panel: renders each host with explicit Switch toggle and connection state', async () => {
@@ -321,15 +306,12 @@ describe('ComposerSsh', () => {
     });
 
     const { container, queryClient, root } = await renderHook('sess-a');
-    let expandBtn = container.querySelector('[data-composer-ssh-expand]') as HTMLButtonElement | null;
-    expect(expandBtn).not.toBeNull();
+    const toggleA = container.querySelector<HTMLButtonElement>('[data-composer-ssh-toggle]')!;
+    expect(toggleA.textContent).toContain('Host One +3');
 
-    // Expand in sess-a
-    await act(async () => {
-      expandBtn?.click();
-    });
+    await act(async () => { toggleA.click(); });
     await flush();
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(4);
+    expect(document.querySelectorAll('[data-composer-ssh-chip]').length).toBe(4);
 
     // Switch session to sess-b
     await act(async () => {
@@ -346,9 +328,9 @@ describe('ComposerSsh', () => {
     await flush();
     await flush();
 
-    // sess-b has 1 host: expand button is gone and 1 chip is directly shown
-    expect(container.querySelector('[data-composer-ssh-expand]')).toBeNull();
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(1);
+    // sess-b has 1 host: summary updates to Host One
+    expect(container.querySelector('[data-composer-ssh-toggle]')?.textContent).toContain('Host One');
+    expect(container.querySelector('[data-composer-ssh-toggle]')?.textContent).not.toContain('+');
   });
 
   it('draft mode: joins and leaves without sessionId and isolates across session switch', async () => {
@@ -363,7 +345,7 @@ describe('ComposerSsh', () => {
     await flush();
 
     expect(getHook().snapshot).toEqual([{ kind: 'ssh', id: 'h1', name: 'Host One' }]);
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(1);
+    expect(container.querySelector('[data-composer-ssh-toggle]')?.textContent).toContain('Host One');
   });
 
   it('adding a host from an existing session keeps the panel populated and joins the new host', async () => {
@@ -422,7 +404,7 @@ describe('ComposerSsh', () => {
     expect(panelAfter!.querySelector('[data-composer-ssh-host="newhost"]')).not.toBeNull();
     expect(panelAfter!.textContent?.trim()).not.toBe('');
 
-    // The resident strip keeps showing both chips (SSH 2), not a blank card.
-    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(2);
+    // The resident strip keeps showing both hosts (`Host One +1`), not a blank card.
+    expect(container.querySelector('[data-composer-ssh-toggle]')?.textContent).toContain('Host One +1');
   });
 });

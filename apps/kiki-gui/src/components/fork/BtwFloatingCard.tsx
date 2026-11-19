@@ -11,6 +11,7 @@ import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSync
 import { createViewState, type Block, type SessionController } from '@kiki/session-core/session';
 
 import { useI18n } from '../../i18n';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import { registerOverlay } from '../../lib/uiBusy';
 import { Icon, Spinner } from '../icons';
 import { Markdown } from '../Markdown';
@@ -106,10 +107,15 @@ export const BtwFloatingCard = memo(function BtwFloatingCard({
     }
   }, [rows.length, isBusy]);
 
+  const stickToBottomRef = useRef(true);
+  const forceScrollRef = useRef(false);
+  const composingRef = useRef(false);
+
   useEffect(() => {
     const el = scrollRef.current;
-    if (el !== null) {
+    if (el !== null && (stickToBottomRef.current || forceScrollRef.current)) {
       el.scrollTop = el.scrollHeight;
+      forceScrollRef.current = false;
     }
   }, [rows]);
 
@@ -118,9 +124,11 @@ export const BtwFloatingCard = memo(function BtwFloatingCard({
     if (clean === '' || sending) return;
     setSending(true);
     setDraft('');
+    forceScrollRef.current = true;
+    stickToBottomRef.current = true;
     void onSendQuestion(agentId, clean)
       .catch(() => {
-        setDraft(clean);
+        setDraft((current) => (current.trim() === '' ? clean : `${clean}\n${current}`));
       })
       .finally(() => {
         setSending(false);
@@ -165,6 +173,10 @@ export const BtwFloatingCard = memo(function BtwFloatingCard({
       {rows.length > 0 ? (
         <div
           ref={scrollRef}
+          onScroll={(event) => {
+            const el = event.currentTarget;
+            stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 36;
+          }}
           className="flex max-h-[260px] flex-col gap-2.5 overflow-y-auto px-3.5 py-2.5 text-[13px] leading-relaxed"
         >
           {rows.map((row) =>
@@ -193,8 +205,10 @@ export const BtwFloatingCard = memo(function BtwFloatingCard({
           onChange={(event) => {
             setDraft(event.target.value);
           }}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+            if (event.key === 'Enter' && !composingRef.current && !isImeKeyEvent(event)) {
               event.preventDefault();
               submit();
             }

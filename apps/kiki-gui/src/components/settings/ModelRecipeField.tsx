@@ -248,10 +248,28 @@ function RecipeAuthorRoute({ installationId, onSaved, onBack, onDirtyChange, onF
   if (query.data === undefined) {
     return (
       <div className="min-w-0 space-y-3" data-recipe-author-route={installationId}>
-        <p role="status" className="text-[12px] text-ink-faint">
-          {t(query.isError ? 'st.recipe.loadFailedShort' : 'st.recipe.loading')}
-        </p>
-        <button type="button" className={SECONDARY} onClick={onBack}>{t('st.recipe.back')}</button>
+        {query.isError ? (
+          <p role="alert" className="text-[12px] text-danger">
+            {errorText(locale, query.error)}
+          </p>
+        ) : (
+          <p role="status" className="text-[12px] text-ink-faint">
+            {t('st.recipe.loading')}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {query.isError ? (
+            <button
+              type="button"
+              className={SECONDARY}
+              disabled={query.isFetching}
+              onClick={() => { void query.refetch(); }}
+            >
+              {t('common.retry')}
+            </button>
+          ) : null}
+          <button type="button" className={SECONDARY} onClick={onBack}>{t('st.recipe.back')}</button>
+        </div>
       </div>
     );
   }

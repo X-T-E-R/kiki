@@ -1606,7 +1606,7 @@ it.each([
     capabilities: ['thinking'], support_efforts: supportEfforts, default_effort: defaultEffort }] });
   await renderWorkspace({ forest: testForest('running', true, { model: 'fixture/kiki-pro', thinkingEffort: effort }) });
   await settle();
-  expect(header.querySelector('[data-agent-effort]')?.textContent).toContain(effort);
+  expect(header.querySelector('[data-agent-effort]')).toBeNull();
   expect(dock.textContent).not.toContain('unavailable for this model');
   expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
   await typeText(composerInput(dock), 'continue');
@@ -1619,7 +1619,7 @@ it('preserves an invalid saved on binding and offers explicit recovery rather th
   harness.listModels.mockResolvedValue(EFFORT_CATALOG);
   await renderWorkspace({ forest: testForest('running', true, { model: 'fixture/kiki-pro', thinkingEffort: 'on' }) });
   await settle();
-  expect(header.querySelector('[data-agent-effort]')?.textContent).toContain('on');
+  expect(header.querySelector('[data-agent-effort]')).toBeNull();
   expect(dock.textContent).toContain('Effort “on” is unavailable for this model');
   expect(dock.textContent).toContain('Use model default effort');
   expect(harness.setAgentEffort).not.toHaveBeenCalled();
@@ -3622,12 +3622,9 @@ it('inherits model and yolo permission on a branch bound to constrained profile:
   expect(dock.textContent).toContain('完全放行');
   expect(dock.querySelector('[data-composer-replying-to]')).toBeNull();
 
-  const branchBar = dock.querySelector<HTMLElement>('[data-branch-fold-bar="agent-352"]');
-  expect(branchBar).not.toBeNull();
-  expect(branchBar?.className).toContain('px-3 sm:px-6');
-  expect(branchBar?.firstElementChild?.className).toContain('max-w-[var(--kiki-chat-content-width,760px)]');
-  expect(branchBar?.textContent).toContain('分支自 main · 轻量');
-  expect(branchBar?.querySelector('[data-branch-fold-action]')?.textContent).toBe('合回主线');
+  expect(dock.querySelector('[data-branch-fold-bar]')).toBeNull();
+  expect(header.querySelector('[data-branch-seam-header]')?.textContent).toBe('轻量');
+  expect(header.querySelector('[data-branch-fold-action]')?.textContent).toBe('合回主线');
 
   await typeText(composerInput(dock), '继续补充迁移方案');
   await act(async () => {
@@ -3830,7 +3827,7 @@ it('guards handleFoldBranch against clobbering edited drafts or navigating away 
 
   const textarea = composerInput(dock);
   await typeText(textarea, 'unsent follow-up draft');
-  const foldBtn = dock.querySelector<HTMLButtonElement>('[data-branch-fold-action]')!;
+  const foldBtn = header.querySelector<HTMLButtonElement>('[data-branch-fold-action]')!;
   expect(foldBtn).not.toBeNull();
   await act(async () => { foldBtn.click(); });
   // Never hijack unsent chat draft text as the merge summary.
@@ -4049,4 +4046,96 @@ it('wires onOpenSettings in the child ModelSwitchDialog so users can jump to mod
 
   expect(currentPath).toContain('/settings/ai');
   expect(currentPath).toContain('st-card-model-switch');
+});
+
+it('resolves authoritative branch identity for agent-<N> deep-links outside forest.byId and multi-page tails without flashing profile:agent restriction', async () => {
+  harness.listModels.mockResolvedValue({
+    items: [
+      { id: 'prov/m-main', remote_id: 'm-main', provider_id: 'prov', display_name: 'Model Main', support_efforts: ['low', 'high'] },
+    ],
+  });
+  let resolveCaps!: (value: unknown) => void;
+  harness.readCapabilities.mockImplementation(() => new Promise((resolve) => { resolveCaps = resolve; }));
+
+  const emptyForest: AgentForest = {
+    roots: [],
+    byId: {},
+  };
+  const tailOnlyBranchState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: true,
+    model: 'prov/m-main',
+    // Page-2 tail turns only: no byte-0 `branchBase` notice block present.
+    blocks: [
+      { id: 'u-21', kind: 'user', text: 'Follow up on turn 21' },
+      { id: 'a-21', kind: 'assistant', text: 'Page 2 tail answer.' },
+    ] as unknown as ReturnType<typeof createViewState>['blocks'],
+  };
+  const controller = controllerStub({
+    forest: emptyForest,
+    agentStates: { 'agent-425': tailOnlyBranchState },
+  });
+
+  await act(async () => {
+    root.render(
+      <MemoryRouter initialEntries={['/s/session/agent/agent-425']}>
+        <QueryClientProvider client={queries}>
+          <I18nProvider>
+            <AgentWorkspace
+              target={{ sessionId: 'session', agentId: 'agent-425' }}
+              controller={controller}
+              sessionState={createViewState('session')}
+              forest={emptyForest}
+              navigation={{ openAgent: vi.fn(), openAgentRoute: vi.fn(), openSession: vi.fn() }}
+              railOpen={false}
+              railIsOverlay={false}
+              onToggleRail={vi.fn()}
+              onCloseRail={vi.fn()}
+              onCancelTask={vi.fn()}
+              onStopAgentTask={vi.fn(async () => {})}
+            />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  });
+  await settle();
+
+  // While capabilitiesQuery is still pending and selectedNode is absent from forest.byId,
+  // Composer must NOT prematurely enforce restrict_models_to_menu ("sub") / profile:agent error.
+  expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
+
+  await act(async () => {
+    resolveCaps({
+      context: 'live',
+      live: false,
+      owner: {
+        agent_id: 'agent-425',
+        profile: 'agent',
+        parent_agent_id: 'main',
+        is_branch: true,
+        branch_seed: 'compact',
+        branch_sealed: false,
+        tools_locked: false,
+        branch_title: 'Investigate auth',
+      },
+      available: true,
+      targets: [],
+      profile: {
+        name: 'agent',
+        model: 'prov/m-main',
+        restrict_models_to_menu: false,
+      },
+    });
+  });
+  await settle();
+  await settle();
+
+  // Authoritative capabilities metadata restores full branch UI & main delegation position.
+  expect(dock.querySelector('[data-branch-fold-bar]')).toBeNull();
+  expect(header.querySelector('[data-branch-fold-action]')?.textContent).toBe('Fold into main');
+  expect(header.querySelector('[data-branch-seam-header]')?.textContent).toBe('Compact');
+  expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
+  expect(header.textContent).toContain('Investigate auth');
 });

@@ -33,6 +33,7 @@ import { createServer } from 'vite';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import { LEGACY_BODY, TAIL } from '../fixtures/message-channels.scenario.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = process.env.KIKI_PROOF_OUTPUT_DIR ?? join(root, '.tmp', 'message-channels');
@@ -58,13 +59,7 @@ function check(condition, message) {
   if (!condition) errors.push(message);
 }
 
-async function settle(page) {
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-    await Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => {})));
-  });
-  await page.waitForTimeout(200);
-}
+const settle = (page) => settlePage(page, { parkPointer: false, waitMs: 200 });
 
 async function shot(page, name) {
   await settle(page);

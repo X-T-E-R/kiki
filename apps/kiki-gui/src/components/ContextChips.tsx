@@ -23,7 +23,11 @@ import {
   PreviewLoadBoundary,
 } from './preview/PreviewLoadBoundary';
 
+export type ContextChipVariant = 'compact' | 'shelf';
+
 const TILE = 'context-chip anim-enter relative flex h-8 min-w-0 items-center gap-1.5 rounded-[10px] text-[12px]';
+const SHELF_CARD =
+  'context-chip anim-enter relative flex h-11 min-w-0 max-w-[180px] shrink-0 items-center gap-2 rounded-[10px] border border-hairline bg-canvas/65 py-1 pl-2.5 pr-1.5 text-left';
 
 function RemoveButton({ label, onRemove }: { label: string; onRemove: () => void }) {
   return (
@@ -44,8 +48,36 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-export function QuoteChip({ quote, onRemove }: { quote: string; onRemove?: () => void }) {
+export function QuoteChip({
+  quote,
+  onRemove,
+  variant = 'compact',
+}: {
+  quote: string;
+  onRemove?: () => void;
+  variant?: ContextChipVariant;
+}) {
   const { t } = useI18n();
+  if (variant === 'shelf') {
+    return (
+      <div
+        data-quote-chip
+        data-chip-variant="shelf"
+        title={quote}
+        className={`${SHELF_CARD} ${onRemove === undefined ? 'pr-2.5' : 'pr-1'}`}
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12px] leading-4 font-medium text-ink">
+            “{oneLine(quote)}”
+          </span>
+          <span className="block truncate text-[10.5px] leading-3.5 text-ink-faint">
+            {t('composer.quoteSelection')}
+          </span>
+        </span>
+        {onRemove !== undefined ? <RemoveButton label={t('composer.removeQuote')} onRemove={onRemove} /> : null}
+      </div>
+    );
+  }
   return (
     <div
       data-quote-chip
@@ -67,6 +99,7 @@ export function ImageTile({
   onOpen,
   onRemove,
   removeLabel,
+  variant = 'compact',
 }: {
   src: string;
   name: string;
@@ -74,20 +107,28 @@ export function ImageTile({
   onOpen?: () => void;
   onRemove?: () => void;
   removeLabel?: string;
+  variant?: ContextChipVariant;
 }) {
   const { t } = useI18n();
   const [viewing, setViewing] = useState(false);
   const imageMenu = useMessageImageMenu({ kind: 'image', url: src, name }, src, name);
   const title = detail === undefined ? name : `${name} · ${detail}`;
+  const isShelf = variant === 'shelf';
   return (
-    <div data-image-tile className="context-chip anim-enter group relative h-12 w-12 shrink-0">
+    <div
+      data-image-tile
+      data-chip-variant={isShelf ? 'shelf' : undefined}
+      className={`context-chip anim-enter group relative shrink-0 ${isShelf ? 'h-11 w-11' : 'h-12 w-12'}`}
+    >
       <button
         type="button"
         title={title}
         aria-label={`${t('media.viewImage')}: ${name}`}
         onClick={onOpen ?? (() => { setViewing(true); })}
         onContextMenu={imageMenu.openMenu}
-        className="context-image block h-full w-full cursor-zoom-in overflow-hidden rounded-[10px] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+        className={`context-image block h-full w-full cursor-zoom-in overflow-hidden rounded-[10px] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none ${
+          isShelf ? 'bg-canvas ring-1 ring-inset ring-ink/10' : ''
+        }`}
       >
         <img src={src} alt={name} referrerPolicy="no-referrer" className="h-full w-full object-cover" draggable={false} />
       </button>
@@ -114,7 +155,9 @@ export function ImageTile({
           aria-label={removeLabel}
           title={removeLabel}
           onClick={onRemove}
-          className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-panel text-ink-soft opacity-0 shadow-[var(--kiki-sheet-shadow)] transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within:opacity-100 group-hover:opacity-100 hover:text-ink focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none [@media(hover:none)]:opacity-100"
+          className={`absolute -top-1.5 -right-1.5 flex items-center justify-center rounded-full bg-panel text-ink-soft opacity-0 shadow-[var(--kiki-sheet-shadow)] ring-1 ring-hairline transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within:opacity-100 group-hover:opacity-100 hover:text-ink focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none [@media(hover:none)]:opacity-100 ${
+            isShelf ? 'h-[18px] w-[18px]' : 'h-5 w-5'
+          }`}
         >
           <Icon name="close" size={12} />
         </button>
@@ -128,8 +171,39 @@ export function ImageTile({
  * whether it was typed through `/` or picked from ＋ → Skills. The token stays
  * in the text (it carries the args); removing the chip strips it.
  */
-export function SkillChip({ name, description, onRemove }: { name: string; description?: string; onRemove?: () => void }) {
+export function SkillChip({
+  name,
+  description,
+  onRemove,
+  variant = 'compact',
+}: {
+  name: string;
+  description?: string;
+  onRemove?: () => void;
+  variant?: ContextChipVariant;
+}) {
   const { t } = useI18n();
+  if (variant === 'shelf') {
+    return (
+      <div
+        data-skill-chip={name}
+        data-chip-variant="shelf"
+        title={description}
+        className={`${SHELF_CARD} ${onRemove === undefined ? 'pr-2.5' : 'pr-1'}`}
+      >
+        <span aria-hidden className="flex shrink-0 text-accent-ink/80">
+          <Icon name="skill" size={14} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12px] leading-4 font-medium text-ink">{name}</span>
+          <span className="block truncate text-[10.5px] leading-3.5 text-ink-faint">{t('composer.skillChip')}</span>
+        </span>
+        {onRemove !== undefined ? (
+          <RemoveButton label={t('composer.removeSkill', { name })} onRemove={onRemove} />
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div
       data-skill-chip={name}
@@ -152,21 +226,51 @@ export function SkillChip({ name, description, onRemove }: { name: string; descr
 export function TextTile({
   children,
   title,
+  subtitle,
+  leading,
   mono = false,
   onRemove,
   removeLabel,
   ariaLabel,
   dataAttrs,
+  variant = 'compact',
 }: {
   children: ReactNode;
   title?: string;
+  subtitle?: string;
+  leading?: ReactNode;
   mono?: boolean;
   onRemove?: () => void;
   removeLabel?: string;
   ariaLabel?: string;
   /** State markers other code keys on (`data-attachment-reading`, …). */
   dataAttrs?: Readonly<Record<string, string | undefined>>;
+  variant?: ContextChipVariant;
 }) {
+  if (variant === 'shelf') {
+    return (
+      <span
+        {...dataAttrs}
+        data-chip-variant="shelf"
+        title={title}
+        aria-label={ariaLabel}
+        className={`${SHELF_CARD} ${onRemove === undefined ? 'pr-2.5' : 'pr-1'} ${mono ? 'font-mono' : ''}`}
+      >
+        {leading !== undefined ? <span className="flex shrink-0 items-center text-ink-faint">{leading}</span> : null}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1 truncate text-[12px] leading-4 font-medium text-ink">
+            {children}
+          </span>
+          {subtitle !== undefined && subtitle !== '' ? (
+            <span className="block truncate font-sans text-[10.5px] leading-3.5 text-ink-faint tabular-nums">
+              {subtitle}
+            </span>
+          ) : null}
+        </span>
+        {onRemove !== undefined && removeLabel !== undefined ? <RemoveButton label={removeLabel} onRemove={onRemove} /> : null}
+      </span>
+    );
+  }
   return (
     <span
       {...dataAttrs}
@@ -174,6 +278,7 @@ export function TextTile({
       aria-label={ariaLabel}
       className={`${TILE} max-w-[16rem] bg-ink/[0.045] pl-2 text-ink-soft ${onRemove === undefined ? 'pr-3' : 'pr-1'} ${mono ? 'font-mono' : ''}`}
     >
+      {leading}
       {children}
       {onRemove !== undefined && removeLabel !== undefined ? <RemoveButton label={removeLabel} onRemove={onRemove} /> : null}
     </span>

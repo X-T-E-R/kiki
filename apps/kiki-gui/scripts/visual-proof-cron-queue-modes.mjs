@@ -23,8 +23,8 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
 
-import { en as EN } from '../../../packages/session-core/src/i18n/en.ts';
-import { zh as ZH } from '../../../packages/session-core/src/i18n/zh.ts';
+import { en as EN } from '@kiki/session-core/i18n/en';
+import { zh as ZH } from '@kiki/session-core/i18n/zh';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 

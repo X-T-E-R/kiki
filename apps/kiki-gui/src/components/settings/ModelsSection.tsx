@@ -33,6 +33,7 @@ import {
   type RequestIdentityLayerDraft,
 } from '@kiki/session-core/settings';
 import { formatTokens } from '@kiki/session-core/util';
+import { asRecord } from '../../lib/record';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ChipSelect } from '../ChipSelect';
@@ -2292,10 +2293,6 @@ function EditorSection({ id, title, aside, children }: {
       {children}
     </section>
   );
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 /**

@@ -786,8 +786,9 @@ async function checkPkgBoundaryGraph(root, boundaries, inventory, errors) {
     }
 
     const srcPrefix = `${rule.root}/src/`;
+    const isTestTsFile = (rel) => /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(rel);
     const srcFiles = inventory.allFiles.filter(
-      (rel) => rel.startsWith(srcPrefix) && isProdTsFile(rel),
+      (rel) => rel.startsWith(srcPrefix) && (isProdTsFile(rel) || (rule.id === '@kiki/gui' && isTestTsFile(rel))),
     );
     const globalRegexes = (rule.forbiddenGlobals ?? []).map((g) => ({
       name: g,

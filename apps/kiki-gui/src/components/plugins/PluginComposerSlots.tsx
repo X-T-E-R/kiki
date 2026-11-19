@@ -367,10 +367,8 @@ export function useExecutePluginSlotAction() {
         if (!handled && sessionId !== undefined) {
           appendToDraft(sessionId, args !== undefined && args.trim() !== '' ? `${action.text}\n${args.trim()}` : action.text);
         } else if (!handled && sessionId === undefined) {
+          requestPluginPromptInsert(undefined, { text: action.text, submit: action.submit, args }, { queueIfUnhandled: true });
           await navigateTo('/new');
-          requestAnimationFrame(() => {
-            requestPluginPromptInsert(undefined, { text: action.text, submit: action.submit, args });
-          });
         }
         return true;
       }
@@ -505,7 +503,7 @@ export function PluginComposerSlots({
       role="toolbar"
       aria-label={t('pluginSlot.toolbarAria')}
       data-plugin-composer-slots
-      className="-mt-1 mb-2 flex min-w-0 flex-wrap items-center gap-1"
+      className="contents"
     >
       {toolbarSlots.map((slot) => {
         const key = `${slot.pluginId}:${slot.id}`;
@@ -547,7 +545,7 @@ export function PluginComposerSlots({
                 key,
               );
             }}
-            className={`inline-flex h-6 max-w-48 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12px] leading-4 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-8 ${TONE_CLASSES[slot.tone]}`}
+            className={`inline-flex h-6 max-w-48 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] leading-4 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:h-8 ${TONE_CLASSES[slot.tone]}`}
           >
             {isBusy ? (
               <Spinner label={label} />

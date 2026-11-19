@@ -1,50 +1,49 @@
 /**
- * Dialog — the shared modal primitive: ink backdrop, Escape to close, a focus
- * trap, and `role="dialog"`/`aria-modal`. Rendered through a body portal so
- * fixed positioning is never captured by a transformed ancestor (the mobile
- * sidebar drawer translates itself). While mounted it registers with the
- * uiBusy overlay set, so the global Escape-to-abort handler yields to it.
+ * Dialog — the shared modal primitive built on `@base-ui/react/dialog`:
+ * portal to `<body>`, focus management, Escape/backdrop dismissal, and
+ * `role="dialog"`/`aria-modal`. While mounted it registers with the uiBusy
+ * overlay set so global Escape-to-abort yields to it.
  *
  * Initial focus goes to the child's `[data-autofocus]` element when present —
  * if it is momentarily disabled (a query still in flight), no fallback runs and
- * the child re-focuses it once it enables. Without a marked element the first
- * focusable control takes focus; focus returns to the previously focused
- * element on close.
+ * the child re-focuses it once it enables. Without a marked element Base UI's
+ * focus manager focuses the first tabbable control and restores focus on close.
  *
- * The trap leaves one thing alone: a portaled surface that this dialog owns —
- * a picker's panel in `<body>`, marked with `data-modal-escape` set to that
- * dialog's `overlayId`. Focus belongs to the surface that owns it, so the trap
- * would otherwise rip it out from under the user mid-typing. The id is what
- * keeps that exemption honest: a panel belonging to a dialog underneath, or to
- * no dialog at all, is not accepted while this one is on top.
- *
- * Backdrop clicks and a bare Escape close the dialog by default. `dismissible:
- * false` opts one out — for a dialog whose closing is a decision the user has to
- * make, not a reflex, so a stray click on the backdrop cannot discard it. That
- * flag governs only those two inputs; the panel's own close control, its focus
- * trap, and the pickers it owns are unaffected.
+ * A portaled surface owned by this dialog (a picker or popover in `<body>`
+ * carrying `data-modal-escape={overlayId}`) is allowed to hold focus while this
+ * dialog is the top modal, and closes on Escape before the dialog does.
  *
  * On a coarse pointer a dismissible dialog also owns one history entry
- * (lib/layerHistory), so the phone's back closes it the way Escape does.
+ * (`lib/layerHistory`) so phone back closes it the way Escape does.
  */
 
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Dialog as BaseDialog } from '@base-ui/react/dialog';
 
 import { useLayerHistory } from '../lib/layerHistory';
 import { useCoarsePointer } from '../lib/layoutHooks';
 import { isImeKeyEvent } from '../lib/shortcuts';
-import { canRestoreModalFocus, MODAL_BASE_Z_INDEX, MODAL_DEPTH_ATTRIBUTE, MODAL_ID_ATTRIBUTE, nextModalDepth, registerModal, registerOverlay } from '../lib/uiBusy';
+import {
+  canRestoreModalFocus,
+  hasOpenOwnedFloatingPortal,
+  MODAL_BASE_Z_INDEX,
+  MODAL_DEPTH_ATTRIBUTE,
+  MODAL_ID_ATTRIBUTE,
+  nextModalDepth,
+  registerModal,
+  registerOverlay,
+} from '../lib/uiBusy';
+
+export const DialogTitle = BaseDialog.Title;
+export const DialogDescription = BaseDialog.Description;
+export const DialogClose = BaseDialog.Close;
 
 const ModalDepth = createContext<number | undefined>(undefined);
 export function useStackedDialog(): boolean { return useContext(ModalDepth) !== undefined; }
 
 /**
- * Names the dialog a portaled surface belongs to, so the dialog's focus trap
- * can tell its own surface from another one's. The value must be the owning
- * dialog's `overlayId`: the trap accepts a portaled surface only when that id
- * is still the top modal, which is what keeps a picker under one dialog from
- * holding focus while another dialog is on top of it.
+ * Names the dialog a portaled surface belongs to, so stacked modal focus and
+ * Escape ownership can tell an owned floating surface from an unrelated one.
  */
 export const MODAL_ESCAPE_ATTRIBUTE = 'data-modal-escape';
 
@@ -54,20 +53,16 @@ const FOCUSABLE_SELECTOR =
 /**
  * Shared panel chrome (everything but the width cap) plus the semantic width
  * scale. Callers pair `DIALOG_PANEL_BASE` with one of the sizes instead of
- * hand-rolling a width; shells that own their chrome (fixed-height flex
- * layouts, alert dialogs) still compose the tier for the cap alone:
+ * hand-rolling a width:
  *
  * - `sm`  520px — confirmations and single-field prompts (rename, undo).
  * - `md`  640px — standard forms with a handful of controls (profile editor).
  * - `lg`  880px — roomy single-column forms with large writing surfaces (new task).
  * - `xl`  1080px — sectioned detail views with side rails (task detail).
  * - `2xl` 1280px — full workspace surfaces (task board).
- *
- * Panels stay fluid below the cap (`w-full`), so narrow viewports just get a
- * full-bleed panel inside the overlay padding.
  */
 export const DIALOG_PANEL_BASE =
-  'anim-enter w-full rounded-2xl border border-hairline bg-panel p-6 shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]';
+  'anim-enter w-full rounded-2xl border border-hairline bg-panel p-6 shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)] outline-none';
 
 export const DIALOG_PANEL_SIZES = {
   sm: 'max-w-[520px]',
@@ -77,34 +72,27 @@ export const DIALOG_PANEL_SIZES = {
   '2xl': 'max-w-[1280px]',
 } as const;
 
-/**
- * The default backdrop: a centered panel, the top padding clearing the status
- * bar in edge-to-edge shells (the inset is 0 elsewhere).
- */
 const CENTERED_OVERLAY_CLASS =
   'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4 pt-[max(1rem,var(--kiki-safe-top-inset))]';
 
-/**
- * The backdrop for the default panel. On a coarse pointer the box follows the
- * visual viewport, so a phone keyboard shortens it instead of covering the
- * panel's bottom; below `md` the panel docks to the bottom edge as a sheet.
- * Only the default panel gets it: its height cap tracks the same viewport and
- * its sheet chrome (square bottom, home-indicator padding) is what makes a
- * docked panel read right. A caller's own panel keeps the centered backdrop.
- */
 export const DIALOG_SHEET_OVERLAY_CLASS =
   `${CENTERED_OVERLAY_CLASS} pointer-coarse:h-[var(--kiki-visual-height,100dvh)] max-md:items-end max-md:p-0 max-md:pt-[var(--kiki-safe-top-inset)]`;
 
-/**
- * The default panel: the `sm` tier, capped to the visible height and
- * scrolling inside itself so its action row stays reachable; below `md` a
- * full-width bottom sheet padded above the home indicator. The cap is not in
- * DIALOG_PANEL_BASE because callers compose the base with their own height
- * and overflow rules, which an arbitrary-value cap here would race in the
- * stylesheet.
- */
 export const DIALOG_DEFAULT_PANEL_CLASS =
   `${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-h-[calc(var(--kiki-visual-height,100dvh)-2rem-var(--kiki-safe-top-inset))] overflow-y-auto overscroll-y-contain max-md:max-w-none max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-[calc(1.5rem+var(--kiki-safe-bottom-inset))]`;
+
+function isOwnedEscapeTarget(target: EventTarget | null, overlayId: string): boolean {
+  return target instanceof Element
+    && target.closest(`[${MODAL_ESCAPE_ATTRIBUTE}]`)?.getAttribute(MODAL_ESCAPE_ATTRIBUTE) === overlayId;
+}
+
+function hasOwnedModalEscapePortal(overlayId: string): boolean {
+  if (typeof document === 'undefined') return false;
+  for (const node of document.querySelectorAll(`[${MODAL_ESCAPE_ATTRIBUTE}]`)) {
+    if (node.getAttribute(MODAL_ESCAPE_ATTRIBUTE) === overlayId) return true;
+  }
+  return false;
+}
 
 export function Dialog({
   onClose, ariaLabel, overlayId, panelClassName, overlayClassName, children,
@@ -125,11 +113,7 @@ export function Dialog({
   overlayData?: Record<`data-${string}`, string>;
   /**
    * Whether a backdrop click or a bare Escape closes this dialog. Defaults to
-   * true, which is what every ordinary modal wants. Set it false for a dialog
-   * whose dismiss is an explicit decision — one that would otherwise throw away
-   * unsaved form state on a stray click, or mark a run finished by accident.
-   * The panel keeps its own close control and its focus trap either way, and a
-   * portaled surface this dialog owns still closes on Escape on its own.
+   * true. Set false when closing is an explicit decision.
    */
   dismissible?: boolean;
   children: ReactNode;
@@ -139,142 +123,208 @@ export function Dialog({
   const [rootDepth] = useState(nextModalDepth);
   const depth = (stacked ?? parentDepth !== undefined) ? (parentDepth === undefined ? rootDepth : parentDepth + 1) : undefined;
   const modalDepth = depth ?? 0;
-  const panelRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [panelEl, setPanelEl] = useState<HTMLDivElement | null>(null);
   const ownership = useRef<ReturnType<typeof registerModal> | null>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   const dismissibleRef = useRef(dismissible);
   dismissibleRef.current = dismissible;
-  // Phone back = Escape: only where Escape closes it, and only on touch, where
-  // a device back exists and no desktop history gets an entry per dialog.
+  const [previousFocus] = useState<HTMLElement | null>(() =>
+    typeof document !== 'undefined' && document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  const previousFocusRef = useRef<HTMLElement | null>(previousFocus);
+
   const coarse = useCoarsePointer();
   useLayerHistory(overlayId, coarse && dismissible, onClose);
 
-  // Stack registration is stable across form edits and busy-state changes.
-  // Register in useLayoutEffect so child effects opening pickers on mount see
-  // this modal in `uiBusy` immediately.
-  useLayoutEffect(() => {
-    const unregister = registerOverlay(overlayId);
-    const modal = panelRef.current ? registerModal(overlayId, modalDepth, panelRef.current) : null;
-    ownership.current = modal;
-    const onKeyDown = (event: KeyboardEvent) => {
-      // An Escape that ends an IME composition belongs to the field, not the dialog.
-      if (isImeKeyEvent(event)) return;
-      if (event.key !== 'Escape' || !dismissibleRef.current
-        || (modal ? !modal.isTop() : !panelRef.current || !canRestoreModalFocus(panelRef.current))) return;
-      // A confirmation rendered inline inside this panel (not stacked) owns
-      // Escape while it is open: it closes, this panel stays.
-      if ((panelRef.current?.querySelector('[aria-modal="true"]') ?? null) !== null) return;
-      // So does a floating surface this panel owns (a picker, an anchored
-      // popover): Escape closes the surface first, the panel on the next press.
-      if (event.target instanceof Element
-        && event.target.closest(`[${MODAL_ESCAPE_ATTRIBUTE}]`)?.getAttribute(MODAL_ESCAPE_ATTRIBUTE) === overlayId) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-      if (dismissibleRef.current) closeRef.current();
-    };
-    window.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      modal?.unregister();
-      ownership.current = null;
-      unregister();
-      window.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [overlayId, depth]);
+  const handlePanelRef = useCallback((node: HTMLDivElement | null) => {
+    panelRef.current = node;
+    setPanelEl((current) => (current === node ? current : node));
+  }, []);
 
-  useEffect(() => {
+  const isTopModal = useCallback((): boolean => {
     const panel = panelRef.current;
-    if (panel === null) return;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const isTop = () => depth === undefined ? canRestoreModalFocus(panel) : ownership.current?.isTop() === true;
-    /**
-     * Focus the dialog keeps: its own subtree, plus a portaled surface that
-     * this dialog owns — identified by its `overlayId` and only while this
-     * dialog is still the top modal. A bare marker would let a picker under a
-     * lower dialog, or one opened on the page behind this one, keep focus
-     * while an unrelated dialog sits on top.
-     */
+    if (panel === null) return false;
+    return depth === undefined ? canRestoreModalFocus(panel) : ownership.current?.isTop() === true;
+  }, [depth]);
+
+  // Register overlay immediately so global Escape-to-abort yields even before portal mount.
+  useLayoutEffect(() => registerOverlay(overlayId), [overlayId]);
+
+  // Register modal ownership once Base UI's Dialog.Portal attaches the popup element.
+  useLayoutEffect(() => {
+    if (panelEl === null) return;
+    const modal = registerModal(overlayId, modalDepth, panelEl);
+    ownership.current = modal;
+    return () => {
+      modal.unregister();
+      if (ownership.current === modal) ownership.current = null;
+    };
+  }, [overlayId, modalDepth, panelEl]);
+
+  // Restore focus cleanly when unmounting (Base UI's finalFocus runs on open->false
+  // transitions, while Kiki callers conditionally unmount `<Dialog />`).
+  useEffect(() => () => {
+    const previous = previousFocusRef.current;
+    if (previous === null) return;
+    if (depth === undefined) {
+      if (previous.isConnected) previous.focus();
+    } else {
+      queueMicrotask(() => {
+        if (previous.isConnected && canRestoreModalFocus(previous)) previous.focus();
+      });
+    }
+  }, [depth]);
+
+  // Keep Tab cycling inside the top modal while leaving portaled surfaces
+  // owned by this dialog (`data-modal-escape`) untouched.
+  useEffect(() => {
+    if (panelEl === null) return;
     const ownsFocus = (target: EventTarget | null) => {
       if (!(target instanceof Element)) return false;
-      if (panel.contains(target)) return true;
-      const owner = target.closest(`[${MODAL_ESCAPE_ATTRIBUTE}]`)?.getAttribute(MODAL_ESCAPE_ATTRIBUTE);
-      return owner === overlayId && isTop();
+      if (panelEl.contains(target)) return true;
+      return isOwnedEscapeTarget(target, overlayId) && isTopModal();
     };
-    const focusable = () => [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
+    const focusable = () => [...panelEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
       (element) => (element.offsetParent !== null || element.getClientRects().length > 0) && (depth === undefined || !element.closest('[inert]')),
     );
-    const marked = panel.querySelector<HTMLElement>('[data-autofocus]:not([disabled])');
-    const initial = marked ?? (panel.querySelector('[data-autofocus]') === null ? panel.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) : null);
-    if (isTop()) (initial ?? panel).focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Tab' || !isTop()) return;
+    const onTabKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !isTopModal()) return;
       if (depth !== undefined) event.stopPropagation();
-      // Tab inside a portaled surface belongs to that surface, not the trap.
-      if (event.target instanceof Element && ownsFocus(event.target) && !panel.contains(event.target)) return;
+      if (event.target instanceof Element && ownsFocus(event.target) && !panelEl.contains(event.target)) return;
       const controls = focusable();
       if (controls.length === 0) {
         event.preventDefault();
-        if (depth !== undefined) panel.focus();
+        if (depth !== undefined) panelEl.focus();
         return;
       }
       const first = controls[0]!;
       const last = controls.at(-1)!;
       const active = document.activeElement;
-      if (event.shiftKey && (active === first || !panel.contains(active))) {
+      if (event.shiftKey && (active === first || !panelEl.contains(active))) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && (active === last || !panel.contains(active))) {
+      } else if (!event.shiftKey && (active === last || !panelEl.contains(active))) {
         event.preventDefault();
         first.focus();
       }
     };
-    const onFocus = (event: FocusEvent) => {
-      if (isTop() && !ownsFocus(event.target)) (focusable()[0] ?? panel).focus();
+    const onFocusIn = (event: FocusEvent) => {
+      if (depth !== undefined && ownership.current?.isTop() === true && !ownsFocus(event.target)) {
+        (focusable()[0] ?? panelEl).focus();
+      }
     };
-    if (depth === undefined) panel.addEventListener('keydown', onKeyDown);
-    else {
-      window.addEventListener('keydown', onKeyDown, true);
-      document.addEventListener('focusin', onFocus);
+    if (depth === undefined) {
+      panelEl.addEventListener('keydown', onTabKeyDown);
+    } else {
+      window.addEventListener('keydown', onTabKeyDown, true);
+      document.addEventListener('focusin', onFocusIn);
     }
     return () => {
-      panel.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keydown', onKeyDown, true);
-      document.removeEventListener('focusin', onFocus);
-      if (depth === undefined) previous?.focus();
-      else queueMicrotask(() => { if (previous && canRestoreModalFocus(previous)) previous.focus(); });
+      panelEl.removeEventListener('keydown', onTabKeyDown);
+      window.removeEventListener('keydown', onTabKeyDown, true);
+      document.removeEventListener('focusin', onFocusIn);
     };
-    // overlayId is read by ownsFocus, so the trap has to be rebuilt with it.
-  }, [depth, overlayId]);
+  }, [depth, overlayId, panelEl, isTopModal]);
 
-  return createPortal(
+  // Synchronous initial focus when the portal attaches: avoids a deferred rAF
+  // pulling focus back out of a child picker opened immediately after mount.
+  useEffect(() => {
+    if (panelEl === null) return;
+    if (!isTopModal()) return;
+    const marked = panelEl.querySelector<HTMLElement>('[data-autofocus]:not([disabled])');
+    const initial = marked ?? (panelEl.querySelector('[data-autofocus]') === null ? panelEl.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) : null);
+    (initial ?? panelEl).focus();
+  }, [panelEl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleOpenChange = useCallback((nextOpen: boolean, eventDetails: BaseDialog.Root.ChangeEventDetails) => {
+    if (nextOpen) return;
+    const cancelEscape = () => {
+      eventDetails.cancel();
+      eventDetails.allowPropagation();
+    };
+    if (!dismissibleRef.current) {
+      cancelEscape();
+      return;
+    }
+    const panel = panelRef.current;
+    if (eventDetails.reason === 'escape-key') {
+      const nativeEvent = eventDetails.event;
+      if (nativeEvent?.defaultPrevented) {
+        cancelEscape();
+        return;
+      }
+      if (nativeEvent instanceof KeyboardEvent && isImeKeyEvent(nativeEvent)) {
+        cancelEscape();
+        return;
+      }
+      if (!isTopModal()) {
+        cancelEscape();
+        return;
+      }
+      // Inline non-stacked confirmation inside this panel owns Escape first.
+      if (panel !== null && panel.querySelector('[aria-modal="true"]') !== null) {
+        cancelEscape();
+        return;
+      }
+      // Portaled surface owned by this dialog owns Escape first.
+      if (
+        isOwnedEscapeTarget(nativeEvent?.target ?? null, overlayId) ||
+        hasOwnedModalEscapePortal(overlayId) ||
+        hasOpenOwnedFloatingPortal(overlayId)
+      ) {
+        cancelEscape();
+        return;
+      }
+      closeRef.current();
+      return;
+    }
+    if (eventDetails.reason === 'outside-press' || eventDetails.reason === 'focus-out') {
+      eventDetails.cancel();
+      return;
+    }
+    closeRef.current();
+  }, [isTopModal, overlayId]);
+
+  return (
     <ModalDepth.Provider value={depth}>
-      <div
-        {...overlayData}
-        className={overlayClassName ?? (panelClassName === undefined ? DIALOG_SHEET_OVERLAY_CLASS : CENTERED_OVERLAY_CLASS)}
-        style={depth === undefined ? undefined : { zIndex: MODAL_BASE_Z_INDEX + depth }}
-        onPointerDown={(event) => {
-          if (dismissibleRef.current && event.target === event.currentTarget && (depth === undefined
-            ? panelRef.current && canRestoreModalFocus(panelRef.current)
-            : ownership.current?.isTop())) closeRef.current();
-        }}
+      <BaseDialog.Root
+        open
+        modal={false}
+        disablePointerDismissal={!dismissible}
+        onOpenChange={handleOpenChange}
       >
-        <div
-          ref={panelRef}
-          role={role}
-          aria-modal="true"
-          aria-label={ariaLabel}
-          tabIndex={-1}
-          {...{
-            [MODAL_ID_ATTRIBUTE]: overlayId,
-            [MODAL_DEPTH_ATTRIBUTE]: modalDepth,
-          }}
-          className={panelClassName ?? DIALOG_DEFAULT_PANEL_CLASS}
-        >
-          {children}
-        </div>
-      </div>
-    </ModalDepth.Provider>,
-    document.body,
+        <BaseDialog.Portal>
+          <BaseDialog.Backdrop className="sr-only" />
+          <BaseDialog.Viewport
+            {...overlayData}
+            className={overlayClassName ?? (panelClassName === undefined ? DIALOG_SHEET_OVERLAY_CLASS : CENTERED_OVERLAY_CLASS)}
+            style={depth === undefined ? undefined : { zIndex: MODAL_BASE_Z_INDEX + depth }}
+            onPointerDown={(event) => {
+              if (dismissibleRef.current && event.target === event.currentTarget && isTopModal()) {
+                closeRef.current();
+              }
+            }}
+          >
+            <BaseDialog.Popup
+              ref={handlePanelRef}
+              role={role}
+              aria-modal="true"
+              aria-label={ariaLabel}
+              initialFocus={false}
+              finalFocus={false}
+              {...{
+                [MODAL_ID_ATTRIBUTE]: overlayId,
+                [MODAL_DEPTH_ATTRIBUTE]: modalDepth,
+              }}
+              className={panelClassName ?? DIALOG_DEFAULT_PANEL_CLASS}
+            >
+              {children}
+            </BaseDialog.Popup>
+          </BaseDialog.Viewport>
+        </BaseDialog.Portal>
+      </BaseDialog.Root>
+    </ModalDepth.Provider>
   );
 }

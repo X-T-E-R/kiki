@@ -45,8 +45,10 @@ import {
 } from '../ComposerControls';
 import { ModelPicker } from '../ModelPicker';
 import { POPOVER_SURFACE_CLASS, type SearchableSelectOption } from '../SearchableSelect';
+import { SelectRowCheck } from '../select/selectPrimitives';
 import { useProviderGroupLabel } from '../modelSelectOptions';
 import { Icon } from '../icons';
+import { formatThinkingEffortWord } from '../../lib/thinkingEffort';
 
 /**
  * `ready` / `partial` / `unavailable` are an advertised effort list (an empty
@@ -60,14 +62,6 @@ function advertisedThinkingLevels(
   if (levels?.kind === 'unavailable') return [];
   if (levels?.kind === 'ready' || levels?.kind === 'partial') return levels.values ?? [];
   return undefined;
-}
-
-function Check({ on }: { on: boolean }) {
-  return (
-    <span aria-hidden className={`flex h-[19px] w-3 shrink-0 items-center ${on ? 'text-ink' : 'text-transparent'}`}>
-      <Icon name="check" size={12} />
-    </span>
-  );
 }
 
 /** Selected effort capsule from the model-chip row: a paper sheet on the paper track, not an ink fill. */
@@ -440,17 +434,19 @@ export function ExecutionSelect({
     if (choice.external_connection_id !== undefined) {
       return choice.external_connection_name ?? t('st.section.connectionServices');
     }
+    const localizedEffort = activeEffort ? formatThinkingEffortWord(activeEffort, t) : undefined;
     if (isNative) {
       const fallbackModel = noModelConnected ? t('new.modelChip.none') : t('composer.execution.defaultModelOption');
-      const resolvedModel = currentModel
-        ? (resolveCatalogModel(models ?? [], currentModel)?.display_name ?? currentModel)
-        : (effectiveModel ?? modelShortLabel ?? fallbackModel);
-      const parts = [resolvedModel, activeEffort].filter(Boolean);
+      const rawModel = currentModel
+        ? (resolveCatalogModel(models ?? [], currentModel)?.display_name ?? modelShortLabel ?? currentModel)
+        : (modelShortLabel ?? (effectiveModel ? (resolveCatalogModel(models ?? [], effectiveModel)?.display_name ?? effectiveModel) : undefined) ?? fallbackModel);
+      const resolvedModel = rawModel.includes('/') ? (rawModel.split('/').pop() || rawModel) : rawModel;
+      const parts = [resolvedModel, localizedEffort].filter(Boolean);
       return parts.join(' · ');
     }
     const targetModel = choice.overrides?.model;
     if (targetModel) {
-      const parts = [targetModel, activeEffort].filter(Boolean);
+      const parts = [targetModel, localizedEffort].filter(Boolean);
       return parts.join(' · ');
     }
     return t('composer.engineModelFollow');
@@ -543,7 +539,7 @@ export function ExecutionSelect({
                 }}
                 className={`${MENU_ROW_CLASS} items-start ${selected ? MENU_ROW_SELECTED_CLASS : ''}`}
               >
-                <Check on={selected} />
+                <SelectRowCheck on={selected} />
                 <span className="min-w-0 flex-1 truncate font-medium text-ink">{conn.name}</span>
               </button>
             );
@@ -636,7 +632,7 @@ export function ExecutionSelect({
           </span>
         ) : undefined}
         buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-[min(16rem,100%)] overflow-hidden ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== 'native' || isExternalClient ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
-        panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,28rem),28rem,calc(100dvh-120px))] w-[min(340px,calc(100vw-2rem))] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
+        panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,28rem),28rem,calc(100dvh-120px))] w-[min(340px,calc(100vw-2rem))] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:flex-1 [&>[role=listbox]]:shrink`}
         panelHeader={panelHeader}
         panelFooter={panelFooter}
         onChange={(next) => {

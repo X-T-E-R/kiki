@@ -73,6 +73,7 @@ export function useRecipeMutation<TInput, TOutput>(
   options: {
     /** Re-read the model entity too: a bind or a conflict changes it. */
     readonly alsoModelId?: string;
+    readonly invalidateRecipeDetail?: boolean;
     readonly onSuccess?: (result: TOutput, input: TInput) => void;
     readonly onError?: (error: unknown) => void;
   } = {},
@@ -83,7 +84,9 @@ export function useRecipeMutation<TInput, TOutput>(
     onSuccess: async (result: TOutput, input: TInput) => {
       await queryClient.invalidateQueries({ queryKey: RECIPE_LIST_KEY });
       await queryClient.invalidateQueries({ queryKey: RECIPE_MARKETS_KEY });
-      await queryClient.invalidateQueries({ queryKey: ['recipe'] });
+      if (options.invalidateRecipeDetail !== false) {
+        await queryClient.invalidateQueries({ queryKey: ['recipe'] });
+      }
       await queryClient.invalidateQueries({ queryKey: ['models'] });
       await queryClient.invalidateQueries({ queryKey: ['model-entity'] });
       await queryClient.invalidateQueries({ queryKey: ['config'] });

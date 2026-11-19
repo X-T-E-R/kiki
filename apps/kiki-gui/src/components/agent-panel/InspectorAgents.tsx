@@ -16,6 +16,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode } from '@kiki/session-core/session';
+import { formatThinkingEffort } from '../../lib/thinkingEffort';
 import { useI18n } from '../../i18n';
 import type { LifeState } from '../../lib/motion';
 import { DisclosureChevron, Icon } from '../icons';
@@ -119,7 +120,7 @@ export const RailCrumbs = memo(function RailCrumbs({
     <div
       data-rail-owner
       data-rail-owner-name={current === MAIN_AGENT_ID ? undefined : label(current)}
-      className="sticky top-0 z-10 -mx-4 flex h-12 items-center gap-2 bg-panel px-4"
+      className="flex h-full min-w-0 flex-1 items-center justify-between gap-2"
     >
       <nav aria-label={t('inspector.tabsAria')} className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px]">
         {shown.map((id, index) => (
@@ -276,7 +277,7 @@ const RosterAgent = memo(function RosterAgent({
     node.nameSource === undefined ? undefined : t(`subagent.source.name.${node.nameSource}`),
     node.statusSource === undefined ? undefined : t(`subagent.source.status.${node.statusSource}`),
     node.model,
-    node.thinkingEffort !== undefined ? t('subagent.effort', { effort: node.thinkingEffort }) : undefined,
+    node.thinkingEffort !== undefined ? formatThinkingEffort(node.thinkingEffort, t) : undefined,
     node.toolCallCountKnown === true ? t('subagent.tools', { count: node.toolCallCount }) : undefined,
   ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
   const state = bucket === 'waiting'
@@ -451,6 +452,21 @@ export const AgentRoster = memo(function AgentRoster({
     },
     overscan: 8,
     initialRect: { width: 300, height: 480 },
+    observeElementRect: (instance, cb) => {
+      const el = instance.scrollElement;
+      if (el === null) return;
+      const emit = () => {
+        const rect = el.getBoundingClientRect();
+        const height = Math.round(rect.height || el.clientHeight);
+        const width = Math.round(rect.width || el.clientWidth);
+        if (height > 0) cb({ width, height });
+      };
+      emit();
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(emit);
+      observer.observe(el);
+      return () => { observer.disconnect(); };
+    },
     useFlushSync: false,
   });
   const listRef = useRef<HTMLDivElement>(null);

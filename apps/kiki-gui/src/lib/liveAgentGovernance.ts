@@ -18,6 +18,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
+import type { AgentActivitySnapshot } from '@kiki/protocol';
 import { useConnection } from '../state/connection';
 
 export type GovernanceResource = 'model_request' | 'agent_execution';
@@ -203,107 +204,81 @@ export function concurrencyRulesPatch(rules: readonly ConcurrencyRule[]): { rule
 }
 
 /**
- * Normalizes live agent activity snapshot so main/subagent/independent and queued fields are always populated.
+ * Maps a typed protocol AgentActivitySnapshot into the GUI LiveAgentSnapshot shape.
  */
-export function normalizeLiveAgentSnapshot(raw: any): LiveAgentSnapshot | null {
+export function normalizeLiveAgentSnapshot(raw: AgentActivitySnapshot | null | undefined): LiveAgentSnapshot | null {
   if (!raw) return null;
-  const active = typeof raw.active === 'number' ? raw.active : (raw.totalActive ?? raw.activeTotal ?? 0);
-  const queued = typeof raw.queued === 'number' ? raw.queued : (raw.totalQueued ?? raw.queuedTotal ?? 0);
-  const main = typeof raw.main === 'number' ? raw.main : (raw.mainActive ?? raw.activeMain ?? 0);
-  const subagent = typeof raw.subagent === 'number' ? raw.subagent : (raw.subActive ?? raw.activeSub ?? 0);
-  const independent = typeof raw.independent === 'number' ? raw.independent : (raw.independentActive ?? raw.activeIndependent ?? 0);
+  const dimensions: LiveAgentRow[] = raw.dimensions.map((d) => ({
+    dimension: d.dimension,
+    id: d.id,
+    active: d.active,
+    queued: d.queued,
+    main: d.main,
+    subagent: d.subagent,
+    independent: d.independent,
+    queuedMain: d.queuedMain,
+    queuedSubagent: d.queuedSubagent,
+    queuedIndependent: d.queuedIndependent,
+    mainActive: d.main,
+    subActive: d.subagent,
+    independentActive: d.independent,
+    totalActive: d.active,
+    mainQueued: d.queuedMain,
+    subQueued: d.queuedSubagent,
+    independentQueued: d.queuedIndependent,
+    totalQueued: d.queued,
+  }));
 
-  const queuedMain = typeof raw.queuedMain === 'number' ? raw.queuedMain : (raw.mainQueued ?? 0);
-  const queuedSubagent = typeof raw.queuedSubagent === 'number' ? raw.queuedSubagent : (raw.subQueued ?? 0);
-  const queuedIndependent = typeof raw.queuedIndependent === 'number' ? raw.queuedIndependent : (raw.independentQueued ?? 0);
-
-  const rawDimensions: any[] = Array.isArray(raw.dimensions) ? raw.dimensions : [];
-  const dimensions: LiveAgentRow[] = rawDimensions.map((d) => {
-    const dActive = typeof d.active === 'number' ? d.active : (d.totalActive ?? (d.mainActive ?? 0) + (d.subActive ?? 0) + (d.independentActive ?? 0));
-    const dQueued = typeof d.queued === 'number' ? d.queued : (d.totalQueued ?? 0);
-    const dMain = typeof d.main === 'number' ? d.main : (d.mainActive ?? 0);
-    const dSub = typeof d.subagent === 'number' ? d.subagent : (d.subActive ?? 0);
-    const dInd = typeof d.independent === 'number' ? d.independent : (d.independentActive ?? 0);
-    return {
-      dimension: d.dimension,
-      id: d.id,
-      label: d.label,
-      isNative: d.isNative,
-      active: dActive,
-      queued: dQueued,
-      main: dMain,
-      subagent: dSub,
-      independent: dInd,
-      queuedMain: d.queuedMain ?? d.mainQueued ?? 0,
-      queuedSubagent: d.queuedSubagent ?? d.subQueued ?? 0,
-      queuedIndependent: d.queuedIndependent ?? d.independentQueued ?? 0,
-      mainActive: dMain,
-      subActive: dSub,
-      independentActive: dInd,
-      totalActive: dActive,
-      mainQueued: d.queuedMain ?? d.mainQueued ?? 0,
-      subQueued: d.queuedSubagent ?? d.subQueued ?? 0,
-      independentQueued: d.queuedIndependent ?? d.independentQueued ?? 0,
-      totalQueued: dQueued,
-    };
-  });
+  const rules: ConcurrencyRule[] = raw.rules.map((rule) => ({
+    ...rule,
+    resource: rule.resource ?? 'model_request',
+  }));
 
   return {
-    domainId: raw.domainId ?? 'this-service',
+    domainId: raw.domainId,
     runtimeEpoch: raw.runtimeEpoch,
     seq: raw.seq,
-    asOf: raw.asOf ?? new Date().toISOString(),
-    coverage: raw.coverage ?? 'this_process',
-    unit: raw.unit ?? 'agent_execution',
-    active,
-    queued,
-    main,
-    subagent,
-    independent,
-    queuedMain,
-    queuedSubagent,
-    queuedIndependent,
+    asOf: raw.asOf,
+    coverage: raw.coverage,
+    unit: raw.unit,
+    active: raw.active,
+    queued: raw.queued,
+    main: raw.main,
+    subagent: raw.subagent,
+    independent: raw.independent,
+    queuedMain: raw.queuedMain,
+    queuedSubagent: raw.queuedSubagent,
+    queuedIndependent: raw.queuedIndependent,
     dimensions,
-    agents: raw.agents ?? [],
-    waiting: raw.waiting ?? [],
-    rules: raw.rules ?? [],
-    mainActive: main,
-    subActive: subagent,
-    independentActive: independent,
-    totalActive: active,
-    mainQueued: queuedMain,
-    subQueued: queuedSubagent,
-    independentQueued: queuedIndependent,
-    totalQueued: queued,
-    activeMain: main,
-    activeSub: subagent,
-    activeIndependent: independent,
-    activeTotal: active,
+    agents: raw.agents,
+    waiting: raw.waiting,
+    rules,
+    mainActive: raw.main,
+    subActive: raw.subagent,
+    independentActive: raw.independent,
+    totalActive: raw.active,
+    mainQueued: raw.queuedMain,
+    subQueued: raw.queuedSubagent,
+    independentQueued: raw.queuedIndependent,
+    totalQueued: raw.queued,
+    activeMain: raw.main,
+    activeSub: raw.subagent,
+    activeIndependent: raw.independent,
+    activeTotal: raw.active,
   };
 }
 
 /**
- * Hook to retrieve live agent activity snapshot.
- * Binds to client.getAgentActivity() or client.getLiveAgentGovernance().
+ * Hook to retrieve live agent activity snapshot from client.getAgentActivity().
  */
 export function useLiveAgentGovernance(options?: { readonly enabled?: boolean }) {
   const { client, scopeId, wsStatus } = useConnection();
   const query = useQuery({
     queryKey: ['live-agent-governance', scopeId],
     queryFn: async (): Promise<LiveAgentSnapshot | null> => {
-      const anyClient = client as unknown as {
-        getAgentActivity?: () => Promise<LiveAgentSnapshot>;
-        getLiveAgentGovernance?: () => Promise<LiveAgentSnapshot>;
-      };
-      if (typeof anyClient.getAgentActivity === 'function') {
-        const raw = await anyClient.getAgentActivity();
-        return normalizeLiveAgentSnapshot(raw);
-      }
-      if (typeof anyClient.getLiveAgentGovernance === 'function') {
-        const raw = await anyClient.getLiveAgentGovernance();
-        return normalizeLiveAgentSnapshot(raw);
-      }
-      return null;
+      if (typeof client.getAgentActivity !== 'function') return null;
+      const raw = await client.getAgentActivity();
+      return normalizeLiveAgentSnapshot(raw);
     },
     refetchInterval: 1000,
     retry: false,

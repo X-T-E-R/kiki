@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(root, '.tmp', 'request-identity-proof', String(Date.now()));
@@ -116,13 +117,7 @@ const errors = [];
 const control = (body) => fetch(`${endpoint}/__control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 const url = (path) => `${web.url}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(endpoint)}&token=${FIXTURE_TOKEN}`;
 
-async function settle(page) {
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-    await Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {})));
-  });
-  await page.waitForTimeout(200);
-}
+const settle = (page) => settlePage(page, { parkPointer: false, waitMs: 200 });
 
 async function shot(page, name) {
   await settle(page);
