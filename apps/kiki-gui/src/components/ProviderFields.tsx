@@ -1362,11 +1362,65 @@ export function ProviderEditor({
 
   useDirtyReporter(`provider:${provider.id}`, dirty);
 
+  useEffect(() => {
+    if (openFocusKeySignal === 0) return;
+    setIsOpen(true);
+    const details = detailsRef.current;
+    if (details === null) return;
+    details.open = true;
+    const focusKey = () => {
+      const editBtn = details.querySelector<HTMLButtonElement>('[data-secret-field] [data-secret-edit]');
+      if (editBtn !== null && !editBtn.disabled) {
+        editBtn.click();
+        return;
+      }
+      const input = details.querySelector<HTMLInputElement>('[data-secret-field] input');
+      input?.focus();
+    };
+    requestAnimationFrame(focusKey);
+  }, [openFocusKeySignal]);
+
+  const remove = async () => {
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await client.deleteProviderEntity(provider.id);
+      await onSaved();
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+      setSaving(false);
+    }
+  };
+
   if (draft === null || baseline === null) {
     return (
-      <div className="rounded-xl border border-hairline bg-paper p-3">
-        <p className="text-[13px] font-semibold text-ink">{provider.id}</p>
+      <div data-connection-row={provider.id} className="space-y-2 rounded-xl border border-hairline bg-paper p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[13px] font-semibold text-ink">{accountLabel ?? provider.id}</p>
+          <button
+            type="button"
+            data-provider-remove={provider.id}
+            className={DANGER_GHOST_BUTTON}
+            disabled={saving}
+            onClick={() => { setConfirming('remove'); }}
+          >
+            {t('st.danger.removeProvider')}
+          </button>
+        </div>
         <Hint>{t('st.providers.cannotRewrite')}</Hint>
+        <FeedbackLine feedback={feedback} />
+        <ConfirmDialog
+          open={confirming === 'remove'}
+          title={t('st.confirm.removeTitle', { id: accountLabel ?? provider.id })}
+          body={managed ? t('st.providers.removeOAuthBody') : t('st.confirm.removeBody')}
+          consequences={managed
+            ? [t('st.confirm.removeC1', { id: provider.id }), t('st.providers.removeOAuthReaddC2')]
+            : [t('st.confirm.removeC1', { id: provider.id }), t('st.confirm.removeC2')]}
+          confirmLabel={t('st.confirm.removeAction')}
+          busy={saving}
+          onConfirm={() => { setConfirming(null); void remove(); }}
+          onCancel={() => { setConfirming(null); }}
+        />
       </div>
     );
   }
@@ -1475,18 +1529,6 @@ export function ProviderEditor({
     }
   };
 
-  const remove = async () => {
-    setSaving(true);
-    setFeedback(null);
-    try {
-      await client.deleteProviderEntity(provider.id);
-      await onSaved();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-      setSaving(false);
-    }
-  };
-
   const kind: ConnectionKind = managed ? 'account' : isLocalBaseUrl(provider.base_url) ? 'local' : 'api';
   const vendor = vendorLabelFor(provider.base_url);
   const host = hostLabel(provider.base_url);
@@ -1540,24 +1582,6 @@ export function ProviderEditor({
       setTesting(false);
     }
   };
-
-  useEffect(() => {
-    if (openFocusKeySignal === 0) return;
-    setIsOpen(true);
-    const details = detailsRef.current;
-    if (details === null) return;
-    details.open = true;
-    const focusKey = () => {
-      const editBtn = details.querySelector<HTMLButtonElement>('[data-secret-field] [data-secret-edit]');
-      if (editBtn !== null && !editBtn.disabled) {
-        editBtn.click();
-        return;
-      }
-      const input = details.querySelector<HTMLInputElement>('[data-secret-field] input');
-      input?.focus();
-    };
-    requestAnimationFrame(focusKey);
-  }, [openFocusKeySignal]);
 
   const statusBadge = (
     <span data-connection-status={healthTone}
@@ -1695,13 +1719,15 @@ export function ProviderEditor({
           </button>
           {dirty ? <span className="text-[12px] text-ink-faint">{t('st.tools.unsaved')}</span> : null}
           <span className="ml-auto flex flex-wrap items-center gap-2">
-            {/* An account connection is removed by signing out, which is in
-                its panel above; a key or local server is a configuration. */}
-            {managed ? null : (
-              <button type="button" className={DANGER_GHOST_BUTTON} disabled={saving} onClick={() => { setConfirming('remove'); }}>
-                {t('st.danger.removeProvider')}
-              </button>
-            )}
+            <button
+              type="button"
+              data-provider-remove={provider.id}
+              className={DANGER_GHOST_BUTTON}
+              disabled={saving}
+              onClick={() => { setConfirming('remove'); }}
+            >
+              {t('st.danger.removeProvider')}
+            </button>
           </span>
         </div>
         <FeedbackLine feedback={feedback} />
@@ -1709,9 +1735,18 @@ export function ProviderEditor({
       ) : null}
       <ConfirmDialog
         open={confirming === 'remove'}
-        title={t('st.confirm.removeTitle', { id: provider.id })}
-        body={t('st.confirm.removeBody')}
-        consequences={[t('st.confirm.removeC1', { id: provider.id }), t('st.confirm.removeC2')]}
+        title={t('st.confirm.removeTitle', { id: accountLabel ?? provider.id })}
+        body={managed ? t('st.providers.removeOAuthBody') : t('st.confirm.removeBody')}
+        consequences={managed
+          ? [
+              accountMethod?.auth_source?.kind === 'local_original'
+                ? t('st.providers.removeOAuthOriginalC1', { id: accountLabel ?? provider.id })
+                : accountFacts?.connected
+                  ? t('st.providers.removeOAuthSignedInC1', { id: accountLabel ?? provider.id })
+                  : t('st.confirm.removeC1', { id: provider.id }),
+              t('st.providers.removeOAuthReaddC2'),
+            ]
+          : [t('st.confirm.removeC1', { id: provider.id }), t('st.confirm.removeC2')]}
         confirmLabel={t('st.confirm.removeAction')}
         busy={saving}
         onConfirm={() => { setConfirming(null); void remove(); }}

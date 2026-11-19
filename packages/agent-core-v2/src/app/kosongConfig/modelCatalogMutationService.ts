@@ -71,6 +71,7 @@ import {
 
 import { IRecipeService } from '#/app/recipes/recipes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IOAuthService } from '#/app/auth/auth';
 import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
 import { IModelPromptReader } from './modelPromptReader';
 import { modelPromptBodies } from './modelPromptBodies';
@@ -657,6 +658,7 @@ export class ModelCatalogMutationService
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IRecipeService private readonly recipes?: IRecipeService,
     @IModelPromptReader private readonly promptReader?: IModelPromptReader,
+    @IOAuthService private readonly oauthService?: IOAuthService,
   ) {
     super();
   }
@@ -990,18 +992,26 @@ export class ModelCatalogMutationService
       if (provider === undefined) {
         throw new Error2(ModelCatalogErrors.codes.PROVIDER_NOT_FOUND, `provider ${id} does not exist`);
       }
-      if (provider.oauth !== undefined) {
-        throw oauthManagedError(id, 'use POST /oauth/logout');
+      if (provider.oauth !== undefined && this.oauthService !== undefined) {
+        try {
+          await this.oauthService.logout(id);
+        } catch {
+          void 0;
+        }
       }
+      const currentProviders = providersOf(this.config);
       const localModels = this.config.inspect<ModelsSection>(MODELS_SECTION).userValue;
       const models = localModels ?? {};
-      const { [id]: _removedProvider, ...restProviders } = providers;
+      const hasProvider = Object.hasOwn(currentProviders, id);
+      const hasProviderModels = Object.values(models).some((record) => providerRefOf(record) === id);
+      if (!hasProvider && !hasProviderModels) return;
+      const { [id]: _removedProvider, ...restProviders } = currentProviders;
       const restModels = Object.fromEntries(
         Object.entries(models).filter(([, record]) => providerRefOf(record) !== id),
       );
       await this.writeSections(
         { [PROVIDERS_SECTION]: restProviders, [MODELS_SECTION]: restModels },
-        { [PROVIDERS_SECTION]: providers, [MODELS_SECTION]: localModels },
+        { [PROVIDERS_SECTION]: currentProviders, [MODELS_SECTION]: localModels },
       );
     });
   }

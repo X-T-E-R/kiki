@@ -205,39 +205,10 @@ export function MessageRowActions({
   const showRegenerate = canRegenerate && onRegenerate !== undefined;
   const showFork = canFork && onFork !== undefined;
   const showPluginActions = pluginActions.length > 0;
-  if (!showCopy && !showLink && !showEdit && !showRegenerate && !showFork && !showPluginActions) return null;
-
-  const copy = (what: 'text' | 'link', text: string) => {
-    void copyTextToClipboard(text)
-      .then(() => {
-        setCopied(what);
-        setTimeout(() => { setCopied(null); }, 1400);
-      })
-      // Both clipboard paths failed: say so, or the tap looks dead.
-      .catch(() => { pushToast({ tone: 'error', text: t('transcript.copyFailed') }); });
-  };
-
-  const toggleMenu = () => {
-    setForkMenuOpen(false);
-    if (!menuOpen) {
-      const rawRect = triggerRef.current?.getBoundingClientRect();
-      if (rawRect !== undefined) {
-        // Account for the docked composer bar at the bottom of the viewport so
-        // an expanded overflow menu (including plugin message actions) flips
-        // upward cleanly instead of slipping behind the composer card.
-        const rect = unzoomedRect(rawRect);
-        const spaceBelow = unzoomedViewport().height - rect.bottom;
-        const spaceAbove = rect.top;
-        setOpenUp(spaceBelow < 240 && spaceAbove > spaceBelow);
-      }
-      setMenuOpen(true);
-    } else {
-      setMenuOpen(false);
-    }
-  };
+  const hasAnyAction = showCopy || showLink || showEdit || showRegenerate || showFork || showPluginActions;
 
   useEffect(() => {
-    if (!menuOpen || coarse) return;
+    if (!hasAnyAction || !menuOpen || coarse) return;
     const unregister = registerOverlay('row-actions-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -280,44 +251,10 @@ export function MessageRowActions({
       window.removeEventListener('scroll', onScrollOrResize, true);
       window.removeEventListener('resize', onScrollOrResize);
     };
-  }, [menuOpen, coarse]);
-
-  const forkDisabled = forkBusy || forkingLocal;
-  const triggerFork = (seed?: SessionSeedMode) => {
-    if (onFork === undefined || forkDisabled || forkingRef.current) return;
-    setForkMenuOpen(false);
-    setMenuOpen(false);
-    const result = onFork(seed);
-    if (result !== undefined && typeof (result as PromiseLike<unknown>).then === 'function') {
-      forkingRef.current = true;
-      setForkingLocal(true);
-      void Promise.resolve(result).finally(() => {
-        forkingRef.current = false;
-        setForkingLocal(false);
-      });
-    }
-  };
-
-  const openForkMenu = (focusFirst: boolean) => {
-    if (forkDisabled || forkingRef.current) return;
-    const rawRect = forkTriggerRef.current?.getBoundingClientRect();
-    if (rawRect !== undefined) {
-      const rect = unzoomedRect(rawRect);
-      const spaceBelow = unzoomedViewport().height - rect.bottom;
-      const spaceAbove = rect.top;
-      setForkOpenUp(spaceBelow < 180 && spaceAbove > spaceBelow);
-    }
-    setMenuOpen(false);
-    setForkMenuOpen(true);
-    if (focusFirst) {
-      queueMicrotask(() => {
-        forkMenuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
-      });
-    }
-  };
+  }, [hasAnyAction, menuOpen, coarse]);
 
   useEffect(() => {
-    if (!forkMenuOpen || coarse) return;
+    if (!hasAnyAction || !forkMenuOpen || coarse) return;
     const unregister = registerOverlay('row-fork-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -356,7 +293,72 @@ export function MessageRowActions({
       window.removeEventListener('scroll', onScrollOrResize, true);
       window.removeEventListener('resize', onScrollOrResize);
     };
-  }, [forkMenuOpen, coarse]);
+  }, [hasAnyAction, forkMenuOpen, coarse]);
+
+  if (!hasAnyAction) return null;
+
+  const copy = (what: 'text' | 'link', text: string) => {
+    void copyTextToClipboard(text)
+      .then(() => {
+        setCopied(what);
+        setTimeout(() => { setCopied(null); }, 1400);
+      })
+      // Both clipboard paths failed: say so, or the tap looks dead.
+      .catch(() => { pushToast({ tone: 'error', text: t('transcript.copyFailed') }); });
+  };
+
+  const toggleMenu = () => {
+    setForkMenuOpen(false);
+    if (!menuOpen) {
+      const rawRect = triggerRef.current?.getBoundingClientRect();
+      if (rawRect !== undefined) {
+        // Account for the docked composer bar at the bottom of the viewport so
+        // an expanded overflow menu (including plugin message actions) flips
+        // upward cleanly instead of slipping behind the composer card.
+        const rect = unzoomedRect(rawRect);
+        const spaceBelow = unzoomedViewport().height - rect.bottom;
+        const spaceAbove = rect.top;
+        setOpenUp(spaceBelow < 240 && spaceAbove > spaceBelow);
+      }
+      setMenuOpen(true);
+    } else {
+      setMenuOpen(false);
+    }
+  };
+
+  const forkDisabled = forkBusy || forkingLocal;
+  const triggerFork = (seed?: SessionSeedMode) => {
+    if (onFork === undefined || forkDisabled || forkingRef.current) return;
+    setForkMenuOpen(false);
+    setMenuOpen(false);
+    const result = onFork(seed);
+    if (result !== undefined && typeof (result as PromiseLike<unknown>).then === 'function') {
+      forkingRef.current = true;
+      setForkingLocal(true);
+      void Promise.resolve(result).finally(() => {
+        forkingRef.current = false;
+        setForkingLocal(false);
+      });
+    }
+  };
+
+  const openForkMenu = (focusFirst: boolean) => {
+    if (forkDisabled || forkingRef.current) return;
+    const rawRect = forkTriggerRef.current?.getBoundingClientRect();
+    if (rawRect !== undefined) {
+      const rect = unzoomedRect(rawRect);
+      const spaceBelow = unzoomedViewport().height - rect.bottom;
+      const spaceAbove = rect.top;
+      setForkOpenUp(spaceBelow < 180 && spaceAbove > spaceBelow);
+    }
+    setMenuOpen(false);
+    setForkMenuOpen(true);
+    if (focusFirst) {
+      queueMicrotask(() => {
+        forkMenuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+      });
+    }
+  };
 
   // The `⋯` menu's rows: a popover on a fine pointer, an action sheet on touch.
   const menuItems = (

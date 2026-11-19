@@ -587,6 +587,20 @@ ${engineError}`;
     () => (external || memoryRow || (bridged && realName === undefined) ? undefined : describeTool(block, semanticContext)),
     [external, memoryRow, bridged, realName, block, semanticContext],
   );
+  const pluginToolSlot = useMemo(
+    () => (memoryRow || semantics !== undefined || external || (bridged && realName === undefined)
+      ? undefined
+      : findToolCardRendererSlot(pluginGuiSlots, block.name)),
+    [memoryRow, semantics, external, bridged, realName, pluginGuiSlots, block.name],
+  );
+  const pluginToolSources = useMemo(
+    () => ({ args: block.args, result: block.output, display: block.display }),
+    [block.args, block.output, block.display],
+  );
+  const pluginTarget = useMemo(
+    () => (pluginToolSlot === undefined ? undefined : resolvePluginToolTargetNode(pluginToolSlot, pluginToolSources)),
+    [pluginToolSlot, pluginToolSources],
+  );
 
   if (memoryRow) return <MemoryToolRow block={block} agentId={agentId} />;
 
@@ -702,19 +716,6 @@ ${engineError}`;
       </ActivityRow>
     );
   }
-
-  const pluginToolSlot = useMemo(
-    () => (external || (bridged && realName === undefined) ? undefined : findToolCardRendererSlot(pluginGuiSlots, block.name)),
-    [external, bridged, realName, pluginGuiSlots, block.name],
-  );
-  const pluginToolSources = useMemo(
-    () => ({ args: block.args, result: block.output, display: block.display }),
-    [block.args, block.output, block.display],
-  );
-  const pluginTarget = useMemo(
-    () => (pluginToolSlot === undefined ? undefined : resolvePluginToolTargetNode(pluginToolSlot, pluginToolSources)),
-    [pluginToolSlot, pluginToolSources],
-  );
 
   return (
     <ActivityRow

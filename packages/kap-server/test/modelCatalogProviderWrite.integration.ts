@@ -879,16 +879,30 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(providers.body.data.items).toEqual([]);
   });
 
-  it('rejects deleting an OAuth-managed provider with 40003 and leaves config unchanged', async () => {
+  it('deletes an unauthenticated OAuth-managed provider and its models with 204', async () => {
     await boot(MANAGED_TOML);
-    const before = await readConfigToml();
-    const { body } = await deleteJson<unknown>('/api/providers/managed%3Akimi-code');
-    expect(body?.code).toBe(40003);
-    expect(body?.msg).toContain('/oauth/logout');
-    expect(await readConfigToml()).toEqual(before);
+    const { status } = await deleteJson<unknown>('/api/providers/managed%3Akimi-code');
+    expect(status).toBe(204);
+
+    const onDisk = await readConfigToml();
+    expect(onDisk['providers']).toBeUndefined();
+    expect(onDisk['models']).toBeUndefined();
 
     const providers = await getJson<{ items: Array<{ id: string }> }>('/api/providers');
-    expect(providers.body.data.items.map((p) => p.id)).toEqual(['managed:kimi-code']);
+    expect(providers.body.data.items).toEqual([]);
+    const models = await getJson<{ items: Array<{ id: string }> }>('/api/models');
+    expect(models.body.data.items).toEqual([]);
+  });
+
+  it('deletes only the targeted OAuth provider and its models while keeping sibling providers intact', async () => {
+    await boot(`${MANAGED_TOML}\n${KEEP_DEFAULT_TOML}`);
+    const { status } = await deleteJson<unknown>('/api/providers/managed%3Akimi-code');
+    expect(status).toBe(204);
+
+    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/providers');
+    expect(providers.body.data.items.map((p) => p.id).sort()).toEqual(['kimi', 'openai']);
+    const models = await getJson<{ items: Array<{ id: string }> }>('/api/models');
+    expect(models.body.data.items.map((m) => m.id).sort()).toEqual(['gpt4o', 'k2']);
   });
 
   it('maps an unknown provider id to 40412 on delete', async () => {

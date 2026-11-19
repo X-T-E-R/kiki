@@ -672,14 +672,13 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       params: providerIdParamSchema,
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
-        [ErrorCode.PROVIDER_OAUTH_MANAGED]: {},
         [ErrorCode.PROVIDER_NOT_FOUND]: {},
       },
       rawResponse: {
         204: { description: 'Provider deleted.' },
       },
       description:
-        'Delete a provider and all of its model aliases (204, no body). The global default_provider/default_model pointers are left untouched — they are the user\'s settings, not this endpoint\'s to garbage-collect. OAuth-managed providers are rejected: log out via /oauth/logout instead.',
+        'Delete a provider and all of its model aliases (204, no body). For OAuth-managed providers, any local Kiki OAuth credentials or machine sign-in attachment are also cleared or detached while leaving external CLI sign-ins intact.',
       tags: ['providers'],
       operationId: 'deleteProvider',
     },

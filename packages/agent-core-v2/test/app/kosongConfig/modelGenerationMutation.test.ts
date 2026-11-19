@@ -16,6 +16,7 @@ import { MODELS_SECTION, PROVIDERS_SECTION, REQUEST_IDENTITY_SECTION } from '#/a
 import { IModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMutation';
 import { ModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMutationService';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
+import { IOAuthService } from '#/app/auth/auth';
 import { IRecipeService } from '#/app/recipes/recipes';
 import type { ResolvedRecipe } from '@kiki/protocol';
 import { Event } from '#/_base/event';
@@ -465,6 +466,86 @@ max_context_size=8192
       expect(entity.recipe_options).toEqual({ research: false });
       expect(entity.recipe_model_binding).toMatchObject({ options: resolved.options, option_values: { research: false }, diagnostics: resolved.diagnostics });
       expect(entity.issues).toContainEqual({ code: 'recipe-option-unknown', severity: 'warning', path: 'recipe_options.removed', message: 'unknown option' });
+    } finally { await ix.dispose(); }
+  });
+  it('deletes an unauthenticated or signed-in OAuth provider and its models, calling oauth logout best-effort', async () => {
+    const storage = new InMemoryStorageService();
+    const store = new TomlAtomicDocumentStore(storage);
+    await store.setText('', 'config.toml', [
+      '[providers."managed:kimi-code"]',
+      'type = "kimi"',
+      'api_key = ""',
+      'base_url = "https://api.example.test/v1"',
+      'oauth = { storage = "file", key = "oauth/kimi-code" }',
+      '[providers.sibling]',
+      'type = "openai"',
+      'base_url = "https://sibling.example.test/v1"',
+      '[models."kimi-code/kimi-k2"]',
+      'provider = "managed:kimi-code"',
+      'model = "kimi-k2"',
+      'max_context_size = 131072',
+      '[models.sibling-model]',
+      'provider = "sibling"',
+      'model = "gpt-4o"',
+      'max_context_size = 128000',
+      '',
+    ].join('\n'));
+    const logout = vi.fn(async () => {
+      throw new Error('local credential missing');
+    });
+    const ix = new TestInstantiationService();
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/scratch/home'));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.stub(IAtomicTomlDocumentStore, store);
+    ix.stub(IModelOAuthTokens, stubModelOAuthTokens());
+    ix.stub(IOAuthService, { logout } as unknown as IOAuthService);
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    ix.set(IModelCatalogMutationService, new SyncDescriptor(ModelCatalogMutationService));
+    try {
+      const catalog = ix.get(IModelCatalogMutationService);
+      await catalog.deleteProvider('managed:kimi-code');
+      expect(logout).toHaveBeenCalledWith('managed:kimi-code');
+      const raw = await store.getText('', 'config.toml');
+      expect(raw).not.toContain('managed:kimi-code');
+      expect(raw).not.toContain('kimi-code/kimi-k2');
+      expect(raw).toContain('[providers.sibling]');
+      expect(raw).toContain('[models.sibling-model]');
+    } finally { await ix.dispose(); }
+  });
+  it('deletes a custom OAuth provider and all models referencing it', async () => {
+    const storage = new InMemoryStorageService();
+    const store = new TomlAtomicDocumentStore(storage);
+    await store.setText('', 'config.toml', [
+      '[providers.custom-oauth]',
+      'type = "openai"',
+      'base_url = "https://custom.example.test/v1"',
+      'oauth = { storage = "file", key = "oauth/custom" }',
+      '[models."custom-oauth/a"]',
+      'provider = "custom-oauth"',
+      'model = "a"',
+      'max_context_size = 64000',
+      '',
+    ].join('\n'));
+    const logout = vi.fn(async () => ({ ok: true }));
+    const ix = new TestInstantiationService();
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/scratch/home'));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.stub(IAtomicTomlDocumentStore, store);
+    ix.stub(IModelOAuthTokens, stubModelOAuthTokens());
+    ix.stub(IOAuthService, { logout } as unknown as IOAuthService);
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    ix.set(IModelCatalogMutationService, new SyncDescriptor(ModelCatalogMutationService));
+    try {
+      const catalog = ix.get(IModelCatalogMutationService);
+      await catalog.deleteProvider('custom-oauth');
+      expect(logout).toHaveBeenCalledWith('custom-oauth');
+      const raw = await store.getText('', 'config.toml');
+      expect(raw).not.toContain('custom-oauth');
+      expect(raw).not.toContain('custom-oauth/a');
     } finally { await ix.dispose(); }
   });
 });
