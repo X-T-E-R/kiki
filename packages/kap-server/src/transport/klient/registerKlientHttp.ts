@@ -93,9 +93,11 @@ export function registerKlientHttp(
       );
       return await reply.send(okEnvelope(data, req.id));
     } catch (error) {
-      if (!(error instanceof RPCError)) {
+      if (controller.signal.aborted && (reply.raw.destroyed || reply.raw.writableEnded)) return;
+      if (!(error instanceof RPCError) && !controller.signal.aborted) {
         req.log.error({ request_id: req.id, event_type: 'klient_call_failed', ...target, error: failureIdentity(error) }, 'klient http call failed');
       }
+      if (reply.raw.destroyed || reply.raw.writableEnded || reply.sent) return;
       return await reply.send(errorEnvelope(error, req.id));
     } finally {
       reply.raw.off('close', abort);

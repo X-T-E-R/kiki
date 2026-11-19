@@ -437,6 +437,7 @@ async function readAgentCapabilities(
         complete: query.metrics_settle === true,
       },
     );
+    void persistedPromise.catch(() => undefined);
     if (query.metrics_only === true) {
       const persisted = await persistedPromise;
       const metrics = { ...persisted };
@@ -464,18 +465,26 @@ async function readAgentCapabilities(
       const metadata = meta?.agents?.[query.agent_id];
       const delegationPosition = resolveDelegationPosition(query.agent_id, metadata?.delegator, metadata?.labels);
       const toolsLocked = metadata?.labels?.['branch'] === 'true' && metadata.labels['toolsLocked'] === 'true';
-      let [snapshot, workspace] = await Promise.all([
-        readPersistedAgentProfileSnapshot(
-          core,
-          workspaceId,
-          query.session_id,
-          query.agent_id,
-          metadata,
-          signal,
-          { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
-        ),
-        session === undefined ? acquireSavedWorkspaceProfileCatalog(core, workspaceId, summary, meta) : Promise.resolve(undefined),
-      ]);
+      const workspacePromise = session === undefined ? acquireSavedWorkspaceProfileCatalog(core, workspaceId, summary, meta) : Promise.resolve(undefined);
+      let snapshot: Awaited<ReturnType<typeof readPersistedAgentProfileSnapshot>>;
+      let workspace: Awaited<typeof workspacePromise>;
+      try {
+        [snapshot, workspace] = await Promise.all([
+          readPersistedAgentProfileSnapshot(
+            core,
+            workspaceId,
+            query.session_id,
+            query.agent_id,
+            metadata,
+            signal,
+            { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+          ),
+          workspacePromise,
+        ]);
+      } catch (error) {
+        void workspacePromise.then((handle) => handle?.dispose()).catch(() => undefined);
+        throw error;
+      }
       if (snapshot === undefined) {
         await workspace?.dispose();
         return {
