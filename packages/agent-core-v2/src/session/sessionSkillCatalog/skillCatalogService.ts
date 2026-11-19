@@ -1,8 +1,10 @@
 import { Service } from '#/_base/di/service';
 import { IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Emitter, type Event } from '#/_base/event';
+import { IConfigService } from '#/app/config/config';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { DISABLED_SKILLS_SECTION, disabledSkillNames } from '#/app/skillCatalog/configSection';
 import { defineState } from '#/state/state';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import type { SkillContribution } from '#/app/skillCatalog/skillSource';
@@ -39,6 +41,7 @@ export class SessionSkillCatalogService
   private readonly plugins?: IPluginService;
   private readonly discovery?: ISkillDiscovery;
   private readonly usage?: IPluginUsageService;
+  private readonly configService?: IConfigService;
   private sessionPluginIds: ReadonlySet<string> | undefined;
   private pluginOverlayTail: Promise<void> = Promise.resolve();
 
@@ -52,6 +55,7 @@ export class SessionSkillCatalogService
     this.plugins = optionalService(instantiation, IPluginService);
     this.discovery = optionalService(instantiation, ISkillDiscovery);
     this.usage = optionalService(instantiation, IPluginUsageService);
+    this.configService = optionalService(instantiation, IConfigService);
     this.states.contributeState(skillCatalogContributionsKey);
     this.states.contributeState(skillCatalogMergedKey);
     this._register(
@@ -60,6 +64,15 @@ export class SessionSkillCatalogService
         this.onDidChangeEmitter.fire(sourceId);
       }),
     );
+    if (this.configService !== undefined) {
+      this._register(
+        this.configService.onDidSectionChange((change) => {
+          if (change.domain !== DISABLED_SKILLS_SECTION) return;
+          this.remerge();
+          this.onDidChangeEmitter.fire(DISABLED_SKILLS_SECTION);
+        }),
+      );
+    }
     if (this.plugins !== undefined) this._register(this.plugins.onDidReload((event) => {
       event.waitUntil(this.refreshPluginOverlay());
     }));
@@ -122,13 +135,15 @@ export class SessionSkillCatalogService
 
   private remerge(): void {
     const m = new InMemorySkillCatalog();
+    m.setDisabledSkills(disabledSkillNames(this.configService));
     const base = this.data.catalog;
+    const baseSkills = base.listAllSkills !== undefined ? base.listAllSkills() : base.listSkills();
     const excludedRoots = new Set(
-      base.listSkills()
+      baseSkills
         .filter((skill) => this.sessionPluginIds !== undefined && skill.plugin !== undefined && !this.sessionPluginIds.has(skill.plugin.id))
         .flatMap((skill) => skill.sourceRoot === undefined ? [] : [skill.sourceRoot]),
     );
-    for (const skill of base.listSkills()) {
+    for (const skill of baseSkills) {
       if (this.sessionPluginIds !== undefined && skill.plugin !== undefined && !this.sessionPluginIds.has(skill.plugin.id)) continue;
       m.register(skill, { replace: true });
     }

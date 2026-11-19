@@ -4087,12 +4087,15 @@ class FixtureServer {
       this.plugins.push(plugin);
       return this.envelope(res, plugin);
     }
-    const pluginActionMatch = /^\/plugins\/([^/]+):(enable|disable|remove)$/.exec(path);
+    const pluginActionMatch = /^\/plugins\/([^/]+):(enable|disable|remove|reload)$/.exec(path);
     if (pluginActionMatch !== null && method === 'POST') {
       const pluginId = decodeURIComponent(pluginActionMatch[1]);
       const action = pluginActionMatch[2];
       const index = this.plugins.findIndex((entry) => entry.id === pluginId);
       if (index < 0) return this.envelope(res, null, 40419, 'plugin.not_found');
+      if (action === 'reload') {
+        return this.envelope(res, this.plugins[index]);
+      }
       if (action === 'remove') this.plugins.splice(index, 1);
       else {
         // This is the global call, so the master and the global default move
@@ -4153,8 +4156,16 @@ class FixtureServer {
     }
     const workspaceSkillsMatch = /^\/workspaces\/([^/]+)\/skills$/.exec(path);
     if (workspaceSkillsMatch !== null) {
+      const disabledSet = new Set(
+        (this.config.disabled_skills ?? []).map((entry) => String(entry).trim().toLowerCase()).filter(Boolean),
+      );
+      const rawSkills = this.scenario?.data.workspaceSkills?.[workspaceSkillsMatch[1]] ?? [];
       return this.envelope(res, {
-        skills: this.scenario?.data.workspaceSkills?.[workspaceSkillsMatch[1]] ?? [],
+        skills: rawSkills.map((skill) => (
+          disabledSet.has(String(skill.name ?? '').trim().toLowerCase())
+            ? { ...skill, enabled: false }
+            : skill
+        )),
       });
     }
     if (path === '/workspaces:inspect' && method === 'POST') {

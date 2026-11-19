@@ -2954,8 +2954,8 @@ export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: st
   'st-card-webbridge': { section: 'browser-control', cardId: 'st-card-webbridge' },
   // Recipes became a tab of Models; its flag row joined Models' own rows.
   'st-card-exp-recipes': { section: 'ai', cardId: 'st-card-exp-ai' },
-  // Installed skills and plugins live on Capabilities; Extensions holds one summary line.
-  'st-card-skill-catalog': { section: 'extensions', cardId: 'st-card-plugins' },
+  // Installed skills live on Extensions -> Skills (#st-card-caps).
+  'st-card-skill-catalog': { section: 'extensions', cardId: 'st-card-caps' },
 };
 
 /** Which tab a legacy section bookmark maps to. */

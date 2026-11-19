@@ -863,4 +863,48 @@ describe('CapabilitiesPage workspace skills', () => {
     expect(isInside('mcp')).toBe(true);
     expect(strip.scrollLeft).toBe(0);
   });
+
+  it('toggles per-skill disabled_skills state, groups plugin_id skills under Plugins, and expands Sources & folders', async () => {
+    const getConfig = vi.fn(async () => ({ disabled_skills: ['kiki-ops'], extra_skill_dirs: ['C:/team/skills'] }));
+    const patchConfig = vi.fn(async (body: { disabled_skills?: string[] }) => ({
+      disabled_skills: body.disabled_skills ?? [],
+      extra_skill_dirs: ['C:/team/skills'],
+    }));
+    Object.assign(client, { getConfig, patchConfig });
+    try {
+      client.listWorkspaceCatalog.mockResolvedValue({ items: [alpha] });
+      client.listWorkspaceSkills.mockResolvedValue({
+        skills: [
+          { ...sampleSkill, name: 'code-review', source: 'project' },
+          { name: 'bilibili-operator', description: 'Bilibili ops', path: 'C:/u/.kiki/plugins/kiki-bilibili/skills/bilibili-operator/SKILL.md', source: 'extra', plugin_id: 'kiki-bilibili', prompt_command: true },
+          { name: 'kiki-ops', description: 'Built-in ops', path: 'builtin:kiki-ops', source: 'builtin', enabled: false },
+        ],
+      });
+      await renderPage('/capabilities?tab=skills');
+      await settleUntil('[data-skill-row="code-review"]');
+
+      // Plugin-contributed skill with source='extra' + plugin_id groups under Plugins.
+      expect(container.querySelector('[data-list-group="plugin"] [data-skill-row="bilibili-operator"]')).not.toBeNull();
+      expect(container.querySelector('[data-skill-row="kiki-ops"]')?.getAttribute('data-skill-enabled')).toBe('false');
+
+      // Toggle code-review off -> patches disabled_skills with ['kiki-ops', 'code-review'].
+      const reviewToggle = container.querySelector<HTMLInputElement>('[data-skill-row="code-review"] input[type="checkbox"]')!;
+      expect(reviewToggle.checked).toBe(true);
+      await act(async () => { reviewToggle.click(); });
+      expect(patchConfig).toHaveBeenCalledWith({
+        disabled_skills: ['kiki-ops', 'code-review'],
+        replace_domains: ['disabled_skills'],
+      });
+
+      // Sources & folders panel expands cleanly on demand.
+      const sourcesBtn = container.querySelector<HTMLButtonElement>('[data-skills-sources-toggle]')!;
+      expect(sourcesBtn.getAttribute('aria-expanded')).toBe('false');
+      await act(async () => { sourcesBtn.click(); });
+      expect(container.querySelector('[data-skills-sources-panel]')).not.toBeNull();
+      expect(container.querySelector('[data-extra-skill-dir-chip="C:/team/skills"]')).not.toBeNull();
+    } finally {
+      delete (client as { getConfig?: unknown; patchConfig?: unknown }).getConfig;
+      delete (client as { getConfig?: unknown; patchConfig?: unknown }).patchConfig;
+    }
+  });
 });

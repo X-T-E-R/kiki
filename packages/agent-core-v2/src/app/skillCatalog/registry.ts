@@ -23,8 +23,27 @@ export class InMemorySkillCatalog implements SkillCatalog {
   private readonly byName = new Map<string, SkillDefinition>();
   private readonly commands = new Map<string, SkillDefinition>();
   private readonly byPluginAndName = new Map<string, SkillDefinition>();
+  private readonly disabledNames = new Set<string>();
   private readonly roots: string[] = [];
   private readonly skipped: SkippedSkill[] = [];
+
+  setDisabledSkills(names: Iterable<string>): void {
+    this.disabledNames.clear();
+    for (const name of names) {
+      const trimmed = name.trim();
+      if (trimmed !== '') this.disabledNames.add(normalizeSkillName(trimmed));
+    }
+  }
+
+  isSkillDisabled(name: string): boolean {
+    return this.disabledNames.has(normalizeSkillName(name));
+  }
+
+  private isDisabledDefinition(skill: SkillDefinition): boolean {
+    if (this.disabledNames.size === 0) return false;
+    if (this.disabledNames.has(normalizeSkillName(skill.name))) return true;
+    return skill.metadata.name !== undefined && this.disabledNames.has(normalizeSkillName(skill.metadata.name));
+  }
 
   registerBuiltinSkill(skill: SkillDefinition): void {
     this.register(skill.source === 'builtin' ? skill : { ...skill, source: 'builtin' });
@@ -53,11 +72,13 @@ export class InMemorySkillCatalog implements SkillCatalog {
 
   getSkill(name: string): SkillDefinition | undefined {
     const key = normalizeSkillName(name);
-    return this.byName.get(key) ?? this.commandEntries().find((skill) => normalizeSkillName(skill.name) === key);
+    const found = this.byName.get(key) ?? this.commandEntries().find((skill) => normalizeSkillName(skill.name) === key);
+    return found !== undefined && !this.isDisabledDefinition(found) ? found : undefined;
   }
 
   getPluginSkill(pluginId: string, name: string): SkillDefinition | undefined {
-    return this.byPluginAndName.get(pluginSkillKey(pluginId, name));
+    const found = this.byPluginAndName.get(pluginSkillKey(pluginId, name));
+    return found !== undefined && !this.isDisabledDefinition(found) ? found : undefined;
   }
 
   renderSkillPrompt(
@@ -82,8 +103,12 @@ export class InMemorySkillCatalog implements SkillCatalog {
     );
   }
 
-  listSkills(): readonly SkillDefinition[] {
+  listAllSkills(): readonly SkillDefinition[] {
     return [...this.byName.values(), ...this.commandEntries()].toSorted((a, b) => a.name.localeCompare(b.name));
+  }
+
+  listSkills(): readonly SkillDefinition[] {
+    return this.listAllSkills().filter((skill) => !this.isDisabledDefinition(skill));
   }
 
   private commandEntries(): SkillDefinition[] {

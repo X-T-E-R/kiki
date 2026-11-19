@@ -1,17 +1,26 @@
-/**
- * Settings → Plugins. One section, two pages: the installed list, and each
- * plugin's own settings page at `/settings/plugins?plugin=<id>`.
- *
- * What is not here is as deliberate as what is. Finding and installing a
- * plugin stays on the Capabilities market, which this leaf links to once. The
- * catalog address stays in that market's own Advanced block. The WebBridge
- * readiness card — an answer about browser control, not about a plugin —
- * lives on the browser page, with the rest of that answer.
- */
+import { useLocation } from 'react-router-dom';
 
+import { useGuardedNavigate } from '../dirtyGuard';
 import { InstalledPluginsList } from './plugins/InstalledPluginsList';
 import { PluginSettingsPage } from './plugins/PluginSettingsPage';
 
+/**
+ * Settings -> Plugins: direct installed + market plugin management on the list
+ * view, and each plugin's settings page at `?plugin=<id>`.
+ */
 export function PluginsSection({ pluginId }: { readonly pluginId: string | null }) {
-  return pluginId === null ? <InstalledPluginsList /> : <PluginSettingsPage pluginId={pluginId} />;
+  const location = useLocation();
+  const navigate = useGuardedNavigate();
+  if (pluginId === null) return <InstalledPluginsList />;
+
+  const backToCurrentSection = location.pathname.startsWith('/settings/extensions')
+    ? () => {
+        const params = new URLSearchParams(location.search);
+        params.delete('plugin');
+        const nextQuery = params.toString();
+        void navigate(nextQuery === '' ? '/settings/extensions' : `/settings/extensions?${nextQuery}`);
+      }
+    : undefined;
+
+  return <PluginSettingsPage pluginId={pluginId} onBack={backToCurrentSection} />;
 }

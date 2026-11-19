@@ -28,8 +28,11 @@ export interface SkillGroup {
   readonly skills: readonly SkillDescriptor[];
 }
 
-/** Map a raw wire source string onto a display group. */
-export function skillGroupId(source: string): SkillGroupId {
+/** Map a raw wire source string (and optional plugin owner) onto a display group. */
+export function skillGroupId(source: string, pluginId?: string): SkillGroupId {
+  if (pluginId !== undefined && pluginId !== '') {
+    return 'plugin';
+  }
   switch (source) {
     case 'plugin':
       return 'plugin';
@@ -86,7 +89,7 @@ export function groupSkills(
   const buckets = new Map<SkillGroupId, SkillDescriptor[]>();
   for (const skill of skills) {
     if (!skillMatchesQuery(skill, query)) continue;
-    const id = skillGroupId(skill.source);
+    const id = skillGroupId(skill.source, skill.plugin_id);
     const bucket = buckets.get(id);
     if (bucket === undefined) buckets.set(id, [skill]);
     else bucket.push(skill);

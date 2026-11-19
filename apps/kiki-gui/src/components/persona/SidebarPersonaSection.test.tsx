@@ -12,6 +12,7 @@ import { resetLayoutPreferencesForTests, writeLayoutPreferences } from '@kiki/se
 import { I18nProvider } from '../../i18n';
 import { buildPersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDirectory';
 import {
+  SIDEBAR_PERSONA_INLINE_THREAD_LIMIT,
   SIDEBAR_PERSONA_ORDER_KEY,
   SIDEBAR_PERSONA_PREVIEW_LIMIT,
   SidebarPersonaSection,
@@ -126,15 +127,19 @@ function subthreadIds(container: HTMLElement, personaId = 'xiao-you'): string[] 
 }
 
 describe('the sidebar persona group', () => {
-  it('keeps personas in a fixed natural order without jumping on pin/activity/unread, and hides hidden entries', async () => {
+  it('sorts active, urgent, pinned, and recently active personas to the top when no custom order is saved, hides hidden entries, and keeps inline rows free of tagline clutter', async () => {
     directory.entries = [
-      persona({ id: 'zhou', name: '小周', life: 'idle', lastActivityAt: 100 }),
+      persona({ id: 'zhou', name: '小周', title: '超长设定副标题不应挤占折叠单行空间', life: 'idle', lastActivityAt: 100 }),
       persona({ id: 'you', name: '小柚', pinned: true, life: 'waiting', unreadCount: 2, unreadSessionIds: ['s1', 's2'], lastActivityAt: 9_000 }),
       persona({ id: 'gui', name: '小桂', hidden: true }),
       persona({ id: 'dou', name: '豆豆', homeSessionId: 'active_home', lastActivityAt: 5_000 }),
     ];
     const container = await render([session({ id: 'active_home' })], 'active_home');
-    expect(rowIds(container)).toEqual(['zhou', 'you', 'dou']);
+    expect(rowIds(container)).toEqual(['dou', 'you', 'zhou']);
+    const zhouPrimary = container.querySelector<HTMLButtonElement>('[data-persona-primary="zhou"]')!;
+    expect(zhouPrimary.textContent).toContain('小周');
+    expect(zhouPrimary.textContent).not.toContain('超长设定副标题');
+    expect(zhouPrimary.getAttribute('title')).toContain('超长设定副标题不应挤占折叠单行空间');
   });
 
   it('reorders personas via drag-and-drop and Alt+Arrow keys and persists the custom order in localStorage', async () => {
@@ -206,20 +211,25 @@ describe('the sidebar persona group', () => {
     expect(container.querySelector('[data-sidebar-personas]')).toBeNull();
   });
 
-  it('sends the primary row to /p/:id/daily even when homeSessionId is not yet claimed and room/topic threads exist', async () => {
+  it('switches directly to the most recent active conversation when clicking a persona row, or /p/:id/daily when zero threads exist', async () => {
     directory.entries = [persona({ id: 'dou-dou', name: '豆豆', homeSessionId: undefined })];
+    const emptyContainer = await render([]);
+    await act(async () => { emptyContainer.querySelector<HTMLElement>('[data-persona-primary="dou-dou"]')!.click(); });
+    expect(navigate).toHaveBeenCalledWith('/p/dou-dou/daily');
+
+    navigate.mockClear();
     const container = await render([
-      hers({ id: 'room_member_1', metadata: { cwd: '/a', room_persona_id: 'dou-dou', room_member_of: 'room_alpha' }, last_seq: 0 }, 'dou-dou'),
-      hers({ id: 'topic_1', title: '豆豆 · 支线改稿', last_seq: 0 }, 'dou-dou'),
+      hers({ id: 'room_member_1', updated_at: '2026-10-02T08:00:00Z', metadata: { cwd: '/a', room_persona_id: 'dou-dou', room_member_of: 'room_alpha' }, last_seq: 0 }, 'dou-dou'),
+      hers({ id: 'topic_1', title: '豆豆 · 支线改稿', updated_at: '2026-10-02T12:00:00Z', last_seq: 0 }, 'dou-dou'),
     ]);
     const primary = container.querySelector<HTMLElement>('[data-persona-primary="dou-dou"]')!;
     await act(async () => { primary.click(); });
-    expect(navigate).toHaveBeenCalledWith('/p/dou-dou/daily');
+    expect(navigate).toHaveBeenCalledWith('/s/topic_1');
 
     // Extra threads remain reachable through the count/chevron disclosure.
     const toggle = container.querySelector<HTMLElement>('[data-persona-switcher-toggle="dou-dou"][data-persona-thread-count="2"]')!;
     await act(async () => { toggle.click(); });
-    expect(subthreadIds(container, 'dou-dou')).toEqual(['room_member_1', 'topic_1']);
+    expect(subthreadIds(container, 'dou-dou')).toEqual(['topic_1', 'room_member_1']);
   });
 
   it('sends the name to the stable daily address instead of a fixed session', async () => {
@@ -269,12 +279,13 @@ describe('reliable persona conversation discovery and unified inline expansion',
     ];
     listPersonaSessionHeads.mockResolvedValue({
       'xiao-you': {
-        total: 4,
+        total: 5,
         items: [
           hers({ id: 'home_you', title: '小柚', updated_at: '2026-10-01T10:00:00Z' }),
           hers({ id: 'topic_loaded', title: '小柚 · 已在首屏切片', updated_at: '2026-10-03T10:00:00Z' }),
           hers({ id: 'topic_cold_1', title: '小柚 · 冷归档对话一', updated_at: '2026-09-12T10:00:00Z' }),
           hers({ id: 'topic_cold_2', title: '小柚 · 冷归档对话二', updated_at: '2026-08-05T10:00:00Z' }),
+          hers({ id: 'topic_cold_3', title: '小柚 · 冷归档对话三', updated_at: '2026-07-05T10:00:00Z' }),
         ],
       },
       'dou-dou': {
@@ -291,7 +302,7 @@ describe('reliable persona conversation discovery and unified inline expansion',
       [hers({ id: 'topic_loaded', title: '小柚 · 已在首屏切片', updated_at: '2026-10-03T10:00:00Z' })],
       undefined,
       '/',
-      { home_you: 1, topic_loaded: 1, topic_cold_1: 1, topic_cold_2: 1 },
+      { home_you: 1, topic_loaded: 1, topic_cold_1: 1, topic_cold_2: 1, topic_cold_3: 1 },
       queryClient,
     );
     await flush();
@@ -312,28 +323,29 @@ describe('reliable persona conversation discovery and unified inline expansion',
     expect(listPersonaSessionHeads).toHaveBeenCalledTimes(1);
     expect(listSessions).not.toHaveBeenCalled();
 
-    // Total conversations = home_you (1) + 3 non-home topics = 4.
+    // Total conversations = home_you (1) + 4 non-home topics = 5; inline preview shows up to 3 before +N.
+    expect(SIDEBAR_PERSONA_INLINE_THREAD_LIMIT).toBe(3);
     const toggle = container.querySelector<HTMLButtonElement>('[data-persona-switcher-toggle="xiao-you"]')!;
-    expect(toggle.getAttribute('data-persona-thread-count')).toBe('4');
+    expect(toggle.getAttribute('data-persona-thread-count')).toBe('5');
 
     // Idle persona starts collapsed; clicking the count chevron unfolds inline without any floating popover.
     expect(container.querySelector('[data-persona-subthreads="xiao-you"]')).toBeNull();
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(document.body.querySelector('[data-persona-switcher]')).toBeNull();
-    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1']);
+    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1', 'topic_cold_2']);
 
     // Clicking "+1 · All conversations" expands the remaining cold conversation inline in place without needing listSessions when total <= head items.
     const moreBtn = container.querySelector<HTMLButtonElement>('[data-persona-subthreads-more="xiao-you"]')!;
     expect(moreBtn.textContent).toContain('+1');
     await act(async () => { moreBtn.click(); });
-    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1', 'topic_cold_2']);
+    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1', 'topic_cold_2', 'topic_cold_3']);
     expect(listSessions).not.toHaveBeenCalled();
 
-    // Clicking Show less returns to the compact 2-thread preview, and clicking the chevron collapses completely.
+    // Clicking Show less returns to the compact 3-thread preview, and clicking the chevron collapses completely.
     const lessBtn = container.querySelector<HTMLButtonElement>('[data-persona-subthreads-less="xiao-you"]')!;
     await act(async () => { lessBtn.click(); });
-    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1']);
+    expect(subthreadIds(container)).toEqual(['topic_loaded', 'topic_cold_1', 'topic_cold_2']);
 
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -468,8 +480,8 @@ describe('reliable persona conversation discovery and unified inline expansion',
 });
 
 describe('collapsible and count-bounded persona group', () => {
-  it('removes inner scroll, caps preview at 8 in fixed order, and expands/collapses cleanly', async () => {
-    expect(SIDEBAR_PERSONA_PREVIEW_LIMIT).toBe(8);
+  it('removes inner scroll, caps folded preview at 5 with active/urgent/pinned/recent priority, and persists expand/collapse', async () => {
+    expect(SIDEBAR_PERSONA_PREVIEW_LIMIT).toBe(5);
     directory.entries = [
       persona({ id: 'p-alpha', name: 'Alpha', lastActivityAt: 100 }),
       persona({ id: 'p-bravo', name: 'Bravo', lastActivityAt: 200 }),
@@ -488,21 +500,23 @@ describe('collapsible and count-bounded persona group', () => {
     expect(wrapper.className).not.toContain('max-h-');
 
     expect(rowIds(container)).toEqual([
-      'p-alpha',
-      'p-bravo',
-      'p-charlie',
-      'p-delta',
-      'p-echo',
       'p-foxtrot',
+      'p-echo',
       'p-golf',
       'p-hotel',
+      'p-delta',
     ]);
 
     const moreBtn = container.querySelector<HTMLButtonElement>('[data-sidebar-personas-more="more"]')!;
     expect(moreBtn).not.toBeNull();
+    expect(moreBtn.textContent).toContain('5');
     await act(async () => { moreBtn.click(); });
     expect(container.querySelectorAll('[data-sidebar-persona-row]')).toHaveLength(10);
     expect(container.querySelector('[data-sidebar-personas-more="less"]')).not.toBeNull();
+
+    // Remounting preserves the persisted show-all preference.
+    const remounted = await render([session({ id: 'active-home' })], 'active-home');
+    expect(remounted.querySelectorAll('[data-sidebar-persona-row]')).toHaveLength(10);
 
     const headerToggle = container.querySelector<HTMLButtonElement>('[data-sidebar-personas-toggle]')!;
     expect(headerToggle.getAttribute('aria-expanded')).toBe('true');

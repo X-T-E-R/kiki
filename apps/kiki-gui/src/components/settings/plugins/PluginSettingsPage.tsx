@@ -32,8 +32,7 @@ import { isStaleRevision, isStaleScope, scopeOf } from '../../capabilities/plugi
 import { Tag } from '../../capabilities/primitives';
 import { useInstalledPlugins, useInvalidatePlugins, usePluginInfo, usePluginMarketplace } from '../../capabilities/usePlugins';
 import { PluginSettingsPanel, settingsPanelOf } from './PluginSettingsPanel';
-import { ORIGIN_KEYS } from './InstalledPluginsList';
-import { pluginDefaultOn, usePluginContributions } from './pluginState';
+import { ORIGIN_KEYS, pluginDefaultOn, usePluginContributions } from './pluginState';
 import { FeedbackLine, InlineError, Toggle } from '../../controls';
 import { SettingField } from '../fields';
 import { SectionCard } from '../SectionCard';
@@ -41,12 +40,18 @@ import { Icon } from '../../icons';
 import { SettingsSegmented } from '../SettingsPrimitives';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from '../../ui';
 
-export function PluginSettingsPage({ pluginId }: { readonly pluginId: string }) {
+export function PluginSettingsPage({
+  pluginId,
+  onBack,
+  hideBack = false,
+}: {
+  readonly pluginId: string;
+  readonly onBack?: () => void;
+  readonly hideBack?: boolean;
+}) {
   const { t } = useI18n();
   const installed = useInstalledPlugins();
   const entries = usePluginMarketplace();
-  // The list is the one source of "is it still installed". A deep link to a
-  // plugin that is not installed reads as a dead link, not as an error.
   const plugin = useMemo(
     () => (installed.data?.plugins ?? []).find((item) => item.id === pluginId),
     [installed.data, pluginId],
@@ -65,16 +70,16 @@ export function PluginSettingsPage({ pluginId }: { readonly pluginId: string }) 
       </div>
     );
   }
-  if (plugin === undefined) return <PluginNotInstalled pluginId={pluginId} />;
+  if (plugin === undefined) return <PluginNotInstalled pluginId={pluginId} onBack={onBack} hideBack={hideBack} />;
 
   return (
     <div className="space-y-6" data-plugin-settings-page={plugin.id}>
-      <PluginHeader plugin={plugin} origin={pluginOrigin(plugin, entries.data?.entries ?? [])} />
+      <PluginHeader plugin={plugin} origin={pluginOrigin(plugin, entries.data?.entries ?? [])} onBack={onBack} hideBack={hideBack} />
       <PluginEffectiveScope plugin={plugin} />
       <SectionCard id="st-card-plugin-settings" title={t('cap.settings.title')}>
         <PluginSettingsBody plugin={plugin} />
       </SectionCard>
-      <PluginManagement plugin={plugin} />
+      <PluginManagement plugin={plugin} onRemoved={onBack} />
     </div>
   );
 }
@@ -288,9 +293,11 @@ function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
 }
 
 /** Back to the list, the plugin's own name, where it came from, what it brings. */
-function PluginHeader({ plugin, origin }: {
+function PluginHeader({ plugin, origin, onBack, hideBack = false }: {
   readonly plugin: PluginSummary;
   readonly origin: PluginOrigin;
+  readonly onBack?: () => void;
+  readonly hideBack?: boolean;
 }) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
@@ -298,16 +305,21 @@ function PluginHeader({ plugin, origin }: {
   const contributions = usePluginContributions(plugin);
   return (
     <header>
-      <button
-        type="button"
-        onClick={() => { void navigate(installedPluginsPath()); }}
-        className="-ml-1 inline-flex min-h-8 items-center gap-1 rounded-md px-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-        data-plugin-settings-back
-      >
-        <Icon name="arrowLeft" size={14} />
-        {t('st.plugins.backToInstalled')}
-      </button>
-      <div className="mt-4 flex min-w-0 items-center gap-4">
+      {!hideBack ? (
+        <button
+          type="button"
+          onClick={() => {
+            if (onBack !== undefined) onBack();
+            else void navigate(installedPluginsPath());
+          }}
+          className="-ml-1 mb-4 inline-flex min-h-8 items-center gap-1 rounded-md px-1 text-[13px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+          data-plugin-settings-back
+        >
+          <Icon name="arrowLeft" size={14} />
+          {t('st.plugins.backToInstalled')}
+        </button>
+      ) : null}
+      <div className="flex min-w-0 items-center gap-4">
         <span className={plugin.enabled ? '' : 'opacity-50 grayscale'}><CapabilityIcon icon={plugin.icon} size="lg" /></span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -332,7 +344,7 @@ function PluginHeader({ plugin, origin }: {
  * Taking a plugin back or off the server. Quiet, at the bottom, each behind
  * the confirmation it has always had; neither shares a row with a setting.
  */
-function PluginManagement({ plugin }: { readonly plugin: PluginSummary }) {
+function PluginManagement({ plugin, onRemoved }: { readonly plugin: PluginSummary; readonly onRemoved?: () => void }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const invalidate = useInvalidatePlugins();
@@ -341,6 +353,7 @@ function PluginManagement({ plugin }: { readonly plugin: PluginSummary }) {
   const [failure, setFailure] = useState<unknown>(null);
   const [confirm, setConfirm] = useState<'remove' | 'rollback' | null>(null);
   const previous = plugin.rollback === undefined ? undefined : plugin.rollback.version ?? t('cap.detail.previous');
+  const canReload = typeof client.reloadPlugin === 'function';
 
   const act = async (action: () => Promise<unknown>): Promise<boolean> => {
     setBusy(true);
@@ -360,6 +373,17 @@ function PluginManagement({ plugin }: { readonly plugin: PluginSummary }) {
   return (
     <SectionCard id="st-card-plugin-manage" title={t('st.plugins.manageTitle')}>
       <div className="flex flex-wrap items-center gap-2">
+        {canReload ? (
+          <button
+            type="button"
+            className={SECONDARY_BUTTON}
+            disabled={busy}
+            onClick={() => { void act(() => client.reloadPlugin(plugin.id)); }}
+            data-plugin-reload={plugin.id}
+          >
+            {t('cap.plugins.reload')}
+          </button>
+        ) : null}
         {previous !== undefined ? (
           <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => { setConfirm('rollback'); }} data-plugin-rollback={plugin.id}>
             {t('cap.action.rollback', { version: previous })}
@@ -382,7 +406,10 @@ function PluginManagement({ plugin }: { readonly plugin: PluginSummary }) {
         onConfirm={() => {
           setConfirm(null);
           void act(() => client.removePlugin(plugin.id, { deleteData: false })).then((done) => {
-            if (done) void navigate(installedPluginsPath());
+            if (done) {
+              if (onRemoved !== undefined) onRemoved();
+              else void navigate(installedPluginsPath());
+            }
           });
         }}
       />
@@ -410,7 +437,7 @@ function PluginManagement({ plugin }: { readonly plugin: PluginSummary }) {
  * never falls back to some other plugin's page — a link that no longer points
  * anywhere should read as a dead link, not as a different plugin.
  */
-function PluginNotInstalled({ pluginId }: { readonly pluginId: string }) {
+function PluginNotInstalled({ pluginId, onBack, hideBack = false }: { readonly pluginId: string; readonly onBack?: () => void; readonly hideBack?: boolean }) {
   const { t } = useI18n();
   const navigate = useNavigate();
   return (
@@ -421,16 +448,21 @@ function PluginNotInstalled({ pluginId }: { readonly pluginId: string }) {
           {t('st.plugins.notInstalledBody', { id: pluginId })}
         </p>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className={SECONDARY_BUTTON}
-          onClick={() => { void navigate(installedPluginsPath()); }}
-          data-plugin-settings-back
-        >
-          {t('st.plugins.backToInstalled')}
-        </button>
-      </div>
+      {!hideBack ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className={SECONDARY_BUTTON}
+            onClick={() => {
+              if (onBack !== undefined) onBack();
+              else void navigate(installedPluginsPath());
+            }}
+            data-plugin-settings-back
+          >
+            {t('st.plugins.backToInstalled')}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

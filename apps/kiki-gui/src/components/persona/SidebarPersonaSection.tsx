@@ -1,12 +1,11 @@
 /**
- * SidebarPersonaSection: the sidebar's persona group.
+ * SidebarPersonaSection: the sidebar's persona group inside the unified
+ * conversation scroll container.
  *
- * One row per persona in a fixed, user-draggable order persisted in
- * `localStorage` (`kiki.sidebar.personaOrder`). Conversations are resolved per
- * persona from the server merged with live client sessions so cold threads
- * outside the global sidebar page remain visible, and expanding a persona's
- * conversations always unfolds inline right beneath its row without opening a
- * duplicate floating popover.
+ * One compact row per persona. When no custom drag order has been saved, active,
+ * pinned, and recently-used personas rise above cold ones; once dragged or
+ * pinned, custom order is respected while ensuring active/attention personas
+ * never hide behind the >5 fold.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -14,7 +13,11 @@ import { useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PersonaSummary, RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { isPinnedSession, sessionRowState } from '@kiki/session-core/sessions';
-import { setSidebarPersonaSectionCollapsed, type SessionSeenMap } from '@kiki/session-core/settings';
+import {
+  setSidebarPersonaSectionCollapsed,
+  setSidebarPersonasShowAll,
+  type SessionSeenMap,
+} from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { BOTS_QUERY_KEY } from '../../lib/botRooms';
@@ -39,9 +42,9 @@ import { usePersonaDirectory, type PersonaDirectoryEntry } from './usePersonaDir
 import { invalidatePersonas } from './usePersonas';
 
 /** Default preview cap when the persona section is expanded. */
-export const SIDEBAR_PERSONA_PREVIEW_LIMIT = 8;
+export const SIDEBAR_PERSONA_PREVIEW_LIMIT = 5;
 /** Inline non-home topic/room conversations surfaced by default before "+N more". */
-export const SIDEBAR_PERSONA_INLINE_THREAD_LIMIT = 2;
+export const SIDEBAR_PERSONA_INLINE_THREAD_LIMIT = 3;
 /** Persisted user-chosen sidebar persona ordering. */
 export const SIDEBAR_PERSONA_ORDER_KEY = 'kiki.sidebar.personaOrder';
 
@@ -68,7 +71,7 @@ function rawThreadTitle(session: Session, untitled: string): string {
   return untitled;
 }
 
-const GROUP_HEAD = 'flex h-7 items-center gap-0.5 pr-1 pl-1';
+const GROUP_HEAD = 'flex h-7 items-center gap-0.5 pr-0.5 pl-1';
 const HEAD_BUTTON =
   'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 const HOVER_ICON_BUTTON =
@@ -114,17 +117,59 @@ function writeSavedPersonaOrder(order: readonly string[]): void {
   }
 }
 
+function lifePriority(life: PersonaDirectoryEntry['life'], unreadCount: number): number {
+  if (life === 'waiting') return 3;
+  if (life === 'working') return 2;
+  if (unreadCount > 0 || life === 'done') return 1;
+  return 0;
+}
+
+export interface PersonaOrderSignals {
+  readonly activePersonaId?: string;
+  readonly statsById?: ReadonlyMap<string, {
+    readonly life: PersonaDirectoryEntry['life'];
+    readonly unreadCount: number;
+    readonly latestActivityAt: number;
+  }>;
+}
+
 /**
- * Order visible sidebar personas deterministically without jumping rows when
- * activity, unread count, pin state, or active selection changes. Respects the
- * user's persisted drag order and appends newly discovered personas at the end.
+ * Order visible sidebar personas. When the user saved an explicit drag/pin
+ * order, follow it and append newly discovered entries; otherwise sort active,
+ * pinned, and recently active personas to the top with stable natural fallback.
  */
 export function orderSidebarPersonas(
   items: readonly PersonaDirectoryEntry[],
   savedOrder: readonly string[] = [],
+  signals?: PersonaOrderSignals,
 ): PersonaDirectoryEntry[] {
   const visible = items.filter((item) => !item.hidden);
-  if (savedOrder.length === 0) return visible;
+  const indexMap = new Map<string, number>();
+  visible.forEach((item, index) => { indexMap.set(item.id, index); });
+
+  const smartCompare = (a: PersonaDirectoryEntry, b: PersonaDirectoryEntry): number => {
+    const aActive = signals?.activePersonaId === a.id ? 1 : 0;
+    const bActive = signals?.activePersonaId === b.id ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+
+    const aStats = signals?.statsById?.get(a.id);
+    const bStats = signals?.statsById?.get(b.id);
+    const aUrgency = lifePriority(aStats?.life ?? a.life, aStats?.unreadCount ?? a.unreadCount);
+    const bUrgency = lifePriority(bStats?.life ?? b.life, bStats?.unreadCount ?? b.unreadCount);
+    if (aUrgency !== bUrgency) return bUrgency - aUrgency;
+
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+
+    const aTime = aStats?.latestActivityAt ?? a.lastActivityAt ?? 0;
+    const bTime = bStats?.latestActivityAt ?? b.lastActivityAt ?? 0;
+    if (aTime !== bTime) return bTime - aTime;
+
+    return (indexMap.get(a.id) ?? 0) - (indexMap.get(b.id) ?? 0);
+  };
+
+  if (savedOrder.length === 0) {
+    return visible.toSorted(smartCompare);
+  }
   const rank = new Map<string, number>();
   savedOrder.forEach((id, index) => { rank.set(id, index); });
   const prioritized: PersonaDirectoryEntry[] = [];
@@ -134,6 +179,7 @@ export function orderSidebarPersonas(
     else rest.push(item);
   }
   prioritized.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  rest.sort(smartCompare);
   return [...prioritized, ...rest];
 }
 
@@ -177,6 +223,7 @@ export function SidebarPersonaSection({
   const { client } = useConnection();
   const layoutPrefs = useLayoutPreferences();
   const collapsed = layoutPrefs.sidebarPersonaSectionCollapsed === true;
+  const showAllPersonas = layoutPrefs.sidebarPersonasShowAll === true;
   const privateFilter = layoutPrefs.filters.private ?? 'hide';
 
   const filteredSessions = useMemo(
@@ -186,7 +233,6 @@ export function SidebarPersonaSection({
 
   const { directory } = usePersonaDirectory({ sessions: filteredSessions, seen });
   const [savedOrder, setSavedOrder] = useState<readonly string[]>(readSavedPersonaOrder);
-  const [showAllPersonas, setShowAllPersonas] = useState(false);
   const [expandedOverrides, setExpandedOverrides] = useState<Readonly<Record<string, boolean>>>({});
   const [showAllThreadsFor, setShowAllThreadsFor] = useState<Readonly<Record<string, boolean>>>({});
   const [rowMenu, setRowMenu] = useState<{ persona: PersonaDirectoryEntry; x: number; y: number } | null>(null);
@@ -194,21 +240,13 @@ export function SidebarPersonaSection({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
 
-  const visiblePersonas = useMemo(
-    () => orderSidebarPersonas(directory, savedOrder),
-    [directory, savedOrder],
+  const nonHiddenPersonas = useMemo(
+    () => directory.filter((item) => !item.hidden),
+    [directory],
   );
-  const hasOverflow = visiblePersonas.length > SIDEBAR_PERSONA_PREVIEW_LIMIT;
-  const shownPersonas = useMemo(
-    () => (!hasOverflow || showAllPersonas
-      ? visiblePersonas
-      : visiblePersonas.slice(0, SIDEBAR_PERSONA_PREVIEW_LIMIT)),
-    [hasOverflow, showAllPersonas, visiblePersonas],
-  );
-  const hiddenMoreCount = Math.max(0, visiblePersonas.length - SIDEBAR_PERSONA_PREVIEW_LIMIT);
 
   const headsQuery = usePersonaSessionHeads({
-    enabled: !collapsed && visiblePersonas.length > 0,
+    enabled: !collapsed && nonHiddenPersonas.length > 0,
     perPersonaLimit: 10,
     privateFilter,
   });
@@ -217,7 +255,7 @@ export function SidebarPersonaSection({
     const map = new Map<string, readonly Session[] | undefined>();
     const heads = headsQuery.data;
     if (heads !== undefined) {
-      for (const persona of visiblePersonas) {
+      for (const persona of nonHiddenPersonas) {
         const head = heads[persona.id];
         if (head !== undefined) {
           map.set(
@@ -228,7 +266,7 @@ export function SidebarPersonaSection({
       }
     }
     return map;
-  }, [headsQuery.data, privateFilter, visiblePersonas]);
+  }, [headsQuery.data, nonHiddenPersonas, privateFilter]);
 
   const personaMembershipSig = useMemo(() => {
     if (sessions.length === 0) return null;
@@ -287,11 +325,13 @@ export function SidebarPersonaSection({
       readonly unreadIds: readonly string[];
       readonly unreadCount: number;
       readonly life: PersonaDirectoryEntry['life'];
+      readonly latestActivityAt: number;
+      readonly primaryTargetUrl: string;
     }>();
-    if (visiblePersonas.length === 0) return map;
+    if (nonHiddenPersonas.length === 0) return map;
     const untitled = t('sidebar.untitled');
     const heads = headsQuery.data;
-    for (const persona of visiblePersonas) {
+    for (const persona of nonHiddenPersonas) {
       const headBucket = heads?.[persona.id];
       const serverItems = serverSessionsByPersona.get(persona.id);
       const merged = mergePersonaConversations(serverItems, filteredSessions, persona.id).filter(
@@ -314,8 +354,13 @@ export function SidebarPersonaSection({
       const computedUnreadSet = new Set(computedUnreadIds);
       let hasWaiting = !hasFilteredOutOwned && persona.life === 'waiting';
       let hasWorking = !hasFilteredOutOwned && persona.life === 'working';
+      let latestActivityAt = persona.lastActivityAt ?? 0;
 
       for (const item of merged) {
+        const ts = Date.parse(item.updated_at ?? '');
+        if (Number.isFinite(ts) && ts > latestActivityAt) {
+          latestActivityAt = ts;
+        }
         const rawState = sessionRowState(item, seen);
         const state = globalSessionIds.has(item.id)
           && rawState === 'unread'
@@ -369,10 +414,31 @@ export function SidebarPersonaSection({
       const knownHome = persona.homeSessionId === undefined
         ? undefined
         : rawSessionsById.get(persona.homeSessionId) ?? headBucket?.items.find((item) => item.id === persona.homeSessionId);
-      const hasHomeSlot = persona.homeSessionId !== undefined
-        && (knownHome !== undefined ? sessionMatchesPrivateFilter(knownHome, privateFilter) : privateFilter !== 'only')
-        ? 1
-        : 0;
+      const homeAllowed = persona.homeSessionId !== undefined
+        && (knownHome !== undefined ? sessionMatchesPrivateFilter(knownHome, privateFilter) : privateFilter !== 'only');
+      const hasHomeSlot = homeAllowed ? 1 : 0;
+      const dailyUrl = `/p/${encodeURIComponent(persona.id)}/daily`;
+
+      const primaryTargetUrl = (() => {
+        const topExtra = extraThreads[0];
+        if (topExtra === undefined) return dailyUrl;
+        if (!homeAllowed) return topExtra.targetUrl;
+        if (knownHome !== undefined) {
+          const homeState = sessionRowState(knownHome, seen);
+          if (homeState === 'needs-me' && !topExtra.needsYou) return dailyUrl;
+          if (topExtra.needsYou || topExtra.life === 'working' || topExtra.isCurrent) return topExtra.targetUrl;
+          if (knownHome.id === activeSessionId || homeState === 'running') return dailyUrl;
+          const homeTs = Date.parse(knownHome.updated_at ?? '');
+          const extraTs = Date.parse(topExtra.updatedAt ?? '');
+          if (Number.isFinite(homeTs) && (!Number.isFinite(extraTs) || homeTs >= extraTs)) {
+            return dailyUrl;
+          }
+          return topExtra.targetUrl;
+        }
+        if (persona.homeSessionId === activeSessionId) return dailyUrl;
+        return topExtra.targetUrl;
+      })();
+
       let serverTotal = 0;
       if (headBucket !== undefined) {
         const visibleHeadItems = headBucket.items.filter((item) => sessionMatchesPrivateFilter(item, privateFilter));
@@ -409,10 +475,54 @@ export function SidebarPersonaSection({
         unreadIds: computedUnreadIds,
         unreadCount,
         life,
+        latestActivityAt,
+        primaryTargetUrl,
       });
     }
     return map;
-  }, [activeSessionId, filteredSessions, globalSessionIds, headsQuery.data, privateFilter, rawSessionsById, roomNames, seen, serverSessionsByPersona, sessions, t, visiblePersonas]);
+  }, [activeSessionId, filteredSessions, globalSessionIds, headsQuery.data, nonHiddenPersonas, privateFilter, rawSessionsById, roomNames, seen, serverSessionsByPersona, sessions, t]);
+
+  const visiblePersonas = useMemo(
+    () => orderSidebarPersonas(directory, savedOrder, { activePersonaId, statsById: personaThreadStats }),
+    [activePersonaId, directory, personaThreadStats, savedOrder],
+  );
+
+  const hasOverflow = visiblePersonas.length > SIDEBAR_PERSONA_PREVIEW_LIMIT;
+  const shownPersonas = useMemo(() => {
+    if (!hasOverflow || showAllPersonas) return visiblePersonas;
+    const top = visiblePersonas.slice(0, SIDEBAR_PERSONA_PREVIEW_LIMIT);
+    const topIds = new Set(top.map((item) => item.id));
+    const mustShow = visiblePersonas.slice(SIDEBAR_PERSONA_PREVIEW_LIMIT).filter((item) => {
+      const stats = personaThreadStats.get(item.id);
+      const life = stats?.life ?? item.life;
+      const unread = stats?.unreadCount ?? item.unreadCount;
+      return item.id === activePersonaId || life !== 'idle' || unread > 0;
+    });
+    if (mustShow.length === 0) return top;
+    const combined = [...top];
+    for (const urgent of mustShow) {
+      if (topIds.has(urgent.id)) continue;
+      let replaceIdx = -1;
+      for (let i = combined.length - 1; i >= 0; i -= 1) {
+        const candidate = combined[i]!;
+        const cStats = personaThreadStats.get(candidate.id);
+        const cLife = cStats?.life ?? candidate.life;
+        const cUnread = cStats?.unreadCount ?? candidate.unreadCount;
+        if (candidate.id !== activePersonaId && cLife === 'idle' && cUnread === 0) {
+          replaceIdx = i;
+          break;
+        }
+      }
+      if (replaceIdx >= 0) {
+        combined.splice(replaceIdx, 1, urgent);
+      } else {
+        combined.push(urgent);
+      }
+    }
+    return combined;
+  }, [activePersonaId, hasOverflow, personaThreadStats, showAllPersonas, visiblePersonas]);
+
+  const hiddenMoreCount = Math.max(0, visiblePersonas.length - shownPersonas.length);
 
   const commitPersonaOrder = useCallback((nextIds: readonly string[]) => {
     setSavedOrder(nextIds);
@@ -497,6 +607,13 @@ export function SidebarPersonaSection({
           label: t('persona.newTopic'),
           run: () => { void navigate(personaNewConversationUrl(rowMenu.persona.id, currentWorkspaceId)); },
         },
+        ...(rowMenu.persona.homeSessionId !== undefined
+          ? [{
+              key: 'daily',
+              label: t('sidebar.persona.dailyConversation'),
+              run: () => { void navigate(`/p/${encodeURIComponent(rowMenu.persona.id)}/daily`); },
+            }]
+          : []),
         { separator: true },
         {
           key: 'pin',
@@ -526,8 +643,8 @@ export function SidebarPersonaSection({
       ];
 
   return (
-    <div data-sidebar-personas className="shrink-0 px-2 pb-1">
-      <div role="group" aria-label={t('persona.groupTitle')} className={collapsed ? 'mb-0.5' : 'mb-2'}>
+    <div data-sidebar-personas className="pt-1 pb-1">
+      <div role="group" aria-label={t('persona.groupTitle')} className={collapsed ? 'mb-0.5' : 'mb-1.5'}>
         <div className={GROUP_HEAD}>
           <button
             type="button"
@@ -559,6 +676,28 @@ export function SidebarPersonaSection({
                 ) : null}
               </span>
             ) : null}
+          </button>
+          {!collapsed && hasOverflow ? (
+            <button
+              type="button"
+              data-sidebar-personas-expand-all={showAllPersonas ? 'collapse' : 'expand'}
+              aria-label={showAllPersonas ? t('sidebar.persona.showLess') : t('sidebar.persona.showAll')}
+              title={showAllPersonas ? t('sidebar.persona.showLess') : t('sidebar.persona.showAll')}
+              onClick={() => { setSidebarPersonasShowAll(!showAllPersonas); }}
+              className={HEAD_BUTTON}
+            >
+              <Icon name={showAllPersonas ? 'collapse' : 'expand'} size={14} />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            data-persona-manage
+            aria-label={t('sidebar.persona.manage')}
+            title={t('sidebar.persona.manage')}
+            onClick={() => { void navigate('/personas'); }}
+            className={HEAD_BUTTON}
+          >
+            <Icon name="settings" size={14} />
           </button>
           <button
             type="button"
@@ -594,6 +733,7 @@ export function SidebarPersonaSection({
                 const unreadCount = stats?.unreadCount ?? persona.unreadCount;
                 const unreadIds = stats?.unreadIds ?? persona.unreadSessionIds;
                 const effectiveLife = stats?.life ?? persona.life;
+                const primaryTargetUrl = stats?.primaryTargetUrl ?? `/p/${encodeURIComponent(persona.id)}/daily`;
 
                 const inlineSubthreadActive = extraThreads.some((item) => item.isCurrent);
                 const isSelectedPersona = activePersonaId === persona.id
@@ -631,10 +771,13 @@ export function SidebarPersonaSection({
                   : 0;
                 const atDaily = (persona.homeSessionId !== undefined && persona.homeSessionId === activeSessionId)
                   || (activePersonaId === persona.id && !inlineSubthreadActive);
-                const emphasis = atDaily || inlineSubthreadActive || effectiveLife === 'waiting' || effectiveLife === 'done';
+                const emphasis = isSelectedPersona || effectiveLife === 'waiting' || effectiveLife === 'done';
                 const menuOpenForRow = rowMenu?.persona.id === persona.id;
                 const isDragging = draggingId === persona.id;
                 const dropEdge = dropTarget?.id === persona.id ? dropTarget.position : undefined;
+                const rowTooltip = persona.title !== undefined && persona.title.trim() !== ''
+                  ? `${persona.name} — ${persona.title.trim()}`
+                  : t('persona.openDaily', { name: persona.name });
 
                 return (
                   <li
@@ -718,15 +861,19 @@ export function SidebarPersonaSection({
                       />
                     ) : null}
 
-                    <div className="row-interactive flex h-8 items-center gap-1 pr-1 pl-2">
+                    <div
+                      className={`row-interactive flex h-8 items-center gap-1 pr-1 pl-2 pointer-coarse:min-h-10 ${
+                        isSelectedPersona && !inlineSubthreadActive ? 'bg-ink/[0.055]' : ''
+                      }`}
+                    >
                       <button
                         type="button"
                         data-persona-primary={persona.id}
                         aria-current={atDaily ? 'page' : undefined}
                         aria-label={t('persona.openDaily', { name: persona.name })}
-                        title={t('persona.openDaily', { name: persona.name })}
+                        title={rowTooltip}
                         onClick={() => {
-                          void navigate(`/p/${encodeURIComponent(persona.id)}/daily`);
+                          void navigate(primaryTargetUrl);
                         }}
                         className="flex h-full min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
                       >
@@ -739,16 +886,13 @@ export function SidebarPersonaSection({
                           />
                         </span>
                         <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
-                        <span className={`min-w-0 shrink truncate text-[13px] leading-[19px] ${
-                          emphasis ? 'font-medium text-ink' : 'text-ink-soft'
+                        <span className={`min-w-0 flex-1 truncate text-[13px] leading-[19px] ${
+                          emphasis ? 'font-medium text-ink' : 'text-ink-soft group-hover:text-ink'
                         }`}>
                           {persona.name}
                         </span>
-                        {persona.title !== undefined && persona.title.trim() !== '' ? (
-                          <span className="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink-faint">{persona.title}</span>
-                        ) : <span className="flex-1" />}
                         {persona.pinned ? (
-                          <span aria-hidden className="shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span>
+                          <span aria-hidden className="shrink-0 text-ink-faint/80"><Icon name="pin" size={12} /></span>
                         ) : null}
                       </button>
 
@@ -810,12 +954,12 @@ export function SidebarPersonaSection({
                             data-persona-thread-count={totalConversations}
                             aria-expanded={isExpanded}
                             aria-label={t('persona.openSwitcherAria', { name: persona.name })}
-                            title={t('persona.openSwitcherAria', { name: persona.name })}
+                            title={t('sidebar.persona.threadsCount', { count: totalConversations })}
                             onClick={(event) => {
                               event.stopPropagation();
                               toggleInlineExpand(persona.id, isExpanded);
                             }}
-                            className={`flex h-6 min-w-8 shrink-0 items-center justify-center gap-0.5 rounded-md px-1.5 text-[11px] leading-none font-medium tabular-nums transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink ${
+                            className={`flex h-6 min-w-7 shrink-0 items-center justify-center gap-0.5 rounded-md px-1.5 text-[11px] leading-none font-medium tabular-nums transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink ${
                               isExpanded
                                 ? 'bg-ink/[0.08] text-ink'
                                 : 'bg-ink/[0.045] text-ink-soft hover:bg-ink/[0.08] hover:text-ink'
@@ -824,6 +968,14 @@ export function SidebarPersonaSection({
                             <span>{totalConversations}</span>
                             <DisclosureChevron open={isExpanded} size={12} className="shrink-0 text-ink-faint" />
                           </button>
+                        ) : totalConversations > 0 ? (
+                          <span
+                            data-persona-thread-count={totalConversations}
+                            title={t('sidebar.persona.threadsCount', { count: totalConversations })}
+                            className="flex h-6 min-w-5 shrink-0 items-center justify-center px-1 text-[11px] leading-none text-ink-faint tabular-nums"
+                          >
+                            {totalConversations}
+                          </span>
                         ) : null}
                       </div>
                     </div>
@@ -831,7 +983,7 @@ export function SidebarPersonaSection({
                     {inlineThreads.length > 0 ? (
                       <ul
                         data-persona-subthreads={persona.id}
-                        className="mt-0.5 mb-1 ml-[17px] flex flex-col gap-px border-l border-hairline pl-1.5"
+                        className="mt-0.5 mb-1 ml-[19px] flex flex-col gap-px border-l border-hairline pl-1.5"
                       >
                         {inlineThreads.map((thread) => (
                           <li key={thread.id}>
@@ -841,7 +993,9 @@ export function SidebarPersonaSection({
                               aria-current={thread.isCurrent ? 'page' : undefined}
                               title={thread.fullTitle}
                               onClick={() => { void navigate(thread.targetUrl); }}
-                              className="row-interactive flex h-7 w-full items-center gap-1.5 pr-2 pl-2 text-left text-[12px] leading-4"
+                              className={`row-interactive flex h-7 w-full items-center gap-1.5 pr-2 pl-2 text-left text-[12px] leading-4 ${
+                                thread.isCurrent ? 'bg-ink/[0.055]' : ''
+                              }`}
                             >
                               <span className="flex h-4 w-[7px] shrink-0 items-center">
                                 <LifeMark
@@ -878,7 +1032,7 @@ export function SidebarPersonaSection({
                                 }
                                 void navigate(`/personas?persona=${encodeURIComponent(persona.id)}&view=conversations`);
                               }}
-                              className="row-interactive flex h-6 w-full items-center pr-2 pl-[23px] text-left text-[11px] leading-4 text-ink-faint transition-colors hover:text-ink"
+                              className="row-interactive flex h-6 w-full items-center pr-2 pl-[23px] text-left text-[11px] leading-4 text-ink-faint tabular-nums transition-colors hover:text-ink"
                             >
                               <span className="min-w-0 truncate">
                                 +{overflowThreadCount} · {t('persona.allConversations')}
@@ -900,7 +1054,7 @@ export function SidebarPersonaSection({
                               }}
                               className="row-interactive flex h-6 w-full items-center pr-2 pl-[23px] text-left text-[11px] leading-4 text-ink-faint transition-colors hover:text-ink"
                             >
-                              <span className="min-w-0 truncate">{t('persona.showLess')}</span>
+                              <span className="min-w-0 truncate">{t('sidebar.persona.showLess')}</span>
                             </button>
                           </li>
                         ) : null}
@@ -911,17 +1065,19 @@ export function SidebarPersonaSection({
               })}
             </ul>
 
-            {hasOverflow ? (
+            {hasOverflow && (showAllPersonas || hiddenMoreCount > 0) ? (
               <button
                 type="button"
                 data-sidebar-personas-more={showAllPersonas ? 'less' : 'more'}
                 aria-expanded={showAllPersonas}
-                onClick={() => { setShowAllPersonas((value) => !value); }}
-                className="row-interactive mt-0.5 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-ink-faint transition-colors hover:text-ink"
+                onClick={() => { setSidebarPersonasShowAll(!showAllPersonas); }}
+                className="row-interactive mt-0.5 flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-ink-faint tabular-nums transition-colors hover:text-ink"
               >
                 <span className="w-[7px] shrink-0" aria-hidden />
                 <span className="min-w-0 truncate">
-                  {showAllPersonas ? t('persona.showLess') : t('persona.showMore', { count: hiddenMoreCount })}
+                  {showAllPersonas
+                    ? t('sidebar.persona.showLess')
+                    : t('sidebar.persona.showMore', { count: hiddenMoreCount })}
                 </span>
               </button>
             ) : null}

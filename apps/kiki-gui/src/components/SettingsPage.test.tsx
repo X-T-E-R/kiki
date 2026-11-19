@@ -1055,12 +1055,13 @@ describe('SettingsPage memory advisor', () => {
 });
 
 describe('SettingsPage batch-3 leaves', () => {
-  it('mounts the skills leaf with discovery defaults and the Extensions summary line', async () => {
+  it('mounts the skills leaf with direct Skills management and collapsible Sources & folders', async () => {
     const container = await renderSettings('/settings/skills');
     expect(container.querySelector('#st-card-caps')).not.toBeNull();
     expect(container.querySelector('#st-card-caps [data-settings-panel-scope]')?.textContent).toContain('connected server');
+    expect(container.querySelector('#st-card-caps [data-skills-view]')).not.toBeNull();
+    expect(container.querySelector('#st-card-caps [data-skills-sources-toggle]')).not.toBeNull();
     expect(container.querySelector('#st-card-skill-catalog')).toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-extensions-open-capabilities]')?.getAttribute('href')).toBe('/capabilities');
   });
 
   it('renders and saves the GUI request timeout in seconds', async () => {
@@ -1598,7 +1599,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/capabilities');
     await flush();
     expect(container.querySelector('#st-card-caps')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(container.querySelector('#st-card-caps [data-skills-view]')).not.toBeNull();
     expect(container.querySelector('#st-card-skill-catalog')).toBeNull();
   });
 
@@ -1616,13 +1617,12 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-sidecar')).toBeNull();
   });
 
-  it('mounts the plugins leaf with the Extensions summary line and link to Capabilities', async () => {
+  it('mounts the plugins leaf with direct installed + market plugin management', async () => {
     const container = await renderSettings('/settings/plugins');
     await flush();
     expect(container.querySelector('#st-card-plugins')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-extensions-installed-counts]')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-extensions-open-capabilities]')?.getAttribute('href')).toBe('/capabilities');
-    expect(container.querySelector('#st-card-plugins [data-plugins-installed-list]')).toBeNull();
+    expect(container.querySelector('#st-card-plugins [data-plugins-view="installed"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins [data-plugins-install-trigger]')).not.toBeNull();
     expect(container.querySelector('#st-card-plugins [data-plugin-settings]')).toBeNull();
     // The browser runtime card is a browser fact, not a plugin one.
     expect(container.querySelector('#st-card-webbridge')).toBeNull();
@@ -1677,7 +1677,7 @@ describe('SettingsPage batch-3 leaves', () => {
     await flush();
     expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=skills');
     expect(extensions.querySelector('#st-card-caps')).not.toBeNull();
-    expect(extensions.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(extensions.querySelector('#st-card-caps [data-skills-view]')).not.toBeNull();
     expect(extensions.querySelector('#st-card-skill-catalog')).toBeNull();
 
     await click(extensions.querySelector('[data-extensions-tab="mcp"]')!);
@@ -2324,10 +2324,10 @@ describe('SettingsPage object links survive an address hash', () => {
     expect(container.querySelector('[data-workspace-detail-name]')).toBeNull();
   });
 
-  it('redirects #st-card-skill-catalog to the Extensions summary line and hides Worktrees Clean up when empty', async () => {
+  it('redirects #st-card-skill-catalog to the Skills tab and hides Worktrees Clean up when empty', async () => {
     const skillsLink = await renderSettings('/settings/extensions?tab=skills#st-card-skill-catalog', { guarded: true });
     await flush();
-    expect(skillsLink.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(skillsLink.querySelector('#st-card-caps')).not.toBeNull();
 
     client.klient.rest = {
       worktrees: {

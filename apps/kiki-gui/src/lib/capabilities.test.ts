@@ -51,8 +51,9 @@ function workspace(id: string, name = id): Workspace {
 }
 
 describe('skillGroupId', () => {
-  it('maps every known source onto its display group', () => {
+  it('maps every known source onto its display group and elevates plugin_id entries to plugin', () => {
     expect(skillGroupId('plugin')).toBe('plugin');
+    expect(skillGroupId('extra', 'kiki-bilibili')).toBe('plugin');
     expect(skillGroupId('project')).toBe('project');
     expect(skillGroupId('user')).toBe('user');
     expect(skillGroupId('extra')).toBe('extra');

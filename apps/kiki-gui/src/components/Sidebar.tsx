@@ -113,6 +113,7 @@ import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon, resolvePluginSlotIconName, Spinner } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
 import { SidebarPersonaSection } from './persona/SidebarPersonaSection';
+import { usePersonaDirectory, type PersonaDirectoryEntry } from './persona/usePersonaDirectory';
 import { invalidatePersonaSessionLists } from '../lib/personaFreshness';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { JoinRoomDialog, NewThreadRoomDialog } from './room/ThreadRoomDialogs';
@@ -1416,8 +1417,27 @@ export function Sidebar({
   // retype. Only Escape and the × clear it. A workspace pick is different: it
   // turns the query into a list filter, and the list it filters is only shown
   // once the query is gone.
+  const { directory: personaDirectory } = usePersonaDirectory({ sessions: personaSessions ?? sessions, seen });
+  const matchingPersonas = useMemo(() => {
+    if (!search.active) return [];
+    const term = search.parsed.text.trim().toLowerCase();
+    if (term === '') return [];
+    return personaDirectory.filter((item) =>
+      !item.hidden
+      && (item.name.toLowerCase().includes(term)
+        || item.id.toLowerCase().includes(term)
+        || (item.title?.toLowerCase().includes(term) ?? false)),
+    );
+  }, [personaDirectory, search.active, search.parsed.text]);
+
   const results = useMemo(() => {
     const items: { key: string; open: () => void }[] = [];
+    for (const persona of matchingPersonas) {
+      items.push({
+        key: `p:${persona.id}`,
+        open: () => { void navigate(`/p/${encodeURIComponent(persona.id)}/daily`); },
+      });
+    }
     for (const match of search.local.workspaces) {
       items.push({
         key: `ws:${match.workspace.id}`,
@@ -1445,7 +1465,7 @@ export function Sidebar({
     return items;
     // setFilters closes over the latest filters; recompute with them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search.local, search.hits, filters, navigate]);
+  }, [matchingPersonas, search.local, search.hits, filters, navigate]);
   useEffect(() => { setActiveResult(0); }, [searchInput]);
   const activeKey = search.active ? results[Math.min(activeResult, results.length - 1)]?.key : undefined;
   useEffect(() => {
@@ -1808,113 +1828,137 @@ export function Sidebar({
         offscreen={inert === true}
         onCloseSidebar={onClose}
       />
-      <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
-
-      <div className="flex items-center gap-0.5 pt-3 pr-2 pb-0.5 pl-4">
-        {/* The section label never gives way: it is T5, unshrinkable and
-            single-line; the shortcuts beside it are what yield when the
-            sidebar is dragged narrow. "Needs you" is counted once, on the
-            bell above — here only the aggregate running mark remains. */}
-        <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-section-ink">{t('sidebar.results.sessions')}</h2>
-        <span className="min-w-0 flex-1" />
-        {counts.running > 0 ? (
-          // Said in words ("2 running"), still the shortcut that filters to
-          // the running sessions; a bare number beside a dot was a guess.
-          <button
-            type="button"
-            data-status-shortcut="running"
-            data-activity-summary
-            aria-pressed={filters.status.includes('running')}
-            title={tp('sidebar.runningCount', counts.running)}
-            onClick={() => { toggleStatus('running'); }}
-            className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            {/* The one breathing mark in the list: rows stay still. */}
-            <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
-            <span className="min-w-0 truncate">{tp('sidebar.runningCount', counts.running)}</span>
-          </button>
-        ) : null}
-        {workspaceGroupKeys.length > 1 && !foldsSuspended && !search.active ? (
-          <button
-            type="button"
-            data-session-groups-fold-all={allFolded ? 'expand' : 'collapse'}
-            aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
-            title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
-            onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-          >
-            <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
-          </button>
-        ) : null}
-        <button
-          type="button"
-          ref={filterMenuButtonRef}
-          data-filter-menu-toggle
-          aria-haspopup="menu"
-          aria-expanded={openMenu === 'filter'}
-          aria-label={t('sidebar.filterMenu')}
-          title={t('sidebar.filterMenu')}
-          onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
-          // An active filter is "on", not "needs you": the selected ink, never the accent.
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
-        >
-          <Icon name="filter" size={14} />
-        </button>
-        <button
-          type="button"
-          ref={viewMenuButtonRef}
-          data-view-menu-toggle
-          aria-haspopup="menu"
-          aria-expanded={openMenu === 'view'}
-          aria-label={t('sidebar.viewMenu')}
-          title={t('sidebar.viewMenu')}
-          onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
-        >
-          <Icon name="sliders" size={14} />
-        </button>
-      </div>
-
-      {filterChips.length > 0 ? (
-        <div data-sidebar-filters aria-label={t('sidebar.filtersAria')} className="flex flex-wrap items-center gap-1 px-3 pb-1.5">
-          {filterChips.map((chip) => (
-            <FilterChip
-              key={chip.key}
-              kind={chip.key.split(':')[0] ?? chip.key}
-              label={chip.label}
-              clearLabel={t('sidebar.clearFilter', { label: chip.label })}
-              openLabel={t('sidebar.filterMenu')}
-              onOpen={() => { setOpenMenu('filter'); }}
-              onClear={chip.clear}
-            />
-          ))}
-          {filterChips.length > 1 ? (
-            <button
-              type="button"
-              data-sidebar-filters-clear-all
-              onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
-              className="h-6 rounded px-1 text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline"
-            >
-              {t('sidebar.clearAllFilters')}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
 
       {search.active ? (
-        <SearchResults
-          search={search}
-          filtersActive={filtersActive}
-          activeKey={activeKey}
-          onHover={(key) => {
-            const index = results.findIndex((entry) => entry.key === key);
-            if (index >= 0) setActiveResult(index);
-          }}
-          onOpen={(key) => { results.find((entry) => entry.key === key)?.open(); }}
-          workspaceNames={new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name]))}
-        />
+        <>
+          {filterChips.length > 0 ? (
+            <div data-sidebar-filters aria-label={t('sidebar.filtersAria')} className="flex flex-wrap items-center gap-1 px-3 pt-1 pb-1.5">
+              {filterChips.map((chip) => (
+                <FilterChip
+                  key={chip.key}
+                  kind={chip.key.split(':')[0] ?? chip.key}
+                  label={chip.label}
+                  clearLabel={t('sidebar.clearFilter', { label: chip.label })}
+                  openLabel={t('sidebar.filterMenu')}
+                  onOpen={() => { setOpenMenu('filter'); }}
+                  onClear={chip.clear}
+                />
+              ))}
+              {filterChips.length > 1 ? (
+                <button
+                  type="button"
+                  data-sidebar-filters-clear-all
+                  onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
+                  className="h-6 rounded px-1 text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline"
+                >
+                  {t('sidebar.clearAllFilters')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <SearchResults
+            search={search}
+            personas={matchingPersonas}
+            filtersActive={filtersActive}
+            activeKey={activeKey}
+            onHover={(key) => {
+              const index = results.findIndex((entry) => entry.key === key);
+              if (index >= 0) setActiveResult(index);
+            }}
+            onOpen={(key) => { results.find((entry) => entry.key === key)?.open(); }}
+            workspaceNames={new Map(workspaceOptions.map((workspace) => [workspace.id, workspace.name]))}
+          />
+        </>
       ) : (
       <div ref={listRef} onScroll={onListScroll} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
+        <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
+
+        <div className="flex items-center gap-0.5 pt-2 pr-0 pb-0.5 pl-2">
+          {/* The section label never gives way: it is T5, unshrinkable and
+              single-line; the shortcuts beside it are what yield when the
+              sidebar is dragged narrow. "Needs you" is counted once, on the
+              bell above — here only the aggregate running mark remains. */}
+          <h2 className="shrink-0 text-[12px] leading-4 font-medium whitespace-nowrap text-section-ink">{t('sidebar.results.sessions')}</h2>
+          <span className="min-w-0 flex-1" />
+          {counts.running > 0 ? (
+            <button
+              type="button"
+              data-status-shortcut="running"
+              data-activity-summary
+              aria-pressed={filters.status.includes('running')}
+              title={tp('sidebar.runningCount', counts.running)}
+              onClick={() => { toggleStatus('running'); }}
+              className="flex h-7 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.05] hover:text-ink aria-pressed:bg-ink/[0.06] aria-pressed:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <LifeMark markId="sidebar:running" life="working" className="h-1.5 w-1.5" />
+              <span className="min-w-0 truncate">{tp('sidebar.runningCount', counts.running)}</span>
+            </button>
+          ) : null}
+          {workspaceGroupKeys.length > 1 && !foldsSuspended ? (
+            <button
+              type="button"
+              data-session-groups-fold-all={allFolded ? 'expand' : 'collapse'}
+              aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
+              title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
+              onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            ref={filterMenuButtonRef}
+            data-filter-menu-toggle
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'filter'}
+            aria-label={t('sidebar.filterMenu')}
+            title={t('sidebar.filterMenu')}
+            onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-selected-ink' : 'text-ink-faint'}`}
+          >
+            <Icon name="filter" size={14} />
+          </button>
+          <button
+            type="button"
+            ref={viewMenuButtonRef}
+            data-view-menu-toggle
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'view'}
+            aria-label={t('sidebar.viewMenu')}
+            title={t('sidebar.viewMenu')}
+            onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
+          >
+            <Icon name="sliders" size={14} />
+          </button>
+        </div>
+
+        {filterChips.length > 0 ? (
+          <div data-sidebar-filters aria-label={t('sidebar.filtersAria')} className="flex flex-wrap items-center gap-1 px-1 pb-1.5">
+            {filterChips.map((chip) => (
+              <FilterChip
+                key={chip.key}
+                kind={chip.key.split(':')[0] ?? chip.key}
+                label={chip.label}
+                clearLabel={t('sidebar.clearFilter', { label: chip.label })}
+                openLabel={t('sidebar.filterMenu')}
+                onOpen={() => { setOpenMenu('filter'); }}
+                onClear={chip.clear}
+              />
+            ))}
+            {filterChips.length > 1 ? (
+              <button
+                type="button"
+                data-sidebar-filters-clear-all
+                onClick={() => { onFiltersChange({ status: [], workspaces: [], archived: 'hide' }); }}
+                className="h-6 rounded px-1 text-[11.5px] text-ink-faint underline-offset-2 transition-colors hover:text-ink hover:underline"
+              >
+                {t('sidebar.clearAllFilters')}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {sessionsQuery.isLoading && sessions.length === 0 ? (
           <div className="flex items-center gap-2 px-2 pt-4 text-[12.5px] text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-faint" />
@@ -3478,6 +3522,7 @@ function ResultHeading({ children }: { children: React.ReactNode }) {
  */
 function SearchResults({
   search,
+  personas = [],
   filtersActive,
   activeKey,
   onHover,
@@ -3485,6 +3530,7 @@ function SearchResults({
   workspaceNames,
 }: {
   search: SessionSearchState;
+  personas?: readonly PersonaDirectoryEntry[];
   filtersActive: boolean;
   activeKey: string | undefined;
   onHover: (key: string) => void;
@@ -3503,8 +3549,9 @@ function SearchResults({
     className: `${RESULT_ROW} ${activeKey === key ? 'bg-paper' : 'hover:bg-paper/70'}`,
   });
   const { local, parsed } = search;
-  const nothingLocal = local.workspaces.length === 0 && local.sessions.length === 0;
+  const nothingLocal = personas.length === 0 && local.workspaces.length === 0 && local.sessions.length === 0;
   const contentSettledEmpty = search.contentActive && !search.contentPending && search.contentInitialError === null && search.hits.length === 0;
+  const personaQuery = parsed.text.trim();
   return (
     <div
       id="sidebar-search-results"
@@ -3523,6 +3570,25 @@ function SearchResults({
             <span className="rounded bg-paper px-1.5 text-ink-soft">{t('sidebar.prefixRole', { role: parsed.role })}</span>
           ) : null}
         </p>
+      ) : null}
+
+      {personas.length > 0 ? (
+        <div role="group" aria-label={t('sidebar.persona.resultsHeading')} data-search-personas>
+          <ResultHeading>{t('sidebar.persona.resultsHeading')}</ResultHeading>
+          {personas.map((persona) => (
+            <button key={persona.id} type="button" {...option(`p:${persona.id}`)}>
+              <PersonaAvatar persona={personaAvatarOf(persona)} size={20} decorative />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] text-ink">
+                  <Highlighted text={persona.name} ranges={highlightTerms(persona.name, personaQuery)} />
+                </span>
+                {persona.title !== undefined && persona.title.trim() !== '' ? (
+                  <span className="block truncate text-[11.5px] text-ink-faint">{persona.title}</span>
+                ) : null}
+              </span>
+            </button>
+          ))}
+        </div>
       ) : null}
 
       {local.workspaces.length > 0 ? (

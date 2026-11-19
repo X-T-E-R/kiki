@@ -69,6 +69,8 @@ export interface SkillCatalog {
     context?: { readonly sessionId?: string },
   ): string;
   listSkills(): readonly SkillDefinition[];
+  listAllSkills?(): readonly SkillDefinition[];
+  isSkillDisabled?(name: string): boolean;
   listInvocableSkills(): readonly SkillDefinition[];
   getSkillRoots(): readonly string[];
   getSkippedByPolicy(): readonly SkippedSkill[];
