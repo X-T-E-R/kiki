@@ -1,5 +1,5 @@
-import { readFile, realpath, stat, mkdir, lstat } from 'node:fs/promises';
-import { atomicCreate, atomicWrite, syncDir } from '#/_base/utils/fs';
+import { readFile, realpath, stat, mkdir, lstat, unlink } from 'node:fs/promises';
+import { atomicCreate } from '#/_base/utils/fs';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { hookExecution, validateHookResources } from '#/app/recipes/recipeHooks';
 import type { RecipeScriptHook, RecipeSource } from '@kiki/protocol';
@@ -102,16 +102,20 @@ export class RecipeSourceReader implements IRecipeSourceReader {
   }
 }
 async function freezeResource(target: string, text: string, source: string, file: string): Promise<void> {
+  if (await holdsText(target, text)) return;
+  await createResource(target, text);
+  if (await holdsText(target, text)) return;
+  if (!(await lstat(target)).isFile()) recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
+  await unlink(target);
+  await createResource(target, text);
+  if (!(await holdsText(target, text))) recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
+}
+async function createResource(target: string, text: string): Promise<void> {
   try { await atomicCreate(target, text); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-  if (!(await lstat(target)).isFile()) recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
-  if (await holdsText(target, text)) return;
-  await atomicWrite(target, text);
-  await syncDir(path.dirname(target));
-  if (!(await lstat(target)).isFile() || !(await holdsText(target, text))) recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
 }
 async function holdsText(target: string, text: string): Promise<boolean> {
-  try { return decode(await readFile(target)) === text; } catch { return false; }
+  try { return (await lstat(target)).isFile() && decode(await readFile(target)) === text; } catch { return false; }
 }
 function decode(bytes: Uint8Array): string { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
 function packageUrl(raw: string): URL {
@@ -122,7 +126,7 @@ function packageUrl(raw: string): URL {
 async function publicUrl(raw: string): Promise<URL> {
   const url = packageUrl(raw);
   try { return (await assertUrlIsSafeToFetch(url, { httpsOnly: true })).url; }
-  catch (error) { throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe source must use a public address', { error, details: { source: raw } }); }
+  catch (error) { throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe source must use a public address', { cause: error, details: { source: raw } }); }
 }
 async function download(raw: string, boundary?: { origin: string; prefix: string }): Promise<Buffer> {
   const signal = AbortSignal.timeout(15_000);
@@ -152,7 +156,7 @@ async function download(raw: string, boundary?: { origin: string; prefix: string
   } catch (error) {
     if (error instanceof Error2) throw error;
     if (error instanceof Error && error.cause instanceof Error2) throw error.cause;
-    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe source could not be read', { error, details: { source: raw } });
+    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe source could not be read', { cause: error, details: { source: raw } });
   }
 }
 async function zipReader(source: RecipeSource, buffer: Buffer): Promise<RecipePackageReader> {

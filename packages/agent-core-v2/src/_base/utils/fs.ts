@@ -3,7 +3,7 @@ import { chmodSync, closeSync, fsyncSync, openSync, renameSync, unlinkSync, writ
 import * as nodeFs from 'node:fs';
 import { chmod, link, open, rename, unlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { dirname } from 'pathe';
+import { dirname, join } from 'pathe';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
 
@@ -201,17 +201,7 @@ export function atomicWriteSync(
     } finally {
       closeSync(fd);
     }
-    try {
-      renameSync(tmpPath, filePath);
-    } catch (error) {
-      if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
-      try {
-        unlinkSync(filePath);
-      } catch (unlinkError) {
-        if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
-      }
-      renameSync(tmpPath, filePath);
-    }
+    renameSync(tmpPath, filePath);
     renamed = true;
     if (mode !== undefined) {
       try {
@@ -237,7 +227,7 @@ export async function atomicCreate(filePath: string, content: string, mode?: num
     await createFileExclusiveDirect(filePath, content, mode);
     return;
   }
-  const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
+  const tmpPath = join(dirname(filePath), `.create.${process.pid}.${randomBytes(8).toString('hex')}`);
   try {
     await atomicWrite(tmpPath, content, undefined, mode);
     try {

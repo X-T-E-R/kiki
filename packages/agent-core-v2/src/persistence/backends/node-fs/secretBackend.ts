@@ -136,7 +136,7 @@ function accountFilePath(homeDir: string, service: string, account: string): str
 async function writeAtomicSecretFile(path: string, envelope: StoredSecretEnvelope): Promise<void> {
   const directory = dirname(path);
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  await atomicWrite(path, JSON.stringify(envelope), undefined, 0o600);
+  await atomicWrite(path, JSON.stringify(envelope), undefined, 0o600, undefined, true);
   await syncDir(directory);
 }
 
