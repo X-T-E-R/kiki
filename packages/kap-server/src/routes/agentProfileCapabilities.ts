@@ -31,6 +31,7 @@ import {
   ServiceCollection,
   SessionAgentProfileCatalogService,
   type Scope,
+  type SessionMeta,
 } from '@kiki/agent-core-v2';
 import { projectSubagentCapabilities, type SubagentCapabilityCatalog } from '@kiki/agent-core-v2/agent/tools/agent/subagentCapabilities';
 import { isToolActiveComposed, type GlobalToolsPolicy } from '@kiki/agent-core-v2/agent/toolPolicy/evaluate';
@@ -355,6 +356,34 @@ export function persistedPanelMetricAgentIds(query: {
   return [query.agent_id];
 }
 
+function branchOwnerFields(metadata: NonNullable<SessionMeta['agents']>[string] | undefined): {
+  readonly parent_agent_id?: string;
+  readonly is_branch?: boolean;
+  readonly branch_sealed?: boolean;
+  readonly tools_locked?: boolean;
+  readonly branch_seed?: 'fresh' | 'compact' | 'verbatim';
+  readonly branch_title?: string;
+} {
+  if (metadata === undefined) return {};
+  const labels = metadata.labels;
+  const parent_agent_id = subagentParentAgentId(metadata);
+  if (labels?.['branch'] !== 'true') {
+    return parent_agent_id === undefined ? {} : { parent_agent_id };
+  }
+  const rawSeed = labels['branchSeed'];
+  const branch_seed = rawSeed === 'fresh' || rawSeed === 'compact' || rawSeed === 'verbatim' ? rawSeed : undefined;
+  const rawTitle = metadata.userLabel ?? labels['branchTitle'] ?? metadata.displayName;
+  const branch_title = typeof rawTitle === 'string' && rawTitle.trim() !== '' ? rawTitle.trim() : undefined;
+  return {
+    parent_agent_id,
+    is_branch: true,
+    branch_sealed: labels['branchSealed'] === 'true',
+    tools_locked: labels['toolsLocked'] === 'true',
+    branch_seed,
+    branch_title,
+  };
+}
+
 export async function agentCapabilities(
   core: Scope,
   query: AgentCapabilitiesQuery,
@@ -450,7 +479,9 @@ async function readAgentCapabilities(
       if (snapshot === undefined) {
         await workspace?.dispose();
         return {
-          context: 'live', live: false, owner: { agent_id: query.agent_id }, available: false,
+          context: 'live', live: false,
+          owner: { agent_id: query.agent_id, ...branchOwnerFields(metadata) },
+          available: false,
           unavailable_reason: 'Persisted agent capability metadata is unavailable',
           unavailable_reason_code: 'persisted_metadata_unavailable', targets: [],
           metrics: await persistedPromise,
@@ -471,7 +502,7 @@ async function readAgentCapabilities(
         });
         if (resolution.profile === undefined) return {
           context: 'live', live: false,
-          owner: { profile: snapshot.profileName ?? profileName, agent_id: query.agent_id },
+          owner: { profile: snapshot.profileName ?? profileName, agent_id: query.agent_id, ...branchOwnerFields(metadata) },
           available: false,
           unavailable_reason: 'Persisted agent profile is unavailable in the workspace catalog',
           unavailable_reason_code: 'persisted_profile_unavailable',
@@ -536,7 +567,7 @@ async function readAgentCapabilities(
         return {
           context: 'live',
           live: false,
-          owner: { profile: snapshot.profileName ?? resolution.profile.name, agent_id: query.agent_id },
+          owner: { profile: snapshot.profileName ?? resolution.profile.name, agent_id: query.agent_id, ...branchOwnerFields(metadata) },
           available: true,
           targets: project(core, input, delegationPosition === 'sub' ? 'sub' : 'main').map((target) => ({
             ...target,
@@ -556,8 +587,12 @@ async function readAgentCapabilities(
       }
     }
     const persisted = await persistedPromise;
-    const owner = { profile: agent.accessor.get(IAgentProfileService).data().profileName, agent_id: agent.id };
     const liveMetadata = session!.accessor.get(ISessionMetadata).snapshot().agents?.[agent.id];
+    const owner = {
+      profile: agent.accessor.get(IAgentProfileService).data().profileName,
+      agent_id: agent.id,
+      ...branchOwnerFields(liveMetadata),
+    };
     const liveDelegationPosition = resolveDelegationPosition(agent.id, liveMetadata?.delegator, liveMetadata?.labels);
     const liveToolsLocked = liveMetadata?.labels?.['branch'] === 'true' && liveMetadata.labels['toolsLocked'] === 'true';
     const panel = await livePanelCapabilities(agent, {

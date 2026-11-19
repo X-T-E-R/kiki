@@ -123,10 +123,9 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
 import { ComposerInput } from './ComposerInput';
 import { normalizeComposerText, type ComposerInputHandle } from '../lib/composerInput';
-import { Icon } from './icons';
+import { Icon, resolvePluginSlotIconName } from './icons';
 import { useElapsedSince, useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
-import { RoomRefChip, ThreadRefChip } from './ThreadRefChip';
 import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { ExecutionSelect } from './harness/ExecutionSelect';
@@ -141,8 +140,10 @@ import { SessionRemainder } from './SessionRemainder';
 import type { ContentContinuationHandle } from './transcriptDetail';
 import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
 import { RecipeBindingStatus } from './agent-panel/RecipeBindingStatus';
+import { Popover } from '@base-ui/react/popover';
 import {
   AddMenu,
+  type AddMenuExtensionItem,
   type AddMenuView,
   COMPOSER_PANEL_START,
   ComposerCardContext,
@@ -164,16 +165,34 @@ import { usePluginPicker } from './capabilities/usePluginPicker';
 import { useMcpPicker } from './capabilities/useMcpPicker';
 import {
   interpolatePluginPromptText,
+  resolvePluginLocalizedText,
   selectComposerToolbarSlots,
   subscribePluginPromptInserts,
   type PluginPromptInsertRequest,
 } from '@kiki/session-core';
 import {
-  PluginComposerSlots,
   useExecutePluginSlotAction,
   usePluginGuiSlots,
 } from './plugins/PluginComposerSlots';
 import { PluginStatusCapsules } from './plugins/PluginStatusCapsules';
+
+function shortRefId(id: string): string {
+  const cleaned = id.replace(/^(?:session_|room_|thread_)/u, '');
+  return cleaned.length > 14 ? `${cleaned.slice(0, 12)}…` : cleaned;
+}
+
+function stripModelProviderPrefix(modelId: string | undefined): string | undefined {
+  if (modelId === undefined) return undefined;
+  const slash = modelId.lastIndexOf('/');
+  return slash >= 0 && slash < modelId.length - 1 ? modelId.slice(slash + 1) : modelId;
+}
+
+function fileExtensionTag(name: string, isDir: boolean, dirLabel: string): string {
+  if (isDir) return dirLabel;
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) return 'FILE';
+  return name.slice(dot + 1).toUpperCase().slice(0, 6);
+}
 
 export interface PendingRuntimeControls {
   readonly model?: string;
@@ -1262,7 +1281,7 @@ export function Composer({
   });
   const skills = skillsQuery.data?.skills ?? [];
   const pluginGuiSlots = usePluginGuiSlots({ sessionId, workspaceId });
-  const { execute: executePluginSlotAction } = useExecutePluginSlotAction();
+  const { execute: executePluginSlotAction, busyKey: pluginSlotBusyKey } = useExecutePluginSlotAction();
   const pluginPick = usePluginPicker(sessionId, workspaceId);
   const mcpPick = useMcpPicker(sessionId);
   const externalEngine = execution !== undefined && execution.executor !== undefined && execution.executor !== '' && execution.executor !== 'native'
@@ -1537,41 +1556,88 @@ export function Composer({
   const overlayTokens = useMemo(
     () => backdropTokens.map((ref) => {
       let label: string;
+      let unresolved = false;
       if (ref.kind === 'agent') {
         label = `@${(ref.profile !== undefined ? agentLabelByProfile.get(ref.profile) : undefined) ?? ref.profile ?? ref.raw}`;
       } else if (ref.kind === 'session') {
         const refId = conversationRefs.find((candidate) => candidate.raw === ref.raw)?.id;
         const title = refId === undefined ? undefined : threadRefDirectory.lookup(refId).session?.title.trim();
-        label = title === undefined || title === '' ? ref.raw : title;
+        if (title === undefined || title === '') {
+          unresolved = true;
+          label = refId === undefined
+            ? ref.raw
+            : `@${locale === 'zh' ? '会话' : 'Thread'} · ${shortRefId(refId)}`;
+        } else {
+          label = title;
+        }
       } else if (ref.kind === 'room') {
         const refId = conversationRefs.find((candidate) => candidate.raw === ref.raw)?.id;
         const name = refId === undefined ? undefined : roomRefDirectory.lookup(refId).name?.trim();
-        label = name === undefined || name === '' ? ref.raw : name;
+        if (name === undefined || name === '') {
+          unresolved = true;
+          label = refId === undefined
+            ? ref.raw
+            : `@${locale === 'zh' ? '群聊' : 'Room'} · ${shortRefId(refId)}`;
+        } else {
+          label = name;
+        }
       } else {
         label = ref.raw;
       }
-      return { ...ref, label };
+      return { ...ref, label, unresolved };
     }),
-    [backdropTokens, agentLabelByProfile, conversationRefs, threadRefDirectory, roomRefDirectory],
+    [backdropTokens, agentLabelByProfile, conversationRefs, threadRefDirectory, roomRefDirectory, locale],
   );
-  const removeConversationRefAt = (index: number) => {
-    const ref = conversationRefs[index];
-    if (ref === undefined) return;
-    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
-    historyIndexRef.current = null;
-    const next = removeThreadRef(text, ref);
-    applyTextChange(next.text, next.cursor);
-  };
-  const hasPluginToolbarSlots =
+  const pluginToolbarSlots = useMemo(
+    () => (variant !== 'subagent' && !queueEditing && !messageEditing
+      ? selectComposerToolbarSlots(pluginGuiSlots.slots)
+      : []),
+    [variant, queueEditing, messageEditing, pluginGuiSlots.slots],
+  );
+  const addMenuExtensionItems = useMemo<readonly AddMenuExtensionItem[]>(
+    () => pluginToolbarSlots.map((slot) => {
+      const key = `${slot.pluginId}:${slot.id}`;
+      const label = resolvePluginLocalizedText(slot.label, locale);
+      const tooltip = slot.tooltip === undefined ? label : resolvePluginLocalizedText(slot.tooltip, locale);
+      const explicitIcon = (slot as { readonly icon?: string }).icon;
+      const panelIdHint = slot.action.kind === 'open_plugin_panel' ? slot.action.panelId : undefined;
+      const iconName = resolvePluginSlotIconName({
+        icon: explicitIcon,
+        pluginId: slot.pluginId,
+        panelId: panelIdHint,
+        fallback: 'plugin',
+      });
+      return {
+        key,
+        pluginId: slot.pluginId,
+        slotId: slot.id,
+        label,
+        tooltip,
+        badgeText: slot.badgeText,
+        iconName,
+        actionKind: slot.action.kind,
+        onTrigger: () => {
+          void executePluginSlotAction(
+            {
+              pluginId: slot.pluginId,
+              label,
+              action: slot.action,
+              sessionId,
+              workspaceId,
+            },
+            key,
+          );
+        },
+      };
+    }),
+    [pluginToolbarSlots, locale, executePluginSlotAction, sessionId, workspaceId],
+  );
+  const hasPluginStatusCapsules =
     variant !== 'subagent' &&
-    !queueEditing &&
-    !messageEditing &&
-    selectComposerToolbarSlots(pluginGuiSlots.slots).length > 0;
-  const hasEnvStrip = ssh.resident !== null || hasPluginToolbarSlots;
-  const hasModeBanner = queueEditing || runMode === 'goal';
+    pluginGuiSlots.slots.some((slot) => slot.slot === 'status-capsule');
+  const hasModeBanner = queueEditing;
   const payloadAttachments = attachments.filter((attachment) => attachment.kind !== 'ssh');
   const hasTray =
-    conversationRefs.length > 0 ||
     draftSkills.length > 0 ||
     quoteItems.length > 0 ||
     (annotations !== undefined && annotations.length > 0) ||
@@ -2854,7 +2920,9 @@ export function Composer({
   const statusEffort = bindingSetting?.thinking === null ? statusModel?.default_effort : bindingSetting?.thinking ?? effort;
   // The status line names the model by its catalog display name (the inherit
   // source and provider live in the picker and the tooltip).
-  const modelShortLabel = statusModel?.display_name ?? effectiveModel;
+  const modelShortLabel =
+    statusModel?.display_name ??
+    (externalExecution ? effectiveModel : stripModelProviderPrefix(effectiveModel));
   // The queued switch names its target the same way the picker does.
   const pendingSwitchChange = pendingModelSwitch === undefined ? undefined : pendingModelSwitchChange({
     ...pendingModelSwitch,
@@ -3171,19 +3239,6 @@ export function Composer({
         />
       ),
     });
-    if (variant !== 'subagent' && pluginGuiSlots.slots.some((slot) => slot.slot === 'status-capsule')) {
-      statusSegments.push({
-        key: 'plugin-capsules',
-        node: (
-          <PluginStatusCapsules
-            slots={pluginGuiSlots.slots}
-            sessionId={sessionId}
-            workspaceId={workspaceId}
-            disabled={disabled}
-          />
-        ),
-      });
-    }
     if (variant !== 'subagent' && sessionId !== undefined) {
       statusSegments.push({
         key: 'output-layer',
@@ -3344,9 +3399,10 @@ export function Composer({
         <div
           ref={cardRef}
           data-composer-card
+          data-run-mode={runMode}
           data-composer-takeover={takenOver ? '' : undefined}
           className={`composer-card relative rounded-[18px] bg-panel transition-[box-shadow] duration-[var(--kiki-motion-quick)] ${
-            dropHighlight ? 'ring-2 ring-accent/50' : ''
+            dropHighlight ? 'ring-2 ring-accent/50' : runMode !== 'normal' && !takenOver ? 'ring-1 ring-accent/25' : ''
           } ${takenOver ? 'ring-1 ring-attention/35' : ''}`}
           onDragEnter={(event) => {
             if (!dragHasFiles(event)) return;
@@ -3402,11 +3458,11 @@ export function Composer({
             </button>,
           ) : null}
           <div hidden={takenOver} data-composer-body>
-          {/* Canonical 4-Layer Composer Slot Standard:
-              Layer 1 — Session Mode & Environment Header (1a Mode/Edit banners, 1b Unified SSH + Plugin Workbench strip).
-              Layer 2 — Draft Payload Tray (data-context-tray: Media thumbnails -> Context chips -> Inline draft alerts), touching Layer 3 directly.
-              Layer 3 — Primary Editor (<ComposerInput /> + floating / and @ menus).
-              Layer 4 — Action & Control Toolbar (data-composer-toolbar). */}
+          {/* Subtraction-first 2-3 row Composer interior:
+              1. Optional transient edit banner (queueEditing) OR 1-row 44px horizontal shelf (data-context-tray).
+              2. Primary editor (<ComposerInput /> + floating / and @ menus).
+              3. Calm action toolbar (data-composer-toolbar).
+              Session SSH and active plugin capsules live in the bare external ContextStrip below. */}
           {hasModeBanner ? (
             <div data-composer-mode-banner className="flex flex-col gap-1.5 px-3 pt-2.5 pb-1">
               {queueEditing ? (
@@ -3434,55 +3490,11 @@ export function Composer({
                   </button>
                 </div>
               ) : null}
-              {/* Goal mode armed: the next message becomes the session goal. The
-                  run-state card (pause/resume/cancel/edit) lives above the
-                  composer dock — see GoalCard. */}
-              {runMode === 'goal' ? (
-                <div
-                  data-goal-armed
-                  role="group"
-                  aria-label={t('composer.goalArmedAria')}
-                  className="anim-enter flex h-7 w-fit items-center gap-1.5 rounded-md bg-paper pr-1 pl-2 text-[12px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]"
-                >
-                  <Icon name="goal" size={12} className="text-ink-soft" />
-                  <span>{t('composer.goalArmedChip')}</span>
-                  <button
-                    type="button"
-                    aria-label={t('composer.goalDisarmAria')}
-                    title={t('composer.goalDisarmAria')}
-                    onClick={() => { setGoalArmed(false); }}
-                    className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-                  >
-                    <Icon name="close" size={12} />
-                  </button>
-                </div>
-              ) : null}
             </div>
           ) : null}
-          {hasEnvStrip ? (
-            <div
-              data-composer-env-strip
-              className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-hairline/60 px-3 py-1.5"
-            >
-              {ssh.resident}
-              {ssh.resident !== null && hasPluginToolbarSlots ? (
-                <span aria-hidden data-composer-env-divider className="h-3.5 w-px shrink-0 bg-hairline" />
-              ) : null}
-              {hasPluginToolbarSlots ? (
-                <PluginComposerSlots
-                  slots={pluginGuiSlots.slots}
-                  sessionId={sessionId}
-                  workspaceId={workspaceId}
-                  disabled={disabled}
-                />
-              ) : null}
-            </div>
-          ) : null}
-          {/* Layer 2 — Draft Payload Tray: strictly items that travel with this
-              message on Send, touching Layer 3 (<ComposerInput />) directly. */}
+          {/* Unified single-row 44px horizontal attachment shelf + inline draft alerts. */}
           {hasLayer2 ? (() => {
-            const mediaTiles: ReactNode[] = [];
-            const chipTiles: ReactNode[] = [];
+            const shelfItems: ReactNode[] = [];
             for (const attachment of payloadAttachments) {
               const chipKey = attachmentKeyOf(attachment);
               const remove = () => {
@@ -3492,15 +3504,17 @@ export function Composer({
                 updateAttachments((current) => current.filter((item) => item !== attachment));
               };
               if (attachment.kind === 'file') {
-                chipTiles.push(
+                shelfItems.push(
                   <TextTile
                     key={chipKey}
+                    variant="shelf"
                     title={attachment.path}
+                    subtitle={fileExtensionTag(attachment.name, attachment.isDir, locale === 'zh' ? '目录' : 'DIR')}
+                    leading={<FileGlyph dir={attachment.isDir} />}
                     mono
                     onRemove={remove}
                     removeLabel={t('composer.removeAttachment', { name: attachment.name })}
                   >
-                    <FileGlyph dir={attachment.isDir} />
                     <span className="min-w-0 truncate">{attachment.name}{attachment.isDir ? '/' : ''}</span>
                   </TextTile>,
                 );
@@ -3512,20 +3526,22 @@ export function Composer({
                   ? `data:${part.source.media_type};base64,${part.source.data}`
                   : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined);
                 if (src !== undefined) {
-                  mediaTiles.push(
-                    <ImageTile key={chipKey} src={src} name={attachment.name}
+                  shelfItems.push(
+                    <ImageTile key={chipKey} variant="shelf" src={src} name={attachment.name}
                       onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(src, attachment.name); }}
                       onRemove={remove} removeLabel={t('composer.removeAttachment', { name: attachment.name })} />,
                   );
                 } else {
-                  chipTiles.push(
+                  shelfItems.push(
                     <TextTile
                       key={chipKey}
+                      variant="shelf"
                       title={attachment.name}
+                      subtitle={fileExtensionTag(attachment.name, false, 'DIR')}
+                      leading={<FileGlyph dir={false} />}
                       onRemove={remove}
                       removeLabel={t('composer.removeAttachment', { name: attachment.name })}
                     >
-                      <FileGlyph dir={false} />
                       <span className="min-w-0 truncate">{attachment.name}</span>
                     </TextTile>,
                   );
@@ -3535,52 +3551,57 @@ export function Composer({
               if (attachment.kind === 'upload') {
                 const name = attachment.name === '' ? t('attach.pastedFile') : attachment.name;
                 const uploading = attachment.fileId === undefined;
-                chipTiles.push(
+                const extTag = fileExtensionTag(name, false, 'DIR');
+                shelfItems.push(
                   <TextTile
                     key={chipKey}
+                    variant="shelf"
                     title={`${attachment.name} · ${attachment.mediaType} · ${formatBytes(attachment.size)}`}
-                    ariaLabel={uploading ? t('composer.attachmentUploading') : undefined}
-                    dataAttrs={{ 'data-attachment-uploading': uploading ? '' : undefined }}
-                    onRemove={remove}
-                    removeLabel={t('composer.removeAttachment', { name })}
-                  >
-                    {uploading ? (
+                    subtitle={`${extTag} · ${formatBytes(attachment.size)}`}
+                    leading={uploading ? (
                       <span className="status-dot-busy flex h-4 w-4 shrink-0 items-center justify-center">
                         <span className="h-1.5 w-1.5 rounded-full bg-accent" />
                       </span>
                     ) : (
                       <FileGlyph dir={false} />
                     )}
+                    ariaLabel={uploading ? t('composer.attachmentUploading') : undefined}
+                    dataAttrs={{ 'data-attachment-uploading': uploading ? '' : undefined }}
+                    onRemove={remove}
+                    removeLabel={t('composer.removeAttachment', { name })}
+                  >
                     <span className="min-w-0 truncate">{name}</span>
-                    <span className="shrink-0 text-ink-faint tabular-nums">{formatBytes(attachment.size)}</span>
                   </TextTile>,
                 );
                 continue;
               }
               const name = attachment.name === '' ? t('attach.pastedImage') : attachment.name;
               if (attachment.data === '') {
-                // Read-in-flight placeholder: a pulsing dot instead of a
-                // preview, and sending stays blocked until data lands.
-                chipTiles.push(
+                shelfItems.push(
                   <TextTile
                     key={chipKey}
+                    variant="shelf"
                     title={t('composer.attachmentReading')}
+                    subtitle={t('composer.attachmentReading')}
+                    leading={(
+                      <span className="status-dot-busy flex h-4 w-4 shrink-0 items-center justify-center">
+                        <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                      </span>
+                    )}
                     ariaLabel={t('composer.attachmentReading')}
                     dataAttrs={{ 'data-attachment-reading': '' }}
                     onRemove={remove}
                     removeLabel={t('composer.removeAttachment', { name })}
                   >
-                    <span className="status-dot-busy flex h-4 w-4 shrink-0 items-center justify-center">
-                      <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                    </span>
                     <span className="min-w-0 truncate">{name}</span>
                   </TextTile>,
                 );
                 continue;
               }
-              mediaTiles.push(
+              shelfItems.unshift(
                 <ImageTile
                   key={chipKey}
+                  variant="shelf"
                   src={attachment.previewUrl}
                   name={name}
                   detail={formatBytes(attachment.size)}
@@ -3590,67 +3611,46 @@ export function Composer({
                 />,
               );
             }
-            const hasContextChipsRow =
+            const hasShelfTrack =
+              shelfItems.length > 0 ||
               quoteItems.length > 0 ||
               (annotations !== undefined && annotations.length > 0) ||
-              chipTiles.length > 0 ||
-              conversationRefs.length > 0 ||
               draftSkills.length > 0;
             return (
               <div
                 data-context-tray
                 role="group"
                 aria-label={t('composer.contextTrayAria')}
-                className="flex flex-col gap-1.5 px-3 pt-2 pb-1"
+                className="flex flex-col gap-1"
               >
-                {mediaTiles.length > 0 ? (
+                {hasShelfTrack ? (
                   <div
-                    data-context-media-strip
                     data-attachment-chips
-                    className="flex flex-wrap items-center gap-1.5"
+                    data-context-shelf
+                    className="flex flex-nowrap items-center gap-2 overflow-x-auto px-3 pt-2 pb-1 no-scrollbar"
                   >
-                    {mediaTiles}
-                  </div>
-                ) : null}
-                {hasContextChipsRow ? (
-                  <div data-context-chips-row className="flex flex-wrap items-center gap-1.5">
+                    {shelfItems}
                     {quoteItems.map((item) => (
-                      <QuoteChip key={item.id} quote={item.quote} onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)} />
+                      <QuoteChip
+                        key={item.id}
+                        variant="shelf"
+                        quote={item.quote}
+                        onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)}
+                      />
                     ))}
                     {annotations !== undefined && annotations.length > 0 ? (
                       <ComposerNotes
+                        variant="shelf"
                         annotations={annotations}
                         onRemove={onRemoveAnnotation}
                         onUpdate={onUpdateAnnotation}
                         onLocate={onLocateAnnotation}
                       />
                     ) : null}
-                    {chipTiles.length > 0 ? (
-                      <div data-attachment-chips className="contents">
-                        {chipTiles}
-                      </div>
-                    ) : null}
-                    {conversationRefs.map((ref, index) =>
-                      ref.kind === 'room' ? (
-                        <RoomRefChip
-                          key={`room-${ref.start}`}
-                          roomId={ref.id}
-                          entry={roomRefDirectory.lookup(ref.id)}
-                          onRemove={() => { removeConversationRefAt(index); }}
-                        />
-                      ) : (
-                        <ThreadRefChip
-                          key={`thread-${ref.start}`}
-                          sessionId={ref.id}
-                          entry={threadRefDirectory.lookup(ref.id)}
-                          group={threadRefs.map((item) => threadRefDirectory.lookup(item.id))}
-                          onRemove={() => { removeConversationRefAt(index); }}
-                        />
-                      ),
-                    )}
                     {draftSkills.map((match) => (
                       <SkillChip
                         key={`skill-${match.skillName}`}
+                        variant="shelf"
                         name={match.item.name}
                         description={match.item.description}
                         onRemove={() => { removeDraftSkill(match.skillName); }}
@@ -3659,7 +3659,7 @@ export function Composer({
                   </div>
                 ) : null}
                 {attachmentError !== null ? (
-                  <div role="alert" data-attachment-error className="flex items-start gap-2 pt-0.5 text-[12px] text-danger">
+                  <div role="alert" data-attachment-error className="flex items-start gap-2 px-3 pt-1 pb-0.5 text-[12px] text-danger">
                     <p className="min-w-0 flex-1">{attachmentError}</p>
                     <button type="button" aria-label={t('common.close')} title={t('common.close')}
                       className="shrink-0 rounded p-0.5 text-ink-faint hover:bg-paper hover:text-ink"
@@ -3672,7 +3672,7 @@ export function Composer({
                   <div
                     role="alert"
                     data-slash-confirm
-                    className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-3 py-1.5 text-[12px] font-medium text-amber-ink"
+                    className="mx-3 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-amber-card px-3 py-1.5 text-[12px] font-medium text-amber-ink"
                   >
                     <span>
                       {slashConfirm.reason === 'unknown'
@@ -3821,6 +3821,8 @@ export function Composer({
               placeholder={
                 disabled
                   ? (disabledPlaceholder ?? t('composer.placeholder'))
+                  : runMode === 'goal'
+                    ? t('composer.goalArmedChip')
                   : busy
                     ? (busyPlaceholder ?? t(busySendsNow ? 'composer.placeholderBusySendsNow' : 'composer.placeholderBusy'))
                     : t('composer.placeholder')
@@ -3893,6 +3895,15 @@ export function Composer({
                 scopeKey: mentionScopeKey ?? sessionId ?? 'none',
                 onMention: mentionFromMenu,
               }}
+              extensions={addMenuExtensionItems.length > 0 ? {
+                items: addMenuExtensionItems,
+                busyKey: pluginSlotBusyKey,
+                disabled,
+              } : undefined}
+              permission={variant !== 'subagent' || (!disabled && !externalExecution) ? {
+                value: permissionMode,
+                onChange: onChangePermissionMode,
+              } : undefined}
               timing={sendTimingAvailable && sendTimingDefault !== undefined ? {
                 defaultTiming: sendTimingDefault,
                 canSendNow: onSendNow !== undefined && !sendNowDegrades,
@@ -3919,39 +3930,58 @@ export function Composer({
                   data-status-segment={segment.key}
                   className={`flex min-w-0 items-center [&>div]:flex [&>div]:min-w-0 ${
                     segment.key === 'permission'
-                      ? 'ml-auto shrink-0 pl-1'
-                      : segment.key === 'plugin-capsules'
-                        ? 'min-w-0 shrink pl-0.5 @max-[32rem]/toolbar:hidden'
+                      ? 'ml-auto shrink-0 pl-1 @max-[30rem]/toolbar:hidden'
                       : segment.key === 'output-layer'
-                        ? 'shrink-0 pl-0.5'
+                        ? 'shrink-0 pl-0.5 @max-[34rem]/toolbar:hidden'
                       : segment.key === 'recipe-binding'
                         ? 'min-w-0 shrink @max-[36rem]/toolbar:hidden'
                       : segment.key === 'run-mode'
                         ? 'mr-1 shrink-0'
                       : segment.key === 'profile' || segment.key === 'agent'
-                        ? 'min-w-0 shrink @max-[24rem]/toolbar:shrink-0'
+                        ? 'min-w-0 shrink @max-[30rem]/toolbar:hidden'
+                      : segment.key === 'execution'
+                        ? 'min-w-0 shrink @max-[30rem]/toolbar:hidden'
                       : 'min-w-0 shrink'
                   }`}
                 >
                   {segment.node}
                 </div>
               ))}
-            </div>
-            <div className="ml-1 flex shrink-0 items-center gap-1">
-              {contextUsage !== undefined ? (
-                <ContextMeter
-                  used={contextUsage.used}
-                  limit={contextUsage.limit}
-                  usage={sessionUsage}
-                  usageError={sessionUsageError}
-                  usageScope={variant === 'subagent' ? 'agent' : 'session'}
-                  sessionId={sessionId}
-                  agentId={agentId}
-                  onCompact={onCompactContext}
-                  autoCompact={contextAutoCompact}
-                  compactAvailability={compactAvailability}
+              {!messageEditing && onChangeExecution !== undefined && execution !== undefined ? (
+                <CompactModelSheet
+                  label={[
+                    pickedPersona?.name ?? execution.profile ?? t('composer.agentDefaultName'),
+                    modelShortLabel,
+                  ].filter((part): part is string => part !== undefined && part !== '').join(' · ')}
+                  ariaLabel={`${t('composer.agentDefaultName')} / ${modelShortLabel ?? ''}`}
+                  profileNode={statusSegments.find((seg) => seg.key === 'profile')?.node}
+                  executionNode={statusSegments.find((seg) => seg.key === 'execution')?.node}
                 />
               ) : null}
+            </div>
+            <div className="ml-1 flex shrink-0 items-center gap-1">
+              {contextUsage !== undefined ? (() => {
+                const ratio = contextUsage.used !== undefined && contextUsage.limit > 0
+                  ? contextUsage.used / contextUsage.limit
+                  : 0;
+                const keepOnNarrow = ratio >= 0.6 || (compactAvailability !== undefined && compactAvailability.available === false && compactAvailability.reason !== undefined);
+                return (
+                  <div className={keepOnNarrow ? 'flex shrink-0 items-center' : 'flex shrink-0 items-center @max-[26.25rem]/toolbar:hidden'}>
+                    <ContextMeter
+                      used={contextUsage.used}
+                      limit={contextUsage.limit}
+                      usage={sessionUsage}
+                      usageError={sessionUsageError}
+                      usageScope={variant === 'subagent' ? 'agent' : 'session'}
+                      sessionId={sessionId}
+                      agentId={agentId}
+                      onCompact={onCompactContext}
+                      autoCompact={contextAutoCompact}
+                      compactAvailability={compactAvailability}
+                    />
+                  </div>
+                );
+              })() : null}
               {queueEditing && onQueueEditRemove !== undefined ? (
                 // Queue-edit mode: the stop button becomes the remove control
                 // for the queued message being edited (two-step: arm, then
@@ -4040,10 +4070,11 @@ export function Composer({
                   <Icon name="close" size={12} />
                 </button>
               ) : null}
+              {busy && !canSend && !queueEditing && !messageEditing && onAbort !== undefined ? null : (
               <div
                 ref={sendTimingRootRef}
                 data-send-timing-root
-                className="relative flex"
+                className="relative flex items-center"
                 onMouseEnter={openSendTimingOnHover}
                 onMouseLeave={closeSendTimingOnLeave}
                 onBlur={onSendTimingBlur}
@@ -4074,9 +4105,9 @@ export function Composer({
                   aria-label={messageEditing ? t('transcript.editSubmit') : queueEditing ? t('composer.queueEditConfirm') : busy ? t(busySendsNow ? 'composer.sendNowAria' : 'composer.queueAria') : t('composer.sendAria')}
                   data-edit-submit={messageEditing ? '' : undefined}
                   data-send-ready={canSend ? '' : undefined}
-                  // Filled accent only once there is something to send; at rest
-                  // the button is a quiet ink glyph on paper.
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-10 ${
+                  className={`flex h-8 shrink-0 items-center justify-center transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 ${
+                    sendTimingAvailable && canSend ? 'w-8 rounded-l-full pointer-coarse:w-9' : 'w-8 rounded-full pointer-coarse:w-10'
+                  } ${
                     canSend
                       ? 'bg-accent text-primary-foreground hover:bg-accent-deep'
                       : 'bg-paper text-ink-faint'
@@ -4104,12 +4135,10 @@ export function Composer({
                     </svg>
                   )}
                 </button>
-                {/* Coarse pointers have no hover and no long-press: an explicit
-                    caret opens the same menu the hover / ↑↓ paths open (split-
-                    button convention: closed ▼, open ▲, as SearchableSelect). */}
                 {sendTimingAvailable ? (
                   <button
                     type="button"
+                    data-send-timing-caret=""
                     aria-label={t('composer.sendTimingAria')}
                     aria-haspopup="menu"
                     aria-expanded={sendTimingOpen}
@@ -4118,9 +4147,13 @@ export function Composer({
                       if (sendTimingOpen) { closeSendTiming(); return; }
                       setSendTimingOpen(true);
                     }}
-                    className="ml-0.5 hidden h-8 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:flex pointer-coarse:h-10 pointer-coarse:w-8"
+                    className={`flex h-8 w-6 shrink-0 cursor-pointer items-center justify-center transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-10 pointer-coarse:w-8 ${
+                      canSend
+                        ? 'rounded-r-full border-l border-primary-foreground/25 bg-accent text-primary-foreground hover:bg-accent-deep'
+                        : 'ml-0.5 rounded-full text-ink-faint hover:bg-ink/[0.05] hover:text-ink'
+                    }`}
                   >
-                    <Icon name="chevron" size={12} className={`transition-transform ${sendTimingOpen ? 'rotate-180' : ''}`} />
+                    <Icon name="chevron" size={12} className={`transition-transform ${sendTimingOpen ? '-rotate-90' : 'rotate-90'}`} />
                   </button>
                 ) : null}
                 {sendTimingOpen && sendTimingDefault !== undefined ? (
@@ -4146,17 +4179,27 @@ export function Composer({
                   </div>
                 ) : null}
               </div>
+              )}
             </div>
           </div>
           </div>
         </div>
-        {/* The status line under the card: what the agent is doing (left) and
-            the one connection fact plus Stop while the card is taken over
-            (right). Key hints teach an empty draft only while the composer
-            holds focus. The row never changes height, so the card never hops. */}
-        <div data-composer-status-line className="mt-1.5 flex h-4 min-w-0 items-center gap-3 px-1">
-          {working !== undefined || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
+        {/* External bare ContextStrip below the composer card:
+            Left: SSH summary trigger (`>_ GPU box +2 ▾` opening upward), active
+            plugin status capsules, and working line.
+            Right: SessionRemainder, statusNotice, takenOver Stop, or idle focus hints. */}
+        <div data-composer-status-line className="mt-1.5 flex min-h-6 min-w-0 items-center gap-2.5 px-1">
+          {ssh.resident !== null || hasPluginStatusCapsules || working !== undefined || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
             <>
+              {ssh.resident}
+              {hasPluginStatusCapsules ? (
+                <PluginStatusCapsules
+                  slots={pluginGuiSlots.slots}
+                  sessionId={sessionId}
+                  workspaceId={workspaceId}
+                  disabled={disabled}
+                />
+              ) : null}
               {working !== undefined ? (
                 <ComposerWorkingLine
                   lastResponseAt={working.lastResponseAt}
@@ -4167,11 +4210,6 @@ export function Composer({
                 />
               ) : null}
               <span className="flex-1" />
-              {/* The right end of the footer: one quiet entry, on the working
-                  line's own row, that says the session is not fully here yet and
-                  opens the same per-structure reading and recovery the
-                  transcript outlet offers. It sits before the notice and Stop so
-                  neither of them is pushed off a narrow row. */}
               {sessionRemainder === undefined ? null : (
                 <SessionRemainder className="shrink" handle={sessionRemainder} />
               )}
@@ -4181,11 +4219,6 @@ export function Composer({
                 </span>
               )}
               {takenOver && busy && onAbort !== undefined ? (
-                // The card's Stop button is under the takeover; the line keeps it.
-                // On touch an invisible box around it makes the target 40px
-                // tall without changing the 16px line: it reaches up only as
-                // far as the gap under the card (the card's own row stays
-                // tappable) and takes the rest from the padding below.
                 <button
                   type="button"
                   data-composer-status-stop
@@ -4199,9 +4232,6 @@ export function Composer({
               ) : null}
             </>
           ) : text.trim() === '' && !busy && !coarsePointer ? (
-            // Keyboard chords only: a software keyboard's Enter is a newline
-            // (see onKeyDown), so on touch this line would describe the wrong
-            // keys and spend a row above the open keyboard.
             <p
               data-composer-hints
               className="min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within/composer:opacity-100 motion-reduce:transition-none"
@@ -4216,6 +4246,47 @@ export function Composer({
       </div>
     </div>
     </ComposerCardContext.Provider>
+  );
+}
+
+function CompactModelSheet({
+  label,
+  ariaLabel,
+  profileNode,
+  executionNode,
+}: {
+  readonly label: string;
+  readonly ariaLabel: string;
+  readonly profileNode: ReactNode;
+  readonly executionNode: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="hidden min-w-0 shrink @max-[30rem]/toolbar:flex">
+      <Popover.Root open={open} onOpenChange={setOpen}>
+        <Popover.Trigger
+          type="button"
+          data-compact-model-sheet-trigger=""
+          aria-label={ariaLabel}
+          className={`${STATUS_SEGMENT_CLASS} max-w-[14rem]`}
+        >
+          <Icon name="star" size={14} className={STATUS_SEGMENT_ICON_CLASS} />
+          <span className="min-w-0 truncate">{label}</span>
+          <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint" />
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Positioner side="top" align="start" sideOffset={8} className="z-50 outline-none">
+            <Popover.Popup
+              data-compact-model-sheet=""
+              className={`anim-enter flex w-[min(22rem,calc(100vw-24px))] flex-col gap-2 rounded-[14px] p-2.5 outline-none ${POPOVER_SURFACE_CLASS}`}
+            >
+              {profileNode}
+              {executionNode}
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
+      </Popover.Root>
+    </div>
   );
 }
 

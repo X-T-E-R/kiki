@@ -211,11 +211,10 @@ describe('wallpaper material', () => {
     const scope = ":root:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
     const assist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
     expect(rule(`${scope} [data-agent-tab-workspace]`)).toContain('background: var(--kiki-surface-paper);');
-    expect(rule(`${scope} [data-agent-relations-surface]`)).toContain('background-color: transparent;');
     expect(rule(`${scope} [data-agent-tab-workspace] header.bg-paper`)).toContain('background-color: transparent;');
     expect(rule(`${scope} .app-rail .sticky.bg-panel`)).toContain('background-color: var(--kiki-surface-panel);');
     expect(rule(`${assist} .app-rail .sticky.bg-panel`)).toContain('background-color: var(--kiki-surface-panel);');
-    expect(css).toContain(`${scope} [data-agent-tab-workspace] header.bg-paper,`);
+    expect(css).toContain(`${scope} [data-agent-tab-workspace] header.bg-paper {`);
   });
 
   it('gives the sidebar one ground that follows the dial, instead of a card per row', () => {
@@ -261,19 +260,15 @@ describe('wallpaper material', () => {
     // on, which is what banded it.
     expect(rule(`${scope} .conversation-center > header.bg-paper`)).toContain('background-color: transparent;');
     expect(css).not.toContain(`${assist} .conversation-center > header.bg-paper {`);
-    expect(css).not.toContain(`${assist} [data-agent-relations-surface] {`);
+    expect(css).not.toContain('[data-agent-relations-surface]');
+    expect(css).not.toContain('[data-goal-armed]');
   });
 
   it('keeps a card only where the app means one action or one place', () => {
-    // The two raised marks in the sidebar column are real surfaces with their
-    // own markup: "New session" is a paper chip and the selected conversation
-    // row carries its own selection state. The pane rule above is about
-    // ground, so it does not touch either; over a picture their fill follows
-    // the chip rule below instead of the theme's own class.
     const sidebar = readFileSync(resolve(import.meta.dirname, '../../components/Sidebar.tsx'), 'utf8');
     expect(sidebar).toContain('data-new-session');
     expect(sidebar).toContain('data-session-selected');
-    expect(sidebar).toMatch(/data-new-session[\s\S]{0,400}bg-paper/);
+    expect(sidebar).not.toMatch(/data-new-session[\s\S]{0,400}shadow-\[var\(--kiki-sheet-shadow\)\]/);
   });
 
   it('speaks the lifted chips in the dial’s paper and panel over a picture', () => {

@@ -291,8 +291,10 @@ describe('RightRail fixed and switchable parts', () => {
       '[data-inspector-tail]',
     ].map((selector) => rail.querySelector(selector));
     expect(standardReadingOrder.every((node) => node !== null)).toBe(true);
-    expect(rail.querySelector('[data-rail-pinned] [data-inspector-needs-you]')).not.toBeNull();
-    // The overview follows the page; the pinned block keeps who and what waits.
+    expect(rail.querySelector('[data-rail-pinned] [data-rail-pending-jump]')?.textContent).toContain('1');
+    expect(rail.querySelector('[data-rail-pinned] [data-inspector-needs-you]')).toBeNull();
+    expect(rail.querySelector('.rail-page [data-inspector-needs-you]')).not.toBeNull();
+    // The overview follows the page; the pinned block keeps only the h-12 bar.
     expect(rail.querySelector('[data-rail-pinned] [data-rail-agent-panel-slot]')).toBeNull();
     // The team reads without a click.
     expect(rail.querySelector('[data-inspector-agents] [data-agent-tree]')).not.toBeNull();
@@ -492,20 +494,20 @@ describe('RightRail shared chapters', () => {
     }
   });
 
-  it('names the page owner with a breadcrumb in both focus states', async () => {
+  it('uses an overview heading when matching center and breadcrumb when peeking another agent', async () => {
     const main = await renderRail();
-    const child = await renderRail({ subagent: context });
+    const child = await renderRail({ subagent: context, onInspectMain: vi.fn() });
 
     const mainOwner = main.querySelector('[data-rail-owner]');
-    expect(mainOwner?.querySelector('[aria-current="page"]')?.textContent).toContain('Main agent');
+    expect(mainOwner?.querySelector('[data-rail-owner-heading]')?.textContent).toBe('Session overview');
     expect(mainOwner?.querySelector('[data-inspect-main]')).toBeNull();
     expect(mainOwner?.getAttribute('data-rail-owner-name')).toBeNull();
-    // A subagent page: "Main agent / Researcher", main a step back up.
+    // Peeking a subagent from main: "Main agent / Researcher", main a step back up.
     const childOwner = child.querySelector('[data-rail-owner]');
     expect(childOwner?.getAttribute('data-rail-owner-name')).toBe('Researcher');
     expect(childOwner?.querySelector('[aria-current="page"]')?.textContent).toContain('Researcher');
     expect(childOwner?.querySelector('[data-inspect-main]')?.textContent).toBe('Main agent');
-    // The pinned head leads the scroll content in both focus states.
+    // The pinned h-12 bar leads the scroll content in both focus states.
     for (const rail of [main, child]) {
       const head = rail.querySelector('[data-agent-panel-scroll]')?.firstElementChild;
       expect(head?.hasAttribute('data-rail-pinned')).toBe(true);
@@ -626,9 +628,10 @@ describe('RightRail shared chapters', () => {
       { agentId: 'agent-1a', parentAgentId: 'agent-1', name: 'Reader', status: 'running' },
     ]);
     const opened: string[] = [];
-    // The routed agent page has no onInspectMain: a crumb navigates instead.
+    // Peeking a nested agent shows the full breadcrumb chain back to main.
     const nested = await renderRail({
       agentForest: deep,
+      onInspectMain: () => {},
       onOpenSubagent: (agentId) => { opened.push(agentId); },
       subagent: { agentId: 'agent-1a', block: undefined, pendingInteractionCount: 0, onJumpToSpawn: undefined },
     });
@@ -657,8 +660,8 @@ describe('RightRail shared chapters', () => {
         } as NonNullable<SessionViewState['session']>,
       },
     });
-    const page = rail.querySelector('[data-rail-pinned] .rail-page')!;
-    expect(page.firstElementChild?.hasAttribute('data-rail-profile-head')).toBe(true);
+    const nowBlock = rail.querySelector('[data-rail-now-block]')!;
+    expect(nowBlock.firstElementChild?.hasAttribute('data-rail-profile-head')).toBe(true);
     expect(rail.querySelector('[data-inspector-setup]')).toBeNull();
     const session = rail.querySelector('[data-inspector-session]')!;
     expect(session).not.toBeNull();
@@ -766,8 +769,8 @@ describe('RightRail shared chapters', () => {
     const block = rail.querySelector('[data-inspector-needs-you]')!;
     // The row names who asked; the full trail rides its title.
     expect(block.querySelector('[data-needs-you-from="worker"]')?.getAttribute('title')).toBe('Lead › Worker');
-    // It sits above the team, under the pinned Now.
-    expect(rail.querySelector('[data-inspector-now]')!.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // NeedsYou sits first in the scrolling rail page, above InspectorNow and the team.
+    expect(block.compareDocumentPosition(rail.querySelector('[data-inspector-now]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(block.compareDocumentPosition(rail.querySelector('[data-inspector-agents]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await act(async () => { rail.querySelector<HTMLButtonElement>('[data-needs-you-approve="a1"]')!.click(); });
     expect(decided).toEqual(['a1:approved']);

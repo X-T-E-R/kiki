@@ -730,7 +730,9 @@ function NormalApp() {
   const rawPersonaDirectory = personaDirectoryState.data === undefined ? undefined : personaDirectoryState.directory;
   const sidebarBadge = useMemo<SidebarBadge | undefined>(() => {
     const inbox = buildConversationInbox(globalSessions, conversations.rooms, seen, workspaceOptions);
-    return inbox.total === 0 ? undefined : { total: inbox.total, needsYou: inbox.needsYou.length > 0 };
+    return inbox.total === 0
+      ? undefined
+      : { total: inbox.total, needsYou: inbox.needsYou.length > 0, needsYouCount: inbox.needsYou.length };
   }, [globalSessions, conversations.rooms, seen, workspaceOptions]);
   const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
     // A Bot's active home and a room member's own session keep their single

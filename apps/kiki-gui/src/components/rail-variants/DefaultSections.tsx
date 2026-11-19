@@ -8,6 +8,7 @@
 import { memo, useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 
 import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
+import { formatThinkingEffort } from '../../lib/thinkingEffort';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useOptionalControllerRegistry } from '../../state/connection';
@@ -185,8 +186,7 @@ export function profileEffortDisplay(profile: {
     }
   }
   const level = String(profile.thinking_effort);
-  const key = `composer.effort.${level}` as I18nKey;
-  return t('subagent.effort', { effort: t(key) === key ? level : t(key) });
+  return formatThinkingEffort(level, t) || undefined;
 }
 
 export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspaceId, cwd, externalDriver }: {

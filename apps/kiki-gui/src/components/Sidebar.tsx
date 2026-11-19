@@ -447,7 +447,7 @@ function PrimaryNav({
             current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
-          <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
+          <span className={`flex h-5 w-5 shrink-0 items-center justify-center ${current ? 'text-ink' : 'text-ink-faint'}`}><Icon /></span>
           <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`)}</span>
           {/* The badge polls once a second; behind a closed drawer it would
               poll for nobody. It reads again the moment the drawer opens. */}
@@ -468,7 +468,7 @@ function PrimaryNav({
   };
 
   return (
-    <nav aria-label={t('nav.aria')} data-primary-nav className="px-2 pb-2">
+    <nav aria-label={t('nav.aria')} data-primary-nav className="px-2.5 pb-2">
       <ul className="space-y-px">
         {primaryItems.map(renderNavItem)}
         {pluginSidebarPanels.map((panel) => {
@@ -504,7 +504,7 @@ function PrimaryNav({
                   current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
                 }`}
               >
-                <span className={current ? 'text-ink' : 'text-ink-faint'}>
+                <span className={`flex h-5 w-5 shrink-0 items-center justify-center ${current ? 'text-ink' : 'text-ink-faint'}`}>
                   <Icon name={iconName} size={16} className={ICON} />
                 </span>
                 <span className="min-w-0 flex-1 truncate">{title}</span>
@@ -530,7 +530,9 @@ function PrimaryNav({
                 onClick={() => { writeLayoutPreferences({ sidebarNavSectionCollapsed: false }); }}
                 className="row-interactive flex h-7 w-full items-center gap-2 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink transition-colors duration-[var(--kiki-motion-quick)]"
               >
-                <DisclosureChevron open={false} size={12} className="shrink-0 text-ink-faint" />
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center text-ink-faint">
+                  <DisclosureChevron open={false} size={12} className="shrink-0" />
+                </span>
                 <span className="min-w-0 flex-1 truncate">{t('sidebar.moreTools')}</span>
                 {foldedBadgeCount > 0 ? (
                   <span
@@ -552,7 +554,9 @@ function PrimaryNav({
                 onClick={() => { writeLayoutPreferences({ sidebarNavSectionCollapsed: true }); }}
                 className="row-interactive flex h-7 w-full items-center gap-2 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink transition-colors duration-[var(--kiki-motion-quick)]"
               >
-                <DisclosureChevron open={true} size={12} className="shrink-0 text-ink-faint" />
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center text-ink-faint">
+                  <DisclosureChevron open={true} size={12} className="shrink-0" />
+                </span>
                 <span className="min-w-0 flex-1 truncate">{t('sidebar.moreTools')}</span>
               </button>
               <ul className="space-y-px">{secondaryItems.map(renderNavItem)}</ul>
@@ -1744,7 +1748,7 @@ export function Sidebar({
           quiet icons, so the vertical space a permanent search field used to
           take belongs to the session list. The wordmark itself is the space
           menu (§6.4) and carries the current space's color and name. */}
-      <div className="flex h-12 shrink-0 items-center gap-1 pr-2 pl-4">
+      <div className="flex h-12 shrink-0 items-center gap-1 pr-2.5 pl-[18px]">
         <div className="min-w-0 flex-1"><SpaceSwitcher /></div>
         <button
           type="button"
@@ -1773,18 +1777,23 @@ export function Sidebar({
         >
           <Icon name="bell" size={16} />
           {inbox.total > 0 ? (
-            // The count itself; attention tone while anything is blocked on
-            // the user, the accent when it is only finished runs to read.
-            <span
-              data-activity-badge={inbox.total}
-              data-activity-badge-tone={inbox.needsYou.length > 0 ? 'needs-you' : 'unread'}
-              aria-hidden
-              className={`pointer-events-none absolute -top-1 -right-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-canvas ${
-                inbox.needsYou.length > 0 ? 'bg-attention' : 'bg-accent'
-              }`}
-            >
-              {inbox.total > 99 ? '99+' : inbox.total}
-            </span>
+            inbox.needsYou.length > 0 ? (
+              <span
+                data-activity-badge={inbox.total}
+                data-activity-badge-tone="needs-you"
+                aria-hidden
+                className="pointer-events-none absolute top-1 right-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-attention px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-canvas"
+              >
+                {inbox.needsYou.length > 99 ? '99+' : inbox.needsYou.length}
+              </span>
+            ) : (
+              <span
+                data-activity-badge={inbox.total}
+                data-activity-badge-tone="unread"
+                aria-hidden
+                className="pointer-events-none absolute top-1.5 right-1.5 h-[7px] w-[7px] rounded-full bg-ink-soft/65 ring-2 ring-canvas"
+              />
+            )
           ) : null}
         </button>
         {onClose !== undefined ? (
@@ -1802,17 +1811,14 @@ export function Sidebar({
         ) : null}
       </div>
 
-      <div className="space-y-1 px-2 pb-3">
-        {/* The surface's one primary action, set as a raised paper chip — the
-            same lift as the content sheet — so it reads as the first thing to
-            reach for without an ink block competing with the wordmark. */}
+      <div className="space-y-1 px-2.5 pb-2">
         <button
           type="button"
           data-new-session
           onClick={onNewSession}
-          className="flex h-8 w-full items-center gap-2 rounded-lg bg-paper px-2 pointer-coarse:h-10 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-panel"
+          className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] pointer-coarse:h-10"
         >
-          <span className="text-accent"><Icon name="plus" size={14} /></span>
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/12 text-accent-ink"><Icon name="plus" size={12} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
         </button>
         {searchOpen ? (
@@ -1914,7 +1920,7 @@ export function Sidebar({
           />
         </>
       ) : (
-      <div ref={listRef} onScroll={onListScroll} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
+      <div ref={listRef} onScroll={onListScroll} className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
         <SidebarPersonaSection sessions={personaSessions ?? sessions} activeSessionId={activeSessionId} seen={seen} workspaceOptions={workspaceOptions} rooms={rooms} />
 
         <div className="flex items-center gap-0.5 pt-2 pr-0 pb-0.5 pl-2">
@@ -2309,7 +2315,7 @@ export function Sidebar({
         * not the connection words are there). The row never overlaps the
         * list above it: it is a flex sibling, not an overlay, and the list
         * keeps bottom padding for its last row. */}
-      <div className="relative flex h-12 shrink-0 items-center gap-1 px-2" data-sidebar-footer>
+      <div className="relative flex h-12 shrink-0 items-center gap-1 px-2.5" data-sidebar-footer>
         <button
           type="button"
           data-nav-settings
@@ -2319,7 +2325,7 @@ export function Sidebar({
             location.pathname.startsWith('/settings') ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
-          <span className={location.pathname.startsWith('/settings') ? 'text-ink' : 'text-ink-faint'}><Icon name="settings" size={16} className={ICON} /></span>
+          <span className={`flex h-5 w-5 shrink-0 items-center justify-center ${location.pathname.startsWith('/settings') ? 'text-ink' : 'text-ink-faint'}`}><Icon name="settings" size={16} className={ICON} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.settings')}</span>
         </button>
         <button
@@ -3634,7 +3640,7 @@ function SearchResults({
       role="listbox"
       aria-label={t('sidebar.searchAria')}
       data-search-results
-      className="min-h-0 flex-1 overflow-y-auto px-2 pb-2"
+      className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-2"
     >
       {filtersActive || parsed.workspaceTerm !== undefined || parsed.role !== undefined ? (
         <p data-search-scope className="flex flex-wrap items-center gap-1 px-2 pt-1 text-[12px] text-ink-faint">

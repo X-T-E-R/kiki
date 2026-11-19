@@ -65,7 +65,7 @@ import { useConnection } from '../../state/connection';
 import { usePromoteAgent, type PromoteAgentAction } from '../../lib/usePromoteAgent';
 import { NavBackButton } from '../NavBackButton';
 import { useMediaQuery } from '../../lib/layoutHooks';
-import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
+import { AgentBreadcrumb, AgentFamilyPopover, relatedAgentNodes } from '../AgentBreadcrumb';
 import {
   EMPTY_SLOTS,
   useOptionalConversationShell,
@@ -397,13 +397,9 @@ const emptyAgentView = createViewState('');
  * kept read-only and settles as an unavailable target instead of becoming a
  * send gate by accident.
  */
-export function WorkspaceHeader({ children, main = false }: { children: ReactNode; main?: boolean }) {
-  // A quiet bar on the sheet's own ground: no rule under it — the sheet edge
-  // and the transcript's top padding carry the separation.
+export function WorkspaceHeader({ children }: { children: ReactNode; main?: boolean }) {
   return (
-    <header className={main
-      ? 'flex h-12 shrink-0 items-center gap-1 bg-paper pr-2 pl-4 lg:pl-5'
-      : 'flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 bg-paper py-2 pr-2 pl-4 lg:pl-5'}>
+    <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-hairline/70 bg-paper pr-2.5 pl-4 lg:pl-5">
       {children}
     </header>
   );
@@ -417,9 +413,8 @@ export const HEADER_ICON_BUTTON =
 
 function AgentWorkspaceHeader({
   target,
+  workspaceId,
   name,
-  model,
-  effort,
   crumbs,
   forest,
   railOpen,
@@ -434,12 +429,20 @@ function AgentWorkspaceHeader({
   onLocateSpawn,
   promote,
   showHistoryBack,
+  isBranch = false,
+  branchSealed = false,
+  branchSeedLabel,
   branchSeamLabel,
+  branchToolsLocked = false,
+  branchUnlocking = false,
+  onUnlockBranchTools,
+  branchFolding = false,
+  branchFoldPending = false,
+  onFoldBranch,
 }: {
   target: AgentWorkspaceTarget;
+  workspaceId?: string;
   name: string;
-  model: string | undefined;
-  effort: string | undefined;
   crumbs: readonly AgentTreeNode[];
   forest: AgentForest;
   railOpen: boolean;
@@ -450,7 +453,7 @@ function AgentWorkspaceHeader({
   showRailToggle: boolean;
   /** Off where no rail can open; the rail is an overlay layer below lg, so this stays on there too. */
   railAvailable?: boolean;
-  /** Off in narrow containers (tabs): the relations row below keeps the navigation. */
+  /** Off in narrow containers (tabs): the inline `AgentFamilyPopover` keeps Parent / Children / Siblings navigation. */
   showBreadcrumb: boolean;
   /** The child has a conversation to renew: the menu offers a fresh context. */
   freshContextAvailable: boolean;
@@ -460,10 +463,31 @@ function AgentWorkspaceHeader({
   /** Opens this child as its own top-level thread; undefined where the transport cannot. */
   promote?: PromoteAgentAction;
   showHistoryBack: boolean;
+  isBranch?: boolean;
+  branchSealed?: boolean;
+  branchSeedLabel?: string;
   branchSeamLabel?: string;
+  branchToolsLocked?: boolean;
+  branchUnlocking?: boolean;
+  onUnlockBranchTools?: () => void;
+  branchFolding?: boolean;
+  branchFoldPending?: boolean;
+  onFoldBranch?: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [familyOpen, setFamilyOpen] = useState(false);
+  const [familyRunningOnly, setFamilyRunningOnly] = useState(false);
+  const related = useMemo(
+    () => relatedAgentNodes(forest, target.agentId),
+    [forest, target.agentId],
+  );
+  const runningChildrenCount = useMemo(
+    () => related.children.filter((node) => node.status === 'running' || node.status === 'background' || node.busy).length,
+    [related.children],
+  );
+  const canUnlockInMenu = isBranch && !branchSealed && branchToolsLocked && onUnlockBranchTools !== undefined;
+  const hasActionsMenu = freshContextAvailable || onLocateSpawn !== undefined || promote !== undefined || canUnlockInMenu;
   useEffect(() => {
     if (!menuOpen) return;
     const unregister = registerOverlay('agent-actions-menu');
@@ -483,46 +507,92 @@ function AgentWorkspaceHeader({
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
   }, [menuOpen]);
+  const tooltipText = [branchSeamLabel, t('sv.subagentNote'), t('sv.agentActionsNote')]
+    .filter((part): part is string => part !== undefined && part !== '')
+    .join(' · ');
+  const readOnlyBadgeLabel = branchSeedLabel !== undefined
+    ? `${branchSeedLabel} · ${locale === 'zh' ? '只读' : 'Read-only'}`
+    : (locale === 'zh' ? '只读' : 'Read-only');
   return (
-    <>
-      <WorkspaceHeader>
+    <WorkspaceHeader>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
         {showHistoryBack ? <NavBackButton /> : null}
-        <div className="min-w-24 flex-1" title={`${t('sv.subagentNote')} · ${t('sv.agentActionsNote')}`}>
-          {showBreadcrumb ? (
-            <AgentBreadcrumb
-              crumbs={crumbs}
-              onOpenSession={navigation.openSession}
-              onOpenAgent={navigation.openAgent}
-            />
-          ) : null}
-          {/* Name in the display serif; model · effort as one quiet line
-              beneath it. The scope notes ride the tooltip — they explain,
-              they do not change what to do next. */}
-          <h1 className="truncate font-display text-[15px] leading-tight font-semibold tracking-tight text-ink">
-            {name}
-          </h1>
-          {branchSeamLabel !== undefined || model !== undefined || effort !== undefined ? (
-            <p className="flex min-w-0 items-center gap-1.5 truncate text-[12px] text-ink-faint">
-              {branchSeamLabel !== undefined ? (
-                <span data-branch-seam-header className="shrink-0 text-ink-soft">{branchSeamLabel}</span>
-              ) : null}
-              {branchSeamLabel !== undefined && (model !== undefined || effort !== undefined) ? <span aria-hidden>·</span> : null}
-              {model !== undefined ? <span className="truncate">{model}</span> : null}
-              {model !== undefined && effort !== undefined ? <span aria-hidden>·</span> : null}
-              {effort !== undefined ? (
-                <span data-agent-effort className="shrink-0">{t('subagent.effort', { effort })}</span>
-              ) : null}
-            </p>
-          ) : null}
-        </div>
+        {showBreadcrumb ? (
+          <AgentBreadcrumb
+            omitLeaf
+            crumbs={crumbs}
+            onOpenSession={navigation.openSession}
+            onOpenAgent={navigation.openAgent}
+          />
+        ) : null}
+        <AgentFamilyPopover
+          forest={forest}
+          currentAgentId={target.agentId}
+          name={name}
+          isBranch={isBranch}
+          branchSealed={branchSealed}
+          showBreadcrumb={showBreadcrumb}
+          depth={crumbs.filter((crumb) => crumb.agentId !== MAIN_AGENT_ID).length}
+          open={familyOpen}
+          onOpenChange={setFamilyOpen}
+          filterRunning={familyRunningOnly}
+          onFilterRunningChange={setFamilyRunningOnly}
+          onOpen={navigation.openAgent}
+          title={tooltipText}
+        />
+        {runningChildrenCount > 0 ? (
+          <button
+            type="button"
+            data-agent-running-children={runningChildrenCount}
+            title={t('sv.childAgents')}
+            onClick={() => {
+              setFamilyRunningOnly(true);
+              setFamilyOpen(true);
+            }}
+            className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-ink/[0.05] px-1.5 text-[11.5px] font-medium text-ink-soft tabular-nums transition-colors hover:bg-ink/[0.09] hover:text-ink"
+          >
+            <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success" />
+            <span>{runningChildrenCount}</span>
+          </button>
+        ) : null}
+        {isBranch && !branchSealed && branchToolsLocked && onUnlockBranchTools !== undefined ? (
+          <button
+            type="button"
+            data-branch-unlock-tools
+            disabled={branchUnlocking}
+            title={t('transcript.branch.unlockTools')}
+            onClick={onUnlockBranchTools}
+            className="hidden h-6 shrink-0 cursor-pointer items-center rounded-md border border-hairline bg-paper px-2 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-60 sm:inline-flex"
+          >
+            {readOnlyBadgeLabel}
+          </button>
+        ) : isBranch && branchSeedLabel !== undefined ? (
+          <span
+            data-branch-seam-header
+            title={branchSeamLabel}
+            className="hidden h-5 shrink-0 items-center rounded bg-ink/[0.04] px-1.5 text-[11px] text-ink-soft sm:inline-flex"
+          >
+            {branchSeedLabel}
+          </span>
+        ) : null}
+      </div>
 
-        {showPreviewToggle ? <PreviewToggleButton /> : null}
-        {/* Same intent as the session's ⋯ menu: renew this child's context
-            without having to make a switch fail first, open the child as a
-            thread of its own, and — where no rail exists to carry 派发处 —
-            locate the card that spawned this child. A child with none of
-            these keeps no menu at all. */}
-        {freshContextAvailable || onLocateSpawn !== undefined || promote !== undefined ? (
+      <div className="flex shrink-0 items-center gap-1">
+        {isBranch && !branchSealed && onFoldBranch !== undefined ? (
+          <button
+            type="button"
+            data-branch-fold-action
+            disabled={branchFolding || branchFoldPending}
+            onClick={onFoldBranch}
+            className="h-7 shrink-0 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10] disabled:cursor-not-allowed disabled:text-ink-faint"
+          >
+            {branchFolding || branchFoldPending
+              ? (locale === 'zh' ? '合回中…' : 'Merging…')
+              : t('transcript.branch.foldAction')}
+          </button>
+        ) : null}
+        {showPreviewToggle ? <PreviewToggleButton sessionId={target.sessionId} workspaceId={workspaceId} /> : null}
+        {hasActionsMenu ? (
           <div className="relative shrink-0" data-agent-actions>
             <button
               type="button"
@@ -540,6 +610,18 @@ function AgentWorkspaceHeader({
                 role="menu"
                 className="anim-enter absolute right-0 top-full z-40 mt-1 w-56 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
               >
+                {canUnlockInMenu ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-branch-unlock-tools-menu
+                    disabled={branchUnlocking}
+                    className="flex h-8 w-full items-center rounded-md px-3 text-left text-[13px] text-ink transition-colors hover:bg-paper disabled:text-ink-faint"
+                    onClick={() => { setMenuOpen(false); onUnlockBranchTools(); }}
+                  >
+                    {t('transcript.branch.unlockTools')}
+                  </button>
+                ) : null}
                 {onLocateSpawn !== undefined ? (
                   <button
                     type="button"
@@ -578,9 +660,6 @@ function AgentWorkspaceHeader({
             ) : null}
           </div>
         ) : null}
-        {/* Pure open-rail entry: renders only while the shared rail is
-            collapsed. Once expanded, the rail's own collapse affordances take
-            over — no "hide panel" button in this header. */}
         {showRailToggle && railAvailable && !railOpen ? (
           <button
             type="button"
@@ -594,16 +673,8 @@ function AgentWorkspaceHeader({
             <PanelIcon />
           </button>
         ) : null}
-      </WorkspaceHeader>
-      <div data-agent-relations-surface className="shrink-0 bg-paper px-4 pb-2 text-[12px] lg:px-5">
-        <AgentRelations
-          key={target.agentId}
-          forest={forest}
-          currentAgentId={target.agentId}
-          onOpen={navigation.openAgent}
-        />
       </div>
-    </>
+    </WorkspaceHeader>
   );
 }
 
@@ -803,7 +874,12 @@ function ChildAgentWorkspace({
       agentKnown,
     }) => {
       const capabilitiesProfile = capabilitiesQuery.data?.profile;
+      const capabilitiesOwner = capabilitiesQuery.data?.owner;
       const liveIsBranch = initialIsBranch
+        || capabilitiesOwner?.is_branch === true
+        || capabilitiesOwner?.branch_sealed === true
+        || capabilitiesOwner?.branch_seed !== undefined
+        || capabilitiesOwner?.tools_locked === true
         || live.blocks.some((block) => block.kind === 'notice' && block.branchBase !== undefined);
       const busy = selectedNode?.busy === true || live.busy;
       const configuredDefault = normalizeSelectableModelAlias(
@@ -886,6 +962,7 @@ function ChildAgentWorkspace({
   } = core;
 
   const capabilitiesProfile = capabilitiesQuery.data?.profile;
+  const capabilitiesOwner = capabilitiesQuery.data?.owner;
   const capturedBlocks = agentLiveState.blocks;
   const branchBaseMarker = useMemo(() => {
     for (const block of capturedBlocks) {
@@ -893,7 +970,17 @@ function ChildAgentWorkspace({
     }
     return undefined;
   }, [capturedBlocks]);
-  const isBranch = initialIsBranch || branchBaseMarker !== undefined;
+  const isBranch = initialIsBranch
+    || capabilitiesOwner?.is_branch === true
+    || capabilitiesOwner?.branch_sealed === true
+    || capabilitiesOwner?.branch_seed !== undefined
+    || capabilitiesOwner?.tools_locked === true
+    || branchBaseMarker !== undefined;
+  const branchIdentityPending =
+    selectedNode === undefined &&
+    selectedSubagent === undefined &&
+    !isBranch &&
+    capabilitiesQuery.isPending;
   const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
   useEffect(() => {
     if (!headerBusy) setExternalBindingSetting(undefined);
@@ -904,7 +991,7 @@ function ChildAgentWorkspace({
   const boundChildModel = normalizeSelectableModelAlias(
     agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model ?? capabilitiesProfile?.model,
   );
-  const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
+  const displayName = selectedNode?.label ?? capabilitiesOwner?.branch_title ?? selectedSubagent?.name ?? agentId;
   const displayModel =
     boundChildModel ??
     (isBranch ? (normalizeSelectableModelAlias(parentModel) ?? configuredDefaultModel) : undefined);
@@ -955,9 +1042,10 @@ function ChildAgentWorkspace({
     executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
   };
   const branchSealed = selectedNode?.branchSealed === true
-    || (selectedNode === undefined && branchFoldBlock !== undefined);
-  const branchToolsLocked = selectedNode?.toolsLocked === true;
-  const branchSeed = selectedNode?.branchSeed ?? branchBaseMarker?.seedMode;
+    || (selectedNode === undefined && (capabilitiesOwner?.branch_sealed === true || branchFoldBlock !== undefined));
+  const branchToolsLocked = selectedNode?.toolsLocked === true
+    || (selectedNode === undefined && capabilitiesOwner?.tools_locked === true);
+  const branchSeed = selectedNode?.branchSeed ?? capabilitiesOwner?.branch_seed ?? branchBaseMarker?.seedMode;
   const [branchFolding, setBranchFolding] = useState(false);
   const [branchFoldPending, setBranchFoldPending] = useState(false);
   const branchFoldSawBusyRef = useRef(false);
@@ -982,7 +1070,7 @@ function ChildAgentWorkspace({
   }, [branchSealed, branchFoldPending, headerBusy]);
   const branchSeamLabel = useMemo(() => {
     if (!isBranch) return undefined;
-    const effectiveParentId = selectedNode?.parentAgentId ?? branchBaseMarker?.sourceAgentId;
+    const effectiveParentId = selectedNode?.parentAgentId ?? capabilitiesOwner?.parent_agent_id ?? branchBaseMarker?.sourceAgentId;
     const parentLabel = effectiveParentId !== undefined && effectiveParentId !== MAIN_AGENT_ID
       ? (forest.byId[effectiveParentId]?.label ?? effectiveParentId)
       : MAIN_AGENT_ID;
@@ -993,7 +1081,7 @@ function ChildAgentWorkspace({
     if (branchSealed) parts.push(t('transcript.branch.sealed'));
     else if (branchToolsLocked) parts.push(t('transcript.branch.toolsLocked'));
     return parts.join(' · ');
-  }, [isBranch, selectedNode?.parentAgentId, branchBaseMarker?.sourceAgentId, forest.byId, t, branchSeed, branchSealed, branchToolsLocked]);
+  }, [isBranch, selectedNode?.parentAgentId, capabilitiesOwner?.parent_agent_id, branchBaseMarker?.sourceAgentId, forest.byId, t, branchSeed, branchSealed, branchToolsLocked]);
 
   const handleUnlockBranchTools = useCallback(() => {
     if (branchUnlocking || typeof client.setBranchToolsLock !== 'function') return;
@@ -1654,7 +1742,7 @@ function ChildAgentWorkspace({
       controller={controller}
       slots={slots}
       header={<AgentWorkspaceHeader
-        target={target} name={displayName} model={displayModel} effort={displayEffort}
+        target={target} workspaceId={sessionState.session?.workspace_id} name={displayName}
         crumbs={resolvedCrumbs} forest={forest} railOpen={railOpen} onToggleRail={onToggleRail}
         navigation={navigation} showPreviewToggle={showPreviewToggle}
         showRailToggle={showRailToggle} railAvailable={railAvailable}
@@ -1664,7 +1752,18 @@ function ChildAgentWorkspace({
         onFreshContext={openFreshContextPanel}
         onLocateSpawn={locateSpawnInMenu ? timelineActions.jumpToSpawn : undefined}
         promote={promoteAction}
+        isBranch={isBranch}
+        branchSealed={branchSealed}
+        branchSeedLabel={branchSeed === 'fresh' || branchSeed === 'compact' || branchSeed === 'verbatim'
+          ? t(`transcript.branch.seed.${branchSeed}` as I18nKey)
+          : undefined}
         branchSeamLabel={branchSeamLabel}
+        branchToolsLocked={branchToolsLocked}
+        branchUnlocking={branchUnlocking}
+        onUnlockBranchTools={handleUnlockBranchTools}
+        branchFolding={branchFolding}
+        branchFoldPending={branchFoldPending}
+        onFoldBranch={handleFoldBranch}
       />}
       timeline={{
         state: timelineState,
@@ -1703,40 +1802,6 @@ function ChildAgentWorkspace({
             </button>
           </ConversationDockColumn>
         ) : null}
-        {isBranch && !branchSealed ? (
-          <ConversationDockColumn
-            data-branch-fold-bar={agentId}
-            innerClassName="flex flex-wrap items-center justify-between gap-2 px-1 text-[12px] text-ink-soft"
-          >
-            <span className="min-w-0 truncate">
-              {branchToolsLocked ? t('transcript.branch.toolsLocked') : branchSeamLabel}
-            </span>
-            <div className="flex shrink-0 items-center gap-2">
-              {branchToolsLocked ? (
-                <button
-                  type="button"
-                  data-branch-unlock-tools
-                  disabled={branchUnlocking}
-                  onClick={handleUnlockBranchTools}
-                  className="h-7 cursor-pointer rounded-md border border-hairline bg-paper px-2.5 text-[12px] text-ink transition-colors hover:border-hairline-strong disabled:cursor-not-allowed disabled:text-ink-faint"
-                >
-                  {t('transcript.branch.unlockTools')}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                data-branch-fold-action
-                disabled={branchFolding || branchFoldPending}
-                onClick={handleFoldBranch}
-                className="h-7 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10] disabled:cursor-not-allowed disabled:text-ink-faint"
-              >
-                {branchFoldPending
-                  ? (locale === 'zh' ? '正在总结并合回…' : 'Summarizing & merging…')
-                  : t(branchFolding ? 'transcript.branch.folding' : 'transcript.branch.foldAction')}
-              </button>
-            </div>
-          </ConversationDockColumn>
-        ) : null}
         {sendNotice?.scope === sendScope ? (
           <ConversationDockColumn>
             <p role="alert" className="rounded-lg border border-hairline bg-paper px-3 py-2 text-[11px] text-danger">
@@ -1761,7 +1826,7 @@ function ChildAgentWorkspace({
           {...core.composerProps}
           variant="subagent" replyingTo={isBranch ? undefined : displayName} busy={headerBusy}
           disabled={composerDisabled} sendDisabled={submissionInFlight}
-          delegationPosition={isBranch ? 'main' : 'sub'}
+          delegationPosition={isBranch || branchIdentityPending ? 'main' : 'sub'}
           boundExecution={childExecution}
           engine={executorId === undefined ? { label: t('composer.unknown'), fork: false, images: false } : undefined}
           disabledPlaceholder={t('subagent.composerUnavailable')}

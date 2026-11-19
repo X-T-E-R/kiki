@@ -749,7 +749,7 @@ export function MediaPreviewProvider({
   );
 }
 
-export { PreviewToggleButton } from './PreviewToggleButton';
+export { PreviewToggleButton, WorkspacePanelsControl } from './PreviewToggleButton';
 
 // ---------------------------------------------------------------------------
 

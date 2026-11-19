@@ -552,7 +552,16 @@ export type AgentPromptRequest = z.infer<typeof agentPromptRequestSchema>;
 export const agentCapabilitiesResponseSchema = z.object({
   context: z.enum(['live', 'draft']),
   live: z.boolean().optional(),
-  owner: z.object({ profile: z.string().optional(), agent_id: z.string().optional() }),
+  owner: z.object({
+    profile: z.string().optional(),
+    agent_id: z.string().optional(),
+    parent_agent_id: z.string().optional(),
+    is_branch: z.boolean().optional(),
+    branch_sealed: z.boolean().optional(),
+    tools_locked: z.boolean().optional(),
+    branch_seed: z.enum(['fresh', 'compact', 'verbatim']).optional(),
+    branch_title: z.string().optional(),
+  }),
   available: z.boolean(),
   unavailable_reason: z.string().optional(),
   unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),

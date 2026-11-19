@@ -398,6 +398,7 @@ function useActiveController(
 export interface SidebarBadge {
   readonly total: number;
   readonly needsYou: boolean;
+  readonly needsYouCount?: number;
 }
 
 function Header({
@@ -509,14 +510,26 @@ function Header({
       >
         <Icon name="menu" size={16} />
         {sidebarBadge !== undefined ? (
-          <span
-            aria-hidden
-            className={`pointer-events-none absolute top-1 right-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-paper ${
-              sidebarBadge.needsYou ? 'bg-attention' : 'bg-accent'
-            }`}
-          >
-            {sidebarBadge.total > 99 ? '99+' : sidebarBadge.total}
-          </span>
+          sidebarBadge.needsYou ? (
+            <span
+              data-activity-badge={sidebarBadge.total}
+              data-activity-badge-tone="needs-you"
+              aria-hidden
+              className="pointer-events-none absolute top-1 right-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-attention px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-paper"
+            >
+              {(() => {
+                const count = sidebarBadge.needsYouCount ?? sidebarBadge.total;
+                return count > 99 ? '99+' : count;
+              })()}
+            </span>
+          ) : (
+            <span
+              data-activity-badge={sidebarBadge.total}
+              data-activity-badge-tone="unread"
+              aria-hidden
+              className="pointer-events-none absolute top-1.5 right-1.5 h-[7px] w-[7px] rounded-full bg-ink-soft/65 ring-2 ring-paper"
+            />
+          )
         ) : null}
       </button>
       {/* The one history-return entry for this visit: it appears in the title
@@ -676,7 +689,7 @@ function Header({
       ) : (
         <span className="flex-1" />
       )}
-      <PreviewToggleButton />
+      <PreviewToggleButton sessionId={session?.id} workspaceId={session?.workspace_id} />
       {railAvailable && railToggleVisible ? (
         <button
           type="button"

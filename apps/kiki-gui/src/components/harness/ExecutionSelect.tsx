@@ -435,9 +435,10 @@ export function ExecutionSelect({
     }
     if (isNative) {
       const fallbackModel = noModelConnected ? t('new.modelChip.none') : t('composer.execution.defaultModelOption');
-      const resolvedModel = currentModel
-        ? (resolveCatalogModel(models ?? [], currentModel)?.display_name ?? currentModel)
-        : (effectiveModel ?? modelShortLabel ?? fallbackModel);
+      const rawModel = currentModel
+        ? (resolveCatalogModel(models ?? [], currentModel)?.display_name ?? modelShortLabel ?? currentModel)
+        : (modelShortLabel ?? (effectiveModel ? (resolveCatalogModel(models ?? [], effectiveModel)?.display_name ?? effectiveModel) : undefined) ?? fallbackModel);
+      const resolvedModel = rawModel.includes('/') ? (rawModel.split('/').pop() || rawModel) : rawModel;
       const parts = [resolvedModel, activeEffort].filter(Boolean);
       return parts.join(' · ');
     }

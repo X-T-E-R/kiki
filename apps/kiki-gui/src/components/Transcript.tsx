@@ -5968,6 +5968,13 @@ export const Transcript = memo(function Transcript({
   const renderedVirtualRangeRef = useRef<{ startIndex: number; endIndex: number } | null>(null);
   const lastTotalSizeRef = useRef<number>(0);
   const lastObservedScrollTopRef = useRef<number>(0);
+  const programmaticScrollTopRef = useRef<number | null>(null);
+  const markProgrammaticScroll = useCallback((targetTop: number) => {
+    programmaticScrollTopRef.current = targetTop;
+    stickToBottomRef.current.state.ignoreScrollToTop = targetTop;
+    stickToBottomRef.current.state.lastScrollTop = targetTop;
+    lastObservedScrollTopRef.current = targetTop;
+  }, []);
   const prevFirstKeyRef = useRef<string | undefined>(undefined);
   const pendingPrependAnchorRef = useRef<{ readonly key: string; readonly offset: number } | null>(null);
   const domAtEndBeforeRender =
@@ -6028,12 +6035,13 @@ export const Transcript = memo(function Transcript({
     directDomUpdates: true,
     directDomUpdatesMode: 'position',
     scrollToFn: (offset, options, instance) => {
-      elementScroll(offset, options, instance);
       const el = instance.scrollElement;
-      if (el !== null) {
-        stickToBottomRef.current.state.ignoreScrollToTop = el.scrollTop;
-        stickToBottomRef.current.state.lastScrollTop = el.scrollTop;
-        lastObservedScrollTopRef.current = el.scrollTop;
+      if (el !== null && options?.behavior !== 'smooth') {
+        markProgrammaticScroll(Math.max(0, offset));
+      }
+      elementScroll(offset, options, instance);
+      if (el !== null && options?.behavior !== 'smooth') {
+        markProgrammaticScroll(el.scrollTop);
       }
     },
     onChange: (instance) => {
@@ -6069,10 +6077,13 @@ export const Transcript = memo(function Transcript({
       if (el !== null && el.isConnected && el.clientHeight > 0) {
         const stick = stickToBottomRef.current;
         const currentTop = el.scrollTop;
+        const progTarget = programmaticScrollTopRef.current;
         const isProgrammatic =
-          stick.state.ignoreScrollToTop !== undefined &&
-          Math.abs(currentTop - stick.state.ignoreScrollToTop) <= 0.5;
+          (progTarget !== null && Math.abs(currentTop - progTarget) <= 0.5) ||
+          (stick.state.ignoreScrollToTop !== undefined &&
+            Math.abs(currentTop - stick.state.ignoreScrollToTop) <= 0.5);
         if (!isProgrammatic && Math.abs(currentTop - lastObservedScrollTopRef.current) > 0.5) {
+          programmaticScrollTopRef.current = null;
           const dist = el.scrollHeight - el.clientHeight - currentTop;
           if (dist > TRANSCRIPT_END_THRESHOLD || currentTop < lastObservedScrollTopRef.current - 0.5) {
             if (stick.state.isAtBottom || !stick.state.escapedFromLock) {
@@ -6102,9 +6113,7 @@ export const Transcript = memo(function Transcript({
         el.scrollHeight - el.clientHeight - el.scrollTop > 0.5
       ) {
         const target = Math.max(0, el.scrollHeight - el.clientHeight);
-        stickToBottomRef.current.state.ignoreScrollToTop = target;
-        stickToBottomRef.current.state.lastScrollTop = target;
-        lastObservedScrollTopRef.current = target;
+        markProgrammaticScroll(target);
         el.scrollTop = target;
         instance.scrollOffset = el.scrollTop;
       }
@@ -6123,21 +6132,17 @@ export const Transcript = memo(function Transcript({
     stick.state.isAtBottom = true;
     if (el !== null && el.isConnected) {
       const target = Math.max(0, el.scrollHeight - el.clientHeight);
-      stick.state.ignoreScrollToTop = target;
-      stick.state.lastScrollTop = target;
-      lastObservedScrollTopRef.current = target;
+      markProgrammaticScroll(target);
       el.scrollTop = target;
       virtualizer.scrollOffset = el.scrollTop;
     }
     void stick.scrollToBottom({ animation: 'instant' });
     virtualizer.scrollToEnd();
     if (el !== null && el.isConnected) {
-      stick.state.ignoreScrollToTop = el.scrollTop;
-      stick.state.lastScrollTop = el.scrollTop;
-      lastObservedScrollTopRef.current = el.scrollTop;
+      markProgrammaticScroll(el.scrollTop);
       virtualizer.scrollOffset = el.scrollTop;
     }
-  }, [virtualizer]);
+  }, [virtualizer, markProgrammaticScroll]);
   const stickController = useMemo<TranscriptStickController>(() => ({
     isFollowing: isFollowingBottom,
     stop: () => { stickToBottomRef.current.stopScroll(); },
@@ -6163,25 +6168,35 @@ export const Transcript = memo(function Transcript({
   useEffect(() => {
     const el = scrollRef.current;
     if (el === null) return;
-    let lastScrollTop = el.scrollTop;
+    lastObservedScrollTopRef.current = el.scrollTop;
     const onScrollSync = () => {
       if (!el.isConnected || el.clientHeight <= 0) return;
       const stick = stickToBottomRef.current;
       const current = el.scrollTop;
-      if (stick.state.ignoreScrollToTop !== undefined && Math.abs(current - stick.state.ignoreScrollToTop) <= 0.5) {
-        lastScrollTop = current;
+      const progTarget = programmaticScrollTopRef.current;
+      if (progTarget !== null && Math.abs(current - progTarget) <= 0.5) {
+        programmaticScrollTopRef.current = null;
+        stick.state.ignoreScrollToTop = current;
+        stick.state.lastScrollTop = current;
+        lastObservedScrollTopRef.current = current;
         return;
       }
+      programmaticScrollTopRef.current = null;
+      if (stick.state.ignoreScrollToTop !== undefined && Math.abs(current - stick.state.ignoreScrollToTop) <= 0.5) {
+        lastObservedScrollTopRef.current = current;
+        return;
+      }
+      const prevTop = lastObservedScrollTopRef.current;
       const dist = el.scrollHeight - el.clientHeight - current;
-      if (dist > TRANSCRIPT_END_THRESHOLD || current < lastScrollTop - 0.5) {
+      if (dist > TRANSCRIPT_END_THRESHOLD || current < prevTop - 0.5) {
         if (stick.state.isAtBottom || !stick.state.escapedFromLock) {
           stick.stopScroll();
         }
-      } else if (current > lastScrollTop + 0.5 || el.scrollHeight <= el.clientHeight + 1) {
+      } else if (current > prevTop + 0.5 || el.scrollHeight <= el.clientHeight + 1) {
         stick.state.escapedFromLock = false;
         stick.state.isAtBottom = true;
       }
-      lastScrollTop = current;
+      lastObservedScrollTopRef.current = current;
     };
     el.addEventListener('scroll', onScrollSync, { passive: true });
     return () => { el.removeEventListener('scroll', onScrollSync); };

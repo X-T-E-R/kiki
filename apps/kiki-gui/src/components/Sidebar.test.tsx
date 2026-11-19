@@ -777,7 +777,7 @@ describe('Sidebar header controls', () => {
       .toBe('1 item needs you');
   });
 
-  it('counts finished-unread runs on the badge in the quieter tone', async () => {
+  it('marks finished-unread runs with a quiet dot and reserves numeric count for needs-you', async () => {
     const done = { ...session('s-done'), last_turn_reason: 'completed' as const, last_seq: 6 };
     const failed = { ...session('s-failed'), last_turn_reason: 'failed' as const, last_seq: 3 };
     const { container } = await mount({
@@ -785,10 +785,21 @@ describe('Sidebar header controls', () => {
       sessionGroups: [{ key: 'today', label: 'Today', items: [done, failed] }],
     });
     const badge = container.querySelector('[data-activity-badge]');
-    expect(badge?.textContent).toBe('2');
+    expect(badge?.getAttribute('data-activity-badge')).toBe('2');
+    expect(badge?.textContent).toBe('');
     expect(badge?.getAttribute('data-activity-badge-tone')).toBe('unread');
     expect(container.querySelector('[data-nav-activity]')?.getAttribute('aria-label'))
       .toBe('2 new items in Activity');
+
+    const blocked = { ...session('s-blocked-mixed'), pending_interaction: 'approval' as const, last_seq: 4 };
+    const mixed = await mount({
+      sessions: [blocked, done, failed],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [blocked, done, failed] }],
+    });
+    const mixedBadge = mixed.container.querySelector('[data-activity-badge]');
+    expect(mixedBadge?.getAttribute('data-activity-badge')).toBe('3');
+    expect(mixedBadge?.textContent).toBe('1');
+    expect(mixedBadge?.getAttribute('data-activity-badge-tone')).toBe('needs-you');
   });
 
   it('shows the phone-drawer exit only where the shell wires onClose', async () => {

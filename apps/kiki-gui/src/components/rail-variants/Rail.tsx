@@ -309,7 +309,10 @@ export function Rail({
   const panelSlot = useLazyPanelSlot();
   const peekAgentId = useInspectorPeek();
   const focusedAgentId = selectedAgentId ?? MAIN_AGENT_ID;
-  const isRoutedChildPage = focusedAgentId !== MAIN_AGENT_ID && onInspectMain === undefined;
+  const sameAsCenter =
+    onInspectMain === undefined || (focusedAgentId === MAIN_AGENT_ID && subagent === undefined);
+  const isRoutedChildPage = focusedAgentId !== MAIN_AGENT_ID && sameAsCenter;
+  const railScrollRef = useRef<HTMLDivElement>(null);
   const forest = useMemo(
     () => (isRoutedChildPage ? mergeAgentViewIntoForest(forestProp, focusedAgentId, state) : forestProp),
     [forestProp, focusedAgentId, isRoutedChildPage, state],
@@ -399,7 +402,7 @@ export function Rail({
   const selectAgent = (agentId: string) => {
     if (agentId === focusedAgentId) return;
     if (agentId === MAIN_AGENT_ID && onInspectMain !== undefined) onInspectMain();
-    else if (onInspectMain === undefined) onOpenSubagent(agentId);
+    else onOpenSubagent(agentId);
   };
   const subBlock = subagent?.block;
   // The timeline card can lag behind an authoritative runtime tree status;
@@ -865,16 +868,28 @@ export function Rail({
           if (event.relatedTarget !== null && !event.currentTarget.contains(event.relatedTarget as Node)) focusInRail.current = false;
         }}
       >
-      <div data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
-      {/* Pinned head: crumbs, who this agent is, and what it is doing. Shares
-          the rail's ground, with a hairline over the scrolling page. */}
-      <div data-rail-pinned className="sticky top-0 z-20 -mx-4 border-b border-hairline bg-panel px-4 pb-3">
-      <RailCrumbs
-        forest={forest}
-        focusedAgentId={focusedAgentId}
-        onSelect={selectAgent}
-        close={(
+      <div ref={railScrollRef} data-agent-panel-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
+      {/* Strict h-12 sticky bar aligning across all 3 panes. */}
+      <div data-rail-pinned className="sticky top-0 z-20 -mx-4 flex h-12 items-center justify-between gap-2 border-b border-hairline bg-panel px-4">
+      {(() => {
+        const railHeaderControls = (
           <span className="flex shrink-0 items-center gap-1.5">
+            {sessionPending !== undefined && sessionPending.length > 0 ? (
+              <button
+                type="button"
+                data-rail-pending-jump=""
+                title={t('inspector.needsYou')}
+                aria-label={`${t('inspector.needsYou')} (${sessionPending.length})`}
+                onClick={() => {
+                  const scroller = railScrollRef.current;
+                  if (scroller !== null) scroller.scrollTop = 0;
+                }}
+                className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-attention px-1.5 text-[11px] font-semibold tabular-nums text-on-accent transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+              >
+                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-on-accent" />
+                <span>{sessionPending.length}</span>
+              </button>
+            ) : null}
             {narrow ? null : <ModeSwitch mode={mode} onChoose={chooseMode} />}
             {onClose === undefined ? null : (
               <button type="button" onClick={mode === 'cockpit' ? () => { chooseMode('default'); } : onClose} data-rail-close
@@ -884,9 +899,38 @@ export function Rail({
               </button>
             )}
           </span>
-        )}
-      />
-      <div key={focusedAgentId} data-rail-now-block className="rail-page space-y-3 pt-1">
+        );
+        if (sameAsCenter) {
+          return (
+            <div data-rail-owner className="flex h-full min-w-0 flex-1 items-center justify-between gap-2">
+              <h2
+                aria-current="page"
+                tabIndex={-1}
+                data-rail-owner-heading=""
+                className="min-w-0 truncate rounded text-[13px] font-medium text-ink-soft outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+              >
+                {t(mode === 'cockpit' ? 'rail.mode.cockpit' : 'inspector.overview')}
+              </h2>
+              {railHeaderControls}
+            </div>
+          );
+        }
+        return (
+          <RailCrumbs
+            forest={forest}
+            focusedAgentId={focusedAgentId}
+            onSelect={selectAgent}
+            close={railHeaderControls}
+          />
+        );
+      })()}
+      </div>
+
+      {/* One page per agent: NeedsYouList, ProfileHead, InspectorNow, then
+          ordered sections all scroll smoothly beneath the h-12 sticky bar. */}
+      <div key={focusedAgentId} className="rail-page pt-3">
+      {needsYouSection !== null ? <div className="pb-3">{needsYouSection}</div> : null}
+      <div data-rail-now-block className="space-y-3 pb-3">
       <ProfileHead
         sessionId={state.sessionId}
         agentId={focusedAgentId}
@@ -906,13 +950,22 @@ export function Rail({
         listPending={sessionPending === undefined}
         onReview={onReviewPending}
         startedAt={runStartedAt}
-        subagent={!show.subagentStory || subagent === undefined || subStatus === undefined ? undefined : {
-          status: subStatus,
-          brief: subBlock?.description ?? subBlock?.instruction ?? focusedNode?.description,
-          result: subBlock?.summary ?? focusedNode?.summary,
-          error: subBlock?.error ?? focusedNode?.error,
-          pendingCount: subagent.pendingInteractionCount,
-        }}
+        subagent={(() => {
+          if (!show.subagentStory || subagent === undefined || subStatus === undefined) return undefined;
+          const rawBrief = subBlock?.description ?? subBlock?.instruction ?? focusedNode?.description;
+          const ownerLabel = (focusedNode?.label ?? '').trim();
+          const brief =
+            rawBrief !== undefined && rawBrief.trim() !== '' && rawBrief.trim() !== ownerLabel
+              ? rawBrief
+              : undefined;
+          return {
+            status: subStatus,
+            brief,
+            result: subBlock?.summary ?? focusedNode?.summary,
+            error: subBlock?.error ?? focusedNode?.error,
+            pendingCount: subagent.pendingInteractionCount,
+          };
+        })()}
         actions={subagent === undefined || (!show.openAgent && !show.locateSpawn && promote === undefined) ? undefined : (
           <div data-subagent-context className="-mt-1 ml-3 flex flex-wrap items-center gap-x-4 gap-y-1">
             {show.openAgent ? (
@@ -933,15 +986,7 @@ export function Rail({
           </div>
         )}
       />
-      {needsYouSection}
       </div>
-      </div>
-
-      {/* One page per agent: switching agents raises the new page into place.
-          The overview leads the page in both modes from the same slot node,
-          so a mode switch never remounts it. The page pulls up one pixel so
-          its first hairline lies under the pinned block's own. */}
-      <div key={focusedAgentId} className="rail-page -mt-px">
       {orderedSections.map(([key, section]) => (
         <Fragment key={key}>{section}</Fragment>
       ))}
