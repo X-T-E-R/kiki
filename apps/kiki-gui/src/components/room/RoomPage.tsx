@@ -22,6 +22,7 @@ import type { QuestionAnswer, RoomDocument, RoomLogEntry, RoomMemberInput, RoomM
 import { formatTokens } from '@kiki/session-core/util';
 import { ApiError, API_CODES } from '@kiki/session-core/transport';
 
+import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, roomUsageQueryKey, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
@@ -48,10 +49,6 @@ import { roomMemberId, threadMemberFace, threadMemberName } from './threadRooms'
 const HEADER_BUTTON =
   'flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[12.5px] text-ink-soft transition-colors hover:bg-canvas hover:text-ink aria-expanded:bg-canvas aria-expanded:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:opacity-50 lg:h-8 lg:min-w-8';
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 export function RoomPage({
   sessions,
   onToggleSidebar,
@@ -60,7 +57,7 @@ export function RoomPage({
   readonly onToggleSidebar: () => void;
 }) {
   const { id = '' } = useParams();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const api = useBotRoomApi();
   const queryClient = useQueryClient();
   const roomQuery = useQuery({
@@ -82,7 +79,7 @@ export function RoomPage({
     return (
       <RoomShell onToggleSidebar={onToggleSidebar} title={roomQuery.isError ? t('room.loadFailed') : undefined}>
         <div className="mx-auto max-w-md p-8 text-center">
-          <p className="text-[13px] text-ink-soft">{roomQuery.isError ? errorText(roomQuery.error) : t('room.notFound')}</p>
+          <p className="text-[13px] text-ink-soft">{roomQuery.isError ? errorText(locale, roomQuery.error) : t('room.notFound')}</p>
           {roomQuery.isError ? (
             <button type="button" onClick={() => { void queryClient.invalidateQueries({ queryKey: roomQueryKey(id) }); }}
               className="mt-2 text-[12.5px] font-medium text-ink underline underline-offset-2">{t('common.retry')}</button>
@@ -126,7 +123,7 @@ function RoomView({
   readonly sessions: readonly Session[];
   readonly onToggleSidebar: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { client } = useConnection();
   const api = useBotRoomApi();
   const queryClient = useQueryClient();
@@ -240,7 +237,7 @@ function RoomView({
       if (kind === 'stop') setStopFirst(false);
       applyRoom(next);
     },
-    onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(error) }) }); },
+    onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(locale, error) }) }); },
   });
   const update = useMutation({
     mutationFn: (input: UpdateRoomInput) => api.updateRoom(room.id, input),
@@ -252,14 +249,14 @@ function RoomView({
         setMembersOpen(true);
         return;
       }
-      pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(error) }) });
+      pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(locale, error) }) });
     },
   });
   const membership = useMutation({
     mutationFn: (change: { readonly add: RoomMemberInput } | { readonly remove: string }) =>
       'add' in change ? api.addRoomMember(room.id, change.add) : api.removeRoomMember(room.id, change.remove),
     onSuccess: applyRoom,
-    onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(error) }) }); },
+    onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(locale, error) }) }); },
   });
   const send = useMutation({
     mutationFn: (text: string) => api.postRoomMessage(room.id, { text, idempotencyKey: crypto.randomUUID() }),
@@ -276,7 +273,7 @@ function RoomView({
     },
     onError: (error) => {
       setConfirmDelete(false);
-      pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(error) }) });
+      pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(locale, error) }) });
     },
   });
 
@@ -373,7 +370,7 @@ function RoomView({
         <div className="shrink-0 px-3 pt-1 pb-3 sm:px-6">
           <div className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)]">
             {send.isError ? (
-              <p role="alert" className="mb-1.5 px-1 text-[12.5px] text-danger">{t('room.sendFailed', { detail: errorText(send.error) })}</p>
+              <p role="alert" className="mb-1.5 px-1 text-[12.5px] text-danger">{t('room.sendFailed', { detail: errorText(locale, send.error) })}</p>
             ) : null}
             <RoomComposer
               roomName={room.name}
@@ -542,7 +539,7 @@ function RoomLogView({
   readonly onContinue: () => void;
   readonly onAdjustBudget: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const byId = useMemo(() => new Map(entries.map((entry) => [entry.id, entry] as const)), [entries]);
@@ -563,7 +560,7 @@ function RoomLogView({
       <div className="mx-auto flex w-full max-w-[var(--kiki-chat-content-width,760px)] flex-col pt-4 pb-6">
         {truncated ? <p className="mb-4 text-center text-[12px] text-ink-faint">{t('room.logTruncated', { count: ROOM_LOG_WINDOW })}</p> : null}
         {error !== null && !loaded ? (
-          <p role="alert" className="py-8 text-center text-[12.5px] text-danger">{t('room.loadFailed')} · {errorText(error)}</p>
+          <p role="alert" className="py-8 text-center text-[12.5px] text-danger">{t('room.loadFailed')} · {errorText(locale, error)}</p>
         ) : null}
         {loaded && entries.length === 0 ? (
           <p data-room-empty className="py-16 text-center text-[13px] text-ink-faint text-pretty">

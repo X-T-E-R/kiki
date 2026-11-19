@@ -15,6 +15,7 @@
  */
 
 import type { MemoryScopeKind, MemoryType, MemoryStatus, MemoryWriter } from '../../lib/client';
+import { asRecord } from '../../lib/record';
 
 export const MEMORY_SCOPE_KINDS: readonly MemoryScopeKind[] = ['global', 'workspace', 'persona', 'persona_workspace'];
 
@@ -126,9 +127,6 @@ function receiptValue(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   try { return JSON.parse(value); } catch { return undefined; }
 }
-
-const asRecord = (value: unknown): Record<string, unknown> | undefined =>
-  typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
 
 const asString = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);
 const asStrings = (value: unknown): string[] =>

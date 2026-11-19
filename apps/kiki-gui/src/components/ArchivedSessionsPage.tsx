@@ -374,7 +374,7 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
           )}
 
           {loaded > 0 ? (
-            <div className="flex items-center gap-3 pt-1">
+            <div className="flex flex-wrap items-center gap-3 pt-1">
               {listQuery.hasNextPage ? (
                 <button
                   type="button"
@@ -383,11 +383,20 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
                   onClick={() => { void listQuery.fetchNextPage(); }}
                   className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}
                 >
-                  {listQuery.isFetchingNextPage ? t('archive.loading') : t('archive.loadOlder')}
+                  {listQuery.isFetchingNextPage
+                    ? t('archive.loading')
+                    : listQuery.isFetchNextPageError
+                      ? t('common.retry')
+                      : t('archive.loadOlder')}
                 </button>
               ) : (
                 <span data-archive-end className="text-[12px] text-ink-faint">{t('archive.allLoaded')}</span>
               )}
+              {listQuery.isFetchNextPageError ? (
+                <span role="alert" data-archive-load-older-error className="text-[12px] text-danger">
+                  {errorText(locale, listQuery.error)}
+                </span>
+              ) : null}
               <span data-archive-count className="text-[12px] tabular-nums text-ink-faint">{loaded}</span>
             </div>
           ) : null}

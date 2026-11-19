@@ -96,7 +96,20 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
           <p className="mt-1 text-[11.5px] leading-[1.45] text-ink-faint">{t('workMode.appliesToWindow')}</p>
         </div>
 
-        {modes.length === 0 ? (
+        {catalog.status === 'loading' && modes.length === 0 ? (
+          <p role="status" className="px-2.5 py-3 text-[12px] text-ink-faint">{t('comms.loading')}</p>
+        ) : catalog.status === 'failed' && modes.length === 0 ? (
+          <div className="flex items-center justify-between gap-2 px-2.5 py-2.5">
+            <p role="alert" className="min-w-0 flex-1 text-[12px] text-danger">{catalog.error ?? t('workMode.loadFailed')}</p>
+            <button
+              type="button"
+              onClick={catalog.reload}
+              className="shrink-0 rounded-md border border-hairline bg-paper px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+            >
+              {t('workMode.retry')}
+            </button>
+          </div>
+        ) : modes.length === 0 ? (
           <p className="px-2.5 py-3 text-[12px] text-ink-faint">{t('workMode.loadFailed')}</p>
         ) : null}
 

@@ -116,18 +116,21 @@ export function DeliveryNote({ message, always = false }: { readonly message: Th
 }
 
 /** Quiet "load earlier" control under a list. */
-export function LoadOlder({ busy, onLoad }: { readonly busy: boolean; readonly onLoad: () => void }) {
+export function LoadOlder({ busy, error, onLoad }: { readonly busy: boolean; readonly error?: boolean; readonly onLoad: () => void }) {
   const { t } = useI18n();
   return (
-    <button
-      type="button"
-      data-comms-load-older
-      disabled={busy}
-      aria-busy={busy}
-      onClick={onLoad}
-      className="inline-flex h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-wait disabled:opacity-60 pointer-coarse:h-11"
-    >
-      {busy ? t('comms.loading') : t('comms.loadOlder')}
-    </button>
+    <span className="inline-flex items-center gap-2">
+      {error ? <span role="alert" className="text-[12px] text-danger">{t('comms.loadFailed')}</span> : null}
+      <button
+        type="button"
+        data-comms-load-older
+        disabled={busy}
+        aria-busy={busy}
+        onClick={onLoad}
+        className="inline-flex h-7 items-center rounded-md px-1.5 -mx-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-wait disabled:opacity-60 pointer-coarse:h-11"
+      >
+        {busy ? t('comms.loading') : error ? t('common.retry') : t('comms.loadOlder')}
+      </button>
+    </span>
   );
 }

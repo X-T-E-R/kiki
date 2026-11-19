@@ -64,7 +64,7 @@ describe('useOutputLayerClient', () => {
       spaceKey: 'workspace-a',
       scopeId: 'scope-a',
       meta: { server_id: 'srv-1' },
-      client: {
+      klient: {
         rest: {
           outputLayer: mockOutputLayerFacade,
         },
@@ -132,7 +132,7 @@ describe('useOutputLayerClient', () => {
     const config = { enabled: true, presets: [{ id: 'shared', label: 'Saved', instruction: 'Rewrite', contextWindow: 32768, modelId: 'explicit' }], settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 } };
     outputLayerStore.setConfiguration(config);
     const facade = { configuration: vi.fn().mockResolvedValue(config), configure: vi.fn(), stream: vi.fn() };
-    mockConnectionValue = { spaceKey: 'home-a', meta: { server_id: 'server-a' }, client: { rest: { outputLayer: facade } } };
+    mockConnectionValue = { spaceKey: 'home-a', meta: { server_id: 'server-a' }, klient: { rest: { outputLayer: facade } } };
     let current!: ReturnType<typeof useOutputLayer>;
     function Consumer({ sessionId }: { sessionId: string }) {
       useOutputLayerClient(sessionId);

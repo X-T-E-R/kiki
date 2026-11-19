@@ -1,3 +1,4 @@
+import { settlePage } from './lib/settle-page.mjs';
 /**
  * marketing-usage-shots — the /usage frame set (2026-10-06).
  *
@@ -91,19 +92,7 @@ async function open(page, link, path, selector, timeout = 45_000) {
   await page.waitForTimeout(1_200);
 }
 
-/** Park the pointer away from every hover target and settle paint. */
-async function settle(page) {
-  await page.mouse.move(2, 2);
-  await page.evaluate(() => document.fonts.ready).catch(() => undefined);
-  await page.evaluate(async () => {
-    await Promise.all(document.getAnimations()
-      .filter((a) => a.playState === 'running' && a.effect?.getComputedTiming().iterations !== Infinity)
-      .map((a) => a.finished.catch(() => undefined)));
-  }).catch(() => undefined);
-  await page.waitForTimeout(400);
-  await page.mouse.move(1, 1);
-  await page.waitForTimeout(200);
-}
+const settle = settlePage;
 
 /**
  * `/usage?panel=realtime`. Both halves of the claim have to be on screen at

@@ -1809,10 +1809,134 @@ describe('MemoryPage pending View location', () => {
 });
 
 
+function createLocalMemoryContinuationFixture() {
+  const entries = new Map<string, MemoryEntry>();
+  for (const status of ['active', 'pending'] as const) {
+    for (let index = 0; index < 5; index += 1) {
+      const id = `m_${status}_${index}`;
+      entries.set(id, {
+        id,
+        revision: '1',
+        type: 'reference',
+        title: `${status} continuation ${index}`,
+        body: `${'Complete original content. '.repeat(30)}END-${status}-${index}`,
+        status,
+        pinned: false,
+        created: '2026-01-01',
+        updated: '2026-01-01',
+        source: { writer: 'agent' },
+        reason: 'Bounded fixture',
+        basis: { kind: 'observed', note: 'Fixture observation.' },
+      });
+    }
+  }
+  const ok = (data: unknown) =>
+    new Response(JSON.stringify({ code: 0, msg: 'ok', data }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  return {
+    store: {
+      get: async (_scope: { kind: string }, id: string) => entries.get(id),
+    },
+    fetch: async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(inputUrl);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.pathname === '/api/memory/settings' && method === 'GET') {
+        return ok({ enabled: true, approval: 'review', budget: 2000, workspaces: {} });
+      }
+      if (url.pathname === '/api/memory/global/journal' && method === 'GET') {
+        return ok([]);
+      }
+      if (url.pathname === '/api/memory/global' && method === 'GET') {
+        const statusesParam = url.searchParams.get('statuses') ?? url.searchParams.get('status') ?? 'active';
+        const requestedStatuses = new Set(statusesParam.split(',').filter(Boolean));
+        const matching = [...entries.values()].filter((entry) => requestedStatuses.has(entry.status ?? 'active'));
+        const cursor = Number(url.searchParams.get('cursor') ?? '0');
+        // Page 0 exercises an empty preparation slice before returning items on cursors 1..N.
+        const slice = cursor === 0 ? [] : matching.slice(cursor - 1, cursor);
+        const nextCursor = cursor + 1;
+        const exhausted = cursor >= matching.length;
+        const hasPending = requestedStatuses.has('pending');
+        const warnings = hasPending ? ['1 memory records were skipped'] : [];
+        return ok({
+          items: slice,
+          next_cursor: exhausted ? undefined : String(nextCursor),
+          coverage: {
+            scopes: [{ kind: 'global' }],
+            statuses: [...requestedStatuses],
+            exhausted,
+            complete: !hasPending,
+            warnings,
+            skipped_records: hasPending ? 1 : 0,
+          },
+        });
+      }
+      if (url.pathname === '/api/memory/global/inbox' && method === 'GET') {
+        const pendingItems = [...entries.values()].filter((entry) => entry.status === 'pending');
+        const offset = Number(url.searchParams.get('cursor') ?? '0');
+        const slice = pendingItems.slice(offset, offset + 1);
+        const nextOffset = offset + slice.length;
+        const exhausted = nextOffset >= pendingItems.length;
+        return ok({
+          items: slice,
+          next_cursor: exhausted ? undefined : String(nextOffset),
+          coverage: {
+            scopes: [{ kind: 'global' }],
+            statuses: ['pending'],
+            exhausted,
+            complete: false,
+            warnings: ['1 memory records were skipped'],
+            skipped_records: 1,
+          },
+        });
+      }
+      const itemMatch = /^\/api\/memory\/global\/([^/]+)$/.exec(url.pathname);
+      if (itemMatch !== null) {
+        const id = decodeURIComponent(itemMatch[1]!);
+        const existing = entries.get(id);
+        if (method === 'GET') {
+          if (existing === undefined) return new Response(JSON.stringify({ code: 40401, msg: 'not found', data: null }), { status: 404 });
+          return ok({ ...existing, complete: true, content_complete: true });
+        }
+        if (method === 'PUT') {
+          const patch = typeof init?.body === 'string' ? JSON.parse(init.body) as Partial<MemoryEntry> & { action?: string } : {};
+          const nextStatus = patch.action === 'approve' || patch.action === 'accept' || (existing?.status === 'pending' && patch.status === undefined)
+            ? 'active'
+            : (patch.status ?? existing?.status ?? 'active');
+          const updated: MemoryEntry = {
+            ...(existing ?? {
+              id,
+              revision: '1',
+              type: 'reference',
+              title: '',
+              body: '',
+              status: 'active',
+              pinned: false,
+              reason: '',
+              source: { writer: 'agent' },
+              created: '2026-01-01',
+              updated: '2026-01-01',
+            }),
+            ...patch,
+            status: nextStatus,
+            id,
+            revision: String(Number(existing?.revision ?? '1') + 1),
+          };
+          entries.set(id, updated);
+          return ok({ entry: updated, operation_id: `op_${id}`, outcome: 'applied' });
+        }
+      }
+      return ok({ items: [] });
+    },
+    close: async () => undefined,
+  };
+}
+
 describe('MemoryPage bounded vertical continuation', () => {
   it('shows early pages while automatically reaching the source suffix, keeps bad-record diagnostics, and approves the complete proposal via real client/routes/store', async () => {
-    const { memoryContinuationFixture } = await import('../../../../packages/kap-server/test/fixtures/memoryContinuation');
-    const fixture = await memoryContinuationFixture();
+    const fixture = createLocalMemoryContinuationFixture();
     const release = deferred<void>();
     const releaseDetail = deferred<void>();
     const applied = deferred<{ code: number; msg: string }>();

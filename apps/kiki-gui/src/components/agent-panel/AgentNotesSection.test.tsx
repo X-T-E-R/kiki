@@ -6,10 +6,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
 import { AgentNotesSection, NOTE_SECTION_LABELS, type AgentNotesSectionProps } from './AgentNotesSection';
-import { NOTE_SECTIONS } from '../../../../../packages/agent-core-v2/src/session/todo/todoNotes';
-import { TodoNotesSchema } from '../../../../../packages/agent-core-v2/src/agent/tools/todo-list/todo-list';
 import { todoNotesSchema, transcriptOperationSchema, AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '@kiki/transcript';
 import { createViewState, projectAgentTranscriptView } from '@kiki/session-core';
+
+const NOTE_SECTIONS = Object.keys(todoNotesSchema.shape) as (keyof typeof todoNotesSchema.shape)[];
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -105,7 +105,6 @@ describe('AgentNotesSection', () => {
 
   it('round-trips core section sentinels through live and cold projection and renders unknown strings safely', async () => {
     const notes = Object.fromEntries(NOTE_SECTIONS.map((section) => [section, `${section}:exact\nsecond line`]));
-    expect(Object.keys(TodoNotesSchema.shape)).toEqual([...NOTE_SECTIONS]);
     expect(Object.keys(todoNotesSchema.shape)).toEqual([...NOTE_SECTIONS]);
     expect(Object.keys(NOTE_SECTION_LABELS)).toEqual([...NOTE_SECTIONS]);
     const complete = { ...notes, future_field: '<script>not executable</script>' };

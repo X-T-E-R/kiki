@@ -342,14 +342,20 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
             if (selection.source === 'ssh' && selection.profile && selection.tunnelId) {
               if (!options.host.connection.commitScopeConnection) throw new ScopeRestoreError('scope-invalid');
               await options.host.connection.commitScopeConnection(scope.homeId, selection.profile.id, selection.tunnelId, crossHome);
-              signal.throwIfAborted();
+              // Point of no return: host already committed the tunnel and space.
+              tunnel = undefined;
+              switchedHome = false;
             }
             if (token !== undefined) persistSelectionToken(selection);
             if (crossHome && !returningControl) {
-              if (ownsClient) await verified.klient.close();
-              signal.throwIfAborted();
+              if (ownsClient) {
+                ownsClient = false;
+                await verified.klient.close();
+              }
               options.reload();
-            } else options.commit(selection, verified, meta);
+            } else {
+              options.commit(selection, verified, meta);
+            }
             ownsClient = false;
             switchedHome = false;
             tunnel = undefined;

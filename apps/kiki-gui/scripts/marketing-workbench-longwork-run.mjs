@@ -30,6 +30,7 @@ import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import { WORKBENCH_LONGWORK_SHOTS } from './marketing-workbench-longwork-shots.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(ROOT, '..', '..');
@@ -139,16 +140,7 @@ async function captureOne(browser, { webUrl, shot: def }) {
     const target = join(OUT, file);
     const shot = async ({ skipSettle = false } = {}) => {
       if (!skipSettle) {
-        await page.mouse.move(2, 2);
-        await page.evaluate(() => document.fonts.ready).catch(() => undefined);
-        await page.evaluate(async () => {
-          await Promise.all(document.getAnimations()
-            .filter((a) => a.playState === 'running' && a.effect?.getComputedTiming().iterations !== Infinity)
-            .map((a) => a.finished.catch(() => undefined)));
-        }).catch(() => undefined);
-        await page.waitForTimeout(400);
-        await page.mouse.move(1, 1);
-        await page.waitForTimeout(200);
+        await settlePage(page);
       }
       await page.screenshot({ path: target });
       console.log(`[shot] ${file} (${Math.round(statSync(target).size / 1024)} KB)`);

@@ -4758,8 +4758,7 @@ describe('virtualized transcript scrolling', () => {
 
   it('restores copy/send-again (without dead edit/fork) for an undelivered terminal prompt, hydrates standalone delivery markers, and preserves middle-part text past 1022 chars when a trailing part carries hidden presentation spans', { timeout: 30_000 }, async () => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
-    const { boundedTranscriptSnapshot } = await import('../../../../packages/kap-server/src/transport/klient/boundedTranscript');
-    const { boundedEntity, readContentSegment } = await import('../../../../packages/kap-server/src/transport/klient/boundedContent');
+    const { boundedTranscriptSnapshot, boundedEntity, readContentSegment } = await import('../test/boundedTranscriptFixture');
     const { patchTranscriptContent } = await import('@kiki/session-core/session');
     const actions: TranscriptRowActions = { disabled: false, onEditMessage: vi.fn(), onRegenerate: vi.fn(), onFork: vi.fn() };
 

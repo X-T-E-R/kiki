@@ -47,6 +47,8 @@
     "desktop:shortcuts:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-release.ps1 -Action InstallShortcuts",
     "desktop:shortcuts": "pnpm desktop:shortcuts:dev",
     "desktop:release:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-release.test.ps1",
+    "desktop:hot-switch:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-hot-switch.test.ps1",
+    "scripts:test": "node --test proof/registry.test.mjs scripts/lib/theme-preference.test.mjs scripts/desktop-build-source.test.mjs scripts/desktop-release-feed.test.mjs scripts/desktop-release-manifest.test.mjs scripts/desktop-version.test.mjs scripts/fixture-agent-hooks.test.mjs scripts/fixture-recipe-chain.test.mjs scripts/fixture-server.test.mjs scripts/fixture-transcript.test.mjs scripts/macos-sign-notarize.test.mjs scripts/prepare-sidecar.test.mjs scripts/space-desktop-mock.test.mjs scripts/verify-updater-signature.test.mjs scripts/visual-smoke.test.mjs",
     "typecheck": "node --max-old-space-size=8192 ../../node_modules/typescript/bin/tsc --noEmit",
     "test": "vitest run",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",

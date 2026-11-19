@@ -43,6 +43,13 @@ function identity(source: OutputLayerSource, preset: OutputLayerPreset, settings
   return JSON.stringify([source.sessionId, source.sourceId, source.sourceRevision, source.text, preset, settings.historyTokens]);
 }
 
+const MAX_CACHED_RESULTS = 200;
+const MAX_CACHED_BYTES = 1024 * 1024;
+
+function estimateEntryBytes(entry: ReadingResult): number {
+  return (entry.identity.length + entry.text.length + entry.output.length + (entry.error?.length ?? 0) + 128) * 2;
+}
+
 /** Only Assistant-visible text belongs in source.text; the client never reads a transcript or submits prompts. */
 export class OutputLayerClient {
   private readonly results = new Map<string, ReadingResult>();
@@ -54,8 +61,14 @@ export class OutputLayerClient {
     const saved = storage?.getItem('kiki.output-layer.results.v1');
     if (saved) {
       try {
-        for (const result of JSON.parse(saved) as ReadingResult[]) {
-          if (result.status === 'completed') this.results.set(result.identity, result);
+        const parsed = JSON.parse(saved) as unknown;
+        if (Array.isArray(parsed)) {
+          for (const result of parsed as ReadingResult[]) {
+            if (result && result.status === 'completed' && typeof result.identity === 'string') {
+              this.setCachedResult(result.identity, result);
+            }
+          }
+          this.evictResults();
         }
       } catch {
         storage?.setItem('kiki.output-layer.results.v1', '[]');
@@ -63,11 +76,40 @@ export class OutputLayerClient {
     }
   }
 
+  private setCachedResult(key: string, value: ReadingResult): void {
+    this.results.delete(key);
+    this.results.set(key, value);
+    this.evictResults();
+  }
+
+  private evictResults(): void {
+    while (this.results.size > MAX_CACHED_RESULTS) {
+      const oldestKey = this.results.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.results.delete(oldestKey);
+    }
+    let totalBytes = 0;
+    for (const entry of this.results.values()) totalBytes += estimateEntryBytes(entry);
+    while (totalBytes > MAX_CACHED_BYTES && this.results.size > 1) {
+      const oldestKey = this.results.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.results.get(oldestKey);
+      this.results.delete(oldestKey);
+      if (oldest !== undefined) totalBytes -= estimateEntryBytes(oldest);
+    }
+  }
+
   configuration(options?: Parameters<OutputLayerFacade['configuration']>[0]): Promise<OutputLayerConfiguration> { return this.api.configuration(options); }
   configure(input: Pick<OutputLayerConfiguration, 'presets' | 'settings'>): Promise<OutputLayerConfiguration> { return this.api.configure(input); }
 
   get(source: OutputLayerSource, preset: OutputLayerPreset, settings = OUTPUT_LAYER_DEFAULT_SETTINGS): OutputLayerResult | undefined {
-    return this.results.get(identity(source, preset, settings));
+    const key = identity(source, preset, settings);
+    const cached = this.results.get(key);
+    if (cached !== undefined) {
+      this.results.delete(key);
+      this.results.set(key, cached);
+    }
+    return cached;
   }
 
   process(source: OutputLayerSource, preset: OutputLayerPreset, settings: OutputLayerSettings, onUpdate: (result: OutputLayerResult) => void): Promise<OutputLayerResult> {
@@ -112,7 +154,7 @@ export class OutputLayerClient {
           if (snapshot.settings.historyTokens > 0 && this.cycles.get(cycleKey) === cycle) cycle.pairs.push({
             sourceId: source.sourceId, sourceRevision: source.sourceRevision, original: source.text, output: result.output,
           });
-          this.results.set(key, { ...result, identity: key, context: context.map(({ sourceId, sourceRevision }) => ({ sourceId, sourceRevision })) });
+          this.setCachedResult(key, { ...result, identity: key, context: context.map(({ sourceId, sourceRevision }) => ({ sourceId, sourceRevision })) });
           this.persist();
         }
       } catch (error) {
@@ -157,6 +199,7 @@ export class OutputLayerClient {
   }
 
   private persist(): void {
+    this.evictResults();
     this.storage?.setItem('kiki.output-layer.results.v1', JSON.stringify([...this.results.values()]));
   }
 }

@@ -10,10 +10,7 @@ import { createViewState, SessionController, type AgentForest, type AgentTreeNod
 import type { SessionTransport } from '@kiki/session-core/transport';
 import type { SessionViewFacade } from '@kiki/klient/session-view';
 import { AgentTranscript, type AgentTranscriptSnapshot, type ContentRef, type ContentSegment, type TranscriptOperation, type TranscriptTodo } from '@kiki/transcript';
-import { boundedTranscriptSnapshot, boundedTranscriptOps } from '../../../../packages/kap-server/src/transport/klient/boundedTranscript';
-import { boundedEntity, readContentSegment } from '../../../../packages/kap-server/src/transport/klient/boundedContent';
-import { SessionViewTarget } from '../../../../packages/kap-server/src/transport/klient/sessionViewTarget';
-import { AgentTranscriptLiveAdapter, type LiveAdapterBusEvent } from '../../../../packages/transcript-live/src/liveAdapter';
+import { boundedTranscriptSnapshot, boundedTranscriptOps, boundedEntity, readContentSegment } from '../test/boundedTranscriptFixture';
 import { UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
 import { I18nProvider } from '../i18n';
 import { AgentPanelContainer } from './AgentPanelContainer';
@@ -2059,7 +2056,7 @@ it('updates the selected agent window through serialized subscription ops, inclu
     tokens: Math.round((limits[agentId] ?? 0) * 0.8), source: 'legacy',
     effectiveMaxContextTokens: limits[agentId] ?? 0, reservedContextTokens: 0,
   }));
-  let target: SessionViewTarget | undefined;
+  let emitSignal: ((signal: Parameters<Parameters<SessionViewFacade['subscribe']>[1]>[0]) => void) | undefined;
   const view: SessionViewFacade = {
     snapshot: async () => ({ as_of_seq: 1, epoch: 'e', session: { id: 'session', workspace_id: 'workspace_example',
       title: 'Fixture', created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', busy: false,
@@ -2070,9 +2067,8 @@ it('updates the selected agent window through serialized subscription ops, inclu
       messages: { items: [], has_more: false }, pending_approvals: [], pending_questions: [] }),
     transcript: { page: vi.fn(), catchUp: vi.fn() },
     subscribe: (_input, onSignal) => {
-      target = new SessionViewTarget('session', onSignal);
-      target.begin(1);
-      target.finish({ seq: 1, epoch: 'e' }, false);
+      emitSignal = onSignal;
+      onSignal({ type: 'ready', generation: 1, currentSessionCursor: { seq: 1, epoch: 'e' }, reconnected: false });
       return { close() {}, updateTranscriptCursor() {}, updateSessionCursor() {}, setTranscriptGrades() {}, nudge() {}, restart() {} };
     },
   };
@@ -2083,16 +2079,14 @@ it('updates the selected agent window through serialized subscription ops, inclu
   harness.holder.value = { subscribe: harness.registry.subscribe, snapshot: harness.registry.snapshot,
     [Symbol.iterator]: () => [controller][Symbol.iterator]() };
   const seq: Record<string, number> = { main: 1, child: 1 };
-  const adapters = { main: new AgentTranscriptLiveAdapter('main'), child: new AgentTranscriptLiveAdapter('child') };
   const snapshots: Array<{ name: string; agentId: string; html: string }> = [];
   const send = (event: Parameters<SessionController['handleTranscript']>[0]) => {
     const serialized = JSON.parse(JSON.stringify(event));
-    target!.send({ type: event.type, session_id: 'session', payload: serialized,
-      seq: 1, epoch: 'e', timestamp: '2026-01-01T00:00:00.000Z' });
+    emitSignal!({ type: 'transcript', generation: 1, event: serialized });
   };
   const publish = async (agentId: 'main' | 'child', model: string, maxContextTokens: number) => {
     limits[agentId] = maxContextTokens;
-    const ops = adapters[agentId].map({ type: 'agent.status.updated', model, maxContextTokens } as LiveAdapterBusEvent);
+    const ops: TranscriptOperation[] = [{ op: 'meta.merge', meta: { agent: { model, maxContextTokens } } }];
     const nextSeq = (seq[agentId] ?? 1) + 1;
     seq[agentId] = nextSeq;
     await act(async () => {

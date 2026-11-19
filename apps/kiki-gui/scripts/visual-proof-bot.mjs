@@ -20,6 +20,7 @@ import { chromium } from 'playwright';
 import { createServer } from 'vite';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(root, '.tmp', 'bot-proof', String(Date.now()));
@@ -51,13 +52,7 @@ async function withPage(theme, width, run) {
   try { await run(page); } finally { await page.close(); }
 }
 
-async function settle(page) {
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-    await Promise.all(document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {})));
-  });
-  await page.waitForTimeout(200);
-}
+const settle = (page) => settlePage(page, { parkPointer: false, waitMs: 200 });
 
 /**
  * DOM audit of this slice's surfaces on the rendered page: text contrast

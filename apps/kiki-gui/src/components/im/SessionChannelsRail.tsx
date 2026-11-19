@@ -286,9 +286,13 @@ function SessionChannelsRailBody({
     void runAction(binding.id, () => connection.client.imSessions.updateBinding(binding.id, patch));
   };
 
+  const [confirmUnbindId, setConfirmUnbindId] = useState<string | null>(null);
+  const [confirmRemoveNotifyId, setConfirmRemoveNotifyId] = useState<string | null>(null);
+
   // Unbind / Remove
   const removeBinding = (bindingId: string) => {
     if (!connection) return;
+    setConfirmUnbindId(null);
     void runAction(bindingId, () => connection.client.imSessions.removeBinding(bindingId));
   };
 
@@ -604,14 +608,35 @@ function SessionChannelsRailBody({
                             </span>
                           ) : null}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => removeBinding(b.id)}
-                          disabled={busy}
-                          className="shrink-0 hover:text-danger hover:underline ml-2"
-                        >
-                          {t('st.im.unbind')}
-                        </button>
+                        {confirmUnbindId === b.id ? (
+                          <span className="ml-2 flex shrink-0 items-center gap-1.5" data-confirm-unbind={b.id}>
+                            <button
+                              type="button"
+                              onClick={() => removeBinding(b.id)}
+                              disabled={busy}
+                              className="font-medium text-danger hover:underline"
+                            >
+                              {t('st.im.unbind')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setConfirmUnbindId(null); }}
+                              disabled={busy}
+                              className="text-ink-faint hover:text-ink hover:underline"
+                            >
+                              {t('common.cancel')}
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => { setConfirmUnbindId(b.id); }}
+                            disabled={busy}
+                            className="shrink-0 hover:text-danger hover:underline ml-2"
+                          >
+                            {t('st.im.unbind')}
+                          </button>
+                        )}
                       </div>
                     </li>
                   );
@@ -660,14 +685,38 @@ function SessionChannelsRailBody({
                           <span className={`h-1.5 w-1.5 rounded-full ${c.enabled ? 'bg-selected-ink' : 'bg-ink-faint'}`} />
                           {t('st.im.pill.out')}
                         </button>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => { void toggleNotifyBinding(c.id, false); }}
-                          className="text-[11px] text-ink-faint hover:text-danger hover:underline"
-                        >
-                          {t('st.im.removeNotify')}
-                        </button>
+                        {confirmRemoveNotifyId === c.id ? (
+                          <span className="flex shrink-0 items-center gap-1.5 text-[11px]" data-confirm-remove-notify={c.id}>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => {
+                                setConfirmRemoveNotifyId(null);
+                                void toggleNotifyBinding(c.id, false);
+                              }}
+                              className="font-medium text-danger hover:underline"
+                            >
+                              {t('st.im.removeNotify')}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => { setConfirmRemoveNotifyId(null); }}
+                              className="text-ink-faint hover:text-ink hover:underline"
+                            >
+                              {t('common.cancel')}
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => { setConfirmRemoveNotifyId(c.id); }}
+                            className="text-[11px] text-ink-faint hover:text-danger hover:underline"
+                          >
+                            {t('st.im.removeNotify')}
+                          </button>
+                        )}
                       </div>
                     </li>
                   );

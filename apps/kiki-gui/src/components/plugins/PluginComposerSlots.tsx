@@ -367,10 +367,8 @@ export function useExecutePluginSlotAction() {
         if (!handled && sessionId !== undefined) {
           appendToDraft(sessionId, args !== undefined && args.trim() !== '' ? `${action.text}\n${args.trim()}` : action.text);
         } else if (!handled && sessionId === undefined) {
+          requestPluginPromptInsert(undefined, { text: action.text, submit: action.submit, args }, { queueIfUnhandled: true });
           await navigateTo('/new');
-          requestAnimationFrame(() => {
-            requestPluginPromptInsert(undefined, { text: action.text, submit: action.submit, args });
-          });
         }
         return true;
       }

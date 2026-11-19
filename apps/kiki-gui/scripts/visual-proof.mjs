@@ -45,8 +45,8 @@ import { createLiveAgentsAttentionWalker, createLiveAgentsCompactWalker } from '
 import { createPluginImportWalker } from './visual-proof-plugin-import.mjs';
 import { createExternalMainWalker } from './visual-proof-external-main.mjs';
 import { createSteerWalker } from './visual-proof-steer.mjs';
-import { en as EN_DICTIONARY } from '../../../packages/session-core/src/i18n/en.ts';
-import { zh as ZH_DICTIONARY } from '../../../packages/session-core/src/i18n/zh.ts';
+import { en as EN_DICTIONARY } from '@kiki/session-core/i18n/en';
+import { zh as ZH_DICTIONARY } from '@kiki/session-core/i18n/zh';
 
 /**
  * Scenarios whose walk exercises the transcript list (streaming, folding,

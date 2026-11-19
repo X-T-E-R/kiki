@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(ROOT, '..', '..');
@@ -130,19 +131,7 @@ async function open(page, link, path, selector, timeout = 45_000) {
   await page.waitForTimeout(1_200);
 }
 
-/** Park the pointer away from every hover target and settle paint. */
-async function settle(page) {
-  await page.mouse.move(2, 2);
-  await page.evaluate(() => document.fonts.ready).catch(() => undefined);
-  await page.evaluate(async () => {
-    await Promise.all(document.getAnimations()
-      .filter((a) => a.playState === 'running' && a.effect?.getComputedTiming().iterations !== Infinity)
-      .map((a) => a.finished.catch(() => undefined)));
-  }).catch(() => undefined);
-  await page.waitForTimeout(400);
-  await page.mouse.move(1, 1);
-  await page.waitForTimeout(200);
-}
+const settle = settlePage;
 
 /** Wait until a predicate over the DOM holds, so no frame races a refetch. */
 async function until(page, predicate, timeout = 30_000) {

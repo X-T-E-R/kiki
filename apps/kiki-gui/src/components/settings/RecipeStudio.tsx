@@ -215,9 +215,23 @@ export function RecipeStudio({
         onClick={() => { setNarrowPane('list'); }}>
         {t('st.recipe.backToList')}
       </button>
-      {detailQuery.data === undefined
-        ? <p role="status" className="text-[12px] text-ink-faint">{t(detailQuery.isError ? 'st.recipe.loadFailedShort' : 'st.recipe.loading')}</p>
-        : (
+      {detailQuery.data === undefined ? (
+        detailQuery.isError ? (
+          <div className="space-y-2">
+            <p role="alert" className="text-[12px] text-danger">{errorText(locale, detailQuery.error)}</p>
+            <button
+              type="button"
+              className={SECONDARY}
+              disabled={detailQuery.isFetching}
+              onClick={() => { void detailQuery.refetch(); }}
+            >
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : (
+          <p role="status" className="text-[12px] text-ink-faint">{t('st.recipe.loading')}</p>
+        )
+      ) : (
           <>
             <RecipeDetailBody detail={detailQuery.data} />
             {/*

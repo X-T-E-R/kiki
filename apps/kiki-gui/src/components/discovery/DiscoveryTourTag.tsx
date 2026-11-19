@@ -92,7 +92,7 @@ export function DiscoveryTourTag() {
         event.preventDefault();
         setCollapsed(true);
       }
-    } else if (event.altKey && event.shiftKey && (event.key === 'G' || event.key === 'g')) {
+    } else if (event.altKey && event.shiftKey && (event.code === 'KeyG' || event.key === 'G' || event.key === 'g')) {
       event.preventDefault();
       setCollapsed(!collapsed);
     }

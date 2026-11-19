@@ -40,29 +40,26 @@ export function useRoomLog(api: BotRoomApi, roomId: string, pollIntervalMs: numb
     if (inFlight.current !== null) return inFlight.current;
     const run = (async () => {
       try {
-        const fresh: RoomLogEntry[] = [];
         let after = lastId.current;
-        let lastSeq: number | undefined;
         for (;;) {
           const page = await api.roomLog(roomId, { afterId: after, limit: PAGE });
-          fresh.push(...page.entries);
-          lastSeq = page.lastSeq;
-          after = page.entries.at(-1)?.id ?? after;
+          if (!alive.current) return;
+          if (page.lastSeq !== undefined && document.visibilityState !== 'hidden') markRoomSeen(roomId, page.lastSeq);
+          if (page.entries.length > 0) {
+            const pageEntries = page.entries;
+            after = pageEntries.at(-1)?.id ?? after;
+            lastId.current = after;
+            setEntries((current) => {
+              const seen = new Set(current.map((entry) => entry.id));
+              const merged = [...current, ...pageEntries.filter((entry) => !seen.has(entry.id))];
+              if (merged.length > ROOM_LOG_WINDOW) setTruncated(true);
+              return merged.length > ROOM_LOG_WINDOW ? merged.slice(-ROOM_LOG_WINDOW) : merged;
+            });
+          }
+          setError(null);
+          setLoaded(true);
           if (page.nextCursor === undefined || page.entries.length === 0) break;
         }
-        if (!alive.current) return;
-        if (lastSeq !== undefined && document.visibilityState !== 'hidden') markRoomSeen(roomId, lastSeq);
-        if (fresh.length > 0) {
-          lastId.current = fresh.at(-1)?.id;
-          setEntries((current) => {
-            const seen = new Set(current.map((entry) => entry.id));
-            const merged = [...current, ...fresh.filter((entry) => !seen.has(entry.id))];
-            if (merged.length > ROOM_LOG_WINDOW) setTruncated(true);
-            return merged.length > ROOM_LOG_WINDOW ? merged.slice(-ROOM_LOG_WINDOW) : merged;
-          });
-        }
-        setError(null);
-        setLoaded(true);
       } catch (caught) {
         if (alive.current) setError(caught);
       } finally {

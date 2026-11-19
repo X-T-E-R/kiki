@@ -20,6 +20,7 @@ import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import { spaceDesktopMock } from './space-desktop-mock.mjs';
+import { settlePage } from './lib/settle-page.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -53,13 +54,7 @@ function build() {
   if (result.status !== 0) throw new Error(`vite build failed (status ${result.status})`);
 }
 
-async function settle(page) {
-  await page.evaluate(async () => {
-    const finite = document.getAnimations().filter((animation) => animation.playState === 'running' && animation.effect?.getComputedTiming().iterations !== Infinity);
-    await Promise.all(finite.map((animation) => animation.finished.catch(() => undefined)));
-  }).catch(() => undefined);
-  await page.waitForTimeout(250);
-}
+const settle = (page) => settlePage(page, { parkPointer: false, waitMs: 200 });
 
 /**
  * Shot groups. `fixture` is the scenario to load; `desktop` injects the Tauri

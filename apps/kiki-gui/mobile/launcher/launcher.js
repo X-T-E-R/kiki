@@ -410,6 +410,8 @@ const views = {
 
 let activeStream = null;
 let scanLoopActive = false;
+let scanStarting = false;
+let scanGeneration = 0;
 let scannerHistoryEntry = false;
 let managingServerId = null;
 let unreachablePairedRecovery = null;
@@ -1067,6 +1069,8 @@ async function submitConnect(parsed) {
 }
 
 function stopCameraScanner(options = {}) {
+  scanGeneration += 1;
+  scanStarting = false;
   scanLoopActive = false;
   if (activeStream) {
     for (const track of activeStream.getTracks()) track.stop();
@@ -1181,11 +1185,15 @@ function focusManualConnectInput() {
 }
 
 async function startWebCameraLoop() {
+  if (scanStarting || activeStream !== null) return;
   if (!navigator.mediaDevices?.getUserMedia || typeof window.BarcodeDetector !== 'function') {
     showScanFeedback(copy.cameraUnavailable);
     focusManualConnectInput();
     return;
   }
+  scanStarting = true;
+  const generation = ++scanGeneration;
+  scanButton.disabled = true;
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -1193,9 +1201,17 @@ async function startWebCameraLoop() {
       audio: false,
     });
   } catch (error) {
+    scanStarting = false;
+    scanButton.disabled = false;
     const denied = error && (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError');
     showScanFeedback(denied ? copy.cameraDenied : copy.cameraUnavailable);
     focusManualConnectInput();
+    return;
+  }
+  scanStarting = false;
+  if (generation !== scanGeneration || activeStream !== null) {
+    for (const track of stream.getTracks()) track.stop();
+    if (activeStream === null) scanButton.disabled = false;
     return;
   }
 

@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { RoomDocument, Session } from '@kiki/protocol';
 
+import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
@@ -33,10 +34,6 @@ import {
   useThreadCommsEnabled,
 } from './threadRooms';
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function defaultRoomName(threads: readonly Session[], untitled: string): string {
   const names = threads.slice(0, 2).map((session) => threadMemberName(session, session.id, untitled));
   return threads.length > 2 ? `${names.join(' · ')} +${threads.length - 2}` : names.join(' · ');
@@ -49,7 +46,7 @@ export function NewThreadRoomDialog({
   readonly threads: readonly Session[];
   readonly onClose: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const api = useBotRoomApi();
   const { client } = useConnection();
   const navigate = useGuardedNavigate();
@@ -58,6 +55,7 @@ export function NewThreadRoomDialog({
   const untitled = t('comms.untitled');
   const [threads, setThreads] = useState<readonly Session[]>(initial.slice(0, ROOM_MAX_MEMBERS));
   const [name, setName] = useState(() => defaultRoomName(initial, untitled));
+  const [addError, setAddError] = useState<string | null>(null);
   const count = threads.length;
   const countOk = count >= ROOM_MIN_MEMBERS && count <= ROOM_MAX_MEMBERS;
   const create = useMutation({
@@ -73,9 +71,13 @@ export function NewThreadRoomDialog({
     },
   });
   const addById = async (sessionId: string) => {
-    const session = await client.getSession(sessionId).catch(() => undefined);
-    if (session === undefined) return;
-    setThreads((current) => current.some((item) => item.id === sessionId) || current.length >= ROOM_MAX_MEMBERS ? current : [...current, session]);
+    setAddError(null);
+    try {
+      const session = await client.getSession(sessionId);
+      setThreads((current) => current.some((item) => item.id === sessionId) || current.length >= ROOM_MAX_MEMBERS ? current : [...current, session]);
+    } catch (error) {
+      setAddError(errorText(locale, error));
+    }
   };
   const blocked = commsEnabled === false;
   const ready = !blocked && countOk && name.trim() !== '' && !create.isPending;
@@ -135,6 +137,12 @@ export function NewThreadRoomDialog({
             <div className="mt-3">
               <AddThreadMember exclude={new Set(threads.map((session) => session.id))} disabled={create.isPending}
                 onAdd={(sessionId) => { void addById(sessionId); }} />
+              {addError !== null ? (
+                <p role="alert" className="mt-2 flex items-start gap-1.5 text-[12.5px] text-danger">
+                  <Icon name="warning" size={14} />
+                  <span>{addError}</span>
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -142,7 +150,7 @@ export function NewThreadRoomDialog({
         {create.isError ? (
           <p role="alert" className="mt-3 flex items-start gap-1.5 text-[12.5px] text-danger">
             <Icon name="warning" size={14} />
-            <span>{t('room.createFailed', { detail: errorText(create.error) })}</span>
+            <span>{t('room.createFailed', { detail: errorText(locale, create.error) })}</span>
           </p>
         ) : null}
 
@@ -157,7 +165,7 @@ export function JoinRoomDialog({ session, threads = [session], onNewRoom, onClos
   readonly onNewRoom?: () => void;
   readonly onClose: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const api = useBotRoomApi();
   const queryClient = useQueryClient();
   const commsEnabled = useThreadCommsEnabled();
@@ -241,7 +249,7 @@ export function JoinRoomDialog({ session, threads = [session], onNewRoom, onClos
         {join.isError ? (
           <p role="alert" className="mt-3 flex items-start gap-1.5 text-[12.5px] text-danger">
             <Icon name="warning" size={14} />
-            <span>{t('room.actionFailed', { detail: errorText(join.error) })}</span>
+            <span>{t('room.actionFailed', { detail: errorText(locale, join.error) })}</span>
           </p>
         ) : null}
       </div>

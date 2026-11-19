@@ -94,7 +94,12 @@ class OutputLayerStore {
     try {
       const saved = spaceStorage.getItem(STORAGE_SESSION_STATE_KEY);
       if (saved) {
-        stored = JSON.parse(saved) as Record<string, OutputLayerSessionState>;
+        const parsed = JSON.parse(saved) as unknown;
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          stored = Object.fromEntries(
+            Object.entries(parsed as Record<string, unknown>).filter(([, value]) => isSessionState(value)),
+          ) as Record<string, OutputLayerSessionState>;
+        }
       }
     } catch {
       // Fallback to empty

@@ -14,6 +14,7 @@ import type { BotSummary, PersonaSummary, Session } from '@kiki/protocol';
 import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 
+import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { BOTS_QUERY_KEY, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
@@ -63,7 +64,7 @@ export function SidebarBotRoomGroups({
   readonly activeSessionId: string | undefined;
   readonly seen: SessionSeenMap;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const api = useBotRoomApi();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
@@ -84,7 +85,7 @@ export function SidebarBotRoomGroups({
       if (sessionId !== undefined) void navigate(`/s/${sessionId}`);
       void queryClient.invalidateQueries({ queryKey: BOTS_QUERY_KEY });
     },
-    onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(error) }) }); },
+    onError: (error) => { pushToast({ tone: 'error', text: t('room.actionFailed', { detail: errorText(locale, error) }) }); },
   });
   const enable = useMutation({
     mutationFn: (persona: PersonaSummary) => api.enableBot(persona.id),
@@ -95,7 +96,7 @@ export function SidebarBotRoomGroups({
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
       if (bot.homeSessionId !== undefined) void navigate(`/s/${bot.homeSessionId}`);
     },
-    onError: (error) => { pushToast({ tone: 'error', text: t('bot.enableFailed', { detail: errorText(error) }) }); },
+    onError: (error) => { pushToast({ tone: 'error', text: t('bot.enableFailed', { detail: errorText(locale, error) }) }); },
   });
 
   const showBots = botsQuery.isSuccess && (bots.length > 0 || candidates.length > 0);
@@ -163,10 +164,6 @@ export function SidebarBotRoomGroups({
       {creating ? <CreateRoomDialog onClose={() => { setCreating(false); }} /> : null}
     </div>
   );
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Overlapping member faces; a ring in the sidebar colour separates them. */

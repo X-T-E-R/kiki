@@ -11,25 +11,19 @@ import type { OutputLayerFacade } from '@kiki/klient/core/facade/output-layer';
 import { outputLayerStore } from './outputLayerStore';
 import type { OutputLayerConfiguration } from './types';
 
-let singletonClient: OutputLayerClient | null = null;
-let currentFacade: OutputLayerFacade | null = null;
-let currentScope: string | null = null;
+const scopedClients = new WeakMap<OutputLayerFacade, Map<string, OutputLayerClient>>();
 
 export function getActiveOutputLayerClient(): OutputLayerClient | null {
-  return singletonClient ?? outputLayerStore.getActiveClient();
+  return outputLayerStore.getActiveClient();
 }
 
 export function setActiveOutputLayerClient(client: OutputLayerClient | null) {
-  singletonClient = client;
   outputLayerStore.setActiveClient(client);
 }
 
 export function useOutputLayerClient(sessionId?: string): OutputLayerClient | null {
   const connection = useOptionalConnection();
-  const clientFacade =
-    connection?.klient?.rest?.outputLayer ??
-    (connection?.client as unknown as { klient?: { rest?: { outputLayer?: OutputLayerFacade } } })?.klient?.rest?.outputLayer ??
-    (connection?.client as unknown as { rest?: { outputLayer?: OutputLayerFacade } })?.rest?.outputLayer;
+  const clientFacade = connection?.klient?.rest?.outputLayer;
 
   const scopeKey = connection?.spaceKey ?? connection?.scopeId ?? 'local';
   const serverId = connection?.meta?.server_id ?? '';
@@ -38,31 +32,38 @@ export function useOutputLayerClient(sessionId?: string): OutputLayerClient | nu
   const outputClient = useMemo(() => {
     if (!clientFacade) {
       if (connection) {
-        singletonClient = null;
         outputLayerStore.setActiveClient(null);
       }
-      currentFacade = null;
-      currentScope = null;
       return null;
     }
-    if (clientFacade === currentFacade && scopeKey === currentScope && singletonClient !== null) {
-      return singletonClient;
+    let byScope = scopedClients.get(clientFacade);
+    if (byScope === undefined) {
+      byScope = new Map<string, OutputLayerClient>();
+      scopedClients.set(clientFacade, byScope);
     }
-    currentFacade = clientFacade;
-    currentScope = scopeKey;
+    const existing = byScope.get(scopeKey);
+    if (existing !== undefined) {
+      outputLayerStore.setActiveClient(existing);
+      return existing;
+    }
     const storage: OutputLayerStorage | undefined = typeof localStorage !== 'undefined'
       ? {
           getItem: (key: string) => {
             try { return localStorage.getItem(`${key}:${scopeKey}`); } catch { return null; }
           },
           setItem: (key: string, value: string) => {
-            try { localStorage.setItem(`${key}:${scopeKey}`, value); } catch {}
+            try {
+              localStorage.setItem(`${key}:${scopeKey}`, value);
+            } catch (error) {
+              console.warn('[output-layer] failed to persist cache:', error);
+            }
           },
         }
       : undefined;
-    singletonClient = new OutputLayerClient(clientFacade, storage);
-    outputLayerStore.setActiveClient(singletonClient);
-    return singletonClient;
+    const created = new OutputLayerClient(clientFacade, storage);
+    byScope.set(scopeKey, created);
+    outputLayerStore.setActiveClient(created);
+    return created;
   }, [clientFacade, scopeKey, connection]);
 
   const queryClient = useContext(QueryClientContext);

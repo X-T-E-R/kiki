@@ -469,21 +469,33 @@ function NormalApp() {
     let initialized = false;
     let seen = 0;
     let timer: ReturnType<typeof setTimeout>;
+    let loggedError = false;
     const read = async () => {
       try {
         const { request } = await client.pluginNavigation();
         if (closed) return;
+        loggedError = false;
         if (initialized && request !== undefined && request.id > seen) {
+          seen = Math.max(seen, request.id);
           void navigate(`/s/${encodeURIComponent(request.sessionId)}`);
           if (host.kind === 'tauri') {
-            const { getCurrentWindow } = await import('@tauri-apps/api/window');
-            const window = getCurrentWindow();
-            await window.show(); await window.unminimize(); await window.setFocus();
+            try {
+              const { getCurrentWindow } = await import('@tauri-apps/api/window');
+              const window = getCurrentWindow();
+              await window.show(); await window.unminimize(); await window.setFocus();
+            } catch (focusError) {
+              console.warn('[plugin-navigation] failed to focus desktop window:', focusError);
+            }
           }
         }
         initialized = true;
         if (request !== undefined) seen = Math.max(seen, request.id);
-      } catch {}
+      } catch (error) {
+        if (!loggedError) {
+          loggedError = true;
+          console.warn('[plugin-navigation] poll failed:', error);
+        }
+      }
       if (!closed) timer = setTimeout(() => { void read(); }, 1500);
     };
     void read();

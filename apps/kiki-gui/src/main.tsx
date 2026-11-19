@@ -144,4 +144,52 @@ async function start(): Promise<void> {
   );
 }
 
-void start();
+const PRELOAD_RELOAD_KEY = 'kiki.vite-preload-reloaded';
+
+window.addEventListener('vite:preloadError', (event) => {
+  event.preventDefault();
+  try {
+    if (sessionStorage.getItem(PRELOAD_RELOAD_KEY) === '1') return;
+    sessionStorage.setItem(PRELOAD_RELOAD_KEY, '1');
+  } catch {
+    return;
+  }
+  window.location.reload();
+});
+
+function renderBootFailure(error: unknown): void {
+  const root = document.querySelector('#root');
+  if (!(root instanceof HTMLElement)) return;
+  const detail = error instanceof Error ? error.message : String(error);
+  const zh = (navigator.language || '').toLowerCase().startsWith('zh');
+  const title = zh ? '页面加载失败' : 'Failed to load';
+  const reloadLabel = zh ? '重新加载' : 'Reload';
+  root.replaceChildren();
+  const wrapper = document.createElement('main');
+  wrapper.setAttribute('role', 'alert');
+  wrapper.style.cssText = 'min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px;font-family:system-ui,-apple-system,sans-serif;';
+  const card = document.createElement('div');
+  card.style.cssText = 'max-width:420px;width:100%;display:flex;flex-direction:column;gap:12px;';
+  const heading = document.createElement('h1');
+  heading.textContent = title;
+  heading.style.cssText = 'margin:0;font-size:18px;font-weight:600;';
+  const msg = document.createElement('p');
+  msg.textContent = detail;
+  msg.style.cssText = 'margin:0;font-size:13px;opacity:0.75;word-break:break-word;';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = reloadLabel;
+  button.style.cssText = 'align-self:flex-start;padding:7px 14px;border-radius:8px;border:1px solid currentColor;background:transparent;cursor:pointer;font-size:13px;';
+  button.addEventListener('click', () => { window.location.reload(); });
+  card.append(heading, msg, button);
+  wrapper.append(card);
+  root.append(wrapper);
+}
+
+void start()
+  .then(() => {
+    try { sessionStorage.removeItem(PRELOAD_RELOAD_KEY); } catch { /* ignore */ }
+  })
+  .catch((error: unknown) => {
+    renderBootFailure(error);
+  });

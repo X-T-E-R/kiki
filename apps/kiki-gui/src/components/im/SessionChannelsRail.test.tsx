@@ -419,10 +419,17 @@ describe('SessionChannelsRail', () => {
     });
     expect(mockImSessions.setNotificationChannel).toHaveBeenCalledWith('sess-1', 'mail', true);
 
-    // 2. Remove bound notify channel -> calls removeNotificationChannel with stripped 'mail'
+    // 2. Remove bound notify channel -> requires two-step inline confirmation before calling removeNotificationChannel with stripped 'mail'
     const removeBtn = notifyItem?.querySelectorAll('button')[1] as HTMLButtonElement;
     await act(async () => {
       removeBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockImSessions.removeNotificationChannel).not.toHaveBeenCalled();
+    const confirmRemoveBtn = notifyItem?.querySelector('[data-confirm-remove-notify="notify:mail"] button') as HTMLButtonElement;
+    expect(confirmRemoveBtn).not.toBeNull();
+    await act(async () => {
+      confirmRemoveBtn.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(mockImSessions.removeNotificationChannel).toHaveBeenCalledWith('sess-1', 'mail');

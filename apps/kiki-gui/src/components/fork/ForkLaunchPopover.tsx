@@ -11,6 +11,7 @@ import type { SessionSeedMode } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { useCoarsePointer } from '../../lib/layoutHooks';
+import { isImeKeyEvent } from '../../lib/shortcuts';
 import { registerOverlay } from '../../lib/uiBusy';
 import { Icon } from '../icons';
 import { ActionSheet } from '../overlays/ActionSheet';
@@ -261,7 +262,7 @@ export const ForkLaunchPopover = memo(function ForkLaunchPopover({
                     setBranchTask(event.target.value);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                    if (event.key === 'Enter' && !isImeKeyEvent(event)) {
                       event.preventDefault();
                       submitBranch('route');
                     }

@@ -52,16 +52,14 @@ interface LayerEntry {
   closed: boolean;
 }
 
+import { asRecord } from './record';
+
 const stack: LayerEntry[] = [];
 const pageNonce = Math.random().toString(36).slice(2, 10);
 let sequence = 0;
 let listenerArmed = false;
 let pendingTraversals = 0;
 let reconcileQueued = false;
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
-}
 
 function currentToken(): string | undefined {
   const token = asRecord(asRecord(window.history.state)?.['usr'])?.['kikiLayerToken'];
