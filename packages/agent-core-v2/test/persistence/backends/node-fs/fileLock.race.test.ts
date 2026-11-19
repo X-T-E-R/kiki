@@ -795,5 +795,56 @@ describe('FileStorageService — transient access denial during acquisition', ()
       closeSparseFileWorker();
     }
   }, 25_000);
+
+  it('fails closed in a worker thread when local worker beacon bind fails without writing .lock, .watch, or .reader sidecars (Round-6 #2)', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-r6-beacon-fail-closed-'));
+    const wirePath = join(directory, 'wire.jsonl');
+    await writeFile(wirePath, '{"ok":1}\n');
+    const coldLockPath = `${wirePath}.cold.lock`;
+    const packageRoot = resolve(import.meta.dirname, '../../../..');
+    const fileLockUrl = pathToFileURL(
+      resolve(packageRoot, 'src/persistence/backends/node-fs/fileLock.ts'),
+    ).href;
+    const tsxApiUrl = import.meta.resolve('tsx/esm/api');
+    const tsconfigPath = resolve(packageRoot, 'tsconfig.json');
+    const workerScriptPath = join(directory, 'beacon-emfile-worker.mjs');
+
+    await writeFile(
+      workerScriptPath,
+      [
+        "import net from 'node:net';",
+        "import { parentPort, workerData } from 'node:worker_threads';",
+        `import { register as registerTypeScript } from ${JSON.stringify(tsxApiUrl)};`,
+        `registerTypeScript({ tsconfig: ${JSON.stringify(tsconfigPath)} });`,
+        'net.Server.prototype.listen = function () {',
+        "  queueMicrotask(() => this.emit('error', Object.assign(new Error('EMFILE: beacon bind exhausted'), { code: 'EMFILE' })));",
+        '  return this;',
+        '};',
+        `const { acquireFileLock, acquireSharedReadLease } = await import(${JSON.stringify(fileLockUrl)});`,
+        'let lockErr = null;',
+        'let readerErr = null;',
+        'try { await acquireFileLock(workerData.coldLockPath, { waitForMs: 100 }); } catch (err) { lockErr = String(err); }',
+        'try { await acquireSharedReadLease(workerData.wirePath); } catch (err) { readerErr = String(err); }',
+        'parentPort.postMessage({ lockErr, readerErr });',
+      ].join('\n'),
+    );
+
+    const worker = new Worker(workerScriptPath, {
+      workerData: { wirePath, coldLockPath },
+    });
+    try {
+      const outcome = await new Promise<{ lockErr: string | null; readerErr: string | null }>((res, rej) => {
+        worker.once('message', res);
+        worker.once('error', rej);
+      });
+      expect(outcome.lockErr).toBeTruthy();
+      expect(outcome.readerErr).toContain('EMFILE');
+
+      const entries = await readdir(directory);
+      expect(entries.filter((name) => name.includes('.cold.lock') || name.includes('.readers'))).toEqual([]);
+    } finally {
+      await worker.terminate();
+    }
+  }, 15_000);
 });
 

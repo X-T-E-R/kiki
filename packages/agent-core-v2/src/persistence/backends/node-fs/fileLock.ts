@@ -117,40 +117,46 @@ function ensureLocalWorkerBeacon(): Promise<string | undefined> {
   if (isMainThread || threadId === 0) return Promise.resolve(undefined);
   if (localWorkerBeaconAddress !== undefined) return Promise.resolve(localWorkerBeaconAddress);
   if (localWorkerBeaconPromise !== undefined) return localWorkerBeaconPromise;
-  localWorkerBeaconPromise = new Promise<string | undefined>((resolveBeacon) => {
+  localWorkerBeaconPromise = new Promise<string | undefined>((resolveBeacon, rejectBeacon) => {
     const server = net.createServer((socket) => {
       socket.on('error', () => {});
       socket.end();
     });
     server.unref();
     let settled = false;
-    const finish = (address: string | undefined): void => {
+    const fail = (error: unknown): void => {
       if (settled) return;
       settled = true;
-      if (address === undefined) {
-        localWorkerBeaconPromise = undefined;
-        try {
-          server.close();
-        } catch {}
-      } else {
-        localWorkerBeaconAddress = address;
-        localWorkerBeaconServer = server;
-      }
+      localWorkerBeaconPromise = undefined;
+      try {
+        server.close();
+      } catch {}
+      rejectBeacon(error instanceof Error ? error : new Error(String(error)));
+    };
+    const succeed = (address: string): void => {
+      if (settled) return;
+      settled = true;
+      localWorkerBeaconAddress = address;
+      localWorkerBeaconServer = server;
       resolveBeacon(address);
     };
-    server.once('error', () => finish(undefined));
-    if (process.platform === 'win32') {
-      const pipePath = `\\\\.\\pipe\\kiki-flk-${process.pid}-${threadId}-${randomUUID()}`;
-      server.listen(pipePath, () => finish(pipePath));
-    } else {
-      server.listen(0, '127.0.0.1', () => {
-        const addr = server.address();
-        if (addr !== null && typeof addr === 'object' && typeof addr.port === 'number' && addr.port > 0) {
-          finish(`tcp:${addr.port}`);
-        } else {
-          finish(undefined);
-        }
-      });
+    server.once('error', (error) => fail(error));
+    try {
+      if (process.platform === 'win32') {
+        const pipePath = `\\\\.\\pipe\\kiki-flk-${process.pid}-${threadId}-${randomUUID()}`;
+        server.listen(pipePath, () => succeed(pipePath));
+      } else {
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server.address();
+          if (addr !== null && typeof addr === 'object' && typeof addr.port === 'number' && addr.port > 0) {
+            succeed(`tcp:${addr.port}`);
+          } else {
+            fail(new Error('worker lock beacon failed to bind local port'));
+          }
+        });
+      }
+    } catch (error) {
+      fail(error);
     }
   });
   return localWorkerBeaconPromise;
@@ -501,10 +507,10 @@ export function sharedReadDirectory(journalPath: string): string {
 
 export async function acquireSharedReadLease(journalPath: string): Promise<{ release(): Promise<void> }> {
   hookExit();
+  const workerBeacon = await ensureLocalWorkerBeacon();
   await flushPendingReaderUnlinks();
   const directory = sharedReadDirectory(journalPath);
   await mkdir(directory, { recursive: true });
-  const workerBeacon = await ensureLocalWorkerBeacon();
   const token = `${process.pid}:${threadId}:${randomUUID()}`;
   const leasePath = join(directory, `${createHash('sha256').update(token).digest('hex')}.reader`);
   const payload: FileLockPayload = {

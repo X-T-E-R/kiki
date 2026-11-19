@@ -631,8 +631,10 @@ async function loadManifest(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
+  signal?: AbortSignal,
 ): Promise<ColdManifest | undefined> {
-  const bytes = await storage.read(scope, coldManifestKey(key));
+  signal?.throwIfAborted();
+  const bytes = await storage.read(scope, coldManifestKey(key), { signal });
   if (bytes === undefined) return undefined;
   let parsed: unknown;
   try {
@@ -650,15 +652,18 @@ async function loadMatchedManifest(
   scope: string,
   key: string,
   expectedGeneration?: string,
+  signal?: AbortSignal,
 ): Promise<ColdManifest | undefined> {
-  const manifest = await loadManifest(storage, scope, key);
+  signal?.throwIfAborted();
+  const manifest = await loadManifest(storage, scope, key, signal);
   if (manifest === undefined) {
     const located = locatedJournal(storage, scope, key);
-    if (located !== undefined && await detectOrphanedSparseJournal(located)) {
+    if (located !== undefined && await detectOrphanedSparseJournal(located, signal)) {
       throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
     }
     return undefined;
   }
+  signal?.throwIfAborted();
   const actualGeneration = expectedGeneration ?? await generationOf(storage, scope, key);
   if (actualGeneration !== manifest.generation) throw corrupted(scope, key, 'generation');
   return manifest;
@@ -671,7 +676,7 @@ export async function readColdManifestSummary(
   signal?: AbortSignal,
 ): Promise<ColdManifestSummary | undefined> {
   return withColdExclusive(storage, scope, key, async () => {
-    const manifest = await loadMatchedManifest(storage, scope, key);
+    const manifest = await loadMatchedManifest(storage, scope, key, undefined, signal);
     if (manifest === undefined) return undefined;
     return {
       format: manifest.format,
@@ -687,12 +692,14 @@ export async function hasColdStateForRewrite(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   const manifestSize = await storage.size(scope, coldManifestKey(key));
   if (manifestSize !== undefined) return true;
   const located = locatedJournal(storage, scope, key);
   if (located !== undefined) {
-    return detectOrphanedSparseJournal(located);
+    return detectOrphanedSparseJournal(located, signal);
   }
   return false;
 }
@@ -1146,18 +1153,23 @@ export async function discardColdUnlocked(
   const located = locatedJournal(storage, scope, key);
   const drop = async (): Promise<void> => {
     options.signal?.throwIfAborted();
-    const bytes = await storage.read(scope, coldManifestKey(key));
+    const bytes = await storage.read(scope, coldManifestKey(key), { signal: options.signal });
     if (bytes === undefined) {
-      if (options.skipRestoreOriginal !== true && located !== undefined) {
-        if (await detectOrphanedSparseJournal(located)) {
+      if (options.skipRestoreOriginal !== true) {
+        if (located !== undefined && await detectOrphanedSparseJournal(located, options.signal)) {
           throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
         }
-        if (
-          (await hasAnySegmentArtifacts(storage, scope, key, located)) &&
-          (await queryWin32SparseAttribute(located, options.signal)) === 'unknown' &&
-          (await journalContainsNulByte(located, options.signal))
-        ) {
-          throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+        if (await hasAnySegmentArtifacts(storage, scope, key, located)) {
+          const journalSize = await storage.size(scope, key);
+          if (journalSize === undefined || journalSize <= 0) {
+            throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+          }
+          const containsNul = located !== undefined
+            ? await journalContainsNulByte(located, options.signal)
+            : (await storage.read(scope, key, { signal: options.signal }))?.includes(0) === true;
+          if (containsNul) {
+            throw corrupted(scope, key, 'manifest-missing-on-sparse-journal');
+          }
         }
       }
       if (located !== undefined) {
@@ -1173,7 +1185,7 @@ export async function discardColdUnlocked(
       parsedManifest = undefined;
     }
 
-    const orphanedSparse = located !== undefined && await detectOrphanedSparseJournal(located);
+    const orphanedSparse = located !== undefined && await detectOrphanedSparseJournal(located, options.signal);
 
     if (options.skipRestoreOriginal !== true) {
       if (parsedManifest === undefined) {
@@ -1313,7 +1325,7 @@ async function sealUnlocked(
   const defaultSegmentBytes = codec === 'zstd' ? COLD_ZSTD_SEGMENT_BYTES : COLD_SEGMENT_BYTES;
   const segmentBytes = requireSegmentBytes(options.segmentBytes ?? defaultSegmentBytes);
   const generation = await generationOf(storage, scope, key);
-  const previousManifest = await loadMatchedManifest(storage, scope, key, generation);
+  const previousManifest = await loadMatchedManifest(storage, scope, key, generation, options.signal);
   const located = locatedJournal(storage, scope, key);
 
   if (sealedCut > 0) {
@@ -1635,14 +1647,15 @@ export async function logicalByteSize(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
+  signal?: AbortSignal,
 ): Promise<number | undefined> {
   return withColdExclusive(storage, scope, key, async () => {
-    const manifest = await loadMatchedManifest(storage, scope, key);
+    const manifest = await loadMatchedManifest(storage, scope, key, undefined, signal);
     const size = await storage.size(scope, key);
     if (manifest === undefined) return size;
     if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
     return size;
-  });
+  }, signal);
 }
 
 function slices(bytes: Uint8Array, start: number, end: number): Uint8Array[] {
@@ -1775,7 +1788,7 @@ export async function openPinnedLogicalRead(
       const located = locatedJournal(storage, scope, key);
       const openPinned = async (): Promise<void> => {
         signal?.throwIfAborted();
-        manifest = await loadMatchedManifest(storage, scope, key);
+        manifest = await loadMatchedManifest(storage, scope, key, undefined, signal);
         size = await storage.size(scope, key);
         signal?.throwIfAborted();
         if (manifest !== undefined) {

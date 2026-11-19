@@ -480,14 +480,20 @@ export async function removeSparseMarker(filePath: string): Promise<void> {
   }
 }
 
-async function hasNulByteAtEverySparseUnit(filePath: string): Promise<boolean | undefined> {
+async function hasNulByteAtEverySparseUnit(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<boolean | undefined> {
+  signal?.throwIfAborted();
   let handle;
   try {
     handle = await open(filePath, 'r');
+    signal?.throwIfAborted();
     const info = await handle.stat();
     if (info.size <= 0) return undefined;
     const buf = Buffer.alloc(SPARSE_PROBE_BYTES);
     for (let offset = 0; offset < info.size; offset += SPARSE_UNIT_BYTES) {
+      signal?.throwIfAborted();
       const probeLen = Math.min(SPARSE_PROBE_BYTES, info.size - offset);
       if (probeLen <= 0) break;
       const { bytesRead } = await handle.read(buf, 0, probeLen, offset);
@@ -497,6 +503,7 @@ async function hasNulByteAtEverySparseUnit(filePath: string): Promise<boolean | 
     }
     return false;
   } catch (error) {
+    if (signal?.aborted) throw signal.reason;
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   } finally {
@@ -507,14 +514,18 @@ async function hasNulByteAtEverySparseUnit(filePath: string): Promise<boolean | 
 async function hasNulByteAtAnyOffset(
   filePath: string,
   offsets: readonly number[],
+  signal?: AbortSignal,
 ): Promise<boolean | undefined> {
+  signal?.throwIfAborted();
   let handle;
   try {
     handle = await open(filePath, 'r');
+    signal?.throwIfAborted();
     const info = await handle.stat();
     let checkedAny = false;
     const buf = Buffer.alloc(SPARSE_PROBE_BYTES);
     for (const offset of offsets) {
+      signal?.throwIfAborted();
       if (offset < 0 || info.size <= offset) continue;
       const probeLen = Math.min(SPARSE_PROBE_BYTES, info.size - offset);
       if (probeLen <= 0) continue;
@@ -526,6 +537,7 @@ async function hasNulByteAtAnyOffset(
     }
     return checkedAny ? false : undefined;
   } catch (error) {
+    if (signal?.aborted) throw signal.reason;
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   } finally {
@@ -535,13 +547,18 @@ async function hasNulByteAtAnyOffset(
 
 export type Win32SparseAttributeState = 'sparse' | 'dense' | 'unknown';
 
-export async function detectOrphanedSparseJournal(filePath: string): Promise<boolean> {
+export async function detectOrphanedSparseJournal(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  signal?.throwIfAborted();
   await flushPendingSparseMarkerUnlinks();
+  signal?.throwIfAborted();
   let markerFound = false;
   let confirmedOffsets: number[] = [];
   let markerProbeOffsets: number[] = [];
   try {
-    const raw = await readFile(sparseMarkerPath(filePath), 'utf8');
+    const raw = await readFile(sparseMarkerPath(filePath), { encoding: 'utf8', signal });
     markerFound = true;
     const parsed = JSON.parse(raw) as {
       probeOffset?: unknown;
@@ -560,6 +577,7 @@ export async function detectOrphanedSparseJournal(filePath: string): Promise<boo
       parsed.probeOffset,
     ]);
   } catch (error) {
+    if (signal?.aborted) throw signal.reason;
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true;
   }
 
@@ -569,17 +587,18 @@ export async function detectOrphanedSparseJournal(filePath: string): Promise<boo
       : markerProbeOffsets.length > 0
         ? markerProbeOffsets
         : FALLBACK_SPARSE_PROBE_OFFSETS;
-    const nul = await hasNulByteAtAnyOffset(filePath, probes);
+    const nul = await hasNulByteAtAnyOffset(filePath, probes, signal);
     if (nul === true) return true;
-    const win32Attr = await queryWin32SparseAttribute(filePath);
+    const win32Attr = await queryWin32SparseAttribute(filePath, signal);
     if (win32Attr === 'sparse') return true;
     if (win32Attr === 'dense') return false;
-    const unitScan = await hasNulByteAtEverySparseUnit(filePath);
+    const unitScan = await hasNulByteAtEverySparseUnit(filePath, signal);
     if (unitScan === true) return true;
     if (unitScan === false) return false;
     return confirmedOffsets.length > 0;
   }
 
+  signal?.throwIfAborted();
   let size: number;
   try {
     size = (await stat(filePath)).size;
@@ -592,12 +611,12 @@ export async function detectOrphanedSparseJournal(filePath: string): Promise<boo
   const fallbackOffsets = normalizeOffsets([...FALLBACK_SPARSE_PROBE_OFFSETS, lastAlignedOffset]).filter(
     (offset) => offset >= 0 && offset < size,
   );
-  const nul = await hasNulByteAtAnyOffset(filePath, fallbackOffsets);
+  const nul = await hasNulByteAtAnyOffset(filePath, fallbackOffsets, signal);
   if (nul === true) return true;
-  const win32Attr = await queryWin32SparseAttribute(filePath);
+  const win32Attr = await queryWin32SparseAttribute(filePath, signal);
   if (win32Attr === 'sparse') return true;
   if (win32Attr === 'dense') return false;
-  const fullUnitScan = await hasNulByteAtEverySparseUnit(filePath);
+  const fullUnitScan = await hasNulByteAtEverySparseUnit(filePath, signal);
   return fullUnitScan === true;
 }
 

@@ -43,6 +43,7 @@ import { InMemoryStorageService } from '#/persistence/backends/memory/inMemorySt
 import {
   COLD_SEGMENT_BYTES,
   openPinnedLogicalRead,
+  readColdManifestSummary,
   readLogicalBytes,
   sealColdSegments,
   unsealColdSegments,
@@ -2758,4 +2759,166 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 25_000);
+
+  it('refuses to sweep recoverable .zst segments when segments.json is missing on a dense zero-filled, empty, or absent wire.jsonl (Round-6 #1)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-r6-preserve-zst-'));
+    const storage = new FileStorageService(root);
+    try {
+      const payload = Buffer.from(
+        Array.from({ length: 340 }, (_, i) => `${JSON.stringify({
+          type: 'note',
+          id: `r6-1-${i}`,
+          text: `DENSE_ZERO_CHECK_${i}_${'D'.repeat(1_550)}`,
+        })}\n`).join(''),
+      );
+      const cut = payload.indexOf(0x0a, 458_752) + 1;
+
+      const scopeDenseZero = 'agents/dense-zero-filled';
+      await mkdir(join(root, scopeDenseZero), { recursive: true });
+      const wireDenseZero = join(root, scopeDenseZero, KEY);
+      await writeFile(wireDenseZero, payload);
+      await sealColdSegments(storage, scopeDenseZero, KEY, cut, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 64 * 1024,
+      });
+      const zstBeforeDense = (await readdir(`${wireDenseZero}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      expect(zstBeforeDense.length).toBeGreaterThan(0);
+
+      const fh = await open(wireDenseZero, 'r+');
+      try {
+        await fh.write(Buffer.alloc(65_536, 0), 0, 65_536, 327_680);
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+      await rm(`${wireDenseZero}.segments.json`);
+      if (process.platform === 'win32') {
+        expect(await queryWin32SparseAttribute(wireDenseZero)).toBe('dense');
+      }
+
+      await expect(unsealRetainedJournal(wireDenseZero)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      await expect(discardRetainedJournal(wireDenseZero)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      const zstAfterDense = (await readdir(`${wireDenseZero}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      expect(zstAfterDense.sort()).toEqual(zstBeforeDense.sort());
+
+      const scopeZeroLen = 'agents/empty-wire';
+      await mkdir(join(root, scopeZeroLen), { recursive: true });
+      const wireZeroLen = join(root, scopeZeroLen, KEY);
+      await writeFile(wireZeroLen, payload);
+      await sealColdSegments(storage, scopeZeroLen, KEY, cut, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 64 * 1024,
+      });
+      const zstBeforeZero = (await readdir(`${wireZeroLen}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      await writeFile(wireZeroLen, '');
+      await rm(`${wireZeroLen}.segments.json`);
+
+      await expect(unsealColdSegments(storage, scopeZeroLen, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      await expect(discardRetainedJournal(wireZeroLen)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      expect(
+        (await readdir(`${wireZeroLen}.segments`, { recursive: true })).filter((e) => e.endsWith('.zst')).sort(),
+      ).toEqual(zstBeforeZero.sort());
+
+      const scopeAbsent = 'agents/absent-wire';
+      await mkdir(join(root, scopeAbsent), { recursive: true });
+      const wireAbsent = join(root, scopeAbsent, KEY);
+      await writeFile(wireAbsent, payload);
+      await sealColdSegments(storage, scopeAbsent, KEY, cut, {
+        codec: 'zstd',
+        reclaim: false,
+        segmentBytes: 64 * 1024,
+      });
+      const zstBeforeAbsent = (await readdir(`${wireAbsent}.segments`, { recursive: true })).filter((entry) =>
+        entry.endsWith('.zst'),
+      );
+      await rm(wireAbsent);
+      await rm(`${wireAbsent}.segments.json`);
+
+      await expect(unsealColdSegments(storage, scopeAbsent, KEY)).rejects.toMatchObject({
+        code: StorageErrors.codes.STORAGE_CORRUPTED,
+      });
+      expect(
+        (await readdir(`${wireAbsent}.segments`, { recursive: true })).filter((e) => e.endsWith('.zst')).sort(),
+      ).toEqual(zstBeforeAbsent.sort());
+    } finally {
+      closeSparseFileWorker();
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('aborts readColdManifestSummary unit-scan immediately on AbortSignal when helper is unavailable (Round-6 #3)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cold-r6-abort-scan-'));
+    const storage = new FileStorageService(root);
+    const prevHelperEnv = process.env['KIKI_WINDOWS_PROCESS_HELPER'];
+    let readSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const scope = 'agents/dense-multi-unit';
+      await mkdir(join(root, scope), { recursive: true });
+      const wirePath = join(root, scope, KEY);
+      const unitLine = Buffer.alloc(65_536, 0x41);
+      unitLine[65_535] = 0x0a;
+      const bigDense = Buffer.concat(Array.from({ length: 48 }, () => unitLine));
+      expect(bigDense.byteLength).toBe(48 * 65_536);
+      await writeFile(wirePath, bigDense);
+
+      closeSparseFileWorker();
+      process.env['KIKI_WINDOWS_PROCESS_HELPER'] = '';
+
+      const probeHandle = await open(wirePath, 'r');
+      const fhProto = Object.getPrototypeOf(probeHandle) as {
+        read: (...args: unknown[]) => Promise<unknown>;
+      };
+      await probeHandle.close();
+
+      let wireReads = 0;
+      let abortOnReadIndex = 1;
+      let activeController = new AbortController();
+      const origRead = fhProto.read;
+      readSpy = vi.spyOn(fhProto, 'read').mockImplementation(async function (this: unknown, ...args: unknown[]) {
+        wireReads += 1;
+        const res = await origRead.apply(this, args);
+        if (wireReads === abortOnReadIndex) {
+          activeController.abort(new Error('preempt-unit-scan'));
+        }
+        return res;
+      });
+
+      await expect(
+        readColdManifestSummary(storage, scope, KEY, activeController.signal),
+      ).rejects.toThrow('preempt-unit-scan');
+      expect(wireReads).toBeLessThanOrEqual(2);
+
+      wireReads = 0;
+      abortOnReadIndex = 7;
+      activeController = new AbortController();
+      await expect(
+        readColdManifestSummary(storage, scope, KEY, activeController.signal),
+      ).rejects.toThrow('preempt-unit-scan');
+      expect(wireReads).toBe(7);
+    } finally {
+      readSpy?.mockRestore();
+      if (prevHelperEnv === undefined) delete process.env['KIKI_WINDOWS_PROCESS_HELPER'];
+      else process.env['KIKI_WINDOWS_PROCESS_HELPER'] = prevHelperEnv;
+      closeSparseFileWorker();
+      await storage.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
