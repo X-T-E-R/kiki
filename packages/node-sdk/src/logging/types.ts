@@ -1,4 +1,4 @@
-import type { ILogService } from '@kiki/agent-core-v2';
+import type { ILogService } from '@kiki/agent-core-v2/_base/log/log';
 
 export type LogLevel = 'off' | 'error' | 'warn' | 'info' | 'debug';
 

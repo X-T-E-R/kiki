@@ -54,6 +54,7 @@
     "test:scale": "vitest run test/perf/syntheticScalePerf.test.ts",
     "test:perf:local": "vitest run --config vitest.local.config.ts",
     "test:bounded-memory": "node --expose-gc ../../node_modules/tsx/dist/cli.mjs scripts/bounded-memory-soak.mts",
+    "test:transcript-gc": "node --expose-gc ../../node_modules/vitest/vitest.mjs run --maxWorkers=2 test/services/transcript.test.ts -t \"collects released payloads\"",
     "clean": "rm -rf dist"
   },
   "dependencies": {

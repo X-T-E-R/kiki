@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/native-fs-watch-error-guard.ts",
+    "src/worker-heap-policy.ts",
+    "src/proxy.ts",
+    "src/logging/**/*.ts"
+  ]
+}

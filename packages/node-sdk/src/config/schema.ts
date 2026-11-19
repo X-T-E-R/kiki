@@ -6,7 +6,7 @@ import { OAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
 import { CognitionConfigSchema } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { RetryConfigSchema } from '@kiki/agent-core-v2/agent/stepRetry/configSection';
 import { interactionConfigSchema, interactionConfigCamelPatchSchema, modelBehaviorConfigSchema, modelProtocolSchema } from '@kiki/protocol';
-import { HOOK_EVENT_TYPES } from '@kiki/agent-core-v2/features/externalHooks/internal/types';
+import { HookDefSchema, type HookDefConfig } from '@kiki/agent-core-v2/features/externalHooks/configSection';
 import {
   builtInProviderRegistrations,
   createNbSearchRuntime,
@@ -257,16 +257,7 @@ export const ExperimentalConfigSchema = z.record(z.string(), z.boolean());
 
 export type ExperimentalConfig = z.infer<typeof ExperimentalConfigSchema>;
 
-export const HookDefSchema = z
-  .object({
-    event: z.enum(HOOK_EVENT_TYPES),
-    matcher: z.string().optional(),
-    command: z.string().min(1),
-    timeout: z.number().int().min(1).max(600).optional(),
-  })
-  .strict();
-
-export type HookDefConfig = z.infer<typeof HookDefSchema>;
+export { HookDefSchema, type HookDefConfig };
 
 const nbSearchProviderOptionDescriptors = builtInProviderRegistrations().map(
   (registration) => registration.descriptor,

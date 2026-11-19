@@ -112,8 +112,7 @@ export type {
 export { limitAgentReplayByTurns } from '#/wire/replay-turns';
 export { normalizeWorkDir, sameWorkDir } from '#/v2/session-mapper';
 export { inspectWorkspaceTrustSources } from '#/workspace-trust';
-export { parseAgentFileText } from '@kiki/agent-core-v2';
-export { resolveAgentPath } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths';
+export { parseAgentFileText, resolveAgentPath } from '@kiki/agent-core-v2';
 
 // Process-wide HTTP proxy bootstrap — installed once at CLI startup so all
 // outbound fetch honors HTTP_PROXY / HTTPS_PROXY / NO_PROXY.

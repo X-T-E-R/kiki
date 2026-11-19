@@ -1,7 +1,6 @@
-import { Error2, ErrorCodes, IAgentLifecycleService, IAppendLogStore, IAtomicDocumentStore, IEventService, IFileSystemStorageService, IInstantiationService, IModelService, IPluginUsageService, IProviderService, ISessionContext, ISessionIndex, ISessionManager, ISessionMetadata, IWorkspaceInstanceManager, SessionCreated, type ISessionScopeHandle, type Scope } from '@kiki/agent-core-v2';
+import { Error2, ErrorCodes, IAgentLifecycleService, IAppendLogStore, IAtomicDocumentStore, IEventService, IFileSystemStorageService, IInstantiationService, IModelService, IPluginUsageService, IProviderService, ISessionContext, ISessionIndex, ISessionManager, ISessionMetadata, IWorkspaceInstanceManager, SessionCreated, sessionScopeOf, workspacePersistenceScope, type ISessionScopeHandle, type Scope } from '@kiki/agent-core-v2';
 import { effectiveModelConfig, resolveModelProviderId } from '@kiki/agent-core-v2/kosong/model/modelAuth';
 import type { AgentMeta, SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
-import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { IHookRulesRegistry } from '@kiki/agent-core-v2/features/externalHooks/app/hookRules';
 import { IHookRulesSession } from '@kiki/agent-core-v2/features/externalHooks/session/hookRules';
 import { projectHookInspection, readPersistedHookInspection } from '@kiki/agent-core-v2/features/externalHooks/internal/inspection';

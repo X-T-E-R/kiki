@@ -1,7 +1,6 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { IAtomicDocumentStore, IBlobStore, IBootstrapService, IFileSystemStorageService, ISessionIndex, type Scope } from '@kiki/agent-core-v2';
+import { agentScopeOf, IAtomicDocumentStore, IBlobStore, IBootstrapService, IFileSystemStorageService, ISessionIndex, sessionScopeOf, workspacePersistenceScope, type Scope } from '@kiki/agent-core-v2';
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
-import { workspacePersistenceScope, sessionScopeOf, agentScopeOf } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import type { ExternalClientOperation, ExternalClientSession } from './contracts';
 import { ExternalClientError } from './contracts';
 

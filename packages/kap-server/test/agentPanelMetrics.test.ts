@@ -8,10 +8,11 @@ import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs
 import { InMemoryStorageService } from '@kiki/agent-core-v2/persistence/backends/memory/inMemoryStorageService';
 import { SqliteUsageReadModel } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteUsageReadModel';
 import { drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/queryStoreDisposals';
+import { Emitter } from '@kiki/agent-core-v2/_base/event';
+import { mobilePlatformOf } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
+import { resolveHostArgs, type PersistenceScopeName } from '@kiki/agent-core-v2/app/bootstrap/bootstrap';
+import type { SessionIndexMutation, SessionSummary } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
-import { stubBootstrap } from '../../agent-core-v2/test/app/bootstrap/stubs';
-import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
-import { stubSessionIndexMirror } from '../../agent-core-v2/test/app/sessionIndex/stubs';
 import {
   IAgentProfileService,
   IAgentStateService,
@@ -60,6 +61,83 @@ afterEach(async () => {
     await rm(home, { recursive: true, force: true, maxRetries: 5 });
   }
 });
+
+function createTestBootstrap(homeDir: string): IBootstrapService {
+  const scopes: Record<PersistenceScopeName, string> = {
+    config: '',
+    sessions: 'sessions',
+    ephemeral: 'ephemeral',
+    blobs: 'blobs',
+    store: 'store',
+    logs: 'logs',
+    cache: 'cache',
+    credentials: 'credentials',
+    cron: 'cron',
+  };
+  return {
+    _serviceBrand: undefined,
+    platform: 'linux',
+    mobilePlatform: mobilePlatformOf('linux', {}),
+    arch: 'x64',
+    cwd: '/tmp',
+    osHomeDir: '/home/test',
+    homeDir,
+    configPath: `${homeDir}/config.toml`,
+    configReadOnly: false,
+    userAgentProfileHomeDir: homeDir,
+    modelAccountHomeDir: homeDir,
+    credentialsHomeDir: homeDir,
+    configKey: 'config.toml',
+    clientIdentity: { productName: 'test-product', version: '0.0.0-test', platform: 'test_platform' },
+    args: resolveHostArgs({}),
+    sessionsDir: `${homeDir}/sessions`,
+    blobsDir: `${homeDir}/blobs`,
+    storeDir: `${homeDir}/store`,
+    cacheDir: `${homeDir}/cache`,
+    logsDir: `${homeDir}/logs`,
+    getEnv: () => undefined,
+    scope: (name) => scopes[name],
+    baseHomeDir: undefined,
+    space: undefined,
+  };
+}
+
+function createTestSessionIndexMirror(): ISessionIndexMirror & { readonly recorded: SessionSummary[] } {
+  const recorded: SessionSummary[] = [];
+  const changes = new Emitter<SessionIndexMutation>();
+  let mutationEpoch = 0;
+  const invalidate = (id: string): void => {
+    mutationEpoch += 1;
+    changes.fire({ id });
+    for (let index = recorded.length - 1; index >= 0; index--) {
+      if (recorded[index]?.id === id) recorded.splice(index, 1);
+    }
+  };
+  return {
+    _serviceBrand: undefined,
+    onDidChange: changes.event,
+    recorded,
+    record: (summary) => {
+      mutationEpoch += 1;
+      changes.fire({ id: summary.id, workspaceId: summary.workspaceId, private: summary.private });
+      recorded.push(summary);
+    },
+    epoch: () => mutationEpoch,
+    dirtyEpoch: () => undefined,
+    settleDirty: () => {},
+    invalidate,
+    pending: () => recorded,
+    acknowledge: (summaries) => {
+      for (const summary of summaries) {
+        const index = recorded.findIndex((record) => record === summary);
+        if (index !== -1) recorded.splice(index, 1);
+      }
+    },
+    runExclusive: (operation) => operation(),
+    evict: async (id) => { invalidate(id); },
+    drain: async () => {},
+  };
+}
 
 function usage(inputOther: number, output: number): TokenUsage {
   return { inputOther, output, inputCacheRead: 0, inputCacheCreation: 0 };
@@ -180,7 +258,7 @@ function persistedFixture(
     error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(),
     child: vi.fn(), setLevel: vi.fn(), flush: vi.fn(),
   };
-  ix.stub(IBootstrapService, stubBootstrap(home));
+  ix.stub(IBootstrapService, createTestBootstrap(home));
   ix.stub(ILogService, log);
   let records = [...initial];
   let mtime = 1;
@@ -250,7 +328,7 @@ function persistedFixture(
     },
   }) as unknown as IAppendLogStore;
   const facts = ix.get(IUsageFactStore);
-  const sessionIndexMirror = stubSessionIndexMirror();
+  const sessionIndexMirror = createTestSessionIndexMirror();
   persistedFixtures.push({ home, ix, model });
   const core = {
     accessor: {

@@ -143,7 +143,12 @@ describe('Event public types', () => {
           void promptId;
           return;
         }
+        case 'agent.created':
+        case 'agent.branch_sealed':
+        case 'agent.tool_lock_changed':
         case 'agent.disposed':
+        case 'event.config.warning':
+        case 'event.persona.changed':
         case 'event.session.history_rewritten':
           return;
         default:
