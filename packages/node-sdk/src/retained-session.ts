@@ -2,9 +2,17 @@ import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/nod
 import { SESSION_LOCK_SCOPE, sessionLockKey } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileLock';
 import type { ColdSealResult } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
 import { StorageErrors } from '@kiki/agent-core-v2/persistence/interface/storage';
-import { discardRetainedSession, sealRetainedSession } from '@kiki/agent-core-v2/persistence/retainedJournal';
+import {
+  compactRetainedSession,
+  discardRetainedSession,
+  sealRetainedSession,
+  unsealRetainedSession,
+  type RetainedCompactOptions,
+  type RetainedCompactSessionResult,
+  type RetainedUnsealSessionResult,
+} from '@kiki/agent-core-v2/persistence/retainedJournal';
 import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
-import { openPinnedLogicalRead } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
+import { openPinnedLogicalRead, type ColdUnsealOptions } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { readPinnedRange, wireFileAddress } from '@kiki/agent-core-v2/persistence/logicalWireFile';
 
 export interface PersistedJournalRead {
@@ -15,11 +23,11 @@ export interface PersistedJournalRead {
 }
 
 /** Opens a logical journal without resuming its session or acquiring its writer lock. Close the read to release its seal pin. */
-export async function openPersistedJournal(wirePath: string): Promise<PersistedJournalRead | undefined> {
+export async function openPersistedJournal(wirePath: string, signal?: AbortSignal): Promise<PersistedJournalRead | undefined> {
   const address = wireFileAddress(wirePath);
   const storage = new FileStorageService(address.baseDir);
   try {
-    const pinned = await openPinnedLogicalRead(storage, address.scope, address.key);
+    const pinned = await openPinnedLogicalRead(storage, address.scope, address.key, signal);
     if (pinned.size === undefined) {
       pinned.close();
       await storage.close();
@@ -28,7 +36,7 @@ export async function openPersistedJournal(wirePath: string): Promise<PersistedJ
     return {
       size: pinned.size,
       sealed: pinned.sealed,
-      readAt: (position, length, signal) => readPinnedRange(pinned, position, length, signal),
+      readAt: (position, length, callSignal) => readPinnedRange(pinned, position, length, callSignal ?? signal),
       close: async () => { pinned.close(); await storage.close(); },
     };
   } catch (error) {
@@ -44,6 +52,12 @@ export interface PersistedSessionMaintenance {
   readonly sessionDir: string;
 }
 
+export type {
+  RetainedCompactOptions,
+  RetainedCompactSessionResult,
+  RetainedUnsealSessionResult,
+};
+
 export function persistedSessionLockScope(workspaceId: string, sessionId: string): string {
   return sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
 }
@@ -54,6 +68,20 @@ export function isPersistedSessionBusy(error: unknown): boolean {
 
 export async function sealPersistedSession(input: PersistedSessionMaintenance): Promise<readonly ColdSealResult[]> {
   return withPersistedSessionLock(input, () => sealRetainedSession(input.sessionDir));
+}
+
+export async function compactPersistedSession(
+  input: PersistedSessionMaintenance,
+  options?: RetainedCompactOptions,
+): Promise<RetainedCompactSessionResult> {
+  return withPersistedSessionLock(input, () => compactRetainedSession(input.sessionDir, options));
+}
+
+export async function unsealPersistedSession(
+  input: PersistedSessionMaintenance,
+  options?: ColdUnsealOptions,
+): Promise<RetainedUnsealSessionResult> {
+  return withPersistedSessionLock(input, () => unsealRetainedSession(input.sessionDir, options));
 }
 
 export async function discardPersistedSession(input: PersistedSessionMaintenance): Promise<number> {

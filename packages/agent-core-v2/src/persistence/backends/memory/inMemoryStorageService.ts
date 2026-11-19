@@ -85,9 +85,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
       merged.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    this.bucket(scope).set(key, merged);
-    this.mtimes.set(this.watchKey(scope, key), Date.now());
-    this.notifyWatchers(scope, key);
+    await this.write(scope, key, merged, options);
   }
 
   async append(

@@ -769,6 +769,7 @@ interface LlmRequestPayload {
     line: string;
     signature: string;
   }[];
+  advertisedProfilesHash?: string;
 }
 
 /**

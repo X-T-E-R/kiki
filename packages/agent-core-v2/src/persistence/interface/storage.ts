@@ -118,6 +118,7 @@ export function toStorageIoError(error: unknown, ctx: { path: string; op: string
 
 export interface StorageWriteOptions {
   readonly atomic?: boolean;
+  readonly preserveDestinationOnError?: boolean;
   readonly signal?: AbortSignal;
 }
 

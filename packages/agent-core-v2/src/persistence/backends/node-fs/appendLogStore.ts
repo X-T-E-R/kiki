@@ -6,8 +6,17 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 
 import { IFileSystemStorageService, StorageError, StorageErrors, type StorageFileStat } from '#/persistence/interface/storage';
-import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
+import {
+  discardColdSegments,
+  discardColdUnlocked,
+  hasColdStateForRewrite,
+  readLogicalBytes,
+  sealColdSegments,
+  waitActiveReadersIdle,
+  withColdExclusive,
+} from '#/persistence/coldSegmentLog';
 import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
+import { removeSparseMarker } from '#/persistence/backends/node-fs/sparseFile';
 import { encodeJsonLines } from '#/persistence/jsonLines';
 import {
   AppendLogCorruptedError,
@@ -324,10 +333,13 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       try {
         let committed: { generation: string; offset: number; boundary: Uint8Array } | undefined;
         await withColdExclusive(this.storage, scope, key, async () => {
+          const located = this.storage.pathFor(scope, key);
           const replace = async (): Promise<void> => {
-            await discardColdUnlocked(this.storage, scope, key);
+            if (await hasColdStateForRewrite(this.storage, scope, key)) {
+              await discardColdUnlocked(this.storage, scope, key);
+            }
+            await waitActiveReadersIdle(this.storage, scope, key);
             const generation = randomUUID();
-            await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
             state.position = undefined;
             if (state.source !== undefined) {
               state.source.revision++;
@@ -344,10 +356,21 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
                 yield chunk;
               }
             };
-            await this.storage.writeStream(scope, key, source(), { atomic: true });
+            await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), {
+              atomic: true,
+              preserveDestinationOnError: true,
+            });
+            await this.storage.writeStream(scope, key, source(), {
+              atomic: true,
+              preserveDestinationOnError: true,
+            });
             committed = { generation, offset, boundary };
+            if (located !== undefined && located.length > 0) {
+              try {
+                await removeSparseMarker(located);
+              } catch {}
+            }
           };
-          const located = this.storage.pathFor(scope, key);
           if (located === undefined || located.length === 0) await replace();
           else await withColdReaderGate(located, replace);
         });

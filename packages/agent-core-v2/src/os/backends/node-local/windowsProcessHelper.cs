@@ -8,6 +8,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
+using Microsoft.Win32.SafeHandles;
 
 public static class WindowsProcessHelper
 {
@@ -60,6 +61,37 @@ public static class WindowsProcessHelper
         public uint faults, total, active, terminated;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileZeroDataInformation
+    {
+        public long FileOffset;
+        public long BeyondFinalZero;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileBasicInfo
+    {
+        public long CreationTime;
+        public long LastAccessTime;
+        public long LastWriteTime;
+        public long ChangeTime;
+        public uint FileAttributes;
+    }
+
+    const uint FSCTL_SET_SPARSE = 0x000900C4;
+    const uint FSCTL_SET_ZERO_DATA = 0x000980C8;
+    const uint GENERIC_READ = 0x80000000;
+    const uint GENERIC_WRITE = 0x40000000;
+    const uint FILE_READ_ATTRIBUTES = 0x0080;
+    const uint FILE_WRITE_ATTRIBUTES = 0x0100;
+    const uint OPEN_EXISTING = 3;
+    const uint INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
+    const uint FILE_ATTRIBUTE_SPARSE_FILE = 0x00000200;
+    const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
+    const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
+    const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    const uint STILL_ACTIVE = 259;
+
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr CreateJobObject(IntPtr attributes, string name);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -83,6 +115,29 @@ public static class WindowsProcessHelper
     [DllImport("kernel32.dll")]
     static extern bool TerminateProcess(IntPtr process, uint code);
 
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFileW(string lpFileName, uint dwDesiredAccess, FileShare dwShareMode, IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(SafeFileHandle hDevice, uint dwIoControlCode, IntPtr lpInBuffer, uint nInBufferSize, IntPtr lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(SafeFileHandle hDevice, uint dwIoControlCode, ref FileZeroDataInformation lpInBuffer, uint nInBufferSize, IntPtr lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern uint GetCompressedFileSizeW(string lpFileName, out uint lpFileSizeHigh);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern uint GetFileAttributesW(string lpFileName);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool MoveFileExW(string lpExistingFileName, string lpNewFileName, uint dwFlags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle hFile, int FileInformationClass, out FileBasicInfo lpFileInformation, uint dwBufferSize);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetFileInformationByHandle(SafeFileHandle hFile, int FileInformationClass, ref FileBasicInfo lpFileInformation, uint dwBufferSize);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool FlushFileBuffers(SafeFileHandle hFile);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetProcessTimes(IntPtr hProcess, out long lpCreationTime, out long lpExitTime, out long lpKernelTime, out long lpUserTime);
+
     static void Check(bool success, string operation)
     {
         if (!success) throw new Win32Exception(Marshal.GetLastWin32Error(), operation);
@@ -99,8 +154,281 @@ public static class WindowsProcessHelper
         Send(writer, "error:" + phase + ":" + (native == null ? 0 : native.NativeErrorCode) + ":" + Convert.ToBase64String(Encoding.UTF8.GetBytes(error.Message)));
     }
 
+    static string LongPath(string path)
+    {
+        string normalized = path.Replace('/', '\\');
+        if (normalized.StartsWith(@"\\?\")) return normalized;
+        if (normalized.StartsWith(@"\\")) return @"\\?\UNC\" + normalized.Substring(2);
+        return @"\\?\" + normalized;
+    }
+
+    static long AllocatedBytes(string path)
+    {
+        string lp = LongPath(path);
+        uint high;
+        uint low = GetCompressedFileSizeW(lp, out high);
+        int err = Marshal.GetLastWin32Error();
+        if (low == 0xFFFFFFFFu && err != 0) throw new Win32Exception(err, "GetCompressedFileSizeW");
+        return ((long)high << 32) | (long)low;
+    }
+
+    static int IsSparse(string path)
+    {
+        string lp = LongPath(path);
+        uint attrs = GetFileAttributesW(lp);
+        if (attrs == INVALID_FILE_ATTRIBUTES)
+        {
+            int err = Marshal.GetLastWin32Error();
+            if (err == 2 || err == 3) return 0;
+            throw new Win32Exception(err, "GetFileAttributesW");
+        }
+        return (attrs & FILE_ATTRIBUTE_SPARSE_FILE) != 0 ? 1 : 0;
+    }
+
+    static void ReplaceAtomic(string srcPath, string dstPath)
+    {
+        string src = LongPath(srcPath);
+        string dst = LongPath(dstPath);
+        int lastErr = 0;
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            if (MoveFileExW(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return;
+            lastErr = Marshal.GetLastWin32Error();
+            if (lastErr != 5 && lastErr != 32) break;
+            Thread.Sleep(10 * (attempt + 1));
+        }
+        throw new Win32Exception(lastErr, "MoveFileExW");
+    }
+
+    static string GetTimes(string path)
+    {
+        string lp = LongPath(path);
+        using (SafeFileHandle handle = CreateFileW(lp, FILE_READ_ATTRIBUTES, FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero))
+        {
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateFileW");
+            FileBasicInfo basic;
+            if (!GetFileInformationByHandleEx(handle, 0, out basic, (uint)Marshal.SizeOf(typeof(FileBasicInfo))))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandleEx");
+            return basic.CreationTime + "\t" + basic.LastAccessTime + "\t" + basic.LastWriteTime + "\t" + basic.ChangeTime;
+        }
+    }
+
+    static void SetTimes(string path, long c, long a, long w, long ch)
+    {
+        string lp = LongPath(path);
+        using (SafeFileHandle handle = CreateFileW(lp, GENERIC_WRITE | FILE_WRITE_ATTRIBUTES, FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero))
+        {
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateFileW");
+            if (!FlushFileBuffers(handle))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "FlushFileBuffers");
+            FileBasicInfo basic;
+            if (!GetFileInformationByHandleEx(handle, 0, out basic, (uint)Marshal.SizeOf(typeof(FileBasicInfo))))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetFileInformationByHandleEx");
+            basic.CreationTime = c;
+            basic.LastAccessTime = a;
+            basic.LastWriteTime = w;
+            basic.ChangeTime = ch;
+            basic.FileAttributes = 0;
+            if (!SetFileInformationByHandle(handle, 0, ref basic, (uint)Marshal.SizeOf(typeof(FileBasicInfo))))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetFileInformationByHandle");
+        }
+    }
+
+    static string PunchRanges(string path, string rangeSpec)
+    {
+        string lp = LongPath(path);
+        long before;
+        try
+        {
+            before = AllocatedBytes(path);
+        }
+        catch (Exception ex)
+        {
+            return "pre_err\tallocated_before:" + ex.Message.Replace("\r", " ").Replace("\n", " ");
+        }
+
+        SafeFileHandle handle = CreateFileW(lp, GENERIC_READ | GENERIC_WRITE | FILE_WRITE_ATTRIBUTES, FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            int openErr = Marshal.GetLastWin32Error();
+            return "pre_err\topen:" + openErr + ":" + new Win32Exception(openErr).Message.Replace("\r", " ").Replace("\n", " ");
+        }
+
+        FileBasicInfo savedBasic;
+        bool hasSavedBasic = false;
+        string mutErr = null;
+        try
+        {
+            if (!GetFileInformationByHandleEx(handle, 0, out savedBasic, (uint)Marshal.SizeOf(typeof(FileBasicInfo))))
+            {
+                int infoErr = Marshal.GetLastWin32Error();
+                return "pre_err\tget_basic_info:" + infoErr + ":" + new Win32Exception(infoErr).Message.Replace("\r", " ").Replace("\n", " ");
+            }
+            hasSavedBasic = true;
+            savedBasic.FileAttributes = 0;
+
+            uint bytesReturned;
+            if (!DeviceIoControl(handle, FSCTL_SET_SPARSE, IntPtr.Zero, 0, IntPtr.Zero, 0, out bytesReturned, IntPtr.Zero))
+            {
+                int sparseErr = Marshal.GetLastWin32Error();
+                return "pre_err\tset_sparse:" + sparseErr + ":" + new Win32Exception(sparseErr).Message.Replace("\r", " ").Replace("\n", " ");
+            }
+
+            try
+            {
+                if (!string.IsNullOrEmpty(rangeSpec))
+                {
+                    string[] items = rangeSpec.Split(',');
+                    uint infoSize = (uint)Marshal.SizeOf(typeof(FileZeroDataInformation));
+                    foreach (string item in items)
+                    {
+                        if (string.IsNullOrEmpty(item)) continue;
+                        string[] bounds = item.Split(':');
+                        FileZeroDataInformation zeroInfo = new FileZeroDataInformation();
+                        zeroInfo.FileOffset = long.Parse(bounds[0]);
+                        zeroInfo.BeyondFinalZero = long.Parse(bounds[1]);
+                        if (!DeviceIoControl(handle, FSCTL_SET_ZERO_DATA, ref zeroInfo, infoSize, IntPtr.Zero, 0, out bytesReturned, IntPtr.Zero))
+                        {
+                            int zeroErr = Marshal.GetLastWin32Error();
+                            mutErr = "zero_data:" + zeroErr + ":" + new Win32Exception(zeroErr).Message;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch (Exception loopEx)
+            {
+                mutErr = "zero_loop:" + loopEx.Message;
+            }
+            finally
+            {
+                if (!FlushFileBuffers(handle))
+                {
+                    int flushErr = Marshal.GetLastWin32Error();
+                    if (mutErr == null) mutErr = "flush:" + flushErr + ":" + new Win32Exception(flushErr).Message;
+                }
+                if (hasSavedBasic && !SetFileInformationByHandle(handle, 0, ref savedBasic, (uint)Marshal.SizeOf(typeof(FileBasicInfo))))
+                {
+                    int timeErr = Marshal.GetLastWin32Error();
+                    if (mutErr == null) mutErr = "restore_times:" + timeErr + ":" + new Win32Exception(timeErr).Message;
+                }
+            }
+        }
+        finally
+        {
+            handle.Dispose();
+        }
+
+        if (mutErr != null)
+            return "mut_err\t" + mutErr.Replace("\r", " ").Replace("\n", " ");
+
+        try
+        {
+            long after = AllocatedBytes(path);
+            return "ok\t" + before + "\t" + after;
+        }
+        catch (Exception afterEx)
+        {
+            return "mut_err\tallocated_after:" + afterEx.Message.Replace("\r", " ").Replace("\n", " ");
+        }
+    }
+
+    static string ProcessCreationFileTime(uint pid)
+    {
+        IntPtr hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (hProc == IntPtr.Zero)
+        {
+            int err = Marshal.GetLastWin32Error();
+            if (err == 87) return "dead";
+            if (err == 5) return "denied";
+            throw new Win32Exception(err, "OpenProcess");
+        }
+        try
+        {
+            uint exitCode;
+            if (GetExitCodeProcess(hProc, out exitCode) && exitCode != STILL_ACTIVE)
+                return "dead";
+            long creation, exit, kernel, user;
+            Check(GetProcessTimes(hProc, out creation, out exit, out kernel, out user), "GetProcessTimes");
+            return creation.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        finally
+        {
+            CloseHandle(hProc);
+        }
+    }
+
+    static int RunSparseWorker()
+    {
+        var utf8NoBom = new UTF8Encoding(false);
+        using (var reader = new StreamReader(Console.OpenStandardInput(), utf8NoBom))
+        using (var writer = new StreamWriter(Console.OpenStandardOutput(), utf8NoBom))
+        {
+            writer.AutoFlush = true;
+            writer.WriteLine("ready\tsparse-v1");
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                if (line.Length == 0) continue;
+                try
+                {
+                    string[] parts = line.Split('\t');
+                    string cmd = parts[0];
+                    if (cmd == "ping")
+                    {
+                        writer.WriteLine("ok\t1");
+                        continue;
+                    }
+                    if (cmd == "proctime")
+                    {
+                        writer.WriteLine("ok\t" + ProcessCreationFileTime(uint.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture)));
+                        continue;
+                    }
+                    string path = Encoding.UTF8.GetString(Convert.FromBase64String(parts[1]));
+                    if (cmd == "size")
+                    {
+                        writer.WriteLine("ok\t" + AllocatedBytes(path));
+                    }
+                    else if (cmd == "attrs")
+                    {
+                        writer.WriteLine("ok\t" + IsSparse(path));
+                    }
+                    else if (cmd == "replace")
+                    {
+                        string dst = Encoding.UTF8.GetString(Convert.FromBase64String(parts[2]));
+                        ReplaceAtomic(path, dst);
+                        writer.WriteLine("ok\t0");
+                    }
+                    else if (cmd == "gettimes")
+                    {
+                        writer.WriteLine("ok\t" + GetTimes(path));
+                    }
+                    else if (cmd == "settimes")
+                    {
+                        SetTimes(path, long.Parse(parts[2]), long.Parse(parts[3]), long.Parse(parts[4]), long.Parse(parts[5]));
+                        writer.WriteLine("ok\t0");
+                    }
+                    else if (cmd == "punch")
+                    {
+                        writer.WriteLine(PunchRanges(path, parts[2]));
+                    }
+                    else
+                    {
+                        writer.WriteLine("err\tunknown command");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    writer.WriteLine("err\t" + ex.Message.Replace("\r", " ").Replace("\n", " "));
+                }
+            }
+        }
+        return 0;
+    }
+
     public static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--sparse-worker" && args[1] == "v1") return RunSparseWorker();
         if (args.Length != 1) return 2;
         const int UnreleasedExit = 6;
         bool releaseCompleted = false;

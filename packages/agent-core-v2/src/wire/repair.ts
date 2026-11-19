@@ -1,5 +1,6 @@
 import type { ILogService } from '#/_base/log/log';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
+import { openPinnedLogicalRead } from '#/persistence/coldSegmentLog';
 import type {
   AppendLogTruncation,
   IAppendLogStore,
@@ -30,30 +31,35 @@ export async function repairWireJournal(
   let droppedCount = 0;
   let repairError: unknown;
   try {
-    if ((await storage.size(scope, key)) !== undefined) {
-      const backupKey = wireJournalBackupKey(key);
-      let lines = 0;
-      let hasContent = false;
-      const original = async function* () {
-        for await (const chunk of storage.readStream(scope, key)) {
-          for (const byte of chunk) {
-            if (byte === 0x0a) {
-              lines++;
-              hasContent = false;
-            } else {
-              hasContent = true;
+    const pinned = await openPinnedLogicalRead(storage, scope, key);
+    try {
+      if (pinned.size !== undefined) {
+        const backupKey = wireJournalBackupKey(key);
+        let lines = 0;
+        let hasContent = false;
+        const original = async function* () {
+          for await (const chunk of pinned.read()) {
+            for (const byte of chunk) {
+              if (byte === 0x0a) {
+                lines++;
+                hasContent = false;
+              } else {
+                hasContent = true;
+              }
             }
+            yield chunk;
           }
-          yield chunk;
+          droppedCount = Math.max(0, lines + Number(hasContent) - records.length);
+        };
+        if ((await storage.size(scope, backupKey)) === undefined) {
+          await storage.writeStream(scope, backupKey, original(), { atomic: true });
+          backupCreated = true;
+        } else {
+          for await (const _chunk of original()) {}
         }
-        droppedCount = Math.max(0, lines + Number(hasContent) - records.length);
-      };
-      if ((await storage.size(scope, backupKey)) === undefined) {
-        await storage.writeStream(scope, backupKey, original(), { atomic: true });
-        backupCreated = true;
-      } else {
-        for await (const _chunk of original()) {}
       }
+    } finally {
+      pinned.close();
     }
     await appendLog.rewrite(scope, key, records);
   } catch (error) {

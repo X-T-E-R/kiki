@@ -23,6 +23,7 @@ import type {
 import { toStorageIoError } from '#/persistence/interface/storage';
 
 import { acquireFileLock } from './fileLock';
+import './sparseFile';
 
 const storagePath = process.platform === 'win32' ? portablePath : posix;
 const basename = (value: string): string => storagePath.basename(value);
@@ -191,7 +192,14 @@ export class FileStorageService implements IFileSystemStorageService {
     const filePath = this.pathFor(scope, key);
     try {
       await mkdir(dirname(filePath), { recursive: true, mode: this.dirMode });
-      await atomicWrite(filePath, data, undefined, this.fileMode, options.signal);
+      await atomicWrite(
+        filePath,
+        data,
+        undefined,
+        this.fileMode,
+        options.signal,
+        options.preserveDestinationOnError === true,
+      );
       await this.syncDirOnce(dirname(filePath));
     } catch (error) {
       options.signal?.throwIfAborted();
@@ -208,7 +216,13 @@ export class FileStorageService implements IFileSystemStorageService {
     const filePath = this.pathFor(scope, key);
     try {
       await mkdir(dirname(filePath), { recursive: true, mode: this.dirMode });
-      await atomicWriteStream(filePath, source, this.fileMode, options.signal);
+      await atomicWriteStream(
+        filePath,
+        source,
+        this.fileMode,
+        options.signal,
+        options.preserveDestinationOnError === true,
+      );
       await this.syncDirOnce(dirname(filePath));
     } catch (error) {
       options.signal?.throwIfAborted();

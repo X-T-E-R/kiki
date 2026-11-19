@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { matchSingleMediaPathTag } from '@kiki/agent-core-v2/agent/media/mediaRef';
+import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
+import { openPinnedLogicalRead, type PinnedLogicalRead } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
+import { readPinnedRange, wireFileAddress } from '@kiki/agent-core-v2/persistence/logicalWireFile';
 import { normalizeLiteral, tokenize } from '@kiki/lexical';
 
 import type { GlobalSearchIncomplete } from '../contract';
@@ -312,10 +315,17 @@ export class SqliteSearchIndex {
     }
   }
 
-  private async tailHash(path: string, offset: number): Promise<string> {
+  private async tailHash(path: string, offset: number, pinned?: PinnedLogicalRead): Promise<string> {
+    const length = Math.min(4096, offset);
+    if (length <= 0) return createHash('sha1').digest('hex');
+    if (pinned?.sealed) {
+      const buf = await readPinnedRange(pinned, offset - length, length);
+      this.readBytes += buf.byteLength;
+      if (buf.byteLength) this.readFiles.add(path);
+      return createHash('sha1').update(buf).digest('hex');
+    }
     const fd = await open(path, 'r');
     try {
-      const length = Math.min(4096, offset);
       const buf = Buffer.allocUnsafe(length);
       const { bytesRead } = await fd.read(buf, 0, length, offset - length);
       this.readBytes += bytesRead;
@@ -469,7 +479,7 @@ export class SqliteSearchIndex {
 
   private async syncFile(session: SqliteSessionInput, path: string, agentId: string, isBranch = false): Promise<void> {
     const db = this.db;
-    const st = await stat(path);
+    let st = await stat(path);
     let file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as FileRow | undefined;
     const policy = agentId === 'main' || this.indexSubagents ? 'full' : 'skip';
     if (policy === 'skip') {
@@ -496,54 +506,66 @@ export class SqliteSearchIndex {
       return;
     }
     if (file?.policy === 'quarantined') return;
-    const changed = file && (st.size !== file.size || st.mtimeMs !== file.mtime_ms || file.ino !== String(st.ino));
-    const replace = file && (st.size < file.offset || file.policy !== policy || (changed && file.offset > 0 &&
-      (file.ino !== String(st.ino) || (st.size === file.size && st.mtimeMs !== file.mtime_ms) ||
-        file.tail_hash !== await this.tailHash(path, file.offset))));
-    if (!replace && file?.offset === st.size) {
-      if (changed) db.prepare('UPDATE files SET size=?,mtime_ms=? WHERE id=?').run(st.size, st.mtimeMs, file.id);
+    if (
+      file !== undefined &&
+      file.policy === policy &&
+      file.offset === st.size &&
+      st.size === file.size &&
+      st.mtimeMs === file.mtime_ms &&
+      String(st.ino) === file.ino
+    ) {
       return;
     }
-    db.prepare("INSERT INTO meta(k,v) VALUES('inflight',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").run(path);
-    if (replace && file) {
-      this.removeFile(file.id);
-      file = undefined;
-    }
-    if (!file) {
-      db.prepare("INSERT INTO files(session_id,agent_id,path,ino,size,mtime_ms,offset,tail_hash,turn_next,turn_has,step_state,policy) VALUES(?,?,?,?,?,?,0,NULL,0,0,?,?)")
-        .run(session.id, agentId, path, String(st.ino), st.size, st.mtimeMs, JSON.stringify(EMPTY_STEP), policy);
-      file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as unknown as FileRow;
-    }
-    const fd = await open(path, 'r');
-    let offset = file.offset;
-    let position = offset;
-    let pending = Buffer.alloc(0);
-    let dropping = false;
-    let next = file.turn_next;
-    let hasTurn = !!file.turn_has;
-    let step: StepTrackerState = JSON.parse(file.step_state) as StepTrackerState;
-    let docs = 0;
-    let textBytes = 0;
-    let skipped = 0;
-    const commit = async (): Promise<void> => {
-      if (offset === file!.offset) return;
-      const hash = await this.tailHash(path, offset);
-      db.prepare('UPDATE files SET ino=?,size=?,mtime_ms=?,offset=?,tail_hash=?,turn_next=?,turn_has=?,step_state=? WHERE id=?')
-        .run(String(st.ino), st.size, st.mtimeMs, offset, hash, next, Number(hasTurn), JSON.stringify(step), file!.id);
-      db.exec('COMMIT');
-      file!.offset = offset;
-      docs = 0;
-      textBytes = 0;
-      this.afterCommit();
-      await this.options.afterBatch?.();
-      db.exec('BEGIN');
-    };
-    db.exec('BEGIN');
+    const address = wireFileAddress(path);
+    const storage = new FileStorageService(address.baseDir);
+    let pinned: PinnedLogicalRead | undefined;
+    let fd: Awaited<ReturnType<typeof open>> | undefined;
     try {
-      const chunk = Buffer.allocUnsafe(CHUNK);
-      while (position < st.size && !this.walStuck) {
-        const { bytesRead } = await fd.read(chunk, 0, Math.min(CHUNK, st.size - position), position);
-        if (!bytesRead) break;
+      pinned = await openPinnedLogicalRead(storage, address.scope, address.key);
+      st = await stat(path);
+      const changed = file && (st.size !== file.size || st.mtimeMs !== file.mtime_ms || file.ino !== String(st.ino));
+      const replace = file && (st.size < file.offset || file.policy !== policy || (changed && file.offset > 0 &&
+        (file.ino !== String(st.ino) || (st.size === file.size && st.mtimeMs !== file.mtime_ms) ||
+          file.tail_hash !== await this.tailHash(path, file.offset, pinned))));
+      if (!replace && file?.offset === st.size) {
+        if (changed) db.prepare('UPDATE files SET size=?,mtime_ms=? WHERE id=?').run(st.size, st.mtimeMs, file.id);
+        return;
+      }
+      db.prepare("INSERT INTO meta(k,v) VALUES('inflight',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").run(path);
+      if (replace && file) {
+        this.removeFile(file.id);
+        file = undefined;
+      }
+      if (!file) {
+        db.prepare("INSERT INTO files(session_id,agent_id,path,ino,size,mtime_ms,offset,tail_hash,turn_next,turn_has,step_state,policy) VALUES(?,?,?,?,?,?,0,NULL,0,0,?,?)")
+          .run(session.id, agentId, path, String(st.ino), st.size, st.mtimeMs, JSON.stringify(EMPTY_STEP), policy);
+        file = db.prepare('SELECT * FROM files WHERE path=?').get(path) as unknown as FileRow;
+      }
+      if (!pinned?.sealed) fd = await open(path, 'r');
+      let offset = file.offset;
+      let position = offset;
+      let pending = Buffer.alloc(0);
+      let dropping = false;
+      let next = file.turn_next;
+      let hasTurn = !!file.turn_has;
+      let step: StepTrackerState = JSON.parse(file.step_state) as StepTrackerState;
+      let docs = 0;
+      let textBytes = 0;
+      let skipped = 0;
+      const commit = async (): Promise<void> => {
+        if (offset === file!.offset) return;
+        const hash = await this.tailHash(path, offset, pinned);
+        db.prepare('UPDATE files SET ino=?,size=?,mtime_ms=?,offset=?,tail_hash=?,turn_next=?,turn_has=?,step_state=? WHERE id=?')
+          .run(String(st.ino), st.size, st.mtimeMs, offset, hash, next, Number(hasTurn), JSON.stringify(step), file!.id);
+        db.exec('COMMIT');
+        file!.offset = offset;
+        docs = 0;
+        textBytes = 0;
+        this.afterCommit();
+        await this.options.afterBatch?.();
+        db.exec('BEGIN');
+      };
+      const consumeChunk = async (chunk: Uint8Array, bytesRead: number): Promise<void> => {
         this.readBytes += bytesRead;
         this.readFiles.add(path);
         position += bytesRead;
@@ -623,22 +645,45 @@ export class SqliteSearchIndex {
           if (this.walStuck) break;
         }
         if (pending.length > MAX_LINE) { dropping = true; pending = Buffer.alloc(0); skipped++; }
-      }
-      if (skipped) db.prepare("INSERT INTO meta(k,v) VALUES('skipped_lines',?) ON CONFLICT(k) DO UPDATE SET v=CAST(v AS INTEGER)+excluded.v")
-        .run(String(skipped));
-      await commit();
-      db.exec('COMMIT');
+      };
       db.exec('BEGIN');
       try {
-        db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
-        if (!this.walStuck && file.offset === st.size) db.prepare('DELETE FROM file_failures WHERE path=?').run(path);
+        if (pinned?.sealed) {
+          if (position < st.size) {
+            for await (const raw of pinned.read({ start: position, end: st.size - 1 }, { chunkBytes: CHUNK })) {
+              if (this.walStuck) break;
+              if (!raw.byteLength) continue;
+              await consumeChunk(raw, raw.byteLength);
+            }
+          }
+        } else {
+          const chunk = Buffer.allocUnsafe(CHUNK);
+          while (position < st.size && !this.walStuck) {
+            const { bytesRead } = await fd!.read(chunk, 0, Math.min(CHUNK, st.size - position), position);
+            if (!bytesRead) break;
+            await consumeChunk(chunk, bytesRead);
+          }
+        }
+        if (skipped) db.prepare("INSERT INTO meta(k,v) VALUES('skipped_lines',?) ON CONFLICT(k) DO UPDATE SET v=CAST(v AS INTEGER)+excluded.v")
+          .run(String(skipped));
+        await commit();
         db.exec('COMMIT');
-      } catch (error) { db.exec('ROLLBACK'); throw error; }
-    } catch (error) {
-      if (db.isTransaction) db.exec('ROLLBACK');
-      db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
-      throw error;
-    } finally { await fd.close(); }
+        db.exec('BEGIN');
+        try {
+          db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
+          if (!this.walStuck && file.offset === st.size) db.prepare('DELETE FROM file_failures WHERE path=?').run(path);
+          db.exec('COMMIT');
+        } catch (error) { db.exec('ROLLBACK'); throw error; }
+      } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        db.prepare("DELETE FROM meta WHERE k='inflight' AND v=?").run(path);
+        throw error;
+      }
+    } finally {
+      await fd?.close();
+      pinned?.close();
+      await storage?.close();
+    }
   }
 
   async search(q: NormalizedQuery, pageToken?: string, budgets: SearchBudgets = DEFAULT_SEARCH_BUDGETS,

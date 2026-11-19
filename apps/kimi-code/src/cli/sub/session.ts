@@ -1,10 +1,12 @@
 import type { Command } from 'commander';
 
 import {
+  compactPersistedSession,
   discardPersistedSession,
   isPersistedSessionBusy,
   sealPersistedSession,
   type PersistedSessionMaintenance,
+  type RetainedCompactOptions,
 } from '@kiki/node-sdk';
 
 import { resolveKikiHome } from '#/kiki/home';
@@ -36,6 +38,10 @@ export interface SessionCommandDeps {
   readonly followSession: (options: FollowSessionOptions) => AsyncIterable<SessionInspection>;
   readonly listSessions: (homeDir: string) => Promise<readonly SessionLocationSummary[]>;
   readonly sealSession?: (input: PersistedSessionMaintenance) => ReturnType<typeof sealPersistedSession>;
+  readonly compactSession?: (
+    input: PersistedSessionMaintenance,
+    options?: RetainedCompactOptions,
+  ) => ReturnType<typeof compactPersistedSession>;
   readonly discardSession?: (input: PersistedSessionMaintenance) => ReturnType<typeof discardPersistedSession>;
   readonly stdout: WritableLike;
   readonly stderr: WritableLike;
@@ -59,6 +65,10 @@ export interface SessionListOptions {
 export interface SessionJournalOptions {
   readonly json: boolean;
   readonly workspace?: string;
+}
+
+export interface SessionCompactCommandOptions extends SessionJournalOptions {
+  readonly reclaim?: boolean;
 }
 
 export async function handleSessionShow(
@@ -146,6 +156,53 @@ export async function handleSessionUnseal(
   options: SessionJournalOptions,
 ): Promise<void> {
   await handleSessionJournal(deps, reference, options, 'unseal');
+}
+
+export async function handleSessionCompact(
+  deps: SessionCommandDeps,
+  reference: string,
+  options: SessionCompactCommandOptions,
+): Promise<void> {
+  try {
+    const located = await locateOfflineSession(deps, reference, options.workspace);
+    const maintenance: PersistedSessionMaintenance = {
+      homeDir: deps.homeDir(),
+      workspaceId: located.workspaceId,
+      sessionId: located.sessionId,
+      sessionDir: located.sessionDir,
+    };
+    const result = await (deps.compactSession ?? compactPersistedSession)(maintenance, {
+      reclaim: options.reclaim !== false,
+    });
+    const reclaimedBytes = Math.max(0, result.physicalBytesBefore - result.physicalBytesAfter);
+    const payload = {
+      schemaVersion: 1,
+      action: 'compact',
+      sessionId: located.sessionId,
+      workspaceId: located.workspaceId,
+      wires: result.totalJournals,
+      compactedJournals: result.compactedJournals,
+      skippedJournals: result.skippedJournals,
+      reusedSegments: result.reusedSegments,
+      logicalBytes: result.logicalBytes,
+      physicalBytesBefore: result.physicalBytesBefore,
+      physicalBytesAfter: result.physicalBytesAfter,
+      reclaimedBytes,
+    };
+    deps.stdout.write(
+      options.json
+        ? `${JSON.stringify(payload, null, 2)}\n`
+        : `Compacted ${result.compactedJournals}/${result.totalJournals} wire journal${result.totalJournals === 1 ? '' : 's'} in ${located.sessionId} (reclaimed ${reclaimedBytes} bytes).\n`,
+    );
+  } catch (error) {
+    writeError(
+      deps,
+      isPersistedSessionBusy(error) && error instanceof Error
+        ? new SessionInspectionError('session_active', error.message)
+        : error,
+      options.json,
+    );
+  }
 }
 
 async function handleSessionJournal(
@@ -312,6 +369,21 @@ export function registerSessionCommand(parent: Command, overrides: Partial<Sessi
         workspace: options.workspace,
       });
     });
+
+  session
+    .command('compact')
+    .description('Compress cold wire prefixes with zstd and reclaim interior sparse extents without resuming the session. A session held by another Kiki process is refused.')
+    .argument('<session>', 'Session link, session_<uuid>, or bare UUID.')
+    .option('--json', 'Print stable machine-readable JSON.')
+    .option('--workspace <workspace-id>', 'Select one copy when the session exists in multiple workspaces.')
+    .option('--no-reclaim', 'Keep dense original wire bytes on disk instead of punching sparse holes.')
+    .action(async (reference: string, options: { json?: boolean; workspace?: string; reclaim?: boolean }) => {
+      await handleSessionCompact(deps, reference, {
+        json: options.json === true,
+        workspace: options.workspace,
+        reclaim: options.reclaim,
+      });
+    });
 }
 
 function commandRawArgs(command: Command): readonly string[] {
@@ -347,6 +419,7 @@ function createDefaultDeps(overrides: Partial<SessionCommandDeps>): SessionComma
     followSession: overrides.followSession ?? followOfflineSession,
     listSessions: overrides.listSessions ?? ((homeDir) => listOfflineSessions({ homeDir })),
     sealSession: overrides.sealSession,
+    compactSession: overrides.compactSession,
     discardSession: overrides.discardSession,
     stdout: overrides.stdout ?? process.stdout,
     stderr: overrides.stderr ?? process.stderr,

@@ -196,8 +196,10 @@ describe('LLMRequester service migration coverage', () => {
         messageCount: 1,
         turnStep: '7.3',
       });
+      expect((requests[1]?.args as Record<string, unknown>)['systemPrompt']).toBeUndefined();
       const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
       expect((requests[0]?.args as Record<string, unknown>)['systemPromptHash']).toBe(sha('request-specific system'));
+      expect((requests[1]?.args as Record<string, unknown>)['systemPromptHash']).toBe(sha('request-specific system'));
 
       ctx.mockNextResponse({ type: 'text', text: 'third response' });
       await llmRequester.request({
@@ -207,6 +209,7 @@ describe('LLMRequester service migration coverage', () => {
         source: { type: 'operation', requestKind: 'direct_test', logFields: { turnStep: '7.4' } },
       });
       const third = wireEvents(ctx, 'llm.request')[2]?.args as Record<string, unknown>;
+      expect(third['systemPrompt']).toBe('changed system');
       expect(third['systemPromptHash']).toBe(sha('changed system'));
       expect(third['toolsHash']).not.toBe(snapshotArgs?.['hash']);
       expect(wireEvents(ctx, 'llm.tools_snapshot')).toHaveLength(2);

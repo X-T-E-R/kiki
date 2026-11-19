@@ -95,12 +95,20 @@ export { resolveKikiHome, analyzeBashCommand, matchBashPattern, matchesBashRuleS
 // config without spinning up a full engine.
 export { effectiveModelAlias, loadRuntimeConfigSafe, readMergedConfigData, resolveConfigPath } from '#/config';
 export {
+  compactPersistedSession,
   discardPersistedSession,
   isPersistedSessionBusy,
   openPersistedJournal,
   sealPersistedSession,
+  unsealPersistedSession,
 } from '#/retained-session';
-export type { PersistedJournalRead, PersistedSessionMaintenance } from '#/retained-session';
+export type {
+  PersistedJournalRead,
+  PersistedSessionMaintenance,
+  RetainedCompactOptions,
+  RetainedCompactSessionResult,
+  RetainedUnsealSessionResult,
+} from '#/retained-session';
 export { limitAgentReplayByTurns } from '#/wire/replay-turns';
 export { normalizeWorkDir, sameWorkDir } from '#/v2/session-mapper';
 export { inspectWorkspaceTrustSources } from '#/workspace-trust';
