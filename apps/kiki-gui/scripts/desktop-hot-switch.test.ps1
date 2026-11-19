@@ -1111,6 +1111,35 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     Remove-Item -LiteralPath $blockedExit
     Assert-Equal $continuedPauseId ([string]$successState.sessions[0].pauseId) 'A resumed switch replaced the original saved pause.'
 
+    $shortcutDesktopDir = Join-Path $testRoot 'DesktopShortcuts'
+    Invoke-Script $controller @(
+        '-Action', 'InstallShortcuts',
+        '-RuntimeRoot', $runtimeRoot,
+        '-CandidateRoot', $oldCandidate,
+        '-DesktopPath', $shortcutDesktopDir,
+        '-ExpectedCommit', $oldCommit
+    ) | Out-Null
+    $installedHotSwitch = Join-Path $runtimeRoot 'controller\desktop-hot-switch.ps1'
+    Assert-True (Test-Path -LiteralPath $installedHotSwitch -PathType Leaf) 'InstallShortcuts did not sync desktop-hot-switch.ps1 into controller/.'
+    $detachOutput = Invoke-Script $installedHotSwitch @(
+        '-RuntimeRoot', $runtimeRoot,
+        '-KikiHome', $homePath,
+        '-Detach',
+        '-DetachDelaySeconds', '1',
+        '-SettleSeconds', '15',
+        '-StartupSeconds', '15'
+    )
+    Assert-Contains 'Detached hot-switch scheduled' $detachOutput 'Detached hot-switch did not schedule its Job-escaped worker.'
+    $detachedServer = Wait-ForFixtureServer $oldCommit 25
+    Assert-Equal $oldCommit ([string]$detachedServer.meta.build_id) 'Detached controller hot-switch did not switch to the settings.json candidate.'
+    $detachWaitDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ([DateTime]::UtcNow -lt $detachWaitDeadline) {
+        $detachState = Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json
+        if ([string]$detachState.phase -eq 'complete') { break }
+        Start-Sleep -Milliseconds 200
+    }
+    Assert-Equal 'complete' ([string](Get-Content -LiteralPath $switchStatePath -Raw | ConvertFrom-Json).phase) 'Detached hot-switch did not complete its state record.'
+
     $completed = $true
     Write-Output 'desktop-hot-switch tests passed: automatic window close, unrelated service preservation, saved-pause continuation, one task receipt, failed launch recovery, prior-pointer recovery, and settle-failure pause cleanup.'
 }

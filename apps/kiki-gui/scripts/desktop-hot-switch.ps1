@@ -6,6 +6,8 @@ param(
     [string]$ExpectedCommit,
     [switch]$Recover,
     [switch]$Background,
+    [switch]$Detach,
+    [ValidateRange(0, 300)][int]$DetachDelaySeconds = 5,
     [ValidateRange(1, 86400)][int]$SettleSeconds = 600,
     [ValidateRange(1, 3600)][int]$StartupSeconds = 90,
     [bool]$InterruptAfterSettle = $true,
@@ -273,6 +275,18 @@ try {
 
     $continuing = $null -ne $state -and $state.phase -eq 'pausing'
     if ($null -ne $state -and $state.phase -notin @('complete', 'pausing')) { throw 'A switch is unfinished. Run this command with -Recover first.' }
+    if (!$candidate) {
+        $controllerSettingsPath = Join-Path $PSScriptRoot 'settings.json'
+        if (Test-Path -LiteralPath $controllerSettingsPath -PathType Leaf) {
+            $controllerSettings = Get-Content -LiteralPath $controllerSettingsPath -Raw | ConvertFrom-Json
+            if ($controllerSettings.schemaVersion -eq 1 -and -not [string]::IsNullOrWhiteSpace($controllerSettings.candidateRoot)) {
+                $candidate = [string]$controllerSettings.candidateRoot
+                if ([string]::IsNullOrWhiteSpace($commit) -and -not [string]::IsNullOrWhiteSpace($controllerSettings.expectedCommit)) {
+                    $commit = [string]$controllerSettings.expectedCommit
+                }
+            }
+        }
+    }
     if (!$candidate) { throw 'Pass -CandidateRoot with the verified desktop build directory.' }
     $verified = Read-PromotionCandidate $candidate $commit
     $expectedBuildId = [string]$verified.GitSha
@@ -284,6 +298,40 @@ try {
     $shells = @(Find-Shells)
     if ($shells.Count -gt 1 -or @($shells | Where-Object { $_.Path -ine (Join-Path (Get-ReleasePath $runtime $old.releaseId) 'kiki-desktop.exe') }).Count) {
         throw 'Close extra desktop shells; the running shell must match the service being switched.'
+    }
+    if ($Detach) {
+        $lock.Dispose()
+        $lock = $null
+        $logPath = Join-Path $runtime 'hot-switch.log'
+        $runnerPs1 = Join-Path $runtime 'hot-switch-detach.ps1'
+        $runnerVbs = Join-Path $runtime 'hot-switch-detach.vbs'
+        $psExe = Join-Path $PSHOME 'powershell.exe'
+        $esc = { param([string]$s) "'" + $s.Replace("'", "''") + "'" }
+        $invokeArgs = @(
+            "-RuntimeRoot $(& $esc $runtime)",
+            "-KikiHome $(& $esc $homePath)",
+            "-CandidateRoot $(& $esc $candidate)",
+            "-SettleSeconds $SettleSeconds",
+            "-StartupSeconds $StartupSeconds"
+        )
+        if (-not [string]::IsNullOrWhiteSpace($commit)) { $invokeArgs += "-ExpectedCommit $(& $esc $commit)" }
+        if ($Background) { $invokeArgs += '-Background' }
+        if ($NoInterruptAfterSettle -or (-not $InterruptAfterSettle)) { $invokeArgs += '-NoInterruptAfterSettle' }
+        $runnerBody = @(
+            "`$env:KIKI_HOME = $(& $esc $homePath)",
+            "Start-Sleep -Seconds $DetachDelaySeconds",
+            "& $(& $esc $entryScript) $($invokeArgs -join ' ') *>> $(& $esc $logPath)"
+        ) -join "`r`n"
+        [IO.File]::WriteAllText($runnerPs1, "[IO.File]::WriteAllText($(& $esc $logPath), '', (New-Object Text.UTF8Encoding(`$false)))`r`n" + $runnerBody + "`r`n", (New-Object Text.UTF8Encoding($false)))
+        $vbsCmd = '""{0}"" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{1}""' -f $psExe, $runnerPs1
+        [IO.File]::WriteAllText($runnerVbs, ('CreateObject("WScript.Shell").Run "{0}", 0, False' -f $vbsCmd), (New-Object Text.UTF8Encoding($false)))
+        $wmiCmd = 'wscript.exe //B //NoLogo "{0}"' -f $runnerVbs
+        $wmiRes = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $wmiCmd }
+        if ($wmiRes.ReturnValue -ne 0) {
+            throw "Failed to spawn detached hot-switch worker via Win32_Process (ReturnValue=$($wmiRes.ReturnValue))."
+        }
+        Write-Host ("Detached hot-switch scheduled (wmiPid={0}, delay={1}s, target={2}, log={3})" -f $wmiRes.ProcessId, $DetachDelaySeconds, $targetRelease, $logPath)
+        return
     }
     foreach ($shell in $shells) { $shell.EnableRaisingEvents = $true; $null = $shell.Handle }
     if ($continuing) {
@@ -369,5 +417,5 @@ try {
     }
     throw $failure
 } finally {
-    $lock.Dispose()
+    if ($null -ne $lock) { $lock.Dispose() }
 }

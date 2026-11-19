@@ -418,11 +418,16 @@ function Install-KikiShortcuts([string]$Root, [string]$Candidate, [string]$Deskt
     $desktopFullPath = Get-FullPath $Desktop
     $controllerDirectory = Join-Path $rootPath 'controller'
     $installedController = Join-Path $controllerDirectory 'desktop-release.ps1'
+    $sourceHotSwitch = Join-Path $PSScriptRoot 'desktop-hot-switch.ps1'
+    $installedHotSwitch = Join-Path $controllerDirectory 'desktop-hot-switch.ps1'
     [IO.Directory]::CreateDirectory($controllerDirectory) | Out-Null
     [IO.Directory]::CreateDirectory($desktopFullPath) | Out-Null
 
     if ((Get-FullPath $PSCommandPath) -ne (Get-FullPath $installedController)) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $installedController -Force
+    }
+    if ((Test-Path -LiteralPath $sourceHotSwitch -PathType Leaf) -and ((Get-FullPath $sourceHotSwitch) -ne (Get-FullPath $installedHotSwitch))) {
+        Copy-Item -LiteralPath $sourceHotSwitch -Destination $installedHotSwitch -Force
     }
     Write-AtomicUtf8Json (Join-Path $controllerDirectory 'settings.json') ([ordered]@{
         schemaVersion = 1
