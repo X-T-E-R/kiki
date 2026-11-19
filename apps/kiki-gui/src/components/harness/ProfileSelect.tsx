@@ -451,7 +451,7 @@ export function ProfileSelect({
 
   const checkedProfile = check?.profile;
   const checkedPath = check?.path;
-  const useFile = (profile: NamedAgentProfile, path: string) => {
+  const applyFile = (profile: NamedAgentProfile, path: string) => {
     const source = profile.source_file ?? path;
     setResolvedFile({ path: source, name: profile.name, description: profile.description });
     onChange({
@@ -740,7 +740,7 @@ export function ProfileSelect({
                       type="button"
                       data-execution-file-use
                       data-execution-file-apply
-                      onClick={() => { useFile(checkedProfile, checkedPath); }}
+                      onClick={() => { applyFile(checkedProfile, checkedPath); }}
                       className="mt-2 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] font-medium text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
                     >
                       {t('composer.execution.fileUse')}

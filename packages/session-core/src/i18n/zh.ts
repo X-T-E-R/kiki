@@ -4364,6 +4364,14 @@ export const zh = {
   'st.fetchModels.serverUnsupported': '此提供商未配置可刷新的目录来源。请在下方选择目录模型或输入模型 ID。',
   'st.providers.managedHint':
     '此提供商通过 OAuth 登录。ID、协议与凭证跟随上方的登录 / 登出状态；下方其余设置仍可编辑并保存。',
+  'st.providers.removeOAuthBody':
+    '这会从 Kiki 配置中移除该账号连接及其模型别名。',
+  'st.providers.removeOAuthSignedInC1':
+    '同时退出并清除 Kiki 本地保存的 {id} 登录凭证。',
+  'st.providers.removeOAuthOriginalC1':
+    'Kiki 将停止复用本机 {id} 登录态，不影响原应用本身。',
+  'st.providers.removeOAuthReaddC2':
+    '后续仍可随时通过“添加连接”重新添加。',
   'st.chips.capabilities': '能力',
   'st.chips.efforts': '模型支持的思考档位',
   'st.chips.addPlaceholder': '自定义值 + 回车',

@@ -105,6 +105,22 @@ export function NbSearchRoutingEditor({
     (chain) => chain.inputKind === 'url' && chain.representation === 'markdown',
   )?.pipelines ?? binding.draft.fetchChain;
 
+  const preview = useMemo(() => {
+    const trimmed = previewUrl.trim();
+    if (advanced === undefined || trimmed === '') return null;
+    try {
+      // The standard package's own selector. Pure: it plans, it does not
+      // fetch, and it cannot bill. A URL it cannot parse is left to the tool.
+      return selectFetchRoute(
+        { url: trimmed, representation: 'markdown', execution: 'sync' },
+        view.effective,
+        defaultPipelines,
+      );
+    } catch {
+      return null;
+    }
+  }, [advanced, previewUrl, view, defaultPipelines]);
+
   if (advanced === undefined) return null;
 
   const own = advanced.routing;
@@ -174,22 +190,6 @@ export function NbSearchRoutingEditor({
     || newOrigin.trim() === ''
     || rules.some((rule) => rule.id === newId.trim());
   const newRuleDuplicate = newId.trim() !== '' && rules.some((rule) => rule.id === newId.trim());
-
-  const preview = useMemo(() => {
-    const trimmed = previewUrl.trim();
-    if (trimmed === '') return null;
-    try {
-      // The standard package's own selector. Pure: it plans, it does not
-      // fetch, and it cannot bill. A URL it cannot parse is left to the tool.
-      return selectFetchRoute(
-        { url: trimmed, representation: 'markdown', execution: 'sync' },
-        view.effective,
-        defaultPipelines,
-      );
-    } catch {
-      return null;
-    }
-  }, [previewUrl, view, defaultPipelines]);
 
   return (
     <div className="space-y-3">

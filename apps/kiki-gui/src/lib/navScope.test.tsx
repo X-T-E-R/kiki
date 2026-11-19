@@ -36,7 +36,10 @@ interface FixtureValue {
   restoreLocal(signal?: AbortSignal): Promise<void>;
 }
 const Context = createContext<FixtureValue | null>(null);
-injected.connection = () => useContext(Context);
+function useInjectedConnection() {
+  return useContext(Context);
+}
+injected.connection = useInjectedConnection;
 const token = 'a'.repeat(43);
 const endpoints = { a: 'http://127.0.0.1:41001', b: 'http://127.0.0.1:41002', ssh: 'http://127.0.0.1:41003' };
 const profile = { id: 'example', label: 'Example', target: { kind: 'alias' as const, alias: 'example' }, releaseChannel: 'stable' as const, remotePort: 58627, serverHomeId: 'server-ssh' };

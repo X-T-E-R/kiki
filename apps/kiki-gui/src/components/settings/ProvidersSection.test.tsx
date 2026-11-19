@@ -26,6 +26,7 @@ const listRecipes = vi.fn();
 const getRequestGovernance = vi.fn();
 const getMemoryAdvisorSettings = vi.fn();
 const updateProvider = vi.fn();
+const deleteProviderEntity = vi.fn();
 const probeDecisionSource = vi.fn();
 
 vi.mock('../../state/connection', () => ({
@@ -45,6 +46,7 @@ vi.mock('../../state/connection', () => ({
       getRequestGovernance,
       getMemoryAdvisorSettings,
       updateProvider,
+      deleteProviderEntity,
       probeDecisionSource,
     },
   }),
@@ -72,6 +74,7 @@ beforeEach(() => {
     advisor_status: { state: 'off', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 },
   });
   updateProvider.mockReset();
+  deleteProviderEntity.mockReset().mockResolvedValue(undefined);
   probeDecisionSource.mockReset();
   listProviders.mockReset().mockResolvedValue({
     items: [
@@ -428,5 +431,71 @@ describe('ProvidersSection unified connections list and folds', () => {
     await typeSearch(container, 'zzzz-no-match');
     expect(connectionRows(container)).toEqual([]);
     expect(container.querySelector('[data-list-empty="no-match"]')).not.toBeNull();
+  });
+
+  it('deletes an unauthenticated managed:kimi-code provider and offers Kimi Code again in Add connection', async () => {
+    let providers = [
+      API_PROVIDER,
+      { id: 'managed:kimi-code', type: 'kimi', status: 'unconfigured', managed: true, has_api_key: false, models: ['kimi-code/kimi-k2'] },
+    ];
+    let models = [
+      { id: 'gpt-4o', provider_id: 'openai-api', remote_id: 'gpt-4o', display_name: 'GPT-4o', max_context_size: 128000 },
+      { id: 'kimi-code/kimi-k2', provider_id: 'managed:kimi-code', remote_id: 'kimi-k2', display_name: 'Kimi K2', max_context_size: 262144 },
+    ];
+    listProviders.mockImplementation(async () => ({ items: providers }));
+    listModels.mockImplementation(async () => ({ items: models }));
+    listOAuthMethods.mockResolvedValue([
+      {
+        id: 'kimi-code',
+        provider: 'managed:kimi-code',
+        label: 'Kimi Code',
+        protocol: 'openai',
+        signed_in: false,
+        connection_state: 'signed_out',
+        account: { state: 'unknown' },
+        quota: { state: 'unknown' },
+      },
+    ]);
+    getProviderEntity.mockImplementation(async (id: string) => (
+      id === 'managed:kimi-code'
+        ? { id: 'managed:kimi-code', type: 'kimi', status: 'unconfigured', managed: true, has_api_key: false, revision: 'rev-kimi', custom_header_keys: [], env_keys: [] }
+        : { ...API_PROVIDER, revision: 'rev-1', custom_header_keys: [], env_keys: [] }
+    ));
+    deleteProviderEntity.mockImplementation(async (id: string) => {
+      providers = providers.filter((p) => p.id !== id);
+      models = models.filter((m) => m.provider_id !== id);
+    });
+
+    const container = await render();
+    expect(connectionRows(container)).toEqual(['openai-api', 'managed:kimi-code']);
+    expect(container.querySelector('[data-attention-row="managed:kimi-code"]')).not.toBeNull();
+
+    const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:kimi-code"]')!;
+    await act(async () => { row.open = true; });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const removeBtn = row.querySelector<HTMLButtonElement>('[data-provider-remove="managed:kimi-code"]')!;
+    expect(removeBtn).not.toBeNull();
+    await act(async () => { removeBtn.click(); });
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"], [role="alertdialog"]')!;
+    expect(dialog).not.toBeNull();
+    const confirmBtn = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Remove provider')!;
+    await act(async () => { confirmBtn.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(deleteProviderEntity).toHaveBeenCalledWith('managed:kimi-code');
+    expect(connectionRows(container)).toEqual(['openai-api']);
+    expect(container.querySelector('[data-connections-attention]')).toBeNull();
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-add-connection]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const addPanel = document.body.querySelector<HTMLElement>('[data-add-connection-panel]')!;
+    expect(addPanel).not.toBeNull();
+    await act(async () => { addPanel.querySelector<HTMLButtonElement>('[data-first-run-lane="account"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(addPanel.querySelector('[data-oauth-method="kimi-code"]')).not.toBeNull();
   });
 });
