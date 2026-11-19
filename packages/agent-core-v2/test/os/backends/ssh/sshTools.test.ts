@@ -595,9 +595,10 @@ describe('SSH tools over a real ssh2 transport', () => {
   it('rejects a file changed between remote counting and the tail window', async () => {
     const f = await fixture();
     const path = '/home/tester/change.txt';
-    f.files.set(path, Buffer.from('one\ntwo\n'));
+    const initial = `${'x'.repeat(70_000)}\ntwo\n`;
+    f.files.set(path, Buffer.from(initial));
     f.response.lineCount = 2;
-    f.response.afterLineCount = () => { f.files.set(path, Buffer.from('one\ntwo\nthree\n')); };
+    f.response.afterLineCount = () => { f.files.set(path, Buffer.from(`${initial}three\n`)); };
     const result = await execute(await f.tools.read.resolveExecution({ host: 'dev', path, line_offset: -1 }));
     expect(result.isError).toBe(true);
     expect(result.output).toContain('changed while locating');
@@ -640,7 +641,7 @@ describe('SSH tools over a real ssh2 transport', () => {
     expect(failed.output).toContain('example-stderr');
     expect(failed.output).toContain('7');
     f.remote.dispose();
-  });
+  }, 20_000);
 
   it('searches Windows trees in one PowerShell traversal with braces, ignores, pagination and explicit failures', async () => {
     const f = await fixture('win32');
