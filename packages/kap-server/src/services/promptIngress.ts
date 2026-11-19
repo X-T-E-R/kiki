@@ -71,6 +71,7 @@ interface Consumer {
 export class PromptIngress {
   private readonly owner = randomUUID();
   private readonly workers = new Map<string, { controller: AbortController; promise: Promise<void>; cancelAttempted: boolean; cancelHandled: boolean }>();
+  private readonly unsettledSubmits = new Map<string, Promise<PromptIngressResult>>();
   private readonly cancelControllers = new Set<AbortController>();
   private readonly closeController = new AbortController();
   private readonly submitSettleTimeoutMs: number;
@@ -390,13 +391,18 @@ export class PromptIngress {
   private async resumeAdmitted(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
     const target = await this.target(sessionId, agentId);
     const key = this.key(agentId, promptId);
+    const progressKey = `${target.scope}/${key}`;
     let entry = await this.read(target, key);
     if (entry === undefined) return undefined;
     entry = await this.recover(target, entry);
-    if (entry.admission !== 'held' && entry.admission !== 'failed') return this.item(target, entry);
+    if ((entry.admission !== 'held' && entry.admission !== 'failed') || this.unsettledSubmits.has(progressKey)) {
+      return this.item(target, entry);
+    }
     const resumed = await this.locked(target, async () => {
       const current = (await this.read(target, key))!;
-      if (current.admission !== 'held' && current.admission !== 'failed') return current;
+      if ((current.admission !== 'held' && current.admission !== 'failed') || this.unsettledSubmits.has(progressKey)) {
+        return current;
+      }
       const next: Entry = { ...current, owner: this.owner, admission: 'restoring', error: undefined, duplicateOf: undefined };
       await this.publish(target, next);
       return next;
@@ -534,6 +540,39 @@ export class PromptIngress {
     });
   }
 
+  private async reconcileLateSubmitSettlement(
+    target: Target,
+    key: string,
+    progressKey: string,
+    settled?: PromptIngressResult,
+  ): Promise<void> {
+    const activeWorker = this.workers.get(progressKey);
+    if (activeWorker !== undefined) {
+      await activeWorker.promise.catch(() => {});
+    }
+    if (this.closed) return;
+    let shouldSchedule: Entry | undefined;
+    await this.locked(target, async () => {
+      const current = await this.read(target, key);
+      if (current === undefined || current.owner !== this.owner || current.admission === 'cancelled') return;
+      const compact = settled === undefined
+        ? current.result
+        : { ...settled, content: this.preview(settled.content), resolved_parts: undefined };
+      if (current.cancelRequested === true) {
+        const next: Entry = compact === current.result ? current : { ...current, result: compact };
+        if (next !== current) await this.publish(target, next);
+        if (!this.workers.has(progressKey)) shouldSchedule = next;
+        return;
+      }
+      if (settled !== undefined && current.admission === 'held') {
+        await this.publish(target, { ...current, result: compact, admission: 'admitted', error: undefined });
+      }
+    }).catch(() => {});
+    if (shouldSchedule !== undefined && !this.closed) {
+      this.schedule(target, shouldSchedule);
+    }
+  }
+
   private async runCancelReconciliation(sessionId: string, agentId: string, promptId: string): Promise<void> {
     if (this.closed) throw new Error('Server stopped during prompt admission');
     const cancelController = new AbortController();
@@ -567,23 +606,52 @@ export class PromptIngress {
       let submitSettled = false;
       let settledResult: PromptIngressResult | undefined;
       let submitFlight: Promise<PromptIngressResult> | undefined;
+      const progressKey = `${target.scope}/${key}`;
       try {
         await abortable(previous.catch(() => {}), controller.signal);
         if (entry.cancelRequested) {
           workerEntry.cancelAttempted = true;
+          const pendingSubmit = this.unsettledSubmits.get(progressKey);
+          if (pendingSubmit !== undefined) {
+            const outcome = await this.awaitSubmitSettlement(pendingSubmit);
+            if (outcome.kind === 'uncertain') {
+              const mapped = mapError(outcome.error, entry.body.prompt_id!);
+              await this.locked(target, async () => {
+                const current = (await this.read(target, key))!;
+                if (current.admission === 'cancelled') {
+                  workerEntry.cancelHandled = true;
+                  return;
+                }
+                await this.publish(target, {
+                  ...current,
+                  admission: 'held',
+                  restoreProgress: this.progressSnapshot(progressKey),
+                  error: { code: mapped.code, message: mapped.msg },
+                });
+              });
+              return;
+            }
+            if (outcome.kind === 'resolved') {
+              settledResult = outcome.result;
+            }
+          }
           await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
           await this.locked(target, async () => {
             const current = (await this.read(target, key))!;
             workerEntry.cancelHandled = true;
-            await this.publish(target, { ...current, admission: 'cancelled', error: undefined });
+            const compact = settledResult === undefined
+              ? current.result
+              : { ...settledResult, content: this.preview(settledResult.content), resolved_parts: undefined };
+            await this.publish(target, { ...current, result: compact, admission: 'cancelled', error: undefined });
           });
           return;
         }
+        if (this.unsettledSubmits.has(progressKey)) return;
         controller.signal.throwIfAborted();
-        const progressKey = `${target.scope}/${key}`;
         const payload = await this.payload(target, key);
         controller.signal.throwIfAborted();
-        submitFlight = this.consumer.submit(target.sessionId, { body: payload, fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
+        let registerUnsettledSubmit: (() => void) | undefined;
+        const rawSubmitFlight = this.consumer.submit(target.sessionId, { body: payload, fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
           steerTarget: entry.steerTarget,
           onRestoreProgress: progress => {
             if (controller.signal.aborted) return;
@@ -596,17 +664,42 @@ export class PromptIngress {
               entry = (await this.read(target, key))!;
               if (entry.cancelRequested || controller.signal.aborted || this.closed) throw new Error('Prompt admission cancelled');
               submittingStarted = true;
+              registerUnsettledSubmit?.();
               entry = { ...entry, stage: 'submitting', restoreProgress: this.progressSnapshot(progressKey) };
               await this.save(target, entry);
               clearTimeout(timeout);
               if (entry.contentIdentity !== undefined && this.pendingContent.get(entry.contentIdentity)?.key === entry.key) this.pendingContent.delete(entry.contentIdentity);
             });
           } });
-        void submitFlight.catch(() => {});
+        const trackedFlight = rawSubmitFlight.then(async (resolved) => {
+          if (!this.closed) {
+            await this.documents().set(`${target.scope}/prompt-ingress/results`, `${key}.json`, resolved);
+          }
+          return resolved;
+        });
+        registerUnsettledSubmit = () => {
+          this.unsettledSubmits.set(progressKey, trackedFlight);
+          void trackedFlight.then(
+            (resolved) => {
+              if (this.unsettledSubmits.get(progressKey) === trackedFlight) {
+                this.unsettledSubmits.delete(progressKey);
+              }
+              return this.reconcileLateSubmitSettlement(target, key, progressKey, resolved);
+            },
+            () => {
+              if (this.unsettledSubmits.get(progressKey) === trackedFlight) {
+                this.unsettledSubmits.delete(progressKey);
+              }
+              return this.reconcileLateSubmitSettlement(target, key, progressKey);
+            },
+          );
+        };
+        if (submittingStarted) registerUnsettledSubmit();
+        void trackedFlight.catch(() => {});
+        submitFlight = trackedFlight;
         const result = await abortable(submitFlight, controller.signal);
         submitSettled = true;
         settledResult = result;
-        await this.documents().set(`${target.scope}/prompt-ingress/results`, `${key}.json`, result);
         await this.locked(target, async () => {
           const current = (await this.read(target, key))!;
           if (current.cancelRequested) workerEntry.cancelAttempted = true;
@@ -660,7 +753,6 @@ export class PromptIngress {
             submitSettled = true;
             if (outcome.kind === 'resolved') {
               settledResult = outcome.result;
-              await this.documents().set(`${target.scope}/prompt-ingress/results`, `${key}.json`, settledResult);
             } else {
               submitError = outcome.error;
             }

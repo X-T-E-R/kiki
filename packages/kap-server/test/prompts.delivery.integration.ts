@@ -1709,6 +1709,26 @@ describe('server-v2 /api prompts', () => {
       expect(Date.now() - startedAbort).toBeLessThan(2000);
       expect(stalledCancel).not.toHaveBeenCalled();
 
+      expect(await boundedIngress.abort(id, 'main', 'stalled-steer-1')).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(await boundedIngress.lookup(id, 'main', 'stalled-steer-1')).toMatchObject({ admission: 'held' });
+      expect(stalledCancel).not.toHaveBeenCalled();
+
+      expect(await boundedIngress.resume(id, 'main', 'stalled-steer-1')).toMatchObject({ admission: 'held' });
+      expect(stalledCalls).toBe(1);
+
+      stalledSubmit1.resolve({
+        prompt_id: 'stalled-steer-1',
+        user_message_id: 'stalled-steer-1',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Stalled 1' }],
+        created_at: new Date().toISOString(),
+      });
+      await vi.waitFor(async () => {
+        expect(await boundedIngress.lookup(id, 'main', 'stalled-steer-1')).toMatchObject({ admission: 'cancelled' });
+      }, { timeout: 2000 });
+      expect(stalledCancel).toHaveBeenCalledTimes(1);
+
       const id2 = await createSession(fixture.home!);
       await boundedIngress.submit(
         id2,

@@ -66,6 +66,8 @@ export type AgentProfileSnapshotHost = { readonly accessor: ServicesAccessor } |
 interface PersistedAgentProfileCacheEntry {
   readonly size: number;
   readonly mtimeMs: number;
+  readonly usedCheckpoint: boolean;
+  readonly checkpointToken: string;
   readonly metadataKey: string;
   readonly snapshot: PersistedAgentProfileSnapshot | undefined;
 }
@@ -144,15 +146,19 @@ export async function readPersistedAgentProfileSnapshot(
   signal?.throwIfAborted();
   const inlineByteBudget = options?.inlineByteBudget;
   const usesCheckpoint = inlineByteBudget !== undefined && size > inlineByteBudget;
+  const checkpointToken = usesCheckpoint ? ckptStat.token : 'full';
   const metadataKey = persistedMetadataKey(metadata);
   const cache = persistedAgentProfileCache(core);
   const cached = cache.get(scope);
-  if (cached !== undefined && cached.size === size && cached.mtimeMs === mtimeMs && cached.metadataKey === metadataKey) {
+  if (cached !== undefined) {
+    const checkpointValid = !cached.usedCheckpoint || (ckptStat.distinguishable && cached.checkpointToken === ckptStat.token);
+    if (cached.size === size && cached.mtimeMs === mtimeMs && cached.metadataKey === metadataKey && checkpointValid) {
+      cache.delete(scope);
+      cache.set(scope, cached);
+      return cached.snapshot;
+    }
     cache.delete(scope);
-    cache.set(scope, cached);
-    return cached.snapshot;
   }
-  const checkpointToken = usesCheckpoint ? ckptStat.token : 'full';
   const flightKey = usesCheckpoint ? `${scope}:budget:${inlineByteBudget}:ckpt:${checkpointToken}` : scope;
   const flights = persistedAgentProfileFlightMap(core);
   let flight = flights.get(flightKey);
@@ -182,7 +188,28 @@ export async function readPersistedAgentProfileSnapshot(
       const snapshot = await scanPersistedAgentProfileSnapshot(appendLog, storage, scope, checkpoint, size)
         .then((value) => value ?? metadataSnapshot(metadata))
         .catch(() => metadataSnapshot(metadata));
-      cachePersistedAgentProfile(cache, scope, { size, mtimeMs, metadataKey, snapshot });
+      if (!usesCheckpoint) {
+        cachePersistedAgentProfile(cache, scope, {
+          size,
+          mtimeMs,
+          usedCheckpoint: false,
+          checkpointToken: 'full',
+          metadataKey,
+          snapshot,
+        });
+      } else if (ckptStat.distinguishable) {
+        const afterCkpt = await readPersistedCheckpointStatToken(storage, scope);
+        if (afterCkpt.distinguishable && afterCkpt.token === ckptStat.token) {
+          cachePersistedAgentProfile(cache, scope, {
+            size,
+            mtimeMs,
+            usedCheckpoint: true,
+            checkpointToken: ckptStat.token,
+            metadataKey,
+            snapshot,
+          });
+        }
+      }
       return snapshot;
     })().finally(() => {
       if (flights.get(flightKey)?.promise === promise) flights.delete(flightKey);

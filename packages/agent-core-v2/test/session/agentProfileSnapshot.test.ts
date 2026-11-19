@@ -160,7 +160,11 @@ describe('readPersistedAgentProfileSnapshot', () => {
   });
 });
 
-function checkpointFixture(extraTail: readonly WireRecord[] = [], context: readonly ContextMessage[] = []) {
+function checkpointFixture(
+  extraTail: readonly WireRecord[] = [],
+  context: readonly ContextMessage[] = [],
+  profileName = 'research',
+) {
   const prefix = Buffer.alloc((8 << 20) + 100, 32);
   prefix[prefix.length - 1] = 10;
   const tail = Buffer.from([
@@ -173,9 +177,9 @@ function checkpointFixture(extraTail: readonly WireRecord[] = [], context: reado
   ].map(record => JSON.stringify(record)).join('\n') + '\n');
   const bytes = Buffer.concat([prefix, tail]);
   const states = [
-    { name: profileKey.name, value: { ...profileKey.initial(), profileName: 'research', modelAlias: 'example-model',
+    { name: profileKey.name, value: { ...profileKey.initial(), profileName, modelAlias: 'example-model',
       canSpawnSubagents: true, allowedSubagents: ['explore'], toolAllowPolicies: [['Read', 'Grep']],
-      boundProfile: { name: 'research', tools: ['Read'], mcpOverrides: { example: false } } } },
+      boundProfile: { name: profileName, tools: ['Read'], mcpOverrides: { example: false } } } },
     { name: profileActiveToolsKey.name, value: ['Read'] },
     { name: tokenCountingKey.name, value: tokenCountingKey.initial() },
     { name: turnKey.name, value: turnKey.initial() },
@@ -376,7 +380,7 @@ it('invalidates cached profile and runtime facts when engine-v1 is created while
       'workspace',
       'session',
       'main',
-      { profileName: 'meta-fallback' } as never,
+      { model: 'meta-fallback' } as never,
       undefined,
       { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
     );
@@ -387,7 +391,7 @@ it('invalidates cached profile and runtime facts when engine-v1 is created while
       'main',
       { contextTokens: 77 } as never,
     );
-    expect(beforeProfile).toMatchObject({ source: 'metadata', wireCoverage: 'unscanned' });
+    expect(beforeProfile).toMatchObject({ source: 'metadata', modelAlias: 'meta-fallback', wireCoverage: 'unscanned' });
     expect(beforeFacts).toEqual({ contextTokens: 77, complete: false });
 
     await docs.set(`${agentScope}/replay-checkpoints`, 'engine-v1', checkpoint);
@@ -399,7 +403,7 @@ it('invalidates cached profile and runtime facts when engine-v1 is created while
       'workspace',
       'session',
       'main',
-      { profileName: 'meta-fallback' } as never,
+      { model: 'meta-fallback' } as never,
       undefined,
       { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
     );
@@ -413,6 +417,39 @@ it('invalidates cached profile and runtime facts when engine-v1 is created while
     expect(afterProfile).toMatchObject({ source: 'wire', profileName: 'research', activeToolNames: ['Read', 'Grep'] });
     expect(afterProfile?.wireCoverage).toBeUndefined();
     expect(afterFacts).toMatchObject({ contextTokens: 1234, turnCount: 8, complete: true });
+
+    const { checkpoint: checkpoint2 } = checkpointFixture([], [], 'implementer');
+    await docs.set(`${agentScope}/replay-checkpoints`, 'engine-v1', checkpoint2);
+    expect(await storage.size(agentScope, 'wire.jsonl')).toBe(wireSizeBefore);
+    expect(await storage.mtime(agentScope, 'wire.jsonl')).toBe(wireMtimeBefore);
+
+    const replacedProfile = await readPersistedAgentProfileSnapshot(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { model: 'meta-fallback' } as never,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    );
+    expect(replacedProfile).toMatchObject({ source: 'wire', profileName: 'implementer', activeToolNames: ['Read', 'Grep'] });
+    expect(replacedProfile?.wireCoverage).toBeUndefined();
+
+    await storage.delete(`${agentScope}/replay-checkpoints`, 'engine-v1');
+    expect(await storage.size(agentScope, 'wire.jsonl')).toBe(wireSizeBefore);
+    expect(await storage.mtime(agentScope, 'wire.jsonl')).toBe(wireMtimeBefore);
+
+    const deletedProfile = await readPersistedAgentProfileSnapshot(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { model: 'meta-fallback' } as never,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    );
+    expect(deletedProfile).toMatchObject({ source: 'metadata', modelAlias: 'meta-fallback', wireCoverage: 'unscanned' });
+    expect(deletedProfile?.profileName).toBeUndefined();
 
     let checkpointPresent = false;
     let docReads = 0;

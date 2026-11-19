@@ -7289,3 +7289,119 @@ it('preserves canonical turn ordinals when extending an explicit cold tail upwar
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 60_000);
+
+it('preserves canonical turn ordinals for hybrid wires with legacy user append turns followed by explicit turn.prompt turns', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-hybrid-legacy-user-turns-'));
+  const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+  await mkdir(wireDir, { recursive: true });
+  const wirePath = join(wireDir, 'wire.jsonl');
+  const records: Record<string, unknown>[] = [];
+  for (let id = 0; id < 8; id += 1) {
+    records.push(
+      {
+        type: 'context.append_message',
+        message: {
+          id: `legacy-msg-${id}`,
+          role: 'user',
+          origin: { kind: 'user' },
+          content: [{ type: 'text', text: `body-${id}` }],
+        },
+        time: 1_000 + id,
+      },
+      { type: 'fixture.padding', padding: 'a'.repeat(600 << 10) },
+      {
+        type: 'context.append_message',
+        message: {
+          id: `legacy-reply-${id}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: `answer-${id}` }],
+          toolCalls: [],
+        },
+        time: 1_050 + id,
+      },
+    );
+  }
+  for (let id = 8; id < 10; id += 1) {
+    records.push(
+      {
+        type: 'context.append_message',
+        message: {
+          id: `legacy-msg-${id}`,
+          role: 'user',
+          origin: { kind: 'user' },
+          content: [{ type: 'text', text: `body-${id}` }],
+        },
+        time: 1_000 + id,
+      },
+      { type: 'fixture.padding', padding: 'b'.repeat(100 << 10) },
+      {
+        type: 'context.append_message',
+        message: {
+          id: `legacy-reply-${id}`,
+          role: 'assistant',
+          content: [{ type: 'text', text: `answer-${id}` }],
+          toolCalls: [],
+        },
+        time: 1_050 + id,
+      },
+    );
+  }
+  for (let id = 10; id < 35; id += 1) {
+    records.push(
+      {
+        type: 'turn.prompt',
+        turnId: id,
+        promptId: `explicit-msg-${id}`,
+        input: [{ type: 'text', text: `body-${id}` }],
+        origin: { kind: 'user' },
+        time: 2_000 + id,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: `explicit-msg-${id}`,
+          role: 'user',
+          origin: { kind: 'user' },
+          content: [{ type: 'text', text: `body-${id}` }],
+        },
+        time: 2_001 + id,
+      },
+      { type: 'fixture.padding', padding: 'c'.repeat(175 << 10) },
+      { type: 'turn.ended', turnId: id, reason: 'completed', time: 2_100 + id },
+    );
+  }
+  await writeFile(wirePath, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const initial = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 20 });
+    expect(initial?.has_more).toBe(true);
+    const collected = [...(initial?.items ?? []).filter((item) => item.kind === 'turn')];
+    expect(collected.at(-1)?.turnId).toBe('t34');
+
+    let beforeTurn = collected[0]?.turnId;
+    let hasMore = initial?.has_more ?? false;
+    let pages = 0;
+    while (hasMore && beforeTurn !== undefined && pages < 10) {
+      pages += 1;
+      const older = await readSessionViewTranscriptPage(service, 's1', {
+        agentId: 'main',
+        beforeTurn,
+        pageSize: 20,
+      });
+      const olderTurns = (older?.items ?? []).filter((item) => item.kind === 'turn');
+      collected.unshift(...olderTurns);
+      hasMore = older?.has_more ?? false;
+      beforeTurn = olderTurns[0]?.turnId;
+    }
+
+    expect(hasMore).toBe(false);
+    expect(collected.map((turn) => turn.turnId)).toEqual(
+      Array.from({ length: 35 }, (_, index) => `t${index}`),
+    );
+    expect(collected.find((turn) => turn.turnId === 't8')).toMatchObject({ prompt: 'body-8' });
+    expect(collected.find((turn) => turn.turnId === 't9')).toMatchObject({ prompt: 'body-9' });
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);

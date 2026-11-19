@@ -565,27 +565,55 @@ function wireTurnId(record: ContextRecord): string | undefined {
 }
 
 function hasImplicitTurnRecords(records: readonly ColdWireRecord[]): boolean {
-  let sawExplicitTurnPrompt = false;
-  let sawLegacyUserAppend = false;
+  let explicitTurnSlotOpen = false;
+  const steeredPromptIds = new Set<string>();
   for (const { record } of records) {
     if (record.type === 'turn_begin') return true;
-    if (record.type === 'turn.started' && wireTurnId(record) === undefined) return true;
-    if (record.type === 'turn.prompt') {
+    if (record.type === 'turn.started' || record.type === 'turn.prompt') {
       if (wireTurnId(record) === undefined) return true;
-      sawExplicitTurnPrompt = true;
+      explicitTurnSlotOpen = true;
+      continue;
+    }
+    if (record.type === 'turn.steer') {
+      if (wireTurnId(record) !== undefined) {
+        const promptId = (record as { promptId?: unknown }).promptId;
+        if (typeof promptId === 'string' && promptId.length > 0) steeredPromptIds.add(promptId);
+      }
+      continue;
+    }
+    if (record.type === 'turn.ended' || record.type === 'context.clear' || record.type === 'branch.base') {
+      explicitTurnSlotOpen = false;
+      steeredPromptIds.clear();
+      continue;
+    }
+    if (record.type === 'context.undo') {
+      explicitTurnSlotOpen = false;
+      steeredPromptIds.clear();
+      if ((record as { replacementPrompt?: unknown }).replacementPrompt !== undefined) return true;
       continue;
     }
     if (record.type === 'context.append_message') {
       const delivery = (record as { delivery?: unknown }).delivery;
-      const message = (record as { message?: { role?: unknown; origin?: { kind?: unknown } } }).message;
+      const message = (record as { message?: { id?: unknown; role?: unknown; origin?: { kind?: unknown } } }).message;
       const kind = message?.origin?.kind;
-      if (delivery === undefined && message?.role === 'user' &&
-          kind !== 'injection' && kind !== 'agent_message' && kind !== 'task' && kind !== 'branch_fold' && kind !== 'external_record') {
-        sawLegacyUserAppend = true;
+      if (
+        delivery === undefined &&
+        message?.role === 'user' &&
+        kind !== 'injection' &&
+        kind !== 'agent_message' &&
+        kind !== 'task' &&
+        kind !== 'branch_fold' &&
+        kind !== 'external_record'
+      ) {
+        if (typeof message.id === 'string' && steeredPromptIds.delete(message.id)) {
+          continue;
+        }
+        if (!explicitTurnSlotOpen) return true;
+        explicitTurnSlotOpen = false;
       }
     }
   }
-  return !sawExplicitTurnPrompt && sawLegacyUserAppend;
+  return false;
 }
 
 interface TurnStartIndex {
