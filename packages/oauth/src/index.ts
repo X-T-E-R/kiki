@@ -273,11 +273,13 @@ export {
   resolveTokenStorage,
   resolveCredentialsStoreMode,
   probeKeyringBackend,
+  probeKeyringBackendAsync,
   keyringServiceForCredentialsDir,
   OAuthStorageUnavailableError,
   KeyringTokenStorage,
 } from './keyring-storage';
 export type {
+  AsyncKeyringEntry,
   KeyringApi,
   KeyringEntry,
   KeyringOperation,

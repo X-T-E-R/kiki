@@ -5,11 +5,13 @@ import { isAbortError } from '#/_base/utils/abort';
 
 import type { ExecutableTool, ExecutableToolContext } from '#/tool/toolContract';
 import { mcpResultToExecutableOutput, type McpOutputOptions } from '#/agent/mcp/output';
-import type { MCPClient, MCPToolResult } from '#/mcpCore/types';
+import type { MCPClient, MCPToolAnnotations, MCPToolResult } from '#/mcpCore/types';
 import { computerToolDescription } from '#/mcpCore/computer';
 import {
   isMcpConnectionClosedError,
   isMcpMalformedResultError,
+  isMcpNotSentTransportError,
+  isMcpToolReplaySafe,
   isMcpTransportFailure,
   probeMcpLiveness,
 } from '#/mcpCore/client-shared';
@@ -24,6 +26,7 @@ interface McpToolOptions {
   readonly admitCall?: () => Promise<{ release(): void } | undefined>;
   readonly computerControl?: boolean;
   readonly computerUsagePreference?: () => 'avoid' | 'prefer';
+  readonly annotations?: MCPToolAnnotations;
   readonly serverName?: string;
   readonly onUnauthorized?: (error: unknown, client: MCPClient) => Promise<boolean>;
 }
@@ -128,6 +131,17 @@ async function retryAfterReconnect(
     );
   }
 
+  const replaySafe = isMcpToolReplaySafe(options.annotations);
+  const throwUnknownOutcome = (cause: unknown): never => {
+    throw new Error(
+      `${toErrorMessage(cause)}. MCP tool call outcome is unknown; the call was not replayed to avoid repeating side effects. Observe current state before deciding whether to retry.`,
+      { cause },
+    );
+  };
+  if (!replaySafe && !isMcpNotSentTransportError(error)) {
+    throwUnknownOutcome(error);
+  }
+
   let failure = error;
   if (!isMcpConnectionClosedError(failure)) {
     const alive = await probeMcpLiveness(client, context.signal);
@@ -139,6 +153,9 @@ async function retryAfterReconnect(
         await throwIfUnauthorized(options, qualifiedName, retryError, client, context.signal);
         if (isUnrecoverable(retryError)) {
           throw retryError;
+        }
+        if (!replaySafe && !isMcpNotSentTransportError(retryError)) {
+          throwUnknownOutcome(retryError);
         }
         failure = retryError;
       }

@@ -31,10 +31,18 @@ export interface MCPToolResult {
   _meta?: Record<string, unknown>;
 }
 
+export interface MCPToolAnnotations {
+  readonly readOnlyHint?: boolean;
+  readonly destructiveHint?: boolean;
+  readonly idempotentHint?: boolean;
+  readonly openWorldHint?: boolean;
+}
+
 export interface MCPToolDefinition {
   name: string;
   description: string;
   inputSchema: unknown;
+  annotations?: MCPToolAnnotations;
 }
 
 export interface MCPClient {

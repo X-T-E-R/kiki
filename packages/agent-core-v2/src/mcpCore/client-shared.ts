@@ -2,7 +2,7 @@ import { getCoreVersion } from '#/_base/version';
 import { ErrorCode, McpError, ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
-import type { MCPClient, MCPToolDefinition, MCPToolResult } from './types';
+import type { MCPClient, MCPToolAnnotations, MCPToolDefinition, MCPToolResult } from './types';
 
 export const KIMI_MCP_CLIENT_NAME = 'kimi-code';
 export const KIMI_MCP_CLIENT_VERSION = getCoreVersion();
@@ -55,6 +55,23 @@ export function isMcpTransportFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (isMcpConnectionClosedError(error)) return true;
   return !(error instanceof McpError);
+}
+
+export function isMcpToolReplaySafe(annotations?: MCPToolAnnotations): boolean {
+  return annotations?.readOnlyHint === true || annotations?.idempotentHint === true;
+}
+
+export function isMcpNotSentTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.message === 'Not connected') return true;
+  const code = (error as Error & { readonly code?: unknown }).code;
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') return true;
+  const cause = (error as { readonly cause?: unknown }).cause;
+  if (cause instanceof Error) {
+    const causeCode = (cause as Error & { readonly code?: unknown }).code;
+    if (causeCode === 'ECONNREFUSED' || causeCode === 'ENOTFOUND' || causeCode === 'EAI_AGAIN') return true;
+  }
+  return false;
 }
 
 export const MCP_LIVENESS_PROBE_TIMEOUT_MS = 5_000;
@@ -116,13 +133,22 @@ interface SdkListedTool {
   readonly name: string;
   readonly description?: string;
   readonly inputSchema: Record<string, unknown>;
+  readonly annotations?: MCPToolAnnotations;
 }
 
 export function toMcpToolDefinition(tool: SdkListedTool): MCPToolDefinition {
+  if (tool.annotations === undefined) {
+    return {
+      name: tool.name,
+      description: tool.description ?? '',
+      inputSchema: tool.inputSchema,
+    };
+  }
   return {
     name: tool.name,
     description: tool.description ?? '',
     inputSchema: tool.inputSchema,
+    annotations: tool.annotations,
   };
 }
 
