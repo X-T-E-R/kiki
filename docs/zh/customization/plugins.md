@@ -514,7 +514,7 @@ return { output: text };
 
 `await context.models.list()` 返回 `{ models, connections }`。传入 `{ candidates: ['model-id'] }` 时，只保留 `id` 或 `remote_id` 在该列表中的条目。`candidates` 为空数组时不返回模型。未知 id 会被省略。列出模型不会启动运行，也不会修改 profile。模型条目提供 `id`、`provider_id`、`remote_id`、显示名、上下文大小和可用的有效能力及协议。连接条目提供 `id`、供应商 `type`、`status`、用途 `service`（`chat` 或 `decision`）、默认及列出的模型，以及 `authentication`（`oauth`、`api-key` 或 `none`）。用这些字段标记和筛选选项，不要从 ID 猜测用途。目录不返回密钥、端点地址、自定义请求头或请求身份配置。
 
-自定义面板后端的 `handlePanelRequest(action, args, context)` 第三个参数是 `PluginPanelContext`。它可以列出模型、管理插件自己声明的密钥，但执行模型请求须通过已准入的工具调用。浏览器面板可调用 `plugin.models.list`，客户端可调用 `klient.rest.plugins.models()` 或 `GET /api/plugins/models`，使用同一份目录。
+自定义面板后端的 `handlePanelRequest(action, args, context)` 第三个参数是 `PluginPanelContext`。它可以列出模型、管理插件自己声明的密钥，但执行模型请求须通过已准入的工具调用。调用方断开、请求超过 60 秒或插件宿主停止时，`context.signal` 会中止；耗时较长的处理函数应在它触发时停止工作。浏览器面板可调用 `plugin.models.list`，客户端可调用 `klient.rest.plugins.models()` 或 `GET /api/plugins/models`，使用同一份目录。
 
 对于插件自有密钥，使用 `await context.credentials.status("apiKey")` 和 `await context.credentials.set("apiKey", value)`。状态返回 `{ reference: { kind: "plugin-setting", setting: "apiKey" }, configured }`，不返回密钥。字符串替换原值，`null` 清除。仅接受声明为密钥的字段，写入须声明 `permissions.secrets`。这些操作沿用 Kiki 的凭据存储。设置读取返回 `secretsConfigured`；更新设置时，省略字段保留原值，传字符串替换，传 `null` 清除。
 

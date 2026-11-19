@@ -493,6 +493,17 @@ describe('plugin host lifecycle', () => {
       await expect(execution).rejects.toThrow('cancelled');
     } finally { host.stop(); }
   });
+
+  it('cancels a hung panel request and aborts the plugin handler', async () => {
+    const host = await readyHost();
+    const abort = new AbortController();
+    try {
+      const request = host.requestPanel('wait', {}, {}, abort.signal);
+      setTimeout(() => abort.abort(), 100);
+      await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+      await expect.poll(() => host.requestPanel('aborted', {}, {})).toBe(true);
+    } finally { host.stop(); }
+  });
 });
 
 it('runs an async Cordis slot in the existing process host and preserves the invocation cut', async () => {
