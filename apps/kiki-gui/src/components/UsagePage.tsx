@@ -9,11 +9,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
-import { ErrorCode, type Session } from '@kiki/protocol';
-
+import { ErrorCode } from '@kiki/protocol';
 import { formatBytes } from '@kiki/session-core/composer/media';
-import { readLastSessionId } from '@kiki/session-core/settings';
-import { spaceStorageKey } from '@kiki/session-core/storage';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { ApiError } from '../lib/client';
@@ -24,7 +21,6 @@ import {
   aggregateSourceRows,
   browserTimezoneOffsetMinutes,
   bucketLabel,
-  burnRatePerHour,
   cacheHitRateOf,
   parseUsageDetailView,
   totalTokensOf,
@@ -37,7 +33,6 @@ import {
   usageSourceFilterValue,
   usageSourceKey,
   usageTokenTotalIsUnknown,
-  usageWindowLabel,
   writeStoredUsageFilters,
   USAGE_SOURCE_KEY_UNKNOWN,
   type UsageDetailView,
@@ -58,11 +53,10 @@ import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageN
 import { UsageExportPanel } from './usage/export/UsageExportPanel';
 import { PricingPanel } from './usage/PricingPanel';
 import { ProviderQuotaPanel } from './usage/ProviderQuotaPanel';
-import { QuotaHeadroomStrip } from './usage/QuotaHeadroomStrip';
 import { DimensionBreakdown } from './usage/UsageBreakdown';
 import { UsageFilterBar } from './usage/UsageFilterBar';
 import { UsageReliabilityDetails } from './usage/UsageReliabilityDetails';
-import { UsageRescanControl } from './usage/UsageRescanControl';
+import { UsageRescanActiveBadge, UsageRescanControl } from './usage/UsageRescanControl';
 import { UsageSessionPanel, type UsageSessionTraceRequest } from './usage/UsageSessionPanel';
 import { UsageSources, type UsageSourcePrior } from './usage/UsageSources';
 import { TrendChart } from './usage/UsageTrend';
@@ -89,7 +83,6 @@ import {
 
 const SESSION_PAGE_SIZE = 25;
 const SESSION_LOCATOR_MAX_AUTO_PAGES = 4;
-const TOP_SESSIONS_OVERVIEW_LIMIT = 6;
 
 type DetailTab = 'sources' | 'sessions' | 'breakdown';
 
@@ -105,6 +98,8 @@ const VIEW_TO_DETAIL_TAB: Record<UsageDetailView, DetailTab> = {
   breakdown: 'breakdown',
   five_hour: 'sources',
 };
+
+const SOURCE_TABS_ORDER: readonly UsageGroupBy[] = ['model', 'provider', 'workspace', 'profile'];
 
 const NOTICE_AMBER = 'rounded-lg border border-amber-rule/40 bg-amber-card px-3 py-2 text-[12.5px] leading-relaxed text-amber-ink';
 const NOTICE_SOFT = 'rounded-lg border border-hairline bg-panel px-3 py-2 text-[12.5px] leading-relaxed text-ink-soft';
@@ -129,74 +124,33 @@ function isAdvanceableImport(reliability: UsageResponseWire['reliability']): boo
   );
 }
 
-/** How old a shared governance read may be and still be told as "now". */
-const LIVE_BAND_FRESH_MS = 5_000;
-
-function LiveBand({ onOpen }: { readonly onOpen: () => void }) {
-  const { client, scopeId } = useConnection();
-  const { t, time } = useI18n();
-  const live = useQuery({
-    queryKey: ['request-governance', scopeId],
-    queryFn: () => client.getRequestGovernance(),
-    enabled: false,
-  });
-  const snapshot = live.data;
-  if (snapshot === undefined || live.isError || Date.now() - live.dataUpdatedAt > LIVE_BAND_FRESH_MS) return null;
-  if (snapshot.active === 0 && snapshot.queued === 0) return null;
-  const waiting = snapshot.waiting.reduce<(typeof snapshot.waiting)[number] | undefined>(
-    (longest, row) => (longest === undefined || row.waitedMs > longest.waitedMs ? row : longest),
-    undefined,
-  );
-  return (
-    <p data-usage-live-band role="status" className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[12.5px] text-ink-soft">
-      <span className="text-ink">{t('usage.live.band', { active: snapshot.active, queued: snapshot.queued })}</span>
-      {waiting !== undefined ? (
-        <span className="min-w-0 text-ink-faint">
-          {waiting.modelId}
-          {waiting.blockingRules.length > 0 ? ` ${t('usage.governance.blockedBy', { rules: waiting.blockingRules.join(', ') })}` : ''}
-          {` · ${time.formatDuration(waiting.waitedMs)}`}
-        </span>
-      ) : null}
-      <button
-        type="button"
-        data-usage-live-band-open
-        onClick={onOpen}
-        className="inline-flex min-h-8 items-center gap-1 rounded-sm font-medium text-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-      >
-        {t('usage.governance.realtime')}
-        <Icon name="arrowRight" size={12} />
-      </button>
-    </p>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Editorial 4-column KPI band
+// Minimalist 4-Figure Editorial KPI Band
 // ---------------------------------------------------------------------------
 
-function Kpi({ id, label, value, hint, dataValue, children }: {
+function Kpi({ id, label, value, hint, title, dataValue }: {
   readonly id: string;
   readonly label: string;
   readonly value: ReactNode;
   readonly hint?: ReactNode;
+  readonly title?: string;
   readonly dataValue?: string;
-  readonly children?: ReactNode;
 }) {
   const valueProps = dataValue === undefined ? {} : { [dataValue]: true };
   return (
     <section
       data-usage-kpi={id}
+      title={title}
       className="flex min-w-0 flex-col py-1 lg:px-5 first:lg:pl-0 last:lg:pr-0"
     >
       <p className="text-[11.5px] font-medium tracking-[-0.005em] text-ink-faint">{label}</p>
       <div
         {...valueProps}
-        className="mt-1.5 flex min-w-0 items-baseline gap-2 truncate font-display text-[27px] leading-none tracking-tight text-ink tabular-nums"
+        className="mt-1.5 flex min-w-0 items-baseline gap-2 truncate font-display text-[28px] leading-none tracking-tight text-ink tabular-nums"
       >
         {value}
       </div>
-      {hint !== undefined ? <div className="mt-2 text-[12px] leading-snug">{hint}</div> : null}
-      {children}
+      {hint !== undefined ? <div className="mt-2 min-h-4 text-[12px] leading-snug text-ink-faint">{hint}</div> : null}
     </section>
   );
 }
@@ -210,9 +164,6 @@ function UsageKpiBand({
   unpricedCount,
   onOpenPricing,
   cacheSavingsUsd,
-  todayResponse,
-  reuseTodaySummary,
-  enabled,
 }: {
   readonly summary: UsageResponseWire['summary'];
   readonly trend: readonly UsageTrendBucketWire[];
@@ -222,84 +173,21 @@ function UsageKpiBand({
   readonly unpricedCount: number;
   readonly onOpenPricing: () => void;
   readonly cacheSavingsUsd: number | undefined;
-  readonly todayResponse: UsageResponseWire | undefined;
-  readonly reuseTodaySummary: boolean;
-  readonly enabled: boolean;
 }) {
-  const { client, scopeId } = useConnection();
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const { t, tp, time } = useI18n();
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const [lastSessionId, setLastSessionId] = useState<string | undefined>(() => readLastSessionId());
-
-  useEffect(() => {
-    if (!enabled) return;
-    const timer = window.setInterval(() => { setNowMs(Date.now()); }, 60_000);
-    return () => { window.clearInterval(timer); };
-  }, [enabled]);
-
-  useEffect(() => {
-    const syncLastSession = (event?: StorageEvent) => {
-      const key = event?.key;
-      const currentKey = spaceStorageKey('kiki.lastSessionId');
-      if (key !== undefined && key !== null && key !== 'kiki.lastSessionId' && key !== currentKey && !key.startsWith('kiki.space.')) return;
-      const next = readLastSessionId();
-      setLastSessionId((current) => (current === next ? current : next));
-    };
-    const onStorage = (event: StorageEvent) => { syncLastSession(event); };
-    window.addEventListener('storage', onStorage);
-    syncLastSession();
-    return () => { window.removeEventListener('storage', onStorage); };
-  }, [scopeId]);
-
-  const todayQuery = useQuery({
-    queryKey: ['usage-v2-strip', scopeId, localDateKey(nowMs), browserTimezoneOffsetMinutes()],
-    enabled: enabled && !incomplete && !reuseTodaySummary && todayResponse === undefined,
-    queryFn: ({ signal }) =>
-      client.getUsage(
-        buildUsageMultiApiQuery(
-          { ...USAGE_MULTI_FILTER_DEFAULTS, range: 'today', includeArchived: true },
-          { timezoneOffsetMinutes: browserTimezoneOffsetMinutes(), pageSize: 1 },
-        ),
-        { signal },
-      ),
-    refetchInterval: (query) => {
-      if (!enabled || incomplete || reuseTodaySummary) return false;
-      const response = query.state.data;
-      const continueCounting = response !== undefined && !response.reliability.complete &&
-        (response.reliability.incomplete_reason === 'deadline' || response.reliability.incomplete_reason === 'record_budget');
-      return continueCounting ? 250 : 60_000;
-    },
-    staleTime: 30_000,
-  });
-
-  const sessionQuery = useQuery({
-    queryKey: ['usage-v2-strip-session', scopeId, lastSessionId],
-    queryFn: ({ signal }) => client.getSession(lastSessionId!, { signal }),
-    enabled: enabled && lastSessionId !== undefined,
-    retry: false,
-    staleTime: 30_000,
-  });
-
-  useEffect(() => {
-    return () => { void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', scopeId, lastSessionId] }); };
-  }, [scopeId, lastSessionId, queryClient]);
-
-  useEffect(() => {
-    if (enabled) return;
-    void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', scopeId, lastSessionId] });
-  }, [enabled, scopeId, lastSessionId, queryClient]);
 
   const costUnknown = summary.cost_unknown || incomplete;
   const tokensUnknown = usageTokenTotalIsUnknown(summary) || (incomplete && totalTokensOf(summary) === 0);
   const cacheHit = cacheHitRateOf(summary);
   const input = summary.tokens.input_other + summary.tokens.input_cache_read + summary.tokens.input_cache_creation;
-  const composition = [
-    { key: 'read', label: t('usage.tokens.cacheRead'), value: summary.tokens.input_cache_read, fill: 'bg-success/75' },
-    { key: 'write', label: t('usage.tokens.cacheWrite'), value: summary.tokens.input_cache_creation, fill: 'bg-amber-rule' },
-    { key: 'fresh', label: t('usage.composition.fresh'), value: summary.tokens.input_other, fill: 'bg-ink/30' },
-  ];
+
+  const tokenCompositionTitle = !tokensUnknown && input > 0
+    ? [
+        `${t('usage.tokens.cacheRead')}: ${time.formatTokens(summary.tokens.input_cache_read)}`,
+        `${t('usage.tokens.cacheWrite')}: ${time.formatTokens(summary.tokens.input_cache_creation)}`,
+        `${t('usage.composition.fresh')}: ${time.formatTokens(summary.tokens.input_other)}`,
+      ].join(' · ')
+    : undefined;
 
   const costOutcome = comparing && prior !== undefined
     ? (summary.cost_unknown && summary.cost_usd_estimated === 0) || (prior.cost_unknown && prior.cost_usd_estimated === 0)
@@ -313,31 +201,6 @@ function UsageKpiBand({
   const activity = useMemo(() => summarizeActivityCounts(trend), [trend]);
   const perTurnCost = avgCostPerTurn(summary, activity);
 
-  const todayData = todayResponse ?? todayQuery.data;
-  const todaySummary = todayData?.summary;
-  const todayIncomplete = todayData?.reliability.complete === false;
-  const todayProgress = importProgressOf(todayData);
-  const todayCountingLabel = todayProgress === undefined
-    ? t('usage.strip.counting')
-    : t('usage.strip.countingProgress', {
-        verified: formatGrouped(todayProgress.verified_sources),
-        total: formatGrouped(todayProgress.total_sources),
-      });
-  const todayTokenTotalUnknown = todaySummary !== undefined && usageTokenTotalIsUnknown(todaySummary);
-  const todayKnownTokenTotal = todaySummary === undefined ? undefined : totalTokensOf(todaySummary);
-  const todayEmptyPartial = todayIncomplete && todayKnownTokenTotal === 0 && todaySummary?.cost_usd_estimated === 0;
-  const todayHasNoKnownTokens = todayTokenTotalUnknown || (todayIncomplete && todayKnownTokenTotal === 0);
-  const todayHasUnknownSubtotal = todaySummary !== undefined && !todayTokenTotalUnknown && todaySummary.tokens_unknown === true;
-  const todayHasUnknownCost = todaySummary !== undefined && todaySummary.cost_unknown === true;
-  const knownTodayTokens = todaySummary === undefined || todayHasNoKnownTokens ? undefined : todayKnownTokenTotal;
-  const burnRate = knownTodayTokens !== undefined ? burnRatePerHour(knownTodayTokens, nowMs) : undefined;
-
-  const current: Session | undefined = sessionQuery.data?.id === lastSessionId ? sessionQuery.data : undefined;
-  const currentAccounting = current?.usage?.accounting;
-  const currentCost = currentAccounting?.cost_usd_estimated ?? (typeof current?.usage?.total_cost_usd === 'number' ? current.usage.total_cost_usd : undefined);
-  const currentUsageError = currentAccounting === undefined ? current?.usage_error : undefined;
-  const currentCostUnknown = currentAccounting?.cost_unknown === true || currentAccounting?.complete === false || currentUsageError === 'agent-read-failed';
-
   const activityHeadline = activity.hasTurns && activity.hasRequests
     ? t('usage.kpi.turnsRequests', { turns: formatGrouped(activity.turns), requests: formatGrouped(activity.requests) })
     : activity.hasTurns
@@ -345,7 +208,7 @@ function UsageKpiBand({
       : tp('usage.sessionChip', summary.session_count);
 
   return (
-    <div className="grid grid-cols-1 gap-x-6 gap-y-4 border-b border-hairline pb-4 sm:grid-cols-2 lg:grid-cols-4 lg:gap-x-0 lg:divide-x lg:divide-hairline">
+    <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-y border-hairline py-4 lg:grid-cols-4 lg:gap-x-0 lg:divide-x lg:divide-hairline">
       <Kpi
         id="cost"
         label={t('usage.kpi.estimatedCost')}
@@ -373,59 +236,36 @@ function UsageKpiBand({
         id="tokens"
         label={t('usage.card.tokens')}
         dataValue="data-usage-summary-tokens"
+        title={tokenCompositionTitle}
         value={tokensUnknown ? '—' : time.formatTokens(totalTokensOf(summary))}
         hint={(
-          <span data-usage-summary-input-output className="text-ink-faint tabular-nums">
+          <span data-usage-summary-input-output className="tabular-nums">
             {tokensUnknown
-              ? '— / —'
+              ? '—'
               : t('usage.kpi.inputOutput', {
                   input: time.formatTokens(input),
                   output: time.formatTokens(summary.tokens.output),
                 })}
           </span>
         )}
-      >
-        {!tokensUnknown && input > 0 ? (
-          <div className="mt-2" title={t('usage.cacheHitHint')}>
-            <div aria-hidden className="flex h-1 overflow-hidden rounded-full bg-hairline/70">
-              {composition.map((part) => (
-                <span key={part.key} className={part.fill} style={{ width: `${(part.value / input) * 100}%` }} />
-              ))}
-            </div>
-            <ul className="mt-1.5 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[11px] text-ink-faint">
-              {composition.map((part) => (
-                <li key={part.key} className="inline-flex items-center gap-1">
-                  <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${part.fill}`} />
-                  {part.label} <span className="tabular-nums">{time.formatTokens(part.value)}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </Kpi>
+      />
 
       <Kpi
         id="cache"
         label={t('usage.kpi.cacheHit')}
         dataValue="data-usage-summary-cache"
+        title={t('usage.cacheHitHint')}
         value={tokensUnknown ? '—' : formatCachePercent(cacheHit)}
-        hint={(
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-ink-faint">
+        hint={(cacheOutcome !== undefined || cacheSavingsUsd !== undefined) ? (
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
             {cacheOutcome !== undefined ? <CompareCell outcome={cacheOutcome} points /> : null}
-            {!tokensUnknown && summary.tokens.input_cache_read > 0 ? (
-              <span className="tabular-nums">
-                {t('usage.kpi.cacheReadVolume', { tokens: time.formatTokens(summary.tokens.input_cache_read) })}
-              </span>
-            ) : cacheHit === null && !tokensUnknown ? (
-              <span>{t('usage.kpi.cacheHitNone')}</span>
-            ) : null}
             {cacheSavingsUsd !== undefined ? (
               <span data-usage-cache-savings className="font-medium text-success tabular-nums">
                 {t('usage.kpi.cacheSaved', { cost: formatCostUsd(cacheSavingsUsd) })}
               </span>
             ) : null}
           </div>
-        )}
+        ) : undefined}
       />
 
       <Kpi
@@ -433,183 +273,21 @@ function UsageKpiBand({
         label={t('usage.kpi.activity')}
         dataValue="data-usage-summary-activity"
         value={<span className="truncate text-[23px] leading-none tracking-tight">{activityHeadline}</span>}
-        hint={(
-          <div data-usage-strip className="space-y-1 text-[11.5px] text-ink-faint">
-            {perTurnCost !== undefined ? (
-              <div className="tabular-nums">{t('usage.kpi.avgPerTurn', { cost: formatCostUsd(perTurnCost) })}</div>
-            ) : null}
-            {todaySummary !== undefined ? (
-              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 tabular-nums">
-                {todayEmptyPartial ? (
-                  <>
-                    <span data-usage-strip-tokens>
-                      <span data-usage-strip-incomplete className="text-amber-ink">{todayCountingLabel}</span>
-                    </span>
-                    <span data-usage-strip-burn-rate className="sr-only">{todayCountingLabel}</span>
-                  </>
-                ) : reuseTodaySummary ? (
-                  <>
-                    {burnRate !== undefined ? (
-                      <span data-usage-strip-burn-rate>
-                        {t('usage.kpi.todayBurn', { rate: t('usage.strip.burnRateValue', { rate: formatGrouped(burnRate) }) })}
-                      </span>
-                    ) : null}
-                    {todayIncomplete ? (
-                      <span data-usage-strip-incomplete className="text-amber-ink">{todayCountingLabel}</span>
-                    ) : null}
-                    <span data-usage-strip-tokens className="sr-only">
-                      {`${todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(todaySummary))} · ${todayTokenTotalUnknown ? '—' : formatCostUsd(todaySummary.cost_usd_estimated)}`}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span data-usage-strip-tokens>
-                      {t('usage.strip.today')}{' '}
-                      {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(todaySummary))}
-                      {' · '}
-                      {todayTokenTotalUnknown ? '—' : formatCostUsd(todaySummary.cost_usd_estimated)}
-                      {todayHasUnknownSubtotal || todayHasUnknownCost ? <KnownSubtotalMarker /> : null}
-                    </span>
-                    {burnRate !== undefined ? (
-                      <>
-                        <span aria-hidden>·</span>
-                        <span data-usage-strip-burn-rate>{t('usage.strip.burnRateValue', { rate: formatGrouped(burnRate) })}</span>
-                      </>
-                    ) : null}
-                    {todayIncomplete ? (
-                      <span data-usage-strip-incomplete className="text-amber-ink">{todayCountingLabel}</span>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            ) : null}
-            {current !== undefined ? (
-              <div className="flex min-w-0 items-center gap-1.5 pt-0.5">
-                <button
-                  type="button"
-                  onClick={() => void navigate(`/s/${current.id}`)}
-                  className="min-w-0 truncate text-left text-ink-soft underline-offset-2 hover:text-ink hover:underline"
-                >
-                  <ThreadTitle text={current.title.trim() !== '' ? current.title : t('sidebar.untitled')} />
-                </button>
-                <span data-usage-strip-current-cost className="shrink-0 text-ink-faint tabular-nums">
-                  {currentUsageError === 'read-failed' || currentCost === undefined ? '—' : formatCostUsd(currentCost)}
-                  {currentCostUnknown && currentCost !== undefined ? <KnownSubtotalMarker /> : null}
-                </span>
-              </div>
-            ) : null}
-          </div>
-        )}
+        hint={perTurnCost !== undefined ? (
+          <span className="tabular-nums">{t('usage.kpi.avgPerTurn', { cost: formatCostUsd(perTurnCost) })}</span>
+        ) : undefined}
       />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Overview Costliest Sessions Rail (zero extra HTTP requests; fed by page 1)
-// ---------------------------------------------------------------------------
-
-function TopSessionsRail({
-  items,
-  totalSessions,
-  summaryCost,
-  workspaceName,
-  onViewAll,
-}: {
-  readonly items: UsageResponseWire['sessions']['items'];
-  readonly totalSessions: number;
-  readonly summaryCost: number;
-  readonly workspaceName: (id: string) => string | undefined;
-  readonly onViewAll: () => void;
-}) {
-  const { t, time } = useI18n();
-  const navigate = useNavigate();
-  const topItems = items.slice(0, TOP_SESSIONS_OVERVIEW_LIMIT);
-
-  return (
-    <aside
-      data-usage-top-sessions
-      aria-label={t('usage.topSessions.title')}
-      className="min-w-0 xl:border-l xl:border-hairline xl:pl-7"
-    >
-      <div className="flex min-h-8 items-center justify-between gap-3">
-        <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-ink">
-          {t('usage.topSessions.title')}
-        </h3>
-        <button
-          type="button"
-          data-usage-open-sessions
-          onClick={onViewAll}
-          className="inline-flex min-h-7 items-center gap-1 rounded px-1.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-        >
-          <span>{t('usage.topSessions.viewAll', { count: formatGrouped(totalSessions) })}</span>
-          <Icon name="arrowRight" size={12} />
-        </button>
-      </div>
-
-      <ol className="mt-3 divide-y divide-hairline border-t border-hairline">
-        {topItems.map((item, idx) => {
-          const itemTokens = totalTokensOf(item.usage);
-          const unknownTotal = usageTokenTotalIsUnknown(item.usage);
-          const unpricedZero = item.usage.cost_unknown && item.usage.cost_usd_estimated === 0 && (itemTokens > 0 || unknownTotal);
-          const share = summaryCost > 0 ? item.usage.cost_usd_estimated / summaryCost : 0;
-          const wsDisplay = workspaceName(item.workspace_id) ?? compactIdentifier(item.workspace_id);
-          const titleDisplay = item.title && item.title.trim() !== '' ? item.title : compactIdentifier(item.id);
-          const fillPct = share > 0 ? Math.max(2, Math.min(100, share * 100)) : 0;
-
-          return (
-            <li key={item.id} className="relative overflow-hidden">
-              {fillPct > 0 ? (
-                <span
-                  aria-hidden
-                  className="pointer-events-none absolute inset-y-[3px] left-0 rounded-r-sm bg-ink/[0.035]"
-                  style={{ width: `${fillPct}%` }}
-                />
-              ) : null}
-              <button
-                type="button"
-                data-usage-top-session={item.id}
-                onClick={() => void navigate(`/s/${item.id}`)}
-                className="relative grid w-full grid-cols-[1.25rem_minmax(0,1fr)_auto] items-baseline gap-x-2.5 px-1.5 py-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-              >
-                <span className={`text-right text-[11.5px] tabular-nums ${idx < 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
-                  {idx + 1}
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-[12.5px] font-medium text-ink" title={item.title ?? item.id}>
-                    <ThreadTitle text={titleDisplay} />
-                  </span>
-                  <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-ink-faint">
-                    <span className="max-w-32 truncate" title={item.workspace_id}>{wsDisplay}</span>
-                    {item.primary_model ? (
-                      <span className="max-w-36 truncate font-mono text-[10px] text-ink-soft">{item.primary_model}</span>
-                    ) : null}
-                    <span className="tabular-nums">
-                      {unknownTotal ? '—' : time.formatTokens(itemTokens)}
-                    </span>
-                  </span>
-                </span>
-                <span className="shrink-0 text-right text-[12.5px] font-semibold text-ink tabular-nums">
-                  {unpricedZero ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
-                  {item.usage.cost_unknown ? (
-                    <KnownSubtotalMarker label={unpricedZero ? t('usage.reliability.costUnknown') : undefined} />
-                  ) : null}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
-    </aside>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sessions tab — enriched with primary model, profiles, and instant local search
+// Sessions table
 // ---------------------------------------------------------------------------
 
 function SessionsTab({
   data,
+  search,
   fetchNextPage,
   hasNextPage,
   isFetchingNextPage,
@@ -620,6 +298,7 @@ function SessionsTab({
   summaryCost,
 }: {
   data: { pages: readonly UsageResponseWire[] };
+  search: string;
   fetchNextPage: () => void;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
@@ -631,7 +310,6 @@ function SessionsTab({
 }) {
   const { t, time } = useI18n();
   const navigate = useNavigate();
-  const [search, setSearch] = useState('');
   const items = useMemo(() => data.pages.flatMap((page) => page.sessions.items), [data.pages]);
   const total = data.pages[0]?.sessions.total ?? items.length;
   const located = sessionLocator !== undefined && items.some((item) => item.id === sessionLocator);
@@ -667,19 +345,6 @@ function SessionsTab({
           <p data-usage-locating className={`mb-3 ${NOTICE_AMBER}`}>{t('usage.sessions.notInPage')}</p>
         )
       ) : null}
-      {items.length > 0 && sessionLocator === undefined ? (
-        <div className="mb-2.5 flex justify-end">
-          <input
-            type="search"
-            data-usage-sessions-search
-            aria-label={t('usage.sessions.searchPlaceholder')}
-            value={search}
-            placeholder={t('usage.sessions.searchPlaceholder')}
-            onChange={(event) => { setSearch(event.target.value); }}
-            className="h-8 w-56 max-w-full rounded-md border border-hairline bg-paper px-2.5 text-[12.5px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink"
-          />
-        </div>
-      ) : null}
       <div aria-hidden className={`${grid} px-2 pb-2 text-[11px] text-ink-faint`}>
         <span className="text-right">#</span>
         <span>{t('usage.col.session')}</span>
@@ -704,21 +369,31 @@ function SessionsTab({
             const profiles = item.profile_names ?? [];
             const updatedLabel = time.relativeTime(new Date(item.updated_at).toISOString());
             const wsDisplay = workspaceName(item.workspace_id) ?? compactIdentifier(item.workspace_id);
+            const fillPct = share > 0 ? Math.max(1.5, Math.min(100, share * 100)) : 0;
             return (
-              <li key={item.id}>
+              <li key={item.id} className="relative overflow-hidden">
+                {fillPct > 0 ? (
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-y-[3px] left-0 rounded-r-sm bg-accent/[0.05]"
+                    style={{ width: `${fillPct}%` }}
+                  />
+                ) : null}
                 <button
                   type="button"
                   data-usage-session={item.id}
                   onClick={() => void navigate(`/s/${item.id}`)}
-                  className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11`}
+                  className={`${grid} relative w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11`}
                 >
                   <span className={`text-right text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
                     {rank}
                   </span>
                   <span className="min-w-0">
                     <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-                      <span className="min-w-0 truncate text-[13px] text-ink"><ThreadTitle text={item.title ?? t('sidebar.untitled')} /></span>
-                      {item.primary_model !== undefined && item.primary_model !== null && item.primary_model !== '' ? (
+                      <span className="min-w-0 truncate text-[13px] text-ink">
+                        <ThreadTitle text={item.title ?? t('sidebar.untitled')} />
+                      </span>
+                      {item.primary_model ? (
                         <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-px font-mono text-[10.5px] text-ink-soft">
                           {item.primary_model}
                         </span>
@@ -738,7 +413,6 @@ function SessionsTab({
                         <span className="flex shrink-0 text-amber-ink" title={item.unknown_price_models.join(', ')}><Icon name="partial" size={12} /></span>
                       ) : null}
                     </span>
-                    <span className="mt-1 block w-full max-w-48"><ShareBarSmall ratio={share} /></span>
                     <span className="mt-1 block text-[11px] text-ink-faint tabular-nums sm:hidden">
                       {unknownTotal ? '—' : time.formatTokens(itemTokens)}
                       {' · '}
@@ -787,15 +461,6 @@ function SessionsTab({
   );
 }
 
-function ShareBarSmall({ ratio }: { ratio: number }) {
-  const width = ratio <= 0 ? 0 : Math.max(2, Math.min(100, ratio * 100));
-  return (
-    <span aria-hidden className="block h-1 w-full overflow-hidden rounded-full bg-hairline/70">
-      <span className="block h-full rounded-full bg-ink/50" style={{ width: `${width}%` }} />
-    </span>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -841,6 +506,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   ) !== null;
   const bucketParam = searchParams.get('bucket');
   const [selectedBucketKey, setSelectedBucketKey] = useState<string | null>(bucketParam);
+  const [sourceSearch, setSourceSearch] = useState('');
+  const [sessionSearch, setSessionSearch] = useState('');
   const traceParam = searchParams.get('trace');
   const trace: UsageSessionTraceRequest | undefined = useMemo(() => {
     if (traceParam === null) return undefined;
@@ -906,9 +573,17 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     }
   };
 
-  const selectTab = (next: DetailTab) => {
+  const selectDetailTab = (next: DetailTab) => {
     setSearchParams(new URLSearchParams(usageDetailViewToSearch(DETAIL_TAB_TO_VIEW[next], location.search)), { replace: true });
   };
+
+  const selectSourceAxisTab = (nextGroup: UsageGroupBy) => {
+    const nextFilters: UsageMultiFilters = { ...filters, groupBy: nextGroup, advancedDimension: undefined };
+    writeStoredUsageFilters(toSingleUsageFilters(nextFilters));
+    const searchWithFilters = usageMultiFiltersToSearch(nextFilters, location.search);
+    setSearchParams(new URLSearchParams(usageDetailViewToSearch('sources', `?${searchWithFilters}`)), { replace: true });
+  };
+
   const filterKey = usageMultiFiltersToSearch(filters);
   const previousFilters = useRef<{ key: string; visitId?: string }>({ key: filterKey });
   useEffect(() => {
@@ -982,11 +657,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   } = usageQuery;
 
   const isRefetchingScope = isPlaceholderData && isUsageFetching;
-  const reuseTodaySummary =
-    filters.range === 'today' &&
-    filters.includeArchived &&
-    !usageMultiFiltersHaveScope(filters) &&
-    !isPlaceholderData;
   const recoveredPageError = useRef<unknown>(undefined);
   useEffect(() => {
     if (!isFetchNextPageError || !(usageError instanceof ApiError) || usageError.code !== ErrorCode.PAGE_TOKEN_MISMATCH || recoveredPageError.current === usageError) return;
@@ -1066,8 +736,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   useEffect(() => {
     if (panel === 'history') return;
     void queryClient.cancelQueries({ queryKey: ['usage-v2'] });
-    void queryClient.cancelQueries({ queryKey: ['usage-v2-strip'] });
-    void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session'] });
   }, [panel, queryClient]);
   const priorSource: UsageSourcePrior | undefined = comparing
     ? {
@@ -1264,15 +932,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   };
 
   const legacyDimension = filters.advancedDimension;
-  const tabs: readonly (readonly [DetailTab, string])[] = [
-    ['sources', t('usage.tab.sources')],
-    ['sessions', t('usage.tab.sessions')],
-    ...(legacyDimension !== undefined
-      ? ([['breakdown', t(`usage.dimension.${legacyDimension}`)]] as const)
-      : []),
-  ];
 
-  // Compact inline scan-pending status pill inside the filter utility slot (only while actively advancing)
   const scanPendingPill =
     !isUsageError && firstPage !== undefined && isAdvanceableImport(firstPage.reliability) ? (() => {
       const progress = importProgressOf(firstPage);
@@ -1327,7 +987,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
-        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-4`} data-usage-page>
+        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-5`} data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} />
           {panel === 'export' ? (
             <UsageExportPanel />
@@ -1336,8 +996,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           ) : panel !== 'history' ? (
             <RequestGovernanceView view={rawPanel === 'limits' ? 'limits' : 'realtime'} />
           ) : <>
-            <LiveBand onOpen={() => { selectPanel('realtime'); }} />
-            <QuotaHeadroomStrip enabled={panel === 'history'} onOpenQuota={() => { selectPanel('quota'); }} />
             <UsageFilterBar
               filters={filters}
               workspaces={workspaces}
@@ -1350,20 +1008,21 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               compareAvailable={compareAvailable}
               onCompareChange={applyCompare}
               onChange={applyFilters}
+              utilitySlot={
+                <>
+                  {scanPendingPill}
+                  <UsageRescanActiveBadge />
+                </>
+              }
               reliabilitySlot={
                 firstPage !== undefined ? (
                   <UsageReliabilityDetails
                     summary={firstPage.summary}
                     reliability={firstPage.reliability}
                     onOpenPricing={() => { setPricingOpen(true); }}
+                    footerSlot={<UsageRescanControl />}
                   />
                 ) : undefined
-              }
-              utilitySlot={
-                <>
-                  {scanPendingPill}
-                  <UsageRescanControl />
-                </>
               }
             />
             {isUsagePending && firstPage === undefined ? (
@@ -1387,7 +1046,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
               </div>
             ) : null}
             {!isUsageError && usageData !== undefined && firstPage !== undefined ? (
-              <div className={isRefetchingScope ? 'space-y-4 opacity-65 transition-opacity' : 'space-y-4'}>
+              <div className={isRefetchingScope ? 'space-y-6 opacity-65 transition-opacity' : 'space-y-6'}>
                 {isRefetchingScope ? (
                   <div data-usage-refetching role="status" className="flex items-center gap-2 text-[12px] text-ink-faint">
                     <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
@@ -1405,9 +1064,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     unpricedCount={unpricedCount}
                     onOpenPricing={() => { setPricingOpen(true); }}
                     cacheSavingsUsd={cacheSavingsUsd}
-                    todayResponse={reuseTodaySummary ? firstPage : undefined}
-                    reuseTodaySummary={reuseTodaySummary}
-                    enabled={panel === 'history' && !isUsagePending}
                   />
                 ) : null}
 
@@ -1416,79 +1072,113 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     {filters.range === 'all' && !usageMultiFiltersHaveScope(filters) ? t('usage.emptyAll') : t('usage.empty')}
                   </p>
                 ) : null) : (
-                  <div className="pt-1">
-                    <TrendChart
-                      trend={trend}
-                      filters={singleFilters}
-                      groupBy={groupBy}
-                      metric={metric}
-                      onMetricChange={applyMetric}
-                      onGranularityChange={(granularity) => { applyFilters({ ...filters, granularity }); }}
-                      selectedKey={selectedBucketKey}
-                      onSelect={selectBucketKeyWithSnapshot}
-                      labelForKey={(key) => {
-                        if (legacyDimension !== undefined) {
-                          const group = trend.flatMap((bucket) => bucket.groups).find((entry) => entry.key === key);
-                          return dimensionKeyLabelLegacy(
-                            {
-                              key,
-                              modelAlias: group?.model_alias ?? null,
-                              profileName: group?.profile_name ?? null,
-                              agentId: group?.agent_id ?? null,
-                            },
-                            legacyDimension,
-                            sourceLookups,
-                            sessionTitle,
-                          );
-                        }
-                        return sourceKeyToLabel(key, groupBy, trend, sourceLookups);
-                      }}
-                    />
-                  </div>
+                  <TrendChart
+                    trend={trend}
+                    filters={singleFilters}
+                    groupBy={groupBy}
+                    metric={metric}
+                    onMetricChange={applyMetric}
+                    onGranularityChange={(granularity) => { applyFilters({ ...filters, granularity }); }}
+                    selectedKey={selectedBucketKey}
+                    onSelect={selectBucketKeyWithSnapshot}
+                    labelForKey={(key) => {
+                      if (legacyDimension !== undefined) {
+                        const group = trend.flatMap((bucket) => bucket.groups).find((entry) => entry.key === key);
+                        return dimensionKeyLabelLegacy(
+                          {
+                            key,
+                            modelAlias: group?.model_alias ?? null,
+                            profileName: group?.profile_name ?? null,
+                            agentId: group?.agent_id ?? null,
+                          },
+                          legacyDimension,
+                          sourceLookups,
+                          sessionTitle,
+                        );
+                      }
+                      return sourceKeyToLabel(key, groupBy, trend, sourceLookups);
+                    }}
+                  />
                 )}
 
                 {firstPage.reliability.complete || trend.length > 0 ? (
-                  <section data-usage-detail>
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-hairline">
-                      <div role="tablist" aria-label={t('usage.sources.title')} className="flex flex-wrap items-baseline gap-1" data-usage-tabs>
-                        {tabs.map(([id, label]) => (
-                          <button
-                            key={id}
-                            type="button"
-                            role="tab"
-                            aria-selected={tab === id}
-                            data-usage-tab={id}
-                            onClick={() => { selectTab(id); }}
-                            className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
-                              tab === id ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                      {tab === 'sources' && selectedBucket !== undefined ? (
+                  <section data-usage-detail className="space-y-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline">
+                      <div role="tablist" aria-label={t('usage.sources.title')} className="flex flex-wrap items-baseline gap-0.5" data-usage-tabs>
+                        {SOURCE_TABS_ORDER.map((axis) => {
+                          const active = tab === 'sources' && groupBy === axis;
+                          return (
+                            <button
+                              key={axis}
+                              type="button"
+                              role="tab"
+                              aria-selected={active}
+                              data-usage-tab={axis}
+                              data-usage-grouping={axis}
+                              onClick={() => { selectSourceAxisTab(axis); }}
+                              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                                active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                              }`}
+                            >
+                              {t(`usage.sources.grouping.${axis}`)}
+                            </button>
+                          );
+                        })}
+
                         <button
                           type="button"
-                          data-usage-clear-bucket
-                          onClick={() => { selectBucketKeyWithSnapshot(null); }}
-                          className="inline-flex h-7 items-center gap-1.5 rounded-full border border-selected-ink/40 bg-panel px-2.5 text-[11.5px] text-ink transition-colors hover:border-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                          role="tab"
+                          aria-selected={tab === 'sessions'}
+                          data-usage-tab="sessions"
+                          onClick={() => { selectDetailTab('sessions'); }}
+                          className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                            tab === 'sessions' ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                          }`}
                         >
-                          <span data-usage-source-scope>{bucketLabel(selectedBucket, filters.granularity, locale)}</span>
-                          <Icon name="close" size={12} className="text-ink-faint" />
+                          {t('usage.tab.sessions')}
                         </button>
-                      ) : null}
+
+                        {legacyDimension !== undefined ? (
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-selected={tab === 'breakdown'}
+                            data-usage-tab="breakdown"
+                            onClick={() => { selectDetailTab('breakdown'); }}
+                            className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                              tab === 'breakdown' ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                            }`}
+                          >
+                            {t(`usage.dimension.${legacyDimension}`)}
+                          </button>
+                        ) : null}
+                      </div>
+
                       {tab === 'sources' && selectedBucket !== undefined ? (
-                        <span data-usage-source-subtotal className="ml-auto pb-1 text-[13px] font-semibold text-ink tabular-nums">
-                          {formatCostUsd(sourceSubtotal)}
-                        </span>
-                      ) : rangeWindow !== null ? (
-                        <span data-usage-range-note className="ml-auto pb-1 text-[11.5px] text-ink-faint tabular-nums">
-                          {usageWindowLabel(rangeWindow, locale)}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2 pb-1">
+                          <button
+                            type="button"
+                            data-usage-clear-bucket
+                            onClick={() => { selectBucketKeyWithSnapshot(null); }}
+                            className="inline-flex h-7 items-center gap-1.5 rounded-full border border-selected-ink/40 bg-panel px-2.5 text-[11.5px] text-ink transition-colors hover:border-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                          >
+                            <span data-usage-source-scope>{bucketLabel(selectedBucket, filters.granularity, locale)}</span>
+                            <span data-usage-source-subtotal className="font-semibold tabular-nums">{formatCostUsd(sourceSubtotal)}</span>
+                            <Icon name="close" size={12} className="text-ink-faint" />
+                          </button>
+                          <button
+                            type="button"
+                            data-usage-open-sessions
+                            onClick={() => { openTrace(undefined); }}
+                            className="text-[12px] text-ink-soft underline decoration-hairline underline-offset-3 hover:text-ink"
+                          >
+                            {t('usage.sources.openSessions')}
+                          </button>
+                        </div>
                       ) : null}
+
                       {tab === 'sessions' && sessionLocator !== undefined ? (
-                        <p className="ml-auto flex items-center gap-2 text-[12px] text-ink-soft">
+                        <p className="ml-auto flex items-center gap-2 pb-1 text-[12px] text-ink-soft">
                           <span className="rounded-md bg-ink/[0.05] px-2 py-0.5 font-medium text-ink-soft">
                             {t('usage.sessions.deepLinkChip')}
                           </span>
@@ -1496,10 +1186,36 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                             {t('common.close')}
                           </button>
                         </p>
+                      ) : tab === 'sources' ? (
+                        <label className="ml-auto flex min-w-0 items-center pb-1.5">
+                          <span className="sr-only">{t('usage.sources.search')}</span>
+                          <input
+                            type="search"
+                            data-usage-source-search
+                            value={sourceSearch}
+                            placeholder={t('usage.sources.searchPlaceholder')}
+                            onChange={(event) => { setSourceSearch(event.target.value); }}
+                            className="h-7 w-40 max-w-full rounded-md border border-hairline bg-paper px-2.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink"
+                          />
+                        </label>
+                      ) : tab === 'sessions' ? (
+                        <label className="ml-auto flex min-w-0 items-center pb-1.5">
+                          <span className="sr-only">{t('usage.sessions.searchPlaceholder')}</span>
+                          <input
+                            type="search"
+                            data-usage-sessions-search
+                            aria-label={t('usage.sessions.searchPlaceholder')}
+                            value={sessionSearch}
+                            placeholder={t('usage.sessions.searchPlaceholder')}
+                            onChange={(event) => { setSessionSearch(event.target.value); }}
+                            className="h-7 w-44 max-w-full rounded-md border border-hairline bg-paper px-2.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink"
+                          />
+                        </label>
                       ) : null}
                     </div>
+
                     {compareQuery.isError ? (
-                      <p data-usage-compare-error className={`mt-2 ${NOTICE_AMBER}`}>
+                      <p data-usage-compare-error className={NOTICE_AMBER}>
                         {t('usage.compare.loadFailed')}{' '}
                         <button
                           type="button"
@@ -1510,84 +1226,41 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         </button>
                       </p>
                     ) : null}
+
                     {tab === 'sources' ? (
-                      selectedBucket === undefined && firstPage.sessions.items.length > 0 ? (
-                        <div className="mt-4 grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1.45fr)_minmax(290px,0.95fr)] xl:items-start">
-                          <UsageSources
-                            trend={sourceTrend}
-                            groupBy={groupBy}
-                            metric={metric}
-                            prior={priorSource}
-                            lookups={sourceLookups}
-                            isFilterActive={(row) => isSourceRowFilterActive(filters, row.filter)}
-                            onFilterSource={(row) => {
-                              if (row.filter === null) return;
-                              applyFilters(toggleSourceRowFilter(filters, row.filter));
-                            }}
-                            onOpenSessions={openTrace}
-                            onSwitchGrouping={(next) => { applyFilters({ ...filters, groupBy: next, advancedDimension: undefined }); }}
-                          />
-                          <TopSessionsRail
-                            items={firstPage.sessions.items}
-                            totalSessions={firstPage.sessions.total}
-                            summaryCost={summary?.cost_usd_estimated ?? 0}
-                            workspaceName={workspaceName}
-                            onViewAll={() => { selectTab('sessions'); }}
-                          />
-                        </div>
-                      ) : (
-                        <div className="mt-4">
-                          <UsageSources
-                            trend={sourceTrend}
-                            groupBy={groupBy}
-                            metric={metric}
-                            prior={priorSource}
-                            lookups={sourceLookups}
-                            isFilterActive={(row) => isSourceRowFilterActive(filters, row.filter)}
-                            onFilterSource={(row) => {
-                              if (row.filter === null) return;
-                              applyFilters(toggleSourceRowFilter(filters, row.filter));
-                            }}
-                            onOpenSessions={openTrace}
-                            onSwitchGrouping={(next) => { applyFilters({ ...filters, groupBy: next, advancedDimension: undefined }); }}
-                          />
-                          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-                            <button
-                              type="button"
-                              data-usage-open-sessions
-                              onClick={() => {
-                                if (selectedBucket !== undefined) openTrace(undefined);
-                                else selectTab('sessions');
-                              }}
-                              className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-1 text-[13px] text-ink underline underline-offset-4 transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-                            >
-                              {t('usage.sources.openSessions')}
-                            </button>
-                          </div>
-                        </div>
-                      )
+                      <UsageSources
+                        trend={sourceTrend}
+                        groupBy={groupBy}
+                        metric={metric}
+                        prior={priorSource}
+                        query={sourceSearch}
+                        lookups={sourceLookups}
+                        isFilterActive={(row) => isSourceRowFilterActive(filters, row.filter)}
+                        onFilterSource={(row) => {
+                          if (row.filter === null) return;
+                          applyFilters(toggleSourceRowFilter(filters, row.filter));
+                        }}
+                        onOpenSessions={openTrace}
+                      />
                     ) : tab === 'sessions' ? (
-                      <div className="mt-3">
-                        <SessionsTab
-                          data={{ pages: usageData.pages }}
-                          fetchNextPage={() => void fetchNextPage()}
-                          hasNextPage={hasNextPage}
-                          isFetchingNextPage={isFetchingNextPage}
-                          isFetchNextPageError={isFetchNextPageError}
-                          sessionLocator={sessionLocator}
-                          locatorSearching={locatorSearching}
-                          workspaceName={workspaceName}
-                          summaryCost={summary?.cost_usd_estimated ?? 0}
-                        />
-                      </div>
+                      <SessionsTab
+                        data={{ pages: usageData.pages }}
+                        search={sessionSearch}
+                        fetchNextPage={() => void fetchNextPage()}
+                        hasNextPage={hasNextPage}
+                        isFetchingNextPage={isFetchingNextPage}
+                        isFetchNextPageError={isFetchNextPageError}
+                        sessionLocator={sessionLocator}
+                        locatorSearching={locatorSearching}
+                        workspaceName={workspaceName}
+                        summaryCost={summary?.cost_usd_estimated ?? 0}
+                      />
                     ) : tab === 'breakdown' && legacyDimension !== undefined ? (
-                      <div className="mt-3">
-                        <DimensionBreakdown
-                          trend={trend}
-                          dimension={legacyDimension}
-                          labelFor={(row) => dimensionKeyLabelLegacy(row, legacyDimension, sourceLookups, sessionTitle)}
-                        />
-                      </div>
+                      <DimensionBreakdown
+                        trend={trend}
+                        dimension={legacyDimension}
+                        labelFor={(row) => dimensionKeyLabelLegacy(row, legacyDimension, sourceLookups, sessionTitle)}
+                      />
                     ) : null}
                   </section>
                 ) : null}

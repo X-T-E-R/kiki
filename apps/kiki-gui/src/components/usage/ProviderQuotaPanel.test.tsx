@@ -118,12 +118,14 @@ describe('ProviderQuotaPanel', () => {
     expect(container.querySelectorAll('[data-quota-item]')).toHaveLength(2);
     const first = container.querySelector('[data-quota-item="account-1"]')!;
     expect(first.textContent).toContain('0.00 USD'); expect(first.textContent).not.toContain('42.50 USD');
-    expect(first.querySelector('[data-quota-meter="tokens"]')?.textContent).toContain('24500/100000 · 25% tokens');
+    expect(first.querySelector('[data-quota-meter="tokens"]')?.textContent).toContain('75%');
     expect(first.querySelector('[data-quota-meter="tokens"]')?.textContent).toContain('5h');
-    expect(first.querySelector('[data-quota-meter="requests"]')?.textContent).toContain('0/500 · 0% requests');
+    expect(first.querySelector('[data-quota-meter="tokens"]')?.getAttribute('data-meter-detail')).toBe('24500/100000 · 25% tokens');
+    expect(first.querySelector('[data-quota-meter="requests"]')?.textContent).toContain('100%');
+    expect(first.querySelector('[data-quota-meter="requests"]')?.getAttribute('data-meter-detail')).toBe('0/500 · 0% requests');
     expect(first.querySelector('[data-quota-meter="credits"]')?.textContent).toContain('500 credits');
     expect(first.querySelector('[data-quota-meter="credits"]')?.textContent).toContain('Team');
-    expect(first.querySelector('[data-quota-meter="percent"]')?.textContent).toContain('0%');
+    expect(first.querySelector('[data-quota-meter="percent"]')?.textContent).toContain('100%');
     expect(first.querySelector('[data-quota-meter="count"]')?.textContent).toContain('2 calls');
     expect(first.querySelector('[data-quota-meter="failed-key"] [data-meter-status="error"]')).not.toBeNull();
     expect(first.querySelector('[data-quota-meter="failed-key"]')?.textContent).toContain('Unknown');
@@ -327,9 +329,10 @@ describe('ProviderQuotaPanel', () => {
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-ready-empty"]')).not.toBeNull();
     expect(container.querySelector('[data-quota-ledger] [data-quota-item="src-managed"]')).not.toBeNull();
 
-    // Remaining percent renders both 'Remaining 52%' and a consistent 52% remaining-fuel progress bar
+    // Remaining percent renders clean '52%' without duplicate 'Used 48%' or 'Remaining' prose
     const managedRow = container.querySelector('[data-quota-item="src-managed"]')!;
-    expect(managedRow.textContent).toContain('Remaining 52%');
+    expect(managedRow.textContent).toContain('52%');
+    expect(managedRow.textContent).not.toContain('Used 48%');
     expect(managedRow.querySelector('[data-quota-progress]')?.getAttribute('data-remaining-percent')).toBe('52');
 
     // Never-queried source (status='unknown', no checked_at, empty meters) shows 'Not queried yet' + 'Query' button
@@ -448,8 +451,9 @@ describe('ProviderQuotaPanel', () => {
     const codexRow = container.querySelector<HTMLElement>('[data-quota-engine="codex-acp"]')!;
     expect(claudeRow.dataset['engineQuotaMode']).toBe('native');
     expect(claudeRow.textContent).toContain('Native 5h window');
-    expect(claudeRow.textContent).toContain('35%');
-    expect(container.querySelector('[data-quota-engines-auto-note="true"]')?.textContent).toContain('Auto instance selection');
+    expect(claudeRow.textContent).toContain('65%');
+    expect(claudeRow.querySelector('[data-engine-quota-source="claude-acp"]')?.getAttribute('title')).toContain('Auto instance selection');
+    expect(container.textContent).not.toContain('Auto instance selection');
 
     // Switch to Plugin A
     await selectOption(container, '[data-engine-quota-source="claude-acp"]', 'plugin:alpha/claude');
@@ -460,7 +464,7 @@ describe('ProviderQuotaPanel', () => {
     expect(claudeRow.dataset['engineQuotaMode']).toBe('plugin');
     expect(claudeRow.textContent).not.toContain('Native 5h window');
     expect(claudeRow.textContent).toContain('alpha-work@example.test');
-    expect(claudeRow.textContent).toContain('Remaining 78%');
+    expect(claudeRow.textContent).toContain('78%');
 
     // Switch to Plugin B
     await selectOption(container, '[data-engine-quota-source="claude-acp"]', 'plugin:beta/claude');
@@ -557,6 +561,11 @@ describe('ProviderQuotaPanel', () => {
     const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
     expect(agyRow.dataset['engineQuotaMode']).toBe('plugin');
     expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('ready');
+
+    // Multi-account fleet defaults to collapsed pool summary; click toggle to expand per-account rows
+    expect(agyRow.querySelector('[data-quota-fleet-summary="agy-cli"]')).not.toBeNull();
+    expect(agyRow.querySelectorAll('[data-quota-account]')).toHaveLength(0);
+    await click(agyRow, '[data-quota-fleet-toggle="agy-cli"]');
     expect(agyRow.querySelectorAll('[data-quota-account]')).toHaveLength(2);
 
     const workAccount = agyRow.querySelector('[data-quota-account="work@example.test"]')!;
@@ -566,16 +575,16 @@ describe('ProviderQuotaPanel', () => {
     // Bucket 0: 84% remaining, foldable 3 models (collapsed by default, expands on click)
     expect(buckets[0]!.textContent).toContain('Gemini');
     expect(buckets[0]!.textContent).toContain('5h');
-    expect(buckets[0]!.textContent).toContain('Remaining 84%');
+    expect(buckets[0]!.textContent).toContain('84%');
     expect(buckets[0]!.textContent).not.toContain('gemini-2.5-pro');
     const toggleModelsBtn = buckets[0]!.querySelector<HTMLButtonElement>('[data-reading-models-toggle]')!;
     expect(toggleModelsBtn.textContent).toContain('3 models');
     await act(async () => { toggleModelsBtn.click(); });
     expect(buckets[0]!.textContent).toContain('gemini-2.5-pro');
 
-    // Bucket 1: remaining 0 is explicitly 'Remaining 0%' with exhausted state, NOT 'Unknown'
+    // Bucket 1: remaining 0 is explicitly '0%' with exhausted state, NOT 'Unknown'
     expect(buckets[1]!.textContent).toContain('Claude / GPT');
-    expect(buckets[1]!.querySelector('[data-reading-state="exhausted"]')?.textContent).toBe('Remaining 0%');
+    expect(buckets[1]!.querySelector('[data-reading-state="exhausted"]')?.textContent).toBe('0%');
 
     // Bucket 2: remaining undefined is explicitly 'Unknown', NOT converted to 0%
     expect(buckets[2]!.textContent).toContain('Claude / GPT');
@@ -674,7 +683,7 @@ describe('ProviderQuotaPanel', () => {
     expect(harnessQuotaRead).toHaveBeenLastCalledWith('plugin:magpie/agy');
     expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('ready');
     expect(agyRow.textContent).toContain('main@example.test');
-    expect(agyRow.textContent).toContain('Remaining 91%');
+    expect(agyRow.textContent).toContain('91%');
   });
   it('degrades gracefully when connected to an older server without the harness-quota route', async () => {
     client.klient = { rest: {} };
@@ -773,7 +782,7 @@ describe('ProviderQuotaPanel', () => {
     expect(container.querySelector('[data-quota-engine-plugin-error]')).toBeNull();
     expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset['engineQuotaStatus']).toBe('ready');
     expect(claudeRow.textContent).toContain('alpha@example.test');
-    expect(claudeRow.textContent).toContain('Remaining 75%');
+    expect(claudeRow.textContent).toContain('75%');
 
     // Trigger a config save that invalidates queries while next cached() refetch fails -> preserves loaded catalog & readings
     await selectOption(container, '[data-engine-quota-source="claude-acp"]', 'plugin:alpha/claude');
@@ -835,7 +844,7 @@ describe('ProviderQuotaPanel', () => {
 
       const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
       expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('ready');
-      expect(agyRow.textContent).toContain('Remaining 80%');
+      expect(agyRow.textContent).toContain('80%');
       expect(harnessQuotaCached).toHaveBeenCalledTimes(1);
       expect(harnessQuotaRead).not.toHaveBeenCalled();
 
@@ -847,7 +856,7 @@ describe('ProviderQuotaPanel', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
       expect(agyRow.querySelector<HTMLElement>('[data-engine-plugin-quota="agy-cli"]')?.dataset['engineQuotaStatus']).toBe('expired');
       expect(agyRow.querySelector('[data-engine-quota-expired="agy-cli"]')).not.toBeNull();
-      expect(agyRow.textContent).not.toContain('Remaining 80%');
+      expect(agyRow.textContent).not.toContain('80%');
       expect(harnessQuotaCached).toHaveBeenCalledTimes(1);
       expect(harnessQuotaRead).not.toHaveBeenCalled();
     } finally {
@@ -926,16 +935,19 @@ describe('ProviderQuotaPanel', () => {
     const hydratedRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
     expect(hydratedRow.dataset['engineQuotaMode']).toBe('native');
 
-    // Select the plugin source -> renders 3 seats x 2 windows with deduplicated model toggle and top summary strip
+    // Select the plugin source -> defaults to collapsed pool summary ('2/3 available' since seat-3 exhausted its 5h pool)
     await selectOption(container, '[data-engine-quota-source="agy-cli"]', 'plugin:magpie/agy');
     expect(hydratedRow.dataset['engineQuotaMode']).toBe('plugin');
+    expect(hydratedRow.querySelector('[data-quota-fleet-toggle="agy-cli"]')?.textContent).toContain('2/3 available');
+    expect(hydratedRow.querySelector('[data-quota-fleet-summary="agy-cli"]')).not.toBeNull();
+    expect(hydratedRow.querySelectorAll('[data-quota-account]')).toHaveLength(0);
+
+    // Expand the multi-account fleet -> renders single matrix header + 3 aligned seat rows with deduplicated model toggle
+    await click(hydratedRow, '[data-quota-fleet-toggle="agy-cli"]');
+    expect(hydratedRow.querySelector('[data-quota-matrix-header]')).not.toBeNull();
     expect(hydratedRow.querySelectorAll('[data-quota-account]')).toHaveLength(3);
     expect(hydratedRow.querySelectorAll('[data-reading-models-toggle]')).toHaveLength(1);
-
-    const summaryStrip = container.querySelector('[data-quota-summary-strip]')!;
-    expect(summaryStrip).not.toBeNull();
-    expect(summaryStrip.textContent).toContain('1 healthy');
-    expect(summaryStrip.textContent).toContain('1 low');
-    expect(summaryStrip.textContent).toContain('1 exhausted');
+    expect(container.textContent).not.toContain('Updated ');
+    expect(container.textContent).not.toContain('Read ');
   });
 });

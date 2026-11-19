@@ -1,7 +1,7 @@
 /**
- * Consumption sources — the answer to "what drove this?". One axis at a time
- * (model / provider / agent profile / workspace) with inline proportional share
- * bars, 1-click multi-facet filter toggles, and session trace triggers.
+ * Consumption sources — one flat axis at a time (model / provider / workspace /
+ * profile) with inline proportional share bars, Plausible-style 1-click row
+ * filtering, and session trace triggers.
  */
 
 import { useMemo, useState } from 'react';
@@ -23,7 +23,6 @@ import {
   type UsageSourceRow,
   type UsageTrendBucketWire,
 } from '../../lib/usageV2';
-import { SettingsSegmented } from '../settings/SettingsPrimitives';
 import {
   CompareCell,
   formatPercent,
@@ -41,16 +40,17 @@ export function UsageSources({
   groupBy,
   metric,
   prior,
+  query = '',
   lookups,
   isFilterActive,
   onFilterSource,
   onOpenSessions,
-  onSwitchGrouping,
 }: {
   readonly trend: readonly UsageTrendBucketWire[];
   readonly groupBy: UsageGroupBy;
   readonly metric: UsageMetric;
   readonly prior: UsageSourcePrior | undefined;
+  readonly query?: string;
   readonly lookups: {
     readonly unknownLabel: string;
     readonly workspaceName: (id: string) => string | undefined;
@@ -58,10 +58,8 @@ export function UsageSources({
   readonly isFilterActive?: (row: UsageSourceRow) => boolean;
   readonly onFilterSource: (row: UsageSourceRow) => void;
   readonly onOpenSessions: (row: UsageSourceRow | undefined) => void;
-  readonly onSwitchGrouping: (groupBy: UsageGroupBy) => void;
 }) {
   const { t, time } = useI18n();
-  const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const rows = useMemo(() => aggregateSourceRows(trend, groupBy), [trend, groupBy]);
   const totalCost = rows.reduce((sum, row) => sum + row.costUsdEstimated, 0);
@@ -129,7 +127,7 @@ export function UsageSources({
             />
           ) : null}
 
-          <div className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-2 py-2.5 sm:grid-cols-[minmax(0,1fr)_6.5rem_4.25rem_3.75rem_auto]">
+          <div className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-2 py-2.5 sm:grid-cols-[minmax(0,1fr)_6.5rem_4.75rem_4rem_auto]">
             <div className="flex min-w-0 items-center gap-1.5">
               <button
                 type="button"
@@ -141,19 +139,29 @@ export function UsageSources({
               >
                 <DisclosureChevron open={open} className="text-current" />
               </button>
-              <div className="min-w-0 flex-1">
+
+              {row.filter !== null ? (
+                <button
+                  type="button"
+                  data-usage-row-name-filter={row.key}
+                  aria-pressed={filterActive}
+                  title={t('usage.sources.toggleFilter', { name: rowName })}
+                  onClick={() => { onFilterSource(row); }}
+                  className="min-w-0 flex-1 text-left transition-colors hover:text-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  <span className={`block truncate text-[13px] font-medium ${filterActive ? 'text-selected-ink underline decoration-selected-ink/40 underline-offset-3' : 'text-ink'}`}>
+                    {rowName}
+                  </span>
+                </button>
+              ) : (
                 <p
-                  className={`truncate text-[13px] ${row.key === USAGE_SOURCE_KEY_UNKNOWN ? 'text-ink-soft italic' : 'font-medium text-ink'}`}
+                  className={`min-w-0 flex-1 truncate text-[13px] ${row.key === USAGE_SOURCE_KEY_UNKNOWN ? 'text-ink-soft italic' : 'font-medium text-ink'}`}
                   title={row.value ?? undefined}
                 >
                   {rowName}
                 </p>
-                {row.key !== USAGE_SOURCE_KEY_UNKNOWN && row.modelAliases.length > 0 && groupBy !== 'model' ? (
-                  <p className="truncate font-mono text-[10.5px] text-ink-faint">
-                    {row.modelAliases.length === 1 ? row.modelAliases[0] : t('usage.sources.modelCount', { count: row.modelAliases.length })}
-                  </p>
-                ) : null}
-              </div>
+              )}
+
               <div className={`flex shrink-0 items-center gap-0.5 transition-opacity ${
                 filterActive ? 'opacity-100' : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100'
               }`}>
@@ -247,8 +255,7 @@ export function UsageSources({
 
         {open ? (
           <div id={`usage-source-details-${row.key}`} className="border-t border-dashed border-hairline px-3 py-2.5">
-            <p className="text-[11.5px] text-ink-faint">{t('usage.sources.tokenComposition')}</p>
-            <dl className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] tabular-nums sm:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] tabular-nums sm:grid-cols-4">
               <div><dt className="text-ink-faint">{t('usage.composition.fresh')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.input_other)}</dd></div>
               <div><dt className="text-ink-faint">{t('usage.tokens.output')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.output)}</dd></div>
               <div><dt className="text-ink-faint">{t('usage.tokens.cacheRead')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.input_cache_read)}</dd></div>
@@ -260,7 +267,7 @@ export function UsageSources({
                   type="button"
                   data-usage-source-filter={row.key}
                   onClick={() => { onFilterSource(row); }}
-                  className="inline-flex min-h-8 items-center rounded-md border border-hairline px-2.5 text-[12.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                  className="inline-flex min-h-8 items-center rounded-md border border-hairline px-2.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                 >
                   {t(`usage.sources.onlyThis.${row.filter.field === 'workspace.id' ? 'workspace' : row.filter.field}`)}
                 </button>
@@ -269,7 +276,7 @@ export function UsageSources({
                 type="button"
                 data-usage-source-sessions={row.key}
                 onClick={() => { onOpenSessions(row); }}
-                className="inline-flex min-h-8 items-center rounded-md border border-hairline px-2.5 text-[12.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                className="inline-flex min-h-8 items-center rounded-md border border-hairline px-2.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
               >
                 {t('usage.sources.openSessions')}
               </button>
@@ -280,41 +287,15 @@ export function UsageSources({
     );
   };
 
-  const gridHead = 'grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-2 pb-2 text-[11px] text-ink-faint sm:grid-cols-[minmax(0,1fr)_6.5rem_4.25rem_3.75rem_auto]';
+  const gridHead = 'grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-2 pb-2 text-[11px] text-ink-faint sm:grid-cols-[minmax(0,1fr)_6.5rem_4.75rem_4rem_auto]';
 
   return (
     <section id="usage-source-table" aria-label={t('usage.sources.title')} data-usage-sources={groupBy}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="flex items-center gap-2">
-          <span className="shrink-0 text-[12.5px] text-ink-soft">{t('usage.sources.by')}</span>
-          <SettingsSegmented<UsageGroupBy>
-            ariaLabel={t('usage.sources.grouping')}
-            dataAttr="data-usage-grouping"
-            value={groupBy}
-            onChange={onSwitchGrouping}
-            choices={(['model', 'provider', 'profile', 'workspace'] as const).map((candidate) => ({
-              value: candidate,
-              label: t(`usage.sources.grouping.${candidate}`),
-            }))}
-          />
-        </span>
-        <label className="ml-auto flex min-w-0 items-center gap-1.5">
-          <span className="sr-only">{t('usage.sources.search')}</span>
-          <input
-            type="search"
-            data-usage-source-search
-            value={query}
-            placeholder={t('usage.sources.searchPlaceholder')}
-            onChange={(event) => { setQuery(event.target.value); }}
-            className="h-8 w-40 max-w-full rounded-md border border-hairline bg-paper px-2.5 text-[12.5px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink"
-          />
-        </label>
-      </div>
       {rows.length === 0 ? (
         <p className="py-8 text-center text-[13px] text-ink-faint">{t('usage.empty')}</p>
       ) : (
         <>
-          <div aria-hidden className={`${gridHead} mt-3 border-b border-hairline`}>
+          <div aria-hidden className={`${gridHead} border-b border-hairline`}>
             <span className="pl-7">{t(`usage.sources.grouping.${groupBy}`)}</span>
             <span className="hidden sm:block">{t('usage.col.share')}</span>
             <span className="hidden text-right sm:block">{t('usage.col.tokens')}</span>

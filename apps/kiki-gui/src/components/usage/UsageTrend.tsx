@@ -117,8 +117,8 @@ export function TrendChart({
           }))}
         />
         {onGranularityChange !== undefined ? (
-          <span className="flex items-center gap-2">
-            <span className="shrink-0 text-[12.5px] text-ink-soft">{t('usage.axis.granularity')}</span>
+          <span className="flex items-center">
+            <span className="sr-only">{t('usage.axis.granularity')}</span>
             <SettingsSelect<UsageGranularity>
               ariaLabel={t('usage.axis.granularity')}
               dataAttr="data-axis-select"

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { formatGrouped } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
@@ -9,8 +10,10 @@ export function UsageReliabilityDetails({
   summary,
   reliability,
   onOpenPricing,
+  footerSlot,
 }: Pick<UsageResponseWire, 'summary' | 'reliability'> & {
   readonly onOpenPricing?: () => void;
+  readonly footerSlot?: ReactNode;
 }) {
   const { t, tp, locale } = useI18n();
   const pop = usePopover();
@@ -66,7 +69,7 @@ export function UsageReliabilityDetails({
       <AnchoredPopover
         {...pop.popoverProps}
         align="end"
-        widthClassName="w-[19rem]"
+        widthClassName="w-[19.5rem]"
         label={summaryLabel}
         data={{ 'data-usage-reliability': '' }}
       >
@@ -122,9 +125,12 @@ export function UsageReliabilityDetails({
             </div>
           </dl>
 
-          <p className="text-[11px] text-ink-faint">
-            {t(reliability.includes_deleted_sessions ? 'usage.reliability.deleted.included' : 'usage.reliability.deleted.excluded')}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-2.5">
+            <span className="text-[11px] text-ink-faint">
+              {t(reliability.includes_deleted_sessions ? 'usage.reliability.deleted.included' : 'usage.reliability.deleted.excluded')}
+            </span>
+            {footerSlot}
+          </div>
         </div>
       </AnchoredPopover>
     </div>

@@ -211,6 +211,36 @@ export function formatQuotaResetDuration(
   return zh ? `${totalMinutes}分` : `${totalMinutes}m`;
 }
 
+/**
+ * Compact tabular reset countdown ('4d 21h', '3h 23m', '45m') for inline meter
+ * headers where space and visual quiet matter; localized prose stays in `title`.
+ */
+export function formatQuotaResetShort(
+  iso: string | undefined,
+  nowMs = Date.now(),
+): string | undefined {
+  return formatQuotaResetDuration(iso, 'en', nowMs);
+}
+
+const GENERIC_WINDOW_LABEL_RE = /^(\d+\s*[hdwm]|weekly|monthly|daily|session)\s*(burst\s*)?window$/i;
+
+export function compactQuotaMeterLabel(
+  label: string,
+  periodLabel: string | undefined,
+): { readonly title: string; readonly periodSuffix: string | undefined } {
+  const trimmed = label.trim();
+  if (periodLabel !== undefined && GENERIC_WINDOW_LABEL_RE.test(trimmed)) {
+    return { title: periodLabel, periodSuffix: undefined };
+  }
+  if (
+    periodLabel !== undefined &&
+    trimmed.toLocaleLowerCase().includes(periodLabel.trim().toLocaleLowerCase())
+  ) {
+    return { title: trimmed, periodSuffix: undefined };
+  }
+  return { title: trimmed, periodSuffix: periodLabel };
+}
+
 export function meterToneClass(utilization: number): string {
   if (utilization >= 100) return 'bg-danger text-danger';
   if (utilization >= 80) return 'bg-amber-rule text-amber-ink';
