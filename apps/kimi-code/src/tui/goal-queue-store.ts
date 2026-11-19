@@ -6,6 +6,8 @@ import {
   KimiError,
 } from '@kiki/node-sdk';
 
+import { isRecord } from '#/utils/errors';
+
 const GOAL_QUEUE_FILE = 'upcoming-goals.json';
 const GOAL_QUEUE_VERSION = 1;
 const MAX_GOAL_OBJECTIVE_LENGTH = 4000;
@@ -241,10 +243,6 @@ function isUpcomingGoal(value: unknown): value is UpcomingGoal {
     isNonEmptyString(value['createdAt']) &&
     isNonEmptyString(value['updatedAt'])
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

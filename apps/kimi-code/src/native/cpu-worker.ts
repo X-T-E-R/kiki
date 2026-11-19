@@ -1,42 +1,22 @@
-import { basename } from 'node:path';
-
 import { configureCpuWorkerRuntime } from '@kiki/node-sdk';
 
 import { CPU_WORKER_ASSET } from '../../scripts/native/manifest.mjs';
 import {
   getCpuWorkerFile,
-  getEmbeddedNativeAssetManifest,
-  getSeaAssetSource,
+  installRuntimeAsset,
   type NativeAssetOptions,
+  type RuntimeAssetInstallStatus,
 } from './native-assets';
 
-export type CpuWorkerInstallStatus =
-  | { readonly status: 'not-sea' }
-  | { readonly status: 'asset-missing' }
-  | { readonly status: 'installed'; readonly assetSha256: string; readonly basename: string }
-  | { readonly status: 'failed'; readonly errorCode: string; readonly assetSha256?: string };
-
-function errorCode(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  if (typeof code === 'string' && code.length > 0) return code;
-  return error instanceof Error ? error.name : 'UNKNOWN';
-}
+export type CpuWorkerInstallStatus = RuntimeAssetInstallStatus;
 
 export function installCpuWorker(options: NativeAssetOptions = {}): CpuWorkerInstallStatus {
-  const source = options.source ?? getSeaAssetSource();
-  if (source === null) return { status: 'not-sea' };
-
-  let assetSha256: string | undefined;
-  try {
-    const manifest = options.manifest ?? getEmbeddedNativeAssetManifest(source);
-    const file = manifest?.runtimeFiles.find((entry) => entry.key === CPU_WORKER_ASSET.key);
-    if (manifest === null || file === undefined) return { status: 'asset-missing' };
-    assetSha256 = file.sha256;
-    const workerPath = getCpuWorkerFile({ ...options, source, manifest });
-    if (workerPath === null) return { status: 'asset-missing' };
-    configureCpuWorkerRuntime({ entry: workerPath });
-    return { status: 'installed', assetSha256, basename: basename(workerPath) };
-  } catch (error) {
-    return { status: 'failed', errorCode: errorCode(error), assetSha256 };
-  }
+  return installRuntimeAsset(
+    {
+      assetKey: CPU_WORKER_ASSET.key,
+      getFile: getCpuWorkerFile,
+      configure: (entry) => configureCpuWorkerRuntime({ entry }),
+    },
+    options,
+  );
 }

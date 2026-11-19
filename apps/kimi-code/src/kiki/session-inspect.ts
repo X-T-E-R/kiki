@@ -17,6 +17,7 @@ import {
   type TranscriptTurn,
   type TranscriptWireRecord,
 } from '@kiki/transcript';
+import { errorMessage, isRecord } from '#/utils/errors';
 import { readSessionWireWindow, SessionWireCursorError, SessionWireLimitError, type SessionWireCoverage, type SessionWireRecordSource } from './session-inspect-wire';
 
 const SESSION_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1239,16 +1240,8 @@ async function mapBounded<T, R>(
   return result;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error && error.code === code;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function levenshtein(left: string, right: string): number {

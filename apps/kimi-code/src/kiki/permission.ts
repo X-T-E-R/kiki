@@ -12,6 +12,8 @@ import {
   type PermissionMode,
 } from '@kiki/node-sdk';
 
+import { isRecord } from '#/utils/errors';
+
 interface PermissionRuleRecord {
   readonly decision: 'allow' | 'deny' | 'ask';
   readonly scope: string;
@@ -210,8 +212,4 @@ function normalizeMode(value: unknown): PermissionMode {
 
 function asDecision(value: unknown): PermissionRuleRecord['decision'] | undefined {
   return value === 'allow' || value === 'deny' || value === 'ask' ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

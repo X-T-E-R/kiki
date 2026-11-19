@@ -3,6 +3,7 @@ import { Text } from '@kiki/pi-tui';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
+import { isRecord } from '#/utils/errors';
 import { formatTokenCount } from '#/utils/usage/usage-format';
 
 import { formatGoalElapsed, pluralizeGoalCount } from '../goal-format';
@@ -207,10 +208,6 @@ function truncateOneLine(text: string, max: number): string {
 function stringArg(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {

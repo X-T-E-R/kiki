@@ -5,6 +5,8 @@ import {
   type ToolUpdate,
 } from '@kiki/node-sdk';
 
+import { isRecord } from '#/utils/errors';
+
 export type OpenUrl = (url: string) => void;
 
 export class McpOAuthAuthorizationUrlOpener {
@@ -35,10 +37,6 @@ export function parseMcpOAuthAuthorizationUrlUpdate(
   if (typeof authorizationUrl !== 'string' || authorizationUrl.length === 0) return undefined;
   if (!isHttpUrl(authorizationUrl)) return undefined;
   return { serverName, authorizationUrl };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isHttpUrl(value: string): boolean {

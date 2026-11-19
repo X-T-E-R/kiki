@@ -39,6 +39,7 @@ import type { Command } from 'commander';
 import { createKimiCodeHostIdentity, createKimiCodeUserAgent } from '#/cli/version';
 import { CLI_COMMAND_NAME } from '#/constant/app';
 import { fetchCatalogOrBuiltIn } from '#/utils/catalog-fetch';
+import { errorMessage } from '#/utils/errors';
 
 interface WritableLike {
   write(chunk: string): boolean;
@@ -603,8 +604,4 @@ function providerSourceLabel(provider: KimiConfig['providers'][string]): string 
   }
   if (provider.oauth !== undefined) return 'oauth';
   return 'inline';
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

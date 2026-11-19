@@ -1,6 +1,7 @@
 import type { ApprovalRequest, ToolInputDisplay } from '@kiki/node-sdk';
 import { goalStartOptions } from '#/tui/components/dialogs/goal-start-permission-prompt';
 import type { ApprovalPanelChoice, ApprovalPanelData, DisplayBlock } from '#/tui/interactions/types';
+import { isRecord } from '#/utils/errors';
 
 const DEFAULT_APPROVAL_CHOICES: ApprovalPanelChoice[] = [
   { label: 'Approve once', response: 'approved' },
@@ -176,10 +177,6 @@ function resolveDisplay(
     blocks: adaptDisplay(display),
     description: describeApproval(display, action),
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function stringField(detail: Record<string, unknown>, key: string): string | undefined {

@@ -4,6 +4,8 @@ import { dirname, join, resolve } from 'node:path';
 
 import type { Command } from 'commander';
 
+import { isRecord } from '#/utils/errors';
+
 import { resolveKikiHome } from './home';
 import { mcpPrincipal } from './mcp';
 import { createSeatOnConnection } from './seat';
@@ -115,8 +117,4 @@ function parseClient(value: string): InstallClient {
 function parseTransport(value: string): 'stdio' {
   if (value === 'stdio') return value;
   throw new Error('Invalid transport.');
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

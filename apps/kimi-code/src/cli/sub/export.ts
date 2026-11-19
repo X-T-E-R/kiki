@@ -17,6 +17,7 @@ import {
 } from '@kiki/node-sdk';
 import type { Command } from 'commander';
 import { createKimiCodeHostIdentity } from '#/cli/version';
+import { errorMessage } from '#/utils/errors';
 import { detectInstallSource } from '#/utils/install-source';
 import { detectShellEnvironment } from '#/utils/process/shell-env';
 
@@ -188,8 +189,4 @@ async function confirmPreviousSession(summary: PreviousSessionSummary): Promise<
   } finally {
     rl.close();
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

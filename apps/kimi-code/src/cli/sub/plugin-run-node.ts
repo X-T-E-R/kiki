@@ -1,27 +1,11 @@
-import { realpath } from 'node:fs/promises';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-
 import { getPluginHostRunnerFile } from '#/native/native-assets';
+import {
+  executePluginNodeEntry,
+  validatePluginNodeEntry as validatePluginNodeEntryWithRunner,
+} from '#/plugin-node-validate';
 
 export async function runPluginNodeEntry(entry: string, args: readonly string[]): Promise<void> {
-  const pluginRoot = process.env['KIKI_PLUGIN_ROOT'];
-  if (pluginRoot === undefined || pluginRoot.trim().length === 0) {
-    throw new Error('KIKI_PLUGIN_ROOT is required to run a plugin node entry.');
-  }
-
-  const { entryReal, argsReal } = await validatePluginNodeEntry(entry, args, pluginRoot);
-  process.argv = [process.argv[0] ?? process.execPath, entryReal, ...argsReal];
-  process.stdin.once('end', () => {
-    const timer = setTimeout(() => process.exit(0), 1_000);
-    timer.unref();
-  });
-  // Keep disk ESM/TLA loading outside the native bundle's dynamic-import-to-require transform.
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const importModule = new Function('specifier', 'return import(specifier)') as (
-    specifier: string,
-  ) => Promise<unknown>;
-  await importModule(pathToFileURL(entryReal).href);
+  await executePluginNodeEntry(entry, args, getPluginHostRunnerFile());
 }
 
 export async function validatePluginNodeEntry(
@@ -30,17 +14,5 @@ export async function validatePluginNodeEntry(
   pluginRoot: string,
   trustedRunner: string | null = getPluginHostRunnerFile(),
 ): Promise<{ entryReal: string; argsReal: readonly string[] }> {
-  const [rootReal, entryReal] = await Promise.all([realpath(pluginRoot), realpath(entry)]);
-  if (isWithin(entryReal, rootReal)) return { entryReal, argsReal: args };
-  if (trustedRunner !== null && args.length === 1 &&
-    entryReal === await realpath(trustedRunner) &&
-    isWithin(await realpath(args[0]!), rootReal)) {
-    return { entryReal, argsReal: [await realpath(args[0]!)] };
-  }
-  throw new Error(`Plugin node entry must be inside KIKI_PLUGIN_ROOT: ${entry}`);
-}
-
-function isWithin(candidate: string, root: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return validatePluginNodeEntryWithRunner(entry, args, pluginRoot, trustedRunner);
 }

@@ -16,6 +16,7 @@ import { parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
 
 import { getTuiConfigPath, parseTuiConfig } from '#/tui/config';
+import { errorMessage, isRecord } from '#/utils/errors';
 import { getDataDir } from '#/utils/paths';
 
 interface WritableLike {
@@ -534,10 +535,6 @@ function formatAgentIssues(
   return messages.length > 0 ? messages.join('\n') : undefined;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 async function resolveConfigTargetPath(
   deps: ResolvedDoctorDeps,
   input: string | undefined,
@@ -636,10 +633,6 @@ function isValidationIssue(value: unknown): value is KimiConfigValidationIssue {
     Array.isArray(path) &&
     path.every((segment) => typeof segment === 'string' || typeof segment === 'number')
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function modelsSectionFromToml(models: Record<string, unknown>): Record<string, ModelRecord> {

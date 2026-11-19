@@ -1,14 +1,5 @@
-import { createHash } from 'node:crypto';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { resolveKikiHome } from '@kiki/node-sdk';
 
@@ -20,8 +11,13 @@ import {
 } from '../../scripts/native/manifest.mjs';
 import { getHostPackageRoot } from '../cli/version';
 import {
+  ensureFile,
   getEmbeddedNativeAssetManifest,
   getSeaAssetSource,
+  nativeErrorCode,
+  readFileSha256,
+  sha256,
+  toBuffer,
   validateNativeAssetManifest,
   type NativeAssetManifest,
   type NativeAssetSource,
@@ -65,19 +61,6 @@ export type KikiDocsInstallStatus =
   | ({ readonly status: 'installed'; readonly source: 'sea' | 'package' | 'workspace' } & MaterializeKikiDocsResult)
   | { readonly status: 'source-missing' }
   | { readonly status: 'failed'; readonly errorCode: string };
-
-function sha256(bytes: Buffer | Uint8Array | string): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
-
-function toBuffer(value: ArrayBuffer | ArrayBufferView | Buffer | string): Buffer {
-  if (Buffer.isBuffer(value)) return value;
-  if (typeof value === 'string') return Buffer.from(value);
-  if (ArrayBuffer.isView(value)) {
-    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-  }
-  return Buffer.from(value);
-}
 
 function safeRelativePath(value: string): string {
   const normalized = value.replaceAll('\\', '/');
@@ -175,35 +158,6 @@ function collectSeaDocs(source: NativeAssetSource, rawManifest: NativeAssetManif
       return { relativePath, bytes, sha256: actualSha256 };
     })
     .toSorted((a, b) => a.relativePath.localeCompare(b.relativePath));
-}
-
-function readFileSha256(path: string): string | null {
-  try {
-    return sha256(readFileSync(path));
-  } catch {
-    return null;
-  }
-}
-
-function ensureFile(path: string, bytes: Buffer, expectedSha256: string): boolean {
-  if (readFileSha256(path) === expectedSha256) return false;
-
-  mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tempPath, bytes, { mode: 0o644 });
-  try {
-    renameSync(tempPath, path);
-  } catch {
-    rmSync(path, { force: true });
-    try {
-      renameSync(tempPath, path);
-    } catch (error) {
-      rmSync(tempPath, { force: true });
-      if (readFileSha256(path) !== expectedSha256) throw error;
-      return false;
-    }
-  }
-  return true;
 }
 
 function backupUserFile(path: string): boolean {
@@ -329,12 +283,6 @@ export function materializeKikiDocsFromDirectory(
   return materializeKikiDocs(collectMarkdownFiles(sourceDir), kikiHome);
 }
 
-function errorCode(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  if (typeof code === 'string' && code.length > 0) return code;
-  return error instanceof Error ? error.name : 'UNKNOWN';
-}
-
 export function installKikiDocs(options: KikiDocsInstallOptions = {}): KikiDocsInstallStatus {
   try {
     const seaSource = options.source === undefined ? getSeaAssetSource() : options.source;
@@ -362,6 +310,6 @@ export function installKikiDocs(options: KikiDocsInstallOptions = {}): KikiDocsI
       ...materializeKikiDocs(collectMarkdownFiles(resolved.path), options.kikiHome),
     };
   } catch (error) {
-    return { status: 'failed', errorCode: errorCode(error) };
+    return { status: 'failed', errorCode: nativeErrorCode(error) };
   }
 }

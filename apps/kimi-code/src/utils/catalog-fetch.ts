@@ -7,6 +7,7 @@ import {
 } from '@kiki/node-sdk';
 
 import { BUILT_IN_CATALOG_JSON } from '#/built-in-catalog';
+import { isAbortError } from '#/utils/errors';
 
 export interface FetchCatalogOrBuiltInResult {
   readonly catalog: Catalog;
@@ -45,13 +46,4 @@ export async function fetchCatalogOrBuiltIn(
     if (builtIn === undefined) throw error;
     return { catalog: builtIn, fromBuiltIn: true };
   }
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    (typeof DOMException !== 'undefined' &&
-      error instanceof DOMException &&
-      error.name === 'AbortError') ||
-    (error instanceof Error && error.name === 'AbortError')
-  );
 }

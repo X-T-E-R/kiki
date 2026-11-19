@@ -13,7 +13,7 @@ import {
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, isAbsolute, join, relative, resolve, win32 as pathWin32 } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, win32 as pathWin32 } from 'node:path';
 import { join as joinPosix } from 'pathe';
 
 import { KIMI_BUILD_INFO } from '#/cli/build-info';
@@ -97,7 +97,7 @@ function loadSeaModule(): NodeSeaModule | null {
   return seaModule;
 }
 
-function currentTarget(): string {
+export function currentTarget(): string {
   return KIMI_BUILD_INFO.buildTarget ?? `${process.platform}-${process.arch}`;
 }
 
@@ -105,7 +105,7 @@ export function nativeAssetManifestKey(target: string = currentTarget()): string
   return buildManifestKey(target);
 }
 
-function toBuffer(value: ArrayBuffer | ArrayBufferView | Buffer | string): Buffer {
+export function toBuffer(value: ArrayBuffer | ArrayBufferView | Buffer | string): Buffer {
   if (Buffer.isBuffer(value)) return value;
   if (typeof value === 'string') return Buffer.from(value);
   if (ArrayBuffer.isView(value)) {
@@ -114,8 +114,67 @@ function toBuffer(value: ArrayBuffer | ArrayBufferView | Buffer | string): Buffe
   return Buffer.from(value);
 }
 
-function sha256(bytes: Buffer | Uint8Array | string): string {
+export function sha256(bytes: Buffer | Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+export function nativeErrorCode(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code === 'string' && code.length > 0) return code;
+  return error instanceof Error ? error.name : 'UNKNOWN';
+}
+
+export type RuntimeAssetInstallStatus =
+  | { readonly status: 'not-sea' }
+  | { readonly status: 'asset-missing' }
+  | {
+      readonly status: 'installed';
+      readonly assetSha256: string;
+      readonly basename: string;
+    }
+  | {
+      readonly status: 'failed';
+      readonly errorCode: string;
+      readonly assetSha256?: string;
+    };
+
+export interface RuntimeAssetInstallSpec {
+  readonly assetKey: string;
+  readonly getFile: (options: NativeAssetOptions) => string | null;
+  readonly configure: (filePath: string) => void;
+  readonly verify?: () => void;
+}
+
+export function installRuntimeAsset(
+  spec: RuntimeAssetInstallSpec,
+  options: NativeAssetOptions = {},
+): RuntimeAssetInstallStatus {
+  const source = options.source ?? getSeaAssetSource();
+  if (source === null) return { status: 'not-sea' };
+
+  let assetSha256: string | undefined;
+  try {
+    const manifest = options.manifest ?? getEmbeddedNativeAssetManifest(source);
+    const file = manifest?.runtimeFiles.find((entry) => entry.key === spec.assetKey);
+    if (manifest === null || file === undefined) return { status: 'asset-missing' };
+    assetSha256 = file.sha256;
+
+    const filePath = spec.getFile({ ...options, source, manifest });
+    if (filePath === null) return { status: 'asset-missing' };
+    spec.configure(filePath);
+    spec.verify?.();
+    return {
+      status: 'installed',
+      assetSha256,
+      basename: basename(filePath),
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      errorCode: nativeErrorCode(error),
+      assetSha256,
+    };
+  }
 }
 
 function manifestObject(value: unknown, label: string): Record<string, unknown> {
@@ -266,7 +325,7 @@ function optionalEnvValue(env: NodeJS.ProcessEnv, key: string): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function sanitizeSegment(value: string): string {
+export function sanitizeSegment(value: string): string {
   const sanitized = value.replaceAll(/[^a-zA-Z0-9._-]/g, '_');
   return sanitized.length > 0 ? sanitized : 'unknown';
 }
@@ -354,7 +413,7 @@ export function getNativeAssetCacheRoot(
   );
 }
 
-function readFileSha256(path: string): string | null {
+export function readFileSha256(path: string): string | null {
   try {
     return sha256(readFileSync(path));
   } catch {
@@ -368,10 +427,15 @@ function ensureFileMode(path: string, mode?: number): void {
   }
 }
 
-function ensureFile(path: string, bytes: Buffer, expectedSha256: string, mode?: number): void {
+export function ensureFile(
+  path: string,
+  bytes: Buffer,
+  expectedSha256: string,
+  mode?: number,
+): boolean {
   if (readFileSha256(path) === expectedSha256) {
     ensureFileMode(path, mode);
-    return;
+    return false;
   }
 
   mkdirSync(dirname(path), { recursive: true });
@@ -381,23 +445,24 @@ function ensureFile(path: string, bytes: Buffer, expectedSha256: string, mode?: 
 
   try {
     renameSync(tempPath, path);
-    return;
+    return true;
   } catch {
     if (readFileSha256(path) === expectedSha256) {
       rmSync(tempPath, { force: true });
       ensureFileMode(path, mode);
-      return;
+      return false;
     }
   }
 
   try {
     rmSync(path, { force: true });
     renameSync(tempPath, path);
+    return true;
   } catch (error) {
     rmSync(tempPath, { force: true });
     if (readFileSha256(path) === expectedSha256) {
       ensureFileMode(path, mode);
-      return;
+      return false;
     }
     throw error;
   }
