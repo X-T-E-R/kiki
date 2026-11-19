@@ -158,6 +158,7 @@ interface BufferedTaskOutput {
   pendingOutputBytes: number;
   outputPersistStarted: boolean;
   outputPersistFailed?: boolean;
+  livePersistFailed?: boolean;
   failedOutputChunks?: string[];
   persistedOutputBytes?: number;
 }
@@ -767,7 +768,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       await entry.outputWriteQueue;
     }
     await cached?.outputWriteQueue;
-    await this.persistence.deleteTask(taskId).catch(() => {});
+    await this.persistence.deleteTask(taskId).catch((error) => {
+      this.log.error('task record deletion failed', { taskId, error });
+    });
   }
 
   track(handle: ITaskHandle, options: AgentTaskTrackOptions): IAgentTaskEntry {
@@ -1266,7 +1269,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const updated = { ...ghost, terminalNotificationSuppressed: true };
     this.ghosts.set(taskId, updated);
     this.fireWorkChange();
-    await this.persistence.writeTask(updated).catch(() => {});
+    await this.persistence.writeTask(updated).catch((error) => {
+      this.log.error('task notification suppression persistence failed', { taskId, error });
+    });
   }
 
   async suppressAllTerminalNotifications(): Promise<void> {
@@ -1916,8 +1921,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (!entry.visible) return entry.persistWriteQueue;
     const persistence = this.persistence;
     entry.persistWriteQueue = entry.persistWriteQueue
-      .then(() => persistence.writeTask(this.toInfo(entry)))
-      .catch(() => { });
+      .then(async () => {
+        await persistence.writeTask(this.toInfo(entry));
+        entry.livePersistFailed = undefined;
+      })
+      .catch((error: unknown) => {
+        entry.livePersistFailed = true;
+        this.log.error('task metadata persistence failed; retrying on next write', { taskId: entry.taskId, error });
+      });
     return entry.persistWriteQueue;
   }
 
@@ -1944,6 +1955,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       }
       entry.receipt = receipt;
       entry.receiptVerification = 'verified';
+      entry.livePersistFailed = undefined;
       if (finalOutput !== undefined) {
         entry.outputPersistStarted = true;
         entry.pendingOutput = [];

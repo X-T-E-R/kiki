@@ -761,6 +761,36 @@ describe('AgentTaskService', () => {
     expect(stubLoop().hasPendingRequests()).toBe(false);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('logs a failed live task metadata write and rewrites the record on the next write', async () => {
+    const svc = ix.get(IAgentTaskService);
+    const internals = svc as unknown as {
+      persistence: { writeTask(info: unknown): Promise<void> };
+      tasks: Map<string, { livePersistFailed?: boolean; persistWriteQueue: Promise<void> }>;
+    };
+    const error = new Error('disk full');
+    const writeTask = vi.spyOn(internals.persistence, 'writeTask').mockRejectedValueOnce(error);
+    const logError = vi.spyOn(ix.get(ILogService), 'error');
+    let release!: () => void;
+    const running = new Promise<void>((resolve) => { release = resolve; });
+    const taskId = svc.registerTask({
+      ...fakeProcessTask(),
+      start: async (sink) => { await running; await sink.settle({ status: 'completed' }); },
+    });
+    try {
+      await internals.tasks.get(taskId)!.persistWriteQueue;
+      expect(logError).toHaveBeenCalledWith('task metadata persistence failed; retrying on next write', { taskId, error });
+      expect(internals.tasks.get(taskId)!.livePersistFailed).toBe(true);
+
+      await svc.suppressTerminalNotification(taskId);
+      expect(writeTask).toHaveBeenCalledTimes(2);
+      expect(writeTask.mock.calls[1]![0]).toMatchObject({ taskId, terminalNotificationSuppressed: true });
+      expect(internals.tasks.get(taskId)!.livePersistFailed).toBeUndefined();
+    } finally {
+      release();
+      await svc.wait(taskId);
+    }
+  });
+
   it('retains all unpersisted output after an append failure rather than advertising a partial file as complete', async () => {
     const storage = new InMemoryStorageService();
     ix.set(IFileSystemStorageService, storage);
