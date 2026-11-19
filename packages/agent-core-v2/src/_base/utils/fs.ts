@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, fsyncSync, openSync } from 'node:fs';
+import { chmodSync, closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as nodeFs from 'node:fs';
 import { chmod, link, open, rename, unlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -186,20 +186,66 @@ export async function atomicWrite(
   }
 }
 
-export async function atomicCreate(filePath: string, content: string): Promise<void> {
+export function atomicWriteSync(
+  filePath: string,
+  content: string | Uint8Array,
+  mode?: number,
+): void {
+  const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`;
+  let renamed = false;
+  try {
+    const fd = openSync(tmpPath, 'w', mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    try {
+      renameSync(tmpPath, filePath);
+    } catch (error) {
+      if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+      try {
+        unlinkSync(filePath);
+      } catch (unlinkError) {
+        if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
+      }
+      renameSync(tmpPath, filePath);
+    }
+    renamed = true;
+    if (mode !== undefined) {
+      try {
+        chmodSync(filePath, mode);
+      } catch {
+        if (process.platform !== 'win32') throw new BugIndicatingError(
+          `chmod(${filePath}, ${mode.toString(8)}) failed after atomic write`,
+        );
+      }
+    }
+  } finally {
+    if (!renamed) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+      }
+    }
+  }
+}
+
+export async function atomicCreate(filePath: string, content: string, mode?: number): Promise<void> {
   if (process.platform === 'android') {
-    await createFileExclusiveDirect(filePath, content);
+    await createFileExclusiveDirect(filePath, content, mode);
     return;
   }
   const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
   try {
-    await atomicWrite(tmpPath, content);
+    await atomicWrite(tmpPath, content, undefined, mode);
     try {
       await link(tmpPath, filePath);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOSYS' || code === 'ENOTSUP') {
-        await createFileExclusiveDirect(filePath, content);
+        await createFileExclusiveDirect(filePath, content, mode);
         return;
       }
       throw error;
@@ -210,8 +256,8 @@ export async function atomicCreate(filePath: string, content: string): Promise<v
   }
 }
 
-async function createFileExclusiveDirect(filePath: string, content: string): Promise<void> {
-  const fh = await open(filePath, 'wx');
+async function createFileExclusiveDirect(filePath: string, content: string, mode?: number): Promise<void> {
+  const fh = await open(filePath, 'wx', mode);
   try {
     await fh.writeFile(content, 'utf8');
     await fh.sync();

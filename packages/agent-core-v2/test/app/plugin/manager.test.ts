@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PluginManager } from '#/app/plugin/manager';
 import * as archive from '#/app/plugin/archive';
+import * as fsUtils from '#/_base/utils/fs';
 import * as installPlan from '#/app/plugin/installPlan';
 import { PluginHost } from '#/app/plugin/host';
 import { readInstalled, writeInstalled, type InstalledRecord } from '#/app/plugin/store';
@@ -950,12 +951,11 @@ describe('PluginManager renamed installations', () => {
     const current = join(home, 'plugins', 'managed', id);
     await packageAt(legacy, legacyId);
     await writeInstalled(home, { version: 1, plugins: [entry(legacy)] });
-    const blocked = join(home, 'plugins', 'installed.json.tmp');
-    await mkdir(blocked);
+    const write = vi.spyOn(fsUtils, 'atomicWrite').mockRejectedValueOnce(new Error('disk unavailable'));
     const failed = new PluginManager({ kimiHomeDir: home });
     await expect(failed.load()).rejects.toThrow();
     expect(failed.list()).toEqual([]);
-    await rm(blocked, { recursive: true });
+    write.mockRestore();
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
     expect(manager.get(id)).toMatchObject({ root: current, manifestPath: join(current, 'kimi.plugin.json'), state: 'ok', skillCount: 1 });

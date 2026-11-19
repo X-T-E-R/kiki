@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { lstat, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { join } from 'node:path';
@@ -30,6 +30,7 @@ import {
   runtimeTokenPath,
   tryRemoveStaleEndpoint,
   readPersistedOwner,
+  runtimeOwnerPath,
   type CommittedOwnerRecord,
 } from '#/app/runtimeHost/paths';
 import { IHomeRuntimeService } from '#/app/runtimeHost/runtimeHost';
@@ -354,6 +355,20 @@ describe('home runtime broker', () => {
     expect(second.runtime.status().role).toBe('owner');
     await expect(first.runtime.call('home', null)).resolves.toBe('a');
     await expect(second.runtime.call('home', null)).resolves.toBe('b');
+  });
+
+  it('backs up a corrupt owner record and malformed token instead of failing or returning an unpersisted token', async () => {
+    const identity = await bootstrapHomeIdentity(process.platform, homeDir);
+    await writeFile(runtimeOwnerPath(identity.canonicalHomeDir), '{"ownerHostId":');
+    await expect(readPersistedOwner(identity.canonicalHomeDir)).resolves.toEqual({});
+    await writeFile(runtimeTokenPath(identity.canonicalHomeDir), '');
+    const repaired = await bootstrapHomeIdentity(process.platform, homeDir);
+    expect(repaired.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(repaired.token).not.toBe(identity.token);
+    expect((await readFile(runtimeTokenPath(identity.canonicalHomeDir), 'utf8')).trim()).toBe(repaired.token);
+    await expect(bootstrapHomeIdentity(process.platform, homeDir)).resolves.toMatchObject({ token: repaired.token });
+    const backups = (await readdir(identity.runtimeDir)).filter((name) => name.includes('.corrupt-')).toSorted();
+    expect(backups).toEqual([expect.stringMatching(/^owner\.json\.corrupt-/), expect.stringMatching(/^token\.corrupt-/)]);
   });
 
   it.skipIf(process.platform === 'win32')('shares canonical home identity through an alias and keeps private permissions', async () => {

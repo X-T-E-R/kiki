@@ -1,10 +1,12 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeSync, closeSync } from 'node:fs';
-import { mkdir, open, readFile, rename, rm, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdir, readFile, rm, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { dirname, join } from 'pathe';
+
+import { atomicWrite, atomicWriteSync, syncDir, syncDirSync } from '#/_base/utils/fs';
 
 export interface AsyncSecretEntry {
   setPassword(value: string): Promise<void>;
@@ -134,54 +136,15 @@ function accountFilePath(homeDir: string, service: string, account: string): str
 async function writeAtomicSecretFile(path: string, envelope: StoredSecretEnvelope): Promise<void> {
   const directory = dirname(path);
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, 'wx', 0o600);
-  try {
-    await handle.chmod(0o600);
-    await handle.writeFile(JSON.stringify(envelope), 'utf8');
-  } catch (error) {
-    await handle.close();
-    await unlink(temporary).catch(() => undefined);
-    throw error;
-  }
-  await handle.close();
-  try {
-    await rename(temporary, path);
-  } catch (error) {
-    await unlink(temporary).catch(() => undefined);
-    throw error;
-  }
+  await atomicWrite(path, JSON.stringify(envelope), undefined, 0o600);
+  await syncDir(directory);
 }
 
 function writeAtomicSecretFileSync(path: string, envelope: StoredSecretEnvelope): void {
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  const fd = openSync(temporary, 'wx', 0o600);
-  try {
-    try {
-      chmodSync(temporary, 0o600);
-    } catch {
-    }
-    writeSync(fd, JSON.stringify(envelope), undefined, 'utf8');
-  } catch (error) {
-    closeSync(fd);
-    try {
-      unlinkSync(temporary);
-    } catch {
-    }
-    throw error;
-  }
-  closeSync(fd);
-  try {
-    renameSync(temporary, path);
-  } catch (error) {
-    try {
-      unlinkSync(temporary);
-    } catch {
-    }
-    throw error;
-  }
+  atomicWriteSync(path, JSON.stringify(envelope), 0o600);
+  syncDirSync(directory);
 }
 
 async function readSecretFile(path: string, expectedAccount: string): Promise<string | undefined> {
@@ -246,7 +209,7 @@ async function brokerRequestAsync(
       authorization: `Bearer ${broker.token}`,
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(10_000),
   });
   return { status: response.status, text: await response.text() };

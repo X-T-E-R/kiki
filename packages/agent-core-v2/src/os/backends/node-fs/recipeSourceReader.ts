@@ -1,4 +1,5 @@
-import { readFile, realpath, stat, mkdir, lstat, writeFile } from 'node:fs/promises';
+import { readFile, realpath, stat, mkdir, lstat } from 'node:fs/promises';
+import { atomicCreate, atomicWrite, syncDir } from '#/_base/utils/fs';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { hookExecution, validateHookResources } from '#/app/recipes/recipeHooks';
 import type { RecipeScriptHook, RecipeSource } from '@kiki/protocol';
@@ -44,10 +45,7 @@ export class RecipeSourceReader implements IRecipeSourceReader {
           parent = path.join(parent, segment); await mkdir(parent, { recursive: true });
           if ((await lstat(parent)).isSymbolicLink()) recipeFailure('Recipe hook resource path is unsafe', hook.source, file);
         }
-        const target = path.join(directory, file);
-        try { await writeFile(target, text, { flag: 'wx', encoding: 'utf8' }); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-        if ((await lstat(target)).isSymbolicLink() || decode(await readFile(target)) !== text) recipeFailure('Frozen Recipe hook resource is corrupt', hook.source, file);
+        await freezeResource(path.join(directory, file), text, hook.source, file);
       }
       result.push({ event: hook.event as HookDef['event'], command: hook.command, matcher: hook.matcher, timeout: hook.timeout,
         cwd: directory, env: { KIKI_RECIPE_ROOT: directory } });
@@ -103,6 +101,18 @@ export class RecipeSourceReader implements IRecipeSourceReader {
     } };
   }
 }
+async function freezeResource(target: string, text: string, source: string, file: string): Promise<void> {
+  try { await atomicCreate(target, text); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  if (!(await lstat(target)).isFile()) recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
+  if (await holdsText(target, text)) return;
+  await atomicWrite(target, text);
+  await syncDir(path.dirname(target));
+  if (!(await lstat(target)).isFile() || !(await holdsText(target, text))) recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
+}
+async function holdsText(target: string, text: string): Promise<boolean> {
+  try { return decode(await readFile(target)) === text; } catch { return false; }
+}
 function decode(bytes: Uint8Array): string { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
 function packageUrl(raw: string): URL {
   const url = new URL(raw);
@@ -112,7 +122,7 @@ function packageUrl(raw: string): URL {
 async function publicUrl(raw: string): Promise<URL> {
   const url = packageUrl(raw);
   try { return (await assertUrlIsSafeToFetch(url, { httpsOnly: true })).url; }
-  catch (cause) { throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe source must use a public address', { cause, details: { source: raw } }); }
+  catch (error) { throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe source must use a public address', { error, details: { source: raw } }); }
 }
 async function download(raw: string, boundary?: { origin: string; prefix: string }): Promise<Buffer> {
   const signal = AbortSignal.timeout(15_000);
@@ -139,10 +149,10 @@ async function download(raw: string, boundary?: { origin: string; prefix: string
         chunks.push(chunk.value);
       }
     } finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-  } catch (cause) {
-    if (cause instanceof Error2) throw cause;
-    if (cause instanceof Error && cause.cause instanceof Error2) throw cause.cause;
-    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe source could not be read', { cause, details: { source: raw } });
+  } catch (error) {
+    if (error instanceof Error2) throw error;
+    if (error instanceof Error && error.cause instanceof Error2) throw error.cause;
+    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe source could not be read', { error, details: { source: raw } });
   }
 }
 async function zipReader(source: RecipeSource, buffer: Buffer): Promise<RecipePackageReader> {
