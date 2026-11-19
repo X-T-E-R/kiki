@@ -244,7 +244,7 @@ async function fetchHop(current: URL, dispatcher: Agent, fetchImpl: typeof fetch
     credentials: 'omit',
     headers: { accept: 'image/*,video/*' },
     signal: AbortSignal.timeout(60_000),
-  } as RequestInit);
+  } as unknown as RequestInit);
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get('location');
     if (location === null) throw new PackError(ErrorCode.VALIDATION_FAILED, 'redirect without a location');
