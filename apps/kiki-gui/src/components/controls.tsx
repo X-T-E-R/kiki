@@ -3,6 +3,9 @@
  * editor components: inline feedback lines, the switch Toggle, and Hint.
  */
 
+import { useId } from 'react';
+import { Switch } from '@base-ui/react/switch';
+
 import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
@@ -80,37 +83,42 @@ export function Toggle({
   /** The attribute's value when it names one of several (a preset id). */
   dataAttrValue?: string;
 }) {
+  const autoId = useId();
+  const switchId = id ?? autoId;
   const text = <span className={layout === 'bare' ? 'sr-only' : 'text-[13px] text-ink'}>{label}</span>;
-  // Quiet switch: a tinted track with a solid knob. ON is a choice you made,
-  // not something waiting on you, so it takes the ink-blue "selected" role
-  // and a column of switches never reads as a row of alerts. The real
-  // checkbox sits first so the track can show its keyboard focus.
+  // Quiet switch built on Base UI Switch inside a positioned label. Base UI
+  // renders the interactive role="switch" beside its hidden checkbox inside the
+  // relative label container, eliminating off-screen sr-only focus scroll jumps.
   return (
-    <label className={`${layout === 'row' ? 'flex w-full justify-between' : 'inline-flex'} min-h-7 items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+    <label
+      htmlFor={switchId}
+      className={`relative ${layout === 'row' ? 'flex w-full justify-between' : 'inline-flex'} min-h-7 items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+    >
       {layout === 'row' ? text : null}
-      <input
-        id={id}
-        type="checkbox"
-        className="peer sr-only"
+      <Switch.Root
+        id={switchId}
         checked={checked}
         disabled={disabled}
-        onChange={(event) => { onChange(event.target.checked); }}
-      />
-      <span
-        role="switch"
-        aria-checked={checked}
         aria-disabled={disabled}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (typeof window !== 'undefined' && typeof window.PointerEvent !== 'function') {
+            event.preventBaseUIHandler();
+            if (!disabled) onChange(!checked);
+          }
+        }}
+        onCheckedChange={(next) => { onChange(next); }}
         {...(dataAttr === undefined ? {} : { [dataAttr]: dataAttrValue ?? '' })}
-        className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-selected-ink ${
+        className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed ${
           checked ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
         }`}
       >
-        <span
-          className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
+        <Switch.Thumb
+          className={`pointer-events-none block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
             checked ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
           }`}
         />
-      </span>
+      </Switch.Root>
       {layout === 'row' ? null : text}
     </label>
   );

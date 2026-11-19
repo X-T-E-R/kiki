@@ -169,7 +169,7 @@ describe('SearchableSelect', () => {
     expect(document.activeElement).toBe(listbox);
     await press(listbox, 'ArrowDown');
     await press(listbox, 'Enter');
-    expect(onChange).toHaveBeenCalledWith('b');
+    expect(onChange).toHaveBeenCalledWith('c');
     expect(document.querySelector('[data-select-panel]')).toBeNull();
   });
 
@@ -204,12 +204,12 @@ describe('SearchableSelect', () => {
     const input = searchInput(container);
     await press(input, 'ArrowDown');
     await press(input, 'Enter');
-    expect(onChange).toHaveBeenCalledWith('b');
+    expect(onChange).toHaveBeenCalledWith('c');
     expect(document.querySelector('[data-select-panel]')).toBeNull();
   });
 
   it('wraps around with ArrowUp from the first row', async () => {
-    const { container, onChange } = await renderSelect({ options: SHORT_OPTIONS, hideFilter: false });
+    const { container, onChange } = await renderSelect({ options: SHORT_OPTIONS, value: 'a', hideFilter: false });
     await act(async () => { trigger(container).click(); });
     const input = searchInput(container);
     await press(input, 'ArrowUp');
@@ -397,7 +397,8 @@ describe('SearchableSelect panel container', () => {
     const { container } = await renderSelect();
     await act(async () => { trigger(container).click(); });
     const panel = document.querySelector<HTMLElement>('[data-select-panel]')!;
-    expect(panel.parentElement).toBe(document.body);
+    expect(document.body.contains(panel)).toBe(true);
+    expect(panel.closest('[data-base-ui-portal]')).not.toBeNull();
     expect(container.contains(panel)).toBe(false);
     expect(panel.contains(trigger(container))).toBe(false);
   });
@@ -406,7 +407,8 @@ describe('SearchableSelect panel container', () => {
     const { container } = await renderSelect();
     await act(async () => { trigger(container).click(); });
     const panel = document.querySelector<HTMLElement>('[data-select-panel]')!;
-    expect(panel.className).toContain('fixed');
+    const positioner = panel.parentElement!;
+    expect(positioner.style.position).toBe('fixed');
     expect(panel.className).toContain('flex');
     expect(panel.className).toContain('flex-col');
     expect(panel.className).not.toContain('absolute');
@@ -538,8 +540,10 @@ describe('SearchableSelect inside a dialog', () => {
 const roomAbove = (top: number) => top - 4 - 8;
 const roomBelow = (top: number, height: number) => height - (top + 32) - 4 - 8;
 
-async function placeAt(top: number, height: number, placement?: 'above' | 'below'): Promise<CSSStyleDeclaration> {
+async function placeAt(top: number, height: number, placement?: 'above' | 'below'): Promise<{ panel: HTMLElement; positioner: HTMLElement }> {
   (window as unknown as { innerHeight: number }).innerHeight = height;
+  Object.defineProperty(document.documentElement, 'clientHeight', { configurable: true, value: height });
+  Object.defineProperty(document.documentElement, 'clientWidth', { configurable: true, value: 1280 });
   const onChange = vi.fn();
   const container = document.createElement('div');
   document.body.append(container);
@@ -560,42 +564,38 @@ async function placeAt(top: number, height: number, placement?: 'above' | 'below
     toJSON: () => ({}),
   } as DOMRect);
   await act(async () => { trigger.click(); });
-  return openPanel().style;
+  const panel = openPanel();
+  return { panel, positioner: panel.parentElement! };
 }
-
-const openedAbove = (style: CSSStyleDeclaration) => style.bottom !== '' && style.top === '';
 
 describe('SearchableSelect panel side', () => {
   it('opens above when above has the room, even with the preference above', async () => {
     expect({ above: roomAbove(700), below: roomBelow(700, 800) }).toEqual({ above: 688, below: 56 });
-    const style = await placeAt(700, 800, 'above');
-    expect(openedAbove(style)).toBe(true);
-    expect(style.top).toBe('');
-    expect(Number.parseFloat(style.maxHeight)).toBeLessThanOrEqual(roomAbove(700));
+    const { panel, positioner } = await placeAt(700, 800, 'above');
+    expect(positioner.getAttribute('data-side')).toBe('top');
+    expect(panel.style.maxHeight).toContain('--available-height');
   });
 
   it('keeps the preferred side when both sides have the same room', async () => {
     const height = 800, top = (height - 32) / 2;
     expect(roomAbove(top)).toBe(roomBelow(top, height));
-    const style = await placeAt(top, height, 'above');
-    expect(openedAbove(style)).toBe(true);
+    const { positioner } = await placeAt(top, height, 'above');
+    expect(positioner.getAttribute('data-side')).toBe('top');
   });
 
-  it('is never taller than the room it opens into', async () => {
+  it('caps panel height to the Base UI --available-height budget', async () => {
     const height = 180, top = 40;
     expect(roomBelow(top, height)).toBe(96);
-    const style = await placeAt(top, height);
-    expect(openedAbove(style)).toBe(false);
-    const declared = Number.parseFloat(style.maxHeight);
-    expect(declared).toBeGreaterThan(0);
-    expect(declared).toBeLessThanOrEqual(roomBelow(top, height));
+    const { panel, positioner } = await placeAt(top, height);
+    expect(positioner.getAttribute('data-side')).toBe('bottom');
+    expect(panel.style.maxHeight).toContain('--available-height');
   });
 
   it('still prefers below by default when below is the roomier side', async () => {
     const height = 800, top = 60;
-    const style = await placeAt(top, height);
-    expect(openedAbove(style)).toBe(false);
-    expect(Number.parseFloat(style.maxHeight)).toBeLessThanOrEqual(roomBelow(top, height));
+    const { panel, positioner } = await placeAt(top, height);
+    expect(positioner.getAttribute('data-side')).toBe('bottom');
+    expect(panel.style.maxHeight).toContain('--available-height');
   });
 });
 

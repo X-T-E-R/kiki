@@ -124,6 +124,7 @@ function SkillsViewInner({
 
   const [sourcesOpen, setSourcesOpen] = useState(defaultSourcesOpen);
   const [togglingSkills, setTogglingSkills] = useState<Readonly<Record<string, boolean>>>({});
+  const [optimisticEnabled, setOptimisticEnabled] = useState<Readonly<Record<string, boolean>>>({});
 
   const skillsQuery = useQuery({
     queryKey: ['workspace-skills', workspaceId],
@@ -152,6 +153,9 @@ function SkillsViewInner({
 
   const isSkillEnabled = (skill: SkillDescriptor): boolean => {
     const normalized = normalizeSkillKey(skill.name);
+    if (Object.hasOwn(optimisticEnabled, normalized)) {
+      return optimisticEnabled[normalized]!;
+    }
     if (configQuery.data?.disabled_skills !== undefined) {
       return !disabledSkillSet.has(normalized);
     }
@@ -163,6 +167,7 @@ function SkillsViewInner({
     const key = normalizeSkillKey(skill.name);
     if (key === '' || togglingSkills[key]) return;
     setTogglingSkills((prev) => ({ ...prev, [key]: true }));
+    setOptimisticEnabled((prev) => ({ ...prev, [key]: nextEnabled }));
 
     const currentRaw = configQuery.data?.disabled_skills
       ?? allSkills.filter((item) => item.enabled === false).map((item) => item.name);
@@ -189,6 +194,12 @@ function SkillsViewInner({
     } catch (error) {
       pushToast({ tone: 'error', text: errorText(locale, error) });
     } finally {
+      setOptimisticEnabled((prev) => {
+        if (!Object.hasOwn(prev, key)) return prev;
+        const copy = { ...prev };
+        delete copy[key];
+        return copy;
+      });
       setTogglingSkills((prev) => {
         const copy = { ...prev };
         delete copy[key];
@@ -253,10 +264,9 @@ function SkillsViewInner({
 
   return (
     <div
-      className={`min-w-0 space-y-3 ${
-        inSettings ? '' : '[&_[data-list-toolbar]]:-top-4 min-[720px]:[&_[data-list-toolbar]]:-top-8'
-      }`}
+      className="min-w-0 space-y-3"
       data-skills-view
+      data-in-settings={inSettings ? '' : undefined}
     >
       {allSkills.length > 0 ? (
         <ListToolbar
@@ -736,15 +746,17 @@ function SkillRow({
         </span>
 
         {canToggle ? (
-          <Toggle
-            layout="bare"
-            label={enabled ? t('cap.skills.disable', { name: skill.name }) : t('cap.skills.enable', { name: skill.name })}
-            checked={enabled}
-            disabled={toggling}
-            dataAttr="data-skill-toggle"
-            dataAttrValue={skill.name}
-            onChange={onToggleEnabled}
-          />
+          <span className="flex w-9 shrink-0 items-center justify-end">
+            <Toggle
+              layout="bare"
+              label={enabled ? t('cap.skills.disable', { name: skill.name }) : t('cap.skills.enable', { name: skill.name })}
+              checked={enabled}
+              disabled={toggling}
+              dataAttr="data-skill-toggle"
+              dataAttrValue={skill.name}
+              onChange={onToggleEnabled}
+            />
+          </span>
         ) : null}
       </div>
     </div>

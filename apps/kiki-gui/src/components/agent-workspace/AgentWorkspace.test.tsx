@@ -3819,19 +3819,19 @@ it('guards handleFoldBranch against clobbering edited drafts or navigating away 
   await settle();
 
   const textarea = composerInput(dock);
-  await typeText(textarea, 'initial fold summary');
+  await typeText(textarea, 'unsent follow-up draft');
   const foldBtn = dock.querySelector<HTMLButtonElement>('[data-branch-fold-action]')!;
   expect(foldBtn).not.toBeNull();
   await act(async () => { foldBtn.click(); });
+  // Never hijack unsent chat draft text as the merge summary.
   expect(harness.foldBranch).toHaveBeenCalledWith('session', {
     branch_id: 'branch-fold-1',
-    summary: 'initial fold summary',
+    summary: undefined,
     done: true,
   });
 
-  await typeText(textarea, 'newer unsent draft');
   await act(async () => { resolveFold({ sealed: true }); });
-  expect(textarea.value).toBe('newer unsent draft');
+  expect(textarea.value).toBe('unsent follow-up draft');
 
   await renderWorkspace({
     target: { sessionId: 'other-session', agentId: 'child' },

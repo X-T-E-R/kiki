@@ -11,6 +11,7 @@ import {
   findInlineSkillTokens,
   hasInlineSlashCandidate,
   isSkillActivatable,
+  orderSlashItemsForDisplay,
   parseSlashDraft,
   parseSlashTrigger,
   removeSkillToken,
@@ -305,5 +306,17 @@ describe('findInlineSkillTokens / extractSlashSkillTokens / removeSkillToken', (
       text: 'check this',
       cursor: 10,
     });
+  });
+
+  it('orders slash items by visual section (skills -> plugins -> actions) while preserving intra-section rank', () => {
+    const built = buildSlashItems([skill('deploy-app'), skill('debug-logs')], { hasSession: true });
+    const withPlugin = [
+      ...built.filter((item) => item.kind === 'action').slice(0, 2),
+      { kind: 'plugin' as const, name: 'deploy-plugin', description: 'plugin deploy', pluginId: 'p1', slotId: 's1' },
+      ...built.filter((item) => item.kind === 'skill'),
+    ];
+    const ordered = orderSlashItemsForDisplay(withPlugin);
+    expect(ordered.map((item) => item.kind)).toEqual(['skill', 'skill', 'plugin', 'action', 'action']);
+    expect(ordered.slice(0, 2).map((item) => item.name)).toEqual(['deploy-app', 'debug-logs']);
   });
 });

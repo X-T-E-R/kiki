@@ -93,9 +93,19 @@ export function InstalledList({
   const { client } = useConnection();
   const invalidate = useInvalidatePlugins();
   const [busy, setBusy] = useState<string | null>(null);
+  const [optimisticEnabled, setOptimisticEnabled] = useState<Readonly<Record<string, boolean>>>({});
   const [failure, setFailure] = useState<unknown>(null);
   const [removing, setRemoving] = useState<PluginSummary | null>(null);
   const canReload = typeof client.reloadPlugin === 'function';
+
+  const displayPlugins = useMemo(
+    () => plugins.map((plugin) => (
+      Object.hasOwn(optimisticEnabled, plugin.id)
+        ? { ...plugin, enabled: optimisticEnabled[plugin.id]! }
+        : plugin
+    )),
+    [plugins, optimisticEnabled],
+  );
 
   const act = async (id: string, action: () => Promise<unknown>) => {
     setBusy(id);
@@ -106,6 +116,26 @@ export function InstalledList({
     } catch (actionError) {
       setFailure(actionError);
     } finally {
+      setBusy(null);
+    }
+  };
+
+  const togglePluginEnabled = async (id: string, enabled: boolean) => {
+    setOptimisticEnabled((prev) => ({ ...prev, [id]: enabled }));
+    setBusy(id);
+    setFailure(null);
+    try {
+      await client.setPluginEnabled(id, enabled);
+      await invalidate();
+    } catch (actionError) {
+      setFailure(actionError);
+    } finally {
+      setOptimisticEnabled((prev) => {
+        if (!Object.hasOwn(prev, id)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       setBusy(null);
     }
   };
@@ -123,31 +153,31 @@ export function InstalledList({
     { id: 'off', label: t('cap.installed.group.off'), test: (plugin) => !plugin.enabled },
   ], [t, updates]);
 
-  const view = useListView({ listId: 'cap-plugins-installed', items: plugins, keyOf, textOf, filters });
+  const view = useListView({ listId: 'cap-plugins-installed', items: displayPlugins, keyOf, textOf, filters });
   const toolbarView = useMemo(() => {
     const activeFilterIds = filters
       .filter((spec) => {
-        const matched = plugins.filter(spec.test).length;
-        return matched > 0 && matched < plugins.length;
+        const matched = displayPlugins.filter(spec.test).length;
+        return matched > 0 && matched < displayPlugins.length;
       })
       .map((spec) => spec.id);
     return {
       ...view,
       tools: {
         ...view.tools,
-        search: plugins.length > 0,
+        search: displayPlugins.length > 0,
         filters: activeFilterIds.length > 0,
         filterIds: activeFilterIds,
       },
     };
-  }, [filters, plugins, view]);
+  }, [filters, displayPlugins, view]);
 
   const groups = useMemo(
-    () => groupItems(plugins, view.visible, (plugin) => {
+    () => groupItems(displayPlugins, view.visible, (plugin) => {
       const id = groupOf(plugin);
       return [{ key: id, label: t(GROUP_KEYS[id]) }];
     }, GROUP_ORDER),
-    [plugins, t, updates, view.visible],
+    [displayPlugins, t, updates, view.visible],
   );
 
   if (loading) return <p className="py-3 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>;
@@ -181,14 +211,13 @@ export function InstalledList({
 
   return (
     <div
-      className={`min-w-0 space-y-3 ${
-        inSettings ? '' : '[&_[data-list-toolbar]]:-top-4 min-[720px]:[&_[data-list-toolbar]]:-top-8'
-      }`}
+      className="min-w-0 space-y-3"
       data-installed-list
+      data-in-settings={inSettings ? '' : undefined}
     >
       <ListToolbar
         view={toolbarView}
-        total={plugins.length}
+        total={displayPlugins.length}
         filters={filters}
         searchLabel={t('cap.plugins.searchInstalled')}
         searchPlaceholder={t('cap.plugins.searchInstalled')}
@@ -199,6 +228,34 @@ export function InstalledList({
           title={t('cap.plugins.noMatchTitle')}
           body={view.query.trim() !== '' ? t('cap.plugins.noMatch', { query: view.query.trim() }) : undefined}
           onClear={view.clear}
+        />
+      ) : groups.length === 1 && !view.narrowed ? (
+        <ListBody
+          items={groups[0]!.items}
+          keyOf={keyOf}
+          density={view.density}
+          label={groups[0]!.label}
+          renderRow={(plugin) => (
+            <InstalledRow
+              plugin={plugin}
+              density={view.density}
+              origin={pluginOrigin(plugin, entries)}
+              entry={entries.find((entry) => entry.id === plugin.id)}
+              update={updates.get(plugin.id)}
+              busy={busy === plugin.id}
+              onOpen={() => { onOpen(plugin.id); }}
+              onOpenSettings={onOpenSettings === undefined ? undefined : () => { onOpenSettings(plugin.id); }}
+              onReload={canReload ? () => {
+                void act(plugin.id, async () => {
+                  await client.reloadPlugin(plugin.id);
+                  pushToast({ tone: 'info', text: t('cap.plugins.reloaded', { name: plugin.displayName }) });
+                });
+              } : undefined}
+              onToggle={(enabled) => { void togglePluginEnabled(plugin.id, enabled); }}
+              onUpdate={(update) => { onUpdate(plugin, update); }}
+              onRemove={() => { setRemoving(plugin); }}
+            />
+          )}
         />
       ) : (
         groups.map((group) => (
@@ -232,7 +289,7 @@ export function InstalledList({
                       pushToast({ tone: 'info', text: t('cap.plugins.reloaded', { name: plugin.displayName }) });
                     });
                   } : undefined}
-                  onToggle={(enabled) => { void act(plugin.id, () => client.setPluginEnabled(plugin.id, enabled)); }}
+                  onToggle={(enabled) => { void togglePluginEnabled(plugin.id, enabled); }}
                   onUpdate={(update) => { onUpdate(plugin, update); }}
                   onRemove={() => { setRemoving(plugin); }}
                 />
@@ -407,8 +464,9 @@ function InstalledRow({
         </span>
       ) : null}
 
-      <span className="shrink-0 [&_label>span:last-child]:max-[479px]:sr-only">
+      <span className="flex w-9 shrink-0 items-center justify-end">
         <Toggle
+          layout="bare"
           label={plugin.enabled ? t('cap.state.on') : t('cap.state.off')}
           checked={plugin.enabled}
           disabled={busy}

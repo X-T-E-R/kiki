@@ -202,7 +202,12 @@ export function PluginsView({
           ariaLabel={t('cap.plugins.views')}
           dataAttribute="data-plugins-tab"
           options={[
-            { value: 'installed', label: installed.length > 0 ? `${t('cap.plugins.installed')} ${installed.length}` : t('cap.plugins.installed') },
+            {
+              value: 'installed',
+              label: !inSettings && installed.length > 0
+                ? `${t('cap.plugins.installed')} ${installed.length}`
+                : t('cap.plugins.installed'),
+            },
             { value: 'market', label: t('cap.plugins.market') },
           ]}
         />

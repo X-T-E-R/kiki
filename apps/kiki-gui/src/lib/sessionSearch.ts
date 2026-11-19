@@ -92,6 +92,8 @@ export function useSessionSearch(input: {
   readonly workspaceScope?: readonly string[];
   /** Session ids that pass the non-workspace filters; hits outside drop out. */
   readonly allowedSessionIds?: ReadonlySet<string>;
+  /** Loaded sessions known to fail client-only filters when pagination is incomplete. */
+  readonly excludedSessionIds?: ReadonlySet<string>;
   readonly queryKeyPrefix?: string;
   readonly pageSize?: number;
   readonly includeToolOutput?: boolean;
@@ -169,15 +171,17 @@ export function useSessionSearch(input: {
       ? 2_000 : false,
   });
 
-  const hits = useMemo(
-    () =>
-      scopeContentHits(mergeSearchPages(query.data?.pages ?? []), {
-        workspaceIds: debouncedScope,
-        allowedSessionIds: input.allowedSessionIds,
-      }),
+  const hits = useMemo(() => {
+    const scoped = scopeContentHits(mergeSearchPages(query.data?.pages ?? []), {
+      workspaceIds: debouncedScope,
+      allowedSessionIds: input.allowedSessionIds,
+    });
+    if (input.excludedSessionIds === undefined || input.excludedSessionIds.size === 0) return scoped;
+    return scoped.filter((hit) => !input.excludedSessionIds!.has(hit.session_id));
+  },
     // debouncedScope is derived from debounced.scopeKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [query.data, debounced.scopeKey, input.allowedSessionIds],
+    [query.data, debounced.scopeKey, input.allowedSessionIds, input.excludedSessionIds],
   );
   const building = query.data?.pages.findLast((page) => page.index_state.state === 'building')?.index_state;
   const unavailable = query.data?.pages.findLast((page) => page.index_state.state === 'unavailable')?.index_state;

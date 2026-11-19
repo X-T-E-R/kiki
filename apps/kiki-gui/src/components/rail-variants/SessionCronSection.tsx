@@ -15,7 +15,7 @@
  * to another conversation never renders here.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -100,13 +100,20 @@ function CronRow({
   pending,
   onOpen,
   onToggle,
+  onDelete,
 }: {
   readonly task: CronTask;
   readonly pending: boolean;
   readonly onOpen: () => void;
   readonly onToggle: (resume: boolean) => void;
+  readonly onDelete?: () => void;
 }) {
   const { t, locale } = useI18n();
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (armTimerRef.current !== null) clearTimeout(armTimerRef.current);
+  }, []);
   const next = task.next_fire_at;
   // The rail reads in the active locale like every other surface: the
   // engine's English phrase would be the one untranslated line in a Chinese
@@ -114,7 +121,7 @@ function CronRow({
   const schedule = cronScheduleLabel(locale, task.cron, task.human_schedule, t);
   // A paused task advertises how to wake it; an active one keeps its control
   // out of the way until the row is read.
-  const reveal = task.paused || pending ? '' : HOVER_REVEAL;
+  const reveal = task.paused || pending || deleteArmed ? '' : HOVER_REVEAL;
   return (
     <li
       data-rail-item
@@ -170,6 +177,29 @@ function CronRow({
       >
         {t(task.paused ? 'cron.action.resume' : 'cron.action.pause')}
       </button>
+      {onDelete !== undefined ? (
+        <button
+          type="button"
+          data-rail-cron-delete={task.id}
+          data-rail-cron-delete-armed={deleteArmed ? 'true' : undefined}
+          aria-label={deleteArmed ? (locale === 'zh' ? '确认删除' : 'Confirm delete') : (locale === 'zh' ? '删除定时任务' : 'Delete scheduled prompt')}
+          disabled={pending}
+          onClick={() => {
+            if (!deleteArmed) {
+              setDeleteArmed(true);
+              if (armTimerRef.current !== null) clearTimeout(armTimerRef.current);
+              armTimerRef.current = setTimeout(() => { setDeleteArmed(false); }, 5_000);
+              return;
+            }
+            setDeleteArmed(false);
+            if (armTimerRef.current !== null) clearTimeout(armTimerRef.current);
+            onDelete();
+          }}
+          className={`${ROW_ACTION} ${reveal} ${deleteArmed ? 'bg-danger/10 font-medium text-danger hover:bg-danger/15 hover:text-danger' : 'text-ink-faint hover:bg-danger/10 hover:text-danger'}`}
+        >
+          {deleteArmed ? (locale === 'zh' ? '确认?' : 'Delete?') : <Icon name="close" size={12} />}
+        </button>
+      ) : null}
     </li>
   );
 }
@@ -226,6 +256,23 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
     onSettled: () => { void queryClient.invalidateQueries({ queryKey }); },
   });
 
+  const remove = useMutation({
+    mutationFn: (id: string) => client.deleteCronTask(id, sessionId),
+    onMutate: () => { setFailed(null); },
+    onSuccess: (_result, id) => {
+      queryClient.setQueryData<InfiniteData<ListCronTasksResponse, number>>(queryKey, (old) =>
+        old === undefined ? undefined : {
+          ...old,
+          pages: old.pages.map((page) => ({
+            ...page,
+            items: page.items.filter((entry) => entry.id !== id),
+          })),
+        },
+      );
+    },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey }); },
+  });
+
   const loaded = read.data !== undefined;
   const tasks = useMemo(
     () => (read.data?.pages ?? []).flatMap((page) => page.items).filter((task) => task.session_id === sessionId),
@@ -241,7 +288,7 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
       : nextAt === null ? t('cron.status.paused') : time.timeUntil(nextAt);
   // A folded summary that counts down has to age with the shared clock.
   useNow();
-  const busyId = toggle.isPending ? toggle.variables.id : undefined;
+  const busyId = toggle.isPending ? toggle.variables.id : remove.isPending ? remove.variables : undefined;
   const manage = useCallback(() => {
     void navigate(`/cron?session=${encodeURIComponent(sessionId)}`);
   }, [navigate, sessionId]);
@@ -281,6 +328,7 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
                     pending={busyId === task.id}
                     onOpen={manage}
                     onToggle={(resume) => { toggle.mutate({ id: task.id, resume }); }}
+                    onDelete={typeof client.deleteCronTask === 'function' ? () => { remove.mutate(task.id); } : undefined}
                   />
                 ))}
               </ul>

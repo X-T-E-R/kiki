@@ -76,16 +76,19 @@ export function McpView({ cwd }: { readonly cwd: string }) {
     staleTime: 30_000,
   });
 
-  const isTrusted = trustQuery.data?.trusted ?? false;
+  const [optimisticTrusted, setOptimisticTrusted] = useState<boolean | undefined>(undefined);
+  const isTrusted = optimisticTrusted ?? trustQuery.data?.trusted ?? false;
 
   const toggleTrust = async () => {
     if (!matchedWorkspace || trustBusy || trustQuery.data === undefined || trustQuery.isError) return;
+    const nextTrusted = !isTrusted;
+    setOptimisticTrusted(nextTrusted);
     setTrustBusy(true);
     setFeedback(null);
     try {
-      const res = isTrusted
-        ? await client.untrustWorkspace(matchedWorkspace.id)
-        : await client.trustWorkspace(matchedWorkspace.id);
+      const res = nextTrusted
+        ? await client.trustWorkspace(matchedWorkspace.id)
+        : await client.untrustWorkspace(matchedWorkspace.id);
       queryClient.setQueryData(['workspace-trust', matchedWorkspace.id], res);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['mcp-managed-servers', cwd] }),
@@ -94,6 +97,7 @@ export function McpView({ cwd }: { readonly cwd: string }) {
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
+      setOptimisticTrusted(undefined);
       setTrustBusy(false);
     }
   };

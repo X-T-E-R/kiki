@@ -20,7 +20,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
 import { useExecutorCatalog } from '../settings/profileEditor/engines';
 
-import type { DeferredAppendTiming, PermissionMode, PromptDeliveryReason, PromptItem, PromptSkillActivation } from '@kiki/protocol';
+import type { PermissionMode, PromptDeliveryReason, PromptItem, PromptSkillActivation } from '@kiki/protocol';
 import {
   beginPendingSubmissionFlight,
   buildPromptContent,
@@ -779,7 +779,7 @@ function ChildAgentWorkspace({
   transcriptVisible = true,
   mediaPreviewProvider: MediaPreviewProvider,
 }: WorkspaceCompositionProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { client, klient, scopeId } = useConnection();
   const liveSettings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const queryClient = useQueryClient();
@@ -951,7 +951,7 @@ function ChildAgentWorkspace({
   const configQuery = useQuery({
     queryKey: ['config'],
     queryFn: () => client.getConfig(),
-    enabled: typeof client.getConfig === 'function' && (controller === null || agentLiveState.transcriptReady || agentLiveState.loaded),
+    enabled: typeof client.getConfig === 'function',
     staleTime: 60_000,
   });
   const capabilitiesQuery = useQuery({
@@ -1002,7 +1002,10 @@ function ChildAgentWorkspace({
   useEffect(() => {
     if (!headerBusy) setExternalBindingSetting(undefined);
   }, [headerBusy]);
-  const isBranch = selectedNode?.isBranch === true;
+  const isBranch = selectedNode?.isBranch === true
+    || selectedNode?.branchSealed === true
+    || selectedNode?.branchSeed !== undefined
+    || selectedNode?.toolsLocked === true;
   const parentModel = nestedParentId !== undefined ? parentAgentState.model : sessionState.model;
   const parentThinkingEffort = nestedParentId !== undefined ? parentAgentState.thinkingEffort : sessionState.thinkingEffort;
   const parentPermissionMode = nestedParentId !== undefined ? parentAgentState.permissionMode : sessionState.permissionMode;
@@ -1058,7 +1061,7 @@ function ChildAgentWorkspace({
     subagent: selectedSubagent,
     state: agentLiveState,
   });
-  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId ?? (selectedNode?.isBranch === true ? 'native' : undefined);
+  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId ?? (isBranch ? 'native' : undefined);
   const executorBindingQuery = useQuery({
     queryKey: ['agentExecutor', scopeId, sessionId, agentId],
     queryFn: async () => await klient.session(sessionId).getAgentExecutor(agentId) ?? null,
@@ -1083,7 +1086,27 @@ function ChildAgentWorkspace({
   const branchToolsLocked = selectedNode?.toolsLocked === true;
   const branchSeed = selectedNode?.branchSeed;
   const [branchFolding, setBranchFolding] = useState(false);
+  const [branchFoldPending, setBranchFoldPending] = useState(false);
+  const branchFoldSawBusyRef = useRef(false);
   const [branchUnlocking, setBranchUnlocking] = useState(false);
+  useEffect(() => {
+    setBranchFoldPending(false);
+    branchFoldSawBusyRef.current = false;
+  }, [sessionId, agentId]);
+  useEffect(() => {
+    if (branchSealed) {
+      setBranchFoldPending(false);
+      branchFoldSawBusyRef.current = false;
+      return;
+    }
+    if (!branchFoldPending) return;
+    if (headerBusy) {
+      branchFoldSawBusyRef.current = true;
+    } else if (branchFoldSawBusyRef.current) {
+      setBranchFoldPending(false);
+      branchFoldSawBusyRef.current = false;
+    }
+  }, [branchSealed, branchFoldPending, headerBusy]);
   const branchSeamLabel = useMemo(() => {
     if (!isBranch) return undefined;
     const parentLabel = selectedNode?.parentAgentId !== undefined && selectedNode.parentAgentId !== MAIN_AGENT_ID
@@ -1110,27 +1133,23 @@ function ChildAgentWorkspace({
   }, [agentId, branchUnlocking, client, controller, sessionId]);
 
   const handleFoldBranch = useCallback(() => {
-    if (branchFolding || typeof client.foldBranch !== 'function') return;
+    if (branchFolding || branchFoldPending || typeof client.foldBranch !== 'function') return;
     setBranchFolding(true);
-    const capturedDraft = draftRef.current;
-    const capturedRevision = draftRevisionRef.current;
-    const note = capturedDraft.trim();
     void client.foldBranch(sessionId, {
       branch_id: agentId,
-      summary: note === '' ? undefined : note,
+      summary: undefined,
       done: true,
     })
       .then(async (res) => {
-        if (note !== '') {
-          if (composerOwnerActive.current) {
-            if (draftRevisionRef.current === capturedRevision && draftRef.current === capturedDraft) {
-              draftRevisionRef.current += 1;
-              draftRef.current = '';
-              setDraft('');
-            }
-          } else if (readDraft(draftKey) === capturedDraft) {
-            writeDraft(draftKey, '');
-          }
+        if (!res.sealed && composerOwnerActive.current) {
+          setBranchFoldPending(true);
+          branchFoldSawBusyRef.current = headerBusy;
+          pushToast({
+            tone: 'info',
+            text: locale === 'zh'
+              ? '已通知分支总结并合回主线'
+              : 'Asked the branch to summarize and merge back to main.',
+          });
         }
         await controller?.resync();
         if (res.sealed && composerOwnerActive.current && transcriptVisibleRef.current) {
@@ -1143,7 +1162,7 @@ function ChildAgentWorkspace({
       .finally(() => {
         if (composerOwnerActive.current) setBranchFolding(false);
       });
-  }, [agentId, branchFolding, client, controller, draftKey, navigation, sessionId, setDraft]);
+  }, [agentId, branchFoldPending, branchFolding, client, controller, headerBusy, locale, navigation, sessionId]);
 
   const composerDisabled = !agentKnown || executorId === undefined || branchSealed;
   const revealOwnSend = useCallback((joinsNow: boolean) => {
@@ -1777,6 +1796,16 @@ function ChildAgentWorkspace({
       ? handleComposerSend(text, composerAttachments, options)
       : handleComposerSendNow(text, composerAttachments, options?.presentation, options?.skills);
 
+  const handleComposerSendRef = useRef(handleComposerSend);
+  handleComposerSendRef.current = handleComposerSend;
+  const handleContinueFailedTurn = useCallback(() => {
+    void handleComposerSendRef.current(locale === 'zh' ? '继续' : 'Continue', []);
+  }, [locale]);
+  const handleRetryFailedTurn = useCallback((failedUserBlock: { readonly text: string } | undefined) => {
+    const text = failedUserBlock?.text.trim() || (locale === 'zh' ? '继续' : 'Continue');
+    void handleComposerSendRef.current(text, []);
+  }, [locale]);
+
   const chrome = (
     <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
     <AdmissionScope value={childAdmissionScope}>
@@ -1804,15 +1833,36 @@ function ChildAgentWorkspace({
         onDismissQuestion: timelineActions.dismissQuestion, forest, onOpenAgent: navigation.openAgent,
         onRetryLoad: timelineActions.retryLoad,
         onCancelQueued: handleCancelQueued,
+        onContinueFailedTurn: composerDisabled ? undefined : handleContinueFailedTurn,
+        onRetryFailedTurn: composerDisabled ? undefined : handleRetryFailedTurn,
         visible: transcriptVisible,
       }}
-      annotations={annotationSurface}
+      annotations={branchSealed ? undefined : annotationSurface}
       dock={<div className="space-y-2 pt-2">
         <ResyncStatusBanner
           resyncing={sessionState.resyncing} resyncFailed={sessionState.resyncFailed}
           error={sessionState.resyncError}
           onRetry={controller === null ? undefined : () => { void controller.resync(); }}
         />
+        {isBranch && branchSealed ? (
+          <ConversationDockColumn
+            data-branch-sealed-bar={agentId}
+            innerClassName="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink-soft"
+          >
+            <span className="min-w-0 truncate font-medium text-ink">
+              {t('transcript.branch.sealed')}
+            </span>
+            <button
+              type="button"
+              data-branch-sealed-back-to-main
+              onClick={() => { navigation.openSession(); }}
+              className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10]"
+            >
+              <Icon name="arrowLeft" size={12} />
+              <span>{t('rail.branches.backToMain')}</span>
+            </button>
+          </ConversationDockColumn>
+        ) : null}
         {isBranch && !branchSealed ? (
           <ConversationDockColumn
             data-branch-fold-bar={agentId}
@@ -1836,11 +1886,13 @@ function ChildAgentWorkspace({
               <button
                 type="button"
                 data-branch-fold-action
-                disabled={branchFolding}
+                disabled={branchFolding || branchFoldPending}
                 onClick={handleFoldBranch}
                 className="h-7 cursor-pointer rounded-md bg-ink/[0.06] px-2.5 text-[12px] font-medium text-ink transition-colors hover:bg-ink/[0.10] disabled:cursor-not-allowed disabled:text-ink-faint"
               >
-                {t(branchFolding ? 'transcript.branch.folding' : 'transcript.branch.foldAction')}
+                {branchFoldPending
+                  ? (locale === 'zh' ? '正在总结并合回…' : 'Summarizing & merging…')
+                  : t(branchFolding ? 'transcript.branch.folding' : 'transcript.branch.foldAction')}
               </button>
             </div>
           </ConversationDockColumn>

@@ -164,7 +164,7 @@ const BUCKET_TONE: Partial<Record<RosterBucket, string>> = { running: 'bg-succes
 const FAILED_TONE = 'bg-ink-faint';
 
 /** Past this many agents the roster offers a search field. */
-const SEARCH_AT = 12;
+const SEARCH_AT = 6;
 /** Past this many visible rows the list windows inside its own scroller. */
 const WINDOW_AT = 40;
 const ROW_HEIGHT = 46;

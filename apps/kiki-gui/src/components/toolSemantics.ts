@@ -70,6 +70,7 @@ export interface ToolSemantics {
 
 export interface SemanticContext {
   readonly locale?: Locale;
+  readonly sessionId?: string;
   readonly t: (key: I18nKey, params?: I18nParams) => string;
   readonly tp: (base: PluralBase, count: number, params?: I18nParams) => string;
   /** A session's title from what the client already knows, if anything. */
@@ -819,7 +820,10 @@ function describeCron(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const args = rec(block.args) ?? {};
   const text = outputText(block.output) ?? '';
   const action = block.name === 'CronCreate' ? 'create' : block.name === 'CronList' ? 'list' : block.name === 'CronDelete' ? 'delete' : str(args['action']);
-  const link: SemanticLink = { kind: 'route', path: '/cron', label: t('tc.sem.openCron') };
+  const cronPath = ctx.sessionId !== undefined && ctx.sessionId !== ''
+    ? `/cron?session=${encodeURIComponent(ctx.sessionId)}`
+    : '/cron';
+  const link: SemanticLink = { kind: 'route', path: cronPath, label: t('tc.sem.openCron') };
   if (action === 'list') {
     const header = /^cron_jobs: (\d+)/.exec(text);
     return {

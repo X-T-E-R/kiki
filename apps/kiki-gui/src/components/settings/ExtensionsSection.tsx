@@ -61,7 +61,7 @@ export function ExtensionsSection({ pluginId }: { readonly pluginId: string | nu
           );
         })}
       </div>
-      <div>
+      <div className="[&_#st-card-plugins>div:first-child]:sr-only [&_#st-card-caps>div:first-child>h2]:sr-only">
         {tab === 'skills' ? <SkillsSection />
           : tab === 'mcp' ? <McpSection />
           : <PluginsSection pluginId={null} />}

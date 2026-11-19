@@ -32,7 +32,7 @@ import { useI18n } from '../../i18n';
 import { externalClientsFacade } from '../../lib/externalClients';
 import { isPeerConnectionSource } from '../../lib/peerAccess';
 import { mapExecutorCapabilities, type ExecutorCapabilityPresentation } from '../../lib/executorCapabilities';
-import { useNow } from '../RelativeTime';
+import { useElapsedSince } from '../RelativeTime';
 import { useOptionalConnection } from '../../state/connection';
 import {
   COMPOSER_PANEL_START,
@@ -101,6 +101,8 @@ export interface ExecutionSelectProps {
   readonly onRequireSwitchConfirmation?: (toModel: string) => void;
   /** Why the bound model sits outside the profile's menu; shown as a dot with the reason in the tooltip. */
   readonly domainNote?: string;
+  /** Incrementing counter that opens the model picker popover on demand. */
+  readonly openSignal?: number;
   /** Called after a pick is committed and the menu closed (never on Escape / cancel). */
   readonly onPicked?: () => void;
 }
@@ -130,10 +132,10 @@ export function ExecutionSelect({
   onRefreshExecutorModels,
   onRequireSwitchConfirmation,
   domainNote,
+  openSignal,
   onPicked,
 }: ExecutionSelectProps) {
   const { t } = useI18n();
-  const now = useNow();
   const rootRef = useRef<HTMLDivElement>(null);
   const providerGroupLabel = useProviderGroupLabel();
   const optConnection = useOptionalConnection();
@@ -180,6 +182,9 @@ export function ExecutionSelect({
   const effectiveExecutorResponse = (executorResponse !== undefined)
     ? executorResponse
     : executorModelsQuery.data;
+
+  // Only external engines with a loaded capability snapshot need the 1s freshness clock.
+  const now = useElapsedSince(!isNative && effectiveExecutorResponse !== undefined ? 0 : undefined) ?? 0;
 
   const executorCapabilities = useMemo(() => {
     if (isNative || !effectiveExecutorResponse) return undefined;
@@ -366,8 +371,10 @@ export function ExecutionSelect({
     };
     if (showSetupNotice) return [defaultRow];
     if (isNative) {
+      const optionByValue = new Map<string, SearchableSelectOption>();
+      for (const option of modelOptions ?? []) optionByValue.set(option.value, option);
       const nativeRows = (models ?? []).map((m): SearchableSelectOption => {
-        const opt = modelOptions?.find((o) => o.value === m.id);
+        const opt = optionByValue.get(m.id);
         const modelLabel = m.display_name ?? m.id;
         const showDistinctId = Boolean(m.display_name && m.display_name !== m.id);
         const optText = opt?.description ?? opt?.hint;
@@ -601,6 +608,7 @@ export function ExecutionSelect({
         hideChevron
         density="compact"
         placement="above"
+        openSignal={openSignal}
         closeSignal={closeSignal}
         ariaLabel={t('composer.execution.panelLabel')}
         searchPlaceholder={t('composer.model.searchPlaceholder')}
@@ -628,7 +636,7 @@ export function ExecutionSelect({
           </span>
         ) : undefined}
         buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-[min(16rem,100%)] overflow-hidden ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== 'native' || isExternalClient ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
-        panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),28rem)] w-[min(340px,calc(100vw-2rem))] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
+        panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,28rem),28rem,calc(100dvh-120px))] w-[min(340px,calc(100vw-2rem))] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
         panelHeader={panelHeader}
         panelFooter={panelFooter}
         onChange={(next) => {

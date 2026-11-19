@@ -215,6 +215,22 @@ export function completeSlashTrigger(
   };
 }
 
+/**
+ * Order slash items to match the menu's visual sections (`skills`, then
+ * `plugins`, then `actions`) while keeping each section's relative rank order.
+ */
+export function orderSlashItemsForDisplay(items: readonly SlashItem[]): SlashItem[] {
+  const skills: SlashItem[] = [];
+  const plugins: SlashItem[] = [];
+  const actions: SlashItem[] = [];
+  for (const item of items) {
+    if (item.kind === 'skill') skills.push(item);
+    else if (item.kind === 'plugin') plugins.push(item);
+    else actions.push(item);
+  }
+  return [...skills, ...plugins, ...actions];
+}
+
 /** Case-insensitive filter: prefix matches rank above substring matches. */
 export function filterSlashItems(items: readonly SlashItem[], query: string): SlashItem[] {
   const q = query.trim().toLowerCase();

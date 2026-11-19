@@ -24,8 +24,8 @@
  *   to the trigger on close when it was inside the popover.
  */
 
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
-import { createPortal } from 'react-dom';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { Popover } from '@base-ui/react/popover';
 
 import {
   containsOrOwnsFloatingTarget,
@@ -38,9 +38,7 @@ import {
   resolveFloatingOwners,
 } from '../../lib/uiBusy';
 import { MODAL_ESCAPE_ATTRIBUTE } from '../Dialog';
-import { unzoomedRect, unzoomedViewport } from '../../lib/uiZoom';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
-import { placeAnchored } from './anchoredPosition';
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -72,8 +70,7 @@ export function AnchoredPopover({
   open, onClose, anchorRef, id, label, side = 'below', align = 'start',
   widthClassName = 'w-[20rem]', className = '', data, onSurfaceKeyDown, initialFocusSelector, role = 'dialog', children,
 }: AnchoredPopoverProps) {
-  const surfaceRef = useRef<HTMLDivElement>(null);
-  const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden', left: 0, top: 0 });
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   // Set by React-tree capture handlers before the document listeners run.
@@ -85,30 +82,6 @@ export function AnchoredPopover({
   const floatingOwners = open ? resolveFloatingOwners(anchorRef.current) : undefined;
   const surfaceOwnerId = `popover:${id}`;
   const zIndex = open ? floatingSurfaceZIndex(anchorRef.current) : undefined;
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    const place = () => {
-      const anchor = anchorRef.current;
-      const surface = surfaceRef.current;
-      if (anchor === null || surface === null) return;
-      const placed = placeAnchored(unzoomedRect(anchor.getBoundingClientRect()),
-        { width: surface.offsetWidth, height: surface.scrollHeight },
-        unzoomedViewport(), { side, align });
-      setStyle({ left: placed.left, top: placed.top, maxHeight: placed.maxHeight });
-    };
-    place();
-    window.addEventListener('resize', place);
-    window.addEventListener('scroll', place, true);
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
-    if (surfaceRef.current !== null) observer?.observe(surfaceRef.current);
-    return () => {
-      window.removeEventListener('resize', place);
-      window.removeEventListener('scroll', place, true);
-      observer?.disconnect();
-      setStyle({ visibility: 'hidden', left: 0, top: 0 });
-    };
-  }, [open, anchorRef, side, align]);
 
   const close = useCallback((restoreFocus: boolean) => {
     closeRef.current();
@@ -170,49 +143,63 @@ export function AnchoredPopover({
     [FLOATING_PORTAL_OWNERS_ATTRIBUTE]: floatingOwners,
     [MODAL_ESCAPE_ATTRIBUTE]: owner,
   };
-  return createPortal(
-    <div
-      ref={surfaceRef}
-      id={id}
-      role={role}
-      aria-label={label}
-      tabIndex={-1}
-      data-anchored-popover=""
-      {...data}
-      {...portalAttributes}
-      onPointerDownCapture={() => { pointerInside.current = true; }}
-      onFocusCapture={() => { focusInside.current = true; }}
-      onBlurCapture={() => {
-        focusInside.current = false;
-        setTimeout(() => {
-          if (focusInside.current || !open) return;
-          const active = document.activeElement;
-          if (
-            active !== null &&
-            active !== document.body &&
-            anchorRef.current?.contains(active) !== true &&
-            !containsOrOwnsFloatingTarget(surfaceRef.current, active, surfaceOwnerId)
-          ) {
-            close(false);
-          }
-        }, 0);
-      }}
-      onKeyDown={(event) => {
-        if (onSurfaceKeyDown?.(event) === true) return;
-        if (event.key !== 'Escape' || event.defaultPrevented) return;
-        event.preventDefault();
-        event.stopPropagation();
-        // A menu-role surface restores focus itself (roving menu keys): its
-        // opener is the recorded focus, not necessarily the anchor button.
-        if (role !== 'menu') close(true);
-        else { closeRef.current(); restoreTriggerFocus(); }
-      }}
-      className={`anim-enter fixed overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS} ${widthClassName} max-w-[calc(100vw-16px)] ${className}`}
-      style={{ ...style, zIndex }}
-    >
-      {children}
-    </div>,
-    document.body,
+  return (
+    <Popover.Root open={open} modal={false}>
+      <Popover.Portal>
+        <Popover.Positioner
+          anchor={anchorRef}
+          side={side === 'above' ? 'top' : 'bottom'}
+          align={align}
+          sideOffset={6}
+          collisionPadding={8}
+          positionMethod="fixed"
+          style={{ zIndex }}
+        >
+          <Popover.Popup
+            ref={surfaceRef}
+            id={id}
+            role={role}
+            aria-label={label}
+            initialFocus={false}
+            finalFocus={false}
+            tabIndex={-1}
+            data-anchored-popover=""
+            {...data}
+            {...portalAttributes}
+            onPointerDownCapture={() => { pointerInside.current = true; }}
+            onFocusCapture={() => { focusInside.current = true; }}
+            onBlurCapture={() => {
+              focusInside.current = false;
+              setTimeout(() => {
+                if (focusInside.current || !open) return;
+                const active = document.activeElement;
+                if (
+                  active !== null &&
+                  active !== document.body &&
+                  anchorRef.current?.contains(active) !== true &&
+                  !containsOrOwnsFloatingTarget(surfaceRef.current, active, surfaceOwnerId)
+                ) {
+                  close(false);
+                }
+              }, 0);
+            }}
+            onKeyDown={(event) => {
+              if (onSurfaceKeyDown?.(event) === true) return;
+              if (event.key !== 'Escape' || event.defaultPrevented) return;
+              event.preventDefault();
+              event.stopPropagation();
+              // A menu-role surface restores focus itself (roving menu keys): its
+              // opener is the recorded focus, not necessarily the anchor button.
+              if (role !== 'menu') close(true);
+              else { closeRef.current(); restoreTriggerFocus(); }
+            }}
+            className={`anim-enter max-h-[min(var(--available-height,calc(100dvh-16px)),calc(100dvh-16px))] overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS} ${widthClassName} max-w-[calc(100vw-16px)] ${className}`}
+          >
+            {children}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

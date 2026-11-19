@@ -323,10 +323,12 @@ export function Rail({
   const promote = usePromoteAgent(state.sessionId, subagent?.agentId);
   // The routed agent page (no onInspectMain) is already this agent's timeline.
   const show = railVisibility(focusedAgentId, onInspectMain === undefined ? focusedAgentId : MAIN_AGENT_ID);
-  const backgroundTasks = useMemo(
-    () => state.tasks.filter((task) => task.kind !== 'subagent' && task.status === 'running'),
-    [state.tasks],
-  );
+  const backgroundTasks = useMemo(() => {
+    const nonSubagent = state.tasks.filter((task) => task.kind !== 'subagent');
+    const running = nonSubagent.filter((task) => task.status === 'running');
+    const recentSettled = sortTasks(nonSubagent.filter((task) => task.status !== 'running')).slice(0, 5);
+    return [...running, ...recentSettled];
+  }, [state.tasks]);
   const runningSubagentTasks = useMemo(
     () =>
       state.tasks.filter(
@@ -361,8 +363,8 @@ export function Rail({
     () => extractBranchFoldSummaries(state.blocks),
     [state.blocks],
   );
-  const showBranches = !isRoutedChildPage && sessionBranches.all.length > 0;
   const viewingBranch = isSessionBranchNode(focusedNode);
+  const showBranches = (!isRoutedChildPage || viewingBranch) && sessionBranches.all.length > 0;
   const showTasks = backgroundTasks.length > 0;
   const showTerminateAll = show.stopAll && onStopAgentTask !== undefined && runningSubagentTasks.length > 0;
   const nodeStatus = focusedNode?.status;
@@ -637,14 +639,21 @@ export function Rail({
       <span>{t('rail.branches.backToMain')}</span>
     </button>
   ) : undefined;
-  // Parallel conversation branches sit right below overview so switching between
-  // active or merged side threads never scrolls behind background worker lists.
+  const hasOpenBranches = sessionBranches.open.length > 0;
+  const branchesSummary = !hasOpenBranches && sessionBranches.merged.length > 0
+    ? `${sessionBranches.merged.length} ${t('rail.branches.status.merged')}`
+    : undefined;
+  // Parallel conversation branches sit right below overview. When only merged
+  // history remains, the chapter collapses to a single quiet line until opened.
   const branchesSection = showBranches ? (
     <div className={SECTION} data-rail-section="branches">
       <RailSection
+        key={hasOpenBranches || viewingBranch ? 'branches-active' : 'branches-settled'}
         title={t('rail.group.branches')}
-        count={sessionBranches.all.length}
-        collapsible={false}
+        count={hasOpenBranches ? sessionBranches.open.length : undefined}
+        summary={branchesSummary}
+        collapsible
+        defaultOpen={hasOpenBranches || viewingBranch}
         data-inspector-branches=""
         actions={backToMainAction}
       >

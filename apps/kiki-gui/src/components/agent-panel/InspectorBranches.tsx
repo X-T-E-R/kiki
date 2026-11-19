@@ -15,7 +15,7 @@ import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode, type Block } from 
 import { plainInline } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { displayUserMessageText } from '../message/messageSource';
-import { DisclosureChevron, Icon } from '../icons';
+import { DisclosureChevron } from '../icons';
 import { plainFailure } from './failureText';
 
 export const MERGED_BRANCH_INLINE_LIMIT = 5;
@@ -175,19 +175,15 @@ const BranchRow = memo(function BranchRow({
     preview,
   ].filter((line) => line !== undefined && line !== '').join('\n');
 
-  const guideBarClass = isWaiting
+  const dotClass = isWaiting
     ? 'bg-attention'
-    : isRunning || state === 'open'
-      ? 'bg-accent'
-      : state === 'failed'
-        ? 'bg-danger/70'
-        : 'bg-hairline-strong';
-
-  const iconClass = isWaiting
-    ? 'text-amber-ink'
-    : isRunning || state === 'open'
-      ? 'text-accent'
-      : 'text-ink-faint';
+    : isRunning
+      ? 'status-dot-busy bg-accent'
+      : state === 'open'
+        ? 'bg-accent/70'
+        : state === 'failed'
+          ? 'bg-danger/70'
+          : 'border border-ink-faint/60';
 
   const statusClass = isWaiting
     ? 'font-medium text-amber-ink'
@@ -206,55 +202,24 @@ const BranchRow = memo(function BranchRow({
       aria-current={focused ? 'true' : undefined}
       title={tooltip}
       onClick={() => { onSelect(node.agentId); }}
-      className={`group relative -mx-2 flex w-[calc(100%+1rem)] min-w-0 items-stretch gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
+      className={`group -mx-1.5 flex h-7 w-[calc(100%+0.75rem)] min-w-0 items-center gap-2 rounded-md px-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
         focused
           ? 'bg-accent/[0.08] text-ink'
           : peeked
             ? 'bg-ink/[0.045] text-ink'
-            : 'hover:bg-ink/[0.035]'
+            : 'hover:bg-ink/[0.04]'
       }`}
     >
+      <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
       <span
-        aria-hidden
-        className={`my-0.5 w-0.5 shrink-0 rounded-full transition-colors ${
-          focused ? 'bg-accent' : guideBarClass
+        className={`min-w-0 flex-1 truncate text-[12.5px] leading-5 ${
+          focused ? 'font-medium text-ink' : isMerged ? 'text-ink-soft group-hover:text-ink' : 'text-ink'
         }`}
-      />
-      <span aria-hidden className={`mt-0.5 flex h-4 w-3.5 shrink-0 items-center justify-center ${iconClass}`}>
-        <Icon name="branch" size={14} />
+      >
+        {node.label}
       </span>
-      <span className="min-w-0 flex-1 space-y-0.5">
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span
-            className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${
-              focused ? 'font-medium text-ink' : isMerged ? 'text-ink-soft group-hover:text-ink' : 'text-ink'
-            }`}
-          >
-            {node.label}
-          </span>
-          <span className={`shrink-0 inline-flex items-center gap-1 text-[11.5px] leading-4 ${statusClass}`}>
-            {isRunning ? <span aria-hidden className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" /> : null}
-            {statusText}
-          </span>
-        </span>
-        {(seedLabel !== undefined || readOnlyLabel !== undefined || preview !== undefined) ? (
-          <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] leading-4 text-ink-faint">
-            {seedLabel !== undefined ? (
-              <span
-                data-branch-seed={node.branchSeed}
-                className="shrink-0 rounded border border-hairline px-1 py-px text-[10.5px] leading-3.5 text-ink-soft"
-              >
-                {seedLabel}
-              </span>
-            ) : null}
-            {readOnlyLabel !== undefined ? (
-              <span className="shrink-0 text-[11px] text-ink-faint">{readOnlyLabel}</span>
-            ) : null}
-            {preview !== undefined ? (
-              <span className="min-w-0 flex-1 truncate">{preview}</span>
-            ) : null}
-          </span>
-        ) : null}
+      <span className={`shrink-0 text-[11.5px] leading-4 ${statusClass}`}>
+        {statusText}
       </span>
     </button>
   );
@@ -276,10 +241,15 @@ export const InspectorBranches = memo(function InspectorBranches({
   readonly onSelect: (agentId: string) => void;
 }) {
   const { t } = useI18n();
+  const hasOpen = branches.open.length > 0;
+  const focusedIsMerged = branches.merged.some((node) => node.agentId === focusedAgentId);
+  const [mergedOpen, setMergedOpen] = useState(focusedIsMerged);
   const [showAllMerged, setShowAllMerged] = useState(false);
 
+  const showMergedList = !hasOpen || mergedOpen || focusedIsMerged;
   const { visibleMerged, hiddenMergedCount } = useMemo(() => {
     const merged = branches.merged;
+    if (!showMergedList) return { visibleMerged: [] as readonly AgentTreeNode[], hiddenMergedCount: merged.length };
     if (showAllMerged || merged.length <= MERGED_BRANCH_INLINE_LIMIT) {
       return { visibleMerged: merged, hiddenMergedCount: 0 };
     }
@@ -297,7 +267,7 @@ export const InspectorBranches = memo(function InspectorBranches({
       visibleMerged: head,
       hiddenMergedCount: merged.length - MERGED_BRANCH_INLINE_LIMIT,
     };
-  }, [branches.merged, focusedAgentId, showAllMerged]);
+  }, [branches.merged, focusedAgentId, showAllMerged, showMergedList]);
 
   return (
     <div data-branches-list className="space-y-0.5">
@@ -315,6 +285,22 @@ export const InspectorBranches = memo(function InspectorBranches({
           />
         );
       })}
+      {hasOpen && branches.merged.length > 0 ? (
+        <button
+          type="button"
+          data-branches-more
+          aria-expanded={showMergedList}
+          onClick={() => { setMergedOpen((open) => !open); }}
+          className="-mx-1.5 flex h-7 w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+        >
+          <DisclosureChevron open={showMergedList} />
+          <span className="min-w-0 flex-1 truncate">
+            {showMergedList
+              ? t('rail.branches.hideMerged')
+              : `${t('rail.branches.status.merged')} · ${branches.merged.length}`}
+          </span>
+        </button>
+      ) : null}
       {visibleMerged.map((node) => (
         <BranchRow
           key={node.agentId}
@@ -326,10 +312,10 @@ export const InspectorBranches = memo(function InspectorBranches({
           onSelect={onSelect}
         />
       ))}
-      {branches.merged.length > MERGED_BRANCH_INLINE_LIMIT ? (
+      {showMergedList && branches.merged.length > MERGED_BRANCH_INLINE_LIMIT ? (
         <button
           type="button"
-          data-branches-more
+          data-branches-more-merged
           aria-expanded={showAllMerged}
           onClick={() => { setShowAllMerged((open) => !open); }}
           className="-mx-1.5 flex h-7 items-center gap-1 rounded-md px-1.5 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"

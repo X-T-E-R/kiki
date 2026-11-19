@@ -153,12 +153,17 @@ export function useOptionalConversationShell(): ConversationShellContextValue | 
  */
 export function useRegisterSeat(seat: ConversationSeat): void {
   const { registerSeat, unregisterSeat } = useConversationShell();
+  const latestSeatRef = useRef(seat);
+  latestSeatRef.current = seat;
   useLayoutEffect(
     () => {
       registerSeat(seat);
-      return () => { unregisterSeat(seat); };
     },
-    [registerSeat, unregisterSeat, seat],
+    [registerSeat, seat],
+  );
+  useLayoutEffect(
+    () => () => { unregisterSeat(latestSeatRef.current); },
+    [unregisterSeat],
   );
 }
 

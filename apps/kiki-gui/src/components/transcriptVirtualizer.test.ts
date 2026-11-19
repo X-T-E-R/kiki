@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Virtualizer, type VirtualItem } from '@tanstack/react-virtual';
 
-import { installTranscriptAnchoring, noteReaderDisclosure, observeRowMutations, shouldCompensateRowResize, type RowResize } from './transcriptVirtualizer';
+import { installTranscriptAnchoring, isFollowingTranscriptEnd, noteReaderDisclosure, observeRowMutations, setFollowingTranscriptEnd, shouldCompensateRowResize, type RowResize } from './transcriptVirtualizer';
 
 const base: RowResize = {
   itemStart: 0,
@@ -344,6 +344,56 @@ describe('a shrinking viewport', () => {
     expect(test.toEnd).not.toHaveBeenCalled();
     expect(test.scroll.scrollTop).toBe(1200);
     test.cleanup();
+  });
+
+  it('never drags a reader back down when wheel-up is followed by a viewport shrink', () => {
+    const test = setup(3200);
+    test.scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    test.scroll.scrollTop = 2600;
+    test.shrink(450);
+    expect(test.toEnd).not.toHaveBeenCalled();
+    expect(test.scroll.scrollTop).toBe(2600);
+    test.cleanup();
+  });
+
+  it('does not drag a scrolled-up reader downward when below-viewport rows grow while virtual estimates lag', () => {
+    const scroll = document.createElement('div');
+    document.body.append(scroll);
+    let top = 400;
+    Object.defineProperty(scroll, 'clientHeight', { get: () => 500, configurable: true });
+    Object.defineProperty(scroll, 'scrollHeight', { get: () => 4000, configurable: true });
+    Object.defineProperty(scroll, 'scrollTop', {
+      get: () => top,
+      set: (value: number) => {
+        top = Math.max(0, Math.min(value, 3500));
+        scroll.dispatchEvent(new Event('scroll'));
+      },
+      configurable: true,
+    });
+    const instance = new Virtualizer<HTMLDivElement, HTMLDivElement>({
+      count: 6,
+      getScrollElement: () => scroll,
+      estimateSize: () => 120,
+      getItemKey: (index) => `row-${index}`,
+      anchorTo: 'end',
+      scrollEndThreshold: 80,
+      scrollToFn: (offset, options) => { scroll.scrollTop = offset + (options.adjustments ?? 0); },
+      observeElementRect: () => {},
+      observeElementOffset: () => {},
+    });
+    instance.scrollElement = scroll;
+    instance.scrollOffset = top;
+    instance.getTotalSize();
+    const cleanup = installTranscriptAnchoring(instance);
+    expect(isFollowingTranscriptEnd(instance)).toBe(false);
+    setFollowingTranscriptEnd(instance, false);
+    // Row 5 sits below scrollOffset (5 * 120 = 600 > 400), while virtual totalSize
+    // (720) - clientHeight (500) - scrollOffset (400) = 0 <= 80 would trigger
+    // virtual-core's internal `wasAtEnd` heuristic without our anti-drag guard.
+    instance.resizeItem(5, 800);
+    expect(scroll.scrollTop).toBe(400);
+    cleanup();
+    scroll.remove();
   });
 });
 

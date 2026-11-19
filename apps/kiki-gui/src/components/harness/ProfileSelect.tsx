@@ -758,13 +758,33 @@ export function ProfileSelect({
                   data-execution-filter
                   value={query}
                   onChange={(e) => { setQuery(e.target.value); }}
+                  onKeyDown={(e) => {
+                    if (isImeKeyEvent(e)) return;
+                    const panel = e.currentTarget.closest<HTMLElement>('[data-execution-panel]') ?? rootRef.current;
+                    const rows = panel !== null
+                      ? [...panel.querySelectorAll<HTMLElement>('[data-menu-row]:not(:disabled)')]
+                      : [];
+                    if (e.key === 'ArrowDown') {
+                      if (rows.length === 0) return;
+                      e.preventDefault();
+                      rows[0]?.focus();
+                    } else if (e.key === 'ArrowUp') {
+                      if (rows.length === 0) return;
+                      e.preventDefault();
+                      rows[rows.length - 1]?.focus();
+                    } else if (e.key === 'Enter') {
+                      if (rows.length === 0) return;
+                      e.preventDefault();
+                      rows[0]?.click();
+                    }
+                  }}
                   placeholder={t('composer.profile.searchPlaceholder')}
                   aria-label={t('composer.execution.filterAria')}
                   className="w-full rounded-md border border-hairline bg-paper px-2.5 py-1 text-[12.5px] text-ink outline-none focus-visible:border-selected-ink placeholder:text-ink-faint"
                 />
               </div>
 
-              <div className="flex-1 overflow-y-auto p-1 max-h-[min(var(--cp-max-h,24rem),24rem)] space-y-2">
+              <div className="flex-1 overflow-y-auto overscroll-contain p-1 max-h-[min(var(--cp-max-h,24rem),24rem,calc(100dvh-120px))] space-y-2">
                 {retainedUnavailableExternal ? (
                   <div data-execution-restore={choice.executor} className="mx-1 my-1 space-y-1 px-2.5 py-1.5 rounded border border-hairline bg-surface/40">
                     <p className="text-[11.5px] leading-snug text-ink-faint">

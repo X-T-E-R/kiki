@@ -271,7 +271,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
           {addControl}
           <PageMoreMenu menuId="capabilities-more" entries={[{ key: 'refresh', label: t('cap.page.refresh'), run: refresh }]} />
         </PageHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 lg:px-6">
+        <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 lg:px-6">
           <div className={`mx-auto w-full ${PAGE_WIDTH.split} pb-16 pt-4 min-[720px]:pt-8`}>
             {/* One row of chrome: which kind of capability, and (for Skills and
                 MCP) which workspace. Every view below starts at its own

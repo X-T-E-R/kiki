@@ -45,6 +45,36 @@ type ReaderDisclosure = {
 
 const readerDisclosures = new WeakMap<TranscriptVirtualizer, ReaderDisclosure>();
 
+type FollowEndState = {
+  following: boolean;
+};
+
+const followEndStates = new WeakMap<TranscriptVirtualizer, FollowEndState>();
+
+function followStateOf(instance: TranscriptVirtualizer): FollowEndState {
+  let state = followEndStates.get(instance);
+  if (state === undefined) {
+    const scroll = instance.scrollElement;
+    const atEnd =
+      scroll instanceof HTMLElement && scroll.isConnected && scroll.clientHeight > 0
+        ? scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= TRANSCRIPT_END_THRESHOLD
+        : true;
+    state = { following: atEnd };
+    followEndStates.set(instance, state);
+  }
+  return state;
+}
+
+/** Single source of truth for whether the reader is currently following the end. */
+export function isFollowingTranscriptEnd(instance: TranscriptVirtualizer): boolean {
+  return followStateOf(instance).following;
+}
+
+/** Explicitly engage or disengage end-following (e.g. jump-to-latest vs upward scroll). */
+export function setFollowingTranscriptEnd(instance: TranscriptVirtualizer, following: boolean): void {
+  followStateOf(instance).following = following;
+}
+
 /**
  * Record the reader opening a row's own disclosure. A click is the reader
  * choosing to read that row, not content arriving at the end, so the size change
@@ -60,6 +90,7 @@ export function noteReaderDisclosure(instance: TranscriptVirtualizer, target: El
   if (!(scroll instanceof HTMLElement) || !scroll.isConnected || scroll.clientHeight === 0) return;
   const index = instance.indexFromElement(row);
   if (index < 0 || index >= instance.options.count || !row.isConnected) return;
+  setFollowingTranscriptEnd(instance, false);
   readerDisclosures.set(instance, {
     key: instance.options.getItemKey(index),
     row,
@@ -184,47 +215,145 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
       break;
     }
   };
-  // A shrinking viewport (soft keyboard, collapsing toolbars) keeps scrollTop,
-  // which silently moves a reader who was following the end off it.
+  // A shrinking viewport (soft keyboard, collapsing toolbars, growing composer)
+  // keeps scrollTop, which silently moves a reader who was genuinely following
+  // the end off it. When the reader has scrolled up away from the end, a
+  // viewport resize must NEVER pull them back down.
   const distanceFromEnd = (element: HTMLElement) => element.scrollHeight - element.clientHeight - element.scrollTop;
+  const followState = followStateOf(instance);
   let viewportHeight = scroll?.clientHeight ?? 0;
   let viewportOffset = scroll?.scrollTop ?? 0;
-  let pinnedToEnd = scroll !== null && distanceFromEnd(scroll) <= TRANSCRIPT_END_THRESHOLD;
+  let lastScrollTop = scroll?.scrollTop ?? 0;
+  let lastTouchY: number | undefined;
+  let lastPointerY: number | undefined;
+  let proseAdjustedInResize = false;
+  if (scroll !== null && scroll.isConnected && scroll.clientHeight > 0) {
+    followState.following = distanceFromEnd(scroll) <= TRANSCRIPT_END_THRESHOLD;
+  }
+  const disengageFollow = () => {
+    followState.following = false;
+    if (scroll !== null && scroll.isConnected) {
+      viewportOffset = scroll.scrollTop;
+      lastScrollTop = scroll.scrollTop;
+    }
+  };
   const viewportObserver = scroll === null || typeof ResizeObserver === 'undefined'
     ? undefined
     : new ResizeObserver(() => {
       if (!scroll.isConnected || scroll.clientHeight === 0 || scroll.clientHeight === viewportHeight) return;
-      if (Math.abs(scroll.scrollTop - viewportOffset) > 0.5) {
-        pinnedToEnd = scroll.scrollHeight - viewportHeight - scroll.scrollTop <= TRANSCRIPT_END_THRESHOLD;
-      }
+      const previousHeight = viewportHeight;
       viewportHeight = scroll.clientHeight;
-      if (pinnedToEnd && distanceFromEnd(scroll) > TRANSCRIPT_END_THRESHOLD) landAtEnd(instance);
+      if (
+        Math.abs(scroll.scrollTop - viewportOffset) > 0.5 ||
+        scroll.scrollHeight - previousHeight - scroll.scrollTop > TRANSCRIPT_END_THRESHOLD
+      ) {
+        followState.following = false;
+      }
+      if (followState.following && scroll.clientHeight < previousHeight && distanceFromEnd(scroll) > TRANSCRIPT_END_THRESHOLD) {
+        landAtEnd(instance);
+      }
       viewportOffset = scroll.scrollTop;
+      lastScrollTop = scroll.scrollTop;
     });
   if (scroll !== null) viewportObserver?.observe(scroll);
   const onScroll = () => {
-    if (scroll !== null && scroll.clientHeight === viewportHeight) {
-      pinnedToEnd = distanceFromEnd(scroll) <= TRANSCRIPT_END_THRESHOLD;
+    if (scroll !== null && scroll.isConnected && scroll.clientHeight > 0) {
+      const dist = distanceFromEnd(scroll);
+      if (dist > TRANSCRIPT_END_THRESHOLD) {
+        followState.following = false;
+      } else if (scroll.scrollTop > lastScrollTop + 0.5 || scroll.scrollHeight <= scroll.clientHeight + 1) {
+        followState.following = true;
+      }
+      lastScrollTop = scroll.scrollTop;
       viewportOffset = scroll.scrollTop;
+      viewportHeight = scroll.clientHeight;
     }
     capture();
     // Newly mounted rows settle after the scroll delivery.
     if (frame !== undefined) cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => { frame = undefined; capture(); });
   };
-  const onReaderInput = () => { readerDisclosures.delete(instance); };
+  const onReaderWheel = (event: WheelEvent) => {
+    readerDisclosures.delete(instance);
+    if (event.deltaY < 0) disengageFollow();
+  };
+  const onReaderTouchStart = (event: TouchEvent) => {
+    lastTouchY = event.touches[0]?.clientY;
+  };
+  const onReaderTouchMove = (event: TouchEvent) => {
+    readerDisclosures.delete(instance);
+    const nextY = event.touches[0]?.clientY;
+    if (lastTouchY !== undefined && nextY !== undefined && nextY > lastTouchY) {
+      disengageFollow();
+    }
+    lastTouchY = nextY;
+  };
+  const onReaderPointerDown = (event: PointerEvent) => {
+    if (scroll !== null && event.offsetX >= scroll.clientWidth - 20) {
+      lastPointerY = event.clientY;
+    } else {
+      lastPointerY = undefined;
+    }
+  };
+  const onReaderPointerMove = (event: PointerEvent) => {
+    if (lastPointerY === undefined || event.buttons === 0) return;
+    if (event.clientY < lastPointerY) disengageFollow();
+    lastPointerY = event.clientY;
+  };
+  const onReaderPointerUp = () => { lastPointerY = undefined; };
   const onReaderKey = (event: KeyboardEvent) => {
-    if (READER_SCROLL_KEYS.has(event.key)) onReaderInput();
+    if (READER_SCROLL_KEYS.has(event.key)) {
+      readerDisclosures.delete(instance);
+      if (
+        (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') &&
+        !(event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable="true"]'))
+      ) {
+        disengageFollow();
+      }
+    }
   };
   scroll?.addEventListener('scroll', onScroll, { passive: true });
-  scroll?.addEventListener('wheel', onReaderInput, { passive: true });
-  scroll?.addEventListener('touchmove', onReaderInput, { passive: true });
+  scroll?.addEventListener('wheel', onReaderWheel, { passive: true });
+  scroll?.addEventListener('touchstart', onReaderTouchStart, { passive: true });
+  scroll?.addEventListener('touchmove', onReaderTouchMove, { passive: true });
+  scroll?.addEventListener('pointerdown', onReaderPointerDown);
+  scroll?.addEventListener('pointermove', onReaderPointerMove);
+  scroll?.addEventListener('pointerup', onReaderPointerUp);
   scroll?.addEventListener('keydown', onReaderKey);
   capture();
   const resizeItem = instance.resizeItem;
   instance.resizeItem = (index, size) => {
     const held = readerDisclosures.get(instance);
     if (held === undefined) {
+      // When the reader is scrolled away from the end, guard against
+      // `@tanstack/virtual-core`'s internal `wasAtEnd` heuristic (which uses
+      // estimated `getTotalSize()` rather than real DOM `scrollHeight` and can
+      // drag `scrollTop` downward when unmeasured rows below expand).
+      if (!followState.following && scroll instanceof HTMLElement && scroll.isConnected && scroll.clientHeight > 0) {
+        const measurement = instance.measurementsCache[index];
+        const key = measurement?.key ?? (index >= 0 && index < instance.options.count ? instance.options.getItemKey(index) : undefined);
+        const scrollOffset = (instance.scrollOffset ?? scroll.scrollTop) + instance.scrollAdjustments;
+        const allowAboveComp =
+          measurement !== undefined &&
+          key !== undefined &&
+          shouldCompensateRowResize({
+            itemStart: measurement.start,
+            itemSize: instance.itemSizeCache.get(key) ?? measurement.size,
+            firstMeasure: !instance.itemSizeCache.has(key),
+            scrollOffset,
+            distanceFromEnd: Number.POSITIVE_INFINITY,
+            endThreshold: TRANSCRIPT_END_THRESHOLD,
+          });
+        if (!allowAboveComp) {
+          const beforeTop = scroll.scrollTop;
+          proseAdjustedInResize = false;
+          resizeItem(index, size);
+          if (!proseAdjustedInResize && Math.abs(scroll.scrollTop - beforeTop) > 0.5) {
+            landOffset(instance, beforeTop);
+          }
+          return;
+        }
+      }
       resizeItem(index, size);
       return;
     }
@@ -268,9 +397,10 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
   instance.shouldAdjustScrollPositionOnItemSizeChange = (item: VirtualItem) => {
     const element = instance.scrollElement;
     const scrollOffset = (instance.scrollOffset ?? 0) + instance.scrollAdjustments;
-    const distanceFromEnd = element instanceof HTMLElement
+    const rawDistanceFromEnd = element instanceof HTMLElement
       ? element.scrollHeight - element.clientHeight - element.scrollTop
       : Number.POSITIVE_INFINITY;
+    const distanceFromEnd = followState.following ? rawDistanceFromEnd : Number.POSITIVE_INFINITY;
     if (shouldCompensateRowResize({
       itemStart: item.start,
       itemSize: item.size,
@@ -288,6 +418,7 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
       const delta = inset - anchor.inset;
       anchor.inset = inset;
       if (Math.abs(delta) > 0.5) {
+        proseAdjustedInResize = true;
         instance.scrollToOffset(scroll.scrollTop + delta, { align: 'start' });
         instance.scrollOffset = scroll.scrollTop;
         anchor.scrollTop = scroll.scrollTop;
@@ -297,8 +428,12 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
   };
   return () => {
     scroll?.removeEventListener('scroll', onScroll);
-    scroll?.removeEventListener('wheel', onReaderInput);
-    scroll?.removeEventListener('touchmove', onReaderInput);
+    scroll?.removeEventListener('wheel', onReaderWheel);
+    scroll?.removeEventListener('touchstart', onReaderTouchStart);
+    scroll?.removeEventListener('touchmove', onReaderTouchMove);
+    scroll?.removeEventListener('pointerdown', onReaderPointerDown);
+    scroll?.removeEventListener('pointermove', onReaderPointerMove);
+    scroll?.removeEventListener('pointerup', onReaderPointerUp);
     scroll?.removeEventListener('keydown', onReaderKey);
     viewportObserver?.disconnect();
     if (frame !== undefined) cancelAnimationFrame(frame);
@@ -316,6 +451,7 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
  * end anchor from the stale offset — the item at the top — and scrolls there.
  */
 export function landAtEnd(instance: TranscriptVirtualizer): void {
+  setFollowingTranscriptEnd(instance, true);
   instance.scrollToEnd();
   const element = instance.scrollElement;
   if (element instanceof HTMLElement) instance.scrollOffset = element.scrollTop;

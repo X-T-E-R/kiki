@@ -597,6 +597,7 @@ export function projectedProfileModelState(
   models: readonly { readonly id: string; readonly remote_id: string; readonly provider_id: string }[],
   selected: string | undefined,
   position: 'main' | 'sub' = 'sub',
+  options?: { readonly unresolvedPending?: boolean },
 ): 'allowed' | 'warning' | 'blocked' | 'unknown' {
   const normalizedSelected = normalizeSelectableModelAlias(selected);
   if (position === 'main') {
@@ -607,7 +608,12 @@ export function projectedProfileModelState(
   if (projection?.effective_model_aliases === undefined) {
     return projection?.restrict_models_to_menu === true ? 'unknown' : 'allowed';
   }
-  if (normalizedSelected === undefined) return 'blocked';
+  if (normalizedSelected === undefined) {
+    if (options?.unresolvedPending === true && projection.effective_model_aliases.length > 0) {
+      return 'unknown';
+    }
+    return 'blocked';
+  }
   const identity = resolveCatalogModel(models, normalizedSelected)?.id ?? normalizedSelected;
   return projection.effective_model_aliases.some((alias) => (resolveCatalogModel(models, alias)?.id ?? alias) === identity)
     ? 'allowed' : position === 'main' ? 'warning' : 'blocked';

@@ -612,6 +612,8 @@ class FixtureSession {
     // key (`frame:`/`turn:`/`task:` + id) → the unbounded canonical entity the
     // segment route reads from, so a read continues what the preview showed.
     this.boundedCanonical = new Map();
+    this.seq = scenarioData.as_of_seq ?? record.last_seq ?? this.messages.length;
+    this.epoch = scenarioData.epoch ?? 'ep_fixture_1';
     this.transcript = new TranscriptProjector(record.id, this.agentTranscripts, this.epoch);
     if ((scenarioData.messages ?? []).length > 0 || (scenarioData.older ?? []).length > 0) {
       seedMessages(this.transcript, this.messages, {
@@ -625,8 +627,6 @@ class FixtureSession {
     this.lastSkillActivation = null; // {name, args, attachments} — walker assertions
     this.lastFsSearch = null; // last fs:search body
     this.lastMessageAction = null; // {action: 'edit'|'regenerate', message_id, body}
-    this.seq = scenarioData.as_of_seq ?? record.last_seq ?? this.messages.length;
-    this.epoch = scenarioData.epoch ?? 'ep_fixture_1';
     this.scriptRunning = false;
     this.abortRequested = false;
     this.waiters = []; // [{kind, resolve, payload?}]
@@ -1835,6 +1835,7 @@ class FixtureServer {
 
   fanoutTranscriptReset(session, agentId) {
     this.klient.transcript(session, agentId);
+    if (typeof session.transcript?.resetEvent !== 'function') return;
     const payload = session.transcript.resetEvent(agentId);
     for (const connection of this.sockets) {
       const spec = connection.transcriptGrades?.get(session.record.id);

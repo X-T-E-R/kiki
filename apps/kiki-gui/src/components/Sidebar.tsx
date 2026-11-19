@@ -1028,10 +1028,27 @@ export function Sidebar({
   );
   const privateFilter = filters.private ?? 'hide';
   const narrowsBeyondWorkspace = filters.status.length > 0 || filters.archived !== 'hide' || privateFilter !== 'hide';
-  const allowedSessionIds = useMemo(
-    () => (narrowsBeyondWorkspace ? new Set(visibleSessions.map((session) => session.id)) : undefined),
-    [narrowsBeyondWorkspace, visibleSessions],
+  // When more pages exist on the server (`hasNextPage === true`), never intersect
+  // server search hits with only the currently loaded page-1 `visibleSessions`
+  // (which would silently discard hits from sessions #51+). Exclude only loaded
+  // sessions known to fail the active filter instead.
+  const hasMoreUnloadedSessions = sessionsQuery.hasNextPage === true;
+  const visibleSessionIdSet = useMemo(
+    () => new Set(visibleSessions.map((session) => session.id)),
+    [visibleSessions],
   );
+  const allowedSessionIds = useMemo(
+    () => (narrowsBeyondWorkspace && !hasMoreUnloadedSessions ? visibleSessionIdSet : undefined),
+    [narrowsBeyondWorkspace, hasMoreUnloadedSessions, visibleSessionIdSet],
+  );
+  const excludedSessionIds = useMemo(() => {
+    if (!narrowsBeyondWorkspace || !hasMoreUnloadedSessions) return undefined;
+    const excluded = new Set<string>();
+    for (const session of sessions) {
+      if (!visibleSessionIdSet.has(session.id)) excluded.add(session.id);
+    }
+    return excluded;
+  }, [narrowsBeyondWorkspace, hasMoreUnloadedSessions, sessions, visibleSessionIdSet]);
   const searchableSessions = useMemo(
     () => (narrowsBeyondWorkspace ? visibleSessions : sessions.filter((session) => session.archived !== true && session.private !== true)),
     [narrowsBeyondWorkspace, visibleSessions, sessions],
@@ -1043,6 +1060,7 @@ export function Sidebar({
     untitled,
     workspaceScope: filters.workspaces,
     allowedSessionIds,
+    excludedSessionIds,
     includeToolOutput,
   });
 
@@ -1310,6 +1328,19 @@ export function Sidebar({
     }
   };
 
+  const navigateAwayFromArchived = (archivedIds: ReadonlySet<string>) => {
+    if (activeSessionId === undefined || !archivedIds.has(activeSessionId)) return;
+    if (location.pathname.startsWith('/archived')) return;
+    const currentIndex = visibleSessions.findIndex((candidate) => candidate.id === activeSessionId);
+    const remaining = visibleSessions.filter((candidate) => !archivedIds.has(candidate.id) && candidate.archived !== true);
+    const next = currentIndex >= 0
+      ? (visibleSessions.slice(currentIndex + 1).find((candidate) => !archivedIds.has(candidate.id) && candidate.archived !== true)
+        ?? visibleSessions.slice(0, currentIndex).findLast((candidate) => !archivedIds.has(candidate.id) && candidate.archived !== true)
+        ?? remaining[0])
+      : remaining[0];
+    void navigate(next !== undefined ? `/s/${encodeURIComponent(next.id)}` : '/new');
+  };
+
   // The authoritative answer, not an optimistic guess: the archived fact goes
   // into the loaded pages so the ordinary list (archived: hide) drops the row
   // and the archived view keeps it, with no second wait on the network. The
@@ -1324,7 +1355,9 @@ export function Sidebar({
         items: page.items.map((session) => ids.has(session.id) ? { ...session, archived: true } : session),
       })),
     });
+    void queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined);
     refreshSessions();
+    navigateAwayFromArchived(ids);
   };
   const markRoomsArchived = (ids: ReadonlySet<string>) => {
     if (ids.size === 0) return;
@@ -1457,8 +1490,14 @@ export function Sidebar({
         key: `h:${index}`,
         open: () => {
           const route = hit.agent_id && hit.agent_id !== 'main'
-            ? `/s/${hit.session_id}/agent/${hit.agent_id}` : `/s/${hit.session_id}`;
-          void navigate(hit.turn === undefined ? route : `${route}?turn=${hit.turn}`);
+            ? `/s/${encodeURIComponent(hit.session_id)}/agent/${encodeURIComponent(hit.agent_id)}`
+            : `/s/${encodeURIComponent(hit.session_id)}`;
+          const params = new URLSearchParams();
+          if (hit.turn !== undefined) params.set('turn', String(hit.turn));
+          if (hit.step_id !== undefined && hit.step_id !== '') params.set('step', hit.step_id);
+          if (search.parsed.text.trim() !== '') params.set('q', search.parsed.text.trim());
+          const qs = params.toString();
+          void navigate(qs === '' ? route : `${route}?${qs}`);
         },
       });
     });
@@ -2391,59 +2430,82 @@ export function Sidebar({
             const target = renaming;
             const sequence = (renameSequences.current.get(target.key) ?? 0) + 1;
             renameSequences.current.set(target.key, sequence);
+            const previousTitle = target.kind === 'room' ? target.title : target.session.title;
+            setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? previousTitle, to: title }));
             if (target.kind === 'room') {
-              const updated = await roomApi.updateRoom(target.id, { name: title });
-              if (renameSequences.current.get(target.key) !== sequence) return;
               queryClient.setQueryData<RoomListItem[]>(ROOM_ITEMS_QUERY_KEY, (old) =>
                 old === undefined ? old : old.map((room) => (room.id === target.id ? { ...room, title } : room)),
               );
-              if (updated !== undefined && updated !== null && typeof updated === 'object' && 'id' in updated) {
-                queryClient.setQueryData(roomQueryKey(target.id), { ...updated, name: title });
-              } else if (queryClient.getQueryData(roomQueryKey(target.id)) !== undefined) {
-                queryClient.setQueryData(roomQueryKey(target.id), (old: unknown) =>
-                  old !== null && typeof old === 'object' ? { ...old, name: title } : old,
-                );
+              try {
+                const updated = await roomApi.updateRoom(target.id, { name: title });
+                if (renameSequences.current.get(target.key) !== sequence) return;
+                if (updated !== undefined && updated !== null && typeof updated === 'object' && 'id' in updated) {
+                  queryClient.setQueryData(roomQueryKey(target.id), { ...updated, name: title });
+                } else if (queryClient.getQueryData(roomQueryKey(target.id)) !== undefined) {
+                  queryClient.setQueryData(roomQueryKey(target.id), (old: unknown) =>
+                    old !== null && typeof old === 'object' ? { ...old, name: title } : old,
+                  );
+                }
+                setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
+                setRenaming((current) => current === target ? null : current);
+                refreshRooms();
+              } catch (cause: unknown) {
+                if (renameSequences.current.get(target.key) === sequence) {
+                  setRenamedTitles((prev) => { const next = new Map(prev); next.delete(target.key); return next; });
+                  refreshRooms();
+                }
+                throw cause;
               }
-              setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? target.title, to: title }));
-              setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
-              setRenaming((current) => current === target ? null : current);
-              refreshRooms();
               return;
             }
+            const patchSessionTitle = (nextTitle: string, serverUpdated?: unknown) => {
+              const serverSession = serverUpdated !== undefined && serverUpdated !== null && typeof serverUpdated === 'object' && 'id' in serverUpdated && typeof (serverUpdated as { id?: unknown }).id === 'string'
+                ? serverUpdated as Partial<Session>
+                : undefined;
+              const mergeUpdated = (existing: Session): Session => ({
+                ...existing,
+                ...serverSession,
+                title: nextTitle,
+              });
+              queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+                old === undefined || !Array.isArray(old.pages)
+                  ? old
+                  : {
+                      ...old,
+                      pages: old.pages.map((page) => ({
+                        ...page,
+                        items: page.items.map((entry) => (entry.id === target.id ? mergeUpdated(entry) : entry)),
+                      })),
+                    },
+              );
+              if (queryClient.getQueryData(['session', target.id]) !== undefined) {
+                queryClient.setQueryData<Session>(['session', target.id], (old) =>
+                  old === undefined ? old : mergeUpdated(old),
+                );
+              }
+            };
+            patchSessionTitle(title);
             // A bare title patch omits `metadata`, so the server leaves the
             // stored custom document (and with it any client-local pin) untouched.
-            const updated = await client.updateSessionProfile(target.id, { title });
-            if (renameSequences.current.get(target.key) !== sequence) return;
-            const mergeUpdated = (existing: Session): Session => ({
-              ...existing,
-              ...(updated !== null && typeof updated === 'object' && 'id' in updated ? updated : undefined),
-              title,
-            });
-            queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
-              old === undefined || !Array.isArray(old.pages)
-                ? old
-                : {
-                    ...old,
-                    pages: old.pages.map((page) => ({
-                      ...page,
-                      items: page.items.map((entry) => (entry.id === target.id ? mergeUpdated(entry) : entry)),
-                    })),
-                  },
-            );
-            if (queryClient.getQueryData(['session', target.id]) !== undefined) {
-              queryClient.setQueryData<Session>(['session', target.id], (old) =>
-                old === undefined ? old : mergeUpdated(old),
-              );
-            }
-            setRenamedTitles((prev) => new Map(prev).set(target.key, { from: prev.get(target.key)?.from ?? target.session.title, to: title }));
-            setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
-            setRenaming((current) => current === target ? null : current);
-            void queryClient.invalidateQueries({
-              queryKey: ['sessions'],
-              predicate: (query) => !Array.isArray((query.state.data as SessionListData | undefined)?.pages),
-            });
-            if (target.session.agent_config?.persona !== undefined) {
-              invalidatePersonaSessionLists(queryClient);
+            try {
+              const updated = await client.updateSessionProfile(target.id, { title });
+              if (renameSequences.current.get(target.key) !== sequence) return;
+              patchSessionTitle(title, updated);
+              setJustRenamed((prev) => ({ key: target.key, seq: (prev?.seq ?? 0) + 1 }));
+              setRenaming((current) => current === target ? null : current);
+              void queryClient.invalidateQueries({
+                queryKey: ['sessions'],
+                predicate: (query) => !Array.isArray((query.state.data as SessionListData | undefined)?.pages),
+              });
+              if (target.session.agent_config?.persona !== undefined) {
+                invalidatePersonaSessionLists(queryClient);
+              }
+            } catch (cause: unknown) {
+              if (renameSequences.current.get(target.key) === sequence) {
+                setRenamedTitles((prev) => { const next = new Map(prev); next.delete(target.key); return next; });
+                patchSessionTitle(previousTitle);
+              }
+              throw cause;
             }
           }}
           onClose={closeRenameEditor}
@@ -2490,8 +2552,17 @@ export function Sidebar({
           onClose={() => { setConfirmArchiveWorktree(null); }}
           onArchiveFailed={() => { refreshSessions(); }}
           onArchived={(result) => {
+            const archivedRootId = confirmArchiveWorktree.id;
             setConfirmArchiveWorktree(null);
+            void queryClient.invalidateQueries({ queryKey: ['archived-sessions'] }).catch(() => undefined);
             refreshSessions();
+            const archivedSet = new Set<string>([archivedRootId]);
+            for (const candidate of sessions) {
+              if (sessionRelationOf(candidate)?.parentId === archivedRootId && !topLevelThreads.has(candidate.id)) {
+                archivedSet.add(candidate.id);
+              }
+            }
+            navigateAwayFromArchived(archivedSet);
             if (result?.tone === 'error') setActionError(result.text);
             else if (result !== null) setActionNotice(result.text);
           }}
