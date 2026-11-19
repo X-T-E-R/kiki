@@ -6,13 +6,14 @@
  */
 
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile, rename } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
 
 import { getDataDir } from '#/utils/paths';
+import { writeTextFileAtomic } from '#/utils/persistence';
 
 export const INVALID_TUI_CONFIG_MESSAGE =
   'Invalid TUI config in ~/.kiki/tui.toml; using defaults.';
@@ -175,12 +176,32 @@ export function parseTuiConfig(
   return normalizeTuiConfig(parsed, warn);
 }
 
+async function backupCorruptTuiConfig(filePath: string): Promise<void> {
+  const ts = Date.now();
+  let backupPath = `${filePath}.corrupt-${ts}`;
+  if (existsSync(backupPath)) {
+    backupPath = `${filePath}.corrupt-${ts}-${Math.random().toString(16).slice(2, 10)}`;
+  }
+  await rename(filePath, backupPath);
+}
+
 export async function saveTuiConfig(
   config: TuiConfig,
   filePath: string = getTuiConfigPath(),
 ): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, renderTuiConfig(config), 'utf-8');
+  if (existsSync(filePath)) {
+    let existingValid = true;
+    try {
+      const existingText = await readFile(filePath, 'utf-8');
+      parseTuiConfig(existingText, () => {});
+    } catch {
+      existingValid = false;
+    }
+    if (!existingValid) {
+      await backupCorruptTuiConfig(filePath);
+    }
+  }
+  await writeTextFileAtomic(filePath, renderTuiConfig(config), { sync: true });
 }
 
 export function normalizeTuiConfig(

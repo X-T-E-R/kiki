@@ -401,6 +401,42 @@ class DeviceToolProviderAndShareTest {
     }
 
     @Test
+    fun shareIntakeStore_backs_up_corrupt_index_and_prunes_orphan_batch_dirs() {
+        val dir = Files.createTempDirectory("kiki-share-corrupt").toFile()
+        try {
+            val inboxDir = File(dir, "shared-inbox").apply { mkdirs() }
+            val corruptPayload = "{not valid json"
+            File(inboxDir, "index.json").writeText(corruptPayload, StandardCharsets.UTF_8)
+            val orphanDir = File(inboxDir, "share_orphan123456").apply {
+                mkdirs()
+                File(this, "stale.txt").writeText("old")
+            }
+
+            val store = ShareIntakeStore(inboxDir, selfPackage = "dev.kiki.app", clock = { 1_700_000_000_123L })
+            val batch = store.stageIncoming(
+                IncomingSharePayload(
+                    action = Intent.ACTION_SEND,
+                    mimeType = "text/plain",
+                    text = "fresh share",
+                ),
+            )
+            assertNotNull(batch)
+
+            val backups = inboxDir.listFiles { f -> f.name.startsWith("index.json.corrupt-") }.orEmpty()
+            assertEquals(1, backups.size)
+            assertEquals(corruptPayload, backups.single().readText(StandardCharsets.UTF_8))
+            assertFalse(orphanDir.exists())
+            assertTrue(inboxDir.listFiles { f -> f.name.endsWith(".tmp") }.orEmpty().isEmpty())
+
+            val orphan2 = File(inboxDir, "share_orphan999999").apply { mkdirs() }
+            store.clearAll()
+            assertFalse(orphan2.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun hostSettings_validates_proxy_urls() {
         val settings = KikiHostSettings(InMemoryHostSettingsStore())
         assertNull(settings.proxyUrl)

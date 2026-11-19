@@ -1,6 +1,17 @@
 import '@kiki/node-sdk/native-fs-watch-error-guard';
 import { enableIndependentWorkerHeaps, removeInjectedHeapOption } from '@kiki/node-sdk/worker-heap-policy';
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
@@ -287,9 +298,34 @@ export function createMessagePortControlChannel(
 function writeAtomicUtf8(targetPath: string, content: string, mode = 0o600): void {
   const parent = dirname(targetPath);
   mkdirSync(parent, { recursive: true });
-  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tempPath, content, { encoding: 'utf8', mode });
-  renameSync(tempPath, targetPath);
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    const fd = openSync(tempPath, 'wx', mode);
+    try {
+      writeFileSync(fd, content, 'utf8');
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tempPath, targetPath);
+  } catch (error) {
+    try {
+      rmSync(tempPath, { force: true });
+    } catch {
+      /* best-effort temp cleanup */
+    }
+    throw error;
+  }
+}
+
+function backupCorruptFileSync(filePath: string): string {
+  const ts = Date.now();
+  let backupPath = `${filePath}.corrupt-${ts}`;
+  if (existsSync(backupPath)) {
+    backupPath = `${filePath}.corrupt-${ts}-${Math.random().toString(16).slice(2, 10)}`;
+  }
+  renameSync(filePath, backupPath);
+  return backupPath;
 }
 
 export function ensureManagedMobileMcp(
@@ -301,12 +337,21 @@ export function ensureManagedMobileMcp(
   const mcpPath = join(homeDir, 'mcp.json');
   let root: Record<string, unknown> = {};
   if (existsSync(mcpPath)) {
+    let parsedValid = false;
     try {
       const parsed = JSON.parse(readFileSync(mcpPath, 'utf8')) as unknown;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         root = { ...(parsed as Record<string, unknown>) };
+        parsedValid = true;
       }
     } catch {
+      parsedValid = false;
+    }
+    if (!parsedValid) {
+      const backupPath = backupCorruptFileSync(mcpPath);
+      process.stderr.write(
+        `[kiki-mobile] Invalid JSON in ${mcpPath}; backed up corrupt file to ${backupPath}\n`,
+      );
       root = {};
     }
   }

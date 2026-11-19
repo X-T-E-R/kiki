@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -73,6 +73,25 @@ describe('mobile-entry and android-entry compatibility', () => {
     expect(iosEnv['KIKI_PLATFORM']).toBe('ios');
     expect(iosEnv['KIKI_RUNTIME_PROFILE']).toBe('mobile');
     expect(iosEnv['KIKI_PTY']).toBe('off');
+  });
+
+  it('backs up corrupt mcp.json instead of silently overwriting user MCP config', async () => {
+    const home = await makeTempHome('kiki-mobile-corrupt-mcp-');
+    const corruptRaw = '{ "mcpServers": [broken';
+    await writeFile(join(home, 'mcp.json'), corruptRaw, 'utf8');
+
+    ensureManagedMobileMcp(home, 'android', 'http://127.0.0.1:19100/mcp', 'tok-123');
+
+    const entries = await readdir(home);
+    const backups = entries.filter((name) => name.startsWith('mcp.json.corrupt-'));
+    expect(backups).toHaveLength(1);
+    expect(await readFile(join(home, backups[0]!), 'utf8')).toBe(corruptRaw);
+    expect(entries.filter((name) => name.endsWith('.tmp'))).toHaveLength(0);
+
+    const parsed = JSON.parse(await readFile(join(home, 'mcp.json'), 'utf8')) as {
+      mcpServers: Record<string, { url: string }>;
+    };
+    expect(parsed.mcpServers['android-phone']?.url).toBe('http://127.0.0.1:19100/mcp');
   });
 
   it('parses stdio bootstrap and control frames and emits @@kiki lines', async () => {

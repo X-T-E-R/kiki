@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -137,6 +137,19 @@ command = "   "
     expect((error as TuiConfigParseError).message).toBe(INVALID_TUI_CONFIG_MESSAGE);
     expect((error as TuiConfigParseError).fallback).toEqual(DEFAULT_TUI_CONFIG);
     expect(readFileSync(filePath, 'utf-8')).toBe('[[[');
+  });
+
+  it('backs up corrupt tui.toml before atomically saving new preferences', async () => {
+    writeFileSync(filePath, '[[[', 'utf-8');
+
+    await saveTuiConfig({ ...DEFAULT_TUI_CONFIG, theme: 'dark' }, filePath);
+
+    const files = readdirSync(dir);
+    const backups = files.filter((name) => name.startsWith('tui.toml.corrupt-'));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(dir, backups[0]!), 'utf-8')).toBe('[[[');
+    expect(files.filter((name) => name.endsWith('.tmp'))).toHaveLength(0);
+    expect((await loadTuiConfig(filePath)).theme).toBe('dark');
   });
 
   it('saves and reloads the normalized config', async () => {

@@ -116,6 +116,7 @@ vi.mock('@kiki/oauth', async () => {
 });
 
 vi.mock('../../src/tui/config', () => ({
+  getTuiConfigPath: () => '/tmp/kiki-test-home/tui.toml',
   loadTuiConfig: mocks.loadTuiConfig,
   TuiConfigParseError: mocks.TuiConfigParseError,
 }));
@@ -425,6 +426,7 @@ describe('runShell', () => {
     const [, , startupInput] = mocks.kimiTuiConstructor.mock.calls[0]!;
     expect(startupInput).toMatchObject({
       startupNotice: 'Invalid TUI config in ~/.kiki/tui.toml; using defaults.',
+      tuiConfigPath: undefined,
       tuiConfig: {
         theme: 'auto',
         editorCommand: 'vim',

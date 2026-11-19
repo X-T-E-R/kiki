@@ -29,12 +29,14 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
   }
   let tuiConfig: TuiConfig;
   let configWarning: string | undefined;
+  let configParseFailed = false;
   try {
     tuiConfig = await loadTuiConfig();
   } catch (error) {
     if (!(error instanceof TuiConfigParseError)) throw error;
     tuiConfig = error.fallback;
     configWarning = error.message;
+    configParseFailed = true;
   }
 
   // Initialise the global Theme singleton before pi-tui grabs stdin.
@@ -88,7 +90,7 @@ export async function runShell(opts: CLIOptions, version: string): Promise<void>
     agentProfile,
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
     tuiConfig,
-    tuiConfigPath: getTuiConfigPath(),
+    tuiConfigPath: configParseFailed ? undefined : getTuiConfigPath(),
     version,
     workDir,
     startupNotice: configWarning,

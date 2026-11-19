@@ -6,7 +6,7 @@
  * these helpers.
  */
 
-import { appendFile, link, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, link, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import type { z } from 'zod';
@@ -57,22 +57,40 @@ export async function readJsonFile<T>(
   return schema.parse(parsed);
 }
 
-export async function writeJsonFile<T>(
+export async function writeTextFileAtomic(
   filePath: string,
-  schema: z.ZodType<T>,
-  value: T,
+  content: string,
+  options?: { readonly sync?: boolean },
 ): Promise<void> {
   assertNonConfigWrite(filePath);
-  const parsed = schema.parse(value);
   await mkdir(dirname(filePath), { recursive: true });
   const tmpPath = tempPathFor(filePath);
   try {
-    await writeFile(tmpPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf-8');
+    if (options?.sync === true) {
+      const handle = await open(tmpPath, 'w');
+      try {
+        await handle.writeFile(content, 'utf-8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } else {
+      await writeFile(tmpPath, content, 'utf-8');
+    }
     await rename(tmpPath, filePath);
   } catch (error) {
     await unlink(tmpPath).catch(() => {});
     throw error;
   }
+}
+
+export async function writeJsonFile<T>(
+  filePath: string,
+  schema: z.ZodType<T>,
+  value: T,
+): Promise<void> {
+  const parsed = schema.parse(value);
+  await writeTextFileAtomic(filePath, `${JSON.stringify(parsed, null, 2)}\n`);
 }
 
 /**

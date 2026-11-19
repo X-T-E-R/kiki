@@ -43,7 +43,7 @@ use std::{
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
+    sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -1935,12 +1935,47 @@ fn main_home_dir() -> Result<PathBuf, String> {
     main_home_for(&kiki_home_dir()?)
 }
 
+static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn backup_corrupt_json_file(path: &Path, error: &serde_json::Error) {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let ts = unix_epoch_millis().unwrap_or(0);
+    let mut backup = path.with_file_name(format!("{file_name}.corrupt-{ts}"));
+    if backup.exists() {
+        let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+        backup = path.with_file_name(format!("{file_name}.corrupt-{ts}-{seq}"));
+    }
+    match fs::rename(path, &backup) {
+        Ok(()) => eprintln!(
+            "[desktop] backed up corrupt {} to {} ({error})",
+            path.display(),
+            backup.display()
+        ),
+        Err(rename_err) if rename_err.kind() == io::ErrorKind::NotFound => {}
+        Err(rename_err) => eprintln!(
+            "[desktop] failed to back up corrupt {}: {rename_err} (parse error: {error})",
+            path.display()
+        ),
+    }
+}
+
 fn read_main_desktop_prefs(main: &Path) -> DesktopPrefs {
-    if let Ok(raw) = fs::read_to_string(main.join("desktop.json")) {
-        return serde_json::from_str(&raw).unwrap_or_default();
+    let path = main.join("desktop.json");
+    match fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str(&raw) {
+            Ok(prefs) => return prefs,
+            Err(error) => {
+                backup_corrupt_json_file(&path, &error);
+                return DesktopPrefs::default();
+            }
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return DesktopPrefs::default(),
     }
     let legacy = kimi_home_dir().ok().map(|home| home.join("kiki").join("desktop.json"));
-    match legacy.and_then(|path| fs::read_to_string(path).ok()) {
+    match legacy.and_then(|legacy_path| fs::read_to_string(legacy_path).ok()) {
         Some(raw) => serde_json::from_str(&raw).unwrap_or_default(),
         None => DesktopPrefs::default(),
     }
@@ -1956,13 +1991,17 @@ fn read_desktop_prefs_for(home: &Path) -> DesktopPrefs {
     if home == main {
         return prefs;
     }
-    if let Ok(raw) = fs::read_to_string(home.join("desktop.json")) {
-        if let Ok(override_prefs) = serde_json::from_str::<DesktopPrefsPatch>(&raw) {
-            prefs.notifications = override_prefs.notifications.unwrap_or(prefs.notifications);
-            prefs.close_to_tray = override_prefs.close_to_tray.unwrap_or(prefs.close_to_tray);
-            prefs.locale = override_prefs.locale.or(prefs.locale);
-            prefs.log_level = override_prefs.log_level.unwrap_or(prefs.log_level);
-            prefs.compatibility = override_prefs.compatibility.unwrap_or(prefs.compatibility);
+    let child_path = home.join("desktop.json");
+    if let Ok(raw) = fs::read_to_string(&child_path) {
+        match serde_json::from_str::<DesktopPrefsPatch>(&raw) {
+            Ok(override_prefs) => {
+                prefs.notifications = override_prefs.notifications.unwrap_or(prefs.notifications);
+                prefs.close_to_tray = override_prefs.close_to_tray.unwrap_or(prefs.close_to_tray);
+                prefs.locale = override_prefs.locale.or(prefs.locale);
+                prefs.log_level = override_prefs.log_level.unwrap_or(prefs.log_level);
+                prefs.compatibility = override_prefs.compatibility.unwrap_or(prefs.compatibility);
+            }
+            Err(error) => backup_corrupt_json_file(&child_path, &error),
         }
     }
     if read_desktop_space(home).ok().flatten().is_some_and(|space| !space.credentials_shared) {
@@ -1976,11 +2015,34 @@ fn read_desktop_prefs_file() -> DesktopPrefs {
 }
 
 fn write_json_file(path: &Path, value: &impl Serialize) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let raw = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
-    fs::write(path, raw).map_err(|error| error.to_string())
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file.json");
+    let seq = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = parent.join(format!(
+        ".{file_name}.{}.{}.{seq}.tmp",
+        std::process::id(),
+        unix_epoch_millis().unwrap_or(0)
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut file = fs::File::create(&tmp_path)?;
+        file.write_all(raw.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error.to_string());
+    }
+    if let Err(error) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 fn apply_desktop_prefs_patch(mut prefs: DesktopPrefs, patch: &DesktopPrefsPatch) -> DesktopPrefs {
@@ -2007,7 +2069,16 @@ fn write_desktop_prefs_file(home: &Path, patch: &DesktopPrefsPatch) -> Result<()
         return write_json_file(&main.join("desktop.json"), &prefs);
     }
     let path = home.join("desktop.json");
-    let mut child = fs::read_to_string(&path).ok().and_then(|raw| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).ok()).unwrap_or_default();
+    let mut child = match fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw) {
+            Ok(map) => map,
+            Err(error) => {
+                backup_corrupt_json_file(&path, &error);
+                serde_json::Map::new()
+            }
+        },
+        Err(_) => serde_json::Map::new(),
+    };
     if let Some(value) = patch.notifications { child.insert("notifications".to_string(), value.into()); }
     if let Some(value) = patch.close_to_tray { child.insert("closeToTray".to_string(), value.into()); }
     if let Some(value) = &patch.locale { child.insert("locale".to_string(), value.clone().into()); }

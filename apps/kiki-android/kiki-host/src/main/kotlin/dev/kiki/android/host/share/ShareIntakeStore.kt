@@ -9,8 +9,12 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 @Serializable
@@ -137,6 +141,7 @@ class ShareIntakeStore(
                 val evictedDir = File(inboxRootDir, evicted.id)
                 if (evictedDir.exists()) runCatching { evictedDir.deleteRecursively() }
             }
+            pruneOrphanBatchDirsLocked(existing.mapTo(HashSet()) { it.id })
             saveIndexLocked(existing)
         }
         return batch
@@ -159,6 +164,7 @@ class ShareIntakeStore(
             val dir = File(inboxRootDir, batch.id)
             if (dir.exists()) runCatching { dir.deleteRecursively() }
         }
+        pruneOrphanBatchDirsLocked(emptySet())
         saveIndexLocked(emptyList())
         current.size
     }
@@ -201,16 +207,63 @@ class ShareIntakeStore(
 
     private fun loadIndexLocked(): List<ShareIntakeBatch> {
         if (!indexFile.isFile) return emptyList()
-        return runCatching {
+        return try {
             val raw = indexFile.readText(StandardCharsets.UTF_8)
             json.decodeFromString(ListSerializer(ShareIntakeBatch.serializer()), raw)
-        }.getOrDefault(emptyList())
+        } catch (_: Throwable) {
+            backupCorruptIndexLocked()
+            emptyList()
+        }
+    }
+
+    private fun backupCorruptIndexLocked() {
+        val baseName = "index.json.corrupt-${clock()}"
+        var target = File(inboxRootDir, baseName)
+        if (target.exists()) {
+            target = File(inboxRootDir, "$baseName-${UUID.randomUUID().toString().take(8)}")
+        }
+        runCatching {
+            Files.move(indexFile.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    private fun pruneOrphanBatchDirsLocked(retainedIds: Set<String>) {
+        val children = inboxRootDir.listFiles() ?: return
+        for (child in children) {
+            if (child.isDirectory && child.name.startsWith("share_") && child.name !in retainedIds) {
+                runCatching { child.deleteRecursively() }
+            }
+        }
     }
 
     private fun saveIndexLocked(batches: List<ShareIntakeBatch>) {
         inboxRootDir.mkdirs()
         val encoded = json.encodeToString(ListSerializer(ShareIntakeBatch.serializer()), batches)
-        indexFile.writeText(encoded, StandardCharsets.UTF_8)
+        val tmpFile = File(inboxRootDir, "index.json.${UUID.randomUUID().toString().take(8)}.tmp")
+        try {
+            FileOutputStream(tmpFile).use { fos ->
+                fos.write(encoded.toByteArray(StandardCharsets.UTF_8))
+                fos.flush()
+                fos.fd.sync()
+            }
+            try {
+                Files.move(
+                    tmpFile.toPath(),
+                    indexFile.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(
+                    tmpFile.toPath(),
+                    indexFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            }
+        } catch (t: Throwable) {
+            runCatching { tmpFile.delete() }
+            throw t
+        }
     }
 
     companion object {

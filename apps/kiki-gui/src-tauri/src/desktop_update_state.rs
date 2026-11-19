@@ -504,4 +504,35 @@ mod tests {
         assert!(write_desktop_prefs_file(&fixture.child, &patch).is_err());
         assert!(!read_desktop_prefs_for(&fixture.main).notifications);
     }
+
+    #[test]
+    fn desktop_prefs_backs_up_corrupt_json_before_atomic_overwrite() {
+        let fixture = PrefsFixture::new();
+        let corrupt_main = "{corrupt main json";
+        let corrupt_child = "{corrupt child json";
+        fs::write(fixture.main.join("desktop.json"), corrupt_main).unwrap();
+        fs::write(fixture.child.join("desktop.json"), corrupt_child).unwrap();
+
+        fixture.write(&fixture.main, r#"{"notifications":false}"#);
+        fixture.write(&fixture.child, r#"{"logLevel":"trace"}"#);
+
+        let main_backups: Vec<_> = fs::read_dir(&fixture.main)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("desktop.json.corrupt-"))
+            .collect();
+        assert_eq!(main_backups.len(), 1);
+        assert_eq!(fs::read_to_string(main_backups[0].path()).unwrap(), corrupt_main);
+
+        let child_backups: Vec<_> = fs::read_dir(&fixture.child)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("desktop.json.corrupt-"))
+            .collect();
+        assert_eq!(child_backups.len(), 1);
+        assert_eq!(fs::read_to_string(child_backups[0].path()).unwrap(), corrupt_child);
+
+        assert!(!read_desktop_prefs_for(&fixture.main).notifications);
+        assert_eq!(read_desktop_prefs_for(&fixture.child).log_level, DesktopLogLevel::Trace);
+    }
 }
