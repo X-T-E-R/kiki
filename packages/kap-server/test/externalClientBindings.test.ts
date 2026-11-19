@@ -46,6 +46,8 @@ let mode: { setMode: ReturnType<typeof vi.fn>; setModeCeiling: ReturnType<typeof
 let seeds: Record<string, unknown>;
 let metadata: Record<string, unknown>;
 let beforeExecute: Map<string, (event: FileCheckEvent) => void>;
+let sessionDisposers: Map<string, () => void>;
+let hookDisposals: ReturnType<typeof vi.fn>;
 const artifactScope = join('sessions', 'session_example', 'agents', 'main', 'tool-results');
 
 beforeEach(async () => {
@@ -54,6 +56,8 @@ beforeEach(async () => {
   home = join(workspace, 'home');
   await mkdir(home);
   beforeExecute = new Map();
+  sessionDisposers = new Map();
+  hookDisposals = vi.fn();
   const docs = new Map<string, unknown>();
   const documents = {
     get: async (scope: string, key: string) => docs.get(`${scope}/${key}`),
@@ -69,15 +73,16 @@ beforeEach(async () => {
   create = vi.fn<(input: { sessionId: string; workDir: string; mainAgentBinding: { driver: string } }) => Promise<unknown>>(async (input) => {
     const context = { workspaceId: 'wd_example', cwd: input.workDir };
     for (const listener of will) listener({ sessionId: input.sessionId, readSeed: () => context,
-      contributeSeed: (id: string, value: unknown) => { seeds[id] = value; } });
+      contributeSeed: (id: string, value: unknown) => { seeds[id] = value; },
+      onSessionDispose: (dispose: () => void) => { sessionDisposers.set(input.sessionId, dispose); } });
     const executor = {
-      registerBeforeResolveTool: vi.fn(() => ({ dispose() {} })),
+      registerBeforeResolveTool: vi.fn(() => ({ dispose: hookDisposals })),
       onBeforeExecuteTool: vi.fn((listener: (event: FileCheckEvent) => void) => {
         beforeExecute.set(input.sessionId, listener);
-        return { dispose() {} };
+        return { dispose: hookDisposals };
       }),
     };
-    const main = { accessor: { get: (id: string) => ({
+    const main = { id: 'main', accessor: { get: (id: string) => ({
       IAgentPermissionModeService: mode, IAgentToolExecutorService: executor,
       IAgentScopeContext: { scope: () => artifactScope },
       IAgentToolPolicyService: { isToolActive: () => true },
@@ -85,7 +90,7 @@ beforeEach(async () => {
     } as Record<string, unknown>)[id] } };
     const session = { id: input.sessionId, main, accessor: { get: (id: string) => ({
       ISessionContext: context,
-      IAgentLifecycleService: { list: () => [main], onWillCreate: () => ({ dispose() {} }) },
+      IAgentLifecycleService: { list: () => [main], onWillCreate: () => ({ dispose() {} }), onDidDispose: () => ({ dispose() {} }) },
       ISessionMetadata: { ready: Promise.resolve(), read: async () => metadata,
         update: async (next: Record<string, unknown>) => { metadata = { ...metadata, ...next }; }, setTitle: vi.fn() },
     } as Record<string, unknown>)[id] } };
@@ -234,6 +239,13 @@ describe('external client access and session binding', () => {
       expect(await fileDecision('Write', file, 'write', sessionId)).toMatchObject({ veto: { isError: true } });
     }
     expect(await fileDecision('Read', join(workspace, 'outside-home.txt'), 'read', 'session_home_1')).toBeUndefined();
+  });
+
+  it('releases bound execution hooks with the session scope', async () => {
+    await bindWorkspace(workspace);
+    expect(hookDisposals).not.toHaveBeenCalled();
+    sessionDisposers.get('session_example')?.();
+    expect(hookDisposals).toHaveBeenCalledTimes(2);
   });
 
   it('retains the bound agent tool-result read exception without allowing writes', async () => {
