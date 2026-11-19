@@ -540,7 +540,7 @@ function windowGlobals(
     for (const attachmentId of item.attachmentIds ?? []) attachmentIds.add(attachmentId);
     for (const step of item.steps) {
       for (const frame of step.frames) {
-        if (frame.kind === 'text') {
+        if (frame.kind === 'text' || frame.kind === 'tool') {
           for (const attachmentId of frame.attachmentIds ?? []) attachmentIds.add(attachmentId);
         }
         if (frame.kind === 'tool' && frame.taskId !== undefined) taskIds.add(frame.taskId);

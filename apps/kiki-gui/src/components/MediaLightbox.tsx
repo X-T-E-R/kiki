@@ -11,6 +11,7 @@ import { Dialog } from './Dialog';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { Icon } from './icons';
 import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageDownloadSink, imageDownloadStep, imageMenuEntries, isOnKikiComputer, noteMediaReady, saveMediaToDisk } from './imageActions';
+import { copyImageToClipboard } from '../lib/clipboard';
 import { imagePreviewDownloadName, imagePreviewLabel } from './imagePreviewName';
 import { useDevicePixelRatio, useDragPan, MAX_ZOOM, MIN_ZOOM, ZOOM_STEPS, zoomPercentOf } from './ImageViewport';
 import { ImageViewportAnnotations, renderAnnotatedImage, scaleAnnotationMarks, type AnnotationTool, type ImageAnnotation } from './ImageViewportAnnotations';
@@ -40,7 +41,7 @@ export function mediaSourceLabel(value: string | undefined): string | undefined 
   }
 }
 
-interface AnnotationRecord {
+export interface AnnotationRecord {
   readonly baseWidth: number;
   readonly baseHeight: number;
   readonly marks: readonly ImageAnnotation[];
@@ -66,13 +67,16 @@ function projectAnnotations(
   return scaleAnnotationMarks(record.marks, targetWidth / record.baseWidth, targetHeight / record.baseHeight);
 }
 
-export function MediaLightbox({ src, name, identity = src ?? 'image', loading = false, failed: sourceFailed = false, onRetry, index = 0, count = 1, onSelect, onClose, sourcePath, linkUrl, outcomeKey, localKikiComputer, remote, mime, size, onSaveOriginal }: {
+export function MediaLightbox({ src, name, identity = src ?? 'image', loading = false, failed: sourceFailed = false, onRetry, index = 0, count = 1, onSelect, onClose, sourcePath, linkUrl, outcomeKey, localKikiComputer, remote, mime, size, onSaveOriginal, savedAnnotations, onAnnotationsChange, onAttachAnnotatedImage }: {
   src?: string; name?: string; identity?: string; loading?: boolean; failed?: boolean; onRetry?: () => void;
   index?: number; count?: number; onSelect?: (index: number) => void; onClose: () => void;
   sourcePath?: string; linkUrl?: string; outcomeKey?: string; localKikiComputer?: boolean; remote?: boolean;
   /** What the viewer actually holds, when the caller knows it — never inferred here. */
   mime?: string; size?: number;
   onSaveOriginal?: (sink: HostSaveSink, signal: AbortSignal, onProgress: (bytes: number, total?: number) => void) => Promise<void>;
+  savedAnnotations?: Readonly<Record<string, AnnotationRecord>>;
+  onAnnotationsChange?: (updater: (previous: Record<string, AnnotationRecord>) => Record<string, AnnotationRecord>) => void;
+  onAttachAnnotatedImage?: (blob: Blob, filename: string) => Promise<boolean> | boolean;
 }) {
   const { t } = useI18n();
   const host = useHost();
@@ -90,9 +94,12 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const [editing, setEditing] = useState(false);
   const [tool, setTool] = useState<AnnotationTool>('arrow');
   const [selected, setSelected] = useState<number>();
-  const [annotations, setAnnotations] = useState<Record<string, AnnotationRecord>>({});
+  const [localAnnotations, setLocalAnnotations] = useState<Record<string, AnnotationRecord>>({});
+  const annotations = savedAnnotations ?? localAnnotations;
+  const setAnnotations = onAnnotationsChange ?? setLocalAnnotations;
   const [history, setHistory] = useState<AnnotationRecord[]>([]);
   const [saveFailed, setSaveFailed] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const [transfer, setTransfer] = useState<{ status: 'idle' | 'downloading' | 'saving' | 'saved' | 'failed'; bytes?: number; total?: number; message?: string }>({ status: 'idle' });
   const downloadController = useRef<AbortController | null>(null);
   const editStart = useRef<AnnotationRecord | undefined>(undefined);
@@ -112,6 +119,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     width: typeof window !== 'undefined' ? window.innerWidth : 1024,
     height: typeof window !== 'undefined' ? window.innerHeight : 768,
   }));
+  const [scrollerDims, setScrollerDims] = useState<{ readonly width: number; readonly height: number }>({ width: 0, height: 0 });
 
   useEffect(() => () => { downloadController.current?.abort(); }, []);
 
@@ -122,6 +130,21 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     window.addEventListener('resize', onResize);
     return () => { window.removeEventListener('resize', onResize); };
   }, []);
+
+  useLayoutEffect(() => {
+    const node = scroller.current;
+    if (node === null) return;
+    const measure = () => {
+      const width = node.clientWidth;
+      const height = node.clientHeight;
+      setScrollerDims((current) => (current.width === width && current.height === height ? current : { width, height }));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => { observer.disconnect(); };
+  }, [identity, loading, failed, sourceFailed]);
 
   useLayoutEffect(() => {
     setZoom('fit');
@@ -294,6 +317,17 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const copyImage = async () => {
     if (src === undefined) return;
     try {
+      if (marks.length > 0) {
+        const blobPromise = renderAnnotatedImage(
+          src,
+          currentAnnotationRecord?.marks ?? marks,
+          currentAnnotationRecord === undefined
+            ? undefined
+            : { width: currentAnnotationRecord.baseWidth, height: currentAnnotationRecord.baseHeight },
+        );
+        await copyImageToClipboard(blobPromise);
+        return;
+      }
       await copyImageBitmap(src);
     } catch (error) {
       pushToast({
@@ -302,6 +336,29 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
         detail: errorToText(error),
         retry: { run: () => { void copyImage(); } },
       });
+    }
+  };
+  const attachAnnotatedImage = async () => {
+    if (src === undefined || onAttachAnnotatedImage === undefined || marks.length === 0 || attaching) return;
+    setSaveFailed(false);
+    setAttaching(true);
+    try {
+      const downloadName = imagePreviewDownloadName({ name });
+      const blob = await renderAnnotatedImage(
+        src,
+        currentAnnotationRecord?.marks ?? marks,
+        currentAnnotationRecord === undefined
+          ? undefined
+          : { width: currentAnnotationRecord.baseWidth, height: currentAnnotationRecord.baseHeight },
+      );
+      const filename = `${downloadName.replace(/\.[^.]+$/, '')}-annotated.png`;
+      const attached = await onAttachAnnotatedImage(blob, filename);
+      if (attached) onClose();
+    } catch (error) {
+      setSaveFailed(true);
+      pushToast({ tone: 'error', text: t('media.annotationDownloadFailed'), detail: errorToText(error) });
+    } finally {
+      setAttaching(false);
     }
   };
   const menuEntries: MiniMenuEntry[] = imageMenuEntries({
@@ -320,8 +377,10 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     onSaveAnnotated: () => save(true),
   });
 
+  const fitWidth = scrollerDims.width > 0 ? scrollerDims.width : viewportDims.width * 0.92;
+  const fitHeight = scrollerDims.height > 0 ? scrollerDims.height : viewportDims.height * 0.75;
   const fitScale = natural === undefined || natural.width <= 0 || natural.height <= 0 ? 1
-    : Math.min(1, (viewportDims.width * 0.92) / natural.width, (viewportDims.height * 0.75) / natural.height);
+    : Math.min(1, fitWidth / natural.width, fitHeight / natural.height);
   const fitPercent = zoomPercentOf(fitScale, dpr);
   const percent = zoom === 'fit' ? fitPercent : zoom;
   const scale = zoom === 'fit' ? fitScale : zoom / (100 * dpr);
@@ -331,6 +390,25 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const source = !onKikiComputer ? linkUrl : (linkUrl ?? sourcePath);
   const shownSource = mediaSourceLabel(source);
   const zoomable = natural !== undefined && !loading && !failed && !sourceFailed;
+  const wheelZoomRef = useRef({ zoomable, percent, sliderMin, applyZoom });
+  wheelZoomRef.current = { zoomable, percent, sliderMin, applyZoom };
+  useEffect(() => {
+    const node = scroller.current;
+    if (node === null) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      const current = wheelZoomRef.current;
+      if (!current.zoomable || event.deltaY === 0) return;
+      event.preventDefault();
+      const factor = Math.exp(-Math.max(-240, Math.min(240, event.deltaY)) * 0.0025);
+      const raw = Math.round(current.percent * factor);
+      const stepped = raw === current.percent ? current.percent + (event.deltaY < 0 ? 1 : -1) : raw;
+      const next = Math.min(MAX_ZOOM, Math.max(current.sliderMin, stepped));
+      current.applyZoom(next, { x: event.clientX, y: event.clientY });
+    };
+    node.addEventListener('wheel', onWheel, { passive: false });
+    return () => { node.removeEventListener('wheel', onWheel); };
+  }, []);
   const details = [
     natural === undefined ? undefined : `${natural.width} × ${natural.height}`,
     mime,
@@ -483,7 +561,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
                     zoom !== 'fit'
                   ) {
                     anchorAt();
-                    const nextFitScale = Math.min(1, (viewportDims.width * 0.92) / nextWidth, (viewportDims.height * 0.75) / nextHeight);
+                    const nextFitScale = Math.min(1, fitWidth / nextWidth, fitHeight / nextHeight);
                     const nextSliderMin = Math.min(MIN_ZOOM, Math.max(1, Math.floor(zoomPercentOf(nextFitScale, dpr))));
                     setZoom(Math.min(MAX_ZOOM, Math.max(nextSliderMin, Math.round(zoom * (natural.width / nextWidth)))));
                   }
@@ -498,14 +576,27 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
       {/* Bottom dock: viewing mode has clear entry; editing mode has explicit state badge & full toolset */}
       <div className="flex max-w-full flex-wrap items-center justify-center gap-2">
         {!editing ? (
-          <button
-            type="button"
-            disabled={natural === undefined || loading || failed || sourceFailed}
-            onClick={() => { editStart.current = currentAnnotationRecord; setHistory([]); setEditing(true); }}
-            className={controlClass}
-          >
-            {t('media.startAnnotation')}
-          </button>
+          <>
+            <button
+              type="button"
+              disabled={natural === undefined || loading || failed || sourceFailed}
+              onClick={() => { editStart.current = currentAnnotationRecord; setHistory([]); setEditing(true); }}
+              className={controlClass}
+            >
+              {t('media.startAnnotation')}
+            </button>
+            {marks.length > 0 && onAttachAnnotatedImage !== undefined ? (
+              <button
+                type="button"
+                data-lightbox-attach-annotated
+                disabled={attaching || src === undefined || loading || failed || sourceFailed}
+                onClick={() => { void attachAnnotatedImage(); }}
+                className={`${controlClass} !border-accent !bg-accent font-semibold !text-on-accent hover:opacity-90`}
+              >
+                {t('preview.addToChat')}
+              </button>
+            ) : null}
+          </>
         ) : (
           <div role="toolbar" aria-label={t('media.annotationMode')} className="flex max-w-full flex-wrap items-center justify-center gap-2 rounded-full border border-shell-hairline bg-shell/80 px-3 py-1 shadow-lg backdrop-blur-md">
             <span role="status" aria-live="polite" className="font-medium text-[11.5px] text-accent-ink px-1.5">{t('media.annotationMode')}</span>
@@ -547,6 +638,17 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
               </button>
             )}
             <div className="h-3 w-px bg-shell-hairline" />
+            {onAttachAnnotatedImage !== undefined ? (
+              <button
+                type="button"
+                data-lightbox-attach-annotated
+                disabled={marks.length === 0 || attaching || src === undefined}
+                onClick={() => { void attachAnnotatedImage(); }}
+                className={`${controlClass} !border-accent !bg-accent font-semibold !text-on-accent hover:opacity-90`}
+              >
+                {t('preview.addToChat')}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={finishEdit}

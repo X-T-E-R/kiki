@@ -83,7 +83,7 @@ function annotateButton(container: HTMLElement): HTMLButtonElement {
   return pill(container)!.querySelector('[data-selection-annotate-action]')!;
 }
 
-function annotateInput(container: HTMLElement): HTMLInputElement | null {
+function annotateInput(container: HTMLElement): HTMLTextAreaElement | null {
   return pill(container)?.querySelector('[data-selection-annotate-input]') ?? null;
 }
 
@@ -92,9 +92,9 @@ async function createAnnotation(container: HTMLElement) {
   return annotateInput(container)!;
 }
 
-async function typeComment(input: HTMLInputElement, text: string) {
+async function typeComment(input: HTMLTextAreaElement, text: string) {
   await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
     setter.call(input, text);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
@@ -218,5 +218,63 @@ describe('SelectionQuoteButton', () => {
     expect(onAnnotate).toHaveBeenCalledExactlyOnceWith('the selectable transcript text', '', {
       blockId: 'actual-source', version: 'source-version', start: 0, end: text.length, text,
     });
+  });
+
+  it('flips below the selection near the top edge and clamps inside narrow viewports', async () => {
+    const originalRect = Object.getOwnPropertyDescriptor(Range.prototype, 'getBoundingClientRect');
+    const originalWidth = window.innerWidth;
+    const originalHeight = window.innerHeight;
+    try {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 240 });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 400 });
+      Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ top: 10, left: 210, right: 235, bottom: 26, width: 25, height: 16, x: 210, y: 10, toJSON: () => ({}) }),
+      });
+      const { container } = await mount();
+      await selectSource(container);
+      const popover = pill(container)!;
+      expect(Number.parseFloat(popover.style.top)).toBe(32);
+      expect(Number.parseFloat(popover.style.left)).toBeGreaterThanOrEqual(8);
+
+      const input = await createAnnotation(container);
+      const annotateBox = pill(container)!;
+      expect(Number.parseFloat(annotateBox.style.left)).toBe(8);
+      expect(Number.parseFloat(annotateBox.style.top)).toBeGreaterThanOrEqual(8);
+      expect(Number.parseFloat(annotateBox.style.top)).toBeLessThanOrEqual(400 - 104 - 8);
+
+      // Shift+Enter does not submit or close the textarea
+      await pressKey(input, 'Enter', { shiftKey: true });
+      expect(pill(container)).not.toBeNull();
+    } finally {
+      if (originalRect !== undefined) Object.defineProperty(Range.prototype, 'getBoundingClientRect', originalRect);
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight });
+    }
+  });
+
+  it('repositions on scroll and closes cleanly when the anchor scrolls out of the viewport', async () => {
+    const originalRect = Object.getOwnPropertyDescriptor(Range.prototype, 'getBoundingClientRect');
+    let currentRect = { top: 200, left: 100, right: 220, bottom: 216, width: 120, height: 16, x: 100, y: 200, toJSON: () => ({}) };
+    try {
+      Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => currentRect,
+      });
+      const { container } = await mount();
+      await selectSource(container);
+      await createAnnotation(container);
+      const beforeTop = Number.parseFloat(pill(container)!.style.top);
+
+      currentRect = { ...currentRect, top: 320, bottom: 336, y: 320 };
+      await act(async () => { window.dispatchEvent(new Event('scroll')); });
+      expect(Number.parseFloat(pill(container)!.style.top)).not.toBe(beforeTop);
+
+      currentRect = { ...currentRect, top: -60, bottom: -40, y: -60 };
+      await act(async () => { window.dispatchEvent(new Event('scroll')); });
+      expect(pill(container)).toBeNull();
+    } finally {
+      if (originalRect !== undefined) Object.defineProperty(Range.prototype, 'getBoundingClientRect', originalRect);
+    }
   });
 });

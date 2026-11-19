@@ -141,10 +141,25 @@ export function ImageViewport({
   const effectiveIdentity = identity ?? src;
   const [zoom, setZoom] = useState<'fit' | number>('fit');
   const [natural, setNatural] = useState<{ readonly width: number; readonly height: number } | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(0);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const anchor = useRef<ZoomAnchor | null>(null);
   const pan = useDragPan(zoom !== 'fit');
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (scroller === null) return;
+    const measure = () => {
+      const next = Math.max(0, scroller.clientWidth - 24);
+      setViewportWidth((current) => (current === next ? current : next));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    return () => { observer.disconnect(); };
+  }, []);
 
   useEffect(() => {
     setNatural(null);
@@ -182,15 +197,40 @@ export function ImageViewport({
     setZoom(next);
   };
 
-  const percent = zoom === 'fit' ? 100 : zoom;
+  const fitScale =
+    natural === null || natural.width <= 0 || viewportWidth <= 0
+      ? 1
+      : Math.min(1, viewportWidth / natural.width);
+  const fitPercent = Math.max(1, zoomPercentOf(fitScale, dpr));
+  const percent = zoom === 'fit' ? fitPercent : zoom;
+  const sliderMin = Math.min(MIN_ZOOM, Math.max(1, Math.floor(fitPercent)));
   const mode = zoom === 'fit' ? 'fit' : percent === 100 ? 'actual' : 'custom';
   const displayWidth = zoom === 'fit' || natural === null ? undefined : natural.width * (zoom / (100 * dpr));
   const zoomBy = (direction: 1 | -1) => {
     const next = direction === 1
       ? ZOOM_STEPS.find((step) => step > percent) ?? MAX_ZOOM
-      : ZOOM_STEPS.toReversed().find((step) => step < percent) ?? MIN_ZOOM;
+      : ZOOM_STEPS.toReversed().find((step) => step < percent) ?? sliderMin;
     switchZoom(next);
   };
+  const wheelZoomStateRef = useRef({ percent, sliderMin, switchZoom, hasImage: natural !== null });
+  wheelZoomStateRef.current = { percent, sliderMin, switchZoom, hasImage: natural !== null };
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (scroller === null) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      const current = wheelZoomStateRef.current;
+      if (!current.hasImage || event.deltaY === 0) return;
+      event.preventDefault();
+      const factor = Math.exp(-Math.max(-240, Math.min(240, event.deltaY)) * 0.0025);
+      const raw = Math.round(current.percent * factor);
+      const stepped = raw === current.percent ? current.percent + (event.deltaY < 0 ? 1 : -1) : raw;
+      const next = Math.min(MAX_ZOOM, Math.max(current.sliderMin, stepped));
+      current.switchZoom(next, { x: event.clientX, y: event.clientY });
+    };
+    scroller.addEventListener('wheel', onWheel, { passive: false });
+    return () => { scroller.removeEventListener('wheel', onWheel); };
+  }, []);
   const dimensions = natural === null ? undefined : `${natural.width} × ${natural.height}`;
   const detail = [dimensions, meta].filter((part) => part !== undefined).join(' · ');
 
@@ -219,18 +259,18 @@ export function ImageViewport({
                     {option === 'fit' ? t('preview.zoomFit') : t('preview.zoomActual')}
                   </button>
                 ))}
-                <button type="button" aria-label={t('media.zoomOut')} title={t('media.zoomOut')} disabled={percent <= MIN_ZOOM} onClick={() => { zoomBy(-1); }}
+                <button type="button" aria-label={t('media.zoomOut')} title={t('media.zoomOut')} disabled={percent <= sliderMin} onClick={() => { zoomBy(-1); }}
                   className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
                   <Icon name="dash" size={12} />
                 </button>
-                <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={1} value={percent} aria-label={t('preview.zoomGroup')} aria-valuetext={`${percent}%`} data-image-zoom-slider
+                <input type="range" min={sliderMin} max={MAX_ZOOM} step={1} value={Math.min(MAX_ZOOM, Math.max(sliderMin, percent))} aria-label={t('preview.zoomGroup')} aria-valuetext={`${percent}%`} data-image-zoom-slider
                   onChange={(event) => { switchZoom(Number(event.currentTarget.value)); }}
                   className="hidden @[26rem]:block h-1 w-14 cursor-pointer accent-accent" />
                 <button type="button" aria-label={t('media.zoomIn')} title={t('media.zoomIn')} disabled={percent >= MAX_ZOOM} onClick={() => { zoomBy(1); }}
                   className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
                   <Icon name="plus" size={12} />
                 </button>
-                {mode === 'custom' ? <span data-image-zoom-percent className="w-9 shrink-0 text-right font-mono text-[11px] text-ink-faint">{percent}%</span> : null}
+                {natural !== null ? <span data-image-zoom-percent className="w-9 shrink-0 text-right font-mono text-[11px] text-ink-faint">{percent}%</span> : null}
               </span>
             )}
             {actions}
@@ -261,6 +301,11 @@ export function ImageViewport({
           decoding="async"
           onLoad={(event) => {
             const image = event.currentTarget;
+            const scrollerEl = scrollerRef.current;
+            if (scrollerEl !== null) {
+              const measured = Math.max(0, scrollerEl.clientWidth - 24);
+              setViewportWidth((current) => (current === measured ? current : measured));
+            }
             const nextWidth = image.naturalWidth;
             const nextHeight = image.naturalHeight;
             if (

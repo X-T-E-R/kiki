@@ -169,10 +169,23 @@ export function toolResultMedia(
   sameFrameOrder = false,
   partialOutputPrefix = false,
 ): readonly MediaRef[] {
+  const isOmittedTypedPlaceholder = (item: MediaRef, part: MediaRef): boolean =>
+    item.kind === 'file' &&
+    item.detail !== undefined &&
+    item.fileId === undefined &&
+    item.blobHash === undefined &&
+    item.url === undefined &&
+    item.mime === undefined &&
+    item.name === undefined &&
+    (part.kind === 'image' || part.kind === 'video' || part.kind === 'audio');
   const fullFrame = references !== undefined && parts !== undefined && references.length === parts.length;
   const boundedPrefix = partialOutputPrefix && references !== undefined && parts !== undefined &&
     parts.length > 0 && references.length > parts.length && parts.every((part, index) => {
       const reference = references[index]!;
+      if (reference.detail !== undefined && reference.fileId === undefined) {
+        return (reference.kind === part.kind || isOmittedTypedPlaceholder(reference, part)) &&
+          (agentId === undefined || reference.detail.agentId === agentId);
+      }
       return reference.kind === part.kind && reference.fileId !== undefined && part.fileId !== undefined &&
         (reference.fileId === part.fileId || samePublishedInlineMedia(reference.fileId, part.fileId, agentId));
     });
@@ -181,15 +194,7 @@ export function toolResultMedia(
       const item = references[index]!;
       const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
       const referenceHash = item.blobHash ?? blob?.hash;
-      const omittedTypedPlaceholder =
-        item.kind === 'file' &&
-        item.detail !== undefined &&
-        item.fileId === undefined &&
-        item.blobHash === undefined &&
-        item.url === undefined &&
-        item.mime === undefined &&
-        item.name === undefined &&
-        (part.kind === 'image' || part.kind === 'video' || part.kind === 'audio');
+      const omittedTypedPlaceholder = isOmittedTypedPlaceholder(item, part);
       return (item.kind === part.kind || omittedTypedPlaceholder) &&
         (blob?.kind !== 'agent' || agentId === undefined || blob.agentId === agentId) &&
         (item.detail === undefined || agentId === undefined || item.detail.agentId === agentId) &&
@@ -369,6 +374,7 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
 const WINDOWS_ABS_RE = /^[A-Za-z]:[\\/]/;
 const WINDOWS_ROOTED_RE = /^\/[A-Za-z]:[\\/]/;
 const UNC_RE = /^\\\\/;
+const HOME_ABS_RE = /^~[\\/]/;
 const SCHEME_RE = /^[a-z][a-z\d+.-]*:/i;
 const EXTERNAL_SCHEME_RE = /^(?:https?|ftp|mailto|ms|app|blob|data|javascript|file):/i;
 /** Bare or ./ ../-prefixed relative tokens that look like files (have an extension). */
@@ -398,6 +404,7 @@ function isFileLookingPath(path: string): boolean {
   return /^file:\/\//i.test(path)
     || WINDOWS_ABS_RE.test(path)
     || UNC_RE.test(path)
+    || HOME_ABS_RE.test(path)
     || path.startsWith('/')
     || path.startsWith('./')
     || path.startsWith('../')
@@ -481,7 +488,7 @@ export function isLocalFileLinkTarget(url: string): boolean {
   const path = splitFilePosition(url).path;
   if (/^file:\/\//i.test(path)) return true;
   if (isExternalReferenceScheme(path)) return false;
-  if (WINDOWS_ABS_RE.test(path) || UNC_RE.test(path) || /^\/[A-Za-z]:[\\/]/.test(path)) return true;
+  if (WINDOWS_ABS_RE.test(path) || UNC_RE.test(path) || /^\/[A-Za-z]:[\\/]/.test(path) || HOME_ABS_RE.test(path)) return true;
   if (path.startsWith('/')) return false; // posix absolute passes sanitize untouched
   return RELATIVE_FILE_RE.test(path);
 }
@@ -562,6 +569,7 @@ export function resolveHostPath(path: string, cwd?: string): string {
     normalized === ''
     || WINDOWS_ABS_RE.test(normalized)
     || UNC_RE.test(normalized)
+    || HOME_ABS_RE.test(normalized)
     || normalized.startsWith('//')
     || normalized.startsWith('/')
   ) {
@@ -595,7 +603,7 @@ export function resolveFileReference(href: string, cwd: string | undefined, lite
   if (fileUrl === undefined && !literalPath) path = decodeReferencePart(path);
   // Only the explicit slash + drive-root form is Windows, not arbitrary POSIX paths.
   if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
-  if (WINDOWS_ABS_RE.test(path) || UNC_RE.test(path)) return { ...reference, path };
+  if (WINDOWS_ABS_RE.test(path) || UNC_RE.test(path) || HOME_ABS_RE.test(path)) return { ...reference, path };
   if (path.startsWith('/')) return isAppRouteHref(path) ? undefined : { ...reference, path };
   if (cwd === undefined || cwd.trim() === '' || !RELATIVE_FILE_RE.test(path)) return undefined;
   const base = /^\/[A-Za-z]:[\\/]/.test(cwd) ? cwd.slice(1) : cwd;

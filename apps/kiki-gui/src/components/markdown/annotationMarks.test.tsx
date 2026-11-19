@@ -20,7 +20,6 @@ import { I18nProvider } from '../../i18n';
 import { selectionSourceAnchor, type TimelineAnnotation } from '@kiki/session-core/composer';
 import { Markdown } from '../Markdown';
 import {
-  ANNOTATION_BUBBLE_GLYPH,
   projectTextWithAnnotationMarks,
   resolveMarkRanges,
 } from './annotationMarks';
@@ -106,7 +105,8 @@ describe('plain-text annotation bubble', () => {
     expect(marks).toHaveLength(1);
     const bubble = mount.querySelector('[data-annotation-ref="ta-plain"]:not(mark)');
     expect(bubble?.textContent).toBe('');
-    expect(bubble?.className).toContain(`before:content-['${ANNOTATION_BUBBLE_GLYPH}']`);
+    expect(bubble?.className).not.toContain('💬');
+    expect(bubble?.querySelector('svg path')).not.toBeNull();
     expect(bubble?.getAttribute('aria-hidden')).toBe('true');
     // The bubble is decorative: no focusable button role beside the mark.
     expect(bubble?.getAttribute('tabindex')).toBeNull();
@@ -124,7 +124,8 @@ describe('markdown annotation bubble', () => {
     );
     const bubble = container.querySelector<HTMLElement>('span[data-annotation-ref="ta-prose"]');
     expect(bubble?.textContent).toBe('');
-    expect(bubble?.className).toContain(`before:content-['${ANNOTATION_BUBBLE_GLYPH}']`);
+    expect(bubble?.className).not.toContain('💬');
+    expect(bubble?.querySelector('svg path')).not.toBeNull();
     expect(bubble?.getAttribute('aria-hidden')).toBe('true');
   });
 
@@ -202,5 +203,30 @@ describe('precise rendered source marks', () => {
     expect(container.querySelector('.kiki-cb-body code')?.textContent?.trim()).toBe('const value = 1;\nconst other = value;');
     expect(container.querySelector('.kiki-cb-tools button')).not.toBeNull();
     expect(container.querySelector('p code mark[data-annotation-ref="inline"]')?.textContent).toBe('value');
+    // Inline code quote badge must sit OUTSIDE the <code> chip, as a monochrome SVG (no emoji).
+    expect(container.querySelector('p code span[data-annotation-ref="inline"]')).toBeNull();
+    const inlineCode = container.querySelector('p code')!;
+    const inlineBubble = inlineCode.nextElementSibling;
+    expect(inlineBubble?.getAttribute('data-annotation-ref')).toBe('inline');
+    expect(inlineBubble?.querySelector('svg path')).not.toBeNull();
+  });
+
+  it('places the monochrome SVG badge outside inline code chips like `5 ~ 15 秒内` and keeps unannotated code blocks highlighted', async () => {
+    const text = '等待 `5 ~ 15 秒内` 完成。\n\n```ts\nconst kept = 42;\n```';
+    const container = await renderSettled(
+      <Markdown
+        text={text}
+        annotationTargets={[{ id: 'ta-code-chip', quote: '5 ~ 15 秒内', comment: 'check timeout' }]}
+      />,
+    );
+    const codeChip = container.querySelector('p code')!;
+    expect(codeChip.querySelector('mark[data-annotation-ref="ta-code-chip"]')?.textContent).toBe('5 ~ 15 秒内');
+    expect(codeChip.querySelector('span[data-annotation-ref="ta-code-chip"]')).toBeNull();
+    const outsideBubble = codeChip.nextElementSibling;
+    expect(outsideBubble?.getAttribute('data-annotation-ref')).toBe('ta-code-chip');
+    expect(outsideBubble?.querySelector('svg path')).not.toBeNull();
+    expect(container.innerHTML).not.toContain('💬');
+    // Unannotated fenced code block still renders through Streamdown CodeBlock (Shiki).
+    expect(container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
   });
 });

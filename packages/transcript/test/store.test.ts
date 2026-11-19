@@ -1428,4 +1428,37 @@ describe('TranscriptStore', () => {
     ]);
     expect(notifications).toHaveLength(1);
   });
+
+  it('retains tool-frame attachmentIds inside windowGlobals when attachmentLimit is tight', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'look' } },
+      { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed' } },
+      {
+        op: 'frame.upsert',
+        turnId: 't1',
+        stepId: 't1.1',
+        frame: {
+          kind: 'tool',
+          frameId: 't1.1.call_1',
+          toolCallId: 'call_1',
+          name: 'ReadMediaFile',
+          state: 'done',
+          attachmentIds: ['att_1', 'att_2', 'att_3', 'att_4'],
+        } satisfies ToolCallFrame,
+      },
+      { op: 'attachment.upsert', attachment: { attachmentId: 'att_1', mediaType: 'image/png', name: '1.png', size: 10, source: { kind: 'file', fileId: 'f1' } } },
+      { op: 'attachment.upsert', attachment: { attachmentId: 'att_2', mediaType: 'image/png', name: '2.png', size: 10, source: { kind: 'file', fileId: 'f2' } } },
+      { op: 'attachment.upsert', attachment: { attachmentId: 'att_3', mediaType: 'image/png', name: '3.png', size: 10, source: { kind: 'file', fileId: 'f3' } } },
+      { op: 'attachment.upsert', attachment: { attachmentId: 'att_4', mediaType: 'image/png', name: '4.png', size: 10, source: { kind: 'file', fileId: 'f4' } } },
+      { op: 'attachment.upsert', attachment: { attachmentId: 'att_other', mediaType: 'image/png', name: 'other.png', size: 10, source: { kind: 'file', fileId: 'f5' } } },
+    ]);
+
+    const snapshot = tx.snapshot({
+      tailTurns: 1,
+      globalWindow: { taskLimit: 4, attachmentLimit: 2, promptLimit: 4 },
+    });
+    expect(snapshot.attachments.map((att) => att.attachmentId)).toEqual(['att_1', 'att_2', 'att_3', 'att_4']);
+    expect(snapshot.attachmentRefs).toEqual([{ kind: 'attachment', attachmentId: 'att_other' }]);
+  });
 });

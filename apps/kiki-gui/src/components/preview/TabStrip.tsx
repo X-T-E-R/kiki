@@ -17,6 +17,7 @@ import {
 } from '#/state/previewResource';
 import { previewTabKey, type PreviewTab as PreviewTabModel } from '#/state/previewWorkspace';
 import { Icon, resolvePluginSlotIconName, type IconName } from '../icons';
+import { useActiveDraftKey } from '../mediaParts';
 import { ActionSheet } from '../overlays/ActionSheet';
 import { mentionTokenFor, webUrlDisplayLabel } from './shared';
 
@@ -497,6 +498,7 @@ function PreviewResourceTabChip({
   readonly onDrop: () => void;
 }) {
   const { t } = useI18n();
+  const activeDraftKey = useActiveDraftKey(sessionId);
   const { source } = resource;
   const isCopy = resourceMutability(resource) === 'copy';
   const hostPath = source.kind === 'host-file' ? source.path : undefined;
@@ -518,7 +520,8 @@ function PreviewResourceTabChip({
         ? source.fileId
         : source.url || name;
   const dirty = hostPath !== undefined && dirtyPaths.has(hostPath);
-  const canMention = sessionId !== undefined && trustedPath !== undefined && !readFailed;
+  const targetDraftKey = activeDraftKey ?? sessionId;
+  const canMention = targetDraftKey !== undefined && trustedPath !== undefined && !readFailed;
 
   return (
     <div
@@ -584,7 +587,9 @@ function PreviewResourceTabChip({
           title={t('preview.addToChat')}
           onClick={(event) => {
             event.stopPropagation();
-            appendToDraft(sessionId, mentionTokenFor(trustedPath, cwd));
+            if (targetDraftKey !== undefined) {
+              appendToDraft(targetDraftKey, mentionTokenFor(trustedPath, cwd));
+            }
           }}
           className={`shrink-0 rounded-sm px-0.5 font-mono text-[11px] leading-none transition-colors hover:text-ink ${
             active ? 'text-ink-faint' : 'text-ink-faint/0 group-hover:text-ink-faint pointer-coarse:text-ink-faint'

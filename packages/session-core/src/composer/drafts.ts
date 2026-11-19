@@ -3,9 +3,15 @@
 import type { DeferredAppendTiming, ModelSwitchMode, PermissionMode, PromptPlanGate, PromptSkillActivation } from '@kiki/protocol';
 
 import { parseExecutionChoice, type ExecutionChoice } from './executionSelection';
-import type { ComposerAttachment } from './attachments';
+import {
+  MAX_ATTACHMENTS,
+  MAX_TOTAL_IMAGE_BYTES,
+  revokeAttachmentPreviewUrls,
+  type ComposerAttachment,
+  type ImageAttachment,
+} from './attachments';
 import type { SelectionAnnotation, SelectionQuote } from './selectionQuote';
-import { readSettings } from '../settings/settings';
+import { readSettings, settingsSnapshot } from '../settings/settings';
 import { spaceStorage } from '../storage/spaceStorage';
 
 const KEY = 'kiki.drafts';
@@ -18,6 +24,10 @@ const DRAFT_WRITE_DELAY_MS = 400;
 let writeTimer: ReturnType<typeof setTimeout> | undefined;
 let hydratedFromDisk = false;
 let unloadListenersInstalled = false;
+
+function draftsEnabledForTyping(): boolean {
+  return typeof localStorage !== 'undefined' && settingsSnapshot().draftPersistence;
+}
 
 function draftsEnabled(): boolean {
   return typeof localStorage !== 'undefined' && readSettings().draftPersistence;
@@ -95,7 +105,7 @@ export function writeDraft(sessionId: string, text: string): void {
   hydrateFromDiskIfNeeded();
   if (text === '') memory.delete(sessionId);
   else memory.set(sessionId, text);
-  if (!draftsEnabled()) {
+  if (!draftsEnabledForTyping()) {
     cancelDraftWrite();
     return;
   }
@@ -377,6 +387,7 @@ export function writeComposerState(sessionId: string, state: ComposerSessionStat
 }
 
 export function clearComposerState(sessionId: string): void {
+  revokeAttachmentPreviewUrls(composerMemory.get(sessionId)?.attachments);
   composerMemory.delete(sessionId);
   pendingSubmissionMemory.delete(sessionId);
   if (draftsEnabled()) {
@@ -386,6 +397,7 @@ export function clearComposerState(sessionId: string): void {
 
 /** Test-only: forget every session's captured composer chrome. */
 export function resetComposerMemoryForTests(): void {
+  for (const state of composerMemory.values()) revokeAttachmentPreviewUrls(state.attachments);
   composerMemory.clear();
   pendingSubmissionMemory.clear();
 }
@@ -516,6 +528,7 @@ export function settlePendingSubmission(
   notifyPendingSubmission(sessionId);
   writeDraft(sessionId, '');
   const chrome = readComposerState(sessionId);
+  revokeAttachmentPreviewUrls(chrome.attachments);
   const nextAnnotations = sentAnnotationIds !== undefined && sentAnnotationIds.size > 0
     ? (chrome.annotations ?? []).filter((item) => !sentAnnotationIds.has(item.id))
     : (chrome.annotations ?? []);
@@ -581,6 +594,89 @@ export function resetInputHistoryForTests(): void {
  * stored text — one channel that works whether or not that session's composer
  * is currently mounted.
  */
+const AGENT_ROUTE_RE = /^\/s\/([^/]+)\/agent\/([^/]+)/;
+
+/**
+ * Resolve the draft/composer storage key for the currently viewed conversation:
+ * main sessions key on `sessionId`; routed branches and subagents key on
+ * `JSON.stringify([scopeId, sessionId, agentId])` (matching `AgentWorkspace`).
+ */
+export function resolveActiveDraftKey(
+  scopeId: string | undefined,
+  sessionId: string | undefined,
+  agentIdOrPathname?: string,
+): string | undefined {
+  if (sessionId === undefined || sessionId === '') return undefined;
+  let agentId: string | undefined;
+  if (agentIdOrPathname !== undefined && agentIdOrPathname !== '') {
+    if (agentIdOrPathname.startsWith('/')) {
+      const match = AGENT_ROUTE_RE.exec(agentIdOrPathname);
+      if (match !== null) {
+        try {
+          const routeSession = decodeURIComponent(match[1]!);
+          const routeAgent = decodeURIComponent(match[2]!);
+          if (routeSession === sessionId && routeAgent !== '' && routeAgent !== 'main') {
+            agentId = routeAgent;
+          }
+        } catch {
+          // ignore malformed URI encoding
+        }
+      }
+    } else if (agentIdOrPathname !== 'main') {
+      agentId = agentIdOrPathname;
+    }
+  }
+  if (agentId !== undefined && scopeId !== undefined && scopeId !== '') {
+    return JSON.stringify([scopeId, sessionId, agentId]);
+  }
+  return sessionId;
+}
+
+/**
+ * Append a programmatic attachment (e.g. an annotated image from MediaLightbox)
+ * into a conversation's composer state and notify mounted subscribers (`SessionView`
+ * and `AgentWorkspace`). Enforces the shared attachment count and image byte caps.
+ */
+export function appendAttachmentToDraft(
+  draftKey: string,
+  attachment: ComposerAttachment,
+): { readonly added: boolean; readonly reason?: 'too_many' | 'total_too_large' } {
+  invalidatePendingSubmissionRetry(draftKey);
+  const previous = readComposerState(draftKey);
+  const current = previous.attachments ?? [];
+  if (current.length >= MAX_ATTACHMENTS) {
+    return { added: false, reason: 'too_many' };
+  }
+  if (attachment.kind === 'image') {
+    const used = current
+      .filter((item): item is ImageAttachment => item.kind === 'image')
+      .reduce((sum, item) => sum + item.size, 0);
+    if (used + attachment.size > MAX_TOTAL_IMAGE_BYTES) {
+      return { added: false, reason: 'total_too_large' };
+    }
+  }
+  const nextAttachments = [...current, attachment];
+  writeComposerState(draftKey, {
+    attachments: nextAttachments,
+    annotations: previous.annotations ?? [],
+    quotes: previous.quotes,
+    quote: previous.quote,
+    quoteSource: previous.quoteSource,
+    permissionMode: previous.permissionMode,
+    planMode: previous.planMode,
+    planGate: previous.planGate,
+    goalObjective: previous.goalObjective,
+    modelOverride: previous.modelOverride,
+    effortOverride: previous.effortOverride,
+    modelChoice: previous.modelChoice,
+    effortChoice: previous.effortChoice,
+    modelSwitchMode: previous.modelSwitchMode,
+    execution: previous.execution,
+  });
+  for (const listener of appendListeners) listener(draftKey, [attachment]);
+  return { added: true };
+}
+
 export function appendToDraft(sessionId: string, text: string): void {
   if (text === '') return;
   invalidatePendingSubmissionRetry(sessionId);
@@ -608,8 +704,8 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
   invalidatePendingSubmissionRetry(sessionId);
   const text = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
   const restored: ComposerAttachment[] = content.flatMap((part): ComposerAttachment[] => {
-    if (part.type !== 'image' && part.type !== 'video' && part.type !== 'file') return [];
-    return [{ kind: 'retained', name: part.type === 'file' ? part.name ?? part.file_id : part.type, content: part }];
+    if (part.type !== 'image' && part.type !== 'video' && part.type !== 'audio' && part.type !== 'file') return [];
+    return [{ kind: 'retained', name: part.name ?? (part.type === 'file' ? part.file_id : part.type), content: part }];
   });
   const current = readDraft(sessionId);
   writeDraft(sessionId, current === '' ? text : text === '' ? current : `${current}\n\n${text}`);

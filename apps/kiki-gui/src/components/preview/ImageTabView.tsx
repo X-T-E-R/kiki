@@ -14,6 +14,7 @@ import type { PreviewReadFailureReason, PreviewReadState } from '#/state/preview
 import { Icon } from '../icons';
 import { ImageViewport } from '../ImageViewport';
 import { useMessageImageMenu } from '../mediaParts';
+import { useMediaPreview } from '../mediaPreviewContext';
 import { HeaderFileActions } from './ResourceHeader';
 import {
   CAPTION_ACTION_CLASS,
@@ -51,6 +52,7 @@ export function ImageTabView({
   const phoneMode = usePhoneMode();
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const mediaPreview = useMediaPreview();
   const localKikiComputer = isLocalKikiComputer(connection);
   const name = basenameOf(path);
   const [attempt, setAttempt] = useState(0);
@@ -253,7 +255,13 @@ export function ImageTabView({
             </button>
             <button
               type="button"
-              onClick={() => { onOpenImage(state.url, name, path); }}
+              onClick={() => {
+                if (mediaPreview?.openGalleryImage !== undefined && sessionId === mediaPreview.sessionId) {
+                  mediaPreview.openGalleryImage({ kind: 'image', path, name }, undefined, state.url);
+                  return;
+                }
+                onOpenImage(state.url, name, path);
+              }}
               title={t('media.viewImage')}
               aria-label={t('media.viewImage')}
               className={CAPTION_ACTION_CLASS}

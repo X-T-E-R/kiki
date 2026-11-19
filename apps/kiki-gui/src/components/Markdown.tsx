@@ -37,7 +37,7 @@ import { useStreamdownPlugins } from './markdown/streamdown-plugins';
 import { StaticDocument } from './markdown/staticDocument';
 import './markdown/markdown.css';
 import { isOnKikiComputer } from './imageActions';
-import { buildResourceMenuEntries } from './mediaParts';
+import { buildResourceMenuEntries, useActiveDraftKey } from './mediaParts';
 import { useMediaPreview } from './mediaPreviewContext';
 import { Icon, type IconName } from './icons';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -157,7 +157,7 @@ function remarkLocalFileLinks(includeImages = true) {
           if (child.type === 'inlineCode' && child.value !== undefined) {
             const value = child.value;
             const exact = findFileReferences(value).some((ref) => ref.start === 0 && ref.end === value.length);
-            const rooted = /^(?:[A-Za-z]:[\\/]|\.?\.?[\\/])/.test(value) && !/[\n\r]|\s(?:--?|&&|\|)/.test(value)
+            const rooted = /^(?:[A-Za-z]:[\\/]|\.?\.?[\\/]|~[\\/])/.test(value) && !/[\n\r]|\s(?:--?|&&|\|)/.test(value)
               && (!/\s/.test(value) || /\.[A-Za-z0-9]{1,10}(?::\d+(?::\d+)?|#.*)?$/.test(value));
             const wrapped = (exact || rooted) ? wrapFileLinkTarget(value, true) : undefined;
             if (wrapped !== undefined) return [{ type: 'link', url: wrapped, children: [child] }];
@@ -171,7 +171,7 @@ function remarkLocalFileLinks(includeImages = true) {
             // CommonMark unescapes \. and \_ in prose; those slashes are real Windows separators.
             let cursor = 0;
             for (const original of findFileReferences(source.slice(startOffset, endOffset))) {
-              if (!/^[A-Za-z]:\\/.test(original.target)) continue;
+              if (!/^(?:[A-Za-z]:\\|~\\)/.test(original.target)) continue;
               const interpreted = original.target.replaceAll(/\\([!-/:-@[-`{-~])/g, '$1');
               const start = value.indexOf(interpreted, cursor);
               if (start < 0) continue;
@@ -351,6 +351,7 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath, rootR
   const preview = useMediaPreview();
   const connection = useOptionalConnection();
   const localKikiComputer = isOnKikiComputer(connection);
+  const draftKey = useActiveDraftKey(preview?.sessionId);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const target = href === undefined ? undefined : (unwrapFileLinkTarget(href) ?? href);
   const sameDocument = target?.startsWith('#') === true && documentPath !== undefined;
@@ -383,6 +384,7 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath, rootR
       rawPath: target,
       cwd: documentDirectory ?? preview.cwd,
       sessionId: preview.sessionId,
+      draftKey,
       localKikiComputer,
       host,
       client: connection?.client,

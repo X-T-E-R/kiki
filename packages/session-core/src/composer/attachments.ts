@@ -21,7 +21,7 @@
  *     survives only for a draft that has not created its session yet.
  */
 
-import type { FileContent, ImageContent, VideoContent, MessageContent } from '@kiki/protocol';
+import type { AudioContent, FileContent, ImageContent, VideoContent, MessageContent } from '@kiki/protocol';
 
 import { LocalizedError, type ValidationIssue } from '../i18n/locale';
 
@@ -260,6 +260,25 @@ function encodeBytesToBase64(bytes: Uint8Array): string {
   return btoa(parts.join(''));
 }
 
+const mintedPreviewObjectUrls = new Set<string>();
+
+/** Revoke a `blob:` preview URL minted by `fileToImageAttachment`. */
+export function revokeAttachmentPreviewUrl(attachment: ComposerAttachment): void {
+  if (attachment.kind !== 'image' && attachment.kind !== 'retained') return;
+  const url = attachment.previewUrl;
+  if (url === undefined || !mintedPreviewObjectUrls.has(url)) return;
+  mintedPreviewObjectUrls.delete(url);
+  if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Revoke all minted `blob:` preview URLs in a list of attachments. */
+export function revokeAttachmentPreviewUrls(attachments: readonly ComposerAttachment[] | undefined): void {
+  if (attachments === undefined) return;
+  for (const attachment of attachments) revokeAttachmentPreviewUrl(attachment);
+}
+
 /** Reads a pasted/dropped image File into an attachment (base64 + preview). */
 export async function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   const readFailed = () =>
@@ -276,13 +295,18 @@ export async function fileToImageAttachment(file: File): Promise<ImageAttachment
     }
     const bytes = new Uint8Array(buffer);
     const data = encodeBytesToBase64(bytes);
-    const previewUrl =
+    let previewUrl: string;
+    if (
       file.size > 65_536 &&
       typeof URL !== 'undefined' &&
       typeof URL.createObjectURL === 'function' &&
       file instanceof Blob
-        ? URL.createObjectURL(file)
-        : `data:${file.type};base64,${data}`;
+    ) {
+      previewUrl = URL.createObjectURL(file);
+      mintedPreviewObjectUrls.add(previewUrl);
+    } else {
+      previewUrl = `data:${file.type};base64,${data}`;
+    }
     return {
       kind: 'image',
       name: file.name,
@@ -372,6 +396,16 @@ export function buildPromptContent(
   }
   for (const upload of uploads) {
     if (upload.fileId === undefined) continue;
+    const normalizedMime = upload.mediaType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+    if (normalizedMime.startsWith('audio/')) {
+      const part: AudioContent = {
+        type: 'audio',
+        source: { kind: 'file', file_id: upload.fileId },
+        name: upload.name === '' ? undefined : upload.name,
+      };
+      content.push(part);
+      continue;
+    }
     const part: FileContent = {
       type: 'file',
       file_id: upload.fileId,
