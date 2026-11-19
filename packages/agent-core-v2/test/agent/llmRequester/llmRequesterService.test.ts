@@ -4052,3 +4052,436 @@ describe('Agent requester request-scoped retry policy', () => {
     expect(onAttemptRetry).not.toHaveBeenCalled();
   });
 });
+
+describe('Agent requester Anthropic message-threads multi-step loop', () => {
+  it('hits continue on step 2 after thinking + signature_delta + whitespace text + tool_use (toolu_ & call_ IDs) + thinking.keep through AgentContextProjectorService and ToolCallIdNormalizer', async () => {
+    const recorded: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+    const sse = (frames: Array<{ type: string; [key: string]: unknown }>): Response =>
+      new Response(
+        frames.map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join(''),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = JSON.parse(await request.text()) as Record<string, unknown>;
+      recorded.push({ headers: request.headers, body });
+      if (recorded.length === 1) {
+        return sse([
+          {
+            type: 'message_start',
+            message: {
+              id: 'msg_e2e_1',
+              type: 'message',
+              role: 'assistant',
+              content: [],
+              model: 'claude-sonnet-4-6',
+              stop_reason: null,
+              usage: { input_tokens: 20, output_tokens: 0 },
+            },
+          },
+          { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+          { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Inspecting workspace' } },
+          { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig_e2e_abc' } },
+          { type: 'content_block_stop', index: 0 },
+          { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+          { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '\n\n' } },
+          { type: 'content_block_stop', index: 1 },
+          {
+            type: 'content_block_start',
+            index: 2,
+            content_block: { type: 'tool_use', id: 'toolu_123', name: 'read_file', input: {} },
+          },
+          {
+            type: 'content_block_delta',
+            index: 2,
+            delta: { type: 'input_json_delta', partial_json: '{"path":"a.ts"}' },
+          },
+          { type: 'content_block_stop', index: 2 },
+          {
+            type: 'content_block_start',
+            index: 3,
+            content_block: { type: 'tool_use', id: 'call_456', name: 'read_file', input: {} },
+          },
+          {
+            type: 'content_block_delta',
+            index: 3,
+            delta: { type: 'input_json_delta', partial_json: '{"path":"b.ts"}' },
+          },
+          { type: 'content_block_stop', index: 3 },
+          { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 15 } },
+          { type: 'message_stop' },
+        ]);
+      }
+      return sse([
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_e2e_2',
+            type: 'message',
+            role: 'assistant',
+            content: [],
+            model: 'claude-sonnet-4-6',
+            stop_reason: null,
+            usage: { input_tokens: 30, output_tokens: 0 },
+          },
+        },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Done reading both files.' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 8 } },
+        { type: 'message_stop' },
+      ]);
+    });
+
+    const baseUrl = 'https://api.example.test';
+    const model: Model = {
+      ...createRequester({ value: 0 }, null).model,
+      name: 'claude-sonnet-4-6',
+      protocol: 'anthropic',
+      providerType: 'anthropic',
+      baseUrl,
+      capabilities: { ...capabilities, thinking: true, tool_use: true, max_context_tokens: 128000 },
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) },
+    };
+    const provider = new AnthropicChatProvider({
+      model: model.name,
+      baseUrl,
+      apiKey: 'YOUR_API_KEY',
+    });
+    const requester = new ModelRequesterImpl(
+      model,
+      { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry,
+    );
+    const { service } = createService(requester, undefined, {
+      thinkingLevel: 'high',
+      requestParams: { cacheKey: 'sess-e2e', thinkingEffort: 'high', thinkingKeep: 'all' },
+    });
+
+    try {
+      const history: ContextMessage[] = [
+        { role: 'user', content: [{ type: 'text', text: 'Read a.ts and b.ts' }], toolCalls: [] },
+      ];
+      const step1 = await service.request({
+        source: { type: 'turn', turnId: 1, step: 1 },
+        messages: history,
+        tools: [
+          {
+            name: 'read_file',
+            description: 'Read a file',
+            parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          },
+        ],
+      });
+      expect(step1.message.toolCalls.map((call) => call.id)).toEqual(['toolu_123', 'call_456']);
+
+      history.push(
+        step1.message,
+        {
+          role: 'tool',
+          toolCallId: 'toolu_123',
+          content: [{ type: 'text', text: 'contents of a.ts' }],
+          toolCalls: [],
+        },
+        {
+          role: 'tool',
+          toolCallId: 'call_456',
+          content: [{ type: 'text', text: 'contents of b.ts' }],
+          toolCalls: [],
+        },
+      );
+      const step2 = await service.request({
+        source: { type: 'turn', turnId: 1, step: 2 },
+        messages: history,
+        tools: [
+          {
+            name: 'read_file',
+            description: 'Read a file',
+            parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          },
+        ],
+      });
+      expect(step2.message.content).toEqual([{ type: 'text', text: 'Done reading both files.' }]);
+
+      expect(recorded).toHaveLength(2);
+      expect(recorded[0]!.body['thread']).toEqual({ type: 'create' });
+      expect(recorded[0]!.body['context_management']).toEqual({
+        edits: [{ type: 'clear_thinking_20251015', keep: 'all' }],
+      });
+      expect(recorded[0]!.headers.get('anthropic-beta')).toContain('context-management-2025-06-27');
+      expect(recorded[0]!.headers.get('anthropic-beta')).toContain('message-threads-2026-08-12');
+
+      expect(recorded[1]!.body['thread']).toEqual({
+        type: 'continue',
+        previous_message_id: 'msg_e2e_1',
+      });
+      expect(recorded[1]!.body['system']).toBeUndefined();
+      expect(recorded[1]!.body['tools']).toBeUndefined();
+      expect(recorded[1]!.headers.get('anthropic-beta')).toBe(
+        recorded[0]!.headers.get('anthropic-beta'),
+      );
+      expect(recorded[1]!.body['messages']).toHaveLength(1);
+      const deltaBlocks = (recorded[1]!.body['messages'] as Array<{ content: Array<{ type: string; tool_use_id?: string }> }>)[0]!.content;
+      expect(deltaBlocks.map((b) => b.tool_use_id)).toEqual(['toolu_123', 'call_456']);
+    } finally {
+      await (service as AgentLLMRequesterService).dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back cleanly to create when ToolCallIdNormalizer rewrites a duplicate tool call id or provider sanitizes an invalid raw id', async () => {
+    const recorded: Array<Record<string, unknown>> = [];
+    const sse = (frames: Array<{ type: string; [key: string]: unknown }>): Response =>
+      new Response(
+        frames.map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join(''),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = JSON.parse(await request.text()) as Record<string, unknown>;
+      recorded.push(body);
+      if (recorded.length === 1) {
+        return sse([
+          {
+            type: 'message_start',
+            message: {
+              id: 'msg_bad_id_1',
+              type: 'message',
+              role: 'assistant',
+              content: [],
+              model: 'claude-sonnet-4-6',
+              stop_reason: null,
+              usage: { input_tokens: 10, output_tokens: 0 },
+            },
+          },
+          {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'tool_use', id: 'call/bad:1', name: 'read_file', input: {} },
+          },
+          {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'input_json_delta', partial_json: '{"path":"c.ts"}' },
+          },
+          { type: 'content_block_stop', index: 0 },
+          { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } },
+          { type: 'message_stop' },
+        ]);
+      }
+      return sse([
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_bad_id_2',
+            type: 'message',
+            role: 'assistant',
+            content: [],
+            model: 'claude-sonnet-4-6',
+            stop_reason: null,
+            usage: { input_tokens: 15, output_tokens: 0 },
+          },
+        },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'OK' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } },
+        { type: 'message_stop' },
+      ]);
+    });
+
+    const baseUrl = 'https://api.example.test';
+    const model: Model = {
+      ...createRequester({ value: 0 }, null).model,
+      name: 'claude-sonnet-4-6',
+      protocol: 'anthropic',
+      providerType: 'anthropic',
+      baseUrl,
+      capabilities: { ...capabilities, thinking: true, tool_use: true, max_context_tokens: 128000 },
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) },
+    };
+    const provider = new AnthropicChatProvider({
+      model: model.name,
+      baseUrl,
+      apiKey: 'YOUR_API_KEY',
+    });
+    const requester = new ModelRequesterImpl(
+      model,
+      { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry,
+    );
+    const { service } = createService(requester, undefined);
+
+    try {
+      const history: ContextMessage[] = [
+        { role: 'user', content: [{ type: 'text', text: 'Read c.ts' }], toolCalls: [] },
+      ];
+      const step1 = await service.request({
+        source: { type: 'turn', turnId: 1, step: 1 },
+        messages: history,
+        tools: [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object' } }],
+      });
+      history.push(step1.message, {
+        role: 'tool',
+        toolCallId: step1.message.toolCalls[0]!.id,
+        content: [{ type: 'text', text: 'c.ts contents' }],
+        toolCalls: [],
+      });
+      await service.request({
+        source: { type: 'turn', turnId: 1, step: 2 },
+        messages: history,
+        tools: [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object' } }],
+      });
+
+      expect(recorded).toHaveLength(2);
+      expect(recorded[0]!['thread']).toEqual({ type: 'create' });
+      expect(recorded[1]!['thread']).toEqual({ type: 'create' });
+      const step2Messages = recorded[1]!['messages'] as Array<{
+        role: string;
+        content: Array<{ type: string; id?: string; tool_use_id?: string }>;
+      }>;
+      expect(step2Messages).toHaveLength(3);
+      expect(step2Messages[1]!.content[0]!.id).toBe('call_bad_1');
+      expect(step2Messages[2]!.content[0]!.tool_use_id).toBe('call_bad_1');
+    } finally {
+      await (service as AgentLLMRequesterService).dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back cleanly to create when ToolCallIdNormalizer rewrites a duplicate tool call id across turns', async () => {
+    const recorded: Array<Record<string, unknown>> = [];
+    const sse = (frames: Array<{ type: string; [key: string]: unknown }>): Response =>
+      new Response(
+        frames.map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join(''),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = JSON.parse(await request.text()) as Record<string, unknown>;
+      recorded.push(body);
+      const turn = recorded.length;
+      if (turn === 1 || turn === 2) {
+        return sse([
+          {
+            type: 'message_start',
+            message: {
+              id: `msg_dup_${turn}`,
+              type: 'message',
+              role: 'assistant',
+              content: [],
+              model: 'claude-sonnet-4-6',
+              stop_reason: null,
+              usage: { input_tokens: 10, output_tokens: 0 },
+            },
+          },
+          {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'tool_use', id: 'call_dup', name: 'read_file', input: {} },
+          },
+          {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'input_json_delta', partial_json: `{"path":"f${turn}.ts"}` },
+          },
+          { type: 'content_block_stop', index: 0 },
+          { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } },
+          { type: 'message_stop' },
+        ]);
+      }
+      return sse([
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_dup_3',
+            type: 'message',
+            role: 'assistant',
+            content: [],
+            model: 'claude-sonnet-4-6',
+            stop_reason: null,
+            usage: { input_tokens: 20, output_tokens: 0 },
+          },
+        },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Done' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } },
+        { type: 'message_stop' },
+      ]);
+    });
+
+    const baseUrl = 'https://api.example.test';
+    const model: Model = {
+      ...createRequester({ value: 0 }, null).model,
+      name: 'claude-sonnet-4-6',
+      protocol: 'anthropic',
+      providerType: 'anthropic',
+      baseUrl,
+      capabilities: { ...capabilities, thinking: true, tool_use: true, max_context_tokens: 128000 },
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) },
+    };
+    const provider = new AnthropicChatProvider({
+      model: model.name,
+      baseUrl,
+      apiKey: 'YOUR_API_KEY',
+    });
+    const requester = new ModelRequesterImpl(
+      model,
+      { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry,
+    );
+    const { service } = createService(requester, undefined);
+    const tools = [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object' } }];
+
+    try {
+      const history: ContextMessage[] = [
+        { role: 'user', content: [{ type: 'text', text: 'Read two files' }], toolCalls: [] },
+      ];
+      const step1 = await service.request({
+        source: { type: 'turn', turnId: 1, step: 1 },
+        messages: history,
+        tools,
+      });
+      expect(step1.message.toolCalls[0]!.id).toBe('call_dup');
+      history.push(step1.message, {
+        role: 'tool',
+        toolCallId: step1.message.toolCalls[0]!.id,
+        content: [{ type: 'text', text: 'f1' }],
+        toolCalls: [],
+      });
+
+      const step2 = await service.request({
+        source: { type: 'turn', turnId: 1, step: 2 },
+        messages: history,
+        tools,
+      });
+      expect(step2.message.toolCalls[0]!.id).toBe('call_dup__2');
+      history.push(step2.message, {
+        role: 'tool',
+        toolCallId: step2.message.toolCalls[0]!.id,
+        content: [{ type: 'text', text: 'f2' }],
+        toolCalls: [],
+      });
+
+      await service.request({
+        source: { type: 'turn', turnId: 1, step: 3 },
+        messages: history,
+        tools,
+      });
+
+      expect(recorded).toHaveLength(3);
+      expect(recorded[0]!['thread']).toEqual({ type: 'create' });
+      expect(recorded[1]!['thread']).toEqual({ type: 'continue', previous_message_id: 'msg_dup_1' });
+      expect(recorded[2]!['thread']).toEqual({ type: 'create' });
+      const step3Messages = recorded[2]!['messages'] as Array<{
+        role: string;
+        content: Array<{ type: string; id?: string; tool_use_id?: string }>;
+      }>;
+      expect(step3Messages).toHaveLength(5);
+      expect(step3Messages[3]!.content[0]!.id).toBe('call_dup__2');
+      expect(step3Messages[4]!.content[0]!.tool_use_id).toBe('call_dup__2');
+    } finally {
+      await (service as AgentLLMRequesterService).dispose();
+      vi.unstubAllGlobals();
+    }
+  });
+});

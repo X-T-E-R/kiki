@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer, type RequestListener } from 'node:http';
 import { release as osRelease } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { zstdDecompressSync } from 'node:zlib';
 import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -46,6 +48,7 @@ import {
   AnthropicChatProvider,
   resolveDefaultMaxTokens,
 } from '#/kosong/provider/bases/anthropic/anthropic';
+import { hashThreadMessages } from '#/kosong/provider/bases/anthropic/anthropic-threads';
 import '#/kosong/provider/bases/google-genai/index';
 import { GoogleGenAIChatProvider, GoogleGenAIStreamedMessage } from '#/kosong/provider/bases/google-genai/google-genai';
 import '#/kosong/provider/bases/openai/index';
@@ -5050,5 +5053,246 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
       expect(countCacheControls(replayedMessages[i])).toBe(0);
     }
     expect(countCacheControls(replayedMessages.at(-1))).toBe(1);
+  });
+
+  it('caches per-message hashes by object identity without re-walking large payloads and ignores vacuous assistant whitespace', () => {
+    let mediaReads = 0;
+    const largeBase64 = 'A'.repeat(256 * 1024);
+    const mediaBlock = {
+      type: 'video',
+      source: {
+        type: 'base64',
+        media_type: 'video/mp4',
+        get data(): string {
+          mediaReads += 1;
+          return largeBase64;
+        },
+      },
+    };
+    const userMessage = { role: 'user', content: [mediaBlock] };
+    const firstHash = hashThreadMessages([userMessage]);
+    const secondHash = hashThreadMessages([userMessage]);
+    expect(firstHash).toBe(secondHash);
+    expect(mediaReads).toBe(1);
+
+    const stringContentHash = hashThreadMessages([{ role: 'user', content: 'hello' }]);
+    const blockContentHash = hashThreadMessages([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'hello', cache_control: { type: 'ephemeral' } }],
+      },
+    ]);
+    expect(stringContentHash).toBe(blockContentHash);
+
+    const assistantWithWhitespace = hashThreadMessages([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'plan', signature: 'sig_1' },
+          { type: 'text', text: '\n\n' },
+          { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } },
+        ],
+      },
+    ]);
+    const assistantWithoutWhitespace = hashThreadMessages([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'plan', signature: 'sig_1' },
+          { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } },
+        ],
+      },
+    ]);
+    expect(assistantWithWhitespace).toBe(assistantWithoutWhitespace);
+
+    const editedTextHash = hashThreadMessages([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'plan', signature: 'sig_1' },
+          { type: 'text', text: 'edited' },
+          { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'a.ts' } },
+        ],
+      },
+    ]);
+    expect(editedTextHash).not.toBe(assistantWithoutWhitespace);
+  });
+
+  it('invokes onRequestSent once per generate even across thread_not_found replay and unthreaded fallback', async () => {
+    stubAnthropicFetch([
+      () => okStreamResponse('msg_1', 'A1'),
+      () => threadErrorResponse(404, 'Lost', 'thread_not_found'),
+      () => okStreamResponse('msg_2', 'A2'),
+      () => threadErrorResponse(400, 'Unsupported', 'thread_unsupported_request'),
+      () => okStreamResponse('msg_3', 'A3'),
+    ]);
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+    });
+
+    const history: Message[] = [userMsg('U1')];
+    const onSent1 = vi.fn();
+    const r1 = await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-sent\0main',
+      onRequestSent: onSent1,
+    });
+    expect(onSent1).toHaveBeenCalledTimes(1);
+
+    history.push(r1.message, userMsg('U2'));
+    const onSent2 = vi.fn();
+    const r2 = await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-sent\0main',
+      onRequestSent: onSent2,
+    });
+    expect(onSent2).toHaveBeenCalledTimes(1);
+
+    history.push(r2.message, userMsg('U3'));
+    const onSent3 = vi.fn();
+    await generate(provider, 'Sys', [], history, undefined, {
+      threadScopeKey: 'sess-sent\0main',
+      onRequestSent: onSent3,
+    });
+    expect(onSent3).toHaveBeenCalledTimes(1);
+  });
+
+  it('composes dcz dictionary compression cleanly across create, continue, 404 thread_not_found replay, and subsequent continue', async () => {
+    const DCZ_MAGIC = Buffer.from([0x5e, 0x2a, 0x4d, 0x18, 0x20, 0x00, 0x00, 0x00]);
+    const baseUrl = 'https://api.example.test';
+    const dictionaries = new Map<string, Buffer>();
+    const observed: Array<{
+      encoding: string | null;
+      dictStore: string | null;
+      beta: string | null;
+      body: Record<string, unknown>;
+    }> = [];
+    let callIndex = 0;
+
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      const rawBytes = Buffer.from(await request.arrayBuffer());
+      const encoding = request.headers.get('content-encoding');
+      const dictStore = request.headers.get('x-dict-store');
+      let jsonBytes: Buffer;
+      if (encoding === 'zstd') {
+        jsonBytes = Buffer.from(zstdDecompressSync(rawBytes));
+      } else if (encoding === 'dcz') {
+        expect(rawBytes.subarray(0, 8).equals(DCZ_MAGIC)).toBe(true);
+        const dictHash = rawBytes.subarray(8, 40).toString('hex');
+        const dictionary = dictionaries.get(dictHash);
+        expect(dictionary).toBeDefined();
+        jsonBytes = Buffer.from(zstdDecompressSync(rawBytes.subarray(40), { dictionary }));
+      } else {
+        jsonBytes = rawBytes;
+      }
+      const bodyHash = createHash('sha256').update(jsonBytes).digest('hex');
+      if (dictStore === '1') {
+        dictionaries.set(bodyHash, jsonBytes);
+      }
+      const body = JSON.parse(jsonBytes.toString('utf8')) as Record<string, unknown>;
+      observed.push({
+        encoding,
+        dictStore,
+        beta: request.headers.get('anthropic-beta'),
+        body,
+      });
+
+      const current = callIndex;
+      callIndex += 1;
+      if (current === 2) {
+        return new Response(
+          JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'not_found_error',
+              message: 'Thread expired',
+              details: { error_code: 'thread_not_found' },
+            },
+          }),
+          {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+      const responseId =
+        current === 0 ? 'msg_dcz_1' : current === 1 ? 'msg_dcz_2' : current === 3 ? 'msg_dcz_3' : 'msg_dcz_4';
+      const replyText = `Reply-${current}`;
+      const sse = [
+        `event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: responseId, type: 'message', role: 'assistant', content: [], model: 'claude-sonnet-4-6', stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } })}\n\n`,
+        `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`,
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: replyText } })}\n\n`,
+        `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`,
+        `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } })}\n\n`,
+        `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`,
+      ].join('');
+      const responseHeaders: Record<string, string> = { 'content-type': 'text/event-stream' };
+      if (dictStore === '1') {
+        responseHeaders['x-dict-stored'] = bodyHash;
+      }
+      return new Response(sse, { status: 200, headers: responseHeaders });
+    });
+
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl,
+      requestCompression: {
+        encoding: 'zstd',
+        dictionary: true,
+        targets: [baseUrl],
+        minBytes: 128,
+      },
+    });
+    const largePrompt = 'shared-context-block '.repeat(120);
+    const history: Message[] = [userMsg(`Turn 1 ${largePrompt}`)];
+
+    const r1 = await generate(provider, largePrompt, [sampleTool], history, undefined, {
+      threadScopeKey: 'sess-dcz\0main',
+    });
+    history.push(r1.message, userMsg('Turn 2 tiny delta'));
+
+    const r2 = await generate(provider, largePrompt, [sampleTool], history, undefined, {
+      threadScopeKey: 'sess-dcz\0main',
+    });
+    history.push(r2.message, userMsg('Turn 3 triggers 404 replay'));
+
+    const r3 = await generate(provider, largePrompt, [sampleTool], history, undefined, {
+      threadScopeKey: 'sess-dcz\0main',
+    });
+    history.push(r3.message, userMsg('Turn 4 continues after replay'));
+
+    await generate(provider, largePrompt, [sampleTool], history, undefined, {
+      threadScopeKey: 'sess-dcz\0main',
+    });
+
+    expect(observed).toHaveLength(5);
+    expect(observed[0]!.encoding).toBe('zstd');
+    expect(observed[0]!.dictStore).toBe('1');
+    expect(observed[0]!.body['thread']).toEqual({ type: 'create' });
+
+    expect(observed[1]!.body['thread']).toEqual({
+      type: 'continue',
+      previous_message_id: 'msg_dcz_1',
+    });
+    expect(observed[1]!.body['messages']).toHaveLength(1);
+
+    expect(observed[2]!.body['thread']).toEqual({
+      type: 'continue',
+      previous_message_id: 'msg_dcz_2',
+    });
+
+    expect(observed[3]!.encoding).toBe('dcz');
+    expect(observed[3]!.dictStore).toBe('1');
+    expect(observed[3]!.beta).toContain('message-threads-2026-08-12');
+    expect(observed[3]!.body['thread']).toEqual({ type: 'create' });
+    expect(observed[3]!.body['messages']).toHaveLength(5);
+
+    expect(observed[4]!.body['thread']).toEqual({
+      type: 'continue',
+      previous_message_id: 'msg_dcz_3',
+    });
+    expect(observed[4]!.body['messages']).toHaveLength(1);
   });
 });

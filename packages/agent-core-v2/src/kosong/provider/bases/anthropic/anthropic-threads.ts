@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, type Hash } from 'node:crypto';
 
 import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages.js';
@@ -113,19 +113,110 @@ export function sanitizeCreateMessagesCacheControl(
   );
 }
 
+const messageDigestCache = new WeakMap<object, string>();
+
+function isVacuousAssistantTextBlock(value: unknown): boolean {
+  return (
+    isPlainRecord(value) &&
+    value['type'] === 'text' &&
+    typeof value['text'] === 'string' &&
+    value['text'].trim().length === 0
+  );
+}
+
+function feedThreadHashValue(
+  hash: Hash,
+  value: unknown,
+  parentKey?: string,
+  assistantContent = false,
+): void {
+  if (value === null || value === undefined) {
+    hash.update('n;');
+    return;
+  }
+  const valueType = typeof value;
+  if (valueType === 'boolean') {
+    hash.update(value ? 'b:1;' : 'b:0;');
+    return;
+  }
+  if (valueType === 'number') {
+    hash.update(Number.isFinite(value as number) ? `d:${String(value)};` : 'n;');
+    return;
+  }
+  if (valueType === 'string') {
+    const str = value as string;
+    hash.update(`s:${str.length}:`);
+    hash.update(str);
+    hash.update(';');
+    return;
+  }
+  if (Array.isArray(value)) {
+    const items =
+      assistantContent && parentKey === 'content'
+        ? value.some((item) => !isVacuousAssistantTextBlock(item))
+          ? value.filter((item) => !isVacuousAssistantTextBlock(item))
+          : value
+        : value;
+    hash.update(`a:${items.length}:[`);
+    for (const item of items) {
+      if (item === undefined || typeof item === 'function' || typeof item === 'symbol') {
+        hash.update('n;');
+      } else {
+        feedThreadHashValue(hash, item);
+      }
+    }
+    hash.update(']');
+    return;
+  }
+  if (valueType === 'object') {
+    const record = value as Record<string, unknown>;
+    const isAssistant = record['role'] === 'assistant';
+    hash.update('o:{');
+    for (const [key, entry] of Object.entries(record)) {
+      if (key === 'cache_control') continue;
+      if (entry === undefined || typeof entry === 'function' || typeof entry === 'symbol') continue;
+      hash.update(`k:${key.length}:${key}:`);
+      if (key === 'content' && typeof entry === 'string') {
+        feedThreadHashValue(hash, [{ type: 'text', text: entry }], 'content', isAssistant);
+      } else {
+        feedThreadHashValue(hash, entry, key, key === 'content' && isAssistant);
+      }
+    }
+    hash.update('}');
+    return;
+  }
+  hash.update('n;');
+}
+
+function hashSingleThreadMessage(message: unknown): string {
+  if (typeof message === 'object' && message !== null) {
+    const cached = messageDigestCache.get(message);
+    if (cached !== undefined) return cached;
+    const hash = createHash('sha256');
+    feedThreadHashValue(hash, message);
+    const digest = hash.digest('hex');
+    messageDigestCache.set(message, digest);
+    return digest;
+  }
+  const hash = createHash('sha256');
+  feedThreadHashValue(hash, message);
+  return hash.digest('hex');
+}
+
 /**
  * Computes a stable SHA-256 fingerprint over message prefixes, ignoring transient
- * `cache_control` markers and normalizing string user content to single text blocks.
+ * `cache_control` markers, normalizing string user content to single text blocks,
+ * and streaming per-message digests cached by object identity to avoid re-stringifying
+ * multi-megabyte media payloads on every turn.
  */
 export function hashThreadMessages(messages: readonly unknown[]): string {
-  const normalized = JSON.stringify(messages, (key, value: unknown) => {
-    if (key === 'cache_control') return undefined;
-    if (key === 'content' && typeof value === 'string') {
-      return [{ type: 'text', text: value }];
-    }
-    return value;
-  });
-  return createHash('sha256').update(normalized).digest('hex');
+  const hash = createHash('sha256');
+  hash.update(`m:${messages.length}:`);
+  for (const message of messages) {
+    hash.update(hashSingleThreadMessage(message));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
 }
 
 /**

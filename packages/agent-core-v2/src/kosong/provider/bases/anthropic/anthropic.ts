@@ -1456,6 +1456,7 @@ export class AnthropicChatProvider implements ChatProvider {
     const authHeadersWithoutBeta = stripAnthropicBetaHeader(auth?.headers);
     const client = this._createClient(auth, options?.rawResponseObserver);
 
+    let notifiedRequestSent = false;
     const sendAttempt = async (
       body: Record<string, unknown>,
       attemptBetas: readonly string[],
@@ -1484,7 +1485,10 @@ export class AnthropicChatProvider implements ChatProvider {
       }
       const finalRequestOptions =
         Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
-      options?.onRequestSent?.();
+      if (!notifiedRequestSent) {
+        notifiedRequestSent = true;
+        options?.onRequestSent?.();
+      }
       return withRequestCompressionDelivery(options?.signal, async () =>
         this._stream
           ? useBetaApi
@@ -1613,20 +1617,18 @@ export class AnthropicChatProvider implements ChatProvider {
       return;
     }
     try {
-      const normalized = normalizeToolCallIdsForProvider(
-        [settlement.message],
-        ANTHROPIC_TOOL_CALL_ID_POLICY,
+      const converted = convertMessage(
+        settlement.message,
+        this._model,
+        this._acceptedImageMimes,
+        this._isGemini,
+        this._audioIn,
       );
-      const convertedReply = normalized
-        .map((msg) =>
-          convertMessage(msg, this._model, this._acceptedImageMimes, this._isGemini, this._audioIn),
-        )
-        .filter(shouldKeepConvertedMessage);
-      if (convertedReply.length === 0) {
+      if (!shouldKeepConvertedMessage(converted)) {
         this._threadTracker.delete(attempt.scopeKey);
         return;
       }
-      const prefix = [...attempt.fullMessages, ...convertedReply];
+      const prefix = [...attempt.fullMessages, converted];
       this._threadTracker.commit(attempt.scopeKey, {
         responseId: settlement.responseId,
         prefixCount: prefix.length,
