@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,8 +27,8 @@ let homeDir: string;
 let workspace: string;
 
 beforeEach(() => {
-  homeDir = mkdtempSync(join(tmpdir(), 'kiki-seat-home-'));
-  workspace = mkdtempSync(join(tmpdir(), 'kiki-seat-workspace-'));
+  homeDir = realpathSync(mkdtempSync(join(tmpdir(), 'kiki-seat-home-')));
+  workspace = realpathSync(mkdtempSync(join(tmpdir(), 'kiki-seat-workspace-')));
   mocks.documents.clear();
   mocks.provision.mockImplementation(async (_core, input) => {
     mocks.documents.set(input.sessionId, {
@@ -39,6 +39,7 @@ beforeEach(() => {
     });
     return {
       workspacePath: input.workspacePath,
+      profileName: input.profileName,
       modelAlias: input.modelAlias ?? 'default-model',
       thinkingEffort: input.thinkingEffort ?? 'medium',
       permissionMode: input.permissionMode,
@@ -112,6 +113,22 @@ describe('ExternalDelegationSeatManager', () => {
     expect(await restored.revoke(first.seatId)).toMatchObject({ seatId: first.seatId });
     expect(await restored.resolve(first.sessionId, first.delegationToken)).toBeUndefined();
     expect(mocks.acquire.mock.calls.length).toBe(mocks.release.mock.calls.length);
+  });
+
+  it('binds the seat main agent to a profile once and refuses to change it', async () => {
+    const core = { accessor: { get: (id: unknown) => id === ISessionManager ? { acquire: mocks.acquire } : undefined } } as never;
+    const manager = new ExternalDelegationSeatManager(core, homeDir, vi.fn());
+
+    const first = await manager.create({ workspace, principal: 'integration', mode: 'auto', profile: 'locked-down' });
+    expect(mocks.provision).toHaveBeenLastCalledWith(core, expect.objectContaining({ profileName: 'locked-down' }));
+    expect(first).toMatchObject({ profile: 'locked-down' });
+    expect(await manager.list()).toEqual([expect.objectContaining({ profile: 'locked-down' })]);
+
+    const reused = await manager.create({ workspace, principal: 'integration' });
+    expect(reused).toMatchObject({ seatId: first.seatId, profile: 'locked-down' });
+    expect(mocks.provision).toHaveBeenLastCalledWith(core, expect.objectContaining({ profileName: 'locked-down' }));
+    await expect(manager.create({ workspace, principal: 'integration', profile: 'other' }))
+      .rejects.toThrow('External delegation seat main agent profile cannot change.');
   });
 
   it('finds an existing seat with its true token without provisioning or touching the catalog', async () => {

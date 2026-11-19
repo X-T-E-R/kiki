@@ -14,6 +14,7 @@ export interface SeatConnection {
   readonly principal: string;
   readonly workspace: string;
   readonly mode: SeatMode;
+  readonly profile?: string;
   readonly model?: string;
   readonly thinking?: string;
 }
@@ -22,6 +23,7 @@ interface SeatCreateOptions {
   readonly workspace: string;
   readonly principal: string;
   readonly mode: SeatMode;
+  readonly agent?: string;
   readonly model?: string;
   readonly thinking?: string;
   readonly home?: string;
@@ -36,12 +38,13 @@ export function registerSeatCommand(program: Command): Command {
     .requiredOption('--workspace <dir>')
     .requiredOption('--principal <name>')
     .option('--mode <mode>', '', parseMode, 'manual')
+    .option('--agent <profile>', 'Agent profile for the seat main agent; fixed when the seat is first created.')
     .option('--model <alias>')
     .option('--thinking <effort>')
     .option('--home <dir>')
     .option('--json')
     .action(async (options: SeatCreateOptions) => {
-      const result = await createSeat(options);
+      const result = await createSeat({ ...options, profile: options.agent });
       process.stdout.write(`${JSON.stringify(result, null, options.json === true ? 0 : 2)}\n`);
     });
 
@@ -81,6 +84,7 @@ export async function createSeat(input: {
   readonly workspace: string;
   readonly principal: string;
   readonly mode?: SeatMode;
+  readonly profile?: string;
   readonly model?: string;
   readonly thinking?: string;
   readonly home?: string;
@@ -96,6 +100,7 @@ export function createSeatOnConnection(
     readonly workspace: string;
     readonly principal: string;
     readonly mode?: SeatMode;
+    readonly profile?: string;
     readonly model?: string;
     readonly thinking?: string;
   },
@@ -108,6 +113,7 @@ export function createSeatOnConnection(
       workspace: input.workspace,
       principal: input.principal,
       mode: input.mode,
+      profile: input.profile,
       model: input.model,
       thinking: input.thinking,
     },
@@ -132,14 +138,12 @@ export async function daemonRequest<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const request: RequestInit = {
-    method,
-    headers: {
-      authorization: `Bearer ${connection.token}`,
-      'content-type': 'application/json',
-    },
-  };
-  if (body !== undefined) request.body = JSON.stringify(body);
+  const headers: Record<string, string> = { authorization: `Bearer ${connection.token}` };
+  const request: RequestInit = { method, headers };
+  if (body !== undefined) {
+    headers['content-type'] = 'application/json';
+    request.body = JSON.stringify(body);
+  }
   const response = await fetch(`${connection.url}${path}`, request);
   const envelope = await response.json() as {
     readonly code: number;
@@ -150,7 +154,7 @@ export async function daemonRequest<T>(
   return envelope.data;
 }
 
-function parseMode(value: string): SeatMode {
-  if (value === 'manual' || value === 'auto' || value === 'yolo') return value;
+export function parseMode(value: string): SeatMode {
+  if (value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo') return value;
   throw new Error('Invalid permission mode.');
 }

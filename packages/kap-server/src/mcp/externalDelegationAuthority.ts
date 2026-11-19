@@ -203,6 +203,7 @@ export async function ensureExternalDelegationSeatSession(
     readonly workspacePath: string;
     readonly principalId: string;
     readonly delegationToken: string;
+    readonly profileName?: string;
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
     readonly permissionMode: PermissionMode;
@@ -210,6 +211,7 @@ export async function ensureExternalDelegationSeatSession(
   },
 ): Promise<{
   readonly workspacePath: string;
+  readonly profileName?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly permissionMode: PermissionMode;
@@ -230,10 +232,10 @@ export async function ensureExternalDelegationSeatSession(
       sessionId: input.sessionId,
       workDir: workspacePath,
       mainAgentBinding:
-        input.modelAlias === undefined && input.thinkingEffort === undefined
+        input.profileName === undefined && input.modelAlias === undefined && input.thinkingEffort === undefined
           ? undefined
           : {
-              profile: DEFAULT_AGENT_PROFILE_NAME,
+              profile: input.profileName ?? DEFAULT_AGENT_PROFILE_NAME,
               model: input.modelAlias,
               thinking: input.thinkingEffort,
               strictThinking: input.thinkingEffort !== undefined,
@@ -256,6 +258,9 @@ export async function ensureExternalDelegationSeatSession(
     if (input.title !== undefined) await session.accessor.get(ISessionMetadata).setTitle(input.title);
     const agent = await ensureMainAgent(session);
     const profile = agent.accessor.get(IAgentProfileService);
+    if (input.profileName !== undefined && (profile.data().profileName ?? DEFAULT_AGENT_PROFILE_NAME) !== input.profileName) {
+      throw new Error('External delegation seat main agent profile cannot change.');
+    }
     if (input.modelAlias !== undefined && profile.data().modelAlias !== input.modelAlias) {
       await profile.setModel(input.modelAlias);
     }
@@ -272,6 +277,7 @@ export async function ensureExternalDelegationSeatSession(
     const data = profile.data();
     return {
       workspacePath,
+      profileName: data.profileName,
       modelAlias: data.modelAlias,
       thinkingEffort: data.modelAlias === undefined ? undefined : data.thinkingLevel,
       permissionMode: agent.accessor.get(IAgentPermissionModeService).mode,

@@ -398,6 +398,12 @@ kiki seat revoke <seatId>
 
 The daemon creates or reuses one seat for each workspace and principal pair. The delegation token is returned only by `seat create`; `seat list` contains non-sensitive identity and configuration fields.
 
+`--agent <profile>` binds the seat's main agent to a named profile instead of the default `agent` profile, for example a locked-down profile when the seat serves an unattended integration. The profile is fixed when the seat is first created; asking for a different one later is refused, so revoke the seat and create it again to change it. Named children dispatched through the seat are still limited by that main profile's `allowed_subagents`, `deny_subagents` and `can_spawn_subagents`.
+
+A named-child `dispatch` (the `dispatch` delegation procedure, or `kiki_dispatch` over MCP) may carry an optional `title` of up to 120 characters. It becomes the new child's label in session views such as the agent tree, so an integration can show a readable name (for example the chat a child works) instead of its `task_name`. A child that already exists keeps its label; `title` is not part of the dispatch key's fingerprint.
+
+Seats never exceed the host's permission ceiling for external delegation, which is `manual` unless the daemon runs with `KIKI_EXTERNAL_PERMISSION_CEILING=auto` (or `review`, or `yolo`). Modes rank `manual` < `auto` < `review` < `yolo`, and a seat runs at the lower of its own mode and the ceiling. A seat created with `--mode auto` therefore still surfaces approvals as `interactions` on a host that keeps the default ceiling, and a `--mode review` seat ("review for me": the configured permission reviewer decides approvals first) needs a ceiling of `review` or `yolo`.
+
 #### Install MCP Configuration
 
 Install the stdio MCP configuration for a supported client:

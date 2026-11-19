@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  IAgentProfileService,
   IAtomicDocumentStore,
   ISessionContext,
   ISessionExternalDelegationProvisionStore,
@@ -11,8 +12,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
+import { ensureMainAgent } from '../src/transport/mainAgent';
 import { startServer, type RunningServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
+import { PROMPT_TOML, writeConfigToml } from './helpers/promptFixture';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 const EXTERNAL_DELEGATION_ENV_NAMES = [
@@ -50,12 +53,12 @@ afterEach(async () => {
   await rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-async function createSeat() {
+async function createSeat(extra: Record<string, unknown> = {}) {
   const base = `http://127.0.0.1:${server!.port}`;
   const response = await authedFetch(server!, base, '/api/external-delegation/seats', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ workspace, principal: 'cursor', mode: 'auto' }),
+    body: JSON.stringify({ workspace, principal: 'cursor', mode: 'auto', ...extra }),
   });
   return response.json() as Promise<{ code: number; data: Record<string, unknown> }>;
 }
@@ -156,6 +159,19 @@ describe('external delegation seats', () => {
       status: 401,
       body: { code: 40101 },
     });
+  });
+
+  it('binds the seat main agent to the requested profile', async () => {
+    await server?.close();
+    await writeConfigToml(home, PROMPT_TOML);
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const created = await createSeat({ profile: 'explore' });
+    expect(created).toMatchObject({ code: 0, data: { profile: 'explore' } });
+    const session = await resumeSessionById(server.core.accessor, String(created.data['sessionId']));
+    const main = await ensureMainAgent(session!);
+    expect(main.accessor.get(IAgentProfileService).data().profileName).toBe('explore');
+    expect((await createSeat()).data).toMatchObject({ seatId: created.data['seatId'], profile: 'explore' });
+    expect((await createSeat({ profile: 'general' })).code).not.toBe(0);
   });
 
   it.each([
