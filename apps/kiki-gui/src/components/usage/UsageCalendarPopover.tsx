@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import { USAGE_RANGE_PRESETS, type UsageRangePreset } from '../../lib/usageV2';
@@ -6,6 +6,23 @@ import { Toggle } from '../controls';
 import { Icon } from '../icons';
 import { ActionSheet } from '../overlays/ActionSheet';
 import { AnchoredPopover } from '../overlays/AnchoredPopover';
+
+function useNarrowViewport(maxWidthPx = 639): boolean {
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(`(max-width: ${maxWidthPx}px)`).matches
+      : false,
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(`(max-width: ${maxWidthPx}px)`);
+    const update = () => { setNarrow(mq.matches); };
+    update();
+    mq.addEventListener?.('change', update);
+    return () => { mq.removeEventListener?.('change', update); };
+  }, [maxWidthPx]);
+  return narrow;
+}
 
 export function startOfLocalDay(ms: number): number {
   const d = new Date(ms);
@@ -126,6 +143,16 @@ export function UsageCalendarPopover({
   const [rightMonthKey, setRightMonthKey] = useState(initialEndMonthKey);
   const [draftStart, setDraftStart] = useState<number | null>(null);
   const [hoverDay, setHoverDay] = useState<number | null>(null);
+  const narrowViewport = useNarrowViewport(639);
+  const singleMonth = phone || narrowViewport;
+
+  useEffect(() => {
+    if (open) {
+      setRightMonthKey(initialEndMonthKey);
+      setDraftStart(null);
+      setHoverDay(null);
+    }
+  }, [open, initialEndMonthKey]);
 
   const committedStart = startAt !== undefined ? startOfLocalDay(startAt) : undefined;
   const committedEnd = endAt !== undefined ? startOfLocalDay(endAt - 1) : undefined;
@@ -165,7 +192,7 @@ export function UsageCalendarPopover({
     onClose();
   };
 
-  const monthKeys = phone ? [rightMonthKey] : [rightMonthKey - 1, rightMonthKey];
+  const monthKeys = singleMonth ? [rightMonthKey] : [rightMonthKey - 1, rightMonthKey];
   const presets = USAGE_RANGE_PRESETS.filter((p): p is Exclude<UsageRangePreset, 'custom'> => p !== 'custom');
 
   const body = (
@@ -197,7 +224,7 @@ export function UsageCalendarPopover({
         })}
       </div>
 
-      <div className={`grid gap-5 ${phone ? 'grid-cols-1' : 'sm:grid-cols-2'}`}>
+      <div className={`grid gap-5 ${singleMonth ? 'grid-cols-1' : 'sm:grid-cols-2'}`}>
         {monthKeys.map((mKey, idx) => {
           const { year, monthIndex } = fromMonthKey(mKey);
           const cells = buildCalendarCells(year, monthIndex);
@@ -212,7 +239,7 @@ export function UsageCalendarPopover({
                   <button
                     type="button"
                     data-calendar-nav="prev"
-                    aria-label="Previous month"
+                    aria-label={t('usage.calendar.prevMonth')}
                     onClick={() => { setRightMonthKey((k) => k - 1); }}
                     className="flex h-7 w-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
                   >
@@ -228,7 +255,7 @@ export function UsageCalendarPopover({
                   <button
                     type="button"
                     data-calendar-nav="next"
-                    aria-label="Next month"
+                    aria-label={t('usage.calendar.nextMonth')}
                     disabled={!canAdvance}
                     onClick={() => { setRightMonthKey((k) => k + 1); }}
                     className="flex h-7 w-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-30"
@@ -295,7 +322,10 @@ export function UsageCalendarPopover({
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-hairline pt-2.5 text-[12px]">
-        <span className="font-mono text-[11.5px] text-ink-faint tabular-nums" data-calendar-readout>
+        <span
+          className={previewRange !== undefined ? 'font-mono text-[11.5px] text-ink-faint tabular-nums' : 'text-[11.5px] text-ink-faint'}
+          data-calendar-readout
+        >
           {previewRange !== undefined
             ? `${formatYmd(previewRange.lo)} → ${formatYmd(previewRange.hi)}`
             : t(`usage.range.${range}`)}
@@ -337,7 +367,7 @@ export function UsageCalendarPopover({
         }}
         dataAttribute="data-usage-calendar-popover"
         returnFocusRef={anchorRef as React.RefObject<HTMLButtonElement | null>}
-        sheetClassName="flex flex-col overflow-hidden p-3"
+        sheetClassName="flex flex-col p-3"
       >
         {body}
       </ActionSheet>
@@ -355,7 +385,7 @@ export function UsageCalendarPopover({
       }}
       anchorRef={anchorRef}
       label={t('usage.axis.range')}
-      widthClassName="w-[32.5rem] max-w-[calc(100vw-2rem)]"
+      widthClassName={singleMonth ? 'w-[18.5rem] max-w-[calc(100vw-2rem)]' : 'w-[32.5rem] max-w-[calc(100vw-2rem)]'}
       data={{ 'data-usage-calendar-popover': '' }}
     >
       {body}

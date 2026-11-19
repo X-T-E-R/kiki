@@ -136,26 +136,36 @@ interface FacetMetric {
   tokens: number;
 }
 
-function computeFacetMetrics(
+interface FacetSignals {
+  readonly metrics: ReadonlyMap<string, Readonly<FacetMetric>>;
+  readonly completeFacets: ReadonlySet<UsageFacetKind>;
+  readonly workspaceActivity: ReadonlyMap<string, { hits: number; latestAt: number }>;
+}
+
+function computeFacetSignals(
   response: UsageResponseWire | undefined,
   modelResponse: UsageResponseWire | undefined,
-): ReadonlyMap<string, Readonly<FacetMetric>> {
-  const map = new Map<string, FacetMetric>();
+): FacetSignals {
+  const metrics = new Map<string, FacetMetric>();
+  const completeFacets = new Set<UsageFacetKind>();
+  const workspaceActivity = new Map<string, { hits: number; latestAt: number }>();
+
   const add = (facet: UsageFacetKind, value: string | null | undefined, cost: number, tokens: number) => {
     if (!value || value === 'unknown' || value === USAGE_SOURCE_KEY_UNKNOWN) return;
     const key = `${facet}:${value}`;
-    const prev = map.get(key);
+    const prev = metrics.get(key);
     if (prev !== undefined) {
       prev.costUsd += cost;
       prev.tokens += tokens;
     } else {
-      map.set(key, { costUsd: cost, tokens });
+      metrics.set(key, { costUsd: cost, tokens });
     }
   };
 
   // Model attribution prefers dedicated modelResponse when groupBy !== 'model'
   const modelSrc = modelResponse ?? response;
   if (modelSrc !== undefined) {
+    if (modelSrc.query.dimension === 'model') completeFacets.add('model');
     for (const bucket of modelSrc.trend) {
       for (const group of bucket.groups) {
         const modelKey =
@@ -172,7 +182,12 @@ function computeFacetMetrics(
 
   if (response !== undefined) {
     const dim = response.query.dimension;
-    let hasProjectTrend = false;
+    if (dim === 'provider') completeFacets.add('provider');
+    if (dim === 'profile') completeFacets.add('profile');
+    if (dim === 'project') completeFacets.add('workspace');
+
+    let sawProvider = false;
+    let sawProfile = false;
     for (const bucket of response.trend) {
       for (const group of bucket.groups) {
         const tokens = totalTokensOf(group);
@@ -183,6 +198,7 @@ function computeFacetMetrics(
             : dim === 'provider'
               ? group.key
               : null);
+        if (providerKey) sawProvider = true;
         add('provider', providerKey, group.cost_usd_estimated, tokens);
 
         const profileKey =
@@ -192,23 +208,36 @@ function computeFacetMetrics(
             : dim === 'profile'
               ? group.key
               : null);
+        if (profileKey) sawProfile = true;
         add('profile', profileKey, group.cost_usd_estimated, tokens);
 
         if (dim === 'project' && group.key !== 'unknown') {
-          hasProjectTrend = true;
           add('workspace', group.key, group.cost_usd_estimated, tokens);
         }
       }
     }
 
-    if (!hasProjectTrend) {
+    if (sawProvider) completeFacets.add('provider');
+    if (sawProfile) completeFacets.add('profile');
+
+    // When dimension !== 'project', response.sessions.items is only a partial page (first 25 sessions).
+    // Never fabricate partial $ totals or fold remaining workspaces into "unused"; only float recently active ones.
+    if (dim !== 'project') {
       for (const session of response.sessions.items) {
-        add('workspace', session.workspace_id, session.usage.cost_usd_estimated, totalTokensOf(session.usage));
+        if (!session.workspace_id) continue;
+        const prev = workspaceActivity.get(session.workspace_id);
+        const ts = session.updated_at ?? session.created_at ?? 0;
+        if (prev !== undefined) {
+          prev.hits += 1;
+          if (ts > prev.latestAt) prev.latestAt = ts;
+        } else {
+          workspaceActivity.set(session.workspace_id, { hits: 1, latestAt: ts });
+        }
       }
     }
   }
 
-  return map;
+  return { metrics, completeFacets, workspaceActivity };
 }
 
 export function UsageFilterBar({
@@ -331,8 +360,8 @@ export function UsageFilterBar({
     [workspaces, models, providers, namedProfiles, response, filters, observed],
   );
 
-  const facetMetrics = useMemo(
-    () => computeFacetMetrics(response, modelResponse),
+  const { metrics: facetMetrics, completeFacets, workspaceActivity } = useMemo(
+    () => computeFacetSignals(response, modelResponse),
     [response, modelResponse],
   );
 
@@ -429,8 +458,10 @@ export function UsageFilterBar({
         });
 
     const rankOption = (a: FacetOption, b: FacetOption) => {
-      const mA = facetMetrics.get(`${a.facet}:${a.value}`);
-      const mB = facetMetrics.get(`${b.facet}:${b.value}`);
+      const aComplete = completeFacets.has(a.facet);
+      const bComplete = completeFacets.has(b.facet);
+      const mA = aComplete ? facetMetrics.get(`${a.facet}:${a.value}`) : undefined;
+      const mB = bComplete ? facetMetrics.get(`${b.facet}:${b.value}`) : undefined;
       const usedA = (mA?.costUsd ?? 0) > 0 || (mA?.tokens ?? 0) > 0 ? 1 : 0;
       const usedB = (mB?.costUsd ?? 0) > 0 || (mB?.tokens ?? 0) > 0 ? 1 : 0;
       if (usedA !== usedB) return usedB - usedA;
@@ -438,11 +469,19 @@ export function UsageFilterBar({
       if (Math.abs(costDiff) > 1e-9) return costDiff;
       const tokDiff = (mB?.tokens ?? 0) - (mA?.tokens ?? 0);
       if (tokDiff !== 0) return tokDiff;
+      if (a.facet === 'workspace' && b.facet === 'workspace' && !aComplete) {
+        const wA = workspaceActivity.get(a.value);
+        const wB = workspaceActivity.get(b.value);
+        const hitsDiff = (wB?.hits ?? 0) - (wA?.hits ?? 0);
+        if (hitsDiff !== 0) return hitsDiff;
+        const tsDiff = (wB?.latestAt ?? 0) - (wA?.latestAt ?? 0);
+        if (tsDiff !== 0) return tsDiff;
+      }
       return a.label.localeCompare(b.label);
     };
 
     const sorted = [...filtered].sort(rankOption);
-    if (needle !== '') {
+    if (needle !== '' || selectedFacet === null || !completeFacets.has(selectedFacet)) {
       return { primaryOptions: sorted, unusedOptions: [] as readonly FacetOption[] };
     }
 
@@ -465,7 +504,7 @@ export function UsageFilterBar({
       return { primaryOptions: idle, unusedOptions: [] as readonly FacetOption[] };
     }
     return { primaryOptions: withActivity, unusedOptions: idle };
-  }, [catalog, facetMetrics, filters, isCategoryStage, needle, selectedFacet]);
+  }, [catalog, completeFacets, facetMetrics, filters, isCategoryStage, needle, selectedFacet, workspaceActivity]);
 
   const displayedOptions = useMemo(
     () => (unusedOpen ? [...primaryOptions, ...unusedOptions] : primaryOptions),
@@ -642,7 +681,7 @@ export function UsageFilterBar({
           data-usage-filter-search
           aria-activedescendant={clampedIndex >= 0 ? `${composerId}-opt-${clampedIndex}` : undefined}
           value={query}
-          placeholder={selectedFacet !== null ? `${t('usage.filter.add')}…` : t('usage.filter.searchPlaceholder')}
+          placeholder={selectedFacet !== null ? t('usage.filter.searchShort') : t('usage.filter.searchPlaceholder')}
           onChange={(event) => {
             setQuery(event.target.value);
             setActiveIndex(0);
@@ -668,10 +707,12 @@ export function UsageFilterBar({
         {isCategoryStage ? (
           FACET_ORDER.map((facet, idx) => {
             const selectedCount = selectedCountForFacet(facet);
-            const activeUsedCount = catalog[facet].filter((opt) => {
-              const m = facetMetrics.get(`${facet}:${opt.value}`);
-              return (m?.costUsd ?? 0) > 0 || (m?.tokens ?? 0) > 0;
-            }).length;
+            const activeUsedCount = completeFacets.has(facet)
+              ? catalog[facet].filter((opt) => {
+                  const m = facetMetrics.get(`${facet}:${opt.value}`);
+                  return (m?.costUsd ?? 0) > 0 || (m?.tokens ?? 0) > 0;
+                }).length
+              : 0;
             const highlighted = idx === clampedIndex;
 
             return (
@@ -712,76 +753,90 @@ export function UsageFilterBar({
           </p>
         ) : (
           <>
-            {displayedOptions.map((option, index) => {
-              const checked = isSelected(option.facet, option.value);
-              const highlighted = index === clampedIndex;
-              const usage = facetMetrics.get(`${option.facet}:${option.value}`);
-              const usageText =
-                usage !== undefined && usage.costUsd > 0
-                  ? formatCostUsd(usage.costUsd)
-                  : usage !== undefined && usage.tokens > 0
-                    ? time.formatTokens(usage.tokens)
-                    : undefined;
+            {(() => {
+              const renderOptionButton = (option: FacetOption, index: number) => {
+                const checked = isSelected(option.facet, option.value);
+                const highlighted = index === clampedIndex;
+                const usage = completeFacets.has(option.facet)
+                  ? facetMetrics.get(`${option.facet}:${option.value}`)
+                  : undefined;
+                const usageText =
+                  usage !== undefined && usage.costUsd > 0
+                    ? formatCostUsd(usage.costUsd)
+                    : usage !== undefined && usage.tokens > 0
+                      ? time.formatTokens(usage.tokens)
+                      : undefined;
 
-              return (
-                <button
-                  key={`${option.facet}:${option.value}`}
-                  id={`${composerId}-opt-${index}`}
-                  ref={(el) => { optionRefs.current[index] = el; }}
-                  type="button"
-                  role="option"
-                  aria-selected={checked}
-                  data-usage-facet-option={`${option.facet}:${option.value}`}
-                  onMouseEnter={() => { setActiveIndex(index); }}
-                  onClick={() => { toggleOption(option.facet, option.value); }}
-                  className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors pointer-coarse:min-h-11 ${
-                    highlighted ? 'bg-ink/[0.06]' : checked ? 'bg-ink/[0.03]' : 'hover:bg-ink/[0.04]'
-                  }`}
-                >
-                  <span
-                    aria-hidden
-                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
-                      checked ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
+                return (
+                  <button
+                    key={`${option.facet}:${option.value}`}
+                    id={`${composerId}-opt-${index}`}
+                    ref={(el) => { optionRefs.current[index] = el; }}
+                    type="button"
+                    role="option"
+                    aria-selected={checked}
+                    data-usage-facet-option={`${option.facet}:${option.value}`}
+                    onMouseEnter={() => { setActiveIndex(index); }}
+                    onClick={() => { toggleOption(option.facet, option.value); }}
+                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors pointer-coarse:min-h-11 ${
+                      highlighted ? 'bg-ink/[0.06]' : checked ? 'bg-ink/[0.03]' : 'hover:bg-ink/[0.04]'
                     }`}
                   >
-                    <Icon name="check" size={12} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className={`block truncate ${checked ? 'font-medium text-ink' : 'text-ink'}`}>
-                      {option.label}
+                    <span
+                      aria-hidden
+                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                        checked ? 'border-ink bg-ink text-paper' : 'border-hairline-strong bg-paper text-transparent'
+                      }`}
+                    >
+                      <Icon name="check" size={12} />
                     </span>
-                    {option.hint !== undefined && option.hint !== option.label ? (
-                      <span className="block truncate font-mono text-[10.5px] text-ink-faint">
-                        {option.hint}
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate ${checked ? 'font-medium text-ink' : 'text-ink'}`}>
+                        {option.label}
+                      </span>
+                      {option.hint !== undefined && option.hint !== option.label ? (
+                        <span className="block truncate font-mono text-[10.5px] text-ink-faint">
+                          {option.hint}
+                        </span>
+                      ) : null}
+                    </span>
+                    {selectedFacet === null ? (
+                      <span className="shrink-0 rounded bg-ink/[0.04] px-1.5 py-px text-[10.5px] text-ink-faint">
+                        {facetLabel(option.facet)}
                       </span>
                     ) : null}
-                  </span>
-                  {selectedFacet === null ? (
-                    <span className="shrink-0 rounded bg-ink/[0.04] px-1.5 py-px text-[10.5px] text-ink-faint">
-                      {facetLabel(option.facet)}
-                    </span>
-                  ) : null}
-                  {usageText !== undefined ? (
-                    <span className="shrink-0 text-[11.5px] text-ink-soft tabular-nums">
-                      {usageText}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
+                    {usageText !== undefined ? (
+                      <span className="shrink-0 text-[11.5px] text-ink-soft tabular-nums">
+                        {usageText}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              };
 
-            {unusedOptions.length > 0 && needle === '' ? (
-              <button
-                type="button"
-                data-usage-filter-unused-toggle
-                aria-expanded={unusedOpen}
-                onClick={() => { setUnusedOpen((prev) => !prev); }}
-                className="mt-1 flex w-full items-center gap-1.5 border-t border-hairline/70 px-2.5 pt-2 pb-1 text-left text-[11.5px] text-ink-faint transition-colors hover:text-ink"
-              >
-                <DisclosureChevron open={unusedOpen} />
-                <span>{t('usage.filter.unusedInPeriod', { count: unusedOptions.length })}</span>
-              </button>
-            ) : null}
+              return (
+                <>
+                  {primaryOptions.map((option, index) => renderOptionButton(option, index))}
+
+                  {unusedOptions.length > 0 && needle === '' ? (
+                    <button
+                      type="button"
+                      data-usage-filter-unused-toggle
+                      aria-expanded={unusedOpen}
+                      onClick={() => { setUnusedOpen((prev) => !prev); }}
+                      className="mt-1 flex w-full items-center gap-1.5 border-t border-hairline/70 px-2.5 pt-2 pb-1 text-left text-[11.5px] text-ink-faint transition-colors hover:text-ink"
+                    >
+                      <DisclosureChevron open={unusedOpen} />
+                      <span>{t('usage.filter.unusedInPeriod', { count: unusedOptions.length })}</span>
+                    </button>
+                  ) : null}
+
+                  {unusedOpen && needle === ''
+                    ? unusedOptions.map((option, offset) => renderOptionButton(option, primaryOptions.length + offset))
+                    : null}
+                </>
+              );
+            })()}
 
             {showCustomProfile ? (
               <button

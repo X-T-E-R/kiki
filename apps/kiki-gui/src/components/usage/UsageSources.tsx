@@ -94,6 +94,10 @@ export function UsageSources({
       : row.value;
   };
 
+  const rowGridClass = prior !== undefined
+    ? 'grid grid-cols-[minmax(0,1fr)_5.75rem] items-center gap-x-3 gap-y-1 px-2 sm:grid-cols-[minmax(0,1fr)_6.5rem_5.25rem_4.25rem_5.75rem] lg:grid-cols-[minmax(0,1fr)_6.5rem_5.25rem_4.25rem_4.5rem_4.5rem_5.75rem]'
+    : 'grid grid-cols-[minmax(0,1fr)_5.75rem] items-center gap-x-3 gap-y-1 px-2 sm:grid-cols-[minmax(0,1fr)_6.5rem_5.25rem_4.25rem_5.75rem]';
+
   const renderRow = (row: UsageSourceRow) => {
     const unknownTotal = row.tokensUnknown && row.totalTokens === 0;
     const share =
@@ -108,7 +112,6 @@ export function UsageSources({
     const priorOutcome = priorOutcomeFor(metric, row, priorRow, prior, cacheHit);
     const filterActive = isFilterActive?.(row) ?? false;
     const rowName = labelFor(row);
-    const bgFillPct = share !== null && share > 0 ? Math.max(1.5, Math.min(100, share * 100)) : 0;
 
     return (
       <li
@@ -118,16 +121,7 @@ export function UsageSources({
           filterActive ? 'bg-selected/25' : ''
         }`}
       >
-        <div className="relative overflow-hidden">
-          {bgFillPct > 0 && !filterActive ? (
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-y-[3px] left-0 rounded-r-sm bg-accent/[0.06] transition-all duration-200"
-              style={{ width: `${bgFillPct}%` }}
-            />
-          ) : null}
-
-          <div className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-2 py-2.5 sm:grid-cols-[minmax(0,1fr)_6.5rem_4.75rem_4rem_auto]">
+        <div className={`${rowGridClass} py-2.5`}>
             <div className="flex min-w-0 items-center gap-1.5">
               <button
                 type="button"
@@ -214,35 +208,34 @@ export function UsageSources({
               {formatPercent(cacheHit)}
             </span>
 
-            <div className="flex items-center justify-end gap-x-3">
-              {prior !== undefined ? (
-                <>
-                  <span className="hidden w-16 text-right text-[12px] text-ink-soft tabular-nums lg:block">
-                    {priorRow === undefined ? '—' : metric === 'cache'
-                      ? formatPercent(cacheHitOf(priorRow))
-                      : metric === 'tokens'
-                        ? time.formatTokens(priorRow.totalTokens)
-                        : formatCostUsd(priorRow.costUsdEstimated)}
-                  </span>
-                  <span className="hidden w-16 text-right lg:block">
-                    {priorOutcome === undefined ? null : <CompareCell outcome={priorOutcome} points={metric === 'cache'} />}
-                  </span>
-                </>
+            {prior !== undefined ? (
+              <>
+                <span className="hidden text-right text-[12px] text-ink-soft tabular-nums lg:block">
+                  {priorRow === undefined ? '—' : metric === 'cache'
+                    ? formatPercent(cacheHitOf(priorRow))
+                    : metric === 'tokens'
+                      ? time.formatTokens(priorRow.totalTokens)
+                      : formatCostUsd(priorRow.costUsdEstimated)}
+                </span>
+                <span className="hidden text-right lg:block">
+                  {priorOutcome === undefined ? null : <CompareCell outcome={priorOutcome} points={metric === 'cache'} />}
+                </span>
+              </>
+            ) : null}
+
+            <span
+              data-usage-breakdown-cost={row.key}
+              className="inline-flex items-center justify-end gap-0.5 text-right text-[13px] font-semibold text-ink tabular-nums"
+            >
+              {unknownTotal || (row.costUnknown && row.costUsdEstimated === 0 && row.totalTokens > 0)
+                ? '—'
+                : formatCostUsd(row.costUsdEstimated)}
+              {row.costUnknown ? (
+                <KnownSubtotalMarker
+                  label={row.costUsdEstimated === 0 && (row.totalTokens > 0 || row.tokensUnknown) ? t('usage.reliability.costUnknown') : undefined}
+                />
               ) : null}
-              <span
-                data-usage-breakdown-cost={row.key}
-                className="text-right text-[13px] font-semibold text-ink tabular-nums"
-              >
-                {unknownTotal || (row.costUnknown && row.costUsdEstimated === 0 && row.totalTokens > 0)
-                  ? '—'
-                  : formatCostUsd(row.costUsdEstimated)}
-                {row.costUnknown ? (
-                  <KnownSubtotalMarker
-                    label={row.costUsdEstimated === 0 && (row.totalTokens > 0 || row.tokensUnknown) ? t('usage.reliability.costUnknown') : undefined}
-                  />
-                ) : null}
-              </span>
-            </div>
+            </span>
 
             <p className="col-span-2 -mt-0.5 pl-7 text-[11px] text-ink-faint tabular-nums sm:hidden">
               {t('usage.sources.mobileDetail', {
@@ -250,7 +243,6 @@ export function UsageSources({
                 tokens: unknownTotal ? '—' : time.formatTokens(row.totalTokens),
               })}
             </p>
-          </div>
         </div>
 
         {open ? (
@@ -287,28 +279,24 @@ export function UsageSources({
     );
   };
 
-  const gridHead = 'grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-2 pb-2 text-[11px] text-ink-faint sm:grid-cols-[minmax(0,1fr)_6.5rem_4.75rem_4rem_auto]';
-
   return (
     <section id="usage-source-table" aria-label={t('usage.sources.title')} data-usage-sources={groupBy}>
       {rows.length === 0 ? (
         <p className="py-8 text-center text-[13px] text-ink-faint">{t('usage.empty')}</p>
       ) : (
         <>
-          <div aria-hidden className={`${gridHead} border-b border-hairline`}>
+          <div aria-hidden className={`${rowGridClass} border-b border-hairline pb-2 text-[11px] text-ink-faint`}>
             <span className="pl-7">{t(`usage.sources.grouping.${groupBy}`)}</span>
             <span className="hidden sm:block">{t('usage.col.share')}</span>
             <span className="hidden text-right sm:block">{t('usage.col.tokens')}</span>
             <span className="hidden text-right sm:block">{t('usage.col.cacheHit')}</span>
-            <span className="flex justify-end gap-x-3">
-              {prior !== undefined ? (
-                <>
-                  <span className="hidden w-16 lg:block">{t('usage.compare.prior')}</span>
-                  <span className="hidden w-16 lg:block">{t('usage.compare.change')}</span>
-                </>
-              ) : null}
-              <span className="text-right">{t('usage.col.cost')}</span>
-            </span>
+            {prior !== undefined ? (
+              <>
+                <span className="hidden text-right lg:block">{t('usage.compare.prior')}</span>
+                <span className="hidden text-right lg:block">{t('usage.compare.change')}</span>
+              </>
+            ) : null}
+            <span className="text-right">{t('usage.col.cost')}</span>
           </div>
           {visible.length === 0 ? (
             <p data-usage-source-empty className="py-8 text-center text-[13px] text-ink-faint">

@@ -49,7 +49,7 @@ const SERIES_FILLS = [
 ] as const;
 const OTHER_FILL = 'bg-ink/18';
 const SERIES_LIMIT = SERIES_FILLS.length;
-const MIN_BUCKET_PX = 36;
+const MIN_BUCKET_PX = 46;
 
 export function TrendChart({
   trend,
@@ -90,8 +90,7 @@ export function TrendChart({
     metric === 'cache' ? formatCachePercent(value) : metric === 'tokens' ? time.formatTokens(value) : formatCostUsd(value);
 
   const chartWidth = Math.max(trend.length * MIN_BUCKET_PX, 0);
-  const visibleBars = Math.max(1, Math.ceil(chartWidth / MIN_BUCKET_PX));
-  const labelEvery = Math.max(1, Math.ceil(trend.length / Math.max(2, Math.min(7, visibleBars))));
+  const labelEvery = trend.length > 18 ? 3 : trend.length > 9 ? 2 : 1;
 
   const activeHoverIndex =
     hoveredIndex !== null && hoveredIndex >= 0 && hoveredIndex < trend.length
@@ -195,105 +194,112 @@ export function TrendChart({
           );
         })() : null}
 
-        <div className="overflow-x-auto">
-          <div className="relative" style={chartWidth > 0 ? { minWidth: chartWidth } : undefined}>
-            <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 bottom-0 flex flex-col justify-between">
-              {[1, 0.5, 0].map((fraction) => (
-                <div key={fraction} className="h-px border-t border-hairline/70" />
-              ))}
+        <div className="overflow-x-auto pb-1" data-usage-trend-scroll>
+          <div style={chartWidth > 0 ? { minWidth: chartWidth } : undefined}>
+            <div className="relative">
+              <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 bottom-0 flex flex-col justify-between">
+                {[1, 0.5, 0].map((fraction) => (
+                  <div key={fraction} className="h-px border-t border-hairline/70" />
+                ))}
+              </div>
+              <div
+                className="relative flex h-36 items-end pt-3"
+                role="img"
+                aria-label={`${t('usage.trend.title')} · ${peakIndex >= 0 && totals[peakIndex] !== undefined && totals[peakIndex]! > 0 ? t('usage.trend.peak', { value: formatValue(totals[peakIndex]!) }) : t('usage.empty')}`}
+                data-usage-trend
+              >
+                {trend.map((bucket, index) => {
+                  const total = totals[index] ?? 0;
+                  const selected = selectedKey === bucket.key;
+                  const dimmed = selectedKey !== null && !selected;
+                  const unknownTotal = bucketTokenTotalIsUnknown(bucket);
+                  const title = [
+                    bucketLabel(bucket, filters.granularity, locale),
+                    `${unknownTotal ? '—' : time.formatTokens(bucketTokens(bucket))} ${t('usage.col.tokens')}`,
+                    unknownTotal ? '—' : formatCostUsd(bucketCost(bucket)),
+                    `${t('usage.trend.metric.cache')} ${formatPercent(bucketCacheHit(bucket))}`,
+                    ...(typeof bucket.turn_count === 'number' ? [t('usage.drilldown.turns', { count: bucket.turn_count })] : []),
+                    ...(typeof bucket.request_count === 'number' ? [t('usage.trend.requests', { count: formatGrouped(bucket.request_count) })] : []),
+                    ...(bucket.groups.some((group) => group.tokens_unknown === true) ? [t('usage.kpi.partialUnknown')] : []),
+                  ].join(' · ');
+                  const heightPct = total > 0 && max > 0 ? Math.max(3, (total / max) * 100) : 0;
+                  const segments: { key: string; fill: string; value: number }[] = [];
+                  if (metric !== 'cache' && total > 0) {
+                    let rest = total;
+                    series.forEach((key, seriesIndex) => {
+                      const value = bucket.groups
+                        .filter((group) => usageSourceKey(group, groupBy) === key)
+                        .reduce((sum, group) => sum + valueOf(group), 0);
+                      if (value > 0) {
+                        segments.push({ key, fill: SERIES_FILLS[seriesIndex]!, value });
+                        rest -= value;
+                      }
+                    });
+                    if (rest > total * 0.001) segments.push({ key: '__other', fill: OTHER_FILL, value: rest });
+                  }
+                  return (
+                    <button
+                      key={bucket.key}
+                      type="button"
+                      data-bucket={bucket.key}
+                      aria-pressed={selected}
+                      aria-controls="usage-source-table"
+                      aria-label={title}
+                      onMouseEnter={() => { setHoveredIndex(index); }}
+                      onFocus={() => { setHoveredIndex(index); }}
+                      onBlur={() => { setHoveredIndex((prev) => (prev === index ? null : prev)); }}
+                      onClick={() => { onSelect(selected ? null : bucket.key); }}
+                      title={title}
+                      style={{ flexBasis: MIN_BUCKET_PX, minWidth: MIN_BUCKET_PX }}
+                      className={`group relative flex h-full shrink-0 grow flex-col items-center justify-end px-1 transition-opacity focus-visible:outline-2 focus-visible:outline-selected-ink ${dimmed ? 'opacity-35 hover:opacity-85' : ''}`}
+                    >
+                      <span aria-hidden className="absolute inset-x-0.5 inset-y-0 rounded-[3px] bg-ink/0 transition-colors group-hover:bg-ink/[0.04]" />
+                      {total <= 0 ? (
+                        <span className="block h-[2px] w-full max-w-[44px] rounded-full bg-hairline" />
+                      ) : metric === 'cache' ? (
+                        <span
+                          className={`block w-full max-w-[44px] rounded-t-[3px] transition-colors ${selected ? 'bg-success/75' : 'bg-success/55 group-hover:bg-success/70'}`}
+                          style={{ height: `${heightPct}%` }}
+                        />
+                      ) : (
+                        <span
+                          className="flex w-full max-w-[44px] flex-col-reverse overflow-hidden rounded-t-[3px]"
+                          style={{ height: `${heightPct}%` }}
+                        >
+                          {segments.map((segment, segmentIndex) => (
+                            <span
+                              key={segment.key}
+                              className={`block w-full ${segment.fill}`}
+                              style={{
+                                height: `${(segment.value / total) * 100}%`,
+                                ...(segmentIndex > 0 ? { borderTop: '1px solid transparent', backgroundClip: 'padding-box' } : {}),
+                              }}
+                            />
+                          ))}
+                        </span>
+                      )}
+                      {selected ? <span aria-hidden className="absolute -bottom-1.5 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-ink" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div
-              className="relative flex h-36 items-end justify-center gap-1.5 px-1 pt-3"
-              role="img"
-              aria-label={`${t('usage.trend.title')} · ${peakIndex >= 0 && totals[peakIndex] !== undefined && totals[peakIndex]! > 0 ? t('usage.trend.peak', { value: formatValue(totals[peakIndex]!) }) : t('usage.empty')}`}
-              data-usage-trend
-            >
+
+            <div aria-hidden className="mt-2 flex" data-usage-trend-axis>
               {trend.map((bucket, index) => {
-                const total = totals[index] ?? 0;
-                const selected = selectedKey === bucket.key;
-                const dimmed = selectedKey !== null && !selected;
-                const unknownTotal = bucketTokenTotalIsUnknown(bucket);
-                const title = [
-                  bucketLabel(bucket, filters.granularity, locale),
-                  `${unknownTotal ? '—' : time.formatTokens(bucketTokens(bucket))} ${t('usage.col.tokens')}`,
-                  unknownTotal ? '—' : formatCostUsd(bucketCost(bucket)),
-                  `${t('usage.trend.metric.cache')} ${formatPercent(bucketCacheHit(bucket))}`,
-                  ...(typeof bucket.turn_count === 'number' ? [t('usage.drilldown.turns', { count: bucket.turn_count })] : []),
-                  ...(typeof bucket.request_count === 'number' ? [t('usage.trend.requests', { count: formatGrouped(bucket.request_count) })] : []),
-                  ...(bucket.groups.some((group) => group.tokens_unknown === true) ? [t('usage.kpi.partialUnknown')] : []),
-                ].join(' · ');
-                const heightPct = total > 0 && max > 0 ? Math.max(3, (total / max) * 100) : 0;
-                const segments: { key: string; fill: string; value: number }[] = [];
-                if (metric !== 'cache' && total > 0) {
-                  let rest = total;
-                  series.forEach((key, seriesIndex) => {
-                    const value = bucket.groups
-                      .filter((group) => usageSourceKey(group, groupBy) === key)
-                      .reduce((sum, group) => sum + valueOf(group), 0);
-                    if (value > 0) {
-                      segments.push({ key, fill: SERIES_FILLS[seriesIndex]!, value });
-                      rest -= value;
-                    }
-                  });
-                  if (rest > total * 0.001) segments.push({ key: '__other', fill: OTHER_FILL, value: rest });
-                }
+                const showLabel = index % labelEvery === 0 || (index === trend.length - 1 && (trend.length - 1) % labelEvery >= Math.ceil(labelEvery / 2));
                 return (
-                  <button
+                  <span
                     key={bucket.key}
-                    type="button"
-                    data-bucket={bucket.key}
-                    aria-pressed={selected}
-                    aria-controls="usage-source-table"
-                    aria-label={title}
-                    onMouseEnter={() => { setHoveredIndex(index); }}
-                    onFocus={() => { setHoveredIndex(index); }}
-                    onBlur={() => { setHoveredIndex((prev) => (prev === index ? null : prev)); }}
-                    onClick={() => { onSelect(selected ? null : bucket.key); }}
-                    title={title}
                     style={{ flexBasis: MIN_BUCKET_PX, minWidth: MIN_BUCKET_PX }}
-                    className={`group relative flex h-full shrink-0 grow flex-col items-center justify-end transition-opacity focus-visible:outline-2 focus-visible:outline-selected-ink ${dimmed ? 'opacity-35 hover:opacity-85' : ''}`}
+                    className="shrink-0 grow whitespace-nowrap text-center text-[10px] text-ink-faint tabular-nums"
                   >
-                    <span aria-hidden className="absolute inset-0 rounded-[3px] bg-ink/0 transition-colors group-hover:bg-ink/[0.04]" />
-                    {total <= 0 ? (
-                      <span className="block h-[2px] w-full max-w-[44px] rounded-full bg-hairline" />
-                    ) : metric === 'cache' ? (
-                      <span
-                        className={`block w-full max-w-[44px] rounded-t-[3px] transition-colors ${selected ? 'bg-success/75' : 'bg-success/55 group-hover:bg-success/70'}`}
-                        style={{ height: `${heightPct}%` }}
-                      />
-                    ) : (
-                      <span
-                        className="flex w-full max-w-[44px] flex-col-reverse overflow-hidden rounded-t-[3px]"
-                        style={{ height: `${heightPct}%` }}
-                      >
-                        {segments.map((segment, segmentIndex) => (
-                          <span
-                            key={segment.key}
-                            className={`block w-full ${segment.fill}`}
-                            style={{
-                              height: `${(segment.value / total) * 100}%`,
-                              ...(segmentIndex > 0 ? { borderTop: '1px solid transparent', backgroundClip: 'padding-box' } : {}),
-                            }}
-                          />
-                        ))}
-                      </span>
-                    )}
-                    {selected ? <span aria-hidden className="absolute -bottom-1.5 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-ink" /> : null}
-                  </button>
+                    {showLabel ? bucketLabel(bucket, filters.granularity, locale) : ''}
+                  </span>
                 );
               })}
             </div>
           </div>
-        </div>
-      </div>
-
-      <div className="mt-2 overflow-x-auto">
-        <div aria-hidden className="flex justify-center gap-1.5 px-1" style={chartWidth > 0 ? { minWidth: chartWidth } : undefined}>
-          {trend.map((bucket, index) => (
-            <span key={bucket.key} style={{ flexBasis: MIN_BUCKET_PX, minWidth: MIN_BUCKET_PX }} className="shrink-0 grow truncate text-center text-[10.5px] text-ink-faint tabular-nums">
-              {index % labelEvery === 0 || index === trend.length - 1 ? bucketLabel(bucket, filters.granularity, locale) : ''}
-            </span>
-          ))}
         </div>
       </div>
 

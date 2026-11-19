@@ -900,9 +900,15 @@ function EngineQuotaRow({
     ? (pStatus !== 'expired' ? selectedPluginSnapshot?.readAt : undefined)
     : (source.supported ? (source.data_as_of ?? source.checked_at) : undefined);
 
-  const refreshTooltip = headerReadAt
-    ? `${t('usage.quota.refresh')} · ${t(q('usage.quota.engines.readAt'), { time: time.relativeTime(headerReadAt) })}`
-    : t('usage.quota.refresh');
+  const pluginExpiredTooltip = pStatus === 'expired'
+    ? `${t(q('usage.quota.engines.pluginExpired'), {
+        time: selectedPluginSnapshot?.readAt ? time.relativeTime(selectedPluginSnapshot.readAt) : '',
+      })} · ${t('usage.quota.refresh')}`
+    : undefined;
+  const refreshTooltip = pluginExpiredTooltip
+    ?? (headerReadAt
+      ? `${t('usage.quota.refresh')} · ${t(q('usage.quota.engines.readAt'), { time: time.relativeTime(headerReadAt) })}`
+      : t('usage.quota.refresh'));
   const nativeRefreshTooltip = isNativeLocked
     ? t('usage.quota.refreshAfter', { seconds: nativeSecondsLeft })
     : refreshTooltip;
@@ -1042,27 +1048,7 @@ function EngineQuotaRow({
                     {t('usage.quota.queryNow')}
                   </button>
                 </div>
-              ) : pStatus === 'expired' ? (
-                <div className="flex items-center gap-1.5" data-engine-quota-expired={engineId}>
-                  <button
-                    type="button"
-                    data-engine-quota-query={engineId}
-                    data-engine-quota-read-at={selectedPluginSnapshot?.readAt}
-                    disabled={isRefreshingPlugin}
-                    onClick={() => { void runPluginRefresh(); }}
-                    aria-label={`${t(q('usage.quota.engines.pluginExpired'), {
-                      time: selectedPluginSnapshot?.readAt ? time.relativeTime(selectedPluginSnapshot.readAt) : '',
-                    })} · ${t('usage.quota.refresh')}`}
-                    title={`${t(q('usage.quota.engines.pluginExpired'), {
-                      time: selectedPluginSnapshot?.readAt ? time.relativeTime(selectedPluginSnapshot.readAt) : '',
-                    })} · ${t('usage.quota.refresh')}`}
-                    className="inline-flex h-7 items-center gap-1 rounded border border-amber-rule/40 bg-amber-card px-2 text-[11px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/15 disabled:opacity-50"
-                  >
-                    <Icon name="refresh" size={12} className={isRefreshingPlugin ? 'animate-spin' : undefined} />
-                    <span>{t('usage.quota.status.expired')}</span>
-                  </button>
-                </div>
-              ) : accountGroups.length === 0 ? (
+              ) : pStatus === 'expired' ? null : accountGroups.length === 0 ? (
                 <p className="py-0.5 text-[12px] text-ink-soft" data-engine-quota-empty={engineId}>
                   {t(q('usage.quota.engines.pluginEmpty'))}
                 </p>
@@ -1117,14 +1103,23 @@ function EngineQuotaRow({
             <button
               type="button"
               data-engine-quota-refresh={engineId}
-              data-engine-quota-read-at={headerReadAt}
+              data-engine-quota-expired={pStatus === 'expired' ? engineId : undefined}
+              data-engine-quota-query={pStatus === 'expired' ? engineId : undefined}
+              data-engine-quota-read-at={pStatus === 'expired' ? selectedPluginSnapshot?.readAt : headerReadAt}
               disabled={isRefreshingPlugin}
               aria-label={refreshTooltip}
               title={refreshTooltip}
               onClick={() => { void runPluginRefresh(); }}
-              className={ICON_BUTTON}
+              className={
+                pStatus === 'expired'
+                  ? 'relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-amber-rule/55 bg-amber-card/70 text-amber-ink transition-colors hover:bg-amber-rule/15 focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:w-11'
+                  : ICON_BUTTON
+              }
             >
               <Icon name="refresh" size={14} className={isRefreshingPlugin ? 'animate-spin' : undefined} />
+              {pStatus === 'expired' ? (
+                <span aria-hidden className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-amber-rule" />
+              ) : null}
             </button>
           ) : canRefreshNative ? (
             <button
@@ -1414,15 +1409,21 @@ function PluginAccountsMatrix({
     return allowed;
   }, [accountGroups]);
 
+  const isLongFleet = accountGroups.length > 8;
+
   return (
     <div
-      className="divide-y divide-hairline/70 border-t border-hairline/70 pt-2"
+      className={`border-t border-hairline/70 ${isLongFleet ? 'max-h-[26rem] overflow-y-auto pr-1' : 'pt-2'}`}
       data-engine-plugin-readings={engineId}
+      data-quota-matrix-scroll={isLongFleet ? engineId : undefined}
     >
       {isUniformMatrix && firstGroup !== undefined ? (
         <div
           data-quota-matrix-header
-          className="hidden pb-2 md:grid md:grid-cols-[minmax(176px,216px)_minmax(0,1fr)] md:items-start md:gap-x-6"
+          data-quota-matrix-sticky={isLongFleet ? 'true' : undefined}
+          className={`hidden border-b border-hairline/70 md:grid md:grid-cols-[minmax(176px,216px)_minmax(0,1fr)] md:items-start md:gap-x-6 ${
+            isLongFleet ? 'sticky top-0 z-10 bg-paper/95 py-2 backdrop-blur-[4px]' : 'pb-2'
+          }`}
         >
           <span className="text-[11px] text-ink-faint">
             {t('usage.quota.summary.seats', { count: accountGroups.length })}
@@ -1439,43 +1440,53 @@ function PluginAccountsMatrix({
         </div>
       ) : null}
 
-      {accountGroups.map((group, groupIndex) => {
-        const seatDot = accountSeatDotClass(group.readings);
-        const labelDisplay = compactIdentifier(group.accountLabel);
-        const idDisplay = group.showAccountId ? compactIdentifier(group.accountId) : undefined;
-        return (
-          <div
-            key={group.accountId}
-            data-quota-account={group.accountId}
-            className="grid grid-cols-1 gap-x-6 gap-y-2 py-2 last:pb-0.5 md:grid-cols-[minmax(176px,216px)_minmax(0,1fr)] md:items-center"
-          >
-            <div className="flex min-w-0 items-center gap-2 text-[12px]">
-              <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${seatDot}`} />
-              <span className="min-w-0 truncate text-ink" title={group.accountLabel}>
-                {labelDisplay}
-              </span>
-              {idDisplay !== undefined ? (
-                <span className="shrink-0 font-mono text-[10.5px] text-ink-faint" title={group.accountId}>
-                  {idDisplay}
+      <div className="divide-y divide-hairline/70">
+        {accountGroups.map((group, groupIndex) => {
+          const seatDot = accountSeatDotClass(group.readings);
+          const labelDisplay = compactIdentifier(group.accountLabel);
+          const idDisplay = group.showAccountId ? compactIdentifier(group.accountId) : undefined;
+          return (
+            <div
+              key={group.accountId}
+              data-quota-account={group.accountId}
+              className="grid grid-cols-1 gap-x-6 gap-y-2 py-2 last:pb-0.5 md:grid-cols-[minmax(176px,216px)_minmax(0,1fr)] md:items-center"
+            >
+              <div className="flex min-w-0 items-center gap-2 text-[12px]">
+                <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${seatDot}`} />
+                <span className="min-w-0 truncate text-ink" title={group.accountLabel}>
+                  {labelDisplay}
                 </span>
-              ) : null}
-            </div>
+                {idDisplay !== undefined ? (
+                  <span className="shrink-0 font-mono text-[10.5px] text-ink-faint" title={group.accountId}>
+                    {idDisplay}
+                  </span>
+                ) : null}
+              </div>
 
-            <div className={cellsGridClass}>
-              {group.readings.map((reading, readingIndex) => (
-                <PluginQuotaBucketCell
-                  key={`${reading.pool ?? 'default'}:${reading.window ?? ''}:${readingIndex}`}
-                  reading={reading}
-                  snapshotReadAt={snapshotReadAt}
-                  showPoolLabel={isUniformMatrix ? 'mobileOnly' : 'always'}
-                  showModelDisclosure={!isUniformMatrix && firstModelSigOccurrence.has(`${groupIndex}:${readingIndex}`)}
-                  alignTrack={maxCols > 1}
-                />
-              ))}
+              <div className={cellsGridClass}>
+                {group.readings.map((reading, readingIndex) => {
+                  const hasFirstSig = firstModelSigOccurrence.has(`${groupIndex}:${readingIndex}`);
+                  const modelDisclosureMode: 'always' | 'mobileOnly' | 'none' = !hasFirstSig
+                    ? 'none'
+                    : isUniformMatrix
+                      ? 'mobileOnly'
+                      : 'always';
+                  return (
+                    <PluginQuotaBucketCell
+                      key={`${reading.pool ?? 'default'}:${reading.window ?? ''}:${readingIndex}`}
+                      reading={reading}
+                      snapshotReadAt={snapshotReadAt}
+                      showPoolLabel={isUniformMatrix ? 'mobileOnly' : 'always'}
+                      showModelDisclosure={modelDisclosureMode}
+                      alignTrack={maxCols > 1}
+                    />
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1494,7 +1505,7 @@ function MatrixColumnHeader({
   const foldModels = showModelDisclosure && models.length > 2;
 
   return (
-    <div className="min-w-0 space-y-1 text-[11.5px]">
+    <div className="relative min-w-0 text-[11.5px]">
       <div className="flex items-center justify-between gap-1.5">
         <span className="min-w-0 truncate font-medium text-ink-soft" title={poolLabel}>
           {poolLabel}
@@ -1514,9 +1525,16 @@ function MatrixColumnHeader({
         ) : null}
       </div>
       {foldModels && modelsOpen ? (
-        <div className="flex flex-wrap gap-1 pt-0.5" data-reading-models-list>
+        <div
+          className="absolute top-full left-0 z-20 mt-1.5 flex max-h-40 w-64 max-w-[min(18rem,calc(100vw-3rem))] flex-col gap-1 overflow-y-auto rounded-lg border border-hairline-strong bg-panel p-2 shadow-[var(--kiki-sheet-shadow)]"
+          data-reading-models-list
+        >
           {models.map((modelId) => (
-            <span key={modelId} className="rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft">
+            <span
+              key={modelId}
+              title={modelId}
+              className="block max-w-full truncate rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
+            >
               {modelId}
             </span>
           ))}
@@ -1536,7 +1554,7 @@ function PluginQuotaBucketCell({
   readonly reading: HarnessQuotaReading;
   readonly snapshotReadAt: string | undefined;
   readonly showPoolLabel: 'always' | 'mobileOnly';
-  readonly showModelDisclosure: boolean;
+  readonly showModelDisclosure: 'always' | 'mobileOnly' | 'none' | boolean;
   readonly alignTrack: boolean;
 }) {
   const { t, locale } = useI18n();
@@ -1545,8 +1563,11 @@ function PluginQuotaBucketCell({
   const models = reading.modelIds ?? [];
   const singleModelAsLabel = reading.pool === undefined && models.length === 1;
   const poolLabel = resolveReadingPoolLabel(reading, t(q('usage.quota.engines.defaultPool')));
-  const inlineModels = showModelDisclosure && !singleModelAsLabel && models.length > 0 && models.length <= 2;
-  const foldModels = showModelDisclosure && models.length > 2;
+  const disclosureMode = showModelDisclosure === true ? 'always' : showModelDisclosure === false ? 'none' : showModelDisclosure;
+  const disclosureActive = disclosureMode !== 'none';
+  const disclosureVisibilityClass = disclosureMode === 'mobileOnly' ? 'md:hidden' : undefined;
+  const inlineModels = disclosureActive && !singleModelAsLabel && models.length > 0 && models.length <= 2;
+  const foldModels = disclosureActive && models.length > 2;
   const distinctReadAt = reading.readAt !== undefined && reading.readAt !== snapshotReadAt ? reading.readAt : undefined;
   const remainingPct = val.kind === 'known' ? val.remainingPercent : undefined;
   const tier = remainingPct !== undefined ? quotaFuelTier(remainingPct) : undefined;
@@ -1615,19 +1636,19 @@ function PluginQuotaBucketCell({
       ) : null}
 
       {inlineModels || foldModels ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[10.5px] text-ink-faint">
+        <div className={`flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[10.5px] text-ink-faint ${disclosureVisibilityClass ?? ''}`}>
           {inlineModels ? (
-            <span className="font-mono text-[10px]" data-reading-models-inline>
+            <span className="min-w-0 truncate font-mono text-[10px]" data-reading-models-inline title={models.join(' · ')}>
               {models.join(' · ')}
             </span>
           ) : <span />}
           {foldModels ? (
             <button
               type="button"
-              data-reading-models-toggle
+              data-reading-models-toggle={disclosureMode === 'mobileOnly' ? 'mobile' : 'inline'}
               aria-expanded={modelsOpen}
               onClick={() => { setModelsOpen((prev) => !prev); }}
-              className="inline-flex items-center gap-0.5 rounded bg-ink/[0.04] px-1.5 py-px font-mono text-[10px] text-ink-soft transition-colors hover:bg-ink/[0.08] hover:text-ink"
+              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-ink/[0.04] px-1.5 py-px font-mono text-[10px] text-ink-soft transition-colors hover:bg-ink/[0.08] hover:text-ink"
             >
               <DisclosureChevron open={modelsOpen} />
               <span>{t(q('usage.quota.engines.modelsCount'), { count: models.length })}</span>
@@ -1637,9 +1658,16 @@ function PluginQuotaBucketCell({
       ) : null}
 
       {foldModels && modelsOpen ? (
-        <div className="flex flex-wrap gap-1 pt-0.5" data-reading-models-list>
+        <div
+          className={`flex max-h-36 flex-wrap gap-1 overflow-y-auto pt-0.5 pr-0.5 ${disclosureVisibilityClass ?? ''}`}
+          data-reading-models-list
+        >
           {models.map((modelId) => (
-            <span key={modelId} className="rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft">
+            <span
+              key={modelId}
+              title={modelId}
+              className="inline-block max-w-full truncate rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
+            >
               {modelId}
             </span>
           ))}

@@ -646,11 +646,13 @@ describe('ProviderQuotaPanel', () => {
     const claudeRow = container.querySelector<HTMLElement>('[data-quota-engine="claude-acp"]')!;
     const agyRow = container.querySelector<HTMLElement>('[data-quota-engine="agy-cli"]')!;
 
-    // Expired state on claude-acp (readAt present, readings cleared after TTL) uses compact icon button without resident prose
+    // Expired state on claude-acp (readAt present, readings cleared after TTL) uses compact refresh icon without misleading credential-expired text
     expect(claudeRow.querySelector<HTMLElement>('[data-engine-plugin-quota="claude-acp"]')?.dataset['engineQuotaStatus']).toBe('expired');
     const expiredBox = claudeRow.querySelector('[data-engine-quota-expired="claude-acp"]')!;
     expect(expiredBox).not.toBeNull();
-    expect(expiredBox.textContent).not.toContain('Cached reading expired');
+    expect(expiredBox.textContent).toBe('');
+    expect(claudeRow.textContent).not.toContain('Cached reading expired');
+    expect(claudeRow.textContent).not.toContain('Expired');
     expect(claudeRow.querySelector('[data-engine-quota-query="claude-acp"]')?.getAttribute('title')).toContain('Cached reading expired');
     expect(claudeRow.textContent).not.toContain('Native Claude Meter');
 
@@ -942,11 +944,12 @@ describe('ProviderQuotaPanel', () => {
     expect(hydratedRow.querySelector('[data-quota-fleet-summary="agy-cli"]')).not.toBeNull();
     expect(hydratedRow.querySelectorAll('[data-quota-account]')).toHaveLength(0);
 
-    // Expand the multi-account fleet -> renders single matrix header + 3 aligned seat rows with deduplicated model toggle
+    // Expand the multi-account fleet -> renders single matrix header + 3 aligned seat rows with deduplicated desktop header toggle and mobile fallback toggle
     await click(hydratedRow, '[data-quota-fleet-toggle="agy-cli"]');
     expect(hydratedRow.querySelector('[data-quota-matrix-header]')).not.toBeNull();
     expect(hydratedRow.querySelectorAll('[data-quota-account]')).toHaveLength(3);
-    expect(hydratedRow.querySelectorAll('[data-reading-models-toggle]')).toHaveLength(1);
+    expect(hydratedRow.querySelectorAll('[data-quota-matrix-header] [data-reading-models-toggle]')).toHaveLength(1);
+    expect(hydratedRow.querySelectorAll('[data-reading-models-toggle="mobile"]')).toHaveLength(1);
     expect(container.textContent).not.toContain('Updated ');
     expect(container.textContent).not.toContain('Read ');
   });

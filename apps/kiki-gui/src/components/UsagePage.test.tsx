@@ -905,7 +905,11 @@ describe('UsagePage (V2)', () => {
     expect(container.textContent).not.toContain('partially unknown');
     expect(container.textContent).not.toContain('Some records have no price');
     expect(container.textContent).toContain('Estimated cost');
-    expect(container.querySelector('[data-usage-unpriced-trigger]')?.textContent).toContain('1 unpriced model');
+    const unpricedBtn = container.querySelector<HTMLButtonElement>('[data-usage-unpriced-trigger]')!;
+    expect(unpricedBtn).not.toBeNull();
+    expect(unpricedBtn.textContent).toBe('');
+    expect(unpricedBtn.getAttribute('title')).toContain('1 unpriced model');
+    expect(unpricedBtn.getAttribute('aria-label')).toContain('1 unpriced model');
     await openReliability(container);
     expect(document.body.querySelector('[data-usage-unpriced-models]')?.textContent).toContain('mystery-1');
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).not.toContain('—');
@@ -1797,12 +1801,24 @@ describe('UsagePage redesign: multi-select filter bar, KPI metrics & zero defens
     const unusedToggle = popover.querySelector<HTMLButtonElement>('[data-usage-filter-unused-toggle]')!;
     expect(unusedToggle).not.toBeNull();
     await act(async () => { unusedToggle.click(); });
-    await act(async () => {
-      popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:acme/model-alpha"]')!.click();
-    });
+    const alphaOption = popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:acme/model-alpha"]')!;
+    expect(alphaOption).not.toBeNull();
+    // Unused toggle stays above expanded unused options rather than getting pushed below them.
+    expect(unusedToggle.compareDocumentPosition(alphaOption) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => { alphaOption.click(); });
     await act(async () => {
       popover.querySelector<HTMLButtonElement>('[data-usage-facet-option="model:k2-thinking"]')!.click();
     });
+
+    // Workspace facet on default groupBy=model does not fabricate partial $ sums or fold workspaces into unused.
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('[data-usage-filter-back]')!.click();
+    });
+    await act(async () => {
+      popover.querySelector<HTMLButtonElement>('[data-usage-filter-category="workspace"]')!.click();
+    });
+    expect(popover.querySelector('[data-usage-filter-unused-toggle]')).toBeNull();
+    expect(popover.querySelector('[data-usage-facet-option="workspace:wd_1"]')?.textContent).not.toContain('$');
 
     // Return to Stage 1 and run instant cross-category search without firing extra API calls
     await act(async () => {

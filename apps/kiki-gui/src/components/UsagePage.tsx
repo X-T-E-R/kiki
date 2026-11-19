@@ -128,10 +128,11 @@ function isAdvanceableImport(reliability: UsageResponseWire['reliability']): boo
 // Minimalist 4-Figure Editorial KPI Band
 // ---------------------------------------------------------------------------
 
-function Kpi({ id, label, value, hint, title, dataValue }: {
+function Kpi({ id, label, value, valueAction, hint, title, dataValue }: {
   readonly id: string;
   readonly label: string;
   readonly value: ReactNode;
+  readonly valueAction?: ReactNode;
   readonly hint?: ReactNode;
   readonly title?: string;
   readonly dataValue?: string;
@@ -144,11 +145,14 @@ function Kpi({ id, label, value, hint, title, dataValue }: {
       className="flex min-w-0 flex-col py-1 lg:px-5 first:lg:pl-0 last:lg:pr-0"
     >
       <p className="text-[11.5px] font-medium tracking-[-0.005em] text-ink-faint">{label}</p>
-      <div
-        {...valueProps}
-        className="mt-1.5 flex min-w-0 items-baseline gap-2 truncate font-display text-[28px] leading-none tracking-tight text-ink tabular-nums"
-      >
-        {value}
+      <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
+        <div
+          {...valueProps}
+          className="flex min-w-0 items-baseline gap-2 truncate font-display text-[28px] leading-none tracking-tight text-ink tabular-nums"
+        >
+          {value}
+        </div>
+        {valueAction}
       </div>
       {hint !== undefined ? <div className="mt-2 min-h-4 text-[12px] leading-snug text-ink-faint">{hint}</div> : null}
     </section>
@@ -214,22 +218,19 @@ function UsageKpiBand({
         label={t('usage.kpi.estimatedCost')}
         dataValue="data-usage-summary-cost"
         value={costUnknown && tokensUnknown && summary.cost_usd_estimated === 0 ? '—' : formatCostUsd(summary.cost_usd_estimated)}
-        hint={(costOutcome !== undefined || unpricedCount > 0) ? (
-          <div className="flex flex-wrap items-center gap-2">
-            {costOutcome !== undefined ? <CompareCell outcome={costOutcome} /> : null}
-            {unpricedCount > 0 ? (
-              <button
-                type="button"
-                data-usage-unpriced-trigger
-                onClick={onOpenPricing}
-                className="inline-flex items-center gap-1 rounded-full border border-amber-rule/45 bg-amber-card px-2 py-0.5 text-[11px] font-medium text-amber-ink transition-colors hover:border-amber-rule focus-visible:outline-2 focus-visible:outline-selected-ink"
-              >
-                <Icon name="partial" size={12} />
-                <span>{tp('usage.kpi.unpricedCount', unpricedCount)}</span>
-              </button>
-            ) : null}
-          </div>
+        valueAction={unpricedCount > 0 ? (
+          <button
+            type="button"
+            data-usage-unpriced-trigger
+            onClick={onOpenPricing}
+            title={`${tp('usage.kpi.unpricedCount', unpricedCount)} · ${t('usage.reliability.setPrices')}`}
+            aria-label={`${tp('usage.kpi.unpricedCount', unpricedCount)} · ${t('usage.reliability.setPrices')}`}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-amber-ink/85 transition-colors hover:bg-amber-card hover:text-amber-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+          >
+            <Icon name="partial" size={14} />
+          </button>
         ) : undefined}
+        hint={costOutcome !== undefined ? <CompareCell outcome={costOutcome} /> : undefined}
       />
 
       <Kpi
@@ -1104,7 +1105,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                 {firstPage.reliability.complete || trend.length > 0 ? (
                   <section data-usage-detail className="space-y-3">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline">
-                      <div role="tablist" aria-label={t('usage.sources.title')} className="flex flex-wrap items-baseline gap-0.5" data-usage-tabs>
+                      <div role="tablist" aria-label={t('usage.sources.title')} className="flex min-w-0 flex-nowrap items-baseline gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" data-usage-tabs>
                         {SOURCE_TABS_ORDER.map((axis) => {
                           const active = tab === 'sources' && groupBy === axis;
                           return (
@@ -1116,7 +1117,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                               data-usage-tab={axis}
                               data-usage-grouping={axis}
                               onClick={() => { selectSourceAxisTab(axis); }}
-                              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                              className={`-mb-px min-h-9 shrink-0 whitespace-nowrap border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
                                 active ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                               }`}
                             >
@@ -1131,7 +1132,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                           aria-selected={tab === 'sessions'}
                           data-usage-tab="sessions"
                           onClick={() => { selectDetailTab('sessions'); }}
-                          className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                          className={`-mb-px min-h-9 shrink-0 whitespace-nowrap border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
                             tab === 'sessions' ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                           }`}
                         >
@@ -1145,7 +1146,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                             aria-selected={tab === 'breakdown'}
                             data-usage-tab="breakdown"
                             onClick={() => { selectDetailTab('breakdown'); }}
-                            className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                            className={`-mb-px min-h-9 shrink-0 whitespace-nowrap border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
                               tab === 'breakdown' ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                             }`}
                           >
