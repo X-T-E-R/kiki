@@ -1302,7 +1302,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         taskId, status, notificationId: taskNotificationId(taskId, status),
       }))?.abort();
     }
-    void this.deliverTasksViaWait(tasks);
+    void this.deliverTasksViaWait(tasks).catch(error => this.log.error('task wait delivery failed', { error }));
   }
 
   private async deliverTasksViaWait(tasks: readonly AgentTaskWaitDelivery[]): Promise<void> {
