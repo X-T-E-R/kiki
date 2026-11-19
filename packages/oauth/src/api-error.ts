@@ -1,4 +1,4 @@
-import { isRecord } from './utils';
+import { isRecord, nonEmptyString } from './utils';
 
 const DIRECT_ERROR_KEYS = ['error_description', 'message', 'detail'] as const;
 const NESTED_ERROR_KEYS = ['message', 'error_description', 'detail', 'code', 'type'] as const;
@@ -57,10 +57,4 @@ export async function readApiErrorMessage(
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
   return nonEmptyString(record[key]);
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
 }

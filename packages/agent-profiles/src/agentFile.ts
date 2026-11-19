@@ -11,6 +11,7 @@ import { normalizeModelAllowlist, openIfEmpty, parseSpawnConstraints, parseSubag
 import { isToolGroupId } from './toolGroups';
 import { MODEL_CONSTRAINT_KEYS, ModelConstraintParseError, parseModelConstraintFields } from './modelConstraintFields';
 import { redactProfileEndpoint } from './endpointCredential';
+import { isPlainRecord, isRecord } from './parseHelpers';
 
 export class AgentFileParseError extends Error {
   readonly code = 'validation.failed';
@@ -847,14 +848,4 @@ function deriveNameFromPath(filePath: string): string | undefined {
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }

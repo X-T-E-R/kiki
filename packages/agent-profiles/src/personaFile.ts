@@ -1,6 +1,7 @@
 import { dump as dumpYaml } from 'js-yaml';
 
 import { FrontmatterError, parseFrontmatter } from './frontmatter';
+import { isRecord, parseOptionalString, parseRequiredString } from './parseHelpers';
 
 export const PERSONA_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -207,17 +208,18 @@ function parseStringList(value: unknown, field: string, path: string): readonly 
 }
 
 function requiredString(value: unknown, field: string, path: string): string {
-  const result = optionalString(value, field, path);
-  if (result === undefined) throw new PersonaFileParseError(`Missing required frontmatter field "${field}" in ${path}`);
-  return result;
+  return parseRequiredString(
+    value,
+    () => new PersonaFileParseError(`Missing required frontmatter field "${field}" in ${path}`),
+    () => new PersonaFileParseError(`Frontmatter field "${field}" in ${path} must be a non-empty string`),
+  );
 }
 
 function optionalString(value: unknown, field: string, path: string): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new PersonaFileParseError(`Frontmatter field "${field}" in ${path} must be a non-empty string`);
-  }
-  return value.trim();
+  return parseOptionalString(
+    value,
+    () => new PersonaFileParseError(`Frontmatter field "${field}" in ${path} must be a non-empty string`),
+  );
 }
 
 function isPermissionKey(key: string): boolean {
@@ -226,10 +228,6 @@ function isPermissionKey(key: string): boolean {
 
 function unique(values: readonly string[]): readonly string[] {
   return [...new Set(values)];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function removeUndefined<T extends object>(value: T): T {

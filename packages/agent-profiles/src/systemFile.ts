@@ -7,6 +7,7 @@ import {
 import { parseAgentFileText } from './agentFile';
 import { agentProfileFromFile } from './agentProfileFromFile';
 import { parseFrontmatter } from './frontmatter';
+import { isRecord } from './parseHelpers';
 import { overlaySubagentPermissions } from './subagentPermissions';
 import type { SkippedAgentFile } from './agentFileTypes';
 import type { HostFs } from './hostFs';
@@ -107,8 +108,4 @@ function loadUpgradedSystemMd(
     (context) => builtinDefault.renderSystemPrompt(context),
   );
   return { ...profile, toolsSource: Object.hasOwn(parsed.data, 'tools') ? 'declared' : 'inherited-default' };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

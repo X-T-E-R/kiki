@@ -7,7 +7,7 @@ import { OAuthError, OAuthUnauthorizedError } from './errors';
 import type { DevicePollResult } from './oauth';
 import { assertWebUrl, decodeJwtPayload, type OAuthDeviceMethod, type OAuthMethodDescriptor, type OAuthMethodModel } from './oauth-method-types';
 import type { DeviceAuthorization, TokenInfo } from './types';
-import { isRecord } from './utils';
+import { isRecord, readJson } from './utils';
 
 const CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
 const ISSUER = 'https://auth.x.ai';
@@ -24,10 +24,6 @@ export const GROK_BUILD_METHOD: OAuthMethodDescriptor = {
 function positiveSeconds(value: unknown, fallback: number): number {
   const seconds = Number(value);
   return Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : fallback;
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try { return await response.json(); } catch { return undefined; }
 }
 
 function tokenFromResponse(data: unknown, priorRefresh?: string): TokenInfo {

@@ -1,6 +1,7 @@
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 import { recipeOptionValuesSchema } from '@kiki/protocol';
 import { MODEL_CONSTRAINT_KEYS, parseModelConstraintFields } from './modelConstraintFields';
+import { isRecord, parseOptionalString, parseRequiredString } from './parseHelpers';
 import { parsePromptOverrides } from './promptOverrides';
 import type {
   AgentModelProfile,
@@ -585,21 +586,16 @@ function parseSourcePath(value: unknown, field: string, filePath: string): strin
 }
 
 function requiredString(value: unknown, field: string, filePath: string): string {
-  const parsed = optionalString(value, field, filePath);
-  if (parsed === undefined) {
-    throw new SubagentLeaseParseError(`Missing required frontmatter field "${field}" in ${filePath}`);
-  }
-  return parsed;
+  return parseRequiredString(
+    value,
+    () => new SubagentLeaseParseError(`Missing required frontmatter field "${field}" in ${filePath}`),
+    () => new SubagentLeaseParseError(`Frontmatter field "${field}" in ${filePath} must be a non-empty string`),
+  );
 }
 
 function optionalString(value: unknown, field: string, filePath: string): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new SubagentLeaseParseError(`Frontmatter field "${field}" in ${filePath} must be a non-empty string`);
-  }
-  return value.trim();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return parseOptionalString(
+    value,
+    () => new SubagentLeaseParseError(`Frontmatter field "${field}" in ${filePath} must be a non-empty string`),
+  );
 }
