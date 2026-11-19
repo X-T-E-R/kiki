@@ -1,12 +1,7 @@
 // Dedicated tsdown config that bundles the off-main-thread workers into
 // self-contained ESM files so they can ride the SEA blob as assets
-// (02-sea-blob.mjs) and be spawned from disk at runtime:
-//   - text-build-worker.mjs: the minidb text-build worker
-//     (packages/minidb/src/worker/text-build-worker.ts).
-// Without it the bundled binary lacks the worker entry file on disk and heavy
-// text-index work degrades to the inline main-thread core, stalling the event
-// loop on large corpora. Runs after the main bundle with clean:false
-// so all verified files remain.
+// (02-sea-blob.mjs) and be spawned from disk at runtime.
+// Runs after the main bundle with clean:false so all verified files remain.
 //
 // One config per entry: rolldown forbids `codeSplitting: false` with
 // multiple inputs, and each worker must be a single self-contained file
@@ -61,7 +56,6 @@ function workerConfig(name: string, entry: string) {
 }
 
 export default [
-  workerConfig('text-build-worker', '../../packages/minidb/src/worker/text-build-worker.ts'),
   workerConfig('sqlite-query-worker', '../../packages/kap-server/src/search/sqlite/queryEntry.ts'),
   workerConfig('history-navigation-worker', '../../packages/kap-server/src/services/history/worker/entry.ts'),
   workerConfig('usage-parser-worker', '../../packages/kap-server/src/usage/worker/entry.ts'),

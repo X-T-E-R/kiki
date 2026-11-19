@@ -20,6 +20,7 @@ import { ILogService } from '#/_base/log/log';
 import { IMemoryStore } from '#/app/memory/memoryStore';
 import { IHostFsWatchService, type HostFsChange } from '#/os/interface/hostFsWatch';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { normalizeAvatarImage, readAvatarDimensions } from '#/agent/media/image-compress';
 
 import { detectCardFormat, exportPersonaCard, parsePersonaCard, personaCardBytes, type PersonaCardAsset } from './personaCard';
 import {
@@ -62,8 +63,6 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 type AvatarExtension = PersonaAvatar['extension'];
-
-type JimpImage = Awaited<ReturnType<(typeof import('jimp'))['Jimp']['fromBuffer']>>;
 
 export class PersonaStore extends Disposable implements IPersonaStore {
   declare readonly _serviceBrand: undefined;
@@ -765,43 +764,11 @@ function detectAvatarMime(data: Uint8Array, requested: string | undefined): Pers
 }
 
 async function normalizeAvatar(data: Uint8Array, mimeType: PersonaAvatarMime): Promise<PersonaAvatar> {
-  const { width, height, image } = await decodeAvatar(data, mimeType);
-  const longest = Math.max(width, height);
-  let outputMime = mimeType;
-  let output = data;
-  if (longest > 256 || mimeType === 'image/png' || mimeType === 'image/jpeg') {
-    if (longest > 256) {
-      const factor = 256 / longest;
-      image.resize({ w: Math.max(1, Math.round(width * factor)), h: Math.max(1, Math.round(height * factor)) });
-    }
-    if (mimeType === 'image/webp') outputMime = 'image/png';
-    output = outputMime === 'image/jpeg'
-      ? await image.getBuffer('image/jpeg', { quality: 90 })
-      : await image.getBuffer('image/png', { deflateLevel: 9 });
-  }
-  const extension = outputMime === 'image/jpeg' ? 'jpg' : outputMime === 'image/webp' ? 'webp' : 'png';
-  return { data: Uint8Array.from(output), mimeType: outputMime, extension, width: image.width, height: image.height };
-}
-
-async function decodeAvatar(data: Uint8Array, mimeType: PersonaAvatarMime): Promise<{ readonly image: JimpImage; readonly width: number; readonly height: number }> {
-  const { Jimp } = await import('jimp');
-  if (mimeType === 'image/webp') {
-    const { decodeWebp } = await import('#/agent/media/webp-decode');
-    const decoded = await decodeWebp(data);
-    const image = await Jimp.fromBitmap({
-      data: Buffer.from(decoded.data.buffer, decoded.data.byteOffset, decoded.data.byteLength),
-      width: decoded.width,
-      height: decoded.height,
-    });
-    return { image, width: decoded.width, height: decoded.height };
-  }
-  const image = await Jimp.fromBuffer(Buffer.from(data));
-  return { image, width: image.width, height: image.height };
+  return normalizeAvatarImage(data, mimeType);
 }
 
 async function avatarDimensions(data: Uint8Array, mimeType: PersonaAvatarMime): Promise<{ readonly width: number; readonly height: number }> {
-  const result = await decodeAvatar(data, mimeType);
-  return { width: result.width, height: result.height };
+  return readAvatarDimensions(data, mimeType);
 }
 
 function isAvatarShape(value: unknown): value is PersonaAvatarShape {

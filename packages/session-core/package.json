@@ -79,6 +79,7 @@
     "@kiki/klient": "workspace:^",
     "@kiki/protocol": "workspace:^",
     "@kiki/transcript": "workspace:^",
+    "croner": "^11.0.1",
     "diff": "^8.0.2"
   }
 }

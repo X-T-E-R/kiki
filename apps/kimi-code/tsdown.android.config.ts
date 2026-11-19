@@ -81,7 +81,6 @@ function bundleConfig(name: string, entry: string, clean = false) {
 
 export default [
   bundleConfig('entry', './src/android-entry.ts', true),
-  bundleConfig('text-build-worker', '../../packages/minidb/src/worker/text-build-worker.ts'),
   bundleConfig('sqlite-indexer', '../../packages/kap-server/src/search/sqlite/indexerDev.ts'),
   bundleConfig('sqlite-query-worker', '../../packages/kap-server/src/search/sqlite/queryEntry.ts'),
   bundleConfig('history-navigation-worker', '../../packages/kap-server/src/services/history/worker/entry.ts'),

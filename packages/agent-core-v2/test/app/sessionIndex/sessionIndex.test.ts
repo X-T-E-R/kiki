@@ -45,11 +45,10 @@ import {
   SessionIndexMirror,
 } from '#/app/sessionIndex/sessionIndexMirrorService';
 import {
-  drainQueryStoreDisposals,
-  MINIDB_QUERY_STORE_SUBDIR,
-  MiniDbQueryStore,
-} from '#/persistence/backends/minidb/miniDbQueryStore';
-import { SqliteQueryStore } from '#/persistence/backends/sqlite/sqliteQueryStore';
+  SQLITE_QUERY_STORE_SUBDIR,
+  SqliteQueryStore,
+} from '#/persistence/backends/sqlite/sqliteQueryStore';
+import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -753,7 +752,7 @@ describe('FileSessionIndex (read model)', () => {
     registerScopedService(
       LifecycleScope.App,
       IQueryStore,
-      MiniDbQueryStore,
+      SqliteQueryStore,
       ScopeActivation.OnDemand,
       'storage',
     );
@@ -862,7 +861,7 @@ describe('FileSessionIndex (read model)', () => {
     rows: number;
   }
 
-  class CountingQueryStore extends MiniDbQueryStore {
+  class CountingQueryStore extends SqliteQueryStore {
     private readonly counts = new Map<string, OpCounts>();
 
     resetCounts(): void {
@@ -988,7 +987,7 @@ describe('FileSessionIndex (read model)', () => {
 
   it('projects and advances the generation through withExclusive after a zero-filled lock', async () => {
     await seedSession('before-restart', { title: 'before', createdAt: 1, updatedAt: 2 });
-    const lockDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
+    const lockDir = join(homeDir, 'cache', SQLITE_QUERY_STORE_SUBDIR);
     const lockPath = join(lockDir, 'session-index.lock');
     await fsp.mkdir(lockDir, { recursive: true });
     await fsp.writeFile(lockPath, Buffer.alloc(188));
@@ -2347,7 +2346,7 @@ describe('FileSessionIndex (read model)', () => {
     let pageGate: Promise<void> | undefined;
     let releasePage: () => void = () => {};
     let notifyPageRead: (() => void) | undefined;
-    class GatedQueryStore extends MiniDbQueryStore {
+    class GatedQueryStore extends SqliteQueryStore {
       override async pageByColumn<T>(
         collection: string,
         query: ColumnPageQuery,
@@ -2406,7 +2405,7 @@ describe('FileSessionIndex (read model)', () => {
         return entries;
       }
     }
-    class TrackingQueryStore extends MiniDbQueryStore {
+    class TrackingQueryStore extends SqliteQueryStore {
       trackManifestReads = false;
       trackedManifestReads = 0;
       override async getCheckpoint(source: string): Promise<Checkpoint | undefined> {
@@ -2504,7 +2503,7 @@ describe('FileSessionIndex (read model)', () => {
     let batchGate: Promise<void> | undefined;
     let releaseBatch: () => void = () => {};
     let notifyBatchEntered: (() => void) | undefined;
-    class GatedQueryStore extends MiniDbQueryStore {
+    class GatedQueryStore extends SqliteQueryStore {
       override async batch(ops: readonly WriteOp[]): Promise<void> {
         notifyBatchEntered?.();
         const gate = batchGate;
@@ -2564,7 +2563,7 @@ describe('FileSessionIndex (read model)', () => {
     let batchGate: Promise<void> | undefined;
     let releaseBatch: () => void = () => {};
     let notifyBatchEntered: (() => void) | undefined;
-    class GatedQueryStore extends MiniDbQueryStore {
+    class GatedQueryStore extends SqliteQueryStore {
       override async batch(ops: readonly WriteOp[]): Promise<void> {
         notifyBatchEntered?.();
         const gate = batchGate;
@@ -2628,7 +2627,7 @@ describe('FileSessionIndex (read model)', () => {
 
     let batchCalls = 0;
     let failBatches = false;
-    class FailingQueryStore extends MiniDbQueryStore {
+    class FailingQueryStore extends SqliteQueryStore {
       override async batch(ops: readonly WriteOp[]): Promise<void> {
         if (failBatches) {
           batchCalls += 1;
@@ -2685,7 +2684,7 @@ describe('FileSessionIndex (read model)', () => {
     let checkpointGate: Promise<void> | undefined;
     let releaseCheckpoint: () => void = () => {};
     let notifyCheckpointEntered: (() => void) | undefined;
-    class GatedQueryStore extends MiniDbQueryStore {
+    class GatedQueryStore extends SqliteQueryStore {
       holdNextPublish = false;
       override async setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> {
         if (
@@ -2750,7 +2749,7 @@ describe('FileSessionIndex (read model)', () => {
   });
 
   it('keeps legacy published collections when the isolated publish fails', async () => {
-    class PublishFailingQueryStore extends MiniDbQueryStore {
+    class PublishFailingQueryStore extends SqliteQueryStore {
       failPublish = false;
       override async setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> {
         if (this.failPublish && source === SESSION_INDEX_MANIFEST) {
@@ -2799,7 +2798,7 @@ describe('FileSessionIndex (read model)', () => {
   });
 
   it('publishes v6 before cleaning a real v5 collection layout', async () => {
-    class UpgradeTrackingQueryStore extends MiniDbQueryStore {
+    class UpgradeTrackingQueryStore extends SqliteQueryStore {
       legacyPresentAtPublish = false;
       override async setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> {
         if (source === SESSION_INDEX_MANIFEST) {
@@ -2856,7 +2855,7 @@ describe('FileSessionIndex (read model)', () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
     await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 3 });
 
-    class FlakyQueryStore extends MiniDbQueryStore {
+    class FlakyQueryStore extends SqliteQueryStore {
       failNextBatch = false;
       override async batch(ops: readonly WriteOp[]): Promise<void> {
         if (this.failNextBatch) {
@@ -2924,7 +2923,7 @@ describe('FileSessionIndex (read model)', () => {
     await seedSession('b', { createdAt: 2, updatedAt: 2 });
     await seedSession('c', { createdAt: 3, updatedAt: 1 });
 
-    class FlakyQueryStore extends MiniDbQueryStore {
+    class FlakyQueryStore extends SqliteQueryStore {
       failNextBatch = false;
       override async batch(ops: readonly WriteOp[]): Promise<void> {
         if (this.failNextBatch) {
@@ -2990,7 +2989,7 @@ describe('FileSessionIndex (read model)', () => {
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
-    await fsp.rm(join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
+    await fsp.rm(join(homeDir, 'cache', SQLITE_QUERY_STORE_SUBDIR), { recursive: true, force: true });
 
     const second = build();
     await expect(second.listRecent({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(
@@ -3123,7 +3122,9 @@ describe('FileSessionIndex (read model)', () => {
       await store.reconcileNow();
       await Promise.all(waiters);
       expect(scans).toBe(1);
-      expect(batchWrites).toHaveBeenCalledTimes(1);
+      expect(
+        batchWrites.mock.calls.filter(([ops]) => ops.some((op) => op.collection === sessionCollection(1))),
+      ).toHaveLength(1);
       expect(scheduled).toBeUndefined();
       expect(await store.get('s0', workspaceId)).toMatchObject({ title: 'external drift' });
     } finally {
@@ -3728,7 +3729,7 @@ describe('FileSessionIndex (read model)', () => {
     await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 2 });
     await seedSession('c', { title: 'c', createdAt: 3, updatedAt: 1 });
 
-    class GatedQueryStore extends MiniDbQueryStore {
+    class GatedQueryStore extends SqliteQueryStore {
       checkpointReads = 0;
       private releaseGate: (() => void) | undefined;
       private markPrepareEntered: (() => void) | undefined;
@@ -3785,7 +3786,7 @@ describe('FileSessionIndex (read model)', () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
     await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 3 });
 
-    class GatedQueryStore extends MiniDbQueryStore {
+    class GatedQueryStore extends SqliteQueryStore {
       private gate: Promise<void> | undefined;
       private openGate: (() => void) | undefined;
       private notifyEntered: (() => void) | undefined;
@@ -4000,7 +4001,7 @@ describe('FileSessionIndex (read model)', () => {
     for (const id of ['a', 'b']) await fsp.utimes(join(sessionsDir, workspaceId, id, 'session-meta', 'state.json'), time, time);
     const first = build();
     await first.prepare();
-    const peerQuery = new MiniDbQueryStore(stubBootstrap(homeDir), stubLog());
+    const peerQuery = new SqliteQueryStore(stubBootstrap(homeDir), stubLog());
     const peerMirror = new SessionIndexMirror(peerQuery, stubFlag(true), stubLog());
     const storage = new FileStorageService(homeDir);
     const peer = new FileSessionIndex(stubBootstrap(homeDir), storage, new JsonAtomicDocumentStore(storage), peerQuery, stubFlag(true), peerMirror, stubLog(), new TestSessionIndexWatch());
@@ -4098,7 +4099,7 @@ describe('FileSessionIndex (read model)', () => {
   it('status() walks the read-model lifecycle and stays diagnosable through degradation', async () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
 
-    class GatedFlakyQueryStore extends MiniDbQueryStore {
+    class GatedFlakyQueryStore extends SqliteQueryStore {
       private gate: Promise<void> | undefined;
       private openGate: (() => void) | undefined;
       failNextBatch = false;
@@ -4162,7 +4163,7 @@ describe('FileSessionIndex (read model)', () => {
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
-    await fsp.rm(join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
+    await fsp.rm(join(homeDir, 'cache', SQLITE_QUERY_STORE_SUBDIR), { recursive: true, force: true });
 
     const second = build();
     (queryStore as GatedFlakyQueryStore).failNextBatch = true;
@@ -4350,7 +4351,7 @@ describe('FileSessionIndex (read model)', () => {
     await mirror.drain();
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
 
-    const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
+    const storeDir = join(homeDir, 'cache', SQLITE_QUERY_STORE_SUBDIR);
     const entries = await fsp.readdir(storeDir, { recursive: true, withFileTypes: true });
     const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
     expect(files.length).toBeGreaterThan(0);

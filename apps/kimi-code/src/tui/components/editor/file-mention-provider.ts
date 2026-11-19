@@ -4,12 +4,12 @@ import { basename, join, resolve } from 'node:path';
 
 import {
   CombinedAutocompleteProvider,
-  fuzzyMatch,
   type AutocompleteItem,
   type AutocompleteProvider,
   type AutocompleteSuggestions,
   type SlashCommand,
 } from '@kiki/pi-tui';
+import { Fzf, byLengthAsc } from 'fzf';
 
 import { findInlineSkillTokens } from '../../utils/inline-skill-tokens';
 
@@ -584,40 +584,25 @@ function rankFsMentionCandidates(
   candidates: readonly FsMentionCandidate[],
   query: string,
 ): FsMentionCandidate[] {
-  const lowerQuery = query.toLowerCase();
-  const scored: Array<{ candidate: FsMentionCandidate; score: number }> = [];
-
-  for (const candidate of candidates) {
-    const score = scoreCandidate(candidate, lowerQuery);
-    if (score > 0) scored.push({ candidate, score });
+  if (query.length === 0) {
+    return candidates.toSorted((a, b) => {
+      const scoreA = (a.isDirectory ? 120 : 100) - (a.path.split('/').length - 1);
+      const scoreB = (b.isDirectory ? 120 : 100) - (b.path.split('/').length - 1);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+      return a.path.localeCompare(b.path);
+    });
   }
 
-  scored.sort((a, b) => {
-    if (a.score !== b.score) return b.score - a.score;
-    if (a.candidate.isDirectory !== b.candidate.isDirectory) {
-      return a.candidate.isDirectory ? -1 : 1;
-    }
-    return a.candidate.path.localeCompare(b.candidate.path);
+  const fzf = new Fzf(candidates, {
+    selector: (candidate) => candidate.path,
+    tiebreakers: [
+      (a, b) => Number(b.item.isDirectory) - Number(a.item.isDirectory),
+      byLengthAsc,
+      (a, b) => a.item.path.localeCompare(b.item.path),
+    ],
   });
-
-  return scored.map((entry) => entry.candidate);
-}
-
-function scoreCandidate(candidate: FsMentionCandidate, lowerQuery: string): number {
-  if (lowerQuery.length === 0) {
-    const depthPenalty = candidate.path.split('/').length - 1;
-    return (candidate.isDirectory ? 120 : 100) - depthPenalty;
-  }
-
-  const lowerPath = candidate.path.toLowerCase();
-  const lowerBase = basename(candidate.path).toLowerCase();
-  let score = 0;
-  if (lowerBase === lowerQuery) score = 100;
-  else if (lowerBase.startsWith(lowerQuery)) score = 80;
-  else if (lowerBase.includes(lowerQuery)) score = 50;
-  else if (lowerPath.includes(lowerQuery)) score = 30;
-  if (candidate.isDirectory && score > 0) score += 10;
-  return score;
+  return fzf.find(query).map((hit) => hit.item);
 }
 
 function toMentionItem(candidate: FsMentionCandidate, isQuotedPrefix: boolean): AutocompleteItem {
@@ -702,16 +687,18 @@ function shouldSuppressSlashArgumentCompletion(
 }
 
 /**
- * All tokens must fuzzy-match `text`; returns the summed score, or null when
- * any token misses. An empty token list matches everything with score 0.
- * Mirrors pi-tui fuzzyFilter's token semantics — keep in sync if it changes.
+ * All tokens must fuzzy-match `text` via `fzf`; returns a lower-is-better
+ * negated score, or null when any token misses. An empty token list matches
+ * everything with score 0.
  */
 function scoreTokens(tokens: readonly string[], text: string): number | null {
+  if (tokens.length === 0) return 0;
+  const fzf = new Fzf([text]);
   let score = 0;
   for (const token of tokens) {
-    const m = fuzzyMatch(token, text);
-    if (!m.matches) return null;
-    score += m.score;
+    const hit = fzf.find(token)[0];
+    if (hit === undefined) return null;
+    score -= hit.score;
   }
   return score;
 }

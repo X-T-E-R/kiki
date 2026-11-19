@@ -25,7 +25,8 @@ import {
   drainSessionIndexMirror,
   SessionIndexMirror,
 } from '#/app/sessionIndex/sessionIndexMirrorService';
-import { drainQueryStoreDisposals, MiniDbQueryStore } from '#/persistence/backends/minidb/miniDbQueryStore';
+import { SqliteQueryStore } from '#/persistence/backends/sqlite/sqliteQueryStore';
+import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 import { IQueryStore } from '#/persistence/interface/queryStore';
 
 import { stubBootstrap } from '../bootstrap/stubs';
@@ -64,7 +65,7 @@ describe('SessionIndexMirror', () => {
     registerScopedService(
       LifecycleScope.App,
       IQueryStore,
-      MiniDbQueryStore,
+      SqliteQueryStore,
       ScopeActivation.OnDemand,
       'storage',
     );

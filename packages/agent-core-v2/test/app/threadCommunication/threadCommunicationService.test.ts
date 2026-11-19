@@ -65,7 +65,8 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IQueryStore } from '#/persistence/interface/queryStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
-import { MiniDbQueryStore, drainQueryStoreDisposals } from '#/persistence/backends/minidb/miniDbQueryStore';
+import { SqliteQueryStore } from '#/persistence/backends/sqlite/sqliteQueryStore';
+import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 import { IThreadTurnStore, ThreadTurnStore } from '#/app/threadCommunication/threadTurnStore';
 import type { WireRecord } from '#/wire/record';
 import { stubLog } from '../../_base/log/stubs';
@@ -247,7 +248,7 @@ describe('ThreadCommunicationService', () => {
     } as unknown as ISessionManager);
     const wireStorage = new InMemoryStorageService();
     ix.stub(IFileSystemStorageService, wireStorage);
-    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore));
     ix.set(ICpuWorkerService, new SyncDescriptor(CpuWorkerService));
     ix.set(IThreadTurnStore, new SyncDescriptor(ThreadTurnStore));
     ix.stub(IAppendLogStore, {

@@ -69,8 +69,8 @@
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@fontsource/space-grotesk": "^5.2.5",
     "@kiki/agent-profiles": "workspace:^",
-    "@kiki/plugin-sdk": "workspace:*",
     "@kiki/klient": "workspace:^",
+    "@kiki/plugin-sdk": "workspace:*",
     "@kiki/protocol": "workspace:^",
     "@kiki/session-core": "workspace:^",
     "@kiki/transcript": "workspace:^",
@@ -97,7 +97,8 @@
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.18.2",
     "smol-toml": "^1.9.0",
-    "streamdown": "^2.2.0"
+    "streamdown": "^2.2.0",
+    "uqr": "^0.1.3"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.4",

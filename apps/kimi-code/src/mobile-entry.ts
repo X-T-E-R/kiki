@@ -402,12 +402,10 @@ export function configureBundledMobileAssets(
 async function configureWorkerRuntimes(bundleDir: string): Promise<void> {
   const [
     nodeSdk,
-    minidbRuntime,
     usageWorkerRuntime,
     modelPricingRuntime,
   ] = await Promise.all([
     import('@kiki/node-sdk'),
-    import('@kiki/minidb/worker-runtime'),
     import('@kiki/kap-server/usage-worker-runtime'),
     import('@kiki/kap-server/model-pricing-runtime'),
   ]);
@@ -429,9 +427,6 @@ async function configureWorkerRuntimes(bundleDir: string): Promise<void> {
 
   const pluginIsolationWorker = join(bundleDir, 'plugin-isolation-worker.mjs');
   if (existsSync(pluginIsolationWorker)) nodeSdk.configurePluginIsolationWorkerRuntime(pluginIsolationWorker);
-
-  const textBuildWorker = join(bundleDir, 'text-build-worker.mjs');
-  if (existsSync(textBuildWorker)) minidbRuntime.configureTextBuildWorkerRuntime(textBuildWorker);
 
   const usageParserWorker = join(bundleDir, 'usage-parser-worker.mjs');
   if (existsSync(usageParserWorker)) usageWorkerRuntime.configureUsageWorkerRuntime(usageParserWorker);

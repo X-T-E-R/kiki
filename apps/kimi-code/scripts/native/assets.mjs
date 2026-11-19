@@ -16,7 +16,6 @@ import {
   MEMORY_WORKER_ASSET,
   CPU_WORKER_ASSET,
   PLUGIN_ISOLATION_WORKER_ASSET,
-  MINIDB_TEXT_BUILD_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION,
   buildManifestKey,
@@ -373,10 +372,6 @@ export async function collectNativeAssets({ appRoot, target }) {
 
   const runtimeFiles = [];
   for (const [runtimeSource, asset] of [
-    [
-      resolve(appRoot, 'dist-native', 'intermediates', 'text-build-worker.mjs'),
-      MINIDB_TEXT_BUILD_WORKER_ASSET,
-    ],
     [
       resolve(appRoot, 'dist-native', 'intermediates', 'sqlite-query-worker.mjs'),
       KAP_SQLITE_QUERY_WORKER_ASSET,

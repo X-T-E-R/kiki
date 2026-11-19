@@ -3,7 +3,13 @@ import type { MessagePort } from 'node:worker_threads';
 import { workspacePathInventory, workspacePathEntry, workspacePathFilter } from '#/os/backends/node-local/workspacePathInventory';
 import { executeWorkspaceTrigram, type WorkspaceTrigramOperation } from '#/os/backends/node-local/workspaceTrigramStore';
 import { decodeImageVerdict } from '#/agent/media/imageDecode';
-import type { ImageCompressWorkerInput } from '#/agent/media/image-compress';
+import type {
+  AvatarNormalizeWorkerInput,
+  ImageCompressWorkerInput,
+  ImageCropWorkerInput,
+  ImageDimensionsWorkerInput,
+  ImageToPngWorkerInput,
+} from '#/agent/media/image-compress';
 import { LocalLineReader, type LineRangeOptions, type TailRangeOptions } from '#/os/backends/node-local/lineReader';
 import { decodeWireInput, projectWireInput } from './wireTask';
 import { parseThreadTurnRecord } from '#/app/threadCommunication/threadTurnRecord';
@@ -24,6 +30,10 @@ export interface FileLineRangeOperation {
 export type CpuOperation =
   | { readonly type: 'image.decode'; readonly bytes: ArrayBuffer; readonly mimeType: string }
   | ({ readonly type: 'image.compress' } & ImageCompressWorkerInput)
+  | ({ readonly type: 'image.crop' } & ImageCropWorkerInput)
+  | ({ readonly type: 'image.normalizeAvatar' } & AvatarNormalizeWorkerInput)
+  | ({ readonly type: 'image.dimensions' } & ImageDimensionsWorkerInput)
+  | ({ readonly type: 'image.toPng' } & ImageToPngWorkerInput)
   | { readonly type: 'wire.context'; readonly input: MessagePort; readonly scope: string; readonly key: string; readonly omitTranscript?: boolean }
   | { readonly type: 'wire.threadTurnRecord'; readonly input: MessagePort }
   | { readonly type: 'checkpoint.read'; readonly path: string; readonly names: readonly string[] }
@@ -87,6 +97,22 @@ export async function executeCpuOperation(operation: CpuOperation): Promise<unkn
     case 'image.compress': {
       const { executeImageCompress } = await import('#/agent/media/image-compress');
       return executeImageCompress(operation);
+    }
+    case 'image.crop': {
+      const { executeImageCrop } = await import('#/agent/media/image-compress');
+      return executeImageCrop(operation);
+    }
+    case 'image.normalizeAvatar': {
+      const { executeAvatarNormalize } = await import('#/agent/media/image-compress');
+      return executeAvatarNormalize(operation);
+    }
+    case 'image.dimensions': {
+      const { executeImageDimensions } = await import('#/agent/media/image-compress');
+      return executeImageDimensions(operation);
+    }
+    case 'image.toPng': {
+      const { executeImageToPng } = await import('#/agent/media/image-compress');
+      return executeImageToPng(operation);
     }
     case 'wire.context': return projectWireInput(operation.input, operation.scope, operation.key, operation.omitTranscript === true);
     case 'checkpoint.read': return readCheckpointStatesFromFile(operation.path, operation.names);

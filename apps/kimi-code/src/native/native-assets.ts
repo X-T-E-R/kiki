@@ -25,7 +25,6 @@ import {
   MEMORY_WORKER_ASSET,
   CPU_WORKER_ASSET,
   PLUGIN_ISOLATION_WORKER_ASSET,
-  MINIDB_TEXT_BUILD_WORKER_ASSET,
   QUERY_STORE_WORKER_ASSET,
   USAGE_READ_MODEL_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
@@ -528,12 +527,6 @@ export function getNativeRuntimeFile(
 
   const cacheRoot = ensureNativeAssetTree({ ...options, source, manifest: rawManifest });
   return cacheRoot === null ? null : resolveAssetPath(cacheRoot, file.relativePath);
-}
-
-export function getMinidbTextBuildWorkerFile(
-  options: NativeAssetOptions = {},
-): string | null {
-  return getNativeRuntimeFile(MINIDB_TEXT_BUILD_WORKER_ASSET.key, options);
 }
 
 export function getKapUsageWorkerFile(options: NativeAssetOptions = {}): string | null {

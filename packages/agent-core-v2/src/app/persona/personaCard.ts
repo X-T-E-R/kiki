@@ -3,6 +3,8 @@ import { type Entry, fromBuffer as yauzlFromBuffer } from 'yauzl';
 
 import type { PersonaDefinition } from '@kiki/agent-profiles/personaFile';
 
+import { encodeImageAsPng } from '#/agent/media/image-compress';
+
 import type {
   PersonaAvatar,
   PersonaAvatarInput,
@@ -317,19 +319,7 @@ function findArchiveAvatar(
 async function avatarAsPng(avatar: PersonaAvatar | undefined): Promise<Uint8Array> {
   if (avatar === undefined) return EMPTY_PNG;
   if (avatar.mimeType === 'image/png') return avatar.data;
-  const { Jimp } = await import('jimp');
-  if (avatar.mimeType === 'image/webp') {
-    const { decodeWebp } = await import('#/agent/media/webp-decode');
-    const decoded = await decodeWebp(avatar.data);
-    const image = await Jimp.fromBitmap({
-      data: Buffer.from(decoded.data.buffer, decoded.data.byteOffset, decoded.data.byteLength),
-      width: decoded.width,
-      height: decoded.height,
-    });
-    return image.getBuffer('image/png');
-  }
-  const image = await Jimp.fromBuffer(Buffer.from(avatar.data));
-  return image.getBuffer('image/png');
+  return encodeImageAsPng(avatar.data, avatar.mimeType);
 }
 
 function appendPngText(png: Uint8Array, keyword: string, value: string): Uint8Array {

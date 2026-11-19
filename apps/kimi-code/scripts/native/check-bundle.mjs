@@ -77,7 +77,6 @@ export function checkBundle(bundlePath, { worker = false } = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const bundles = [
     { path: nativeJsBundlePath(), worker: false },
-    { path: resolve(nativeIntermediatesDir(), 'text-build-worker.mjs'), worker: true },
     { path: resolve(nativeIntermediatesDir(), 'sqlite-query-worker.mjs'), worker: true },
     { path: resolve(nativeIntermediatesDir(), 'history-navigation-worker.mjs'), worker: true },
     { path: resolve(nativeIntermediatesDir(), 'usage-parser-worker.mjs'), worker: true },
