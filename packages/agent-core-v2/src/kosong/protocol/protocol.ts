@@ -38,6 +38,7 @@ export interface ProtocolAdapterConfig {
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly requestCompression?: RequestCompression;
   readonly responsesWebSocket?: ResponsesWebSocketConfig;
+  readonly capabilities?: ModelCapability;
   readonly providerOptions?: ProtocolProviderOptions;
 }
 

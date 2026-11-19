@@ -84,6 +84,7 @@ export class ModelRequesterImpl implements ModelRequester {
       defaultHeaders: model.headers,
       requestCompression: model.requestCompression,
       responsesWebSocket: model.responsesWebSocket,
+      capabilities: model.capabilities,
       providerOptions: model.providerOptions,
     });
     return this.cachedChatProvider;

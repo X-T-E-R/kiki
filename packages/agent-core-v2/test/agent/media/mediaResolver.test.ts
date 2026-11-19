@@ -290,6 +290,97 @@ describe('AgentMediaResolverService audio strategy', () => {
     expect(result[0]!.content).toEqual([message.content[0], expect.objectContaining({ type: 'text' })]);
     expect(stream).not.toHaveBeenCalled();
   });
+
+  it('normalizes alias audio MIME types for daemon refs and inline data URLs, and degrades inline audio when audio_in is false', async () => {
+    const wavBytes = Buffer.from('RIFF\u0004\u0000\u0000\u0000WAVE');
+    const wavB64 = wavBytes.toString('base64');
+    const media = {
+      ...stubMediaStore(),
+      open: async (_id: string, variant?: 'wav') => variant === 'wav' ? undefined : {
+        name: 'clip', mediaType: 'audio/x-wav', size: wavBytes.length,
+        stream: async function* () { yield wavBytes; },
+      },
+    };
+    const service = resolver(new Map(), undefined, media);
+
+    const daemonMsg: Message = {
+      role: 'user',
+      toolCalls: [],
+      content: [{ type: 'audio_url', audioUrl: { url: buildKimiFileUrl(FILE_ID) } }],
+    };
+    expect(firstPart(await service.resolve([daemonMsg], requester({ audioIn: true })))).toEqual({
+      type: 'audio_url',
+      audioUrl: { url: `data:audio/wav;base64,${wavB64}`, name: 'clip' },
+    });
+
+    const canonicalInline: Message[] = [{
+      role: 'user',
+      toolCalls: [],
+      content: [{ type: 'audio_url', audioUrl: { url: `data:audio/mpeg;base64,${wavB64}`, name: 'song.mp3' } }],
+    }];
+    expect(await service.resolve(canonicalInline, requester({ audioIn: true }))).toBe(canonicalInline);
+
+    const aliasInline: Message = {
+      role: 'tool',
+      toolCallId: 'call_audio_1',
+      toolCalls: [],
+      content: [{ type: 'audio_url', audioUrl: { url: `data:audio/mp3;base64,${wavB64}`, name: 'song.mp3' } }],
+    };
+    expect(firstPart(await service.resolve([aliasInline], requester({ audioIn: true })))).toEqual({
+      type: 'audio_url',
+      audioUrl: { url: `data:audio/mpeg;base64,${wavB64}`, name: 'song.mp3' },
+    });
+    expect(firstPart(await service.resolve([aliasInline], requester({ audioIn: false })))).toEqual({
+      type: 'text',
+      text: '[audio omitted: inline audio is unavailable for this model request]',
+    });
+  });
+
+  it('resolves blobref:audio/... to data:audio/...;base64,... when audio_in is true and degrades when false or missing', async () => {
+    const audioBytes = Buffer.from('ID3\x03\x00\x00\x00fake-mp3');
+    const hash = 'a'.repeat(64);
+    const blobs = blobStore();
+    await blobs.put('agents/main/blobs', hash, audioBytes);
+
+    const ix = createServices(disposables, {
+      base: [registerStateServices],
+      additionalServices: (reg) => {
+        reg.defineInstance(IFileService, fileService(new Map()));
+        reg.defineInstance(IBlobStore, blobs);
+        reg.defineInstance(ITelemetryService, telemetry);
+        reg.defineInstance(IFlagService, { enabled: () => true } as never);
+        reg.defineInstance(ISessionMediaStore, stubMediaStore());
+        reg.definePartialInstance(IAgentScopeContext, { scope: (name) => `agents/main/${name}` });
+        reg.define(IAgentMediaResolverService, AgentMediaResolverService);
+      },
+    });
+    const service = ix.get(IAgentMediaResolverService);
+
+    const mp3Ref: Message = {
+      role: 'tool',
+      toolCallId: 'call_blob_1',
+      toolCalls: [],
+      content: [{ type: 'audio_url', audioUrl: { url: `blobref:audio/mp3;${hash}`, name: 'clip.mp3' } }],
+    };
+    expect(firstPart(await service.resolve([mp3Ref], requester({ audioIn: true })))).toEqual({
+      type: 'audio_url',
+      audioUrl: { url: `data:audio/mpeg;base64,${audioBytes.toString('base64')}`, name: 'clip.mp3' },
+    });
+    expect(firstPart(await service.resolve([mp3Ref], requester({ audioIn: false })))).toEqual({
+      type: 'text',
+      text: '[audio omitted: inline audio is unavailable for this model request]',
+    });
+
+    const missingRef: Message = {
+      role: 'user',
+      toolCalls: [],
+      content: [{ type: 'audio_url', audioUrl: { url: `blobref:audio/wav;${'b'.repeat(64)}` } }],
+    };
+    expect(firstPart(await service.resolve([missingRef], requester({ audioIn: true })))).toEqual({
+      type: 'text',
+      text: '[audio omitted: inline audio is unavailable for this model request]',
+    });
+  });
 });
 
 describe('AgentMediaResolverService video strategy', () => {

@@ -153,6 +153,7 @@ export interface AnthropicOptions {
   clientFactory?: (auth: ProviderRequestAuth) => Anthropic;
   hooks?: AnthropicHooks | undefined;
   acceptedImageMimes?: ReadonlySet<string> | undefined;
+  audioIn?: boolean;
 }
 
 const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
@@ -330,9 +331,38 @@ interface AnthropicVideoBlock {
   source: { type: 'base64'; media_type: string; data: string } | { type: 'url'; url: string };
 }
 
+interface AnthropicAudioBlock {
+  type: 'audio';
+  source: { type: 'base64'; media_type: string; data: string } | { type: 'url'; url: string };
+}
+
 const OMITTED_MEDIA_PLACEHOLDER = {
   audio_url: '(audio omitted: not supported by this provider)',
 } as const;
+
+const AUDIO_MIME_ALIASES: Readonly<Record<string, string>> = {
+  'audio/x-wav': 'audio/wav',
+  'audio/wave': 'audio/wav',
+  'audio/mp3': 'audio/mpeg',
+  'audio/x-m4a': 'audio/mp4',
+};
+
+const SUPPORTED_B64_AUDIO_TYPES = new Set([
+  'audio/mpeg',
+  'audio/wav',
+  'audio/mp4',
+  'audio/ogg',
+  'audio/flac',
+  'audio/aac',
+  'audio/opus',
+  'audio/webm',
+  'audio/x-ms-wma',
+]);
+
+function normalizeAudioMimeType(raw: string): string {
+  const base = (raw.split(';', 1)[0] ?? '').trim().toLowerCase();
+  return AUDIO_MIME_ALIASES[base] ?? base;
+}
 
 const SUPPORTED_B64_VIDEO_TYPES = new Set([
   'video/mp4',
@@ -399,6 +429,32 @@ function videoUrlPartToAnthropic(url: string): AnthropicVideoBlock {
   };
 }
 
+function audioUrlPartToAnthropic(url: string): AnthropicAudioBlock {
+  if (url.startsWith('data:')) {
+    const withoutScheme = url.slice(5);
+    const parts = withoutScheme.split(';base64,', 2);
+    if (parts.length !== 2 || parts[0] === undefined || parts[1] === undefined) {
+      throw new ChatProviderError(`Invalid data URL for audio: ${url}`);
+    }
+    const mediaType = normalizeAudioMimeType(parts[0]);
+    const data = parts[1];
+    if (!SUPPORTED_B64_AUDIO_TYPES.has(mediaType)) {
+      throw new ChatProviderError(
+        `Unsupported media type for base64 audio: ${mediaType}, url: ${url}`,
+      );
+    }
+    return {
+      type: 'audio',
+      source: { type: 'base64', media_type: mediaType, data },
+    };
+  }
+
+  return {
+    type: 'audio',
+    source: { type: 'url', url },
+  };
+}
+
 interface AnthropicToolParam extends AnthropicTool {
   cache_control?: { type: 'ephemeral' } | null;
 }
@@ -415,8 +471,11 @@ function toolResultToBlock(
   toolCallId: string,
   content: ContentPart[],
   acceptedImageMimes: ReadonlySet<string>,
+  audioIn: boolean,
 ): ToolResultBlockParam {
-  const blocks: Array<TextBlockParam | AnthropicImageBlock | AnthropicVideoBlock> = [];
+  const blocks: Array<
+    TextBlockParam | AnthropicImageBlock | AnthropicVideoBlock | AnthropicAudioBlock
+  > = [];
   for (const part of content) {
     if (part.type === 'text') {
       if (part.text) {
@@ -427,10 +486,14 @@ function toolResultToBlock(
     } else if (part.type === 'video_url') {
       blocks.push(videoUrlPartToAnthropic(part.videoUrl.url));
     } else if (part.type === 'audio_url') {
-      const placeholder = OMITTED_MEDIA_PLACEHOLDER[part.type];
-      const last = blocks.at(-1);
-      if (!(last?.type === 'text' && last.text === placeholder)) {
-        blocks.push({ type: 'text', text: placeholder });
+      if (audioIn) {
+        blocks.push(audioUrlPartToAnthropic(part.audioUrl.url));
+      } else {
+        const placeholder = OMITTED_MEDIA_PLACEHOLDER[part.type];
+        const last = blocks.at(-1);
+        if (!(last?.type === 'text' && last.text === placeholder)) {
+          blocks.push({ type: 'text', text: placeholder });
+        }
       }
     }
   }
@@ -446,6 +509,7 @@ function convertMessage(
   model: string,
   acceptedImageMimes: ReadonlySet<string>,
   includeToolSignature: boolean,
+  audioIn: boolean,
 ): MessageParam {
   const role = message.role;
 
@@ -464,7 +528,12 @@ function convertMessage(
     if (message.toolCallId === undefined) {
       throw new ChatProviderError('Tool message missing `toolCallId`.');
     }
-    const block = toolResultToBlock(message.toolCallId, message.content, acceptedImageMimes);
+    const block = toolResultToBlock(
+      message.toolCallId,
+      message.content,
+      acceptedImageMimes,
+      audioIn,
+    );
     return { role: 'user', content: [block as ContentBlockParam] };
   }
 
@@ -492,10 +561,14 @@ function convertMessage(
     } else if (part.type === 'video_url') {
       blocks.push(videoUrlPartToAnthropic(part.videoUrl.url) as unknown as ContentBlockParam);
     } else if (part.type === 'audio_url') {
-      const placeholder = OMITTED_MEDIA_PLACEHOLDER[part.type];
-      const last = blocks.at(-1);
-      if (!(last?.type === 'text' && last.text === placeholder)) {
-        blocks.push({ type: 'text', text: placeholder } satisfies TextBlockParam);
+      if (audioIn) {
+        blocks.push(audioUrlPartToAnthropic(part.audioUrl.url) as unknown as ContentBlockParam);
+      } else {
+        const placeholder = OMITTED_MEDIA_PLACEHOLDER[part.type];
+        const last = blocks.at(-1);
+        if (!(last?.type === 'text' && last.text === placeholder)) {
+          blocks.push({ type: 'text', text: placeholder } satisfies TextBlockParam);
+        }
       }
     }
   }
@@ -986,6 +1059,7 @@ export class AnthropicChatProvider implements ChatProvider {
   private readonly _thinkingEffort: ThinkingEffort | undefined;
   private readonly _hooks: AnthropicHooks | undefined;
   private readonly _acceptedImageMimes: ReadonlySet<string>;
+  private readonly _audioIn: boolean;
   readonly uploadImage: ChatProvider['uploadImage'];
 
   constructor(options: AnthropicOptions) {
@@ -1001,6 +1075,7 @@ export class AnthropicChatProvider implements ChatProvider {
     this.uploadImage = this._hooks?.uploadImage;
     this._acceptedImageMimes =
       options.acceptedImageMimes ?? providerImagePolicy().acceptedMimes;
+    this._audioIn = options.audioIn ?? false;
     this._apiKey =
       options.apiKey === undefined || options.apiKey.length === 0 ? undefined : options.apiKey;
     this._baseUrl = options.baseUrl;
@@ -1048,7 +1123,7 @@ export class AnthropicChatProvider implements ChatProvider {
         history.filter((msg) => !isToolDeclarationOnlyMessage(msg)),
         ANTHROPIC_TOOL_CALL_ID_POLICY,
       )
-        .map((msg) => convertMessage(msg, this._model, this._acceptedImageMimes, this._isGemini))
+        .map((msg) => convertMessage(msg, this._model, this._acceptedImageMimes, this._isGemini, this._audioIn))
         .filter(shouldKeepConvertedMessage),
       {
         isUser: (message) => message.role === 'user',

@@ -308,7 +308,7 @@ function portableMessage(message: ContextMessage): ContextMessage {
       switch (part.type) {
         case 'text': return [{ type: 'text', text: part.text, presentation: part.presentation }];
         case 'image_url': return [{ type: 'image_url', imageUrl: { url: part.imageUrl.url, id: part.imageUrl.id, name: part.imageUrl.name } }];
-        case 'audio_url': return [{ type: 'audio_url', audioUrl: { url: part.audioUrl.url, id: part.audioUrl.id } }];
+        case 'audio_url': return [{ type: 'audio_url', audioUrl: { url: part.audioUrl.url, id: part.audioUrl.id, name: part.audioUrl.name } }];
         case 'video_url': return [{ type: 'video_url', videoUrl: { url: part.videoUrl.url, id: part.videoUrl.id, name: part.videoUrl.name } }];
         case 'think': return [];
       }

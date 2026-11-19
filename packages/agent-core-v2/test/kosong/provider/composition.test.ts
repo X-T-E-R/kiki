@@ -58,6 +58,8 @@ import {
   requestIdentityFetch,
 } from '#/kosong/provider/bases/request-auth';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
+import { providerImagePolicy } from '#/kosong/provider/providerImagePolicy';
+import { ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
 import { resolveAuthoredRequestIdentity } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
 import {
@@ -3178,6 +3180,291 @@ describe('provider-aware accepted image mimes', () => {
     await expect(
       provider.generate('sys', [], historyWith(url)),
     ).rejects.toThrow(/Unsupported media type for base64 image: image\/heic/);
+  });
+});
+
+describe('Anthropic audio_url passthrough and audioIn capability gating', () => {
+  const SAMPLE_B64 = Buffer.from('RIFF\x04\x00\x00\x00WAVE').toString('base64');
+  const AUDIO_HISTORY = (url: string): Message[] => [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Listen to this.' },
+        { type: 'audio_url', audioUrl: { url } },
+      ],
+      toolCalls: [],
+    },
+    {
+      role: 'assistant',
+      content: [],
+      toolCalls: [{ type: 'function', id: 'toolu_audio_1', name: 'ReadMediaFile', arguments: '{}' }],
+    },
+    {
+      role: 'tool',
+      toolCallId: 'toolu_audio_1',
+      content: [
+        { type: 'text', text: 'Loaded audio.' },
+        { type: 'audio_url', audioUrl: { url } },
+      ],
+      toolCalls: [],
+    },
+  ];
+
+  it('converts audio_url in both user messages and tool_result blocks when audioIn is enabled via capabilities', async () => {
+    const url = `data:audio/mpeg;base64,${SAMPLE_B64}`;
+    const provider = registry.createChatProvider({
+      protocol: 'anthropic',
+      providerType: 'anthropic',
+      modelName: 'gemini-4-neon',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+      capabilities: {
+        image_in: true,
+        video_in: true,
+        audio_in: true,
+        thinking: true,
+        tool_use: true,
+        max_context_tokens: 1_000_000,
+      },
+    });
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], AUDIO_HISTORY(url)));
+    const body = await request.clone().json() as {
+      messages: Array<{ content: Array<Record<string, unknown>> }>;
+    };
+
+    expect(body.messages[0]!.content).toEqual([
+      { type: 'text', text: 'Listen to this.' },
+      { type: 'audio', source: { type: 'base64', media_type: 'audio/mpeg', data: SAMPLE_B64 } },
+    ]);
+    expect(body.messages[2]!.content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'toolu_audio_1',
+      content: [
+        { type: 'text', text: 'Loaded audio.' },
+        { type: 'audio', source: { type: 'base64', media_type: 'audio/mpeg', data: SAMPLE_B64 } },
+      ],
+    });
+  });
+
+  it('converts remote audio URLs to url source blocks when audioIn is true', async () => {
+    const remoteUrl = 'https://example.test/sample.mp3';
+    const provider = new AnthropicChatProvider({
+      model: 'gemini-4-neon',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+      audioIn: true,
+    });
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], AUDIO_HISTORY(remoteUrl)));
+    const body = await request.clone().json() as {
+      messages: Array<{ content: Array<Record<string, unknown>> }>;
+    };
+
+    expect(body.messages[0]!.content[1]).toEqual({
+      type: 'audio',
+      source: { type: 'url', url: remoteUrl },
+    });
+    expect(body.messages[2]!.content[0]).toMatchObject({
+      type: 'tool_result',
+      content: [
+        { type: 'text', text: 'Loaded audio.' },
+        { type: 'audio', source: { type: 'url', url: remoteUrl } },
+      ],
+    });
+  });
+
+  it.each([
+    ['audio/mpeg', 'audio/mpeg'],
+    ['audio/wav', 'audio/wav'],
+    ['audio/mp4', 'audio/mp4'],
+    ['audio/ogg', 'audio/ogg'],
+    ['audio/flac', 'audio/flac'],
+    ['audio/aac', 'audio/aac'],
+    ['audio/opus', 'audio/opus'],
+    ['audio/webm', 'audio/webm'],
+    ['audio/x-ms-wma', 'audio/x-ms-wma'],
+    ['audio/x-wav', 'audio/wav'],
+    ['audio/wave', 'audio/wav'],
+    ['audio/mp3', 'audio/mpeg'],
+    ['audio/x-m4a', 'audio/mp4'],
+    ['audio/ogg;codecs=opus', 'audio/ogg'],
+  ])('accepts %s and normalizes media_type to %s when audioIn is true', async (inputMime, expectedMime) => {
+    const provider = new AnthropicChatProvider({
+      model: 'gemini-4-neon',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+      audioIn: true,
+    });
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], [
+      {
+        role: 'user',
+        content: [{ type: 'audio_url', audioUrl: { url: `data:${inputMime};base64,${SAMPLE_B64}` } }],
+        toolCalls: [],
+      },
+    ]));
+    const body = await request.clone().json() as {
+      messages: Array<{ content: Array<Record<string, unknown>> }>;
+    };
+
+    expect(body.messages[0]!.content[0]).toEqual({
+      type: 'audio',
+      source: { type: 'base64', media_type: expectedMime, data: SAMPLE_B64 },
+    });
+  });
+
+  it.each([
+    { label: 'audioIn explicitly false', audioIn: false as boolean | undefined },
+    { label: 'audioIn omitted (default for official claude models)', audioIn: undefined as boolean | undefined },
+  ])('degrades audio_url to omitted placeholder in user and tool_result blocks when $label', async ({ audioIn }) => {
+    const url = `data:audio/wav;base64,${SAMPLE_B64}`;
+    const provider = registry.createChatProvider({
+      protocol: 'anthropic',
+      providerType: 'anthropic',
+      modelName: 'claude-sonnet-4-6',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+      capabilities: audioIn === undefined
+        ? undefined
+        : {
+            image_in: true,
+            video_in: false,
+            audio_in: audioIn,
+            thinking: true,
+            tool_use: true,
+            max_context_tokens: 200_000,
+          },
+    });
+    const request = await captureRejectedFetch(() => provider.generate('sys', [], [
+      {
+        role: 'user',
+        content: [
+          { type: 'audio_url', audioUrl: { url } },
+          { type: 'audio_url', audioUrl: { url } },
+        ],
+        toolCalls: [],
+      },
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [{ type: 'function', id: 'toolu_audio_2', name: 'ReadMediaFile', arguments: '{}' }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'toolu_audio_2',
+        content: [
+          { type: 'audio_url', audioUrl: { url } },
+          { type: 'audio_url', audioUrl: { url } },
+        ],
+        toolCalls: [],
+      },
+    ]));
+    const body = await request.clone().json() as {
+      messages: Array<{ content: Array<Record<string, unknown>> }>;
+    };
+
+    expect(body.messages[0]!.content).toEqual([
+      { type: 'text', text: '(audio omitted: not supported by this provider)' },
+    ]);
+    expect(body.messages[2]!.content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'toolu_audio_2',
+      content: [{ type: 'text', text: '(audio omitted: not supported by this provider)' }],
+    });
+  });
+
+  it('rejects malformed data URLs and unsupported audio MIME types when audioIn is true', async () => {
+    const provider = new AnthropicChatProvider({
+      model: 'gemini-4-neon',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+      audioIn: true,
+    });
+
+    await expect(
+      provider.generate('sys', [], [
+        { role: 'user', content: [{ type: 'audio_url', audioUrl: { url: 'data:audio/wav,not-base64' } }], toolCalls: [] },
+      ]),
+    ).rejects.toThrow(/Invalid data URL for audio/);
+
+    await expect(
+      provider.generate('sys', [], [
+        { role: 'user', content: [{ type: 'audio_url', audioUrl: { url: `data:audio/silk;base64,${SAMPLE_B64}` } }], toolCalls: [] },
+      ]),
+    ).rejects.toThrow(/Unsupported media type for base64 audio: audio\/silk/);
+  });
+
+  it('forwards model.capabilities.audio_in from ModelRequesterImpl into AnthropicChatProvider', async () => {
+    const url = `data:audio/mpeg;base64,${SAMPLE_B64}`;
+    const runFor = async (audioIn: boolean) => {
+      const requester = new ModelRequesterImpl(
+        {
+          id: audioIn ? 'audio-anthropic' : 'plain-anthropic',
+          name: audioIn ? 'gemini-4-neon' : 'claude-sonnet-4-6',
+          aliases: [],
+          protocol: 'anthropic',
+          providerType: 'anthropic',
+          providerName: 'example-provider',
+          baseUrl: 'https://api.example.test',
+          headers: {},
+          capabilities: {
+            image_in: true,
+            video_in: audioIn,
+            audio_in: audioIn,
+            thinking: true,
+            tool_use: true,
+            max_context_tokens: 200_000,
+          },
+          maxContextSize: 200_000,
+          alwaysThinking: false,
+          imagePolicy: {
+            acceptedTypes: providerImagePolicy('anthropic').acceptedMimes,
+            convertUnsupported: 'off',
+          },
+          authProvider: {
+            canRefresh: false,
+            getAuth: async () => ({ apiKey: 'sk-probe' }),
+          },
+        },
+        registry,
+      );
+      const request = await captureRejectedFetch(async () => {
+        for await (const event of requester.request(
+          { systemPrompt: 'sys', tools: [], messages: AUDIO_HISTORY(url) },
+          undefined,
+          { attribution: { logicalRequestId: 'audio-probe', purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } } },
+        )) {
+          void event;
+        }
+      });
+      return await request.clone().json() as {
+        messages: Array<{ content: Array<Record<string, unknown>> }>;
+      };
+    };
+
+    const enabledBody = await runFor(true);
+    expect(enabledBody.messages[0]!.content[1]).toEqual({
+      type: 'audio',
+      source: { type: 'base64', media_type: 'audio/mpeg', data: SAMPLE_B64 },
+    });
+    expect(enabledBody.messages[2]!.content[0]).toMatchObject({
+      type: 'tool_result',
+      content: [
+        { type: 'text', text: 'Loaded audio.' },
+        { type: 'audio', source: { type: 'base64', media_type: 'audio/mpeg', data: SAMPLE_B64 } },
+      ],
+    });
+
+    const disabledBody = await runFor(false);
+    expect(disabledBody.messages[0]!.content[1]).toEqual({
+      type: 'text',
+      text: '(audio omitted: not supported by this provider)',
+    });
+    expect(disabledBody.messages[2]!.content[0]).toMatchObject({
+      type: 'tool_result',
+      content: [
+        { type: 'text', text: 'Loaded audio.' },
+        { type: 'text', text: '(audio omitted: not supported by this provider)' },
+      ],
+    });
   });
 });
 

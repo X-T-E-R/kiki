@@ -33,6 +33,7 @@ registerProtocolBase({
         acceptedImageMimes:
           config.providerOptions?.acceptedImageMimes ??
           providerImagePolicy(config.providerType).acceptedMimes,
+        audioIn: config.capabilities?.audio_in,
       }),
     });
   },

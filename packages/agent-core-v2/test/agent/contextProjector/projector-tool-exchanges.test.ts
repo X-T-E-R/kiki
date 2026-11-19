@@ -151,11 +151,37 @@ describe('projector tool-exchange normalization', () => {
 
   it('omits unsupported audio only from the provider projection while preserving the canonical audio part', () => {
     const audio: ContextMessage = { ...user('listen'), content: [{ type: 'audio_url', audioUrl: { url: 'kimi-file://f_audio' } }] };
-    expect(projector.project([audio])[0]?.content).toEqual([{ type: 'audio_url', audioUrl: { url: 'kimi-file://f_audio' } }]);
-    expect(projector.project([audio], { audio: 'omit_unsupported' })[0]?.content).toEqual([
+    const toolAudio: ContextMessage = {
+      role: 'tool',
+      toolCallId: 'c_audio',
+      toolCalls: [],
+      content: [
+        { type: 'text', text: 'Audio loaded' },
+        { type: 'audio_url', audioUrl: { url: 'data:audio/mpeg;base64,AAAA', name: 'sample.mp3' } },
+      ],
+    };
+    const history: ContextMessage[] = [audio, assistant('', ['c_audio']), toolAudio];
+
+    const kept = projector.project(history);
+    expect(kept[0]?.content).toEqual([{ type: 'audio_url', audioUrl: { url: 'kimi-file://f_audio' } }]);
+    expect(kept[2]?.content).toEqual([
+      { type: 'text', text: 'Audio loaded' },
+      { type: 'audio_url', audioUrl: { url: 'data:audio/mpeg;base64,AAAA', name: 'sample.mp3' } },
+    ]);
+
+    const omitted = projector.project(history, { audio: 'omit_unsupported' });
+    expect(omitted[0]?.content).toEqual([
+      { type: 'text', text: '[audio omitted for provider compatibility; re-read the file to hear it]' },
+    ]);
+    expect(omitted[2]?.content).toEqual([
+      { type: 'text', text: 'Audio loaded' },
       { type: 'text', text: '[audio omitted for provider compatibility; re-read the file to hear it]' },
     ]);
     expect(audio.content).toEqual([{ type: 'audio_url', audioUrl: { url: 'kimi-file://f_audio' } }]);
+    expect(toolAudio.content[1]).toEqual({
+      type: 'audio_url',
+      audioUrl: { url: 'data:audio/mpeg;base64,AAAA', name: 'sample.mp3' },
+    });
   });
 
   it('leaves a fully resolved exchange untouched', () => {
