@@ -79,6 +79,7 @@ function splitNewSectionBlocks(
   inlineTablePaths: ReadonlySet<string>,
   deferred: DeferredSectionBlock[],
 ): Record<string, unknown> | undefined {
+  if (deepEqual(previous, next)) return next;
   const serializedPath = JSON.stringify(path);
   if (inlineTablePaths.has(serializedPath) && hasNestedObjectOrObjectArray(next)) {
     deferred.push({ path, value: next });

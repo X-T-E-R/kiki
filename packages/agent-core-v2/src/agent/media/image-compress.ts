@@ -172,10 +172,7 @@ export async function compressImageForModel(
   try {
     options.signal?.throwIfAborted();
     const outputMimeList = [...outputMimes];
-    const useWorker =
-      options.cpuWorker !== undefined ||
-      (hasRegisteredCpuPool() &&
-        (bytes.byteLength > 65_536 || (dims !== null && dims.width * dims.height > 262_144)));
+    const useWorker = options.cpuWorker !== undefined || hasRegisteredCpuPool();
     let encodedResult: ImageCompressWorkerOutput;
     if (useWorker) {
       const ownedBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -192,21 +189,7 @@ export async function compressImageForModel(
         options,
       );
       if (workerCall !== undefined) {
-        try {
-          encodedResult = await workerCall;
-        } catch {
-          if (options.signal?.aborted) return finish('passthrough_error', passthrough());
-          encodedResult = await executeImageCompress(
-            {
-              bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-              normalizedMime,
-              maxEdge,
-              byteBudget,
-              outputMimes: outputMimeList,
-            },
-            options.signal,
-          );
-        }
+        encodedResult = await workerCall;
       } else {
         encodedResult = await executeImageCompress(
           {
@@ -622,25 +605,7 @@ export async function cropImageForModel(
       options,
     );
     if (workerCall !== undefined) {
-      try {
-        cropped = await workerCall;
-      } catch {
-        if (options.signal?.aborted) {
-          return fail('decode_failed', 'Failed to decode the image for cropping: aborted');
-        }
-        cropped = await executeImageCrop(
-          {
-            bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-            normalizedMime,
-            region,
-            maxEdge,
-            byteBudget,
-            skipResize: options.skipResize === true,
-            outputMimes: outputMimeList,
-          },
-          options.signal,
-        );
-      }
+      cropped = await workerCall;
     } else {
       cropped = await executeImageCrop(
         {

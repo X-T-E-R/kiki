@@ -144,9 +144,9 @@ export async function* readNdjsonLines(
         throw streamError instanceof Error ? streamError : new Error(String(streamError));
       }
       if (ended || signal?.aborted) return;
-      stream.resume();
       await new Promise<void>((resolve) => {
         notify = resolve;
+        stream.resume();
       });
     }
   } finally {

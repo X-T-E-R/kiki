@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   SOURCE_OWNED_ADAPTER_ENTRY,
   SOURCE_OWNED_ADAPTER_FILES,
@@ -28,4 +31,27 @@ void test('production manifest lists only the shipped adapter files', async () =
   }
   assert.equal(SOURCE_OWNED_ADAPTER_FILES.includes('fixture-cli.mjs'), false);
   assert.equal(SOURCE_OWNED_ADAPTER_FILES.includes('agy-cli-audit-acp.mjs'), false);
+});
+
+void test('committed agy-cli-acp.mjs matches a fresh tsdown build byte-for-byte', async () => {
+  const { build } = await import('tsdown');
+  const configModule = await import('./tsdown.config.ts');
+  const baseConfig = configModule.default;
+  const outDir = await mkdtemp(join(tmpdir(), 'agy-bundle-fresh-'));
+  try {
+    await build({
+      ...baseConfig,
+      outDir,
+      logLevel: 'silent',
+    });
+    const fresh = await readFile(join(outDir, SOURCE_OWNED_ADAPTER_ENTRY));
+    const committed = await readFile(fileURLToPath(new URL(`./${SOURCE_OWNED_ADAPTER_ENTRY}`, import.meta.url)));
+    assert.equal(
+      Buffer.compare(fresh, committed),
+      0,
+      'scripts/external-harness/agy-cli-acp.mjs is stale; run `pnpm run build:external-harness`',
+    );
+  } finally {
+    await rm(outDir, { recursive: true, force: true });
+  }
 });

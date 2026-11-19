@@ -225,6 +225,7 @@ export class SqliteSearchHost {
     const id = ++this.id;
     this.rebuilding = true;
     this.setInventory(sessions);
+    this.inventoryBatch = undefined;
     this.inventoryToSend = false;
     const revision = this.inventoryRevision;
     return new Promise((resolve, reject) => {
@@ -373,6 +374,7 @@ export class SqliteSearchHost {
       } else if (message.type === 'heartbeat') this.lastPong = Date.now();
       else if (message.type === 'release_reader') {
         this.reason = 'corrupt_rebuilding';
+        this.inventoryBatch = undefined;
         this.inventoryToSend = this.inventoryRevision > 0;
         this.inventoryInFlight = this.inventoryToSend;
         for (const [id, session] of this.known) this.pending.set(id, session);
@@ -491,15 +493,20 @@ export class SqliteSearchHost {
     callbacks?: { readonly onDrained?: () => void; readonly onError?: () => void },
   ): 'sent' | 'backpressure' | 'failed' {
     if (!child.connected) return 'failed';
+    let callbackSettled = false;
+    let callbackErrored = false;
     try {
       const flushed = child.send(request, (error) => {
+        callbackSettled = true;
         if (error !== null && error !== undefined) {
+          callbackErrored = true;
           callbacks?.onError?.();
           return;
         }
         callbacks?.onDrained?.();
       });
-      return flushed ? 'sent' : 'backpressure';
+      if (callbackErrored) return 'failed';
+      return flushed || callbackSettled ? 'sent' : 'backpressure';
     } catch {
       return 'failed';
     }
@@ -550,6 +557,7 @@ export class SqliteSearchHost {
             this.flushPending();
           },
           onError: () => {
+            if (this.child !== child) return;
             if (this.inventoryBatch === batch) this.inventoryBatch = undefined;
             this.inventoryToSend = true;
           },
@@ -585,7 +593,8 @@ export class SqliteSearchHost {
           this.flushTargeted();
         },
         onError: () => {
-          work.sent = false;
+          if (this.child !== child) return;
+          if (this.targeted.get(sessionId) === work) work.sent = false;
           this.targetedDraining = false;
         },
       });

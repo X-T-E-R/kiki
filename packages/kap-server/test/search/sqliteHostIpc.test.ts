@@ -137,4 +137,78 @@ describe('SqliteSearchHost IPC disconnect handling', () => {
     await expect.poll(() => host.snapshot().indexedSessions, { timeout: 10_000 }).toBe(2_050);
     expect(syncCalls).toBe(3);
   });
+
+  it('clears in-flight inventoryBatch on reindex and handles synchronous send callback without wedging', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-sqlite-reindex-race-'));
+    homes.push(home);
+    const script = join(home, 'reindex-indexer.mjs');
+    await writeFile(
+      script,
+      [
+        "process.send?.({ type: 'ready', writer: true });",
+        'const seenSyncRevisions = [];',
+        "process.on('message', (msg) => {",
+        "  if (msg?.type === 'sync') {",
+        '    seenSyncRevisions.push(msg.revision);',
+        '    if (msg.last) {',
+        "      process.send?.({ type: 'inventory_synced', revision: msg.revision });",
+        "      process.send?.({ type: 'status', status: { state: 'ready', indexedSessions: seenSyncRevisions.length, totalSessions: seenSyncRevisions.length, documents: 0, filesPending: 0, stale: false, lastBatchMs: 1 } });",
+        '    }',
+        "  } else if (msg?.type === 'reindex') {",
+        "    process.send?.({ type: 'reindexed', id: msg.id, sessions: msg.sessions.length, documents: 0 });",
+        '  }',
+        '});',
+      ].join('\n'),
+    );
+
+    const host = new SqliteSearchHost({
+      database: join(home, 'index.sqlite'),
+      indexerEntry: script,
+      heartbeatMs: 5_000,
+    });
+    hosts.push(host);
+
+    await host.open();
+    const child = host['child']!;
+    try { if (child.pid) setPriority(child.pid, 0); } catch {}
+    await expect.poll(() => host['ready'], { timeout: 10_000 }).toBe(true);
+
+    const origSend = child.send.bind(child);
+    let syncSendCount = 0;
+    let deferredCallback: ((err: Error | null) => void) | undefined;
+    vi.spyOn(child, 'send').mockImplementation(((message: unknown, ...rest: unknown[]) => {
+      const cb = typeof rest[0] === 'function' ? (rest[0] as (err: Error | null) => void) : undefined;
+      if (typeof message === 'object' && message !== null && (message as { type?: string }).type === 'sync') {
+        syncSendCount += 1;
+        if (syncSendCount === 1) {
+          deferredCallback = cb;
+          return false;
+        }
+        if (cb) cb(null);
+        return false;
+      }
+      return (origSend as (...args: unknown[]) => boolean)(message, ...rest);
+    }) as typeof child.send);
+
+    const initialSessions = Array.from({ length: 2_050 }, (_, idx) => ({
+      id: `stale-${idx}`,
+      dir: home,
+      workspaceId: 'w1',
+      updatedAt: idx + 1,
+    }));
+    host.sync(initialSessions);
+    expect(syncSendCount).toBe(1);
+    expect(host['inventoryBatch']?.draining).toBe(true);
+
+    const reindexResult = await host.reindex([{ id: 'fresh-1', dir: home, workspaceId: 'w1', updatedAt: 9999 }]);
+    expect(reindexResult.sessions).toBe(1);
+    expect(host['inventoryBatch']).toBeUndefined();
+
+    deferredCallback?.(null);
+    expect(syncSendCount).toBe(1);
+
+    host.sync(initialSessions);
+    expect(syncSendCount).toBe(4);
+    expect(host['inventoryBatch']).toBeUndefined();
+  });
 });

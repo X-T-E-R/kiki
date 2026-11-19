@@ -450,4 +450,90 @@ describe('CPU worker image operations', () => {
       normalizeAvatarImage(ONE_BY_ONE_PNG, 'image/png', { cpuWorker, signal: aborted.signal }),
     ).rejects.toThrow('cancelled-before-crop');
   }, 30_000);
+
+  it('routes tiny images through registered CPU pool and never falls back to main thread on worker rejection', async () => {
+    const {
+      compressImageForModel,
+      cropImageForModel,
+    } = await import('#/agent/media/image-compress');
+    const { registerCpuPool } = await import('#/app/cpuWorker/runtime');
+    const { CpuWorkerError } = await import('#/app/cpuWorker/host');
+
+    const calls: string[] = [];
+    const failingPool = {
+      request: async <T>(operation: unknown): Promise<T> => {
+        const type = (operation as { type?: string }).type ?? 'unknown';
+        calls.push(type);
+        throw new CpuWorkerError('CPU_TIMEOUT', 'simulated worker timeout');
+      },
+      close: async () => {},
+    } as unknown as CpuWorkerPool;
+    const registration = registerCpuPool(failingPool);
+    try {
+      const compressed = await compressImageForModel(ONE_BY_ONE_PNG, 'image/png', {
+        maxEdge: 1,
+        byteBudget: 10,
+      });
+      expect(calls).toEqual(['image.compress']);
+      expect(compressed.changed).toBe(false);
+      expect(compressed.data).toBe(ONE_BY_ONE_PNG);
+
+      const cropped = await cropImageForModel(
+        ONE_BY_ONE_PNG,
+        'image/png',
+        { x: 0, y: 0, width: 1, height: 1 },
+      );
+      expect(calls).toEqual(['image.compress', 'image.crop']);
+      expect(cropped.ok).toBe(false);
+      if (!cropped.ok) {
+        expect(cropped.error).toContain('Failed to decode the image for cropping');
+        expect(cropped.error).toContain('simulated worker timeout');
+      }
+    } finally {
+      await registration.dispose();
+    }
+  });
+
+  it('applies backpressure instead of terminating oldest detached worker on soft cancel storm and awaits retiring exits in close', async () => {
+    const workers = await pool({ maxWorkers: 1, cancelGraceMs: 25, timeoutMs: 10_000 });
+    const ac1 = new AbortController();
+    const ac2 = new AbortController();
+    const ac3 = new AbortController();
+
+    const p1 = workers.request<number>({ type: 'delay', ms: 180 }, { signal: ac1.signal });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    ac1.abort(new Error('cancel-1'));
+    await expect(p1).rejects.toThrow('cancel-1');
+
+    const p2 = workers.request<number>({ type: 'delay', ms: 180 }, { signal: ac2.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    ac2.abort(new Error('cancel-2'));
+    await expect(p2).rejects.toThrow('cancel-2');
+
+    const p3 = workers.request<number>({ type: 'delay', ms: 180 }, { signal: ac3.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const detachedBeforeStorm = [...(workers as unknown as { detachedDraining: Array<{ worker: { terminate: () => Promise<number> } }> }).detachedDraining];
+    expect(detachedBeforeStorm.length).toBe(2);
+
+    let terminatedMidFlight = 0;
+    for (const entry of detachedBeforeStorm) {
+      const origTerminate = entry.worker.terminate.bind(entry.worker);
+      entry.worker.terminate = () => {
+        terminatedMidFlight += 1;
+        return origTerminate();
+      };
+    }
+
+    ac3.abort(new Error('cancel-3'));
+    await expect(p3).rejects.toThrow('cancel-3');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(terminatedMidFlight).toBe(0);
+
+    const p4 = workers.request<number>({ type: 'echo', bytes: 7 });
+    expect(await p4).toBe(7);
+
+    await workers.close();
+    expect((workers as unknown as { retiringExits: Set<Promise<void>> }).retiringExits.size).toBe(0);
+  }, 15_000);
 });
