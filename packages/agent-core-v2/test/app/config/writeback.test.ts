@@ -168,7 +168,7 @@ describe('config.toml writeback preservation', () => {
     expect(text.includes('[image]')).toBe(false);
     expect(text.includes('max_edge_px')).toBe(false);
     expect(text.includes('# 头部注释\n[thinking]\neffort = "high"\n')).toBe(true);
-    expect(text.includes('# 图片注释')).toBe(true);
+    expect(text.includes('# 图片注释')).toBe(false);
     expect(text.includes('# 尾部注释\n[custom]\nkeep_me = "yes"\n')).toBe(true);
     const parsed = parseToml(text) as Record<string, unknown>;
     expect(parsed['image']).toBeUndefined();

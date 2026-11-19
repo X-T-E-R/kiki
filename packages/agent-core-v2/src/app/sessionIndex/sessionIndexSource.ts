@@ -1,4 +1,5 @@
 import { basename, sep } from 'node:path';
+import pLimit from 'p-limit';
 
 import { FORKED_FROM_KEY, parseSessionExecutionPhase, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
@@ -408,16 +409,13 @@ export async function mapBounded<T, R>(
   concurrency: number,
   fn: (item: T) => Promise<R | undefined>,
 ): Promise<R[]> {
+  if (items.length === 0) return [];
+  const limit = pLimit(Math.max(1, concurrency));
+  const settled = await limit.map(items, (item) => fn(item));
   const out: R[] = [];
-  let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (next < items.length) {
-      const item = items[next++]!;
-      const value = await fn(item);
-      if (value !== undefined) out.push(value);
-    }
-  });
-  await Promise.all(workers);
+  for (const value of settled) {
+    if (value !== undefined) out.push(value);
+  }
   return out;
 }
 

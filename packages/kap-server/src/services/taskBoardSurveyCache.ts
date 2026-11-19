@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { LRUCache } from 'lru-cache';
 import type { surveyTasks } from 'own-work/tasks';
 import type { OwnWorkTaskApi } from '@kiki/agent-core-v2/app/taskBoard/ownWorkAdapter';
 
@@ -6,6 +7,12 @@ type Survey = Awaited<ReturnType<typeof surveyTasks>>;
 export type SurveyTaskApi = OwnWorkTaskApi & { surveyTasks: typeof surveyTasks };
 const TTL_MS = 30_000;
 const MAX_STORES = 32;
+
+interface SurveySnapshot {
+  readonly identity: string;
+  pending: boolean;
+  readonly value: Promise<Survey>;
+}
 
 /**
  * Host-only pagination snapshots: first-page requests resurvey (concurrent scans
@@ -16,7 +23,12 @@ const MAX_STORES = 32;
  * validation/budgets are retained; this wrapper only filters its summaries.
  */
 export function withTaskBoardSurveyCache(api: SurveyTaskApi): OwnWorkTaskApi {
-  const snapshots = new Map<string, { identity: string; pending: boolean; expiresAt: number; value: Promise<Survey> }>();
+  const snapshots = new LRUCache<string, SurveySnapshot>({
+    max: MAX_STORES,
+    ttl: TTL_MS,
+    ttlResolution: 0,
+    perf: { now: () => Date.now() + 1 },
+  });
   const keyFor = (root: string) => process.platform === 'win32' ? path.resolve(root).toLowerCase() : path.resolve(root);
   const invalidate = (root: string) => { snapshots.delete(keyFor(root)); };
   return {
@@ -33,23 +45,20 @@ export function withTaskBoardSurveyCache(api: SurveyTaskApi): OwnWorkTaskApi {
         throw Object.assign(new Error('Task storage no longer exists.'), { code: 'BOARD_STORAGE_INVALID' });
       }
       const identity = `${key}\0${inspection.storageId}\0${inspection.kind}`;
-      for (const [entryKey, entry] of snapshots) {
-        if (!entry.pending && entry.expiresAt <= Date.now()) snapshots.delete(entryKey);
-      }
       let snapshot = snapshots.get(key);
       if (snapshot?.identity !== identity) snapshot = undefined;
       if (!snapshot || (!snapshot.pending && options.cursor === undefined)) {
         const value = api.surveyTasks({ root: options.root, includeArchived: true, depth: 'envelope' });
-        snapshot = { identity, pending: true, expiresAt: Number.POSITIVE_INFINITY, value };
+        snapshot = { identity, pending: true, value };
         const current = snapshot;
-        snapshots.delete(key);
-        snapshots.set(key, current);
-        while (snapshots.size > MAX_STORES) snapshots.delete(snapshots.keys().next().value!);
+        snapshots.set(key, current, { ttl: 0 });
         void value.then(() => {
           current.pending = false;
-          current.expiresAt = Date.now() + TTL_MS;
+          if (snapshots.peek(key) === current) {
+            snapshots.set(key, current, { ttl: TTL_MS });
+          }
         }, () => {
-          if (snapshots.get(key) === current) snapshots.delete(key);
+          if (snapshots.peek(key) === current) snapshots.delete(key);
         });
       }
       const survey = await snapshot.value;

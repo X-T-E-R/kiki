@@ -1,4 +1,4 @@
-import { load } from 'js-yaml';
+import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { MemoryDomainError, normalizeMemoryBasis, normalizeMemoryValidity, type MemoryBasis, type MemoryValidity } from './memoryMetadata';
 import { MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from './memoryScopes';
@@ -44,7 +44,7 @@ export function parseMemoryMarkdown(markdown: string): MemoryMarkdownDocument {
   if (markdown.length > 64 * 1024) throw new MemoryDomainError('invalid_input', 'Memory Markdown exceeds the import limit', 'Import one complete entry of at most 65,536 UTF-16 units at a time.');
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(markdown);
   if (match === null) throw new MemoryDomainError('invalid_input', 'Memory Markdown frontmatter is missing', 'Export an entry before editing its Markdown; keep its scope, ID, revision and origin.');
-  const metadata = metadataSchema.parse(load(match[1]!));
+  const metadata = metadataSchema.parse(parseYaml(match[1]!));
   const body = redactMemorySecrets(match[2]!.trim());
   const title = redactMemorySecrets(metadata.title);
   if (body.length === 0 || body.length > 1_500 || title.length > 200) throw new MemoryDomainError('invalid_input', 'Memory Markdown body is empty or oversized', 'Keep the complete entry body within 1,500 characters and the title within 200.');

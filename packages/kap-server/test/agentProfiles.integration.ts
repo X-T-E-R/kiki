@@ -744,7 +744,7 @@ describe('GET /api/agents (shared default server partition)', () => {
     });
     expect(created.code).toBe(0);
     const customPath = join(home, 'agents', 'custom-reviewer.md');
-    expect(await readFile(customPath, 'utf8')).toContain('recipe: "example"');
+    expect(await readFile(customPath, 'utf8')).toContain('recipe: example');
     expect((await createProfile({ name: 'custom-reviewer', description: 'overwrite', prompt: 'No' })).code).toBe(ErrorCode.AGENT_PROFILE_ALREADY_EXISTS);
     expect((await createProfile({ name: '../escape', description: 'invalid', prompt: 'No' })).code).toBe(ErrorCode.VALIDATION_FAILED);
     expect((await createProfile({ name: 'custom-copy', template: 'duplicate:custom-reviewer' })).code).toBe(0);

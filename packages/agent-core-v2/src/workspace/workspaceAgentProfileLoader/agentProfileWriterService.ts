@@ -24,7 +24,13 @@ import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfi
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 
-import { parseFrontmatter } from '#/_base/text/frontmatter';
+import {
+  FrontmatterError,
+  parseFrontmatter,
+  replaceFrontmatterBody,
+  updateFrontmatterField,
+  type FrontmatterFieldValue,
+} from '#/_base/text/frontmatter';
 import { parseAgentFileText } from './internal/agentFile';
 import { projectAgentRoots, userAgentRoots, projectAgentRootCandidates } from './internal/agentRoots';
 import { parseAgentRouteFileText } from './internal/agentRouteFile';
@@ -922,114 +928,33 @@ function validateModelProfileUpdates(value: unknown, issues: ValidationIssue[]):
 }
 
 function replacePromptBody(text: string, prompt: string): string {
-  const block = locateFrontmatter(text);
-  const newline = text.indexOf('\n', block.contentEnd);
-  const prefix = newline === -1 ? `${text}${preferredEol(text)}` : text.slice(0, newline + 1);
-  const eol = preferredEol(text);
-  return `${prefix}${eol}${prompt.trim()}${eol}`;
+  try {
+    return replaceFrontmatterBody(text, prompt);
+  } catch (error) {
+    if (error instanceof FrontmatterError) {
+      throw validationError([{ path: '', message: error.message }]);
+    }
+    throw error;
+  }
 }
 
 function updateFrontmatterScalar(
   text: string,
   key: string,
-  value: string | number | boolean | readonly unknown[] | Readonly<Record<string, unknown>> | null,
+  value: FrontmatterFieldValue,
 ): string {
-  const block = locateFrontmatter(text);
-  const lines = scanLines(block.content);
-  const keyPattern = new RegExp(`^${escapeRegExp(key)}[ \\t]*:`);
-  const index = lines.findIndex((line) => keyPattern.test(line.content));
-  if (index === -1) {
-    if (value === null) return text;
-    const eol = preferredEol(text);
-    const separator = block.content.length === 0 || block.content.endsWith('\n')
-      ? ''
-      : eol;
-    const inserted = `${block.content}${separator}${key}: ${JSON.stringify(value)}${eol}`;
-    return text.slice(0, block.contentStart) + inserted + text.slice(block.contentEnd);
-  }
-
-  const line = lines[index]!;
-  let end = line.end;
-  const rawValue = line.content.slice(line.content.indexOf(':') + 1).trim();
-  if (rawValue === '' || rawValue.startsWith('|') || rawValue.startsWith('>')) {
-    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-      const candidate = lines[cursor]!;
-      if (/^[A-Za-z0-9_-]+[ \\t]*:/.test(candidate.content)) break;
-      end = candidate.end;
+  try {
+    return updateFrontmatterField(text, key, value);
+  } catch (error) {
+    if (error instanceof FrontmatterError) {
+      throw validationError([{ path: '', message: error.message }]);
     }
-  } else {
-    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-      const candidate = lines[cursor]!;
-      if (!/^\s+\S/.test(candidate.content)) break;
-      end = candidate.end;
-    }
+    throw error;
   }
-  const replacement = value === null
-    ? ''
-    : `${key}: ${JSON.stringify(value)}${line.eol || preferredEol(text)}`;
-  const absoluteStart = block.contentStart + line.start;
-  const absoluteEnd = block.contentStart + end;
-  return text.slice(0, absoluteStart) + replacement + text.slice(absoluteEnd);
-}
-
-function locateFrontmatter(text: string): {
-  readonly content: string;
-  readonly contentStart: number;
-  readonly contentEnd: number;
-} {
-  const opening = /^---[ \\t]*(?:\r\n|\n)/.exec(text);
-  if (opening === null) throw validationError([{ path: '', message: 'profile file is missing frontmatter' }]);
-  let cursor = opening[0].length;
-  while (cursor <= text.length) {
-    const newline = text.indexOf('\n', cursor);
-    const lineEnd = newline === -1 ? text.length : newline;
-    const contentEnd = lineEnd > cursor && text[lineEnd - 1] === '\r' ? lineEnd - 1 : lineEnd;
-    if (text.slice(cursor, contentEnd).trim() === '---') {
-      return {
-        content: text.slice(opening[0].length, cursor),
-        contentStart: opening[0].length,
-        contentEnd: cursor,
-      };
-    }
-    if (newline === -1) break;
-    cursor = newline + 1;
-  }
-  throw validationError([{ path: '', message: 'profile file has no closing frontmatter fence' }]);
-}
-
-function scanLines(text: string): readonly {
-  readonly content: string;
-  readonly start: number;
-  readonly end: number;
-  readonly eol: string;
-}[] {
-  const lines: Array<{ content: string; start: number; end: number; eol: string }> = [];
-  let cursor = 0;
-  while (cursor < text.length) {
-    const newline = text.indexOf('\n', cursor);
-    const end = newline === -1 ? text.length : newline + 1;
-    const contentEnd = newline === -1
-      ? text.length
-      : newline > cursor && text[newline - 1] === '\r'
-        ? newline - 1
-        : newline;
-    lines.push({
-      content: text.slice(cursor, contentEnd),
-      start: cursor,
-      end,
-      eol: newline === -1 ? '' : text.slice(contentEnd, newline + 1),
-    });
-    cursor = end;
-  }
-  return lines;
 }
 
 function preferredEol(text: string): string {
   return text.includes('\r\n') ? '\r\n' : '\n';
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

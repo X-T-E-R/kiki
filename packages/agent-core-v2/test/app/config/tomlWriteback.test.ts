@@ -47,12 +47,12 @@ describe('planConfigWriteback', () => {
     expect(result).toBe('default_model = "kimi-k3"   # pick one\n');
   });
 
-  it('appends a new key after the last statement of its block, before trailing trivia', () => {
+  it('appends a new key inside its block while preserving trailing block comments', () => {
     const text = ['[image]', 'max_edge_px = 1500', '# tail note', ''].join('\n');
     const result = edit(text, 'image', { max_edge_px: 1500 }, { max_edge_px: 1500, read_byte_budget: 5000 }, {
       image: { max_edge_px: 1500, read_byte_budget: 5000 },
     });
-    expect(result).toBe('[image]\nmax_edge_px = 1500\nread_byte_budget = 5000\n# tail note\n');
+    expect(result).toBe('[image]\nmax_edge_px = 1500\n# tail note\nread_byte_budget = 5000\n');
   });
 
   it('inserts into an empty table right after its header', () => {
@@ -61,12 +61,12 @@ describe('planConfigWriteback', () => {
     expect(result).toBe('[image]\nmax_edge_px = 1500\n');
   });
 
-  it('deletes only the removed key line and keeps surrounding comments', () => {
-    const text = ['[image]', '# about edge', 'max_edge_px = 1500', 'quality = "high"', ''].join('\n');
+  it('deletes a removed key with its owned comment while keeping unrelated comments', () => {
+    const text = ['[image]', '# about edge', 'max_edge_px = 1500', '# about quality', 'quality = "high"', ''].join('\n');
     const result = edit(text, 'image', { max_edge_px: 1500, quality: 'high' }, { quality: 'high' }, {
       image: { quality: 'high' },
     });
-    expect(result).toBe('[image]\n# about edge\nquality = "high"\n');
+    expect(result).toBe('[image]\n# about quality\nquality = "high"\n');
   });
 
   it('edits one provider in place, drops a removed provider block and appends a new one', () => {
@@ -142,19 +142,50 @@ describe('planConfigWriteback', () => {
     );
   });
 
-  it('falls back to re-serializing a dotted-key domain while preserving other domains', () => {
-    const text = 'a.b = 1\n\n[cool]\nx = 1\n';
+  it('patches a dotted-key domain in place with zero comment loss while preserving other domains', () => {
+    const text = '# dotted section\na.b = 1 # inline note\n\n[cool]\nx = 1\n';
     const result = edit(text, 'a', { b: 1 }, { b: 2 }, { a: { b: 2 }, cool: { x: 1 } });
-    expect(result).toBe('[a]\nb = 2\n\n[cool]\nx = 1\n');
+    expect(result).toBe('# dotted section\na.b = 2 # inline note\n\n[cool]\nx = 1\n');
   });
 
-  it('re-serializes a changed array-of-tables domain and keeps untouched ones byte-for-byte', () => {
-    const text = ['[[models]]', 'name = "m1"', '', '[[pinned]]', 'x = 1', ''].join('\n');
-    const result = edit(text, 'models', [{ name: 'm1' }], [{ name: 'm1' }, { name: 'm2' }], {
-      models: [{ name: 'm1' }, { name: 'm2' }],
+  it('patches an array-of-tables domain in place with zero comment loss and keeps untouched ones byte-for-byte', () => {
+    const text = [
+      '# primary model entry',
+      '[[models]]',
+      '# keep model name note',
+      'name = "m1" # inline model note',
+      '',
+      '[[pinned]]',
+      'x = 1',
+      '',
+    ].join('\n');
+    const result = edit(text, 'models', [{ name: 'm1' }], [{ name: 'm1-updated' }, { name: 'm2' }], {
+      models: [{ name: 'm1-updated' }, { name: 'm2' }],
       pinned: [{ x: 1 }],
     });
-    expect(result).toBe(['[[models]]', 'name = "m1"', '', '[[models]]', 'name = "m2"', '', '[[pinned]]', 'x = 1', ''].join('\n'));
+    expect(result).toBe(
+      [
+        '# primary model entry',
+        '[[models]]',
+        '# keep model name note',
+        'name = "m1-updated" # inline model note',
+        '',
+        '[[models]]',
+        'name = "m2"',
+        '',
+        '[[pinned]]',
+        'x = 1',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('preserves UTF-8 BOM on in-place edits', () => {
+    const text = '\uFEFF# bom note\n[image]\nmax_edge_px = 1500\n';
+    const result = edit(text, 'image', { max_edge_px: 1500 }, { max_edge_px: 2048 }, {
+      image: { max_edge_px: 2048 },
+    });
+    expect(result).toBe('\uFEFF# bom note\n[image]\nmax_edge_px = 2048\n');
   });
 
   it('does not treat multiline string bodies or bracketed array items as table headers', () => {
@@ -210,19 +241,21 @@ describe('planConfigWriteback', () => {
       image: { max_edge_px: 1500 },
       thinking: { effort: 'high' },
     });
-    expect(result).toBe('[image]\nmax_edge_px = 1500\n[thinking]\neffort = "high"\n');
+    expect(result).toBe('[image]\nmax_edge_px = 1500\n\n[thinking]\neffort = "high"');
   });
 
-  it('removes a deleted domain region and keeps neighboring trivia', () => {
-    const text = ['# head', '[image]', 'max_edge_px = 1500', '', '# tail', '[tail]', 'x = 1', ''].join('\n');
+  it('removes a deleted domain region with its owned comment and keeps unrelated neighboring comments', () => {
+    const text = ['# file header', '', '# image note', '[image]', 'max_edge_px = 1500', '', '# tail', '[tail]', 'x = 1', ''].join('\n');
     const result = edit(text, 'image', { max_edge_px: 1500 }, undefined, { tail: { x: 1 } });
-    expect(result).toBe('# head\n\n# tail\n[tail]\nx = 1\n');
+    expect(result).toContain('# file header');
+    expect(result).not.toContain('# image note');
+    expect(result).toContain('# tail\n[tail]\nx = 1\n');
   });
 
-  it('replaces a multiline array statement wholesale', () => {
+  it('updates a multiline array in place while preserving multiline layout', () => {
     const text = 'override_models = [\n  "a",\n  "b",\n]\n';
     const result = edit(text, 'override_models', ['a', 'b'], ['a', 'c'], { override_models: ['a', 'c'] });
-    expect(result).toBe('override_models = [ "a", "c" ]\n');
+    expect(result).toBe('override_models = [\n  "a",\n  "c",\n]\n');
   });
 
   it('declines to plan when the file contains constructs it cannot map', () => {
@@ -253,14 +286,14 @@ describe('planConfigWriteback', () => {
     expect(result).toBe("[models.'acme/m1']\nname = \"m1\"\n\n[image]\nmax_edge_px = 2000\n");
   });
 
-  it('preserves a whitespace-padded quoted header and a quoted root key holding a dot', () => {
+  it('preserves a quoted header and a quoted root key holding a dot', () => {
     const text = '[ models . "acme/m1" ]\nname = "m1"\n\n["x.y"]\nv = 1\n\n[image]\nmax_edge_px = 1500\n';
     const result = edit(text, 'image', { max_edge_px: 1500 }, { max_edge_px: 2000 }, {
       models: { 'acme/m1': { name: 'm1' } },
       'x.y': { v: 1 },
       image: { max_edge_px: 2000 },
     });
-    expect(result).toBe('[ models . "acme/m1" ]\nname = "m1"\n\n["x.y"]\nv = 1\n\n[image]\nmax_edge_px = 2000\n');
+    expect(result).toBe('[models . "acme/m1"]\nname = "m1"\n\n["x.y"]\nv = 1\n\n[image]\nmax_edge_px = 2000\n');
   });
 
   it('edits inside a quoted sub-table region at key level', () => {
