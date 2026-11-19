@@ -16,7 +16,7 @@ import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint
 import { logicalByteSize } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { readPersistedAgentRuntimeFacts, type PersistedAgentRuntimeFacts } from '@kiki/agent-core-v2/session/agentRuntimeFacts';
 import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
-import { isExternalClientMain } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { isExternalClientMain, type AgentMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { readPersistedAgentProfileSnapshot, PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET } from './agentProfileSnapshot';
 import { persistedAgentContextLimit } from './persistedAgentContext';
 import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccounting';
@@ -267,38 +267,33 @@ export async function readPersistedAgentPanelMetrics(
     };
     const fallbackFacts = (contextTokens: number | undefined): PersistedAgentRuntimeFacts =>
       contextTokens === undefined ? { complete: false } : { contextTokens, complete: false };
-    const runtime = new Map(await mapBounded(missing, PERSISTED_METRICS_RUNTIME_CONCURRENCY, async (agentId, index): Promise<readonly [string, RuntimePrepassEntry]> => {
+    const deadlineFallbackEntry = (agentId: string, meta: AgentMeta | undefined, contextComplete: boolean): readonly [string, RuntimePrepassEntry] => {
+      const native = !(metadata !== undefined && isExternalClientMain(metadata, agentId)) && (meta?.executor ?? 'native') === 'native';
+      const context: PersistedAgentContext = {
+        contextTokens: meta?.contextTokens ?? null,
+        contextLimit: native ? persistedAgentContextLimit(core, undefined, meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
+        compactionCount: null,
+      };
+      return [agentId, {
+        facts: fallbackFacts(meta?.contextTokens),
+        checkpointReady: false,
+        context,
+        contextComplete,
+      }] as const;
+    };
+    const runtime = new Map(await mapBounded(missing, PERSISTED_METRICS_RUNTIME_CONCURRENCY, async (agentId): Promise<readonly [string, RuntimePrepassEntry]> => {
       options.signal?.throwIfAborted();
       const meta = metadata?.agents?.[agentId];
+      if (runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
+        return deadlineFallbackEntry(agentId, meta, false);
+      }
       const size = await logicalByteSize(storage, `${sessionScope}/agents/${agentId}`, 'wire.jsonl');
       options.signal?.throwIfAborted();
       if (size === undefined || size === 0) {
-        const native = !(metadata !== undefined && isExternalClientMain(metadata, agentId)) && (meta?.executor ?? 'native') === 'native';
-        const context: PersistedAgentContext = {
-          contextTokens: meta?.contextTokens ?? null,
-          contextLimit: native ? persistedAgentContextLimit(core, undefined, meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
-          compactionCount: null,
-        };
-        return [agentId, {
-          facts: fallbackFacts(meta?.contextTokens),
-          checkpointReady: false,
-          context,
-          contextComplete: size === 0,
-        }] as const;
+        return deadlineFallbackEntry(agentId, meta, size === 0);
       }
-      if (runtimeBudgetDeadlineAt !== undefined && index >= 4 && Date.now() >= runtimeBudgetDeadlineAt) {
-        const native = !(metadata !== undefined && isExternalClientMain(metadata, agentId)) && (meta?.executor ?? 'native') === 'native';
-        const context: PersistedAgentContext = {
-          contextTokens: meta?.contextTokens ?? null,
-          contextLimit: native ? persistedAgentContextLimit(core, undefined, meta?.model, agentId === 'main' ? 'main' : 'sub') ?? null : null,
-          compactionCount: null,
-        };
-        return [agentId, {
-          facts: fallbackFacts(meta?.contextTokens),
-          checkpointReady: false,
-          context,
-          contextComplete: false,
-        }] as const;
+      if (runtimeBudgetDeadlineAt !== undefined && Date.now() >= runtimeBudgetDeadlineAt) {
+        return deadlineFallbackEntry(agentId, meta, false);
       }
       const [facts, profile] = await Promise.all([
         readPersistedAgentRuntimeFacts(core, workspaceId, sessionId, agentId, meta, options.signal),

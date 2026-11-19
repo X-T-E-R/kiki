@@ -131,6 +131,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private reconcileRequest = 0;
   private forcedReconcileRequest = 0;
   private reuseReconcileFingerprints = true;
+  private activeReconcileRequest = 0;
+  private activeReconcileReuseFingerprints = true;
   private nextReconcileRetryAt = 0;
   private reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
   private readonly reconcileRetryTimer = this._register(new TimeoutTimer());
@@ -500,14 +502,27 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   reconcileNow(options?: { reuseFingerprints?: boolean }): Promise<void> {
     if (this._store.isDisposed) return Promise.reject(new SessionIndexReconcilePendingError('disposed', 0));
     if (!this.readModelEnabled()) return Promise.resolve();
+    const wantsForced = options?.reuseFingerprints !== true;
+    if (this.reconcileFlight !== undefined) {
+      const covered = !wantsForced ||
+        !this.activeReconcileReuseFingerprints ||
+        this.forcedReconcileRequest > this.activeReconcileRequest;
+      if (!covered) {
+        this.reconcileRequest += 1;
+        this.forcedReconcileRequest = this.reconcileRequest;
+        this.reuseReconcileFingerprints = false;
+      }
+      return this.reconcileFlight;
+    }
     const retryAfterMs = this.nextReconcileRetryAt - Date.now();
-    if (this.reconcileFlight === undefined && retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
+    if (retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
     this.reconcileRequest += 1;
-    if (options?.reuseFingerprints !== true) {
+    if (wantsForced) {
       this.forcedReconcileRequest = this.reconcileRequest;
     }
-    this.reuseReconcileFingerprints &&= options?.reuseFingerprints === true;
-    if (this.reconcileFlight !== undefined) return this.reconcileFlight;
+    this.reuseReconcileFingerprints &&= !wantsForced;
+    this.activeReconcileRequest = this.reconcileRequest;
+    this.activeReconcileReuseFingerprints = this.reuseReconcileFingerprints;
     this.reconcileRetryTimer.cancel();
     this.reconcileFlight = this.runReconcile().finally(() => {
       this.reconcileFlight = undefined;
@@ -526,6 +541,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       this.checkReconcileActive(attempt);
       const request = this.reconcileRequest;
       const reuseFingerprints = reuseAttemptFingerprints;
+      this.activeReconcileRequest = request;
+      this.activeReconcileReuseFingerprints = reuseFingerprints;
       const mutated = new Map<string, string | undefined>();
       const subscription = this.mirror.onDidChange(({ id, workspaceId }) => mutated.set(id, workspaceId));
       let committed = false;
@@ -573,14 +590,24 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             }
             reuseAttemptFingerprints = true;
           }
+        } else if (request !== this.reconcileRequest) {
+          if (this.forcedReconcileRequest > request) {
+            this.projector.invalidateFingerprint();
+            reuseAttemptFingerprints = false;
+          } else {
+            reuseAttemptFingerprints = true;
+          }
         }
       }
-      if (committed && request === this.reconcileRequest) {
-        this.reuseReconcileFingerprints = true;
-        this.nextReconcileRetryAt = 0;
-        this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
-        this.reconcileRetryTimer.cancel();
-        return;
+      if (committed) {
+        if (request === this.reconcileRequest) {
+          this.reuseReconcileFingerprints = true;
+          this.nextReconcileRetryAt = 0;
+          this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
+          this.reconcileRetryTimer.cancel();
+          return;
+        }
+        attempt = -1;
       }
     }
     const delay = this.reconcileRetryDelayMs;

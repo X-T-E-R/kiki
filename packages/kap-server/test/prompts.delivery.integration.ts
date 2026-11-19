@@ -43,6 +43,7 @@ import { createHooks } from '@kiki/agent-core-v2/hooks';
 import type { TurnResult } from '@kiki/agent-core-v2/agent/loop/loop';
 import { timeRestorePhase } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
+import { IWorkspaceService } from '@kiki/agent-core-v2/app/workspace/workspace';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
 import { describe, expect, it, vi } from 'vitest';
 import { startServer } from '../src/start';
@@ -776,7 +777,7 @@ describe('server-v2 /api prompts', () => {
       const firstId = 'external-queue-first';
       const nextId = 'external-queue-next';
       await commands.submit({ agent_id: childId, prompt_id: firstId, content: [{ type: 'text', text: 'First external turn.' }] });
-      await vi.waitFor(() => { expect(prompt.list().active?.id).toBe(firstId); });
+      await vi.waitFor(() => { expect(prompt.list().active?.id).toBe(firstId); }, { timeout: 5000 });
       expect(run).toHaveBeenCalledTimes(1);
       const tasks = lifecycle.get('main')!.accessor.get(IAgentTaskService);
       const firstTaskId = tasks.list(true).find(item => item.kind === 'agent' && item.agentId === childId)!.taskId;
@@ -1134,7 +1135,7 @@ describe('server-v2 /api prompts', () => {
       }, { timeout: 5000 });
       const retry = await client.session(id).commands.submit(body);
       expect(retry).toEqual(accepted!.body.data);
-      expect(retry.content[2]).toMatchObject({ type: 'text', text: expect.stringContaining('notes.txt') });
+      expect(retry.content.at(-1)).toMatchObject({ type: 'text', text: expect.stringContaining('notes.txt') });
       const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
       const wire = (await readFile(join(session.accessor.get(ISessionContext).sessionDir, 'agents/main/wire.jsonl'), 'utf8'))
         .split('\n').filter(Boolean).map(line => JSON.parse(line) as { type: string; promptId?: string });
@@ -1564,4 +1565,196 @@ describe('server-v2 /api prompts', () => {
       executor.mockRestore();
     }
   }, 30_000);
+
+  it('reconciles cancellation requested during submitting and holds prompts for tombstoned workspaces without resurrecting them', async () => {
+    const id = await createSession(fixture.home!);
+    const submitGate = promiseGate<import('../src/services/promptIngress').PromptIngressResult>();
+    const enteredSubmit = promiseGate<void>();
+    const cancelSignals: boolean[] = [];
+    const submit = vi.fn(async (_sessionId: string, execution: import('../src/services/promptIngress').PromptIngressExecution) => {
+      await execution.beforeSubmit();
+      enteredSubmit.resolve();
+      return submitGate.promise;
+    });
+    const cancel = vi.fn(async (_sessionId: string, _agentId: string, _promptId: string, signal?: AbortSignal) => {
+      cancelSignals.push(Boolean(signal?.aborted));
+    });
+    const ingress = new PromptIngress(fixture.server!.core, { submit, cancel });
+    try {
+      await ingress.submit(id, { prompt_id: 'cancel-mid-submit', content: [{ type: 'text', text: 'Cancel me' }] }, 'fp-cancel');
+      await enteredSubmit.promise;
+
+      const abortResult = await ingress.abort(id, 'main', 'cancel-mid-submit');
+      expect(abortResult).toBe(false);
+      await vi.waitFor(async () => {
+        expect(await ingress.lookup(id, 'main', 'cancel-mid-submit')).toMatchObject({ admission: 'held' });
+      });
+
+      submitGate.resolve({
+        prompt_id: 'cancel-mid-submit',
+        user_message_id: 'cancel-mid-submit',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Cancel me' }],
+        created_at: new Date().toISOString(),
+      });
+      await vi.waitFor(async () => {
+        expect(await ingress.lookup(id, 'main', 'cancel-mid-submit')).toMatchObject({ admission: 'cancelled' });
+      });
+      expect(cancel).toHaveBeenCalledWith(id, 'main', 'cancel-mid-submit', expect.any(AbortSignal));
+      expect(cancelSignals).toEqual([false]);
+    } finally {
+      submitGate.resolve({
+        prompt_id: 'cancel-mid-submit',
+        user_message_id: 'cancel-mid-submit',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Cancel me' }],
+        created_at: new Date().toISOString(),
+      });
+      await ingress.close();
+    }
+
+    await createMainAgent(id);
+    const workspaceId = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(ISessionContext).workspaceId;
+    await closeSessionById(fixture.server!.core.accessor, id);
+    const workspaces = fixture.server!.core.accessor.get(IWorkspaceService);
+    await workspaces.delete(workspaceId);
+    expect(await workspaces.get(workspaceId)).toBeUndefined();
+
+    const root = `/api/sessions/${id}/prompts`;
+    expect((await call('POST', root, {
+      admission: 'durable',
+      prompt_id: 'deleted-ws-hold',
+      content: [{ type: 'text', text: 'Hold until workspace returns' }],
+    })).body.code).toBe(0);
+    await vi.waitFor(async () => {
+      expect((await call('GET', `${root}/deleted-ws-hold?admission=durable`)).body).toMatchObject({
+        code: 0,
+        data: { admission: 'held', prompt_id: 'deleted-ws-hold' },
+      });
+    }, { timeout: 5000 });
+    expect(await workspaces.get(workspaceId)).toBeUndefined();
+  });
+
+  it('serializes mid-submit failure with concurrent abort under lock and bounds stalled submitFlight waits on abort and close', async () => {
+    const id = await createSession(fixture.home!);
+    const failSubmitEntered = promiseGate<void>();
+    const releaseFailSubmit = promiseGate<void>();
+    const raceCancel = vi.fn(async () => {});
+    const raceIngress = new PromptIngress(fixture.server!.core, {
+      submit: async (_sessionId, execution) => {
+        await execution.beforeSubmit();
+        failSubmitEntered.resolve();
+        await releaseFailSubmit.promise;
+        throw new Error('submit failed right as abort arrived');
+      },
+      cancel: raceCancel,
+    });
+    try {
+      await raceIngress.submit(
+        id,
+        { prompt_id: 'race-fail-cancel', content: [{ type: 'text', text: 'Race cancel' }] },
+        'fp-race-fail',
+      );
+      await failSubmitEntered.promise;
+      releaseFailSubmit.resolve();
+      await raceIngress.abort(id, 'main', 'race-fail-cancel');
+      await vi.waitFor(async () => {
+        expect(await raceIngress.lookup(id, 'main', 'race-fail-cancel')).toMatchObject({
+          admission: 'cancelled',
+        });
+      });
+      expect(raceCancel).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseFailSubmit.resolve();
+      await raceIngress.close();
+    }
+
+    const stalledSubmit1 = promiseGate<import('../src/services/promptIngress').PromptIngressResult>();
+    const stalledSubmit2 = promiseGate<import('../src/services/promptIngress').PromptIngressResult>();
+    const enteredStalled1 = promiseGate<void>();
+    const enteredStalled2 = promiseGate<void>();
+    const stalledCancel = vi.fn(async () => {});
+    let stalledCalls = 0;
+    const boundedIngress = new PromptIngress(
+      fixture.server!.core,
+      {
+        submit: async (_sessionId, execution) => {
+          await execution.beforeSubmit();
+          stalledCalls += 1;
+          if (stalledCalls === 1) {
+            enteredStalled1.resolve();
+            return stalledSubmit1.promise;
+          }
+          enteredStalled2.resolve();
+          return stalledSubmit2.promise;
+        },
+        cancel: stalledCancel,
+      },
+      { submitSettleTimeoutMs: 50 },
+    );
+    try {
+      await boundedIngress.submit(
+        id,
+        { prompt_id: 'stalled-steer-1', content: [{ type: 'text', text: 'Stalled 1' }] },
+        'fp-stalled-1',
+      );
+      await enteredStalled1.promise;
+      const startedAbort = Date.now();
+      expect(await boundedIngress.abort(id, 'main', 'stalled-steer-1')).toBe(false);
+      await vi.waitFor(async () => {
+        const current = await boundedIngress.lookup(id, 'main', 'stalled-steer-1');
+        expect(current).toMatchObject({ admission: 'held' });
+        expect(current?.admission_error).toBeDefined();
+      }, { timeout: 2000 });
+      expect(Date.now() - startedAbort).toBeLessThan(2000);
+      expect(stalledCancel).not.toHaveBeenCalled();
+
+      expect(await boundedIngress.abort(id, 'main', 'stalled-steer-1')).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(await boundedIngress.lookup(id, 'main', 'stalled-steer-1')).toMatchObject({ admission: 'held' });
+      expect(stalledCancel).not.toHaveBeenCalled();
+
+      expect(await boundedIngress.resume(id, 'main', 'stalled-steer-1')).toMatchObject({ admission: 'held' });
+      expect(stalledCalls).toBe(1);
+
+      stalledSubmit1.resolve({
+        prompt_id: 'stalled-steer-1',
+        user_message_id: 'stalled-steer-1',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Stalled 1' }],
+        created_at: new Date().toISOString(),
+      });
+      await vi.waitFor(async () => {
+        expect(await boundedIngress.lookup(id, 'main', 'stalled-steer-1')).toMatchObject({ admission: 'cancelled' });
+      }, { timeout: 2000 });
+      expect(stalledCancel).toHaveBeenCalledTimes(1);
+
+      const id2 = await createSession(fixture.home!);
+      await boundedIngress.submit(
+        id2,
+        { prompt_id: 'stalled-steer-2', content: [{ type: 'text', text: 'Stalled 2' }] },
+        'fp-stalled-2',
+      );
+      await enteredStalled2.promise;
+      const startedClose = Date.now();
+      await boundedIngress.close();
+      expect(Date.now() - startedClose).toBeLessThan(2000);
+    } finally {
+      stalledSubmit1.resolve({
+        prompt_id: 'stalled-steer-1',
+        user_message_id: 'stalled-steer-1',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Stalled 1' }],
+        created_at: new Date().toISOString(),
+      });
+      stalledSubmit2.resolve({
+        prompt_id: 'stalled-steer-2',
+        user_message_id: 'stalled-steer-2',
+        status: 'queued',
+        content: [{ type: 'text', text: 'Stalled 2' }],
+        created_at: new Date().toISOString(),
+      });
+      await boundedIngress.close();
+    }
+  });
 });

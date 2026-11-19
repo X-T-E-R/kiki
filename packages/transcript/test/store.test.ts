@@ -1408,4 +1408,24 @@ describe('TranscriptStore', () => {
     ]);
     expect(store.agents()[0]?.parentAgentId).toBeUndefined();
   });
+
+  it('describeAgents batches multiple roster updates into a single roster notification', () => {
+    const store = new TranscriptStore('s1');
+    const notifications: Array<readonly string[]> = [];
+    store.onRosterChange((agents) => notifications.push(agents.map((agent) => agent.agentId)));
+
+    store.describeAgents([
+      { agentId: 'main', type: 'main' },
+      { agentId: 'sub-1', type: 'sub', parentAgentId: 'main' },
+      { agentId: 'sub-2', type: 'sub', parentAgentId: 'main' },
+    ]);
+    expect(notifications).toEqual([['main', 'sub-1', 'sub-2']]);
+
+    store.describeAgents([
+      { agentId: 'main', type: 'main' },
+      { agentId: 'sub-1', type: 'sub', parentAgentId: 'main' },
+      { agentId: 'sub-2', type: 'sub', parentAgentId: 'main' },
+    ]);
+    expect(notifications).toHaveLength(1);
+  });
 });

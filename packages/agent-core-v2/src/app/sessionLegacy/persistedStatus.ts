@@ -31,16 +31,15 @@ export class PersistedStatusReader {
       return cached.status;
     }
     const facts = await readPersistedAgentRuntimeFacts(
-      { storage: this.storage, appendLog: this.logs, docs: this.docs }, workspaceId, sessionId, 'main', metadata, undefined, { includeStatus: true },
+      { storage: this.storage, appendLog: this.logs, docs: this.docs, workers: this.workers }, workspaceId, sessionId, 'main', metadata, undefined, { includeStatus: true },
     );
     let status: PersistedStatus;
     if (facts.complete && facts.status !== undefined) {
       status = facts.status;
     } else {
-      const { transcript: _transcript, ...projection } = await readWireContextProjection(
-        this.workers.request.bind(this.workers), this.logs, this.storage, scope, AGENT_WIRE_RECORD_KEY,
+      status = await readWireContextProjection(
+        this.workers.request.bind(this.workers), this.logs, this.storage, scope, AGENT_WIRE_RECORD_KEY, undefined, { omitTranscript: true },
       );
-      status = projection;
     }
     const after = await this.storage.stat?.(scope, AGENT_WIRE_RECORD_KEY);
     this.cache.delete(scope);

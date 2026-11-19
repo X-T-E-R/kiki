@@ -3064,4 +3064,63 @@ describe('agent profile space inheritance', () => {
       );
     });
   });
+
+  it('shares user-root watches across workspaces and releases handles only after the last workspace disposes', async () => {
+    await withFixture(async (fixture) => {
+      const watchedRoots: string[] = [];
+      let disposedWatches = 0;
+      const emitters = new Map<string, Emitter<unknown>>();
+      const sharedWatch: IHostFsWatchService = {
+        _serviceBrand: undefined,
+        watch(path: string) {
+          watchedRoots.push(path);
+          let emitter = emitters.get(path);
+          if (emitter === undefined) {
+            emitter = new Emitter<unknown>();
+            emitters.set(path, emitter);
+          }
+          let disposed = false;
+          return {
+            ready: Promise.resolve(),
+            onDidChange: emitter.event as never,
+            dispose() {
+              if (!disposed) {
+                disposed = true;
+                disposedWatches += 1;
+              }
+            },
+          };
+        },
+      };
+      const wsOne = join(fixture.workDir, 'ws-1');
+      const wsTwo = join(fixture.workDir, 'ws-2');
+      const wsThree = join(fixture.workDir, 'ws-3');
+      await mkdir(wsOne, { recursive: true });
+      await mkdir(wsTwo, { recursive: true });
+      await mkdir(wsThree, { recursive: true });
+      const stackOne = makeStack({ ...fixture, workDir: wsOne }, { fsWatch: sharedWatch });
+      await stackOne.ready();
+      const userWatches = watchedRoots.filter((root) => root !== wsOne);
+      expect(userWatches.length).toBeGreaterThan(0);
+
+      const stackTwo = makeStack({ ...fixture, workDir: wsTwo }, { fsWatch: sharedWatch });
+      const stackThree = makeStack({ ...fixture, workDir: wsThree }, { fsWatch: sharedWatch });
+      await Promise.all([stackTwo.ready(), stackThree.ready()]);
+
+      expect(watchedRoots.filter((root) => root !== wsOne && root !== wsTwo && root !== wsThree)).toEqual(userWatches);
+
+      await stackOne.dispose();
+      await stackTwo.dispose();
+      expect(disposedWatches).toBe(2);
+
+      await writeAgent(join(fixture.homeDir, 'agents'), 'shared-watch.md', agentMd('shared-watch', 'shared watch profile'));
+      const updated = waitForEvent(stackThree.catalog.onDidChange);
+      for (const root of userWatches) emitters.get(root)?.fire(undefined);
+      await updated;
+      expect(stackThree.catalog.get('shared-watch')?.description).toBe('shared watch profile');
+
+      await stackThree.dispose();
+      expect(disposedWatches).toBe(3 + userWatches.length);
+    });
+  });
 });

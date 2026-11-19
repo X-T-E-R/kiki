@@ -176,6 +176,7 @@ import {
 type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
   readonly sessionId: string;
   readonly rollbackOnMaterializationFailure?: boolean;
+  readonly skipIndexLookup?: boolean;
 };
 
 const NO_ABORT = new AbortController().signal;
@@ -409,8 +410,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return promise;
   }
 
-  private async assertNewSession(sessionId: string): Promise<void> {
-    if (this.sessions.has(sessionId) || (await this.index.get(sessionId)) !== undefined) {
+  private async assertNewSession(sessionId: string, skipIndexLookup = false): Promise<void> {
+    if (this.sessions.has(sessionId) || (!skipIndexLookup && (await this.index.get(sessionId)) !== undefined)) {
       throw new Error2(ErrorCodes.SESSION_ALREADY_EXISTS, `Session "${sessionId}" already exists`);
     }
     for (const scope of new Set([this.sessionScope(sessionId), sessionScopeOf(this.handlerScope, sessionId)])) {
@@ -425,12 +426,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   async create(opts: CreateSessionOptions): Promise<ISessionScopeHandle> {
+    const generatedSessionId = opts.sessionId === undefined;
     const sessionId = opts.sessionId ?? createSessionId();
     if (opts.localSession !== undefined && (sessionId.startsWith('external:') || sessionId === opts.localSession.externalId)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'External source IDs cannot be used as Kiki session IDs');
     }
-    if (opts.sessionId !== undefined) {
-      await this.assertNewSession(sessionId);
+    if (!generatedSessionId && this.sessions.has(sessionId)) {
+      throw new Error2(ErrorCodes.SESSION_ALREADY_EXISTS, `Session "${sessionId}" already exists`);
     }
     if (opts.ephemeral === true) this.ephemeralSessions.add(sessionId);
     this.triggerCreateSkillReload();
@@ -440,6 +442,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         ...opts,
         sessionId,
         rollbackOnMaterializationFailure: true,
+        skipIndexLookup: generatedSessionId,
       });
     } catch (error) {
       this.ephemeralSessions.delete(sessionId);
@@ -542,7 +545,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const prePersistence: { revoke(): void; entry: LedgerEntry }[] = [];
     try {
       await phase('materialize_lock', () => this.acquireSessionLock(opts.sessionId, opts.waitForSessionMs));
-      if (opts.rollbackOnMaterializationFailure === true) await this.assertNewSession(opts.sessionId);
+      if (opts.rollbackOnMaterializationFailure === true) await this.assertNewSession(opts.sessionId, opts.skipIndexLookup === true);
       workspaceReference = this.acquireWorkspaceReference();
       handle = createScopedChildHandle(
         this.instantiation,
@@ -1400,8 +1403,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         );
       }
 
+      const generatedTargetId = opts.newSessionId === undefined;
       targetId = opts.newSessionId ?? createSessionId();
-      await this.assertNewSession(targetId);
+      if (!generatedTargetId) {
+        await this.assertNewSession(targetId);
+      }
 
       if (opts.turnIndex !== undefined) {
         sliceMainRecordsAtTurn(
@@ -1414,7 +1420,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
       await this.acquireSessionLock(targetId);
       try {
-        await this.assertNewSession(targetId);
+        await this.assertNewSession(targetId, generatedTargetId);
       } catch (error) {
         await this.releaseSessionLock(targetId);
         throw error;
@@ -1893,11 +1899,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
    * media, then binds a main agent with no delegator while registering settled descendant subagents.
    */
   async materializePromotion(source: PromotionSource, opts: PromoteAgentOptions): Promise<ISessionScopeHandle> {
+    const generatedTargetId = opts.newSessionId === undefined;
     const targetId = opts.newSessionId ?? createSessionId();
-    await this.assertNewSession(targetId);
+    if (!generatedTargetId && this.sessions.has(targetId)) {
+      throw new Error2(ErrorCodes.SESSION_ALREADY_EXISTS, `Session "${targetId}" already exists`);
+    }
     await this.acquireSessionLock(targetId);
     try {
-      await this.assertNewSession(targetId);
+      await this.assertNewSession(targetId, generatedTargetId);
     } catch (error) {
       await this.releaseSessionLock(targetId);
       throw error;

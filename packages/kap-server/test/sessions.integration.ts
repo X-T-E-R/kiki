@@ -3733,4 +3733,56 @@ describe('server-v2 /api/sessions (SQLite read model)', () => {
     expect(deleted.body.data.failed).toEqual([]);
     expect(await server.core.accessor.get(ISessionIndex).get(id)).toBeUndefined();
   });
+
+  it('uses authoritative get for caller-supplied sessionIds and creation_id probes while keeping generated UUIDs sweep-free', async () => {
+    const running = server as RunningServer;
+    const index = running.core.accessor.get(ISessionIndex);
+    const manager = running.core.accessor.get(ISessionManager);
+    const storage = running.core.accessor.get(IFileSystemStorageService);
+    await index.prepare();
+    await manager.create({ workDir: home as string });
+
+    const listSpy = vi.spyOn(storage, 'list');
+    try {
+      const fresh = await manager.create({ workDir: home as string });
+      expect(fresh.id).toMatch(/^session_/);
+      expect(listSpy.mock.calls.filter(([scope]) => scope === 'sessions')).toHaveLength(0);
+    } finally {
+      listSpy.mockRestore();
+    }
+
+    const seedUnindexedSession = async (sessionId: string) => {
+      const metaDir = join(home as string, 'sessions', 'unindexed-other-ws', sessionId, 'session-meta');
+      await mkdir(metaDir, { recursive: true });
+      await writeFile(
+        join(metaDir, 'state.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          id: sessionId,
+          createdAt: 1_000,
+          updatedAt: 2_000,
+          agents: {},
+        }),
+        'utf8',
+      );
+    };
+
+    const directLegacyId = 'legacy-unindexed-caller-id';
+    await seedUnindexedSession(directLegacyId);
+    await expect(
+      manager.create({ sessionId: directLegacyId, workDir: home as string }),
+    ).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+
+    const creationUuid = '22222222-2222-4222-8222-222222222222';
+    await seedUnindexedSession(`session_${creationUuid}`);
+    const conflict = await postJson<null>('/api/sessions', {
+      creation_id: creationUuid,
+      metadata: { cwd: home as string },
+    });
+    expect(conflict.body.code).not.toBe(0);
+    expect(conflict.body.details).toMatchObject({
+      creation_id: creationUuid,
+      reason: 'session_id_exists',
+    });
+  });
 });

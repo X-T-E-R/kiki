@@ -972,11 +972,13 @@ export class SessionEventBroadcaster {
 
     state.lifecycleDisposables.push(
       store.onRosterChange((agents) => {
+        const hasSubscribers = state.targets.size > 0;
         for (const descriptor of agents) {
           if (stream.knownAgents.has(descriptor.agentId)) continue;
           const transcript = store.getAgent(descriptor.agentId);
           if (transcript === undefined) continue;
           stream.knownAgents.add(descriptor.agentId);
+          if (!hasSubscribers) continue;
           for (const [target, sub] of state.targets) {
             if (!this.hasTranscriptBaseline(state, target, descriptor.agentId)) continue;
             const grade = gradeFor(sub.transcriptGrades, descriptor.agentId);

@@ -97,15 +97,18 @@ function liveInteractions(service: TranscriptService, sessionId: string, agentId
 }
 
 export async function readPlanInteractions(service: TranscriptService, sessionId: string, agentId: string, signal?: AbortSignal): Promise<readonly TranscriptInteraction[]> {
+  signal?.throwIfAborted();
   const live = liveInteractions(service, sessionId, agentId);
-  if (live.length > 0 || typeof service.readColdPageSnapshot !== 'function') return live;
+  if (live.length > 0) return live;
   try {
     const snapshot = await service.readColdPageSnapshot(sessionId, agentId, (source) => ({
       ...source, items: [], tasks: [], prompts: [], todos: [], attachments: [],
     }), signal);
     return snapshot?.interactions ?? [];
-  } catch {
-    return [];
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return [];
+    throw error;
   }
 }
 
@@ -1161,7 +1164,8 @@ async function extendColdPage(
     snapshot: next,
     progressed: boundary?.fingerprint !== nextBoundary?.fingerprint || boundary?.start !== nextBoundary?.start || boundary?.end !== nextBoundary?.end ||
       next.hasMoreOlder !== snapshot.hasMoreOlder || next.items.map(itemKey).join('\0') !== snapshot.items.map(itemKey).join('\0'),
-    prefixMaterialized: prefixWasMaterialized(boundary, nextBoundary),
+    prefixMaterialized: prefixWasMaterialized(boundary, nextBoundary) ||
+      (boundary !== undefined && boundary.start > 0 && nextBoundary === undefined && next.hasMoreOlder === false),
   };
 }
 

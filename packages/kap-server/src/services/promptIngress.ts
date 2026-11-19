@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import {
-  Error2, ErrorCodes, IAtomicDocumentStore, IBootstrapService, IFileService, IFileSystemStorageService,
-  IBlobStore, ILogService, ISessionIndex, ISessionManager, IWorkAdmissionService, isError2, type Scope,
+  Error2, ErrorCodes, IAgentLifecycleService, IAtomicDocumentStore, IBootstrapService, IFileService, IFileSystemStorageService,
+  IBlobStore, ILogService, ISessionContext, ISessionIndex, ISessionManager, ISessionMetadata, IWorkAdmissionService, isError2, type Scope,
 } from '@kiki/agent-core-v2';
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
 import { fileNotFoundError } from '@kiki/agent-core-v2/app/file/fileService';
@@ -17,6 +17,18 @@ export type PromptIngressResult = PromptSubmitResult & Pick<PromptSubmitReceipt,
 
 const PAGE_SIZE = 64;
 const INDEX_KEY = 'index.json';
+const STATE_META_CACHE_MAX_ENTRIES = 256;
+const DEFAULT_SUBMIT_SETTLE_TIMEOUT_MS = 5_000;
+
+export interface PromptIngressOptions {
+  readonly submitSettleTimeoutMs?: number;
+}
+
+interface CachedSessionStateMeta {
+  readonly fingerprint: string;
+  readonly private: boolean;
+  readonly agentIds: ReadonlySet<string>;
+}
 
 type Admission = NonNullable<PromptItem['admission']>;
 interface Target { readonly sessionId: string; readonly scope: string }
@@ -58,15 +70,23 @@ interface Consumer {
 
 export class PromptIngress {
   private readonly owner = randomUUID();
-  private readonly workers = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+  private readonly workers = new Map<string, { controller: AbortController; promise: Promise<void>; cancelAttempted: boolean; cancelHandled: boolean }>();
+  private readonly unsettledSubmits = new Map<string, Promise<PromptIngressResult>>();
+  private readonly cancelControllers = new Set<AbortController>();
+  private readonly closeController = new AbortController();
+  private readonly submitSettleTimeoutMs: number;
   private readonly targetTails = new Map<string, Promise<void>>();
   private readonly progress = new Map<string, NonNullable<PromptItem['restore_progress']>>();
   private readonly pendingContent = new Map<string, { readonly key: string; readonly promptId: string }>();
+  private readonly stateMetaCache = new Map<string, CachedSessionStateMeta>();
+  private readonly stateMetaFlights = new Map<string, Promise<CachedSessionStateMeta | undefined>>();
   private closed = false;
   private outboxFlight?: Promise<void>;
+  private rerunOutbox = false;
   private readonly admissionListener: { dispose(): void };
 
-  constructor(private readonly core: Scope, private readonly consumer: Consumer) {
+  constructor(private readonly core: Scope, private readonly consumer: Consumer, options?: PromptIngressOptions) {
+    this.submitSettleTimeoutMs = Math.max(1, options?.submitSettleTimeoutMs ?? DEFAULT_SUBMIT_SETTLE_TIMEOUT_MS);
     const admission = core.accessor.get(IWorkAdmissionService);
     let previous = admission.state().operationId;
     this.admissionListener = admission.onDidChange(() => {
@@ -83,10 +103,25 @@ export class PromptIngress {
   }
 
   start(): void {
-    if (this.closed || this.outboxFlight !== undefined || !this.isSwitchOutboxEnabled()) return;
-    this.outboxFlight = this.drainSwitchOutbox().catch(error => {
+    if (this.closed || !this.isSwitchOutboxEnabled()) return;
+    if (this.outboxFlight !== undefined) {
+      this.rerunOutbox = true;
+      return;
+    }
+    const runPass = async (): Promise<void> => {
+      do {
+        this.rerunOutbox = false;
+        await this.drainSwitchOutbox();
+      } while (this.rerunOutbox && !this.closed && this.core.accessor.get(IWorkAdmissionService).state().operationId === undefined);
+    };
+    this.outboxFlight = runPass().catch(error => {
       this.core.accessor.get(ILogService).warn('switch outbox recovery failed; saved messages remain available', { error: error instanceof Error ? error.message : String(error) });
-    }).finally(() => { this.outboxFlight = undefined; });
+    }).finally(() => {
+      this.outboxFlight = undefined;
+      if (this.rerunOutbox && !this.closed && this.core.accessor.get(IWorkAdmissionService).state().operationId === undefined) {
+        this.start();
+      }
+    });
   }
 
   private async registerSwitchEntry(target: Target, key: string): Promise<void> {
@@ -127,15 +162,78 @@ export class PromptIngress {
     return this.submitAdmitted(sessionId, body, fingerprint, steerTarget, true);
   }
 
+  private async stateFingerprint(scope: string): Promise<string | undefined> {
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    if (storage.stat !== undefined) {
+      const info = await storage.stat(scope, 'state.json');
+      return info === undefined ? undefined : `${info.size}:${info.revision}:${info.identity ?? ''}`;
+    }
+    const [size, mtime] = await Promise.all([
+      storage.size(scope, 'state.json'),
+      storage.mtime(scope, 'state.json'),
+    ]);
+    return size === undefined && mtime === undefined ? undefined : `${size ?? -1}:${mtime ?? -1}`;
+  }
+
+  private async readColdStateMeta(scope: string): Promise<CachedSessionStateMeta | undefined> {
+    const fingerprint = await this.stateFingerprint(scope);
+    if (fingerprint === undefined) {
+      this.stateMetaCache.delete(scope);
+      return undefined;
+    }
+    const cached = this.stateMetaCache.get(scope);
+    if (cached?.fingerprint === fingerprint) {
+      this.stateMetaCache.delete(scope);
+      this.stateMetaCache.set(scope, cached);
+      return cached;
+    }
+    const flightKey = `${scope}\0${fingerprint}`;
+    let flight = this.stateMetaFlights.get(flightKey);
+    if (flight === undefined) {
+      flight = (async (): Promise<CachedSessionStateMeta | undefined> => {
+        const metadata = await this.documents().get<{ private?: boolean; agents?: Record<string, unknown> }>(scope, 'state.json');
+        if (metadata === undefined) return undefined;
+        const entry: CachedSessionStateMeta = {
+          fingerprint,
+          private: metadata.private === true,
+          agentIds: new Set(Object.keys(metadata.agents ?? {})),
+        };
+        const after = await this.stateFingerprint(scope);
+        if (after === fingerprint) {
+          this.stateMetaCache.delete(scope);
+          this.stateMetaCache.set(scope, entry);
+          if (this.stateMetaCache.size > STATE_META_CACHE_MAX_ENTRIES) {
+            this.stateMetaCache.delete(this.stateMetaCache.keys().next().value!);
+          }
+        }
+        return entry;
+      })().finally(() => {
+        if (this.stateMetaFlights.get(flightKey) === flight) this.stateMetaFlights.delete(flightKey);
+      });
+      this.stateMetaFlights.set(flightKey, flight);
+    }
+    return flight;
+  }
+
   private async target(sessionId: string, agentId: string): Promise<Target> {
+    const live = this.core.accessor.get(ISessionManager).get(sessionId);
+    if (live !== undefined) {
+      const ctx = live.accessor.get(ISessionContext);
+      if (ctx.ephemeral) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Save this temporary session before using durable admission.');
+      const scope = sessionScopeOf(workspacePersistenceScope(this.core.accessor.get(IBootstrapService).scope('sessions'), ctx.workspaceId), sessionId);
+      if (agentId !== 'main') {
+        const present = live.accessor.get(IAgentLifecycleService).get(agentId) !== undefined ||
+          (await live.accessor.get(ISessionMetadata).read()).agents?.[agentId] !== undefined;
+        if (!present) throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agentId} does not exist`);
+      }
+      return { sessionId, scope };
+    }
     const summary = await this.core.accessor.get(ISessionIndex).get(sessionId);
-    const live = summary === undefined ? this.core.accessor.get(ISessionManager).get(sessionId) : undefined;
-    if (summary === undefined && live === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-    if (summary === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Save this temporary session before using durable admission.');
+    if (summary === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     const scope = sessionScopeOf(workspacePersistenceScope(this.core.accessor.get(IBootstrapService).scope('sessions'), summary.workspaceId), sessionId);
     if (agentId !== 'main') {
-      const metadata = await this.documents().get<{ agents?: Record<string, unknown> }>(scope, 'state.json');
-      if (metadata?.agents?.[agentId] === undefined) throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agentId} does not exist`);
+      const metadata = await this.readColdStateMeta(scope);
+      if (metadata?.agentIds.has(agentId) !== true) throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `agent ${agentId} does not exist`);
     }
     return { sessionId, scope };
   }
@@ -216,10 +314,16 @@ export class PromptIngress {
       await this.recover(target, existing);
       const recovered = await this.locked(target, async () => {
         const current = (await this.read(target, key))!;
+        if (current.result === undefined && await this.documents().get(`${target.scope}/prompt-ingress/payloads`, `${key}.json`) === undefined) {
+          const repairedContent = await this.retainMedia(target, body.content);
+          await this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, { ...body, content: repairedContent, admission: undefined });
+        }
         await this.publish(target, current);
+        if (waitingSwitch && current.admission === 'waiting_switch') await this.registerSwitchEntry(target, key);
         return current;
       });
       if (recovered.owner === this.owner && recovered.admission === 'restoring' && !waitingSwitch) this.schedule(target, recovered);
+      if (recovered.admission === 'waiting_switch' && this.core.accessor.get(IWorkAdmissionService).state().operationId === undefined) this.start();
       return this.item(target, recovered);
     }
     const content = await this.retainMedia(target, body.content);
@@ -231,6 +335,10 @@ export class PromptIngress {
       ]);
       if (raced !== undefined) {
         if (raced.fingerprint !== fingerprint) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, 'This prompt_id already belongs to another request.');
+        if (raced.result === undefined && await this.documents().get(`${target.scope}/prompt-ingress/payloads`, `${key}.json`) === undefined) {
+          await this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload);
+        }
+        await this.publish(target, raced);
         return raced;
       }
       const ordinal = index?.next ?? 0;
@@ -241,19 +349,10 @@ export class PromptIngress {
         contentIdentity, duplicateOf: duplicate?.promptId,
         error: duplicate === undefined ? undefined : { code: 40903, message: 'An identical message is already waiting for restoration. This copy is held. Cancel it or explicitly resume it to send it separately.' },
         steerTarget: body.delivery_mode === 'steer' ? steerTarget : undefined };
-      await Promise.all([
-        this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload),
-        this.save(target, created),
-      ]);
+      await this.documents().set(`${target.scope}/prompt-ingress/payloads`, `${key}.json`, savedPayload);
+      await this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 });
+      await this.publish(target, created);
       if (created.admission === 'waiting_switch') await this.registerSwitchEntry(target, key);
-      await Promise.all([
-        this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 }),
-        this.documents().update<IndexPage>(`${target.scope}/prompt-ingress/pages`, `${Math.floor(created.ordinal / PAGE_SIZE)}.json`, current => {
-          const keys = [...(current?.keys ?? [])];
-          keys[created.ordinal % PAGE_SIZE] = created.key;
-          return { keys };
-        }),
-      ]);
       if (duplicate === undefined) this.pendingContent.set(contentIdentity, { key, promptId: body.prompt_id! });
       return created;
     });
@@ -292,13 +391,18 @@ export class PromptIngress {
   private async resumeAdmitted(sessionId: string, agentId: string, promptId: string): Promise<PromptItem | undefined> {
     const target = await this.target(sessionId, agentId);
     const key = this.key(agentId, promptId);
+    const progressKey = `${target.scope}/${key}`;
     let entry = await this.read(target, key);
     if (entry === undefined) return undefined;
     entry = await this.recover(target, entry);
-    if (entry.admission !== 'held' && entry.admission !== 'failed') return this.item(target, entry);
+    if ((entry.admission !== 'held' && entry.admission !== 'failed') || this.unsettledSubmits.has(progressKey)) {
+      return this.item(target, entry);
+    }
     const resumed = await this.locked(target, async () => {
       const current = (await this.read(target, key))!;
-      if (current.admission !== 'held' && current.admission !== 'failed') return current;
+      if ((current.admission !== 'held' && current.admission !== 'failed') || this.unsettledSubmits.has(progressKey)) {
+        return current;
+      }
       const next: Entry = { ...current, owner: this.owner, admission: 'restoring', error: undefined, duplicateOf: undefined };
       await this.publish(target, next);
       return next;
@@ -308,7 +412,9 @@ export class PromptIngress {
   }
 
   async abort(sessionId: string, agentId: string, promptId: string): Promise<boolean | undefined> {
-    if (await this.core.accessor.get(ISessionIndex).get(sessionId) === undefined) return undefined;
+    const live = this.core.accessor.get(ISessionManager).get(sessionId);
+    if (live !== undefined && live.accessor.get(ISessionContext).ephemeral) return undefined;
+    if (live === undefined && await this.core.accessor.get(ISessionIndex).get(sessionId) === undefined) return undefined;
     const target = await this.target(sessionId, agentId);
     const key = this.key(agentId, promptId);
     const entry = await this.locked(target, async () => {
@@ -349,7 +455,11 @@ export class PromptIngress {
       void running.promise.then(async () => {
         if (this.closed || this.workers.has(key)) return;
         const current = await this.read(target, entry.key).catch(() => undefined);
-        if (current !== undefined && current.owner === this.owner && current.admission === 'restoring') {
+        if (current === undefined || current.owner !== this.owner) return;
+        if (
+          current.admission === 'restoring' ||
+          (!running.cancelAttempted && !running.cancelHandled && current.cancelRequested === true && current.admission !== 'cancelled' && current.admission !== 'admitted')
+        ) {
           this.schedule(target, current);
         }
       });
@@ -368,7 +478,8 @@ export class PromptIngress {
       controller.abort(new Error2(ErrorCodes.SESSION_BUSY, `Message restoration timed out after 120s during ${phase}. Retry this saved message or cancel it.`));
     }, 120_000);
     timeout.unref?.();
-    const run = () => this.run(target, entry.key, controller, timeout, previous);
+    const workerEntry = { controller, promise: Promise.resolve(), cancelAttempted: false, cancelHandled: false };
+    const run = () => this.run(target, entry.key, controller, timeout, previous, workerEntry);
     const promise = (admission === undefined ? run() : admission.run(run)).catch(error => {
       this.core.accessor.get(ILogService).warn('durable prompt admission stopped', { error: error instanceof Error ? error.message : String(error) });
     }).finally(() => {
@@ -379,26 +490,168 @@ export class PromptIngress {
       if (entry.contentIdentity !== undefined && this.pendingContent.get(entry.contentIdentity)?.key === entry.key) this.pendingContent.delete(entry.contentIdentity);
       if (this.targetTails.get(lane) === promise) this.targetTails.delete(lane);
     });
-    this.workers.set(key, { controller, promise });
+    workerEntry.promise = promise;
+    this.workers.set(key, workerEntry);
     this.targetTails.set(lane, promise);
   }
 
-  private async run(target: Target, key: string, controller: AbortController, timeout: ReturnType<typeof setTimeout>, previous: Promise<void>): Promise<void> {
+  private awaitSubmitSettlement(
+    submitFlight: Promise<PromptIngressResult>,
+  ): Promise<
+    | { readonly kind: 'resolved'; readonly result: PromptIngressResult }
+    | { readonly kind: 'rejected'; readonly error: unknown }
+    | { readonly kind: 'uncertain'; readonly error: Error }
+  > {
+    if (this.closed || this.closeController.signal.aborted) {
+      return Promise.resolve({ kind: 'uncertain', error: new Error('Server stopped during prompt admission') });
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (
+        value:
+          | { readonly kind: 'resolved'; readonly result: PromptIngressResult }
+          | { readonly kind: 'rejected'; readonly error: unknown }
+          | { readonly kind: 'uncertain'; readonly error: Error },
+      ) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.closeController.signal.removeEventListener('abort', onClose);
+        resolve(value);
+      };
+      const onClose = () => {
+        finish({ kind: 'uncertain', error: new Error('Server stopped during prompt admission') });
+      };
+      const timer = setTimeout(() => {
+        finish({
+          kind: 'uncertain',
+          error: new Error2(
+            ErrorCodes.SESSION_BUSY,
+            'Prompt submission is still settling with the agent. Inspect or retry once the agent settles.',
+          ),
+        });
+      }, this.submitSettleTimeoutMs);
+      timer.unref?.();
+      this.closeController.signal.addEventListener('abort', onClose, { once: true });
+      void submitFlight.then(
+        (result) => finish({ kind: 'resolved', result }),
+        (error: unknown) => finish({ kind: 'rejected', error }),
+      );
+    });
+  }
+
+  private async reconcileLateSubmitSettlement(
+    target: Target,
+    key: string,
+    progressKey: string,
+    settled?: PromptIngressResult,
+  ): Promise<void> {
+    const activeWorker = this.workers.get(progressKey);
+    if (activeWorker !== undefined) {
+      await activeWorker.promise.catch(() => {});
+    }
+    if (this.closed) return;
+    let shouldSchedule: Entry | undefined;
+    await this.locked(target, async () => {
+      const current = await this.read(target, key);
+      if (current === undefined || current.owner !== this.owner || current.admission === 'cancelled') return;
+      const compact = settled === undefined
+        ? current.result
+        : { ...settled, content: this.preview(settled.content), resolved_parts: undefined };
+      if (current.cancelRequested === true) {
+        const next: Entry = compact === current.result ? current : { ...current, result: compact };
+        if (next !== current) await this.publish(target, next);
+        if (!this.workers.has(progressKey)) shouldSchedule = next;
+        return;
+      }
+      if (settled !== undefined && current.admission === 'held') {
+        await this.publish(target, { ...current, result: compact, admission: 'admitted', error: undefined });
+      }
+    }).catch(() => {});
+    if (shouldSchedule !== undefined && !this.closed) {
+      this.schedule(target, shouldSchedule);
+    }
+  }
+
+  private async runCancelReconciliation(sessionId: string, agentId: string, promptId: string): Promise<void> {
+    if (this.closed) throw new Error('Server stopped during prompt admission');
+    const cancelController = new AbortController();
+    this.cancelControllers.add(cancelController);
+    const timer = setTimeout(() => {
+      cancelController.abort(new Error2(ErrorCodes.SESSION_BUSY, 'Prompt cancellation timed out while reconciling with the agent.'));
+    }, 30_000);
+    timer.unref?.();
+    try {
+      await this.consumer.cancel(sessionId, agentId, promptId, cancelController.signal);
+    } finally {
+      clearTimeout(timer);
+      this.cancelControllers.delete(cancelController);
+    }
+  }
+
+  private async run(
+    target: Target,
+    key: string,
+    controller: AbortController,
+    timeout: ReturnType<typeof setTimeout>,
+    previous: Promise<void>,
+    workerEntry: { cancelAttempted: boolean; cancelHandled: boolean },
+  ): Promise<void> {
     if (this.closed) return;
     const lease = await this.core.accessor.get(IFileSystemStorageService).acquireLock(`${target.scope}/prompt-ingress`, `${key}.worker.lock`, { waitForMs: 0 });
     try {
       let entry = (await this.read(target, key))!;
       if (entry.owner !== this.owner || (entry.admission !== 'restoring' && !entry.cancelRequested) || entry.admission === 'cancelled') return;
+      let submittingStarted = false;
+      let submitSettled = false;
+      let settledResult: PromptIngressResult | undefined;
+      let submitFlight: Promise<PromptIngressResult> | undefined;
+      const progressKey = `${target.scope}/${key}`;
       try {
         await abortable(previous.catch(() => {}), controller.signal);
         if (entry.cancelRequested) {
-          await this.consumer.cancel(target.sessionId, entry.agentId, entry.body.prompt_id!, controller.signal);
-          await this.locked(target, () => this.publish(target, { ...entry, admission: 'cancelled', error: undefined }));
+          workerEntry.cancelAttempted = true;
+          const pendingSubmit = this.unsettledSubmits.get(progressKey);
+          if (pendingSubmit !== undefined) {
+            const outcome = await this.awaitSubmitSettlement(pendingSubmit);
+            if (outcome.kind === 'uncertain') {
+              const mapped = mapError(outcome.error, entry.body.prompt_id!);
+              await this.locked(target, async () => {
+                const current = (await this.read(target, key))!;
+                if (current.admission === 'cancelled') {
+                  workerEntry.cancelHandled = true;
+                  return;
+                }
+                await this.publish(target, {
+                  ...current,
+                  admission: 'held',
+                  restoreProgress: this.progressSnapshot(progressKey),
+                  error: { code: mapped.code, message: mapped.msg },
+                });
+              });
+              return;
+            }
+            if (outcome.kind === 'resolved') {
+              settledResult = outcome.result;
+            }
+          }
+          await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
+          await this.locked(target, async () => {
+            const current = (await this.read(target, key))!;
+            workerEntry.cancelHandled = true;
+            const compact = settledResult === undefined
+              ? current.result
+              : { ...settledResult, content: this.preview(settledResult.content), resolved_parts: undefined };
+            await this.publish(target, { ...current, result: compact, admission: 'cancelled', error: undefined });
+          });
           return;
         }
+        if (this.unsettledSubmits.has(progressKey)) return;
         controller.signal.throwIfAborted();
-        const progressKey = `${target.scope}/${key}`;
-        const result = await abortable(this.consumer.submit(target.sessionId, { body: await this.payload(target, key), fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
+        const payload = await this.payload(target, key);
+        controller.signal.throwIfAborted();
+        let registerUnsettledSubmit: (() => void) | undefined;
+        const rawSubmitFlight = this.consumer.submit(target.sessionId, { body: payload, fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
           steerTarget: entry.steerTarget,
           onRestoreProgress: progress => {
             if (controller.signal.aborted) return;
@@ -410,39 +663,126 @@ export class PromptIngress {
             await this.locked(target, async () => {
               entry = (await this.read(target, key))!;
               if (entry.cancelRequested || controller.signal.aborted || this.closed) throw new Error('Prompt admission cancelled');
+              submittingStarted = true;
+              registerUnsettledSubmit?.();
               entry = { ...entry, stage: 'submitting', restoreProgress: this.progressSnapshot(progressKey) };
               await this.save(target, entry);
               clearTimeout(timeout);
               if (entry.contentIdentity !== undefined && this.pendingContent.get(entry.contentIdentity)?.key === entry.key) this.pendingContent.delete(entry.contentIdentity);
             });
-          } }), controller.signal);
-        await this.documents().set(`${target.scope}/prompt-ingress/results`, `${key}.json`, result);
+          } });
+        const trackedFlight = rawSubmitFlight.then(async (resolved) => {
+          if (!this.closed) {
+            await this.documents().set(`${target.scope}/prompt-ingress/results`, `${key}.json`, resolved);
+          }
+          return resolved;
+        });
+        registerUnsettledSubmit = () => {
+          this.unsettledSubmits.set(progressKey, trackedFlight);
+          void trackedFlight.then(
+            (resolved) => {
+              if (this.unsettledSubmits.get(progressKey) === trackedFlight) {
+                this.unsettledSubmits.delete(progressKey);
+              }
+              return this.reconcileLateSubmitSettlement(target, key, progressKey, resolved);
+            },
+            () => {
+              if (this.unsettledSubmits.get(progressKey) === trackedFlight) {
+                this.unsettledSubmits.delete(progressKey);
+              }
+              return this.reconcileLateSubmitSettlement(target, key, progressKey);
+            },
+          );
+        };
+        if (submittingStarted) registerUnsettledSubmit();
+        void trackedFlight.catch(() => {});
+        submitFlight = trackedFlight;
+        const result = await abortable(submitFlight, controller.signal);
+        submitSettled = true;
+        settledResult = result;
         await this.locked(target, async () => {
           const current = (await this.read(target, key))!;
+          if (current.cancelRequested) workerEntry.cancelAttempted = true;
           entry = { ...current, result: { ...result, content: this.preview(result.content), resolved_parts: undefined }, admission: current.cancelRequested ? 'held' : 'admitted', error: undefined };
           await this.publish(target, entry);
         });
         if (entry.cancelRequested) {
-          await this.consumer.cancel(target.sessionId, entry.agentId, entry.body.prompt_id!, controller.signal);
-          await this.locked(target, () => this.publish(target, { ...entry, admission: 'cancelled' }));
+          await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
+          await this.locked(target, async () => {
+            const current = (await this.read(target, key))!;
+            workerEntry.cancelHandled = true;
+            await this.publish(target, { ...current, admission: 'cancelled', error: undefined });
+          });
         }
       } catch (error) {
-        const mapped = mapError(error, entry.body.prompt_id!);
-        await this.locked(target, async () => {
-          const current = (await this.read(target, key))!;
-          if (current.admission === 'cancelled') return;
-          await this.publish(target, { ...current, admission: this.closed || current.cancelRequested || current.stage === 'submitting' ? 'held' : 'failed',
-            restoreProgress: this.progressSnapshot(`${target.scope}/${key}`), error: { code: mapped.code, message: mapped.msg } });
-        });
+        let submitError: unknown = error;
+        let uncertainSettlement = false;
+        for (;;) {
+          const decision = await this.locked(target, async () => {
+            const current = (await this.read(target, key))!;
+            if (current.admission === 'cancelled') {
+              workerEntry.cancelHandled = true;
+              return { action: 'done' as const };
+            }
+            if (!this.closed && current.cancelRequested === true && !workerEntry.cancelAttempted) {
+              workerEntry.cancelAttempted = true;
+              return { action: submittingStarted ? 'settle_then_cancel' as const : 'reconcile_cancel' as const };
+            }
+            const mapped = mapError(submitError, entry.body.prompt_id!);
+            const holdForDeletedWorkspace = isError2(submitError) && submitError.code === ErrorCodes.WORKSPACE_NOT_FOUND;
+            const compact = settledResult === undefined
+              ? current.result
+              : { ...settledResult, content: this.preview(settledResult.content), resolved_parts: undefined };
+            await this.publish(target, {
+              ...current,
+              result: compact,
+              admission: this.closed || current.cancelRequested || current.stage === 'submitting' || holdForDeletedWorkspace || uncertainSettlement ? 'held' : 'failed',
+              restoreProgress: this.progressSnapshot(`${target.scope}/${key}`),
+              error: { code: mapped.code, message: mapped.msg },
+            });
+            return { action: 'done' as const };
+          });
+          if (decision.action === 'done') return;
+          if (decision.action === 'settle_then_cancel' && !submitSettled && submitFlight !== undefined) {
+            const outcome = await this.awaitSubmitSettlement(submitFlight);
+            if (outcome.kind === 'uncertain') {
+              uncertainSettlement = true;
+              submitError = outcome.error;
+              continue;
+            }
+            submitSettled = true;
+            if (outcome.kind === 'resolved') {
+              settledResult = outcome.result;
+            } else {
+              submitError = outcome.error;
+            }
+          }
+          try {
+            await this.runCancelReconciliation(target.sessionId, entry.agentId, entry.body.prompt_id!);
+            await this.locked(target, async () => {
+              const current = (await this.read(target, key))!;
+              workerEntry.cancelHandled = true;
+              const compact = settledResult === undefined
+                ? current.result
+                : { ...settledResult, content: this.preview(settledResult.content), resolved_parts: undefined };
+              await this.publish(target, { ...current, result: compact, admission: 'cancelled', error: undefined });
+            });
+            return;
+          } catch (cancelError) {
+            submitError = cancelError;
+          }
+        }
       }
     } finally { await lease.release(); }
   }
 
   async close(): Promise<void> {
     this.closed = true;
+    this.closeController.abort(new Error('Server stopped during prompt admission'));
     this.admissionListener.dispose();
     await this.outboxFlight;
     for (const worker of this.workers.values()) worker.controller.abort(new Error('Server stopped during prompt admission'));
+    for (const cancelController of this.cancelControllers) cancelController.abort(new Error('Server stopped during prompt admission'));
     await Promise.all([...this.workers.values()].map(worker => worker.promise));
   }
 

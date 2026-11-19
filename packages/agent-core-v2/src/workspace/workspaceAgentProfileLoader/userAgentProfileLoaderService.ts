@@ -1,3 +1,5 @@
+import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { Emitter, type Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
 import { TimeoutTimer } from '#/_base/utils/timer';
@@ -28,6 +30,56 @@ import { loadSystemMdProfile } from './internal/systemFile';
 import { IUserAgentProfileLoader } from './userAgentProfileLoader';
 
 const WATCH_DEBOUNCE_MS = 200;
+
+interface SharedUserRootWatchEntry {
+  refs: number;
+  readonly emitter: Emitter<void>;
+  readonly handles: readonly IDisposable[];
+}
+
+const sharedUserRootWatches = new WeakMap<IHostFsWatchService, Map<string, SharedUserRootWatchEntry>>();
+
+function leaseUserRootWatch(
+  fsWatch: IHostFsWatchService,
+  userAgentProfileHomeDir: string,
+  osHomeDir: string,
+  genericRoots: boolean,
+): { readonly onDidChange: Event<void>; readonly dispose: () => void } {
+  let byKey = sharedUserRootWatches.get(fsWatch);
+  if (byKey === undefined) {
+    byKey = new Map();
+    sharedUserRootWatches.set(fsWatch, byKey);
+  }
+  const key = JSON.stringify([userAgentProfileHomeDir, osHomeDir, genericRoots]);
+  let entry = byKey.get(key);
+  if (entry === undefined) {
+    const emitter = new Emitter<void>();
+    const handles: IDisposable[] = [];
+    for (const { root, candidates } of userAgentRootWatchPlans(userAgentProfileHomeDir, osHomeDir, { genericRoots })) {
+      const handle = fsWatch.watch(root, {
+        ignored: subtreeWatchFilter(root, candidates),
+        signal: true,
+      });
+      handles.push(handle, handle.onDidChange(() => emitter.fire()));
+    }
+    entry = { refs: 0, emitter, handles };
+    byKey.set(key, entry);
+  }
+  entry.refs += 1;
+  let released = false;
+  return {
+    onDidChange: entry.emitter.event,
+    dispose: () => {
+      if (released) return;
+      released = true;
+      entry.refs -= 1;
+      if (entry.refs > 0) return;
+      byKey.delete(key);
+      for (const handle of entry.handles) handle.dispose();
+      entry.emitter.dispose();
+    },
+  };
+}
 
 /** `IUserAgentProfileLoader` implementation (Workspace scope): discovers user agent profiles through
  *  `bootstrap` home paths and `hostFs`, and appends the `<home>/SYSTEM.md` prompt-override profile
@@ -144,25 +196,21 @@ export class UserAgentProfileLoaderService
   }
 
   private async watchUserAgentRoots(): Promise<void> {
-    for (const { root, candidates } of userAgentRootWatchPlans(
+    const shared = leaseUserRootWatch(
+      this.fsWatch,
       this.bootstrap.userAgentProfileHomeDir,
       this.bootstrap.osHomeDir,
-      { genericRoots: this.genericRootsEnabled },
-    )) {
-      const handle = this.fsWatch.watch(root, {
-        ignored: subtreeWatchFilter(root, candidates),
-        signal: true,
-      });
-      this._register(handle);
-      this._register(
-        handle.onDidChange(() => {
-          this.watchDebounce.cancelAndSet(() => {
-            void this.reloadFromWatch().catch((error) => {
-              this.log.warn(`agent profile loader "user" reload failed: ${String(error)}`);
-            });
-          }, WATCH_DEBOUNCE_MS);
-        }),
-      );
-    }
+      this.genericRootsEnabled,
+    );
+    this._register(toDisposable(() => shared.dispose()));
+    this._register(
+      shared.onDidChange(() => {
+        this.watchDebounce.cancelAndSet(() => {
+          void this.reloadFromWatch().catch((error) => {
+            this.log.warn(`agent profile loader "user" reload failed: ${String(error)}`);
+          });
+        }, WATCH_DEBOUNCE_MS);
+      }),
+    );
   }
 }

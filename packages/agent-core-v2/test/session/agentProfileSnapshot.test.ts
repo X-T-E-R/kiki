@@ -7,6 +7,12 @@ import { createWireContextProjection } from '#/agent/contextMemory/wireContextPr
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { WireRecord } from '#/wire/record';
 import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { executeCpuOperation } from '#/app/cpuWorker/tasks';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { profileKey, profileActiveToolsKey } from '#/agent/profile/profileOps';
 import { tokenCountingKey } from '#/agent/tokenCounting/tokenCountingOps';
 import { turnKey } from '#/agent/loop/turnOps';
@@ -154,7 +160,11 @@ describe('readPersistedAgentProfileSnapshot', () => {
   });
 });
 
-function checkpointFixture(extraTail: readonly WireRecord[] = [], context: readonly ContextMessage[] = []) {
+function checkpointFixture(
+  extraTail: readonly WireRecord[] = [],
+  context: readonly ContextMessage[] = [],
+  profileName = 'research',
+) {
   const prefix = Buffer.alloc((8 << 20) + 100, 32);
   prefix[prefix.length - 1] = 10;
   const tail = Buffer.from([
@@ -167,9 +177,9 @@ function checkpointFixture(extraTail: readonly WireRecord[] = [], context: reado
   ].map(record => JSON.stringify(record)).join('\n') + '\n');
   const bytes = Buffer.concat([prefix, tail]);
   const states = [
-    { name: profileKey.name, value: { ...profileKey.initial(), profileName: 'research', modelAlias: 'example-model',
+    { name: profileKey.name, value: { ...profileKey.initial(), profileName, modelAlias: 'example-model',
       canSpawnSubagents: true, allowedSubagents: ['explore'], toolAllowPolicies: [['Read', 'Grep']],
-      boundProfile: { name: 'research', tools: ['Read'], mcpOverrides: { example: false } } } },
+      boundProfile: { name: profileName, tools: ['Read'], mcpOverrides: { example: false } } } },
     { name: profileActiveToolsKey.name, value: ['Read'] },
     { name: tokenCountingKey.name, value: tokenCountingKey.initial() },
     { name: turnKey.name, value: turnKey.initial() },
@@ -285,4 +295,188 @@ it.each([false, true])('keeps mirrored context through a direct model switch, wi
     read: async () => undefined, readStream: async function* () { yield bytes; } }, appendLog: { flush: async () => {} } };
   expect(await readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main', { contextTokens: 321 } as never))
     .toMatchObject({ contextTokens: counted ? 0 : 321, complete: true });
+});
+
+it('decodes node-fs checkpoints via checkpoint.read and coalesces concurrent profile and runtime reads', async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), 'checkpoint-worker-test-'));
+  const storage = new FileStorageService(baseDir);
+  const docs = new JsonAtomicDocumentStore(storage);
+  try {
+    const { host: fixtureHost, checkpoint } = checkpointFixture();
+    const totalSize = await fixtureHost.storage.size();
+    const wireChunks: Buffer[] = [];
+    for await (const chunk of fixtureHost.storage.readStream('', '', { start: 0, end: totalSize - 1 })) {
+      wireChunks.push(Buffer.from(chunk));
+    }
+    const agentScope = 'sessions/workspace/session/agents/main';
+    await storage.append(agentScope, 'wire.jsonl', Buffer.concat(wireChunks));
+    await storage.write(agentScope, 'wire.jsonl.generation', Buffer.from('fixture-generation'));
+    await docs.set(`${agentScope}/replay-checkpoints`, 'engine-v1', checkpoint);
+
+    const workerCalls: Array<{ readonly type: string; readonly path?: string }> = [];
+    const workers = {
+      request: vi.fn(async (operation: Parameters<typeof executeCpuOperation>[0]) => {
+        workerCalls.push({ type: operation.type, path: 'path' in operation ? operation.path : undefined });
+        return executeCpuOperation(operation);
+      }),
+    };
+    const host = {
+      storage,
+      docs,
+      workers,
+      appendLog: { flush: async () => {} },
+    };
+
+    const [profileA, profileB, runtimeFacts] = await Promise.all([
+      readPersistedAgentProfileSnapshot(host as never, 'workspace', 'session', 'main', undefined, undefined, {
+        inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+      }),
+      readPersistedAgentProfileSnapshot(host as never, 'workspace', 'session', 'main', undefined, undefined, {
+        inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET,
+      }),
+      readPersistedAgentRuntimeFacts(host as never, 'workspace', 'session', 'main'),
+    ]);
+
+    expect(profileA).toMatchObject({ source: 'wire', profileName: 'research', activeToolNames: ['Read', 'Grep'] });
+    expect(profileB).toEqual(profileA);
+    expect(runtimeFacts).toMatchObject({ contextTokens: 1234, turnCount: 8, complete: true });
+    expect(workerCalls).toEqual([
+      {
+        type: 'checkpoint.read',
+        path: storage.pathFor(`${agentScope}/replay-checkpoints`, 'engine-v1'),
+      },
+    ]);
+  } finally {
+    await storage.close();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+it('invalidates cached profile and runtime facts when engine-v1 is created while wire.jsonl is idle and skips null caching without pathFor', async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), 'checkpoint-stat-key-test-'));
+  const storage = new FileStorageService(baseDir);
+  const docs = new JsonAtomicDocumentStore(storage);
+  try {
+    const { host: fixtureHost, checkpoint } = checkpointFixture();
+    const totalSize = await fixtureHost.storage.size();
+    const wireChunks: Buffer[] = [];
+    for await (const chunk of fixtureHost.storage.readStream('', '', { start: 0, end: totalSize - 1 })) {
+      wireChunks.push(Buffer.from(chunk));
+    }
+    const agentScope = 'sessions/workspace/session/agents/main';
+    await storage.append(agentScope, 'wire.jsonl', Buffer.concat(wireChunks));
+    await storage.write(agentScope, 'wire.jsonl.generation', Buffer.from('fixture-generation'));
+    const wireSizeBefore = await storage.size(agentScope, 'wire.jsonl');
+    const wireMtimeBefore = await storage.mtime(agentScope, 'wire.jsonl');
+
+    const host = {
+      storage,
+      docs,
+      appendLog: { flush: async () => {} },
+    };
+
+    const beforeProfile = await readPersistedAgentProfileSnapshot(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { model: 'meta-fallback' } as never,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    );
+    const beforeFacts = await readPersistedAgentRuntimeFacts(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { contextTokens: 77 } as never,
+    );
+    expect(beforeProfile).toMatchObject({ source: 'metadata', modelAlias: 'meta-fallback', wireCoverage: 'unscanned' });
+    expect(beforeFacts).toEqual({ contextTokens: 77, complete: false });
+
+    await docs.set(`${agentScope}/replay-checkpoints`, 'engine-v1', checkpoint);
+    expect(await storage.size(agentScope, 'wire.jsonl')).toBe(wireSizeBefore);
+    expect(await storage.mtime(agentScope, 'wire.jsonl')).toBe(wireMtimeBefore);
+
+    const afterProfile = await readPersistedAgentProfileSnapshot(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { model: 'meta-fallback' } as never,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    );
+    const afterFacts = await readPersistedAgentRuntimeFacts(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { contextTokens: 77 } as never,
+    );
+    expect(afterProfile).toMatchObject({ source: 'wire', profileName: 'research', activeToolNames: ['Read', 'Grep'] });
+    expect(afterProfile?.wireCoverage).toBeUndefined();
+    expect(afterFacts).toMatchObject({ contextTokens: 1234, turnCount: 8, complete: true });
+
+    const { checkpoint: checkpoint2 } = checkpointFixture([], [], 'implementer');
+    await docs.set(`${agentScope}/replay-checkpoints`, 'engine-v1', checkpoint2);
+    expect(await storage.size(agentScope, 'wire.jsonl')).toBe(wireSizeBefore);
+    expect(await storage.mtime(agentScope, 'wire.jsonl')).toBe(wireMtimeBefore);
+
+    const replacedProfile = await readPersistedAgentProfileSnapshot(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { model: 'meta-fallback' } as never,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    );
+    expect(replacedProfile).toMatchObject({ source: 'wire', profileName: 'implementer', activeToolNames: ['Read', 'Grep'] });
+    expect(replacedProfile?.wireCoverage).toBeUndefined();
+
+    await storage.delete(`${agentScope}/replay-checkpoints`, 'engine-v1');
+    expect(await storage.size(agentScope, 'wire.jsonl')).toBe(wireSizeBefore);
+    expect(await storage.mtime(agentScope, 'wire.jsonl')).toBe(wireMtimeBefore);
+
+    const deletedProfile = await readPersistedAgentProfileSnapshot(
+      host as never,
+      'workspace',
+      'session',
+      'main',
+      { model: 'meta-fallback' } as never,
+      undefined,
+      { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET },
+    );
+    expect(deletedProfile).toMatchObject({ source: 'metadata', modelAlias: 'meta-fallback', wireCoverage: 'unscanned' });
+    expect(deletedProfile?.profileName).toBeUndefined();
+
+    let checkpointPresent = false;
+    let docReads = 0;
+    const memoryLikeHost = {
+      storage: {
+        ...fixtureHost.storage,
+        pathFor: () => undefined,
+      },
+      docs: {
+        get: async () => {
+          docReads += 1;
+          return checkpointPresent ? checkpoint : undefined;
+        },
+      },
+      appendLog: { flush: async () => {} },
+    };
+    expect(
+      await readPersistedAgentRuntimeFacts(memoryLikeHost as never, 'workspace', 'session', 'main', { contextTokens: 55 } as never),
+    ).toEqual({ contextTokens: 55, complete: false });
+    expect(docReads).toBe(1);
+    checkpointPresent = true;
+    expect(
+      await readPersistedAgentRuntimeFacts(memoryLikeHost as never, 'workspace', 'session', 'main', { contextTokens: 55 } as never),
+    ).toMatchObject({ contextTokens: 1234, turnCount: 8, complete: true });
+    expect(docReads).toBe(2);
+  } finally {
+    await storage.close();
+    await rm(baseDir, { recursive: true, force: true });
+  }
 });

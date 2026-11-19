@@ -801,9 +801,9 @@ export class SubagentTool implements ISubagentTool {
           ),
           registerOptions,
         );
+        signal.removeEventListener('abort', abortBeforeRegister);
         if (resumeRecord !== undefined) await writeResumeRecord(this.metadata, handle.agentId, { ...resumeRecord, taskId });
         await this.dispatch.recordRun(handle.agentId, taskId, handle.sourceRef, resumeRecord?.operationId);
-        signal.removeEventListener('abort', abortBeforeRegister);
         const requester = this.lifecycle.get(this.callerAgentId);
         if (requester !== undefined) {
           emitAgentRunSpawned(requester, handle.agentId, {

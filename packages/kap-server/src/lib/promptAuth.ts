@@ -16,6 +16,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
 import { resolveSelectedExecutionBinding } from '@kiki/agent-core-v2/agent/profile/executionBinding';
+import { resolveModelProviderId } from '@kiki/agent-core-v2/kosong/model/modelAuth';
 import { IAdhocEndpointVault } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointVault';
 import { materializeAdhocModel } from '@kiki/agent-core-v2/session/adhocEndpoint/adhocEndpointRuntime';
 import { resolveEndpointBinding } from '@kiki/agent-core-v2/session/adhocEndpoint/endpointBinding';
@@ -65,9 +66,18 @@ async function computeAuthFilesFingerprint(accessor: IAgentScopeHandle['accessor
   const paths = [
     bootstrap.configPath,
     join(bootstrap.homeDir, 'config.toml'),
+    join(bootstrap.homeDir, 'credentials', 'credentials.toml'),
+    join(bootstrap.homeDir, 'credentials.toml'),
     join(bootstrap.credentialsHomeDir, 'credentials', 'config.toml'),
+    join(bootstrap.credentialsHomeDir, 'credentials', 'credentials.toml'),
     join(bootstrap.credentialsHomeDir, 'credentials.toml'),
-    ...(bootstrap.baseHomeDir === undefined ? [] : [join(bootstrap.baseHomeDir, 'config.toml')]),
+    ...(bootstrap.baseHomeDir === undefined
+      ? []
+      : [
+          join(bootstrap.baseHomeDir, 'config.toml'),
+          join(bootstrap.baseHomeDir, 'credentials', 'credentials.toml'),
+          join(bootstrap.baseHomeDir, 'credentials.toml'),
+        ]),
   ];
   const unique = [...new Set(paths.filter((item): item is string => typeof item === 'string' && item.length > 0))];
   if (unique.length === 0) return undefined;
@@ -90,21 +100,25 @@ function isStaticApiKeyModelReadyInMemory(
     if (expected !== undefined && expected.resolvedModelId !== resolvedModelId) return undefined;
     const configured = models.get(resolvedModelId);
     if (configured === undefined) return undefined;
-    const configuredRecord = configured as unknown as Record<string, unknown>;
-    if (configuredRecord['oauth'] !== undefined) return undefined;
-    const providerId = typeof configured.provider === 'string' && configured.provider.length > 0
-      ? configured.provider
-      : providers.getDefaultProvider();
+    if (configured.oauth !== undefined) return undefined;
+    const rawProviderId = resolveModelProviderId(
+      {
+        providerId: typeof configured.providerId === 'string' && configured.providerId.length > 0 ? configured.providerId : undefined,
+        provider: typeof configured.provider === 'string' && configured.provider.length > 0 ? configured.provider : undefined,
+      },
+      providers.getDefaultProvider(),
+    );
+    const providerId = rawProviderId !== undefined && rawProviderId.length > 0 ? rawProviderId : undefined;
     if (expected !== undefined && expected.providerId !== providerId) return undefined;
     if (providerId !== undefined) {
       const provider = providers.get(providerId);
       if (provider === undefined || provider.oauth !== undefined) return undefined;
       const key = typeof provider.apiKey === 'string' ? provider.apiKey.trim() : '';
-      const modelKey = typeof configuredRecord['apiKey'] === 'string' ? configuredRecord['apiKey'].trim() : '';
+      const modelKey = typeof configured.apiKey === 'string' ? configured.apiKey.trim() : '';
       if (key.length === 0 && modelKey.length === 0) return undefined;
       return { resolvedModelId, providerId };
     }
-    const directKey = typeof configuredRecord['apiKey'] === 'string' ? configuredRecord['apiKey'].trim() : '';
+    const directKey = typeof configured.apiKey === 'string' ? configured.apiKey.trim() : '';
     if (directKey.length === 0) return undefined;
     return { resolvedModelId };
   } catch {

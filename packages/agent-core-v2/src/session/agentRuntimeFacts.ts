@@ -1,4 +1,5 @@
 import { produce } from 'immer';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
@@ -11,7 +12,10 @@ import { AGENT_WIRE_RECORD_KEY, isWireRecord } from '#/wire/record';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '#/workspace/sessionLifecycle/internal/addressing';
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { AgentProfileSnapshotHost } from './agentProfileSnapshot';
-import { readPersistedAgentCheckpoint } from './persistedAgentCheckpoint';
+import {
+  readPersistedAgentCheckpoint,
+  readPersistedCheckpointStatToken,
+} from './persistedAgentCheckpoint';
 import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { planKey, type PlanState } from '#/features/plan/planOps';
@@ -42,6 +46,7 @@ const CONTEXT = { silent: true, emit: () => {}, checkpoint: () => {}, clearCheck
 interface RuntimeFactsCacheEntry {
   readonly size: number;
   readonly mtime: number | undefined;
+  readonly checkpointToken: string;
   readonly contextTokens: number | undefined;
   readonly promise: Promise<PersistedAgentRuntimeFacts>;
 }
@@ -60,9 +65,17 @@ export async function readPersistedAgentRuntimeFacts(
   signal?.throwIfAborted();
   const storage = 'accessor' in host ? host.accessor.get(IFileSystemStorageService) : host.storage;
   const docs = 'accessor' in host ? host.accessor.get(IAtomicDocumentStore) : host.docs;
+  let workers: ICpuWorkerService | undefined;
+  if ('accessor' in host) {
+    try { workers = host.accessor.get(ICpuWorkerService); } catch { workers = undefined; }
+  } else {
+    workers = host.workers;
+  }
   const scope = agentScopeOf(sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId), agentId);
-  const [size, mtime] = await Promise.all([
-    logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
+  const [size, mtime, ckptStat] = await Promise.all([
+    logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY),
+    storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
+    readPersistedCheckpointStatToken(storage, scope),
   ]);
   const fallback = { contextTokens: metadata?.contextTokens, complete: false };
   if (size === undefined) return fallback;
@@ -71,10 +84,15 @@ export async function readPersistedAgentRuntimeFacts(
   const wait = (promise: Promise<PersistedAgentRuntimeFacts>) => promise.then(facts => { signal?.throwIfAborted(); return facts; });
   const cacheKey = options?.includeStatus === true ? `${scope}:status` : scope;
   const cached = cache.get(cacheKey);
-  if (cached?.size === size && cached.mtime === mtime && cached.contextTokens === metadata?.contextTokens) return wait(cached.promise);
+  if (
+    cached?.size === size &&
+    cached.mtime === mtime &&
+    cached.checkpointToken === ckptStat.token &&
+    cached.contextTokens === metadata?.contextTokens
+  ) return wait(cached.promise);
   const read = async (): Promise<PersistedAgentRuntimeFacts> => {
     const keys = options?.includeStatus === true ? [...KEYS, ...STATUS_KEYS] : KEYS;
-    const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, new Set(keys.map(key => key.name)));
+    const checkpoint = await readPersistedAgentCheckpoint(docs, storage, scope, size, mtime ?? 0, new Set(keys.map(key => key.name)), workers);
     const usable = checkpoint !== undefined && KEYS.every(key => checkpoint.states.has(key.name));
     const start = usable ? checkpoint.offset : 0;
     if (size - start > BYTE_BUDGET) return fallback;
@@ -118,10 +136,12 @@ export async function readPersistedAgentRuntimeFacts(
       foldLine(pending + decoder.decode());
       valid &&= bytesRead === size - start;
     }
-    const [afterSize, afterMtime] = await Promise.all([
-      logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
+    const [afterSize, afterMtime, afterCkpt] = await Promise.all([
+      logicalByteSize(storage, scope, AGENT_WIRE_RECORD_KEY),
+      storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
+      readPersistedCheckpointStatToken(storage, scope),
     ]);
-    if (!valid || afterSize !== size || afterMtime !== mtime) return fallback;
+    if (!valid || afterSize !== size || afterMtime !== mtime || afterCkpt.token !== ckptStat.token) return fallback;
     return {
       contextTokens: tokensSeen ? (states.get(tokenCountingKey.name) as ReturnType<typeof tokenCountingKey.initial>).tokens : metadata?.contextTokens,
       turnCount: (states.get(turnKey.name) as ReturnType<typeof turnKey.initial>).nextTurnId,
@@ -135,11 +155,13 @@ export async function readPersistedAgentRuntimeFacts(
       } : undefined,
     };
   };
-  const entry = { size, mtime, contextTokens: metadata?.contextTokens, promise: read() };
+  const entry = { size, mtime, checkpointToken: ckptStat.token, contextTokens: metadata?.contextTokens, promise: read() };
   cache.delete(cacheKey);
   cache.set(cacheKey, entry);
   if (cache.size > 1024) cache.delete(cache.keys().next().value!);
-  void entry.promise.then(facts => { if (!facts.complete && cache.get(cacheKey) === entry) cache.delete(cacheKey); },
-    () => { if (cache.get(cacheKey) === entry) cache.delete(cacheKey); });
+  void entry.promise.then(
+    facts => { if ((!facts.complete || !ckptStat.distinguishable) && cache.get(cacheKey) === entry) cache.delete(cacheKey); },
+    () => { if (cache.get(cacheKey) === entry) cache.delete(cacheKey); },
+  );
   return wait(entry.promise);
 }

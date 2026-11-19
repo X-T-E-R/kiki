@@ -564,6 +564,65 @@ function wireTurnId(record: ContextRecord): string | undefined {
   return Number.isSafeInteger(ordinal) && ordinal >= 0 ? `t${ordinal}` : undefined;
 }
 
+function hasImplicitTurnRecords(records: readonly ColdWireRecord[]): boolean {
+  let activeExplicitTurnId: string | undefined;
+  let explicitTurnSlotOpen = false;
+  const steeredPromptIds = new Set<string>();
+  for (const { record } of records) {
+    if (record.type === 'turn_begin') return true;
+    if (record.type === 'turn.started' || record.type === 'turn.prompt') {
+      const tid = wireTurnId(record);
+      if (tid === undefined) return true;
+      if (tid !== activeExplicitTurnId) steeredPromptIds.clear();
+      activeExplicitTurnId = tid;
+      explicitTurnSlotOpen = true;
+      continue;
+    }
+    if (record.type === 'turn.steer') {
+      const tid = wireTurnId(record);
+      if ((record as { managed?: unknown }).managed !== true && tid !== undefined && tid === activeExplicitTurnId) {
+        const promptId = (record as { promptId?: unknown }).promptId;
+        if (typeof promptId === 'string' && promptId.length > 0) steeredPromptIds.add(promptId);
+      }
+      continue;
+    }
+    if (record.type === 'turn.ended' || record.type === 'context.clear' || record.type === 'branch.base') {
+      activeExplicitTurnId = undefined;
+      explicitTurnSlotOpen = false;
+      steeredPromptIds.clear();
+      continue;
+    }
+    if (record.type === 'context.undo') {
+      activeExplicitTurnId = undefined;
+      explicitTurnSlotOpen = false;
+      steeredPromptIds.clear();
+      if ((record as { replacementPrompt?: unknown }).replacementPrompt !== undefined) return true;
+      continue;
+    }
+    if (record.type === 'context.append_message') {
+      const delivery = (record as { delivery?: unknown }).delivery;
+      const message = (record as { message?: { id?: unknown; role?: unknown; origin?: { kind?: unknown } } }).message;
+      const kind = message?.origin?.kind;
+      if (
+        delivery === undefined &&
+        message?.role === 'user' &&
+        kind !== 'injection' &&
+        kind !== 'agent_message' &&
+        kind !== 'task' &&
+        kind !== 'branch_fold' &&
+        kind !== 'external_record'
+      ) {
+        if (typeof message.id === 'string' && steeredPromptIds.delete(message.id)) {
+          continue;
+        }
+        if (!explicitTurnSlotOpen) return true;
+        explicitTurnSlotOpen = false;
+      }
+    }
+  }
+  return false;
+}
+
 interface TurnStartIndex {
   fingerprint: string;
   scannedTo: number;
@@ -1160,9 +1219,9 @@ export class TranscriptService {
       const metadata = session?.accessor.get(ISessionMetadata);
       if (tailFirst) await metadata?.ready;
       const meta = tailFirst ? metadata?.snapshot() : await metadata?.read();
-      for (const [agentId, agentMeta] of Object.entries(meta?.agents ?? {})) {
-        store.describeAgent(descriptorFromMeta(agentId, agentMeta));
-      }
+      store.describeAgents(
+        Object.entries(meta?.agents ?? {}).map(([agentId, agentMeta]) => descriptorFromMeta(agentId, agentMeta)),
+      );
     } catch {
     }
   }
@@ -2135,14 +2194,20 @@ export class TranscriptService {
     signal?: AbortSignal, extendOlder = false, spanBytes = FIRST_SCREEN_WINDOW_BYTES, preserveWindow = false, tailFirst = false, boundedPage = false): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     const location = await this.historyWireLocation(sessionId, agentId);
-    if (location === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    if (location === undefined) {
+      const fallback = await this.readColdSnapshot(sessionId, agentId, undefined, signal);
+      return fallback === undefined ? undefined : project(fallback);
+    }
     const { wirePath } = location;
     const info = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return undefined;
       throw error;
     });
     signal?.throwIfAborted();
-    if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    if (info === undefined) {
+      const fallback = await this.readColdSnapshot(sessionId, agentId, undefined, signal);
+      return fallback === undefined ? undefined : project(fallback);
+    }
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     if (info.size <= (tailFirst || boundedPage ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
       if (this.coldWireWindows.has(wirePath)) {
@@ -2157,7 +2222,7 @@ export class TranscriptService {
     const opened = signal ?? new AbortController().signal;
     if (!extendOlder && !preserveWindow) {
       const existing = this.coldWireWindows.get(wirePath);
-      if (existing?.droppedTail === true && existing.fingerprint === fingerprint) {
+      if (existing !== undefined && existing.fingerprint === fingerprint && (existing.droppedTail === true || existing.end < info.size)) {
         this.forgetColdWindow(wirePath);
         this.retainedColdTurns.delete(wirePath);
         this.deleteColdSnapshotCache(wirePath);
@@ -2166,29 +2231,37 @@ export class TranscriptService {
     if (extendOlder) {
       const span = spanBytes > 0 ? spanBytes : FIRST_SCREEN_WINDOW_BYTES;
       const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, span, !tailFirst);
-      if (extended === undefined) return undefined;
+      if (extended === undefined) {
+        return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal, false);
+      }
       return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, extended, project, opened);
     }
     const cached = this.coldSnapshotCache.get(wirePath);
     const cachedWindow = this.coldWireWindows.get(wirePath);
-    if (cached !== undefined && cached.fingerprint === fingerprint && cached.expiresAt > Date.now() && cached.pageOnly &&
-        (tailFirst || cachedWindow?.entire === true || (cachedWindow !== undefined && cachedWindow.end < info.size) || cachedWindow?.headers !== undefined)) {
+    const windowCoversTail = cachedWindow !== undefined &&
+      (cachedWindow.entire || (cachedWindow.end >= info.size && cachedWindow.droppedTail !== true));
+    const windowReusable = cachedWindow !== undefined && (preserveWindow
+      ? tailFirst || cachedWindow.entire || cachedWindow.start === 0 || cachedWindow.headers !== undefined
+      : windowCoversTail && (tailFirst || cachedWindow.entire || cachedWindow.headers !== undefined));
+    if (cached !== undefined && cached.fingerprint === fingerprint && cached.expiresAt > Date.now() && cached.pageOnly && windowReusable) {
       signal?.throwIfAborted();
       this.assertReadableAgent(sessionId, agentId);
       this.admitColdSnapshotCache(wirePath, fingerprint, cached.snapshot, true);
-      return cached.snapshot;
+      return project(cached.snapshot);
     }
     if (cached !== undefined) this.deleteColdSnapshotCache(wirePath);
     const mode = !tailFirst ? 'headers' : preserveWindow ? 'records' : 'first-screen';
-    const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, mode);
-    if (window === undefined) return undefined;
+    const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, mode, preserveWindow);
+    if (window === undefined) {
+      return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal, tailFirst || boundedPage);
+    }
     const after = await stat(wirePath);
     signal?.throwIfAborted();
     this.assertReadableAgent(sessionId, agentId);
     if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) {
       this.forgetColdWindow(wirePath);
       this.retainedColdTurns.delete(wirePath);
-      return partialColdWindowSnapshot(window);
+      return project({ ...partialColdWindowSnapshot(window), hasMoreOlder: window.start > 0 });
     }
     return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, window, project, opened);
   }
@@ -2200,9 +2273,9 @@ export class TranscriptService {
     this.assertReadableAgent(sessionId, agentId);
     this.retainColdTailTurns(wirePath, fingerprint, { ...window.snapshot,
       items: window.snapshot.items.filter(item => item.kind !== 'turn' || completeColdWindowTurn(window, item.turnId) !== undefined) });
-    const preview = project({ ...partialColdWindowSnapshot(window), hasMoreOlder: window.start > 0 });
-    this.admitColdSnapshotCache(wirePath, fingerprint, preview, true);
-    return preview;
+    const unprojected = { ...partialColdWindowSnapshot(window), hasMoreOlder: window.start > 0 };
+    this.admitColdSnapshotCache(wirePath, fingerprint, unprojected, true);
+    return project(unprojected);
   }
 
   private async readScreenSnapshot(sessionId: string, agentId: string,
@@ -2224,13 +2297,16 @@ export class TranscriptService {
     }
     const opened = signal ?? new AbortController().signal;
     const proof = tailFirst ? await historyNavigationProof(location.wirePath, info.size, opened) : undefined;
-    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, captureReplayState, tailFirst ? 'first-screen' : 'headers');
+    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, captureReplayState, tailFirst ? 'first-screen' : 'headers', false);
+    if (window === undefined) {
+      return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState, tailFirst);
+    }
     if (proof !== undefined && !matchesNavigationProof(proof, await historyNavigationProof(location.wirePath, info.size, opened))) {
       this.forgetColdWindow(location.wirePath);
       throw new Error('history_source_changed');
     }
     opened.throwIfAborted();
-    return window === undefined ? undefined : partialColdWindowSnapshot(window);
+    return partialColdWindowSnapshot(window);
   }
 
   async coldHistoryTruncated(sessionId: string, agentId: string): Promise<boolean> {
@@ -2258,14 +2334,20 @@ export class TranscriptService {
     signal?: AbortSignal, tailFirst = false): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     const location = await this.historyWireLocation(sessionId, agentId);
-    if (location === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    if (location === undefined) {
+      const fallback = await this.readColdSnapshot(sessionId, agentId, undefined, signal);
+      return fallback === undefined ? undefined : project(fallback);
+    }
     const { wirePath } = location;
     const info = await stat(wirePath).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return undefined;
       throw error;
     });
     signal?.throwIfAborted();
-    if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
+    if (info === undefined) {
+      const fallback = await this.readColdSnapshot(sessionId, agentId, undefined, signal);
+      return fallback === undefined ? undefined : project(fallback);
+    }
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
     const retained = this.retainedColdTurns.get(wirePath);
     if (retained !== undefined && retained.fingerprint !== fingerprint) this.retainedColdTurns.delete(wirePath);
@@ -2279,7 +2361,7 @@ export class TranscriptService {
         signal?.throwIfAborted();
         this.assertReadableAgent(sessionId, agentId);
         this.admitColdSnapshotCache(wirePath, fingerprint, cached.snapshot, cached.pageOnly);
-        return cached.snapshot;
+        return project(cached.snapshot);
       }
       this.deleteColdSnapshotCache(wirePath);
     }
@@ -2290,12 +2372,12 @@ export class TranscriptService {
     this.assertReadableAgent(sessionId, agentId);
     if (`${fileIdentity(after)}:${fileFingerprint(after)}` !== fingerprint) {
       this.retainedColdTurns.delete(wirePath);
-      return snapshot;
+      return project(snapshot);
     }
     this.retainColdTailTurns(wirePath, fingerprint, snapshot);
-    const preview = project(this.completeColdReplays.has(snapshot) ? { ...snapshot, hasMoreOlder: false } : snapshot);
-    this.admitColdSnapshotCache(wirePath, fingerprint, preview, true);
-    return preview;
+    const unprojected = this.completeColdReplays.has(snapshot) ? { ...snapshot, hasMoreOlder: false } : snapshot;
+    this.admitColdSnapshotCache(wirePath, fingerprint, unprojected, true);
+    return project(unprojected);
   }
 
   private async resolveColdWindowHeaders(sessionId: string, agentId: string, wirePath: string,
@@ -2313,7 +2395,7 @@ export class TranscriptService {
       signal.throwIfAborted();
       if (existingHeaders.has(turn.turnId)) continue;
       if (turn.turnId === 't0') {
-        head ??= this.projectColdRecords(agentId, (await this.readWireRange(wirePath, 0, Math.min(window.start, FIRST_SCREEN_WINDOW_BYTES), signal)).records, false);
+        head ??= await this.projectColdRecords(agentId, (await this.readWireRange(wirePath, 0, Math.min(window.start, FIRST_SCREEN_WINDOW_BYTES), signal)).records, false, undefined, undefined, undefined, signal);
         const header = head.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turn.turnId && item.startedAt !== undefined);
         if (header !== undefined) {
           existingHeaders.set(header.turnId, { ...header, steps: [] });
@@ -2350,7 +2432,7 @@ export class TranscriptService {
     }
     window.headers = [...existingHeaders.values()];
     window.headerAttachments = [...attachmentsById.values()];
-    if (added) window.snapshot = this.projectColdRecords(agentId, window.records, window.entire, preserveOpenTurnIds, captureReplayState, window);
+    if (added) window.snapshot = await this.projectColdRecords(agentId, window.records, window.entire, preserveOpenTurnIds, captureReplayState, window, signal);
   }
 
   async resolveOrphanOpenings(sessionId: string, agentId: string, snapshot: AgentTranscriptSnapshot,
@@ -2392,17 +2474,19 @@ export class TranscriptService {
     info: { size: number; mtimeMs: number; ctimeMs: number; dev: number | bigint; ino: number | bigint; birthtimeMs: number },
     fingerprint: string, signal: AbortSignal, preserveOpenTurnIds?: () => readonly string[],
     captureReplayState?: (state: TranscriptReplayState) => void, mode: 'headers' | 'records' | 'first-screen' = 'headers',
+    allowDroppedTail = false,
   ): Promise<ColdWireWindow | undefined> {
     const resolveHeaders = mode === 'headers';
     const existing = this.coldWireWindows.get(wirePath);
-    if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true) {
+    if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true &&
+        (allowDroppedTail || (existing.droppedTail !== true && existing.end >= info.size))) {
       if (resolveHeaders && !existing.entire && existing.end >= info.size && existing.headers === undefined) {
         await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, existing, signal, preserveOpenTurnIds, captureReplayState);
         existing.bytes = this.coldWindowBytes(existing.snapshot, existing.records);
         this.rememberColdWindow(wirePath, existing);
         this.deleteColdSnapshotCache(wirePath);
       } else if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
-        existing.snapshot = this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing);
+        existing.snapshot = await this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing, signal);
       }
       return existing;
     }
@@ -2462,8 +2546,11 @@ export class TranscriptService {
     const discovered = mode === 'first-screen' ? await this.firstScreenRecords(agentId, wirePath, info.size, signal) : undefined;
     const start = discovered?.start ?? await this.tailRecordStart(wirePath, info.size, signal);
     const read = discovered ?? await this.readWireRange(wirePath, start, info.size, signal, !resolveHeaders);
+    if (start > 0 && read.records[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(read.records)) {
+      return undefined;
+    }
     const entire = start === 0 && read.complete && !(discovered?.skippedTurnIds.length);
-    const snapshot = this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureReplayState);
+    const snapshot = await this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureReplayState, undefined, signal);
     const window: ColdWireWindow = { fingerprint, start, end: info.size, entire, records: read.records, snapshot, bytes: 0, skippedTurnIds: discovered?.skippedTurnIds };
     if (!entire && resolveHeaders) {
       await this.resolveColdWindowHeaders(sessionId, agentId, wirePath, window, signal, preserveOpenTurnIds, captureReplayState);
@@ -2475,7 +2562,8 @@ export class TranscriptService {
     while (mode !== 'first-screen' && visible.snapshot.items.length === 0 && visible.start > 0 && guard < 8) {
       const before = visible.start;
       const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, undefined, resolveHeaders);
-      if (extended === undefined || extended.start === before) break;
+      if (extended === undefined) return undefined;
+      if (extended.start === before) break;
       visible = extended;
       guard += 1;
     }
@@ -2489,14 +2577,20 @@ export class TranscriptService {
   ): Promise<ColdWireWindow | undefined> {
     const retained = this.coldWireWindows.get(wirePath);
     const window = retained?.fingerprint === fingerprint && retained.payloadEvicted === true ? retained :
-      await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, resolveHeaders ? 'headers' : 'records');
+      await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, resolveHeaders ? 'headers' : 'records', true);
     if (window === undefined || window.start === 0) return window;
     const next = await this.tailRecordStart(wirePath, window.start, signal, spanBytes);
     if (next >= window.start) return window;
     const read = await this.readWireRange(wirePath, next, window.start, signal, !resolveHeaders);
     const merged = [...read.records, ...window.records];
+    if (next > 0 && merged[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(merged)) {
+      this.forgetColdWindow(wirePath);
+      this.retainedColdTurns.delete(wirePath);
+      this.deleteColdSnapshotCache(wirePath);
+      return undefined;
+    }
     const entire = next === 0 && read.complete && window.droppedTail !== true && !(window.skippedTurnIds?.length);
-    const snapshot = this.projectColdRecords(agentId, merged, entire, preserveOpenTurnIds, captureReplayState, entire ? undefined : window);
+    const snapshot = await this.projectColdRecords(agentId, merged, entire, preserveOpenTurnIds, captureReplayState, entire ? undefined : window, signal);
     const bytes = this.coldWindowBytes(snapshot, merged);
     let extended: ColdWireWindow;
     if (window.records.length > 0 && bytes > COLD_WIRE_WINDOW_MAX_BYTES && read.records.length > 0) {
@@ -2518,6 +2612,12 @@ export class TranscriptService {
       const fitted = await this.fitOlderColdWindow(agentId, read.records, window, signal, preserveOpenTurnIds, captureReplayState);
       const startAt = read.recordStarts[fitted.keepFrom];
       if (startAt === undefined || startAt >= window.start) return window;
+      if (startAt > 0 && fitted.records[0]?.record.type !== 'branch.base' && hasImplicitTurnRecords(fitted.records)) {
+        this.forgetColdWindow(wirePath);
+        this.retainedColdTurns.delete(wirePath);
+        this.deleteColdSnapshotCache(wirePath);
+        return undefined;
+      }
       const retainedTurnIds = new Set(fitted.snapshot.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
       const skippedTurnIds = (window.skippedTurnIds ?? []).filter(turnId => turnId === '*' || retainedTurnIds.has(turnId));
       extended = { ...window, start: startAt, entire: false, records: fitted.records,
@@ -2553,7 +2653,7 @@ export class TranscriptService {
     const projectFrom = async (keepFrom: number, oldCount: number) => {
       await maybeYield();
       const records = [...older.slice(keepFrom), ...window.records.slice(0, oldCount)];
-      const snapshot = this.projectColdRecords(agentId, records, false, preserveOpenTurnIds, captureReplayState, window);
+      const snapshot = await this.projectColdRecords(agentId, records, false, preserveOpenTurnIds, captureReplayState, window, signal);
       await maybeYield();
       return {
         keepFrom, records, snapshot, bytes: this.coldWindowBytes(snapshot, records),
@@ -2720,10 +2820,10 @@ export class TranscriptService {
     }
   }
 
-  private projectColdRecords(agentId: string, records: readonly ColdWireRecord[], sawEntireFile: boolean,
+  private async projectColdRecords(agentId: string, records: readonly ColdWireRecord[], sawEntireFile: boolean,
     preserveOpenTurnIds?: () => readonly string[], captureReplayState?: (state: TranscriptReplayState) => void,
-    recovered?: Pick<ColdWireWindow, 'headers' | 'headerAttachments'>,
-  ): AgentTranscriptSnapshot {
+    recovered?: Pick<ColdWireWindow, 'headers' | 'headerAttachments'>, signal?: AbortSignal,
+  ): Promise<AgentTranscriptSnapshot> {
     const transcript = new AgentTranscriptDraft(agentId);
     const reducer = new TranscriptFactReducer(transcript);
     const adapter = new TranscriptWireAdapter(agentId, {
@@ -2740,8 +2840,17 @@ export class TranscriptService {
         turnHeaders: recovered.headers.map(({ steps: _steps, ...header }) => [header.turnId, { ...header, state: 'running', endedAt: undefined }]),
         canonicalTurns: recovered.headers.map((turn) => turn.turnId) });
     }
+    let yieldedAt = performance.now();
     const startOrdinal = records[0]?.position.ordinal;
     for (let index = 0; index < records.length; index += 1) {
+      if ((index & 63) === 0) {
+        signal?.throwIfAborted();
+        if (index > 0 && performance.now() - yieldedAt >= 4) {
+          await new Promise<void>((resolve) => { setImmediate(resolve); });
+          signal?.throwIfAborted();
+          yieldedAt = performance.now();
+        }
+      }
       const { record, position } = records[index]!;
       if (typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
       reducer.apply(adapter.add(record, { ...position, ordinal: startOrdinal === undefined ? position.ordinal : startOrdinal + index }));
@@ -2792,6 +2901,7 @@ export class TranscriptService {
     let turns = 0;
     let wantedTurns = DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns;
     let hasUndo = false;
+    let hasImplicitTurn = false;
     let yieldedAt = performance.now();
     const floor = Math.max(0, end - COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES);
     try {
@@ -2869,18 +2979,28 @@ export class TranscriptService {
               else skippedTurnIds.add(reverseTurn);
             } else records.push({ record, position: { startByteOffset: boundary, endByteOffset: recordEnd } });
             if (record.type === 'context.undo') hasUndo = true;
+            if (record.type === 'context.append_message') {
+              const delivery = (record as { delivery?: unknown }).delivery;
+              const message = (record as { message?: { role?: unknown; origin?: { kind?: unknown } } }).message;
+              const kind = message?.origin?.kind;
+              if (delivery === undefined && message?.role === 'user' &&
+                  kind !== 'injection' && kind !== 'agent_message' && kind !== 'task' && kind !== 'branch_fold' && kind !== 'external_record') {
+                hasImplicitTurn = true;
+              }
+            }
             if (record.type === 'turn.prompt' || record.type === 'turn_begin') {
+              if (owningTurn === undefined) hasImplicitTurn = true;
               if (skippedUnknownTurn) skippedTurnIds.add('*');
               skippedUnknownTurn = false;
               reverseTurn = undefined;
               turns++;
             }
-            if (turns >= wantedTurns) {
-              const visible = hasUndo ? this.projectColdRecords(agentId, records.toReversed(), false).items.filter(item => item.kind === 'turn').length : turns;
+            if (!hasImplicitTurn && turns >= wantedTurns) {
+              const visible = hasUndo ? (await this.projectColdRecords(agentId, records.toReversed(), false, undefined, undefined, undefined, signal)).items.filter(item => item.kind === 'turn').length : turns;
               if (visible >= DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns) return finish();
               wantedTurns += DEFAULT_TRANSCRIPT_MEMORY_CONFIG.tailTurns - visible;
             }
-            if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS || record.type === 'context.clear' || record.type === 'branch.base') return finish();
+            if (scannedRecords >= WIRE_COLD_READ_MAX_RECORDS || record.type === 'branch.base' || (!hasImplicitTurn && record.type === 'context.clear')) return finish();
           }
           recordEnd = boundary;
           lineEnd = previous;
@@ -3988,7 +4108,7 @@ export class TranscriptService {
     const opening = readEnd < fileSize ? await this.anchorOpeningRecords(wirePath, fingerprint, window.records, readEnd, fileSize, opened, budget) : undefined;
     if (opening === 'pending') return this.pendingAnchor(agentId);
     const records = opening === undefined ? window.records : [...window.records, opening];
-    const snapshot = this.projectColdRecords(agentId, records, start === 0);
+    const snapshot = await this.projectColdRecords(agentId, records, start === 0, undefined, undefined, undefined, opened);
     opened.throwIfAborted();
     this.rememberAnchorSeek(key, { fingerprint, at: seek.at });
     const openingTurn = opening === undefined ? undefined : wireTurnId(window.records.at(-1)!.record);
@@ -4068,7 +4188,12 @@ export class TranscriptService {
   }
 
   private pendingAnchor(agentId: string): AgentTranscriptSnapshot {
-    const pending = this.projectColdRecords(agentId, [], false);
+    const pending: AgentTranscriptSnapshot = {
+      ...new AgentTranscriptDraft(agentId).snapshot(),
+      toolCallCount: undefined,
+      toolCallCountKnown: false,
+      hasMoreOlder: true,
+    };
     this.anchorReads.set(pending, 'pending');
     return pending;
   }

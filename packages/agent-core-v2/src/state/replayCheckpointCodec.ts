@@ -22,6 +22,17 @@ type EncodedNode =
   | { readonly kind: 'date'; readonly value: string }
   | { readonly kind: 'bytes'; readonly value: string };
 
+export const REPLAY_ABI_VERSION = 2;
+
+export interface ReplayCheckpointWire {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly headHash?: string;
+  readonly prefixSha256?: string;
+  readonly boundarySha256?: string;
+  readonly storeGeneration?: string;
+}
+
 export interface ReplayCheckpointGraph {
   readonly version: 1;
   readonly root: EncodedValue;

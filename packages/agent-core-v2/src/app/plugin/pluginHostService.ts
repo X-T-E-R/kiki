@@ -171,6 +171,7 @@ export class PluginHostService extends Service implements IPluginHostService {
   private readonly extensionGenerations = new Map<string, number>();
   private readonly extensionDiscoveries = new Set<Promise<void>>();
   private readonly dynamicE12Cache = new Map<string, { readonly signature: string; readonly payload: Record<string, unknown> | null }>();
+  private readonly e5TimeoutCooldowns = new Map<string, { readonly extensionGeneration: number; readonly slotSignature: string | undefined; readonly until: number; probing: boolean }>();
   private activeE12Probes = 0;
   private readonly waitingE12Probes: Array<() => void> = [];
 
@@ -314,7 +315,10 @@ export class PluginHostService extends Service implements IPluginHostService {
         if (affected !== undefined) for (const id of affected) this.gates.set(id, event.finished);
         this.withdrawExtensionPorts(affected);
         const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys(), ...this.slotRegistrations.keys(), ...this.extensionGenerations.keys()])];
-        for (const id of ids) this.dynamicE12Cache.delete(id.toLowerCase());
+        for (const id of ids) {
+          this.dynamicE12Cache.delete(id.toLowerCase());
+          this.e5TimeoutCooldowns.delete(id.toLowerCase());
+        }
         await Promise.all(ids.map(async (id) => {
           await this.withdrawSlot(id);
           await this.isolates?.current?.terminatePlugin(id, 'Plugin changing');
@@ -430,6 +434,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     this.hosts.clear();
     this.hostSignatures.clear();
     this.dynamicE12Cache.clear();
+    this.e5TimeoutCooldowns.clear();
     await Promise.allSettled(hosts.map((host) => host.stopAndWait()));
   }
 
@@ -439,6 +444,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       : affected.map((id) => id.toLowerCase());
     for (const id of ids) {
       this.extensionGenerations.set(id, (this.extensionGenerations.get(id) ?? 0) + 1);
+      this.e5TimeoutCooldowns.delete(id);
       const store = this.extensionRegistrations.get(id);
       this.extensionRegistrations.delete(id);
       store?.dispose();
@@ -473,6 +479,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     for (const { id, info } of infos) {
       const generation = (this.extensionGenerations.get(id) ?? 0) + 1;
       this.extensionGenerations.set(id, generation);
+      this.e5TimeoutCooldowns.delete(id);
       const previous = this.extensionRegistrations.get(id);
       this.extensionRegistrations.delete(id);
       previous?.dispose();
@@ -793,6 +800,23 @@ export class PluginHostService extends Service implements IPluginHostService {
         ?? runtime.admissionGateForSession(context.sessionId);
     if (gate?.revoked === true) return undefined;
 
+    const cooldownKey = pluginId.toLowerCase();
+    const extGeneration = this.extensionGenerations.get(cooldownKey) ?? 0;
+    const currentSignature = this.slotRegistrations.get(cooldownKey)?.signature ?? this.slotRegistrations.get(pluginId)?.signature;
+    const existingCooldown = this.e5TimeoutCooldowns.get(cooldownKey);
+    if (existingCooldown !== undefined) {
+      if (
+        existingCooldown.extensionGeneration !== extGeneration ||
+        (existingCooldown.slotSignature !== undefined && currentSignature !== undefined && existingCooldown.slotSignature !== currentSignature)
+      ) {
+        this.e5TimeoutCooldowns.delete(cooldownKey);
+      } else if (Date.now() < existingCooldown.until || existingCooldown.probing) {
+        return undefined;
+      } else {
+        existingCooldown.probing = true;
+      }
+    }
+
     let result: IsolatedPluginResult<unknown>;
     try {
       result = await this.invokeSlot({
@@ -815,11 +839,30 @@ export class PluginHostService extends Service implements IPluginHostService {
         timeoutMs: 3_000,
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isTimeout =
+        (error !== null && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'timeout') ||
+        (error instanceof Error && error.name === 'TimeoutError') ||
+        /timed?\s*out/i.test(message);
+      if (isTimeout && (this.extensionGenerations.get(cooldownKey) ?? 0) === extGeneration) {
+        const latestSignature = this.slotRegistrations.get(cooldownKey)?.signature ?? this.slotRegistrations.get(pluginId)?.signature;
+        this.e5TimeoutCooldowns.set(cooldownKey, {
+          extensionGeneration: extGeneration,
+          slotSignature: latestSignature,
+          until: Date.now() + 30_000,
+          probing: false,
+        });
+      } else if (existingCooldown !== undefined && this.e5TimeoutCooldowns.get(cooldownKey) === existingCooldown) {
+        this.e5TimeoutCooldowns.delete(cooldownKey);
+      }
       this.logger?.current?.warn('plugin E5 prompt context invocation failed', {
         pluginId,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
       return undefined;
+    }
+    if ((this.extensionGenerations.get(cooldownKey) ?? 0) === extGeneration) {
+      this.e5TimeoutCooldowns.delete(cooldownKey);
     }
     return formatPluginPromptContextValue(result.value);
   }
@@ -839,6 +882,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       if (this.hosts.get(id) === host) {
         this.hosts.delete(id);
         this.hostSignatures.delete(id);
+        this.e5TimeoutCooldowns.delete(id.toLowerCase());
       }
       await host.stopAndWait();
     }));
@@ -1363,6 +1407,9 @@ export class PluginHostService extends Service implements IPluginHostService {
           ? pool.registerWorkerPlugin({ pluginId: info.id, entryPath: plugin.entry, settings })
           : Promise.resolve({ generation: ++this.slotGeneration, dispose: async () => { await this.hosts.get(info.id)?.terminateSlotRealm(); } }),
       };
+      if (prior?.signature !== signature) {
+        this.e5TimeoutCooldowns.delete(info.id.toLowerCase());
+      }
       this.slotRegistrations.set(info.id, record);
       const { generation } = await record.registration;
       const assertAdmitted = () => {
@@ -1382,6 +1429,7 @@ export class PluginHostService extends Service implements IPluginHostService {
   }
 
   private async withdrawSlot(pluginId: string): Promise<void> {
+    this.e5TimeoutCooldowns.delete(pluginId.toLowerCase());
     const record = this.slotRegistrations.get(pluginId);
     this.slotRegistrations.delete(pluginId);
     if (record) await (await record.registration).dispose();

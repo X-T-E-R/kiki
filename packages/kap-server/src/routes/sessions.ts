@@ -452,10 +452,13 @@ export function registerSessionsRoutes(
     },
     async (req, reply) => {
       const body = req.body;
+      const hasKnownSession = async (sessionId: string, signal?: AbortSignal): Promise<boolean> => {
+        if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) return true;
+        return (await core.accessor.get(ISessionIndex).get(sessionId, undefined, signal)) !== undefined;
+      };
       const createSession = async (forcedSessionId?: string): Promise<Session> => {
         if (forcedSessionId !== undefined) {
-          const manager = core.accessor.get(ISessionManager);
-          if (manager.get(forcedSessionId) !== undefined || await core.accessor.get(ISessionIndex).get(forcedSessionId) !== undefined) {
+          if (await hasKnownSession(forcedSessionId)) {
             throw new SessionCreateReceiptError(
               ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT,
               `The reserved session id ${forcedSessionId} already exists.`,
@@ -659,6 +662,13 @@ export function registerSessionsRoutes(
               );
             }
           }
+          if (forcedSessionId !== undefined && isError2(error) && error.code === ErrorCodes.SESSION_ALREADY_EXISTS) {
+            throw new SessionCreateReceiptError(
+              ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT,
+              `The reserved session id ${forcedSessionId} already exists.`,
+              { creation_id: body.creation_id, reason: 'session_id_exists' },
+            );
+          }
           throw error;
         }
       };
@@ -689,11 +699,7 @@ export function registerSessionsRoutes(
                   const mapped = mapSessionError(req, error);
                   return { code: mapped.code, message: mapped.msg, details: mapped.details };
                 },
-                async (sessionId) => {
-                  const manager = core.accessor.get(ISessionManager);
-                  if (manager.get(sessionId) !== undefined) return 'present';
-                  return (await core.accessor.get(ISessionIndex).get(sessionId)) === undefined ? 'absent' : 'present';
-                },
+                async (sessionId) => (await hasKnownSession(sessionId, signal)) ? 'present' : 'absent',
                 signal,
               );
               if (signal.aborted) {

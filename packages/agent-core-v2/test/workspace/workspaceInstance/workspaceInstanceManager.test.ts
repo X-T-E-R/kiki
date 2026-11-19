@@ -523,4 +523,30 @@ describe('workspace SSH preparation after late enablement', () => {
       expect(f.connect).not.toHaveBeenCalled();
     } finally { await f.dispose(); }
   });
+
+  it('refuses to resurrect a tombstoned workspace via createOrTouch during getOrCreate', async () => {
+    const instance = manager([]);
+    const createOrTouch = vi.fn(async () => workspace('deleted-ws'));
+    const workspaces: IWorkspaceService = {
+      _serviceBrand: undefined,
+      list: async () => [],
+      get: async () => undefined,
+      findRegisteredById: async () => undefined,
+      findRegisteredByRoot: async () => undefined,
+      isDeleted: vi.fn(async (id?: string, root?: string) => id === 'deleted-ws' || root === '/deleted-ws'),
+      createOrTouch,
+      update: async () => undefined,
+      delete: async () => {},
+    };
+    (instance as unknown as { workspaces: IWorkspaceService }).workspaces = workspaces;
+    try {
+      await expect(instance.getOrCreate({ workspaceId: 'deleted-ws', root: '/deleted-ws' })).rejects.toMatchObject({
+        code: 'workspace.not_found',
+      });
+      expect(workspaces.isDeleted).toHaveBeenCalledWith('deleted-ws', '/deleted-ws');
+      expect(createOrTouch).not.toHaveBeenCalled();
+    } finally {
+      instance.dispose();
+    }
+  });
 });

@@ -57,6 +57,7 @@ const harness = vi.hoisted(() => ({
   subscribeAgentModelSwitches: vi.fn(),
   getConfig: vi.fn(),
   patchConfig: vi.fn(),
+  foldBranch: vi.fn(),
   readCapabilities: vi.fn(),
   fsSearch: vi.fn(),
   referenceCandidates: vi.fn(),
@@ -97,6 +98,7 @@ vi.mock('../../state/connection', () => {
       subscribeAgentModelSwitches: harness.subscribeAgentModelSwitches,
       getConfig: harness.getConfig,
       patchConfig: harness.patchConfig,
+      foldBranch: harness.foldBranch,
       get promoteAgent() { return harness.promoteAvailable ? harness.promoteAgent : undefined; },
       get sessions() { return harness.promoteAvailable ? { promoteAgent: harness.promoteAgent } : {}; },
       klient: { rest: { executors: { getModels: harness.getExecutorModels }, agents: { referenceCandidates: harness.referenceCandidates } } },
@@ -241,6 +243,7 @@ beforeEach(() => {
   harness.subscribeAgentModelSwitches.mockReturnValue({ ready: Promise.resolve(), dispose: () => {} });
   harness.getConfig.mockResolvedValue({});
   harness.patchConfig.mockResolvedValue({});
+  harness.foldBranch.mockResolvedValue({ sealed: true });
   harness.listModels.mockResolvedValue({ items: [
     { id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro' },
     { id: 'fixture/other', provider_id: 'fixture', remote_id: 'other' },
@@ -3735,4 +3738,173 @@ it.each([
   expect(sentText).toContain('Comment: Raise cap to 32k?');
   expect(sentText).toContain('Check token trade-offs.');
   expect(dock.textContent).not.toContain('1 note');
+});
+
+it('reuses pending submission key across A -> B -> A target switch and reconciles late ACKs while unmounted', async () => {
+  harness.sendAgentMessage.mockRejectedValueOnce(new Error('transient network loss'))
+    .mockResolvedValueOnce(null);
+  await renderWorkspace();
+  await settle();
+  await sendFromComposer('retry across switch');
+  const firstKey = harness.sendAgentMessage.mock.calls[0]?.[4];
+  expect(typeof firstKey).toBe('string');
+
+  await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'child' } });
+  await renderWorkspace();
+  expect(composerInput(dock).value).toBe('retry across switch');
+
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(2);
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).toBe(firstKey);
+  expect(composerInput(dock).value).toBe('');
+
+  let resolveLateAck!: (value: null) => void;
+  harness.sendAgentMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveLateAck = resolve; }));
+  await sendFromComposer('settle while unmounted');
+  expect(composerInput(dock).value).toBe('settle while unmounted');
+
+  await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'child' } });
+  await act(async () => { resolveLateAck(null); });
+  await renderWorkspace();
+  expect(composerInput(dock).value).toBe('');
+});
+
+it('guards handleFoldBranch against clobbering edited drafts or navigating away after target switch', async () => {
+  const branchNode: AgentTreeNode = {
+    agentId: 'branch-fold-1',
+    parentAgentId: 'main',
+    name: 'agent',
+    label: 'Branch fold test',
+    status: 'idle',
+    busy: false,
+    isBranch: true,
+    branchSeed: 'fresh',
+    toolCallCount: 1,
+    childIds: [],
+  };
+  const mainNode: AgentTreeNode = {
+    ...testForest().roots[0]!,
+    childIds: ['branch-fold-1'],
+  };
+  const forest: AgentForest = {
+    roots: [mainNode],
+    byId: { ...testForest().byId, main: mainNode, 'branch-fold-1': branchNode },
+  };
+  let resolveFold!: (value: { sealed: boolean }) => void;
+  harness.foldBranch.mockImplementationOnce(() => new Promise((resolve) => { resolveFold = resolve; }));
+  const openSession = vi.fn();
+  let resolveResync!: () => void;
+  const resync = vi.fn(() => new Promise<void>((resolve) => { resolveResync = resolve; }));
+  const branchController = Object.assign(
+    controllerStub({
+      forest,
+      agentStates: {
+        'branch-fold-1': {
+          ...createViewState('session'),
+          loaded: true,
+          transcriptReady: true,
+          blocks: [{ id: 'b-1', kind: 'assistant', text: 'Ready to fold.' }] as unknown as ReturnType<typeof createViewState>['blocks'],
+        },
+      },
+    }),
+    { resync },
+  );
+
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'branch-fold-1' },
+    forest,
+    controller: branchController,
+    navigation: { openAgent: vi.fn(), openAgentRoute: vi.fn(), openSession },
+  });
+  await settle();
+
+  const textarea = composerInput(dock);
+  await typeText(textarea, 'initial fold summary');
+  const foldBtn = dock.querySelector<HTMLButtonElement>('[data-branch-fold-action]')!;
+  expect(foldBtn).not.toBeNull();
+  await act(async () => { foldBtn.click(); });
+  expect(harness.foldBranch).toHaveBeenCalledWith('session', {
+    branch_id: 'branch-fold-1',
+    summary: 'initial fold summary',
+    done: true,
+  });
+
+  await typeText(textarea, 'newer unsent draft');
+  await act(async () => { resolveFold({ sealed: true }); });
+  expect(textarea.value).toBe('newer unsent draft');
+
+  await renderWorkspace({
+    target: { sessionId: 'other-session', agentId: 'child' },
+    navigation: { openAgent: vi.fn(), openAgentRoute: vi.fn(), openSession },
+  });
+  await act(async () => { resolveResync(); });
+  await settle();
+  expect(openSession).not.toHaveBeenCalled();
+});
+
+it('clears untrimmed trailing-whitespace drafts on send settlement and keeps a target-scoped in-flight latch across A -> B -> A remounts', async () => {
+  harness.sendAgentMessage.mockResolvedValueOnce(null);
+  await renderWorkspace();
+  await settle();
+
+  const trailingTextarea = await sendFromComposer('send this\n');
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith(
+    'session',
+    'child',
+    'send this',
+    [{ type: 'text', text: 'send this' }],
+    expect.any(String),
+    undefined,
+  );
+  expect(trailingTextarea.value).toBe('');
+
+  harness.sendAgentMessage.mockClear();
+  let resolveAttachmentSend!: (value: null) => void;
+  harness.sendAgentMessage.mockImplementationOnce(
+    () => new Promise((resolve) => { resolveAttachmentSend = resolve; }),
+  );
+  harness.host = {
+    kind: 'browser',
+    pickFiles: async () => [{
+      name: 'diagram.png',
+      size: 1,
+      type: 'image/png',
+      read: async () => new File(['x'], 'diagram.png', { type: 'image/png' }),
+    }],
+  };
+
+  await renderWorkspace();
+  await settle();
+  await clickAttach();
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
+
+  await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'child' } });
+  await settle();
+  const otherTextarea = composerInput(dock);
+  await typeText(otherTextarea, 'other target can send');
+  const otherSendButton = dock.querySelector<HTMLButtonElement>(
+    '[aria-label="Send message"], [aria-label="Queue prompt"], [aria-label="Send into this turn"]',
+  )!;
+  expect(otherSendButton.disabled).toBe(false);
+
+  await renderWorkspace();
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+  const remountedSendButton = dock.querySelector<HTMLButtonElement>(
+    '[aria-label="Send message"], [aria-label="Queue prompt"], [aria-label="Send into this turn"]',
+  )!;
+  expect(remountedSendButton.disabled).toBe(true);
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    resolveAttachmentSend(null);
+  });
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
+  expect(composerInput(dock).value).toBe('');
 });
