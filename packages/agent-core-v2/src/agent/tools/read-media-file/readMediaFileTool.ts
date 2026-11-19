@@ -48,25 +48,35 @@ import {
 } from './read-media-file';
 import readMediaDescriptionHead from './read-media.md?raw';
 
+function formatMediaKinds(kinds: readonly string[], conjunction: 'and' | 'or'): string {
+  if (kinds.length <= 1) return kinds[0] ?? '';
+  if (kinds.length === 2) return `${kinds[0]} ${conjunction} ${kinds[1]}`;
+  return `${kinds.slice(0, -1).join(', ')}, ${conjunction} ${kinds.at(-1)}`;
+}
+
 function buildDescription(capabilities: ModelCapability): string {
   const head = renderPrompt(readMediaDescriptionHead, { MAX_MEDIA_MEGABYTES });
-  const lines: string[] = [head];
-  const hasImage = capabilities.image_in;
-  const hasVideo = capabilities.video_in;
-  if (hasImage && hasVideo) {
-    lines.push('- This tool supports image and video files for the current model.');
-  } else if (hasImage) {
+  const supported: string[] = [];
+  const unsupported: string[] = [];
+  for (const [enabled, label] of [
+    [capabilities.image_in, 'image'],
+    [capabilities.video_in, 'video'],
+    [capabilities.audio_in, 'audio'],
+  ] as const) {
+    (enabled ? supported : unsupported).push(label);
+  }
+  if (supported.length === 0) {
+    return `${head}\n- The current model does not support image, video, or audio input.`;
+  }
+  const lines = [
+    head,
+    `- This tool supports ${formatMediaKinds(supported, 'and')} files for the current model.`,
+  ];
+  if (unsupported.length > 0) {
+    const prefix = formatMediaKinds(unsupported, 'and');
     lines.push(
-      '- This tool supports image files for the current model.',
-      '- Video files are not supported by the current model.',
+      `- ${prefix[0]!.toUpperCase()}${prefix.slice(1)} files are not supported by the current model.`,
     );
-  } else if (hasVideo) {
-    lines.push(
-      '- This tool supports video files for the current model.',
-      '- Image files are not supported by the current model.',
-    );
-  } else {
-    lines.push('- The current model does not support image or video input.');
   }
   return lines.join('\n');
 }
@@ -92,7 +102,7 @@ interface ImageDelivery {
 }
 
 function buildMediaNote(input: {
-  readonly kind: 'image' | 'video';
+  readonly kind: 'image' | 'video' | 'audio';
   readonly mimeType: string;
   readonly byteSize: number;
   readonly dimensions: { readonly width: number; readonly height: number } | null;
@@ -327,7 +337,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         return {
           isError: true,
           output:
-            `"${args.path}" is not a supported image or video file. ` +
+            `"${args.path}" is not a supported image, video, or audio file. ` +
             'Use Read for text files, or Bash or an MCP tool for other binary formats.',
         };
       }
@@ -362,6 +372,14 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             'Tell the user to use a model with video input capability.',
         };
       }
+      if (fileType.kind === 'audio' && !this.capabilities.audio_in) {
+        return {
+          isError: true,
+          output:
+            'The current model does not support audio input. ' +
+            'Tell the user to use a model with audio input capability.',
+        };
+      }
 
       if (stat.size === 0) {
         return { isError: true, output: `"${args.path}" is empty.` };
@@ -375,7 +393,10 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
         };
       }
 
-      if (fileType.kind === 'video' && (args.region !== undefined || args.full_resolution === true)) {
+      if (
+        (fileType.kind === 'video' || fileType.kind === 'audio') &&
+        (args.region !== undefined || args.full_resolution === true)
+      ) {
         return {
           isError: true,
           output: 'region and full_resolution apply only to image files.',
@@ -512,11 +533,16 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
             dimensions = { width: compressed.originalWidth, height: compressed.originalHeight };
           }
         }
-      } else {
+      } else if (fileType.kind === 'video') {
         mediaPart = await this.videoContentPart(mediaData, fileType.mimeType, safePath);
+      } else {
+        mediaPart = {
+          type: 'audio_url',
+          audioUrl: { url: `data:${fileType.mimeType};base64,${mediaData.toString('base64')}` },
+        };
       }
 
-      const tag = fileType.kind === 'image' ? 'image' : 'video';
+      const tag = fileType.kind;
       const openText = `<${tag} path="${safePath}">`;
       const closeText = `</${tag}>`;
 

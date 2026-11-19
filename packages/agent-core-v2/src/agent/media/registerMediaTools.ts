@@ -28,7 +28,7 @@ export function registerMediaTools(
 ): IDisposable {
   if (
     !deps.runtime.isAvailable(['fs']) ||
-    (!deps.capabilities.image_in && !deps.capabilities.video_in)
+    (!deps.capabilities.image_in && !deps.capabilities.video_in && !deps.capabilities.audio_in)
   ) {
     return toDisposable(() => {});
   }

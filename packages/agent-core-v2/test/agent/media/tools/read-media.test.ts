@@ -75,6 +75,16 @@ function mp4Buffer(): Buffer {
   ]);
 }
 
+function wavBuffer(): Buffer {
+  return Buffer.concat([
+    Buffer.from('RIFF'),
+    Buffer.from([0x24, 0x00, 0x00, 0x00]),
+    Buffer.from('WAVE'),
+    Buffer.from('fmt '),
+    Buffer.alloc(24),
+  ]);
+}
+
 function withExifOrientation(jpeg: Uint8Array, orientation: number): Buffer {
   const tiff = Buffer.alloc(26);
   tiff.write('II', 0, 'latin1');
@@ -320,17 +330,29 @@ describe('ReadMediaFileTool', () => {
   });
 
   it('reflects model capabilities in its description', () => {
+    expect(
+      makeTool({}, capabilities({ image_in: true, video_in: true, audio_in: true })).description,
+    ).toContain('image, video, and audio files');
     expect(makeTool({}, capabilities({ image_in: true, video_in: true })).description).toContain(
       'image and video files',
     );
+    expect(makeTool({}, capabilities({ image_in: true, video_in: true })).description).toContain(
+      'Audio files are not supported',
+    );
     expect(makeTool({}, capabilities({ image_in: true, video_in: false })).description).toContain(
-      'Video files are not supported',
+      'Video and audio files are not supported',
     );
     expect(makeTool({}, capabilities({ image_in: false, video_in: true })).description).toContain(
-      'Image files are not supported',
+      'Image and audio files are not supported',
     );
+    expect(
+      makeTool({}, capabilities({ image_in: false, video_in: false, audio_in: true })).description,
+    ).toContain('This tool supports audio files');
+    expect(
+      makeTool({}, capabilities({ image_in: false, video_in: false, audio_in: true })).description,
+    ).toContain('Image and video files are not supported');
     expect(makeTool({}, capabilities({ image_in: false, video_in: false })).description).toContain(
-      'does not support image or video input',
+      'does not support image, video, or audio input',
     );
   });
 
@@ -355,7 +377,7 @@ describe('ReadMediaFileTool', () => {
       { path: '/workspace/archive.zip' },
     );
     expect(result.isError).toBe(true);
-    expect(result.output).toContain('not a supported image or video file');
+    expect(result.output).toContain('not a supported image, video, or audio file');
   });
 
   it('reads a small media file once and sniffs the full-read prefix', async () => {
@@ -758,6 +780,79 @@ describe('ReadMediaFileTool', () => {
     expect(withFullResolution.output).toMatch(/image files/i);
   });
 
+  it('returns an inline audio_url part and <audio> wrapper when audio_in is supported', async () => {
+    const audio = wavBuffer();
+    const result = await execute(
+      makeTool(
+        { '/workspace/clip.wav': { data: audio } },
+        capabilities({ image_in: false, video_in: false, audio_in: true }),
+      ),
+      { path: '/workspace/clip.wav' },
+    );
+
+    const systemText = noteText(result);
+    expect(systemText).toMatch(/^<system>.*<\/system>$/s);
+    expect(systemText).toContain('Read audio file.');
+    expect(systemText).toContain('Mime type: audio/wav.');
+    expect(systemText).toContain(`Size: ${String(audio.length)} bytes.`);
+
+    const parts = outputParts(result);
+    expect(parts).toHaveLength(3);
+    expect(parts[0]).toEqual({ type: 'text', text: '<audio path="/workspace/clip.wav">' });
+    expect(parts[1]).toEqual({
+      type: 'audio_url',
+      audioUrl: { url: `data:audio/wav;base64,${audio.toString('base64')}` },
+    });
+    expect(parts[2]).toEqual({ type: 'text', text: '</audio>' });
+  });
+
+  it('errors when reading audio without audio input capability', async () => {
+    const result = await execute(
+      makeTool(
+        { '/workspace/clip.wav': { data: wavBuffer() } },
+        capabilities({ image_in: true, video_in: true, audio_in: false }),
+      ),
+      { path: '/workspace/clip.wav' },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.output).toBe(
+      'The current model does not support audio input. Tell the user to use a model with audio input capability.',
+    );
+  });
+
+  it('rejects region, full_resolution, empty, and oversized audio files', async () => {
+    const caps = capabilities({ audio_in: true });
+    const tool = makeTool({ '/workspace/clip.wav': { data: wavBuffer() } }, caps);
+
+    const withRegion = await execute(tool, {
+      path: '/workspace/clip.wav',
+      region: { x: 0, y: 0, width: 10, height: 10 },
+    });
+    expect(withRegion.isError).toBe(true);
+    expect(withRegion.output).toBe('region and full_resolution apply only to image files.');
+
+    const withFullRes = await execute(tool, {
+      path: '/workspace/clip.wav',
+      full_resolution: true,
+    });
+    expect(withFullRes.isError).toBe(true);
+    expect(withFullRes.output).toBe('region and full_resolution apply only to image files.');
+
+    const empty = await execute(
+      makeTool({ '/workspace/empty.wav': { data: wavBuffer(), size: 0 } }, caps),
+      { path: '/workspace/empty.wav' },
+    );
+    expect(empty.isError).toBe(true);
+    expect(empty.output).toContain('is empty');
+
+    const oversized = await execute(
+      makeTool({ '/workspace/huge.wav': { data: wavBuffer(), size: 101 * 1024 * 1024 } }, caps),
+      { path: '/workspace/huge.wav' },
+    );
+    expect(oversized.isError).toBe(true);
+    expect(oversized.output).toContain('exceeds the maximum');
+  });
+
   it('uses the video uploader when provided', async () => {
     const uploadResult = {
       type: 'video_url' as const,
@@ -891,6 +986,16 @@ describe('registerMediaTools', () => {
     expect(registry.resolve('ReadMediaFile')).toBeInstanceOf(ReadMediaFileTool);
   });
 
+  it('registers ReadMediaFile when the model supports audio input', () => {
+    const registry = new AgentToolRegistryService();
+    registerMediaTools(registry, {
+      runtime: runtimeFor(fs, env),
+      workspace: WORKSPACE,
+      capabilities: capabilities({ image_in: false, video_in: false, audio_in: true }),
+    });
+    expect(registry.resolve('ReadMediaFile')).toBeInstanceOf(ReadMediaFileTool);
+  });
+
   it('does not register anything when the model lacks media capability', () => {
     const registry = new AgentToolRegistryService();
     const disposable = registerMediaTools(registry, {
@@ -999,7 +1104,13 @@ describe('AgentMediaToolsRegistrar', () => {
     bindModel('vision-model', capabilities({ image_in: true, video_in: false }));
     const tool = registry.resolve('ReadMediaFile');
     expect(tool).toBeInstanceOf(ReadMediaFileTool);
-    expect((tool as ReadMediaFileTool).description).toContain('Video files are not supported');
+    expect((tool as ReadMediaFileTool).description).toContain('Video and audio files are not supported');
+
+    bindModel('vision-model', capabilities({ image_in: true, video_in: false, audio_in: true }));
+    const refreshed = registry.resolve('ReadMediaFile');
+    expect(refreshed).toBeInstanceOf(ReadMediaFileTool);
+    expect(refreshed).not.toBe(tool);
+    expect((refreshed as ReadMediaFileTool).description).toContain('image and audio files');
   });
 
   it('passes the current session attachments root to the local media tool', async () => {

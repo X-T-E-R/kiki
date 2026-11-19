@@ -391,11 +391,13 @@ export class ReadTool implements IReadTool {
       const small = stat.size <= (64 << 10) ? await fs.readBytes(safePath, (64 << 10) + 1) : undefined;
       const header = small?.subarray(0, MEDIA_SNIFF_BYTES) ?? await fs.readBytes(safePath, MEDIA_SNIFF_BYTES);
       const fileType = detectFileType(safePath, header);
-      if (fileType.kind === 'image' || fileType.kind === 'video') {
-        const next = this.mediaToolAvailable() ? ` Use ${MEDIA_TOOL_NAME} to view it.` : '';
+      if (fileType.kind === 'image' || fileType.kind === 'video' || fileType.kind === 'audio') {
+        const verb = fileType.kind === 'audio' ? 'listen to' : 'view';
+        const article = fileType.kind === 'video' ? 'a' : 'an';
+        const next = this.mediaToolAvailable() ? ` Use ${MEDIA_TOOL_NAME} to ${verb} it.` : '';
         return {
           isError: true,
-          output: `"${args.path}" is ${fileType.kind === 'image' ? 'an' : 'a'} ${fileType.kind} file, and Read only returns text.${next}`,
+          output: `"${args.path}" is ${article} ${fileType.kind} file, and Read only returns text.${next}`,
         };
       }
 

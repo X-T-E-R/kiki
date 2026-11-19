@@ -18,7 +18,7 @@ export const ReadMediaFileInputSchema = z.object({
   path: z
     .string()
     .describe(
-      'Path to an image or video file. Relative paths resolve against the working directory; ' +
+      'Path to an image, video, or audio file. Relative paths resolve against the working directory; ' +
         'a path outside the working directory must be absolute. ' +
         'Directories and text files are not supported.',
     ),

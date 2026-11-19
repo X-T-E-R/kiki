@@ -35,6 +35,7 @@ describe('daemon file url parsing parity (engine vs transcript mirror)', () => {
 
 const TAG_TEXTS = [
   '<image path="/cache/shot.png"></image>',
+  '<audio path="/cache/clip.wav"></audio>',
   '<image path="/cache/shot.png">',
   '<image content_type="image/png" path="/cache/shot.png">',
   '  <image path="/cache/shot.png"></image>\n',
@@ -60,6 +61,7 @@ describe('standalone media path tag matching parity', () => {
 const PARTS: ReadonlyArray<MediaRefPart> = [
   { type: 'image_url', imageUrl: { url: 'kimi-file://f_1?path=%2Fcache%2Fshot.png' } },
   { type: 'video_url', videoUrl: { url: 'kimi-file://f_3?path=%2Fcache%2Fclip.mp4' } },
+  { type: 'audio_url', audioUrl: { url: 'kimi-file://f_4?path=%2Fcache%2Fclip.wav' } },
   { type: 'image_url', imageUrl: { url: 'kimi-file://f_1' } },
   { type: 'image_url', imageUrl: { url: 'https://example.com/shot.png' } },
   { type: 'text', text: '<image path="/cache/shot.png"></image>' },

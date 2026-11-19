@@ -9,7 +9,7 @@ export { AUDIO_MIME_BY_SUFFIX, IMAGE_MIME_BY_SUFFIX, VIDEO_MIME_BY_SUFFIX };
 export const MEDIA_SNIFF_BYTES = 512;
 
 export interface FileType {
-  readonly kind: 'text' | 'image' | 'video' | 'unknown';
+  readonly kind: 'text' | 'image' | 'video' | 'audio' | 'unknown';
   readonly mimeType: string;
 }
 
@@ -63,15 +63,6 @@ export const NON_TEXT_SUFFIXES: ReadonlySet<string> = new Set<string>([
   '.ar',
   '.deb',
   '.rpm',
-  '.mp3',
-  '.wav',
-  '.flac',
-  '.ogg',
-  '.oga',
-  '.opus',
-  '.aac',
-  '.m4a',
-  '.wma',
   '.ttf',
   '.otf',
   '.woff',
@@ -129,6 +120,19 @@ const FTYP_VIDEO_BRANDS: Readonly<Record<string, string>> = Object.freeze({
   '3g2': 'video/3gpp2',
 });
 
+const FTYP_AUDIO_BRANDS: Readonly<Record<string, string>> = Object.freeze({
+  m4a: 'audio/mp4',
+  m4b: 'audio/mp4',
+  m4p: 'audio/mp4',
+});
+
+const OGG_THEORA_SIGNATURE = Buffer.from([0x80, 0x74, 0x68, 0x65, 0x6f, 0x72, 0x61]);
+const OGG_OPUS_SIGNATURE = Buffer.from('OpusHead');
+const OGG_VORBIS_SIGNATURE = Buffer.from([0x01, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73]);
+const OGG_FLAC_SIGNATURE = Buffer.from([0x7f, 0x46, 0x4c, 0x41, 0x43]);
+const OGG_FLAC_SHORT_SIGNATURE = Buffer.from('fLaC');
+const OGG_SPEEX_SIGNATURE = Buffer.from('Speex   ');
+
 function toBuffer(data: Buffer | Uint8Array): Buffer {
   return Buffer.isBuffer(data) ? data : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }
@@ -147,6 +151,64 @@ function sniffFtypBrand(header: Buffer): string | null {
   if (header.subarray(4, 8).toString('latin1') !== 'ftyp') return null;
   const raw = header.subarray(8, 12).toString('latin1').toLowerCase();
   return raw.replaceAll(/[\s\u0000]+$/g, '').trim();
+}
+
+function hasExplicitOggAudioCodec(header: Buffer): boolean {
+  return (
+    header.includes(OGG_OPUS_SIGNATURE) ||
+    header.includes(OGG_VORBIS_SIGNATURE) ||
+    header.includes(OGG_FLAC_SIGNATURE) ||
+    header.includes(OGG_FLAC_SHORT_SIGNATURE) ||
+    header.includes(OGG_SPEEX_SIGNATURE)
+  );
+}
+
+function isId3v2Header(header: Buffer): boolean {
+  if (header.length < 5 || !startsWith(header, [0x49, 0x44, 0x33])) return false;
+  if (header[3]! < 2 || header[3]! > 4 || header[4] === 0xff) return false;
+  if (header.length >= 10) {
+    for (let i = 6; i < 10; i += 1) {
+      if ((header[i]! & 0x80) !== 0) return false;
+    }
+  }
+  return true;
+}
+
+function isAdtsAudioHeader(header: Buffer): boolean {
+  if (header.length < 7) return false;
+  if (header[0] !== 0xff || (header[1]! & 0xf6) !== 0xf0) return false;
+  const sampleRateIndex = (header[2]! >> 2) & 0x0f;
+  if (sampleRateIndex > 12) return false;
+  const frameLength =
+    ((header[3]! & 0x03) << 11) | (header[4]! << 3) | ((header[5]! >> 5) & 0x07);
+  return frameLength >= 7;
+}
+
+function isMpegAudioFrameHeader(header: Buffer): boolean {
+  if (header.length < 4) return false;
+  if (header[0] !== 0xff || (header[1]! & 0xe0) !== 0xe0) return false;
+  const version = (header[1]! >> 3) & 0x03;
+  const layer = (header[1]! >> 1) & 0x03;
+  if (version === 1 || (layer !== 1 && layer !== 2)) return false;
+  const bitrateIndex = (header[2]! >> 4) & 0x0f;
+  const sampleRateIndex = (header[2]! >> 2) & 0x03;
+  return bitrateIndex !== 0 && bitrateIndex !== 0x0f && sampleRateIndex !== 0x03;
+}
+
+function refineSharedContainer(sniffed: FileType, suffix: string, header: Buffer): FileType {
+  if (sniffed.mimeType === 'video/x-ms-wmv' && suffix === '.wma') {
+    return { kind: 'audio', mimeType: 'audio/x-ms-wma' };
+  }
+  if (sniffed.mimeType === 'video/webm' && suffix === '.weba') {
+    return { kind: 'audio', mimeType: 'audio/webm' };
+  }
+  if (sniffed.mimeType === 'video/mp4' && suffix === '.m4a') {
+    return { kind: 'audio', mimeType: 'audio/mp4' };
+  }
+  if (sniffed.mimeType === 'audio/ogg' && suffix === '.ogv' && !hasExplicitOggAudioCodec(header)) {
+    return { kind: 'video', mimeType: 'video/ogg' };
+  }
+  return sniffed;
 }
 
 export function sniffMediaFromMagic(data: Buffer | Uint8Array): FileType | null {
@@ -178,6 +240,28 @@ export function sniffMediaFromMagic(data: Buffer | Uint8Array): FileType | null 
     const chunk = header.subarray(8, 12).toString('latin1');
     if (chunk === 'WEBP') return { kind: 'image', mimeType: 'image/webp' };
     if (chunk === 'AVI ') return { kind: 'video', mimeType: 'video/x-msvideo' };
+    if (chunk === 'WAVE') return { kind: 'audio', mimeType: 'audio/wav' };
+  }
+  if (startsWith(header, OGG_FLAC_SHORT_SIGNATURE)) {
+    return { kind: 'audio', mimeType: 'audio/flac' };
+  }
+  if (startsWith(header, Buffer.from('OggS'))) {
+    if (header.includes(OGG_THEORA_SIGNATURE)) {
+      return { kind: 'video', mimeType: 'video/ogg' };
+    }
+    if (header.includes(OGG_OPUS_SIGNATURE)) {
+      return { kind: 'audio', mimeType: 'audio/opus' };
+    }
+    return { kind: 'audio', mimeType: 'audio/ogg' };
+  }
+  if (isId3v2Header(header)) {
+    return { kind: 'audio', mimeType: 'audio/mpeg' };
+  }
+  if (isAdtsAudioHeader(header)) {
+    return { kind: 'audio', mimeType: 'audio/aac' };
+  }
+  if (isMpegAudioFrameHeader(header)) {
+    return { kind: 'audio', mimeType: 'audio/mpeg' };
   }
   if (startsWith(header, Buffer.from('FLV'))) {
     return { kind: 'video', mimeType: 'video/x-flv' };
@@ -194,6 +278,9 @@ export function sniffMediaFromMagic(data: Buffer | Uint8Array): FileType | null 
   if (brand !== null && brand !== '') {
     if (brand in FTYP_IMAGE_BRANDS) {
       return { kind: 'image', mimeType: FTYP_IMAGE_BRANDS[brand]! };
+    }
+    if (brand in FTYP_AUDIO_BRANDS) {
+      return { kind: 'audio', mimeType: FTYP_AUDIO_BRANDS[brand]! };
     }
     if (brand in FTYP_VIDEO_BRANDS) {
       return { kind: 'video', mimeType: FTYP_VIDEO_BRANDS[brand]! };
@@ -334,11 +421,14 @@ export function detectFileType(
     mediaHint = { kind: 'image', mimeType: IMAGE_MIME_BY_SUFFIX[suffix]! };
   } else if (suffix in VIDEO_MIME_BY_SUFFIX) {
     mediaHint = { kind: 'video', mimeType: VIDEO_MIME_BY_SUFFIX[suffix]! };
+  } else if (suffix in AUDIO_MIME_BY_SUFFIX) {
+    mediaHint = { kind: 'audio', mimeType: AUDIO_MIME_BY_SUFFIX[suffix]! };
   }
 
   if (header !== undefined) {
     const buf = toBuffer(header);
-    const sniffed = sniffMediaFromMagic(buf);
+    const rawSniffed = sniffMediaFromMagic(buf);
+    const sniffed = rawSniffed ? refineSharedContainer(rawSniffed, suffix, buf) : null;
     if (sniffed) {
       if (type === 'media') return sniffed;
       if (mediaHint) {
@@ -351,6 +441,9 @@ export function detectFileType(
     }
     if (mediaHint?.kind === 'image') {
       return { kind: 'unknown', mimeType: '' };
+    }
+    if (mediaHint?.kind === 'audio') {
+      return mediaHint;
     }
     if (type === 'media' && mediaHint?.kind === 'video') {
       return mediaHint;

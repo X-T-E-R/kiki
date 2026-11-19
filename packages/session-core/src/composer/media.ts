@@ -44,11 +44,6 @@ export interface MediaRef {
 
 type ContentPart = Message['content'][number];
 
-function parseComposerBlobRef(url: string): ReturnType<typeof parseMediaBlobRef> {
-  const audio = /^blobref:(audio\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u.exec(url);
-  return audio === null ? parseMediaBlobRef(url) : { kind: 'mime', mime: audio[1]!, hash: audio[2]! };
-}
-
 function mimeFromDataUrl(url: string | undefined): string | undefined {
   if (url === undefined) return undefined;
   const match = /^data:([^;,]+)/.exec(url);
@@ -90,7 +85,7 @@ export function mediaRefFromUrl(
   url: string,
   extra?: Pick<MediaRef, 'name' | 'mime' | 'size'>,
 ): MediaRef {
-  const blobref = parseComposerBlobRef(url);
+  const blobref = parseMediaBlobRef(url);
   if (blobref?.kind === 'mime') {
     return { kind, name: extra?.name, size: extra?.size, mime: blobref.mime, blobHash: blobref.hash };
   }
@@ -184,7 +179,7 @@ export function toolResultMedia(
   const paired = sameFrameOrder && (fullFrame || boundedPrefix) && parts !== undefined && references !== undefined &&
     parts.every((part, index) => {
       const item = references[index]!;
-      const blob = item.fileId === undefined ? undefined : parseComposerBlobRef(item.fileId);
+      const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
       const referenceHash = item.blobHash ?? blob?.hash;
       const omittedTypedPlaceholder =
         item.kind === 'file' &&
@@ -229,7 +224,7 @@ export function toolResultMedia(
   const merged: MediaRef[] = [];
   const positions = new Map<string, number>();
   for (const item of inputs) {
-    const blob = item.fileId === undefined ? undefined : parseComposerBlobRef(item.fileId);
+    const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
     const owner = blob?.kind === 'agent' ? blob.agentId : item.detail?.agentId ?? agentId;
     const hash = item.blobHash ?? blob?.hash;
     // One ref can name both a canonical file and its original bytes. Paths and
@@ -276,7 +271,7 @@ const BROWSER_MEDIA_URL_RE = /^(?:data:|blob:|https?:\/\/)/i;
 function toolMediaRef(ref: MediaRef, path: string | undefined): MediaRef {
   const url = ref.url;
   if (url?.startsWith('blobref:')) {
-    const match = parseComposerBlobRef(url);
+    const match = parseMediaBlobRef(url);
     if (match?.kind === 'mime' && match.mime.startsWith(`${ref.kind}/`)) {
       return { ...ref, url: undefined, path, mime: match.mime, blobHash: match.hash };
     }
@@ -342,9 +337,7 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
       if (cleaned !== '') texts.push(cleaned);
       continue;
     }
-    const engineRef = type === 'audio_url' && typeof ref?.['url'] === 'string'
-      ? { kind: 'audio' as const, url: ref['url'] }
-      : type === 'image_url' || type === 'video_url' ? mediaUrlFromPart(part) : undefined;
+    const engineRef = type === 'image_url' || type === 'video_url' || type === 'audio_url' ? mediaUrlFromPart(part) : undefined;
     if (engineRef !== undefined) {
       media.push(toolMediaRef({
         kind: engineRef.kind,

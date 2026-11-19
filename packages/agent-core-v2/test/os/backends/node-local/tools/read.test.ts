@@ -724,6 +724,26 @@ describe('ReadTool', () => {
     expect(readText).not.toHaveBeenCalled();
   });
 
+  it('rejects audio files before text decoding and hints ReadMediaFile when available', async () => {
+    const wavHeader = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVE')]);
+    const { fs, readText } = createSpiedMapFs({
+      '/tmp/voice.wav': { bytes: wavHeader },
+    });
+
+    const withoutMedia = createReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+    const refused = await execute(withoutMedia, { path: '/tmp/voice.wav' });
+    expect(refused.isError).toBe(true);
+    expect(toolContentString(refused)).toBe('"/tmp/voice.wav" is an audio file, and Read only returns text.');
+
+    const withMedia = createReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE, undefined, mediaTools(true));
+    const hinted = await execute(withMedia, { path: '/tmp/voice.wav' });
+    expect(hinted.isError).toBe(true);
+    expect(toolContentString(hinted)).toBe(
+      '"/tmp/voice.wav" is an audio file, and Read only returns text. Use ReadMediaFile to listen to it.',
+    );
+    expect(readText).not.toHaveBeenCalled();
+  });
+
   it('rejects NUL-containing binary files before text decoding', async () => {
     const header = Buffer.concat([Buffer.from('plain prefix'), Buffer.from([0x00, 0x01])]);
     const { fs, readText } = createSpiedMapFs({

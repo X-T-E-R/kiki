@@ -82,6 +82,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
         modelAlias,
         String(capabilities.image_in),
         String(capabilities.video_in),
+        String(capabilities.audio_in),
         'runtime-unavailable',
       ].join('|');
       if (key === this.registeredKey) return;
@@ -114,6 +115,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
         : `${[...imagePolicy.acceptedTypes].toSorted().join(',')}:${imagePolicy.convertUnsupported}`,
       String(capabilities.image_in),
       String(capabilities.video_in),
+      String(capabilities.audio_in),
       identityKey,
       inspected.status,
       inspected.environment.pathClass,

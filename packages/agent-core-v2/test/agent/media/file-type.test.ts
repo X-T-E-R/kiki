@@ -5,6 +5,7 @@ import {
   sniffImageDimensions,
   sniffMediaFromMagic,
   MEDIA_SNIFF_BYTES,
+  AUDIO_MIME_BY_SUFFIX,
   IMAGE_MIME_BY_SUFFIX,
   VIDEO_MIME_BY_SUFFIX,
   NON_TEXT_SUFFIXES,
@@ -104,6 +105,63 @@ describe('sniffMediaFromMagic', () => {
     });
   });
 
+  it('recognises audio magic bytes across WAV, FLAC, Ogg codecs, MP3, AAC ADTS, and M4A', () => {
+    const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVE')]);
+    expect(sniffMediaFromMagic(wav)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/wav' });
+
+    const flac = Buffer.from('fLaC\x00\x00\x00\x22', 'latin1');
+    expect(sniffMediaFromMagic(flac)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/flac' });
+
+    const oggOpus = Buffer.concat([Buffer.from('OggS'), Buffer.alloc(24), Buffer.from('OpusHead')]);
+    expect(sniffMediaFromMagic(oggOpus)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/opus' });
+
+    const oggVorbis = Buffer.concat([
+      Buffer.from('OggS'),
+      Buffer.alloc(24),
+      Buffer.from([0x01, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73]),
+    ]);
+    expect(sniffMediaFromMagic(oggVorbis)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/ogg' });
+
+    const oggSpeex = Buffer.concat([Buffer.from('OggS'), Buffer.alloc(24), Buffer.from('Speex   ')]);
+    expect(sniffMediaFromMagic(oggSpeex)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/ogg' });
+
+    const oggFlac = Buffer.concat([
+      Buffer.from('OggS'),
+      Buffer.alloc(24),
+      Buffer.from([0x7f, 0x46, 0x4c, 0x41, 0x43]),
+    ]);
+    expect(sniffMediaFromMagic(oggFlac)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/ogg' });
+
+    const oggTheora = Buffer.concat([
+      Buffer.from('OggS'),
+      Buffer.alloc(24),
+      Buffer.from([0x80, 0x74, 0x68, 0x65, 0x6f, 0x72, 0x61]),
+    ]);
+    expect(sniffMediaFromMagic(oggTheora)).toEqual<FileType>({ kind: 'video', mimeType: 'video/ogg' });
+
+    const id3 = Buffer.from([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    expect(sniffMediaFromMagic(id3)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/mpeg' });
+
+    const mp3Frame = Buffer.from([0xff, 0xfb, 0x90, 0x00]);
+    expect(sniffMediaFromMagic(mp3Frame)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/mpeg' });
+
+    const adts = Buffer.from([0xff, 0xf1, 0x50, 0x80, 0x02, 0x1f, 0xfc]);
+    expect(sniffMediaFromMagic(adts)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/aac' });
+
+    const m4a = Buffer.concat([
+      Buffer.from([0, 0, 0, 0x18]),
+      Buffer.from('ftyp'),
+      Buffer.from('M4A '),
+      Buffer.alloc(12),
+    ]);
+    expect(sniffMediaFromMagic(m4a)).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/mp4' });
+  });
+
+  it('does not misclassify plain text or UTF-16 LE BOM as audio', () => {
+    expect(sniffMediaFromMagic(Buffer.from('ID3 = 123\n'))).toBeNull();
+    expect(sniffMediaFromMagic(Buffer.from([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]))).toBeNull();
+  });
+
   it('returns null for unrecognised magic bytes', () => {
     expect(sniffMediaFromMagic(Buffer.from('plain text content'))).toBeNull();
   });
@@ -154,6 +212,49 @@ describe('detectFileType', () => {
       kind: 'video',
       mimeType: 'video/quicktime',
     });
+  });
+
+  it('resolves audio files by extension and keeps audio suffixes out of NON_TEXT_SUFFIXES', () => {
+    for (const [suffix, mimeType] of Object.entries(AUDIO_MIME_BY_SUFFIX)) {
+      expect(NON_TEXT_SUFFIXES.has(suffix)).toBe(false);
+      expect(detectFileType(`clip${suffix}`)).toEqual<FileType>({ kind: 'audio', mimeType });
+      expect(detectFileType(`clip${suffix.toUpperCase()}`)).toEqual<FileType>({ kind: 'audio', mimeType });
+    }
+  });
+
+  it('disambiguates shared container formats between audio and video by extension', () => {
+    const asf = Buffer.from([
+      0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c,
+    ]);
+    expect(detectFileType('song.wma', asf, 'media')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/x-ms-wma' });
+    expect(detectFileType('song.wma', asf, 'text')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/x-ms-wma' });
+    expect(detectFileType('clip.wmv', asf, 'media')).toEqual<FileType>({ kind: 'video', mimeType: 'video/x-ms-wmv' });
+
+    const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from('.webm.', 'latin1')]);
+    expect(detectFileType('voice.weba', webm, 'media')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/webm' });
+    expect(detectFileType('voice.weba', webm, 'text')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/webm' });
+    expect(detectFileType('clip.webm', webm, 'media')).toEqual<FileType>({ kind: 'video', mimeType: 'video/webm' });
+
+    const isom = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftyp'), Buffer.from('isom'), Buffer.alloc(12)]);
+    expect(detectFileType('memo.m4a', isom, 'media')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/mp4' });
+    expect(detectFileType('memo.m4a', isom, 'text')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/mp4' });
+
+    const genericOgg = Buffer.concat([Buffer.from('OggS'), Buffer.alloc(24)]);
+    expect(detectFileType('clip.ogv', genericOgg, 'media')).toEqual<FileType>({ kind: 'video', mimeType: 'video/ogg' });
+    expect(detectFileType('clip.ogv', genericOgg, 'text')).toEqual<FileType>({ kind: 'video', mimeType: 'video/ogg' });
+    expect(detectFileType('voice.ogg', genericOgg, 'media')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/ogg' });
+  });
+
+  it('classifies audio extensions as audio in both text and media modes when magic bytes are inconclusive', () => {
+    const unknownBinary = Buffer.from([0x01, 0x02, 0x00, 0x04]);
+    const unknownPlain = Buffer.from('unrecognized-header');
+    for (const header of [unknownBinary, unknownPlain]) {
+      expect(detectFileType('clip.aac', header, 'text')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/aac' });
+      expect(detectFileType('clip.aac', header, 'media')).toEqual<FileType>({ kind: 'audio', mimeType: 'audio/aac' });
+    }
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(detectFileType('fake.mp3', pngHeader, 'text').kind).toBe('unknown');
+    expect(detectFileType('fake.mp3', pngHeader, 'media')).toEqual<FileType>({ kind: 'image', mimeType: 'image/png' });
   });
 
   it('treats .svg (text) as text, not image, even though the MIME is image/*', () => {

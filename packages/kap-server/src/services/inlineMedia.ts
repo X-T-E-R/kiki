@@ -12,7 +12,7 @@ export function inlineMediaId(attachment: TranscriptAttachment, agentId: string)
   return `inline:${agentId}:${Buffer.from(attachment.attachmentId).toString('base64url')}:${contentRevision(source.url)}`;
 }
 
-export function inlineToolMedia(part: unknown): { readonly kind: 'image' | 'video'; readonly url: string } | undefined {
+export function inlineToolMedia(part: unknown): ReturnType<typeof mediaUrlFromPart> {
   const media = mediaUrlFromPart(part);
   return media?.url.startsWith(`data:${media.kind}/`) ? media : undefined;
 }

@@ -110,7 +110,7 @@ export async function resolvePromptSessionMediaRefs(
   let changed = false;
   for (const part of content) {
     if (
-      (part.type !== 'image' && part.type !== 'video') ||
+      (part.type !== 'image' && part.type !== 'video' && part.type !== 'audio') ||
       part.source.kind !== 'session_media'
     ) {
       resolved.push(part);
@@ -121,7 +121,8 @@ export async function resolvePromptSessionMediaRefs(
     let file = published ? await readPublishedMedia?.(fileId) : await store.open(fileId);
     if (file === undefined && !published && staged !== undefined) {
       const upload = await staged.get(fileId);
-      assertMediaFile(upload, part.type);
+      if (part.type === 'audio') assertAudioFile(upload, false);
+      else assertMediaFile(upload, part.type);
       file = await materializeSessionMedia(store, upload);
     }
     if (file === undefined) throw fileNotFoundError(fileId);

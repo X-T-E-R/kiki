@@ -56,14 +56,15 @@ export function parseDaemonFileRefFileId(url: string): string | undefined {
 
 /**
  * The structural minimum the daemon-ref extraction needs from a content
- * part — the kosong `text` / `image_url` / `video_url` shapes plus anything
- * else.
+ * part — the kosong `text` / `image_url` / `video_url` / `audio_url` shapes
+ * plus anything else.
  */
 export interface MediaRefPart {
   readonly type: string;
   readonly text?: string;
   readonly imageUrl?: { readonly url?: string };
   readonly videoUrl?: { readonly url?: string };
+  readonly audioUrl?: { readonly url?: string };
 }
 
 /**
@@ -74,13 +75,15 @@ export interface MediaRefPart {
  */
 export function daemonFileRefFromPairingPart(
   part: MediaRefPart,
-): { readonly kind: 'image' | 'video'; readonly ref: DaemonFileRef } | undefined {
-  if (part.type !== 'image_url' && part.type !== 'video_url') return undefined;
-  const url = part.type === 'image_url' ? part.imageUrl?.url : part.videoUrl?.url;
+): { readonly kind: 'image' | 'video' | 'audio'; readonly ref: DaemonFileRef } | undefined {
+  if (part.type !== 'image_url' && part.type !== 'video_url' && part.type !== 'audio_url') return undefined;
+  const url = part.type === 'image_url' ? part.imageUrl?.url
+    : part.type === 'video_url' ? part.videoUrl?.url : part.audioUrl?.url;
   if (typeof url !== 'string') return undefined;
   const ref = parseDaemonFileRef(url);
   if (ref === undefined) return undefined;
-  return { kind: part.type === 'image_url' ? 'image' : 'video', ref };
+  const kind = part.type === 'image_url' ? 'image' : part.type === 'video_url' ? 'video' : 'audio';
+  return { kind, ref };
 }
 
 export type MediaBlobRef =
@@ -90,14 +93,14 @@ export type MediaBlobRef =
 export function parseMediaBlobRef(url: string): MediaBlobRef | undefined {
   const agent = /^blobref:([A-Za-z0-9][A-Za-z0-9_-]{0,255})[/:]([0-9a-f]{64})$/u.exec(url);
   if (agent !== null) return { kind: 'agent', agentId: agent[1]!, hash: agent[2]! };
-  const mime = /^blobref:((?:image|video)\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u.exec(url);
+  const mime = /^blobref:((?:image|video|audio)\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u.exec(url);
   return mime === null ? undefined : { kind: 'mime', mime: mime[1]!, hash: mime[2]! };
 }
 
-export function mediaUrlFromPart(part: unknown): { readonly kind: 'image' | 'video'; readonly url: string } | undefined {
+export function mediaUrlFromPart(part: unknown): { readonly kind: 'image' | 'video' | 'audio'; readonly url: string } | undefined {
   if (part === null || typeof part !== 'object' || Array.isArray(part)) return undefined;
   const value = part as Record<string, unknown>;
-  for (const kind of ['image', 'video'] as const) {
+  for (const kind of ['image', 'video', 'audio'] as const) {
     if (value['type'] === `${kind}_url`) {
       for (const key of [`${kind}Url`, `${kind}_url`]) {
         const container = value[key] as { url?: unknown } | undefined;

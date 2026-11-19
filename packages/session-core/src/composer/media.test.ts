@@ -71,15 +71,17 @@ describe('mediaFromContentParts', () => {
     ]);
   });
 
-  it('decodes persisted image references instead of passing private URLs to img', () => {
+  it('decodes persisted image and audio references instead of passing private URLs to img', () => {
     const hash = 'a'.repeat(64);
     const content: Message['content'] = [
       { type: 'image', source: { kind: 'url', url: `blobref:image/png;${hash}` } },
       { type: 'image', source: { kind: 'url', url: 'kimi-file://upload_1' } },
+      { type: 'audio', source: { kind: 'url', url: `blobref:audio/wav;${hash}` } },
     ];
     expect(mediaFromContentParts(content)).toEqual([
       { kind: 'image', name: undefined, size: undefined, mime: 'image/png', blobHash: hash },
       { kind: 'image', fileId: 'upload_1' },
+      { kind: 'audio', name: undefined, size: undefined, mime: 'audio/wav', blobHash: hash },
     ]);
   });
 
@@ -125,12 +127,17 @@ describe('extractToolOutputMedia', () => {
     expect(extractToolOutputMedia([
       { type: 'text', text: '<audio path="E:/audio/voice.wav">' },
       { type: 'audio_url', audioUrl: { url: `blobref:audio/wav;${hash}` } },
+      { type: 'text', text: '</audio>' },
+      { type: 'text', text: '<audio path="E:/audio/inline.wav">' },
+      { type: 'audio_url', audioUrl: { url: 'data:audio/wav;base64,UklGRg==' } },
+      { type: 'text', text: '</audio>' },
       { type: 'audio', source: { kind: 'base64', media_type: 'audio/ogg', data: 'AAAA' } },
       { type: 'audio', source: { kind: 'session_media', file_id: 'saved-audio' } },
       { type: 'image_url', imageUrl: { url: 'data:image/png;base64,AAAA' } },
       { type: 'video', source: { kind: 'url', url: 'https://example.test/video.mp4' } },
     ])?.media).toMatchObject([
       { kind: 'audio', path: 'E:/audio/voice.wav', blobHash: hash, mime: 'audio/wav' },
+      { kind: 'audio', path: 'E:/audio/inline.wav', url: 'data:audio/wav;base64,UklGRg==', mime: 'audio/wav' },
       { kind: 'audio', url: 'data:audio/ogg;base64,AAAA' },
       { kind: 'audio', fileId: 'saved-audio' },
       { kind: 'image', url: 'data:image/png;base64,AAAA' },

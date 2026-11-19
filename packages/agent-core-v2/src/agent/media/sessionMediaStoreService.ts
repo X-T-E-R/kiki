@@ -145,7 +145,7 @@ export class ScopedMediaStore implements ISessionMediaStore {
     if (data === undefined) return undefined;
     const bytes = Buffer.from(data);
     const type = detectFileType(fileId, bytes.subarray(0, MEDIA_SNIFF_BYTES), 'media');
-    if (type.kind !== 'image' && type.kind !== 'video') return undefined;
+    if (type.kind !== 'image' && type.kind !== 'video' && type.kind !== 'audio') return undefined;
     return {
       path: undefined,
       name: fileId,

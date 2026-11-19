@@ -727,4 +727,65 @@ describe('canonical inline media original', () => {
       rmSync(tempHome, { recursive: true, force: true });
     }
   });
+
+  it('projects inline audio tool output to session_media and hydrates both inline and offloaded audio blobs', async () => {
+    const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x24, 0, 0, 0]), Buffer.from('WAVE'), Buffer.from('fmt '), Buffer.alloc(24)]);
+    const url = `data:audio/wav;base64,${wav.toString('base64')}`;
+    const hash = createHash('sha256').update(wav.toString('base64')).digest('hex');
+    const source = { kind: 'frame' as const, id: 'f-audio', turnId: 't1', stepId: 's1' };
+    const frame = {
+      kind: 'tool',
+      frameId: 'f-audio',
+      name: 'ReadMediaFile',
+      toolCallId: 'call-audio',
+      state: 'done',
+      output: [{ type: 'audio_url', audioUrl: { url } }],
+    };
+    const projected = boundedEntity(frame, source, undefined, 'child') as unknown as {
+      output: { type: string; source: { kind: string; file_id: string } }[];
+    };
+    expect(projected.output[0]).toMatchObject({
+      type: 'audio',
+      source: { kind: 'session_media', file_id: expect.stringMatching(/^inline-content:child:/u) },
+    });
+    const fileId = projected.output[0]!.source.file_id;
+
+    const inlineFile = await openPublishedInlineMedia(fileId, async () => frame);
+    expect(inlineFile).toBeDefined();
+    expect(inlineFile?.mediaType).toBe('audio/wav');
+    const inlineChunks: Uint8Array[] = [];
+    for await (const chunk of inlineFile!.stream()) inlineChunks.push(chunk);
+    expect(Buffer.concat(inlineChunks)).toEqual(wav);
+
+    const offloadedFrame = {
+      ...frame,
+      output: [{ type: 'audio_url', audioUrl: { url: `blobref:audio/wav;${hash}` } }],
+    };
+    const blobFile = await openPublishedInlineMedia(
+      fileId,
+      async () => offloadedFrame,
+      async (id) => id === `blobref:child:${hash}`
+        ? {
+          name: 'tool-result.bin',
+          mediaType: 'application/octet-stream',
+          size: wav.length,
+          stream: async function* () { yield wav; },
+        }
+        : undefined,
+    );
+    expect(blobFile).toBeDefined();
+    expect(blobFile?.mediaType).toBe('audio/wav');
+    const blobChunks: Uint8Array[] = [];
+    for await (const chunk of blobFile!.stream()) blobChunks.push(chunk);
+    expect(Buffer.concat(blobChunks)).toEqual(wav);
+
+    const resolved = await resolvePromptSessionMediaRefs(
+      [{ type: 'audio', source: { kind: 'session_media', file_id: fileId } }],
+      { open: async () => undefined } as unknown as ISessionMediaStore,
+      async () => inlineFile,
+    );
+    expect(resolved).toMatchObject([
+      { type: 'audio', source: { kind: 'base64', media_type: 'audio/wav', data: wav.toString('base64') } },
+    ]);
+  });
 });

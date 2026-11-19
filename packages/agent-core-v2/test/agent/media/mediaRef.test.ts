@@ -15,6 +15,7 @@ import {
   mediaKindForPath,
   mediaKindOfPart,
   parseDaemonFileUrl,
+  parseMediaBlobRef,
 } from '#/agent/media/mediaRef';
 
 describe('media kind classification', () => {
@@ -54,6 +55,17 @@ describe('media kind classification', () => {
     expect(VIDEO_MIME_BY_SUFFIX['.mkv']).toBe('video/x-matroska');
     expect(AUDIO_MIME_BY_SUFFIX['.mp3']).toBe('audio/mpeg');
     expect(AUDIO_MIME_BY_SUFFIX['.weba']).toBe('audio/webm');
+  });
+});
+
+describe('audio blob references', () => {
+  it.each(Object.values(AUDIO_MIME_BY_SUFFIX))('parses %s references', (mime) => {
+    const hash = 'a'.repeat(64);
+    expect(parseMediaBlobRef(`blobref:${mime};${hash}`)).toEqual({ kind: 'mime', mime, hash });
+  });
+
+  it('rejects invalid audio references', () => {
+    expect(parseMediaBlobRef('blobref:audio/wav;bad-hash')).toBeUndefined();
   });
 });
 

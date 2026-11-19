@@ -179,6 +179,14 @@ describe('SessionMediaStoreService', () => {
     expect(opened).toMatchObject({ name: fileId, mediaType: 'image/png', size: BLOB_IMAGE.length });
     expect(opened?.path).toBeUndefined();
     expect(opened === undefined ? undefined : Buffer.from(await collect(opened.stream()))).toEqual(BLOB_IMAGE);
+
+    const audioHash = 'b'.repeat(64);
+    const wavBytes = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVE'), Buffer.from('fmt ')]);
+    blobBytes.set(audioHash, wavBytes);
+    const audioFileId = `blobref:main:${audioHash}`;
+    const openedAudio = await store.open(audioFileId);
+    expect(openedAudio).toMatchObject({ name: audioFileId, mediaType: 'audio/wav', size: wavBytes.length });
+    expect(openedAudio === undefined ? undefined : Buffer.from(await collect(openedAudio.stream()))).toEqual(wavBytes);
   });
 
   it('opens canonical media with its persisted download metadata', async () => {
