@@ -102,13 +102,16 @@ export class RecipeSourceReader implements IRecipeSourceReader {
   }
 }
 async function freezeResource(target: string, text: string, source: string, file: string): Promise<void> {
-  if (await holdsText(target, text)) return;
-  await createResource(target, text);
-  if (await holdsText(target, text)) return;
-  if (!(await lstat(target)).isFile()) recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
-  await unlink(target);
-  await createResource(target, text);
-  if (!(await holdsText(target, text))) recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (await holdsText(target, text)) return;
+    await createResource(target, text);
+    if (await holdsText(target, text)) return;
+    const info = await lstat(target).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+    if (info === undefined) continue;
+    if (!info.isFile()) break;
+    await unlink(target).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
+  }
+  recipeFailure('Frozen Recipe hook resource is corrupt', source, file);
 }
 async function createResource(target: string, text: string): Promise<void> {
   try { await atomicCreate(target, text); }
