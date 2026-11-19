@@ -414,7 +414,15 @@ export function UnifiedAgentManager() {
 
   const editor = editing === undefined ? null : <ProfileEditor key={editing.key} profile={editing.profile} writable={editing.writable} profiles={profiles}
     models={models} diagnostics={editing.diagnostics} shippedEntry={shippedEntryForProfile(editing.profile, shippedEntries)}
-    onSaved={refresh} onClose={detail.close}
+    onSaved={refresh}
+    onDeleted={() => {
+      void invalidateAgentProfileCatalogs(queryClient);
+      void queryClient.invalidateQueries({ queryKey: ['shipped-agent-profiles'] });
+      void queryClient.invalidateQueries({ queryKey: ['config'] });
+      detail.close();
+      setFeedback({ tone: 'success', text: t('st.agents.deleted') });
+    }}
+    onClose={detail.close}
     onOpenWinner={(() => {
       const winner = effective?.find((candidate) => candidate.name === editing.profile.name && !sameProfile(candidate, editing.profile));
       const target = winner === undefined ? undefined : rows.find((row) => sameProfile(row.profile, winner));

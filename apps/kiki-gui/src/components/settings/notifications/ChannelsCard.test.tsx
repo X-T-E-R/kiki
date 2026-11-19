@@ -1550,4 +1550,34 @@ describe('ChannelsCard two-way accounts', () => {
     await act(async () => { optInputAfter.blur(); await settle(); });
     expect(configPatches.at(-1)).toEqual({ send_message: { tts_options: null } });
   });
+
+  it('renders Reauthorize visibly outside collapsed details, routes expired kiki-qq accounts to plugin settings, and removes expired or missing accounts with confirmation', async () => {
+    const state = imChannelSnapshot();
+    state.instances[0] = { ...state.instances[0]!, listening: true, adapter: 'stopped', connection: 'auth_expired', connection_detail: { code: 'auth_expired' } };
+    state.instances.push(
+      { id: 'plugin:kiki-qq/qq-official', provider_kind: 'plugin:kiki-qq/qq-official', label: 'Official QQ', account_id: '123456', listening: true, configured: true, adapter: 'stopped', connection: 'auth_expired' },
+      { id: 'orphaned-im', provider_kind: 'telegram', label: 'Orphaned', listening: false, configured: false, adapter: 'missing' },
+    );
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+
+    const wechatRow = container.querySelector<HTMLElement>('[data-im-account="account-a"]')!;
+    await click(wechatRow, '[data-im-reauthorize-now="account-a"]');
+    const drawer = wechatRow.querySelector<HTMLElement>('[data-im-connect-drawer]');
+    expect(drawer).not.toBeNull();
+    expect(drawer?.closest('details')).toBeNull();
+
+    const qqRow = container.querySelector<HTMLElement>('[data-im-account="plugin:kiki-qq/qq-official"]')!;
+    const qqReauth = qqRow.querySelector<HTMLAnchorElement>('[data-im-reauthorize-now="plugin:kiki-qq/qq-official"]');
+    expect(qqReauth?.tagName).toBe('A');
+    expect(qqReauth?.getAttribute('href')).toBe('/settings/plugins?plugin=kiki-qq');
+
+    const orphanRow = container.querySelector<HTMLElement>('[data-im-account="orphaned-im"]')!;
+    await click(orphanRow, 'button[aria-controls]');
+    await click(orphanRow, '[data-im-remove-account="orphaned-im"]');
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    await click(document.body, '[role="alertdialog"] [data-confirm-action="confirm"]');
+    expect(fixture.calls).toContainEqual({ operation: 'removeInstance', id: 'orphaned-im' });
+    expect(container.querySelector('[data-im-account="orphaned-im"]')).toBeNull();
+  });
 });

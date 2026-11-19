@@ -236,6 +236,13 @@ class NotificationSessionPorts implements ImSessionPorts {
       if (existing !== undefined) return { instanceId: existing.id };
       return this.createInstance(input.providerKind, input.credential);
     },
+    remove: async (instanceId: string): Promise<void> => {
+      const settings = this.notificationService.getSettings();
+      if (!Object.hasOwn(settings.provider_instances, instanceId)) return;
+      const usedByAlertChannel = Object.values(settings.channels).some((channel) => channel.provider_instance_id === instanceId);
+      if (usedByAlertChannel) return;
+      await this.notificationService.deleteInstance(instanceId);
+    },
   };
 
   readonly sessions: ImSessionPorts['sessions'] = {

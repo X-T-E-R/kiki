@@ -433,7 +433,10 @@ export interface HttpRestFacade {
   };
 
   readonly ssh: {
-    list(workspaceId?: string): Promise<{ readonly hosts: readonly import('@kiki/protocol').SshHost[] }>;
+    list(workspaceId?: string): Promise<{
+      readonly hosts: readonly import('@kiki/protocol').SshHost[];
+      readonly statuses?: Readonly<Record<string, import('@kiki/protocol').SshHostStatus>>;
+    }>;
     discover(): Promise<{ readonly hosts: readonly import('@kiki/protocol').SshHost[] }>;
     upsert(id: string, host: import('@kiki/protocol').SshHostInput, workspaceId?: string): Promise<{ readonly host: import('@kiki/protocol').SshHost }>;
     remove(id: string, workspaceId?: string): Promise<{ readonly removed: true }>;
@@ -672,6 +675,7 @@ export interface HttpRestFacade {
     paste(text: string, instanceId?: string): Promise<import('@kiki/protocol').ImPasteResult>;
     check(instanceId: string): Promise<import('@kiki/protocol').ImCheckResult>;
     listen(instanceId: string, listening: boolean): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    removeInstance(instanceId: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     confirm(discoveryId: string, body: import('@kiki/protocol').ImConfirmRequest): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     dismiss(discoveryId: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
     updateBinding(id: string, patch: import('@kiki/protocol').ImBindingPatch): Promise<import('@kiki/protocol').ImSessionSnapshot>;
@@ -724,6 +728,10 @@ export interface HttpRestFacade {
     previewModelMenu(name: string, body: import('@kiki/protocol').AgentModelMenuPreviewRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').AgentModelMenuPreviewResponse>;
     create(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
     update(name: string, body: UpdateNamedAgentProfileRequest): Promise<NamedAgentProfile>;
+    delete(
+      name: string,
+      query: { readonly workspace_id: string; readonly scope: 'user' | 'project'; readonly source_file?: string },
+    ): Promise<{ readonly deleted: true; readonly name: string; readonly scope: 'user' | 'project'; readonly source_file: string }>;
     /** Shipped (built-in) profile templates: management status and restore-original. */
     readonly shipped: {
       list(): Promise<ListShippedAgentProfilesResponse>;

@@ -9,10 +9,16 @@ import { ImIdentityAlreadyBoundError, type ImSessionBridge } from '../services/i
 import { ImSessionSetup, imSetupCatalog } from '../services/imSession/setup';
 
 const identifier = z.string().regex(/^[a-zA-Z0-9_.:-]{1,120}$/u);
+const instanceIdentifier = z.string().regex(/^[a-zA-Z0-9_.:/-]{1,120}$/u).refine((value) => !value.includes('..'));
 
 function routeId(req: FastifyRequest): string {
   const params = req.params as { id?: unknown };
   return identifier.parse(params.id);
+}
+
+function instanceRouteId(req: FastifyRequest): string {
+  const params = req.params as { id?: unknown };
+  return instanceIdentifier.parse(params.id);
 }
 
 export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionBridge): void {
@@ -62,11 +68,12 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
     const body = z.object({ text: z.string().min(1).max(8192), instance_id: identifier.optional() }).strict().parse(req.body);
     return bridge.paste({ text: body.text, ...(body.instance_id === undefined ? {} : { instanceId: body.instance_id }) });
   }));
-  app.post('/im/sessions/instances/:id/check', (req, reply) => respond(req, reply, () => bridge.check(routeId(req))));
+  app.post('/im/sessions/instances/:id/check', (req, reply) => respond(req, reply, () => bridge.check(instanceRouteId(req))));
   app.post('/im/sessions/instances/:id/listen', (req, reply) => respond(req, reply, () => {
     const body = z.object({ listening: z.boolean() }).strict().parse(req.body);
-    return bridge.setListening(routeId(req), body.listening);
+    return bridge.setListening(instanceRouteId(req), body.listening);
   }));
+  app.delete('/im/sessions/instances/:id', (req, reply) => respond(req, reply, () => bridge.removeInstance(instanceRouteId(req))));
   app.post('/im/sessions/discoveries/:id/confirm', (req, reply) => respond(req, reply, () => bridge.confirm(routeId(req), imConfirmRequestSchema.parse(req.body))));
   app.post('/im/sessions/discoveries/:id/dismiss', (req, reply) => respond(req, reply, () => bridge.dismiss(routeId(req))));
   app.post('/im/sessions/bindings/:id/test', (req, reply) => respond(req, reply, async () => {

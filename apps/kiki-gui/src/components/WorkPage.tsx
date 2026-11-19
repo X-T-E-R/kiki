@@ -26,7 +26,7 @@ import { Composer } from './Composer';
 import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { Icon, type IconName } from './icons';
-import { useNewSessionDraft } from './NewSessionDraft';
+import { useNewSessionDraft, WorkspacePickerFields } from './NewSessionDraft';
 import { WorkModeMenu, type WorkModeMenuProps } from './WorkModeMenu';
 import { useWorkModes, useWindowModeId, workPresetsEnabled } from '../lib/workModeCatalog';
 import { useConnection } from '../state/connection';
@@ -164,7 +164,12 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
           {t('workHome.headline')}
         </h2>
         <p className="mt-2.5 max-w-[52ch] text-[13.5px] leading-[1.6] text-ink-soft">{t('workHome.subhead')}</p>
-        {showTargetHint ? <p className="mt-2 text-[12px] text-ink-faint">{t('new.noTargetHint')}</p> : null}
+        {showTargetHint ? (
+          <div data-work-target-recovery className="mt-3 space-y-2 rounded-lg border border-hairline bg-panel/60 p-3">
+            <p className="text-[12px] text-ink-soft">{t('new.noTargetHint')}</p>
+            <WorkspacePickerFields state={state} />
+          </div>
+        ) : null}
         {state.workspacesError !== null && cwd === '' ? (
           <div role="alert" data-work-workspace-failure className="mt-2 text-[12px] text-danger">
             <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>

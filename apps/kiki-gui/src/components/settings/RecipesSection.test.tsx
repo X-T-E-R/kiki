@@ -313,4 +313,24 @@ describe('the Recipe library', () => {
       source: { locator: 'https://example.test/recipes/custom.zip', sha256: 'a'.repeat(64) },
     });
   });
+
+  it('allows removing an unavailable installed recipe directly from the library row and from the failed detail page', async () => {
+    const broken = detail({ used_by: ['example/broken-model'] }, {
+      installation_id: 'inst-broken',
+      name: 'Broken pack',
+      health: 'unavailable',
+      last_error: { code: 'recipe-revision-unavailable', message: 'snapshot missing', source: 'https://example.test/broken' },
+    });
+    packages.set('inst-broken', broken);
+    await renderLibrary();
+    expect(container.querySelector('[data-recipes-remove="inst-broken"]')).not.toBeNull();
+    expect(container.querySelector('[data-recipes-remove="inst-clear-work"]')).toBeNull();
+
+    await click('[data-recipes-remove="inst-broken"]');
+    const dialog = document.querySelector('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain('Broken pack');
+    await click('[role="alertdialog"] [data-confirm-action="confirm"]');
+    expect(removeRecipeCalls).toEqual([{ installation_id: 'inst-broken', expected_revision: 'sha256:a91d', disable_models: true }]);
+    expect(packages.has('inst-broken')).toBe(false);
+  });
 });

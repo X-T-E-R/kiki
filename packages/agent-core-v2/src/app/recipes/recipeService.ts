@@ -360,15 +360,19 @@ export class RecipeService extends Disposable implements IRecipeService {
   async addMarket(input: RecipeMarketInput): Promise<RecipeMarket> { return this.writeMarket(input, false); }
   async updateMarket(input: RecipeMarketInput): Promise<RecipeMarket> { return this.writeMarket(input, true); }
   private async writeMarket(input: RecipeMarketInput, exists: boolean): Promise<RecipeMarket> {
-    this.enabled(); const before = this.config.get<RecipesConfig>(RECIPES_SECTION);
-    if (before.markets.some((market) => market.id === input.id) !== exists) recipeFailure(exists ? 'Recipe market not found' : 'Recipe market already exists', input.id);
+    this.enabled();
+    const beforeRaw = this.config.inspect<RecipesConfig>(RECIPES_SECTION).userValue;
+    const beforeMarkets = beforeRaw?.markets ?? this.config.get<RecipesConfig>(RECIPES_SECTION).markets;
+    if (beforeMarkets.some((market) => market.id === input.id) !== exists) recipeFailure(exists ? 'Recipe market not found' : 'Recipe market already exists', input.id);
     if (!input.url.startsWith('https://')) recipeFailure('Recipe market requires HTTPS', input.url);
-    await this.config.replaceSections({ [RECIPES_SECTION]: { markets: [...before.markets.filter((market) => market.id !== input.id), input] } }, undefined, { [RECIPES_SECTION]: before });
+    await this.config.replaceSections({ [RECIPES_SECTION]: { markets: [...beforeMarkets.filter((market) => market.id !== input.id), input] } }, undefined, { [RECIPES_SECTION]: beforeRaw });
     this.changed.fire(); return { ...input, offline: false };
   }
   async removeMarket(id: string): Promise<void> {
-    this.enabled(); const before = this.config.get<RecipesConfig>(RECIPES_SECTION);
-    await this.config.replaceSections({ [RECIPES_SECTION]: { markets: before.markets.filter((market) => market.id !== id) } }, undefined, { [RECIPES_SECTION]: before }); this.changed.fire();
+    this.enabled();
+    const beforeRaw = this.config.inspect<RecipesConfig>(RECIPES_SECTION).userValue;
+    const beforeMarkets = beforeRaw?.markets ?? this.config.get<RecipesConfig>(RECIPES_SECTION).markets;
+    await this.config.replaceSections({ [RECIPES_SECTION]: { markets: beforeMarkets.filter((market) => market.id !== id) } }, undefined, { [RECIPES_SECTION]: beforeRaw }); this.changed.fire();
   }
 }
 registerScopedService(LifecycleScope.App, IRecipeService, RecipeService, ScopeActivation.OnDemand, 'recipes');

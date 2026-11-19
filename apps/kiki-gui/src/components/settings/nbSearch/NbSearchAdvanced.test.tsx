@@ -1249,4 +1249,44 @@ describe('S2 second service instance', () => {
     expect(container.querySelector('[data-field-issue]')!.textContent).toContain('already uses this ID');
     expect(container.querySelector<HTMLButtonElement>('[data-nb-search-instance-create]')!.disabled).toBe(true);
   });
+
+  it('keeps fetch routing rule ID input focused on edit, toggles routing on/off, and re-enables disabled built-in rules', async () => {
+    const routing = {
+      enabled: true,
+      builtin_enabled: true,
+      disabled_builtin_rules: ['github-raw-text'],
+      rules: [{ id: 'my-docs', match: { origin: 'https://docs.example.test' }, action: { pipelines: ['direct.fetch'] } }],
+    };
+    const capabilities = {
+      ...CAPABILITIES,
+      inherited_configuration: { ...CAPABILITIES.inherited_configuration!, routing },
+      fetch: { ...CAPABILITIES.fetch, routing: { ...CAPABILITIES.fetch.routing!, ...routing } },
+    };
+    const container = await render('fetch', {
+      ...BASE_CONFIG,
+      fetch: { routing },
+    }, { capabilities });
+
+    const idInput = container.querySelector<HTMLInputElement>('[data-nb-search-routing-rule-id]')!;
+    idInput.focus();
+    expect(document.activeElement).toBe(idInput);
+    await setInputValue(idInput, 'my-docs-v2');
+    expect(container.querySelector<HTMLInputElement>('[data-nb-search-routing-rule-id]')).toBe(idInput);
+    expect(document.activeElement).toBe(idInput);
+
+    // Re-enable disabled built-in rule via chip
+    const reenableChip = container.querySelector<HTMLButtonElement>('[data-nb-search-routing-builtin-reenable="github-raw-text"]');
+    expect(reenableChip).not.toBeNull();
+    await click(reenableChip);
+    expect(container.querySelector('[data-nb-search-routing-builtin-disabled]')).toBeNull();
+    expect(container.querySelector('[data-nb-search-routing-builtin-rule="github-raw-text"]')!.getAttribute('data-nb-search-routing-builtin-rule-active')).toBe('true');
+
+    // Toggle routing off and back on via Toggle inside AdvancedDetails
+    const toggle = container.querySelector<HTMLInputElement>('[data-nb-search-routing-toggle] input[type="checkbox"]')!;
+    expect(toggle.checked).toBe(true);
+    await click(toggle);
+    expect(container.querySelector('[data-nb-search-routing-enabled]')!.getAttribute('data-nb-search-routing-enabled')).toBe('false');
+    await click(toggle);
+    expect(container.querySelector('[data-nb-search-routing-enabled]')!.getAttribute('data-nb-search-routing-enabled')).toBe('true');
+  });
 });

@@ -135,9 +135,27 @@ export function updateDeclarativeRule(draft: HooksDraft, id: string, patch: Part
   return { shape: 'v2', config: { ...config, rules: config.rules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule) } };
 }
 
+export function updateDeclarativeRuleAt(draft: HooksDraft, index: number, patch: Partial<HookRuleConfig>): HooksDraft {
+  const config = v2Config(draft);
+  return { shape: 'v2', config: { ...config, rules: config.rules.map((rule, position) => position === index ? { ...rule, ...patch } : rule) } };
+}
+
 export function removeDeclarativeRule(draft: HooksDraft, id: string): HooksDraft {
   const config = v2Config(draft);
   return { shape: 'v2', config: { ...config, rules: config.rules.filter((rule) => rule.id !== id), disabled: config.disabled.filter((entry) => entry !== id) } };
+}
+
+export function removeDeclarativeRuleAt(draft: HooksDraft, index: number): HooksDraft {
+  const config = v2Config(draft);
+  const removed = config.rules[index];
+  return {
+    shape: 'v2',
+    config: {
+      ...config,
+      rules: config.rules.filter((_, position) => position !== index),
+      disabled: removed === undefined ? config.disabled : config.disabled.filter((entry) => entry !== removed.id),
+    },
+  };
 }
 
 export function convertToV2(draft: HooksDraft): HooksDraft {

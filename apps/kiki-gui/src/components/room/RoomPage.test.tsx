@@ -427,3 +427,34 @@ it('retains cached member sessions on transient failures and only omits missing 
   expect(queryClient.getQueryData(key)).toHaveLength(2);
   expect(queryClient.getQueryState(key)?.status).toBe('success');
 });
+
+it('stops polling roomQuery after a terminal 404/error response instead of polling forever', async () => {
+  vi.useFakeTimers();
+  try {
+    rooms.get.mockRejectedValue(new ApiError({ code: 40401, msg: 'Room not found', data: null }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/rooms/missing-room']}>
+            <I18nProvider>
+              <Routes>
+                <Route path="/rooms/:id" element={<RoomPage sessions={[]} onToggleSidebar={() => {}} />} />
+              </Routes>
+            </I18nProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(rooms.get).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(rooms.get).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});

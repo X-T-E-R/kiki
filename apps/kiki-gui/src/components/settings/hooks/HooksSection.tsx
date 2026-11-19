@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -27,12 +27,13 @@ import {
   hooksDraftJson,
   hooksDraftPatch,
   parseHooksDraftJson,
-  removeDeclarativeRule,
+  removeDeclarativeRuleAt,
   removeLegacyRule,
   setV2Disabled,
   setV2Enabled,
   setV2Files,
   updateDeclarativeRule,
+  updateDeclarativeRuleAt,
   updateLegacyRule,
   validateHooksDraft,
   type DraftIssue,
@@ -56,6 +57,8 @@ function issuesFor(issues: readonly DraftIssue[], ref: RuleRef): DraftIssue[] {
 /** One rule's summary: a legacy command and a declarative text rule share the row. */
 interface HookEntry {
   readonly ref: RuleRef;
+  readonly rowKey: string;
+  readonly declarativeIndex?: number;
   readonly event: string;
   readonly declarative?: HookRuleConfig;
   readonly legacy?: LegacyHookConfig;
@@ -91,16 +94,19 @@ const EVENT_GROUP_ORDER = [
   'PreCompact', 'PostCompact', 'SessionHeartbeat', 'Notification',
 ];
 
-function entriesFromDraft(draft: HooksDraft): readonly HookEntry[] {
+function entriesFromDraft(draft: HooksDraft, declarativeKeys: readonly string[]): readonly HookEntry[] {
   const declarative: HookEntry[] = draft.shape === 'v2'
-    ? draft.config.rules.map((rule) => ({
+    ? draft.config.rules.map((rule, index) => ({
         ref: { kind: 'declarative', id: rule.id } as const,
+        rowKey: declarativeKeys[index] ?? `declarative-idx:${index}`,
+        declarativeIndex: index,
         event: rule.event,
         declarative: rule,
       }))
     : [];
   const legacy: HookEntry[] = (draft.shape === 'legacy' ? draft.rules : draft.config.legacy).map((rule, index) => ({
     ref: { kind: 'legacy', index } as const,
+    rowKey: `legacy:${index}`,
     event: rule.event,
     legacy: rule,
   }));
@@ -124,6 +130,9 @@ export function HooksSection() {
   const [json, setJson] = useState('');
   const [mode, setMode] = useState<'form' | 'json'>('form');
   const [selected, setSelected] = useState<RuleRef | null>(null);
+  const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
+  const nextDeclarativeKey = useRef(1);
+  const declarativeKeysRef = useRef<string[]>([]);
   const [narrowPane, setNarrowPane] = useState<'list' | 'detail'>('list');
   const [issues, setIssues] = useState<readonly DraftIssue[]>([]);
   const [dirty, setDirty] = useState(false);
@@ -135,7 +144,15 @@ export function HooksSection() {
   // same workspace a plain New conversation here would use.
   const kikiWorkspace = useAskKikiWorkspace();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const entries = useMemo(() => (draft === null ? [] : entriesFromDraft(draft)), [draft]);
+  const declarativeCount = draft?.shape === 'v2' ? draft.config.rules.length : 0;
+  while (declarativeKeysRef.current.length < declarativeCount) {
+    declarativeKeysRef.current.push(`decl-${nextDeclarativeKey.current++}`);
+  }
+  if (declarativeKeysRef.current.length > declarativeCount) {
+    declarativeKeysRef.current.length = declarativeCount;
+  }
+  const declarativeKeys = [...declarativeKeysRef.current];
+  const entries = useMemo(() => (draft === null ? [] : entriesFromDraft(draft, declarativeKeys)), [draft, declarativeKeys.join(',')]);
 
   useEffect(() => {
     if (configQuery.data === undefined || dirty) return;
@@ -157,8 +174,18 @@ export function HooksSection() {
     setFeedback(null);
   };
 
-  const select = (ref: RuleRef | null) => {
+  const select = (ref: RuleRef | null, rowKey?: string | null) => {
     setSelected(ref);
+    if (ref === null) {
+      setSelectedRowKey(null);
+    } else if (rowKey !== undefined) {
+      setSelectedRowKey(rowKey);
+    } else if (ref.kind === 'declarative' && draft?.shape === 'v2') {
+      const idx = draft.config.rules.findIndex((entry) => entry.id === ref.id);
+      setSelectedRowKey(idx >= 0 ? (declarativeKeysRef.current[idx] ?? null) : null);
+    } else {
+      setSelectedRowKey(refKey(ref));
+    }
     setNarrowPane(ref === null ? 'list' : 'detail');
   };
 
@@ -167,31 +194,36 @@ export function HooksSection() {
   // first rule, so the right two-thirds is never a blank wall.
   useEffect(() => {
     if (draft === null || entries.length === 0) return;
+    if (selectedRowKey !== null && entries.some((entry) => entry.rowKey === selectedRowKey)) return;
     if (selected !== null && entries.some((entry) => sameRef(entry.ref, selected))) return;
     setSelected(entries[0]!.ref);
-  }, [draft, entries, selected]);
+    setSelectedRowKey(entries[0]!.rowKey);
+  }, [draft, entries, selected, selectedRowKey]);
 
   // One way in: a text rule, which covers the common case. A command rule is
   // the same flow with the kind switched inside the editor.
   const addRule = () => {
     if (draft === null) return;
     const next = addDeclarativeRule(draft.shape === 'v2' ? draft : convertToV2(draft));
+    const newKey = `decl-${nextDeclarativeKey.current++}`;
+    declarativeKeysRef.current = [...declarativeKeysRef.current, newKey];
     edit(next.draft);
-    select(next.ref);
+    select(next.ref, newKey);
   };
 
-  const convertSelectedToCommand = (id: string) => {
+  const convertSelectedToCommand = (index: number) => {
     if (draft === null || draft.shape !== 'v2') return;
-    const rule = draft.config.rules.find((entry) => entry.id === id);
+    const rule = draft.config.rules[index];
     if (rule === undefined) return;
     const legacyRule: LegacyHookConfig = { event: 'PreToolUse', command: '' };
     const config = draft.config;
-    const index = config.legacy.length;
+    const legacyIndex = config.legacy.length;
+    declarativeKeysRef.current = declarativeKeysRef.current.filter((_, position) => position !== index);
     edit({
       shape: 'v2',
-      config: { ...config, rules: config.rules.filter((entry) => entry.id !== id), legacy: [...config.legacy, legacyRule] },
+      config: { ...config, rules: config.rules.filter((_, position) => position !== index), legacy: [...config.legacy, legacyRule] },
     });
-    select({ kind: 'legacy', index });
+    select({ kind: 'legacy', index: legacyIndex }, `legacy:${legacyIndex}`);
   };
 
   const convertSelectedToDeclarative = (index: number) => {
@@ -201,13 +233,24 @@ export function HooksSection() {
     const rule = rules[index];
     if (rule === undefined) return;
     const next = addDeclarativeRule(v2);
+    const newKey = `decl-${nextDeclarativeKey.current++}`;
+    declarativeKeysRef.current = [...declarativeKeysRef.current, newKey];
     edit(removeLegacyRule(next.draft, index));
-    select(next.ref);
+    select(next.ref, newKey);
   };
 
-  const removeRule = (ref: RuleRef) => {
+  const removeRule = (ref: RuleRef, declarativeIndex?: number) => {
     if (draft === null) return;
-    edit(ref.kind === 'declarative' ? removeDeclarativeRule(draft, ref.id) : removeLegacyRule(draft, ref.index));
+    if (ref.kind === 'declarative') {
+      const idx = declarativeIndex ?? (draft.shape === 'v2' ? draft.config.rules.findIndex((entry) => entry.id === ref.id) : -1);
+      if (idx < 0) return;
+      declarativeKeysRef.current = declarativeKeysRef.current.filter((_, position) => position !== idx);
+      edit(removeDeclarativeRuleAt(draft, idx));
+      setSelectedRowKey(null);
+      return;
+    }
+    edit(removeLegacyRule(draft, ref.index));
+    setSelectedRowKey(null);
   };
 
   const formatJson = () => {
@@ -307,6 +350,7 @@ export function HooksSection() {
       setMode('json');
     }
     setSelected(null);
+    setSelectedRowKey(null);
     setIssues([]);
     setDirty(false);
     setFeedback(null);
@@ -332,14 +376,14 @@ export function HooksSection() {
         ? (entry.legacy.command.trim() === '' ? t('st.hooks.commandEmpty') : entry.legacy.command)
         : '';
     return (
-      <li key={refKey(entry.ref)} className="flex min-w-0 items-center gap-2 pr-1">
+      <li key={entry.rowKey} className="flex min-w-0 items-center gap-2 pr-1">
         <button
           type="button"
           data-hooks-rule={refKey(entry.ref)}
-          aria-current={sameRef(selected, entry.ref) ? 'true' : undefined}
-          onClick={() => select(entry.ref)}
+          aria-current={(selectedRowKey !== null ? selectedRowKey === entry.rowKey : sameRef(selected, entry.ref)) ? 'true' : undefined}
+          onClick={() => select(entry.ref, entry.rowKey)}
           className={`flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-md py-1.5 pr-1 pl-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink ${
-            sameRef(selected, entry.ref) ? 'bg-ink/[0.06]' : 'hover:bg-ink/[0.04]'
+            (selectedRowKey !== null ? selectedRowKey === entry.rowKey : sameRef(selected, entry.ref)) ? 'bg-ink/[0.06]' : 'hover:bg-ink/[0.04]'
           }`}
         >
           <span className="flex max-w-full items-center gap-1.5">
@@ -407,20 +451,30 @@ export function HooksSection() {
       return isEmpty ? null : <Hint>{t('st.hooks.selectRule')}</Hint>;
     }
     if (selected.kind === 'declarative') {
-      const rule = draft.shape === 'v2' ? draft.config.rules.find((entry) => entry.id === selected.id) : undefined;
+      const ruleIndex = draft.shape === 'v2'
+        ? (() => {
+            const byKey = selectedRowKey === null ? -1 : declarativeKeys.indexOf(selectedRowKey);
+            return byKey >= 0 ? byKey : draft.config.rules.findIndex((entry) => entry.id === selected.id);
+          })()
+        : -1;
+      const rule = draft.shape === 'v2' && ruleIndex >= 0 ? draft.config.rules[ruleIndex] : undefined;
       if (rule === undefined) return <Hint>{t('st.hooks.selectRule')}</Hint>;
+      const editorKey = declarativeKeys[ruleIndex] ?? `declarative-idx:${ruleIndex}`;
       return (
         <DeclarativeRuleEditor
-          key={rule.id}
+          key={editorKey}
           rule={rule}
-          issues={issuesFor(issues, selected)}
+          issues={issuesFor(issues, { kind: 'declarative', id: rule.id })}
           onChange={(patch) => {
             if (draft.shape !== 'v2') return;
-            edit(updateDeclarativeRule(draft, rule.id, patch));
-            if (patch.id !== undefined && patch.id !== rule.id) setSelected({ kind: 'declarative', id: patch.id });
+            edit(updateDeclarativeRuleAt(draft, ruleIndex, patch));
+            if (patch.id !== undefined && patch.id !== rule.id) {
+              setSelected({ kind: 'declarative', id: patch.id });
+              setSelectedRowKey(editorKey);
+            }
           }}
-          onRemove={() => removeRule(selected)}
-          onConvertToCommand={() => convertSelectedToCommand(rule.id)}
+          onRemove={() => removeRule({ kind: 'declarative', id: rule.id }, ruleIndex)}
+          onConvertToCommand={() => convertSelectedToCommand(ruleIndex)}
         />
       );
     }

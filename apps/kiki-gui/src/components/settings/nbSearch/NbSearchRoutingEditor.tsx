@@ -19,10 +19,11 @@
  * Renders the body only — the Fetch tab owns the group heading.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { selectFetchRoute, type FetchRouteRule } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
+import { Toggle } from '../../controls';
 import { Icon } from '../../icons';
 import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
@@ -92,6 +93,8 @@ export function NbSearchRoutingEditor({
   const [adding, setAdding] = useState(false);
   const [newId, setNewId] = useState('');
   const [newOrigin, setNewOrigin] = useState('');
+  const nextRowKey = useRef(1);
+  const rowKeysRef = useRef<string[]>([]);
 
   const pipelineById = useMemo(
     () => new Map(capabilities.fetch.pipelines.map((pipeline) => [pipeline.id, pipeline])),
@@ -127,6 +130,13 @@ export function NbSearchRoutingEditor({
   const mode: RoutingMode = own === undefined ? 'inherited' : own === null ? 'cleared' : 'custom';
   const config: RoutingConfig | undefined = own === undefined || own === null ? undefined : own;
   const rules = view.effective.rules;
+  while (rowKeysRef.current.length < rules.length) {
+    rowKeysRef.current.push(`route-row-${nextRowKey.current++}`);
+  }
+  if (rowKeysRef.current.length > rules.length) {
+    rowKeysRef.current.length = rules.length;
+  }
+  const rowKeys = [...rowKeysRef.current];
   const builtinEnabled = view.effective.builtin_enabled;
   const routingEnabled = view.effective.enabled;
 
@@ -168,7 +178,15 @@ export function NbSearchRoutingEditor({
     if (target < 0 || target >= rules.length) return;
     const next = [...rules];
     [next[index], next[target]] = [next[target]!, next[index]!];
+    const nextKeys = [...rowKeysRef.current];
+    [nextKeys[index], nextKeys[target]] = [nextKeys[target]!, nextKeys[index]!];
+    rowKeysRef.current = nextKeys;
     writeRules(next);
+  };
+
+  const removeRuleAt = (index: number) => {
+    rowKeysRef.current = rowKeysRef.current.filter((_, candidate) => candidate !== index);
+    writeRules(rules.filter((_, candidate) => candidate !== index));
   };
 
   const setRulePipelines = (index: number, pipelines: readonly string[]) => {
@@ -180,6 +198,7 @@ export function NbSearchRoutingEditor({
     const id = newId.trim();
     const origin = newOrigin.trim();
     if (id === '' || origin === '' || rules.some((rule) => rule.id === id)) return;
+    rowKeysRef.current.push(`route-row-${nextRowKey.current++}`);
     writeRules([...rules, { id, match: { origin }, action: { pipelines: ['direct.fetch'] } }]);
     setNewId('');
     setNewOrigin('');
@@ -279,11 +298,32 @@ export function NbSearchRoutingEditor({
         )}
 
         {view.effective.disabled_builtin_rules.length === 0 ? null : (
-          <p className="text-[12px] leading-snug text-ink-faint" data-nb-search-routing-builtin-disabled>
-            {t('st.nbSearch.routing.builtinDisabledHint', {
-              ids: view.effective.disabled_builtin_rules.join(', '),
-            })}
-          </p>
+          <div className="space-y-1.5" data-nb-search-routing-builtin-disabled>
+            <p className="text-[12px] leading-snug text-ink-faint">
+              {t('st.nbSearch.routing.builtinDisabledHint', {
+                ids: view.effective.disabled_builtin_rules.join(', '),
+              })}
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {view.effective.disabled_builtin_rules.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`${SECONDARY_BUTTON} inline-flex items-center gap-1 px-2 py-0.5 font-mono text-[11px]`}
+                  disabled={saving}
+                  data-nb-search-routing-builtin-reenable={id}
+                  aria-label={t('st.nbSearch.routing.enableRule', { id })}
+                  onClick={() => {
+                    const next = view.effective.disabled_builtin_rules.filter((entry) => entry !== id);
+                    patch({ disabled_builtin_rules: next });
+                  }}
+                >
+                  <span>{id}</span>
+                  <Icon name="close" size={12} />
+                </button>
+              ))}
+            </div>
+          </div>
         )}
       </div>
 
@@ -326,7 +366,7 @@ export function NbSearchRoutingEditor({
                 const unknownPipeline = pipelines.filter((id) => !urlPipelines.some((candidate) => candidate.id === id));
                 return (
                   <li
-                    key={`${index}:${rule.id}`}
+                    key={rowKeys[index]}
                     className="space-y-2 rounded-lg border border-hairline p-3"
                     data-nb-search-routing-rule={rule.id}
                     data-nb-search-routing-rule-enabled={off ? 'false' : 'true'}
@@ -396,7 +436,7 @@ export function NbSearchRoutingEditor({
                           aria-label={t('st.nbSearch.routing.removeRule', { id: rule.id })}
                           title={t('st.nbSearch.routing.removeRule', { id: rule.id })}
                           onClick={() => {
-                            writeRules(rules.filter((_, candidate) => candidate !== index));
+                            removeRuleAt(index);
                           }}
                         >
                           <Icon name="close" size={12} />
@@ -687,24 +727,22 @@ export function NbSearchRoutingEditor({
 
       <AdvancedDetails summary={t('st.nbSearch.routing.advancedTitle')}>
         <p data-nb-search-routing-precedence>{t('st.nbSearch.routing.precedence')}</p>
-        <p data-nb-search-routing-enabled={routingEnabled ? 'true' : 'false'}>
-          {routingEnabled ? t('st.nbSearch.routing.routingOn') : t('st.nbSearch.routing.routingOff')}
-        </p>
-        {routingEnabled ? null : (
-          <>
-            <button
-              type="button"
-              className={`${SECONDARY_BUTTON} mt-1`}
-              data-nb-search-routing-enable
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <p data-nb-search-routing-enabled={routingEnabled ? 'true' : 'false'}>
+            {routingEnabled ? t('st.nbSearch.routing.routingOn') : t('st.nbSearch.routing.routingOff')}
+          </p>
+          <span data-nb-search-routing-toggle>
+            <Toggle
+              layout="bare"
+              label={t('st.nbSearch.routing.title')}
+              checked={routingEnabled}
               disabled={saving}
-              onClick={() => {
-                patch({ enabled: true });
+              onChange={(enabled) => {
+                patch({ enabled });
               }}
-            >
-              {t('st.nbSearch.routing.enableRouting')}
-            </button>
-          </>
-        )}
+            />
+          </span>
+        </div>
       </AdvancedDetails>
     </div>
   );

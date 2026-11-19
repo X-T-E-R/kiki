@@ -52,6 +52,7 @@ export function RecipesSection({ recipeId, initialEdit = false }: {
   if (recipeId === null) return <RecipeLibrary onOpen={(id) => { void navigate(recipeSettingsPath(id)); }} />;
   return (
     <RecipePackagePage
+      key={recipeId}
       installationId={recipeId}
       initialEdit={initialEdit}
       onOpenLibrary={openLibrary}
@@ -73,6 +74,7 @@ function RecipeLibrary({ onOpen }: { onOpen: (installationId: string) => void })
   const listQuery = useRecipeList();
   const installed = listQuery.data ?? [];
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [removingSummary, setRemovingSummary] = useState<RecipeSummary | null>(null);
 
   const checkUpdates = useRecipeMutation(
     () => client.checkRecipeUpdates(),
@@ -114,6 +116,21 @@ function RecipeLibrary({ onOpen }: { onOpen: (installationId: string) => void })
     },
   );
 
+  const remove = useRecipeMutation(
+    (summary: RecipeSummary) => client.removeRecipe({
+      installation_id: summary.installation_id,
+      expected_revision: summary.revision,
+      disable_models: true,
+    }),
+    {
+      onSuccess: () => { setRemovingSummary(null); },
+      onError: (error) => {
+        setRemovingSummary(null);
+        setFeedback({ tone: 'error', text: t('st.recipe.removeFailed', { detail: errorText(locale, error) }) });
+      },
+    },
+  );
+
   return (
     <div className="space-y-6">
       <SectionCard id="st-card-recipes-library" title={t('st.recipes.libraryTitle')}
@@ -143,15 +160,33 @@ function RecipeLibrary({ onOpen }: { onOpen: (installationId: string) => void })
           <ul className="divide-y divide-hairline border-y border-hairline" data-recipes-list>
             {installed.map((summary) => (
               <RecipeLibraryRow key={summary.installation_id} summary={summary}
-                busy={setMode.isPending || applyUpdate.isPending}
+                busy={setMode.isPending || applyUpdate.isPending || remove.isPending}
                 onOpen={onOpen}
                 onSetMode={(mode) => { setFeedback(null); setMode.mutate({ summary, mode }); }}
-                onUpdate={() => { setFeedback(null); applyUpdate.mutate(summary); }} />
+                onUpdate={() => { setFeedback(null); applyUpdate.mutate(summary); }}
+                onRemove={() => { setFeedback(null); setRemovingSummary(summary); }} />
             ))}
           </ul>
         )}
         <FeedbackLine feedback={feedback} />
       </SectionCard>
+
+      <ConfirmDialog
+        open={removingSummary !== null}
+        stacked
+        overlayId="recipe-row-remove-confirm"
+        title={t('st.recipe.removeConfirmTitle', { name: removingSummary?.name ?? '' })}
+        body={t('st.recipe.removeConfirmBody')}
+        consequences={removingSummary === null || (removingSummary.used_by?.length ?? 0) === 0 ? undefined : [
+          t('st.recipes.usedBy', { models: removingSummary.used_by!.join(', ') }),
+        ]}
+        confirmLabel={t('st.recipe.removeConfirmAction')}
+        cancelLabel={t('common.cancel')}
+        tone="danger"
+        busy={remove.isPending}
+        onCancel={() => { setRemovingSummary(null); }}
+        onConfirm={() => { if (removingSummary !== null) remove.mutate(removingSummary); }}
+      />
 
       <RecipeImportCard />
       <RecipeMarketsCard />
@@ -160,14 +195,16 @@ function RecipeLibrary({ onOpen }: { onOpen: (installationId: string) => void })
 }
 
 /** One installed package: open for reading, update rule, and any newer copy. */
-function RecipeLibraryRow({ summary, busy, onOpen, onSetMode, onUpdate }: {
+function RecipeLibraryRow({ summary, busy, onOpen, onSetMode, onUpdate, onRemove }: {
   summary: RecipeSummary;
   busy: boolean;
   onOpen: (installationId: string) => void;
   onSetMode: (mode: 'follow' | 'pinned') => void;
   onUpdate: () => void;
+  onRemove: () => void;
 }) {
   const { t } = useI18n();
+  const selectable = recipeIsSelectable(summary);
   return (
     <li className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5 py-2.5" data-recipes-row={summary.installation_id}>
       <div className="min-w-0 flex-1">
@@ -179,7 +216,7 @@ function RecipeLibraryRow({ summary, busy, onOpen, onSetMode, onUpdate }: {
         </button>
         <p className="truncate font-mono text-[11px] text-ink-faint">
           {summary.version} · {recipeRevisionShort(summary.revision)}
-          {recipeIsSelectable(summary) ? '' : ` · ${t('st.recipe.unavailable')}`}
+          {selectable ? '' : ` · ${t('st.recipe.unavailable')}`}
         </p>
         {summary.used_by !== undefined && summary.used_by.length > 0 ? (
           <p className="truncate text-[11px] text-ink-faint" data-recipes-used-by={summary.installation_id}>
@@ -193,6 +230,13 @@ function RecipeLibraryRow({ summary, busy, onOpen, onSetMode, onUpdate }: {
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {!selectable ? (
+          <button type="button" className={SECONDARY} disabled={busy}
+            data-recipes-remove={summary.installation_id}
+            onClick={onRemove}>
+            {t('st.recipe.remove')}
+          </button>
+        ) : null}
         {summary.update_available === true ? (
           <button type="button" className={SECONDARY} disabled={busy}
             data-recipes-update={summary.installation_id}
@@ -366,6 +410,8 @@ function RecipePackagePage({ installationId, initialEdit, onOpenLibrary, onEdit,
   const [forkedId, setForkedId] = useState<string | null>(null);
   const editingId = forkedId ?? installationId;
   const detailQuery = useRecipeDetail(editingId);
+  const listQuery = useRecipeList();
+  const listEntry = listQuery.data?.find((entry) => entry.installation_id === installationId);
   const [editing, setEditing] = useState(initialEdit);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -391,7 +437,7 @@ function RecipePackagePage({ installationId, initialEdit, onOpenLibrary, onEdit,
   const remove = useRecipeMutation(
     () => client.removeRecipe({
       installation_id: installationId,
-      expected_revision: detailQuery.data?.summary.revision,
+      expected_revision: detailQuery.data?.summary.revision ?? listEntry?.revision,
       // The confirmation names the models, so the detach is part of the same
       // stated decision rather than a side effect discovered afterwards.
       disable_models: true,
@@ -406,6 +452,8 @@ function RecipePackagePage({ installationId, initialEdit, onOpenLibrary, onEdit,
   );
 
   if (detailQuery.data === undefined) {
+    const fallbackName = listEntry?.name ?? installationId;
+    const fallbackUsedBy = listEntry?.used_by ?? [];
     return (
       <div className="space-y-3">
         <button type="button" className={SECONDARY} data-recipe-open-library onClick={onOpenLibrary}>
@@ -421,12 +469,34 @@ function RecipePackagePage({ installationId, initialEdit, onOpenLibrary, onEdit,
               onClick={() => { void detailQuery.refetch(); }}>
               {t('st.recipe.retryLoad')}
             </button>
+            <button type="button" className={SECONDARY} disabled={remove.isPending}
+              data-recipe-remove={installationId}
+              onClick={() => { setFeedback(null); setConfirmingRemove(true); }}>
+              {t('st.recipe.remove')}
+            </button>
           </div>
         ) : (
           <p role="status" className="text-[12px] text-ink-faint">
             {t(detailQuery.isSuccess ? 'st.recipe.conflictGone' : 'st.recipe.loading')}
           </p>
         )}
+        <ConfirmDialog
+          open={confirmingRemove}
+          stacked
+          overlayId="recipe-remove-confirm"
+          title={t('st.recipe.removeConfirmTitle', { name: fallbackName })}
+          body={t('st.recipe.removeConfirmBody')}
+          consequences={fallbackUsedBy.length === 0 ? undefined : [
+            t('st.recipes.usedBy', { models: fallbackUsedBy.join(', ') }),
+          ]}
+          confirmLabel={t('st.recipe.removeConfirmAction')}
+          cancelLabel={t('common.cancel')}
+          tone="danger"
+          busy={remove.isPending}
+          onCancel={() => { setConfirmingRemove(false); }}
+          onConfirm={() => { remove.mutate(undefined); }}
+        />
+        <FeedbackLine feedback={feedback} />
       </div>
     );
   }

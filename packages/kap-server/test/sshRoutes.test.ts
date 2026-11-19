@@ -271,16 +271,16 @@ describe('S5 real SSH REST authority with Fastify inject', () => {
     };
     try {
       expect((await request('/ssh/config-sync')).data).toEqual({ enabled: true, source: 'default' });
-      expect((await request('/ssh/hosts')).data).toEqual({ hosts: [] });
+      expect((await request('/ssh/hosts')).data).toEqual({ hosts: [], statuses: {} });
       for (const enabled of [false, true, false]) {
         expect((await request('/ssh/config-sync', 'PUT', { enabled })).data).toEqual({ enabled, source: 'home' });
         expect((await request('/ssh/config-sync')).data).toEqual({ enabled, source: 'home' });
-        expect((await request('/ssh/hosts')).data).toEqual({ hosts: [] });
+        expect((await request('/ssh/hosts')).data).toEqual({ hosts: [], statuses: {} });
       }
       await writeFile(config, `Host dev\n  HostName example.test\n  User tester\n  UserKnownHostsFile ${knownHosts}\n`);
       expect((await request('/ssh/hosts/dev', 'PUT', { name: 'Saved', hostname: 'example.test', user: 'tester' })).code).toBe(0);
       await request('/ssh/config-sync', 'PUT', { enabled: true });
-      expect((await request('/ssh/hosts')).data).toMatchObject({ hosts: [{ source: 'kiki', id: 'dev' }] });
+      expect((await request('/ssh/hosts')).data).toMatchObject({ hosts: [{ source: 'kiki', id: 'dev' }], statuses: { dev: { hostId: 'dev', state: 'idle' } } });
       expect((await request('/ssh/config-sync')).data).toEqual({ enabled: true, source: 'home' });
       expect((await request('/ssh/hosts/dev:host-keys')).data).toMatchObject({ hostId: 'dev', hostname: 'example.test',
         state: 'recorded', records: [{ status: 'recorded', algorithm: 'ssh-ed25519',

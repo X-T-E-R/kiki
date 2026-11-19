@@ -141,6 +141,14 @@ export interface AgentProfilesRouteHost {
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
+  delete?(
+    path: string,
+    options: { preHandler: unknown[]; schema?: Record<string, unknown> },
+    handler: (
+      req: { id: string; query: unknown; params: unknown },
+      reply: { send(payload: unknown): unknown },
+    ) => Promise<void> | void,
+  ): unknown;
 }
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
@@ -929,6 +937,108 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     updateRoute.path,
     updateRoute.options,
     updateRoute.handler as Parameters<AgentProfilesRouteHost['patch']>[2],
+  );
+
+  const deleteQuerySchema = z.object({
+    workspace_id: z.string().min(1),
+    scope: z.enum(['user', 'project', 'workspace']).transform((value): 'user' | 'project' => (value === 'workspace' ? 'project' : value)),
+    source_file: z.string().min(1).optional(),
+  }).strict();
+  const deleteResponseSchema = z.object({
+    deleted: z.literal(true),
+    name: z.string().min(1),
+    scope: z.enum(['user', 'project']),
+    source_file: z.string().min(1),
+  }).strict();
+  const deleteRoute = defineRoute(
+    {
+      method: 'DELETE',
+      path: '/agents/{name}',
+      params: namedAgentProfileNameParamsSchema,
+      querystring: deleteQuerySchema,
+      success: { data: deleteResponseSchema },
+      errors: {
+        [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
+        [ErrorCode.WORKSPACE_NOT_FOUND]: {},
+        [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {},
+        [ErrorCode.AGENT_PROFILE_READ_ONLY]: {},
+      },
+      description: 'Delete a writable user or project named agent profile file',
+      tags: ['agents'],
+    },
+    async (req, reply) => {
+      const workspace = await core.accessor.get(IWorkspaceService).get(req.query.workspace_id);
+      if (workspace === undefined) {
+        reply.send(
+          errEnvelope(
+            ErrorCode.WORKSPACE_NOT_FOUND,
+            `workspace ${req.query.workspace_id} does not exist`,
+            req.id,
+          ),
+        );
+        return;
+      }
+
+      const lease = await core.accessor
+        .get(IWorkspaceInstanceManager)
+        .acquire({ workspaceId: workspace.id });
+      try {
+        await lease.instance.program.ready;
+        const removed = await lease.instance.program.agentProfileWriter.delete({
+          name: req.params.name,
+          scope: req.query.scope,
+          sourcePath: req.query.source_file,
+        });
+        const configService = core.accessor.get(IConfigService);
+        const beforeDisabled = configService.inspect<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION).userValue;
+        if (Array.isArray(beforeDisabled) && beforeDisabled.includes(req.params.name)) {
+          const stillExists = core.accessor.get(IAgentProfileRegistry).entries().some((entry) =>
+            (entry.workspaceKey === undefined || entry.workspaceKey === workspace.id)
+            && entry.contribution.profiles.some((candidate) => candidate.name === req.params.name),
+          );
+          if (!stillExists) {
+            await configService.replaceSections(
+              { [DISABLED_NAMED_PROFILES_SECTION]: beforeDisabled.filter((entry) => entry !== req.params.name) },
+              undefined,
+              { [DISABLED_NAMED_PROFILES_SECTION]: beforeDisabled },
+            );
+          }
+        }
+        reply.send(okEnvelope({
+          deleted: true as const,
+          name: removed.name,
+          scope: removed.sourceId === 'workspace' ? 'project' as const : 'user' as const,
+          source_file: removed.sourcePath,
+        }, req.id));
+      } catch (error) {
+        if (isError2(error) && error.code === ErrorCodes.VALIDATION_FAILED) {
+          const issues = Array.isArray(error.details?.['issues'])
+            ? error.details['issues']
+            : [{ path: '', message: error.message }];
+          reply.send({
+            ...errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id),
+            details: issues,
+          });
+          return;
+        }
+        if (isError2(error) && error.code === AgentProfileWriteErrors.codes.PROFILE_READ_ONLY) {
+          reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_READ_ONLY, error.message, req.id));
+          return;
+        }
+        if (isError2(error) && error.code === AgentProfileWriteErrors.codes.PROFILE_NOT_FOUND) {
+          reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, error.message, req.id));
+          return;
+        }
+        throw error;
+      } finally {
+        lease.dispose();
+      }
+    },
+  );
+  app.delete?.(
+    deleteRoute.path,
+    deleteRoute.options,
+    deleteRoute.handler as Parameters<NonNullable<AgentProfilesRouteHost['delete']>>[2],
   );
 }
 

@@ -35,6 +35,8 @@ import type { IWorkspaceAgentProfileLoader } from './workspaceAgentProfileLoader
 import { AgentProfileWriteErrors } from './errors';
 import type {
   AgentProfileCreateRequest,
+  AgentProfileDeleteRequest,
+  AgentProfileDeleteResult,
   AgentProfileWriteRequest,
   AgentProfileWriteResult,
   AgentProfileWriteScope,
@@ -455,6 +457,58 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     };
   }
 
+  delete(request: AgentProfileDeleteRequest): Promise<AgentProfileDeleteResult> {
+    const operation = this.tail.catch(() => undefined).then(() => this.doDelete(request));
+    this.tail = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async doDelete(request: AgentProfileDeleteRequest): Promise<AgentProfileDeleteResult> {
+    validateDeleteRequest(request);
+    const sourceId = SOURCE_BY_SCOPE[request.scope];
+    const registration = this.registry.entries().find(
+      (entry) => entry.sourceId === sourceId && entry.workspaceKey === this.workspace.workspaceId,
+    );
+    const profile = registration?.contribution.profiles.findLast(
+      (candidate) => candidate.name === request.name
+        && (request.sourcePath === undefined || candidate.sourcePath === request.sourcePath),
+    );
+    if (registration === undefined || profile === undefined) {
+      if (request.sourcePath !== undefined) {
+        throw new Error2(AgentProfileWriteErrors.codes.PROFILE_NOT_FOUND,
+          `Agent profile "${request.name}" is not loaded from the requested source file`);
+      }
+      this.throwMissingOrReadOnly(request.name, request.scope);
+    }
+    if (profile.sourcePath === undefined || profile.sourcePath.includes('://')) {
+      throw readOnlyError(request.name, registration.sourceId);
+    }
+    if (request.scope === 'user' && this.userLoader.getDefaultProfile().sourcePath === profile.sourcePath) {
+      throw readOnlyError(request.name, registration.sourceId);
+    }
+    const roots = request.scope === 'user'
+      ? await userAgentRoots(this.fs, this.bootstrap.userAgentProfileHomeDir, this.bootstrap.osHomeDir)
+      : await projectAgentRoots(this.fs, this.workspace.cwd);
+    const realTarget = (await this.fs.realpath(profile.sourcePath)).replaceAll('\\', '/');
+    const insideAllowedRoot = realTarget.toLowerCase().endsWith('.md') && roots.some((root) => {
+      const prefix = root.path.replaceAll('\\', '/').replace(/\/+$/u, '');
+      if (!realTarget.startsWith(`${prefix}/`)) return false;
+      const excluded = root.lowPrioritySubdirectories ?? [];
+      return !excluded.some((sub) => realTarget.toLowerCase().startsWith(`${prefix}/${sub}/`.toLowerCase()));
+    });
+    if (!insideAllowedRoot) {
+      throw readOnlyError(request.name, registration.sourceId);
+    }
+    await this.fs.remove(profile.sourcePath);
+    await this.loaderFor(request.scope).reload();
+    return {
+      name: request.name,
+      sourceId,
+      workspaceKey: this.workspace.workspaceId,
+      sourcePath: profile.sourcePath,
+    };
+  }
+
   private loaderFor(scope: AgentProfileWriteScope): ReloadableLoader {
     if (scope === 'user') return this.userLoader;
     if (scope === 'project') return this.workspaceLoader;
@@ -488,6 +542,21 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
 function profileExistsError(name: string): Error2 {
   return new Error2(AgentProfileWriteErrors.codes.PROFILE_ALREADY_EXISTS,
     `Agent profile "${name}" already exists`);
+}
+
+function validateDeleteRequest(request: AgentProfileDeleteRequest): void {
+  const issues: ValidationIssue[] = [];
+  if (!isRecord(request)) throw validationError([{ path: '', message: 'request must be an object' }]);
+  if (typeof request.name !== 'string' || request.name.trim() === '' || /[/\\]|\.\./u.test(request.name)) {
+    issues.push({ path: 'name', message: 'name must be a valid agent profile name' });
+  }
+  if (request.scope !== 'user' && request.scope !== 'project') {
+    issues.push({ path: 'scope', message: 'scope must be user or project' });
+  }
+  if (request.sourcePath !== undefined && (typeof request.sourcePath !== 'string' || request.sourcePath.trim() === '' || request.sourcePath.includes('\0'))) {
+    issues.push({ path: 'sourcePath', message: 'sourcePath must be a non-empty path string' });
+  }
+  if (issues.length > 0) throw validationError(issues);
 }
 
 function validateCreateRequest(request: AgentProfileCreateRequest): void {
