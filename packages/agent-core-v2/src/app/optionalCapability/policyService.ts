@@ -78,8 +78,9 @@ export class OptionalCapabilityPolicyService extends Service implements IOptiona
     super();
     this.publishComputerSelection();
     if (this.computerAdmission !== undefined) {
-      this._register(this.computerAdmission.onDidChange((admission) => {
-        if (admission !== undefined) this.publishComputerSelection();
+      const ref = this.computerAdmission;
+      this._register(ref.onDidChange(() => {
+        if (ref.current !== undefined) this.publishComputerSelection();
       }));
     }
     if (this.settings.onDidSectionChange !== undefined) {
