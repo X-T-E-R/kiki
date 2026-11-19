@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 
 import { Error2, ErrorCodes } from '#/errors';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IFileService } from '#/app/file/fileService';
 import { LifecycleScope } from '#/app/scopes';
@@ -57,6 +59,16 @@ const VIDEO_UNAVAILABLE_TEXT =
   '[video omitted: the uploaded file is no longer available]';
 const IMAGE_UNAVAILABLE_TEXT =
   '[image omitted: the uploaded file is no longer available]';
+const AUDIO_UNAVAILABLE_TEXT =
+  '[audio omitted: inline audio is unavailable for this model request]';
+const AUDIO_BLOBREF_RE = /^blobref:(audio\/[A-Za-z0-9.+_*-]+);([0-9a-f]{64})$/u;
+const AUDIO_MIME_ALIASES: Readonly<Record<string, string>> = {
+  'audio/x-wav': 'audio/wav',
+  'audio/wave': 'audio/wav',
+  'audio/mp3': 'audio/mpeg',
+  'audio/x-m4a': 'audio/mp4',
+};
+const SUPPORTED_AUDIO_MIMES = new Set(Object.values(AUDIO_MIME_BY_SUFFIX));
 const IMAGE_MEMO_MAX_BYTES = 8 * 1024 * 1024;
 const IMAGE_MEMO_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const FLAGS_ENABLED = { enabled: () => true } as unknown as IFlagService;
@@ -79,6 +91,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionMediaStore private readonly mediaStore: ISessionMediaStore,
     @IFlagService private readonly flags: IFlagService = FLAGS_ENABLED,
+    @ref(IAgentScopeContext) private readonly agentScope?: LiveRef<IAgentScopeContext>,
   ) {
     this.states.contributeState(mediaResolvedKey);
   }
@@ -121,7 +134,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
                 ? await this.resolveAudioPart(daemonPart.ref, requester, signal)
                 : part.type === 'image_url'
                   ? await this.resolveInlineImagePart(part, requester, signal)
-                  : part;
+                  : part.type === 'audio_url'
+                    ? await this.resolveInlineAudioPart(part, requester, signal)
+                    : part;
         content.push(resolved);
         changed ||= resolved !== part;
       }
@@ -145,8 +160,8 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       try {
         signal?.throwIfAborted();
         const file = await this.mediaStore.open(ref.fileId, 'wav') ?? await this.mediaStore.open(ref.fileId);
-        const mime = file?.mediaType.split(';', 1)[0]?.toLowerCase();
-        const type = mime !== undefined && Object.values(AUDIO_MIME_BY_SUFFIX).includes(mime)
+        const mime = file === undefined ? undefined : normalizeAudioMime(file.mediaType);
+        const type = mime !== undefined && SUPPORTED_AUDIO_MIMES.has(mime)
           ? mime : file && AUDIO_MIME_BY_SUFFIX[extname(file.name).toLowerCase()];
         if (file !== undefined && type !== undefined) {
           const chunks: Uint8Array[] = [];
@@ -160,7 +175,56 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
         signal?.throwIfAborted();
       }
     }
-    return { type: 'text', text: '[audio omitted: inline audio is unavailable for this model request]' };
+    return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+  }
+
+  private async resolveInlineAudioPart(
+    part: Extract<ContentPart, { type: 'audio_url' }>,
+    requester: ModelRequester,
+    signal: AbortSignal | undefined,
+  ): Promise<ContentPart> {
+    if (!requester.model.capabilities.audio_in) {
+      return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+    }
+    const url = part.audioUrl.url;
+    if (url.startsWith('blobref:')) {
+      const match = AUDIO_BLOBREF_RE.exec(url);
+      if (match === null) {
+        return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+      }
+      const mime = normalizeAudioMime(match[1]!);
+      if (!SUPPORTED_AUDIO_MIMES.has(mime)) {
+        return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+      }
+      signal?.throwIfAborted();
+      const scope = this.agentScope?.current?.scope('blobs') ?? 'blobs';
+      const bytes = await this.blobs.get(scope, match[2]!).catch(() => undefined);
+      signal?.throwIfAborted();
+      if (bytes === undefined) {
+        return { type: 'text', text: AUDIO_UNAVAILABLE_TEXT };
+      }
+      return {
+        type: 'audio_url',
+        audioUrl: {
+          ...part.audioUrl,
+          url: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`,
+        },
+      };
+    }
+    if (url.startsWith('data:')) {
+      const withoutScheme = url.slice(5);
+      const parts = withoutScheme.split(';base64,', 2);
+      if (parts.length === 2 && parts[0] !== undefined && parts[1] !== undefined) {
+        const mime = normalizeAudioMime(parts[0]);
+        if (mime !== parts[0] && SUPPORTED_AUDIO_MIMES.has(mime)) {
+          return {
+            type: 'audio_url',
+            audioUrl: { ...part.audioUrl, url: `data:${mime};base64,${parts[1]}` },
+          };
+        }
+      }
+    }
+    return part;
   }
 
   private async resolveImagePart(
@@ -467,8 +531,13 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
 
 function hasResolvableMediaPart(message: Message): boolean {
   return message.content.some(
-    (part) => part.type === 'image_url' || daemonFileRefFromPart(part) !== undefined,
+    (part) => part.type === 'image_url' || part.type === 'audio_url' || daemonFileRefFromPart(part) !== undefined,
   );
+}
+
+function normalizeAudioMime(raw: string): string {
+  const base = (raw.split(';', 1)[0] ?? '').trim().toLowerCase();
+  return AUDIO_MIME_ALIASES[base] ?? base;
 }
 
 function imagePolicyFor(

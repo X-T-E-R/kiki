@@ -592,4 +592,63 @@ describe('model switch engine', () => {
     expect(ctx.llmCalls[1]?.history[1]?.toolCalls[0]?.extras).toEqual({ signature: 'OLD_TOOL_SIGNATURE' });
     expect(ctx.get(IAgentContextMemoryService).get()).toEqual(canonicalBefore);
   });
+
+  it('gates audio_url across audio_in=true to audio_in=false direct switches and back without mutating canonical memory, and preserves audio name on compact', async () => {
+    const AUDIO_MODEL = 'example/audio-model';
+    const NO_AUDIO_MODEL = 'example/no-audio-model';
+    const ctx = testAgent({ autoConfigure: false, initialConfig: {
+      providers: { example: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' } },
+      models: {
+        [AUDIO_MODEL]: { provider: 'example', model: 'audio-model', maxContextSize: 200_000, capabilities: ['audio_in', 'tool_use'] },
+        [NO_AUDIO_MODEL]: { provider: 'example', model: 'no-audio-model', maxContextSize: 200_000, capabilities: ['tool_use'] },
+      },
+    } }, agentServices((reg) => reg.define(IAgentModelSwitchService, AgentModelSwitchService)));
+    hosts.push(ctx);
+    await ctx.ready;
+    ctx.get(IAgentProfileService).update({ modelAlias: AUDIO_MODEL, thinkingLevel: 'off', systemPrompt: 'Test system prompt.' });
+    await ctx.get(ISessionMetadata).registerAgent('main', { type: 'main', model: AUDIO_MODEL, thinkingEffort: 'off' });
+
+    const audioPart = {
+      type: 'audio_url' as const,
+      audioUrl: { url: 'data:audio/mpeg;base64,SUQzAw==', id: 'aud-1', name: 'voice.mp3' },
+    };
+    const context = ctx.get(IAgentContextMemoryService);
+    context.append({ role: 'user', content: [{ type: 'text', text: 'Hear this clip.' }, audioPart], toolCalls: [], origin: { kind: 'user' } });
+    context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'call-aud', name: 'ReadMediaFile', arguments: '{}' }] });
+    context.append({ role: 'tool', content: [{ type: 'text', text: 'Audio tool output.' }, audioPart], toolCalls: [], toolCallId: 'call-aud' });
+    const canonicalBefore = structuredClone(context.get());
+
+    ctx.mockNextResponse({ type: 'text', text: 'Heard on audio model.' });
+    await ctx.get(IAgentLLMRequesterService).request();
+    expect(ctx.llmCalls[0]?.history[0]?.content).toContainEqual(audioPart);
+    expect(ctx.llmCalls[0]?.history[2]?.content).toContainEqual(audioPart);
+
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'audio-off-direct', model: NO_AUDIO_MODEL, mode: 'direct' }))
+      .toMatchObject({ state: 'completed', fromModel: AUDIO_MODEL, toModel: NO_AUDIO_MODEL });
+
+    ctx.mockNextResponse({ type: 'text', text: 'Degraded on non-audio model.' });
+    await ctx.get(IAgentLLMRequesterService).request();
+    expect(ctx.llmCalls[1]?.history[0]?.content).toEqual([
+      { type: 'text', text: 'Hear this clip.' },
+      { type: 'text', text: '[audio omitted for provider compatibility; re-read the file to hear it]' },
+    ]);
+    expect(ctx.llmCalls[1]?.history[2]?.content).toEqual([
+      { type: 'text', text: 'Audio tool output.' },
+      { type: 'text', text: '[audio omitted for provider compatibility; re-read the file to hear it]' },
+    ]);
+    expect(context.get()).toEqual(canonicalBefore);
+
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'audio-on-direct', model: AUDIO_MODEL, mode: 'direct' }))
+      .toMatchObject({ state: 'completed', fromModel: NO_AUDIO_MODEL, toModel: AUDIO_MODEL });
+
+    ctx.mockNextResponse({ type: 'text', text: 'Heard again.' });
+    await ctx.get(IAgentLLMRequesterService).request();
+    expect(ctx.llmCalls[2]?.history[0]?.content).toContainEqual(audioPart);
+    expect(ctx.llmCalls[2]?.history[2]?.content).toContainEqual(audioPart);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Compact summary with audio.' });
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'audio-off-compact', model: NO_AUDIO_MODEL, mode: 'compact' }))
+      .toMatchObject({ state: 'completed', summaryGenerated: true });
+    expect(context.get().flatMap((message) => message.content)).toContainEqual(audioPart);
+  });
 });
