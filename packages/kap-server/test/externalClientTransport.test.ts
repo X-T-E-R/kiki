@@ -565,7 +565,7 @@ describe('external client transport', () => {
       id, clientId, redirectUri: 'http://127.0.0.1/callback', scopes: ['read'], resource, codeChallenge: 'challenge', createdAt: expiresAt - 1_000, expiresAt, status,
     });
     const code = (clientId: string, expiresAt: number) => ({ clientId, grantId: 'connection_fixture', redirectUri: 'http://127.0.0.1/callback', scopes: ['read'], resource, codeChallenge: 'challenge', expiresAt });
-    const staleClients = Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`client_flood_${index}`, client(`client_flood_${index}`, nowSeconds - index)]));
+    const staleClients = Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`client_flood_${index}`, client(`client_flood_${index}`, nowSeconds + 60 - index)]));
     await store.update(scope, 'state.json', () => ({
       version: 1,
       clients: {
@@ -602,7 +602,7 @@ describe('external client transport', () => {
       expect(Object.keys(document!.refreshTokens)).toEqual(['refresh_live']);
       expect(document!.codes).toEqual({});
       expect(Object.keys(document!.pending)).toEqual(['consent_denied_recent']);
-      expect(Object.keys(document!.clients)).toHaveLength(258);
+      expect(Object.keys(document!.clients)).toHaveLength(259);
       expect(document!.clients).toHaveProperty('client_live');
       expect(document!.clients).toHaveProperty(registered.client_id);
       expect(document!.clients).toHaveProperty('client_flood_299');

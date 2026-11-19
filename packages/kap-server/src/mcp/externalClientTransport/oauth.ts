@@ -353,7 +353,7 @@ export class ExternalClientOAuthService implements OAuthServerProvider {
       client_id: clientId,
       client_id_issued_at: client.client_id_issued_at ?? Math.floor(Date.now() / 1000),
     } as OAuthClientInformationFull;
-    await this.mutate((document) => ({ ...document, clients: { ...document.clients, [clientId]: full } }));
+    await this.mutate((document) => ({ ...document, clients: { ...document.clients, [clientId]: full } }), clientId);
     return full;
   }
 
@@ -425,13 +425,13 @@ export class ExternalClientOAuthService implements OAuthServerProvider {
     return normalizeDocument(value);
   }
 
-  private async mutate(work: (document: OAuthDocument) => OAuthDocument): Promise<void> {
+  private async mutate(work: (document: OAuthDocument) => OAuthDocument, retainClientId?: string): Promise<void> {
     const operation = this.mutation.then(async () => {
       if (this.store === undefined) {
-        this.memoryDocument = pruneDocument(work(this.memoryDocument), Date.now());
+        this.memoryDocument = pruneDocument(work(this.memoryDocument), Date.now(), retainClientId);
         return;
       }
-      await this.store.update<OAuthDocument>(this.storeScope, DOCUMENT_KEY, (current) => pruneDocument(work(current === undefined ? emptyDocument() : normalizeDocument(current)), Date.now()));
+      await this.store.update<OAuthDocument>(this.storeScope, DOCUMENT_KEY, (current) => pruneDocument(work(current === undefined ? emptyDocument() : normalizeDocument(current)), Date.now(), retainClientId));
     });
     this.mutation = operation.then(() => undefined, () => undefined);
     await operation;
@@ -454,13 +454,13 @@ function normalizeDocument(value: OAuthDocument): OAuthDocument {
   };
 }
 
-function pruneDocument(document: OAuthDocument, nowMs: number): OAuthDocument {
+function pruneDocument(document: OAuthDocument, nowMs: number, retainClientId?: string): OAuthDocument {
   const nowSeconds = Math.floor(nowMs / 1000);
   const accessTokens = filterRecords(document.accessTokens, (record) => record.expiresAt > nowSeconds);
   const refreshTokens = filterRecords(document.refreshTokens, (record) => record.expiresAt > nowSeconds);
   const codes = filterRecords(document.codes, (record) => record.expiresAt > nowMs);
   const pending = filterRecords(document.pending, (record) => record.expiresAt + SETTLED_CONSENT_RETENTION_MS > nowMs);
-  const referenced = new Set<string>();
+  const referenced = new Set<string>(retainClientId === undefined ? [] : [retainClientId]);
   for (const records of [accessTokens, refreshTokens, codes, pending]) {
     for (const record of Object.values(records)) referenced.add(record.clientId);
   }
