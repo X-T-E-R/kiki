@@ -7,6 +7,8 @@ import { ndJsonStream } from '@agentclientprotocol/sdk';
 import {
   IInstantiationService,
   ISessionIndex,
+  ISessionIndexMirror,
+  IThreadMailboxStore,
   InstantiationService,
   SyncDescriptor,
   type IInstantiationService as InstantiationServiceApi,
@@ -76,6 +78,42 @@ describe('runAcpServerWithStream session index readiness', () => {
         ).rejects.toThrow(/session index is not ready/i);
         expect(instantiation).toBeDefined();
         expect(instantiation!.cascadeDisposed).toBe(true);
+      } finally {
+        toAgent.end();
+        toClient.end();
+        await rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    },
+    30_000,
+  );
+});
+
+describe('runAcpServerWithStream close', () => {
+  it(
+    'runs every teardown step after one fails and reports the failure without an unhandled rejection',
+    async () => {
+      const homeDir = await mkdtemp(join(tmpdir(), 'acp-close-failure-'));
+      const toAgent = new PassThrough();
+      const toClient = new PassThrough();
+      try {
+        const stream = ndJsonStream(Writable.toWeb(toClient), Readable.toWeb(toAgent));
+        const running = await runAcpServerWithStream(stream, { homeDir });
+        const failure = new Error('injected mailbox close failure');
+        const mailbox = running.core.accessor.get(IThreadMailboxStore);
+        mailbox.close = () => Promise.reject(failure);
+        const mirror = running.core.accessor.get(ISessionIndexMirror);
+        const drain = mirror.drain.bind(mirror);
+        let drained = false;
+        mirror.drain = async () => {
+          drained = true;
+          await drain();
+        };
+
+        toAgent.end();
+        await running.conn.closed;
+        await expect(running.close()).rejects.toBe(failure);
+        expect(drained).toBe(true);
+        await expect(running.close()).rejects.toBe(failure);
       } finally {
         toAgent.end();
         toClient.end();

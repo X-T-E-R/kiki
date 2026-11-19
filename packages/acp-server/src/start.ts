@@ -50,6 +50,7 @@ import { acpClientFromContext } from './acp-client';
 // connection.
 import { IAcpConnection } from './acp-fs';
 import { AcpRuntimeProviderFactory } from './acp-terminal';
+import { log } from './log';
 import { AcpServer, type AcpServerOptions, createAcpAgentApp } from './server';
 
 export interface RunAcpServerOptions extends AcpServerOptions {
@@ -207,47 +208,59 @@ export async function runAcpServerWithStream(
   });
 
   let closePromise: Promise<void> | undefined;
-  const close = async (): Promise<void> => {
-    if (closePromise !== undefined) return closePromise;
-    closePromise = (async () => {
-      await server.dispose();
-      // Detach the klient's event subscriptions first so disposal below cannot
-      // deliver into a torn-down scope.
-      await klient.close();
-      await core.accessor.get(IThreadMailboxStore).close();
-      await core.accessor.get(IHomeRuntimeService).close();
-      // Flush the append-log write-behind before disposing, so a clean shutdown
-      // never races a pending drain against teardown (and doesn't drop the last
-      // persisted ops). Best-effort: a flush failure must not block disposal.
-      const appendLogStore = core.accessor.get(IAppendLogStore);
+  const runCloseSteps = async (): Promise<void> => {
+    // Every step runs even when an earlier one fails, so a single teardown
+    // error never skips the persistence drains or `core.dispose()` below.
+    const errors: unknown[] = [];
+    const step = async (name: string, fn: () => unknown): Promise<void> => {
       try {
-        await appendLogStore.flush();
-      } catch {
-        // ignore — disposal proceeds regardless
+        await fn();
+      } catch (error) {
+        errors.push(error);
+        log.error('acp-server close step failed', { step: name, error: String(error) });
       }
-      // Same shutdown order as kap-server: settle queued session-metadata
-      // writes, then drain the session-index mirror while the query store is
-      // still open, so a queued summary lands in the read model.
-      await drainSessionMetadataWrites();
-      await core.accessor.get(ISessionIndexMirror).drain();
-      await acpProviderRegistration.dispose();
-      await core.dispose();
-      // `core.dispose()` runs the mirror's and the query store's synchronous
-      // `dispose()`, whose drains/closes are asynchronous — await them so an
-      // embedding host that removes homeDir right after close() never races
-      // an in-flight shard close (ENOTEMPTY on teardown). The same window
-      // exists for the append-log retirement flushes released by disposal.
-      await appendLogStore.drainRetirements();
-      await drainSessionIndexMirror();
-      await drainQueryStoreDisposals();
-      await drainSessionMetadataWrites();
-      await drainLogCloses();
-    })();
+    };
+    await step('server.dispose', () => server.dispose());
+    // Detach the klient's event subscriptions first so disposal below cannot
+    // deliver into a torn-down scope.
+    await step('klient.close', () => klient.close());
+    await step('threadMailboxStore.close', () => core.accessor.get(IThreadMailboxStore).close());
+    await step('homeRuntime.close', () => core.accessor.get(IHomeRuntimeService).close());
+    // Flush the append-log write-behind before disposing, so a clean shutdown
+    // never races a pending drain against teardown (and doesn't drop the last
+    // persisted ops). A flush failure is logged and reported but must not block
+    // disposal.
+    const appendLogStore = core.accessor.get(IAppendLogStore);
+    await step('appendLogStore.flush', () => appendLogStore.flush());
+    // Same shutdown order as kap-server: settle queued session-metadata
+    // writes, then drain the session-index mirror while the query store is
+    // still open, so a queued summary lands in the read model.
+    await step('drainSessionMetadataWrites', () => drainSessionMetadataWrites());
+    await step('sessionIndexMirror.drain', () => core.accessor.get(ISessionIndexMirror).drain());
+    await step('acpProviderRegistration.dispose', () => acpProviderRegistration.dispose());
+    await step('core.dispose', () => core.dispose());
+    // `core.dispose()` runs the mirror's and the query store's synchronous
+    // `dispose()`, whose drains/closes are asynchronous — await them so an
+    // embedding host that removes homeDir right after close() never races
+    // an in-flight shard close (ENOTEMPTY on teardown). The same window
+    // exists for the append-log retirement flushes released by disposal.
+    await step('appendLogStore.drainRetirements', () => appendLogStore.drainRetirements());
+    await step('drainSessionIndexMirror', () => drainSessionIndexMirror());
+    await step('drainQueryStoreDisposals', () => drainQueryStoreDisposals());
+    await step('drainSessionMetadataWrites', () => drainSessionMetadataWrites());
+    await step('drainLogCloses', () => drainLogCloses());
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'acp-server close failed');
+  };
+  const close = (): Promise<void> => {
+    closePromise ??= runCloseSteps();
     return closePromise;
   };
 
   void conn.closed.then(() => {
-    void close();
+    close().catch((error: unknown) => {
+      log.error('acp-server close after connection end failed', { error: String(error) });
+    });
   });
 
   return { core, klient, conn, close };
