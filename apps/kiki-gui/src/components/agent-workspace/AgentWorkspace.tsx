@@ -1824,7 +1824,7 @@ function ChildAgentWorkspace({
         ) : null}
         <Composer
           {...core.composerProps}
-          variant="subagent" replyingTo={isBranch ? undefined : displayName} busy={headerBusy}
+          variant="subagent" busy={headerBusy}
           disabled={composerDisabled} sendDisabled={submissionInFlight}
           delegationPosition={isBranch || branchIdentityPending ? 'main' : 'sub'}
           boundExecution={childExecution}

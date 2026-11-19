@@ -234,6 +234,7 @@ it('does not let stale parent activity resurrect a focused runtime-idle child', 
   });
   expect(rail.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('idle');
   expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Working');
+  expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Status unknown');
 });
 
 it('treats a historical running card as unknown when the session says nothing is executing', async () => {
@@ -260,6 +261,7 @@ it('treats a historical running card as unknown when the session says nothing is
   });
   expect(rail.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('idle');
   expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Working');
+  expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Status unknown');
 });
 
 describe('RightRail fixed and switchable parts', () => {
@@ -499,7 +501,8 @@ describe('RightRail shared chapters', () => {
     const child = await renderRail({ subagent: context, onInspectMain: vi.fn() });
 
     const mainOwner = main.querySelector('[data-rail-owner]');
-    expect(mainOwner?.querySelector('[data-rail-owner-heading]')?.textContent).toBe('Session overview');
+    expect(mainOwner?.querySelector('[data-rail-owner-heading]')?.textContent).toBe('Overview');
+    expect(main.querySelector('#rail-overview-title')?.textContent).toBe('Usage');
     expect(mainOwner?.querySelector('[data-inspect-main]')).toBeNull();
     expect(mainOwner?.getAttribute('data-rail-owner-name')).toBeNull();
     // Peeking a subagent from main: "Main agent / Researcher", main a step back up.

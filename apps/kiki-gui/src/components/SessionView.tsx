@@ -515,7 +515,7 @@ function Header({
               data-activity-badge={sidebarBadge.total}
               data-activity-badge-tone="needs-you"
               aria-hidden
-              className="pointer-events-none absolute top-1 right-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-attention px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-paper"
+              className="pointer-events-none absolute top-1.5 right-1.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-attention px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-paper"
             >
               {(() => {
                 const count = sidebarBadge.needsYouCount ?? sidebarBadge.total;

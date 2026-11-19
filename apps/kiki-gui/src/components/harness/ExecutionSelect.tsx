@@ -48,6 +48,7 @@ import { POPOVER_SURFACE_CLASS, type SearchableSelectOption } from '../Searchabl
 import { SelectRowCheck } from '../select/selectPrimitives';
 import { useProviderGroupLabel } from '../modelSelectOptions';
 import { Icon } from '../icons';
+import { formatThinkingEffortWord } from '../../lib/thinkingEffort';
 
 /**
  * `ready` / `partial` / `unavailable` are an advertised effort list (an empty
@@ -433,18 +434,19 @@ export function ExecutionSelect({
     if (choice.external_connection_id !== undefined) {
       return choice.external_connection_name ?? t('st.section.connectionServices');
     }
+    const localizedEffort = activeEffort ? formatThinkingEffortWord(activeEffort, t) : undefined;
     if (isNative) {
       const fallbackModel = noModelConnected ? t('new.modelChip.none') : t('composer.execution.defaultModelOption');
       const rawModel = currentModel
         ? (resolveCatalogModel(models ?? [], currentModel)?.display_name ?? modelShortLabel ?? currentModel)
         : (modelShortLabel ?? (effectiveModel ? (resolveCatalogModel(models ?? [], effectiveModel)?.display_name ?? effectiveModel) : undefined) ?? fallbackModel);
       const resolvedModel = rawModel.includes('/') ? (rawModel.split('/').pop() || rawModel) : rawModel;
-      const parts = [resolvedModel, activeEffort].filter(Boolean);
+      const parts = [resolvedModel, localizedEffort].filter(Boolean);
       return parts.join(' · ');
     }
     const targetModel = choice.overrides?.model;
     if (targetModel) {
-      const parts = [targetModel, activeEffort].filter(Boolean);
+      const parts = [targetModel, localizedEffort].filter(Boolean);
       return parts.join(' · ');
     }
     return t('composer.engineModelFollow');

@@ -29,6 +29,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { isPeerConnectionSource } from '../lib/peerAccess';
+import { formatThinkingEffortWord } from '../lib/thinkingEffort';
 import { useNavigate } from 'react-router-dom';
 
 import type { AgentReferenceCandidate, AgentReferenceCandidatesQuery, DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, PromptSkillActivation, SessionUsageError } from '@kiki/protocol';
@@ -3950,7 +3951,10 @@ export function Composer({
               {!messageEditing && onChangeExecution !== undefined && execution !== undefined ? (
                 <CompactModelSheet
                   label={[
-                    pickedPersona?.name ?? execution.profile ?? t('composer.agentDefaultName'),
+                    pickedPersona?.name
+                      ?? (execution.profile !== undefined && execution.profile !== '' && execution.profile !== 'agent'
+                        ? execution.profile
+                        : t('composer.agentDefaultName')),
                     modelShortLabel,
                   ].filter((part): part is string => part !== undefined && part !== '').join(' · ')}
                   ariaLabel={`${t('composer.agentDefaultName')} / ${modelShortLabel ?? ''}`}
@@ -4234,7 +4238,7 @@ export function Composer({
           ) : text.trim() === '' && !busy && !coarsePointer ? (
             <p
               data-composer-hints
-              className="min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within/composer:opacity-100 motion-reduce:transition-none"
+              className="hidden sm:block min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within/composer:opacity-100 motion-reduce:transition-none"
             >
               {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
               {t(skillCatalogReady && onActivateSkill !== undefined ? 'composer.footerSkills' : 'composer.footerShortcuts')}
@@ -4861,12 +4865,13 @@ function ModelChip({
       triggerSuffix={
         showEffort || domainNote !== undefined ? (
           <>
-            {showEffort ? (
-              // Same segment, same quiet gap: the gauge already draws the depth,
-              // the word names it. Narrow composers drop the word first.
-              <span data-effort-label className="shrink-0 text-ink-faint capitalize @max-[24rem]/toolbar:hidden">
-                {effort}
-              </span>
+            {showEffort && effort !== undefined ? (
+              <>
+                <span aria-hidden className="shrink-0 text-ink-faint/60 @max-[24rem]/toolbar:hidden">·</span>
+                <span data-effort-label className="shrink-0 text-ink-faint @max-[24rem]/toolbar:hidden">
+                  {formatThinkingEffortWord(effort, t)}
+                </span>
+              </>
             ) : null}
             {domainNote !== undefined ? (
               <span data-model-domain-note className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-rule">

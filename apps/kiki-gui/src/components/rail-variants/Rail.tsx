@@ -566,7 +566,7 @@ export function Rail({
     <>
       <header data-rail-switchable-head className="flex h-9 min-w-0 flex-nowrap items-baseline gap-1.5 py-1">
         <h3 id="rail-overview-title" className={`${INSPECTOR_HEAD} whitespace-nowrap leading-7`}>
-          {mode === 'cockpit' ? t('rail.cockpit.title') : t('inspector.overview')}
+          {mode === 'cockpit' ? t('rail.cockpit.title') : t('rail.usageSection')}
         </h3>
         <button
           type="button"
@@ -909,7 +909,7 @@ export function Rail({
                 data-rail-owner-heading=""
                 className="min-w-0 truncate rounded text-[13px] font-medium text-ink-soft outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
               >
-                {t(mode === 'cockpit' ? 'rail.mode.cockpit' : 'inspector.overview')}
+                {t(mode === 'cockpit' ? 'rail.mode.cockpit' : 'rail.ownerOverview')}
               </h2>
               {railHeaderControls}
             </div>
@@ -966,8 +966,16 @@ export function Rail({
             pendingCount: subagent.pendingInteractionCount,
           };
         })()}
-        actions={subagent === undefined || (!show.openAgent && !show.locateSpawn && promote === undefined) ? undefined : (
-          <div data-subagent-context className="-mt-1 ml-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+        actions={subagent === undefined || (!show.openAgent && !show.locateSpawn && promote === undefined) ? undefined : (() => {
+          const nowHasMark =
+            Math.max(sessionPending === undefined ? pending.length : 0, subagent.pendingInteractionCount) > 0
+            || busy
+            || subStatus === 'running'
+            || subStatus === 'background'
+            || subStatus === 'failed'
+            || subStatus === 'completed';
+          return (
+          <div data-subagent-context className={`-mt-1 ${nowHasMark ? 'ml-3 ' : ''}flex flex-wrap items-center gap-x-4 gap-y-1`}>
             {show.openAgent ? (
               <NowAction data-rail-open-agent="" icon="external" label={t('inspector.openAgent')} onClick={() => { onOpenSubagent(subagent.agentId); }} />
             ) : null}
@@ -984,7 +992,8 @@ export function Rail({
               />
             ) : null}
           </div>
-        )}
+          );
+        })()}
       />
       </div>
       {orderedSections.map(([key, section]) => (

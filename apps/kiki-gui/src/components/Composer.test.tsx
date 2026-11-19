@@ -892,7 +892,7 @@ describe('Composer execution control', () => {
     const trigger = await waitForTrigger(container);
     expect(trigger.hasAttribute('data-model-picker')).toBe(true);
     const label = trigger.querySelector<HTMLElement>(':scope > span.truncate');
-    expect(label?.textContent).toContain('fixture/kiki-pro');
+    expect(label?.textContent).toContain('kiki-pro');
     expect(label?.className).toContain('@max-[16rem]/toolbar:sr-only');
     expect(trigger.title).not.toBe('');
   });
@@ -1999,7 +1999,7 @@ describe('Composer model chip', () => {
       value: 'Synthetic continuation',
       onSend,
     });
-    expect(container.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    expect(container.querySelector('[data-effort-label]')?.textContent).toBe('High');
     await click(container.querySelector('#composer-model-select')!);
     expect(container.querySelector('[data-effort="high"]')?.getAttribute('aria-checked')).toBe('true');
     expect(onSend).not.toHaveBeenCalled();
@@ -2016,7 +2016,7 @@ describe('Composer model chip', () => {
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
     expect(trigger.hasAttribute('data-model-picker')).toBe(true);
     expect(trigger.textContent).toContain('Kiki Pro');
-    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('High');
     // The gauge draws the depth: high is the top of two levels, all bars lit.
     expect(trigger.querySelector('[data-effort-gauge]')?.getAttribute('data-effort-gauge')).toBe('3');
     const label = trigger.querySelector('span.truncate')!;
@@ -2032,7 +2032,7 @@ describe('Composer model chip', () => {
     for (let index = 0; index < 5; index += 1) await settle();
     const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
     expect(trigger.querySelector('[data-effort-gauge]')?.getAttribute('data-effort-gauge')).toBe('2');
-    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('high');
+    expect(trigger.querySelector('[data-effort-label]')?.textContent).toBe('High');
     await click(trigger);
     expect([...container.querySelectorAll('[data-effort]')].map((node) => node.getAttribute('data-effort')))
       .toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -4075,7 +4075,7 @@ describe('Composer restored selection diagnostics', () => {
     expect(onChangeEffort).toHaveBeenCalledWith('high');
     expect(onChangeExecution).not.toHaveBeenCalled();
     expect(trigger.textContent).toContain('vendor/sonnet');
-    expect(trigger.textContent).toContain('high');
+    expect(trigger.textContent).toContain('High');
   });
   it.each([
     { catalog: 'model', code: API_CODES.TIMEOUT },
@@ -5040,7 +5040,7 @@ describe('session SSH stays resident and rides no message', () => {
     expect(container.querySelector('[data-binding-setting]')?.textContent).toBe(state === 'applying' ? 'Applying…' : state === 'next_step' ? 'Applies from the next step' : 'Applies from the next message');
     expect(container.querySelector('[data-model-switch-pending]')).toBeNull();
     expect(container.querySelector('[data-model-switch-pending-line]')).toBeNull();
-    expect(container.querySelector('#composer-model-select')?.textContent).toContain('max');
+    expect(container.querySelector('#composer-model-select')?.textContent).toContain('Max');
   });
 
   it('names a queued switch in words above the input and keeps the row chip for wide toolbars', async () => {

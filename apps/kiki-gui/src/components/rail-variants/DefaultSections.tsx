@@ -6,12 +6,14 @@
  */
 
 import { memo, useCallback, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
+import { resolveCatalogModel } from '@kiki/session-core/settings';
 import { formatThinkingEffort } from '../../lib/thinkingEffort';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
-import { useOptionalControllerRegistry } from '../../state/connection';
+import { useOptionalConnection, useOptionalControllerRegistry } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { useAgentPanelCatalog } from '../agent-panel/useAgentPanelCatalog';
@@ -205,6 +207,13 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
 }) {
   const { t } = useI18n();
   const [drawer, setDrawer] = useState<DetailDrawerTarget | null>(null);
+  const connection = useOptionalConnection();
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: () => connection?.client?.listModels?.() ?? Promise.resolve({ items: [] }),
+    enabled: connection !== null && typeof connection.client?.listModels === 'function',
+    staleTime: 60_000,
+  });
   const query = { session_id: sessionId, agent_id: agentId };
   const state = useAgentState(sessionId, agentId);
   const read = useAgentPanelCatalog(query, sessionId !== undefined,
@@ -214,10 +223,17 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
   const profile = read.data?.profile;
   const profileName = profile?.name !== undefined && profile.name !== '' && profile.name !== 'unknown' ? profile.name : undefined;
+  const displayProfileName = profileName === 'agent'
+    ? t('composer.agentDefaultName')
+    : (profileName ?? (label === 'agent' ? t('composer.agentDefaultName') : label));
   const model = state?.model ?? fallbackModel ?? profile?.model;
+  const isExternalExecutor = profile?.executor !== undefined && profile.executor !== '' && profile.executor !== 'native';
+  const resolvedModel = model === undefined
+    ? undefined
+    : resolveCatalogModel(modelsQuery.data?.items ?? [], model)?.display_name
+      ?? (!isExternalExecutor && model.includes('/') ? (model.split('/').pop() || model) : model);
   const effortText = profileEffortDisplay(profile, t);
-  const externalDefault = effortText === undefined && profile?.executor !== undefined
-    && profile.executor !== '' && profile.executor !== 'native';
+  const externalDefault = effortText === undefined && isExternalExecutor;
   const effortLabel = externalDefault
     ? t('subagent.effort', { effort: t('st.engines.defaults.inheritPlaceholder') })
     : effortText;
@@ -225,7 +241,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   // keeps its real model and effort, because that model did run.
   const modelLine = externalDriver !== undefined
     ? t('rail.external.driver', { client: externalDriver })
-    : [model, effortLabel]
+    : [resolvedModel, effortLabel]
       .filter((part): part is string => part !== undefined && part !== '')
       .join(' · ');
   const source = capabilitySourceLabel(t, { source: profile?.source, sourceFile: profile?.source_file });
@@ -257,7 +273,7 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
           onClick={() => { setDrawer({ kind: 'profile', identity }); }}
           className={`-mx-0.5 min-w-0 truncate rounded px-0.5 text-left font-display text-[15px] leading-6 font-semibold tracking-tight text-ink transition-colors hover:text-ink-soft ${FOCUS_RING}`}
         >
-          {profileName ?? label}
+          {displayProfileName}
         </button>
         {source !== undefined ? (
           <span title={source.title} className={`shrink-0 rounded px-1.5 py-px text-[11px] leading-4 ${SOURCE_TONE_CLASS[source.tone]}`}>{source.text}</span>
