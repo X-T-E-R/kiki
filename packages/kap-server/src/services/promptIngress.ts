@@ -2,11 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import {
   Error2, ErrorCodes, IAgentLifecycleService, IAtomicDocumentStore, IBootstrapService, IFileService, IFileSystemStorageService,
-  IBlobStore, ILogService, ISessionContext, ISessionIndex, ISessionManager, ISessionMetadata, IWorkAdmissionService, isError2, type Scope,
+  IBlobStore, ILogService, ISessionContext, ISessionIndex, ISessionManager, ISessionMetadata, IWorkAdmissionService, isError2,
+  sessionScopeOf, workspacePersistenceScope, type Scope,
 } from '@kiki/agent-core-v2';
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
 import { fileNotFoundError } from '@kiki/agent-core-v2/app/file/fileService';
-import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import type { PromptItem, PromptSubmission, PromptSubmitResult, PromptSubmitReceipt } from '@kiki/protocol';
 import { assertPromptFileRefs, sessionPromptFiles } from '../lib/promptMedia';
 import { mapError } from '../transport/errors';
@@ -551,6 +551,7 @@ export class PromptIngress {
     key: string,
     progressKey: string,
     settled?: PromptIngressResult,
+    attempt = 0,
   ): Promise<void> {
     const activeWorker = this.workers.get(progressKey);
     if (activeWorker !== undefined) {
@@ -558,22 +559,40 @@ export class PromptIngress {
     }
     if (this.closed) return;
     let shouldSchedule: Entry | undefined;
-    await this.locked(target, async () => {
-      const current = await this.read(target, key);
-      if (current === undefined || current.owner !== this.owner || current.admission === 'cancelled') return;
-      const compact = settled === undefined
-        ? current.result
-        : { ...settled, content: this.preview(settled.content), resolved_parts: undefined };
-      if (current.cancelRequested === true) {
-        const next: Entry = compact === current.result ? current : { ...current, result: compact };
-        if (next !== current) await this.publish(target, next);
-        if (!this.workers.has(progressKey)) shouldSchedule = next;
-        return;
+    try {
+      await this.locked(target, async () => {
+        const current = await this.read(target, key);
+        if (current === undefined || current.owner !== this.owner || current.admission === 'cancelled') return;
+        const compact = settled === undefined
+          ? current.result
+          : { ...settled, content: this.preview(settled.content), resolved_parts: undefined };
+        if (current.cancelRequested === true) {
+          const next: Entry = compact === current.result ? current : { ...current, result: compact };
+          if (next !== current) await this.publish(target, next);
+          if (!this.workers.has(progressKey)) shouldSchedule = next;
+          return;
+        }
+        if (settled !== undefined && current.admission === 'held') {
+          await this.publish(target, { ...current, result: compact, admission: 'admitted', error: undefined });
+        }
+      });
+    } catch (error) {
+      this.core.accessor.get(ILogService).warn('failed to persist late prompt settlement', {
+        sessionId: target.sessionId,
+        key,
+        attempt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const retryDelaysMs = [500, 2_000, 5_000];
+      const delayMs = retryDelaysMs[attempt];
+      if (delayMs !== undefined && !this.closed) {
+        const timer = setTimeout(() => {
+          if (!this.closed) void this.reconcileLateSubmitSettlement(target, key, progressKey, settled, attempt + 1);
+        }, delayMs);
+        timer.unref?.();
       }
-      if (settled !== undefined && current.admission === 'held') {
-        await this.publish(target, { ...current, result: compact, admission: 'admitted', error: undefined });
-      }
-    }).catch(() => {});
+      return;
+    }
     if (shouldSchedule !== undefined && !this.closed) {
       this.schedule(target, shouldSchedule);
     }

@@ -94,7 +94,7 @@ interface ActiveCall {
 interface ActiveListen {
   readonly frame: KlientFrame;
   readonly handler: (data: unknown) => void;
-  readonly onError?: (error: Error) => void;
+  readonly onError?: (error: Error, terminal?: boolean) => void;
   readonly onReady?: () => void;
 }
 
@@ -501,7 +501,7 @@ export class HttpChannel implements KlientChannel {
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
-    onError?: (error: Error) => void,
+    onError?: (error: Error, terminal?: boolean) => void,
     onReady?: () => void,
   ): IDisposable {
     if (this.closed) throw new Error('http closed');
@@ -738,7 +738,7 @@ class HttpEventSocket {
     scope: ScopeRef,
     source: EventSourceRef,
     handler: (data: unknown) => void,
-    onError?: (error: Error) => void,
+    onError?: (error: Error, terminal?: boolean) => void,
     onReady?: () => void,
   ): IDisposable {
     this.requireWebSocket();

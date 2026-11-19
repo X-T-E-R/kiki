@@ -18,26 +18,122 @@ const DISK_CACHE_SUBDIR = ['cache', 'media-previews-v1'] as const;
 const DISK_CACHE_FORMAT_VERSION = 1;
 const DISK_CACHE_MAX_ENTRIES = 512;
 const DISK_CACHE_MAX_BYTES = 96 * 1024 * 1024;
-const previewResultCache = new Map<string, { readonly bytes: Uint8Array; readonly mime: string }>();
-let previewResultCacheBytes = 0;
 let diskTempCounter = 0;
 let diskWritesSinceSweep = 0;
 const sweepingDirs = new Set<string>();
-const previewResultFlights = new Map<string, {
-  readonly controller: AbortController;
-  users: number;
-  readonly promise: Promise<{ bytes: Uint8Array; mime: string }>;
-}>();
+
+/** Per-server bounded memory cache and single-flight deduplicator for rendered media previews. */
+export class MediaPreviewCache {
+  private readonly cache = new Map<string, { readonly bytes: Uint8Array; readonly mime: string }>();
+  private cacheBytes = 0;
+  private readonly flights = new Map<string, {
+    readonly controller: AbortController;
+    users: number;
+    readonly promise: Promise<{ bytes: Uint8Array; mime: string }>;
+  }>();
+
+  get(key: string): { readonly bytes: Uint8Array; readonly mime: string } | undefined {
+    const cached = this.cache.get(key);
+    if (cached === undefined) return undefined;
+    this.cache.delete(key);
+    this.cache.set(key, cached);
+    return cached;
+  }
+
+  store(key: string, result: { readonly bytes: Uint8Array; readonly mime: string }): void {
+    if (result.bytes.byteLength > PREVIEW_RESULT_CACHE_MAX_BYTES) return;
+    const previous = this.cache.get(key);
+    if (previous !== undefined) {
+      this.cache.delete(key);
+      this.cacheBytes -= previous.bytes.byteLength;
+    }
+    this.cache.set(key, result);
+    this.cacheBytes += result.bytes.byteLength;
+    while (this.cache.size > PREVIEW_RESULT_CACHE_MAX_ENTRIES || this.cacheBytes > PREVIEW_RESULT_CACHE_MAX_BYTES) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      const entry = this.cache.get(oldest)!;
+      this.cacheBytes -= entry.bytes.byteLength;
+      this.cache.delete(oldest);
+    }
+  }
+
+  sharedFlight(
+    key: string,
+    signal: AbortSignal,
+    compute: (signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string }>,
+    persistToDisk: boolean,
+  ): Promise<{ bytes: Uint8Array; mime: string }> {
+    const flightKey = `${persistToDisk ? 'disk' : 'mem'}\0${key}`;
+    let flight = this.flights.get(flightKey);
+    if (flight === undefined) {
+      const controller = new AbortController();
+      const promise = (async () => {
+        if (persistToDisk) {
+          const diskHit = await readDiskCachedPreview(key, controller.signal);
+          if (diskHit !== undefined) {
+            this.store(key, diskHit);
+            return diskHit;
+          }
+        }
+        const computed = await compute(controller.signal);
+        this.store(key, computed);
+        if (persistToDisk) {
+          void writeDiskCachedPreview(key, computed);
+        }
+        return computed;
+      })();
+      flight = { controller, users: 0, promise };
+      this.flights.set(flightKey, flight);
+      const current = flight;
+      const clear = () => {
+        if (this.flights.get(flightKey) === current) this.flights.delete(flightKey);
+      };
+      void current.promise.then(clear, clear);
+    }
+    const current = flight;
+    current.users += 1;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (done: () => void) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', cancel);
+        current.users -= 1;
+        if (current.users === 0 && this.flights.get(flightKey) === current) {
+          this.flights.delete(flightKey);
+          current.controller.abort();
+        }
+        done();
+      };
+      const cancel = () => {
+        finish(() => { reject(signal.reason ?? new Error('Media preview cancelled')); });
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+      void current.promise.then(
+        (value) => { finish(() => { resolve(value); }); },
+        (error: unknown) => { finish(() => { reject(error); }); },
+      );
+    });
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.cacheBytes = 0;
+  }
+}
+
+const defaultPreviewCache = new MediaPreviewCache();
 
 export class MediaPreviewUnavailableError extends Error {}
 
 export function clearMediaPreviewMemoryCacheForTest(): void {
-  previewResultCache.clear();
-  previewResultCacheBytes = 0;
+  defaultPreviewCache.clear();
 }
 
 export interface CreateMediaPreviewOptions {
   readonly persistToDisk?: boolean;
+  readonly cache?: MediaPreviewCache;
 }
 
 export async function createMediaPreview(
@@ -49,14 +145,11 @@ export async function createMediaPreview(
 ): Promise<{ bytes: Uint8Array; mime: string }> {
   signal.throwIfAborted();
   const persistToDisk = options?.persistToDisk ?? true;
+  const cache = options?.cache ?? defaultPreviewCache;
   if (cacheKey !== undefined && cacheKey.length > 0) {
-    const cached = previewResultCache.get(cacheKey);
-    if (cached !== undefined) {
-      previewResultCache.delete(cacheKey);
-      previewResultCache.set(cacheKey, cached);
-      return cached;
-    }
-    return sharedServerPreviewFlight(
+    const cached = cache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    return cache.sharedFlight(
       cacheKey,
       signal,
       (flightSignal) => computeMediaPreview(file, mediaType, flightSignal),
@@ -64,83 +157,6 @@ export async function createMediaPreview(
     );
   }
   return computeMediaPreview(file, mediaType, signal);
-}
-
-function sharedServerPreviewFlight(
-  key: string,
-  signal: AbortSignal,
-  compute: (signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string }>,
-  persistToDisk: boolean,
-): Promise<{ bytes: Uint8Array; mime: string }> {
-  const flightKey = `${persistToDisk ? 'disk' : 'mem'}\0${key}`;
-  let flight = previewResultFlights.get(flightKey);
-  if (flight === undefined) {
-    const controller = new AbortController();
-    const promise = (async () => {
-      if (persistToDisk) {
-        const diskHit = await readDiskCachedPreview(key, controller.signal);
-        if (diskHit !== undefined) {
-          storeServerPreviewResult(key, diskHit);
-          return diskHit;
-        }
-      }
-      const computed = await compute(controller.signal);
-      storeServerPreviewResult(key, computed);
-      if (persistToDisk) {
-        void writeDiskCachedPreview(key, computed);
-      }
-      return computed;
-    })();
-    flight = { controller, users: 0, promise };
-    previewResultFlights.set(flightKey, flight);
-    const current = flight;
-    const clear = () => {
-      if (previewResultFlights.get(flightKey) === current) previewResultFlights.delete(flightKey);
-    };
-    void current.promise.then(clear, clear);
-  }
-  const current = flight;
-  current.users += 1;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (done: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', cancel);
-      current.users -= 1;
-      if (current.users === 0 && previewResultFlights.get(flightKey) === current) {
-        previewResultFlights.delete(flightKey);
-        current.controller.abort();
-      }
-      done();
-    };
-    const cancel = () => {
-      finish(() => { reject(signal.reason ?? new Error('Media preview cancelled')); });
-    };
-    signal.addEventListener('abort', cancel, { once: true });
-    void current.promise.then(
-      (value) => { finish(() => { resolve(value); }); },
-      (error: unknown) => { finish(() => { reject(error); }); },
-    );
-  });
-}
-
-function storeServerPreviewResult(key: string, result: { readonly bytes: Uint8Array; readonly mime: string }): void {
-  if (result.bytes.byteLength > PREVIEW_RESULT_CACHE_MAX_BYTES) return;
-  const previous = previewResultCache.get(key);
-  if (previous !== undefined) {
-    previewResultCache.delete(key);
-    previewResultCacheBytes -= previous.bytes.byteLength;
-  }
-  previewResultCache.set(key, result);
-  previewResultCacheBytes += result.bytes.byteLength;
-  while (previewResultCache.size > PREVIEW_RESULT_CACHE_MAX_ENTRIES || previewResultCacheBytes > PREVIEW_RESULT_CACHE_MAX_BYTES) {
-    const oldest = previewResultCache.keys().next().value;
-    if (oldest === undefined) break;
-    const entry = previewResultCache.get(oldest)!;
-    previewResultCacheBytes -= entry.bytes.byteLength;
-    previewResultCache.delete(oldest);
-  }
 }
 
 function resolveDiskCacheEntryPath(key: string): { readonly dir: string; readonly filePath: string } | undefined {

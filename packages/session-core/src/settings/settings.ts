@@ -24,7 +24,7 @@ import {
 
 import type { DiscoveryState } from '../discovery/state';
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
-import { spaceStorage, spaceStorageKey } from '../storage/spaceStorage';
+import { onDidChangeSpaceStorage, spaceStorage, spaceStorageKey } from '../storage/spaceStorage';
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 import { questionGuardDraftFromBehavior, questionGuardModelPatch } from './questionGuardSettings';
 
@@ -923,6 +923,13 @@ export function readRestartRequirement(): RestartRequirement {
 // cache keeps `useSyncExternalStore` happy (a fresh object per read would loop).
 const restartListeners = new Set<() => void>();
 let restartSnapshotCache: RestartRequirement | undefined;
+let restartSnapshotKey: string | undefined;
+
+onDidChangeSpaceStorage(() => {
+  restartSnapshotCache = undefined;
+  restartSnapshotKey = undefined;
+  for (const listener of restartListeners) listener();
+});
 
 export function subscribeRestartRequirement(listener: () => void): () => void {
   restartListeners.add(listener);
@@ -930,12 +937,17 @@ export function subscribeRestartRequirement(listener: () => void): () => void {
 }
 
 export function restartRequirementSnapshot(): RestartRequirement {
-  restartSnapshotCache ??= readRestartRequirement();
+  const currentKey = spaceStorageKey(RESTART_REQUIRED_KEY);
+  if (restartSnapshotCache === undefined || restartSnapshotKey !== currentKey) {
+    restartSnapshotCache = readRestartRequirement();
+    restartSnapshotKey = currentKey;
+  }
   return restartSnapshotCache;
 }
 
 function publishRestartRequirement(next: RestartRequirement): RestartRequirement {
   restartSnapshotCache = next;
+  restartSnapshotKey = spaceStorageKey(RESTART_REQUIRED_KEY);
   for (const listener of restartListeners) listener();
   return next;
 }

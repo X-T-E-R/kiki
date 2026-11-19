@@ -47,14 +47,6 @@ interface FallbackInput {
   readonly agentId?: string;
 }
 
-interface BoundedSnapshotReader {
-  (
-    sessionId: string,
-    agentId: string,
-    limits: TranscriptColdReadLimits,
-  ): Promise<BoundedTranscriptSnapshot>;
-}
-
 function outputText(output: unknown): string {
   if (typeof output === 'string') return output;
   if (!Array.isArray(output)) return '';
@@ -139,20 +131,22 @@ function fallbackHits(
 async function fallbackSearch(
   transcript: TranscriptService,
   input: FallbackInput,
+  signal?: AbortSignal,
 ): Promise<HistorySearchPage> {
   const limits: TranscriptColdReadLimits = {
     maxBytes: HISTORY_FALLBACK_MAX_BYTES,
     maxRecords: HISTORY_FALLBACK_MAX_RECORDS,
     chunkBytes: HISTORY_FALLBACK_CHUNK_BYTES,
   };
-  const reader = (transcript as unknown as { readColdSnapshotBounded?: BoundedSnapshotReader })
-    .readColdSnapshotBounded;
   let scan: BoundedTranscriptSnapshot | undefined;
   let scanError = false;
-  if (input.sessionId !== undefined && input.agentId !== undefined && reader !== undefined) {
+  if (input.sessionId !== undefined && input.agentId !== undefined) {
     try {
-      scan = await reader.call(transcript, input.sessionId, input.agentId, limits);
-    } catch {
+      scan = signal === undefined
+        ? await transcript.readColdSnapshotBounded(input.sessionId, input.agentId, limits)
+        : await transcript.readColdSnapshotBounded(input.sessionId, input.agentId, limits, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
       scanError = true;
     }
   } else {
@@ -421,7 +415,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
         };
       }
       const fallback = { workspaceId, query, mode, includeToolOutput: toolOutputScope, role, after, before, sort, pageSize, sessionId, agentId };
-      const page = await (getNavigation === undefined ? fallbackSearch(getTranscript(), fallback) :
+      const page = await (getNavigation === undefined ? fallbackSearch(getTranscript(), fallback, signal) :
         navigationSearch(getTranscript(), getNavigation(), fallback, pageToken, signal));
       return sessionId === undefined ? withoutPrivateSessions(page, sessionIndex, workspaceId) : page;
     },

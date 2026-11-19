@@ -481,13 +481,13 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   const connectionIdentity = { homeId: serverHomeId, hostId: createKimiDeviceId(homeDir), protocol: CONNECTION_PROTOCOL } as const;
   const admission = new ConnectionAdmission(homeDir, connectionIdentity, opts.disableAuth === true ? 'dangerous_auth_bypass' : undefined);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
   const sshRemote = opts.sshRemoteConnector ?? new SshRemoteConnector({ serverVersion });
-  const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal));
+  const remoteConnections = new RemoteConnectionManager(homeDir, connectionIdentity, sshRemote, (spaceId, target, signal) => resolveLocalSpaceTransport(core, spaceId, target, signal), logger);
   await Promise.all([admission.ready(), remoteConnections.ready()]);
   const buildId = opts.buildId ?? process.env['KIKI_BUILD_ID'];
   const buildChannel = opts.buildChannel ?? process.env['KIKI_BUILD_CHANNEL'];
   const startedAt = continuation?.startedAt ?? Date.now();
-  const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
   const externalDelegation = opts.externalDelegation === undefined
     ? externalDelegationAuthorityFromEnv(process.env)
     : {
@@ -1066,7 +1066,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }) ?? { dispose: () => {} };
   const navigationPrivacyCleanupSubscription = core.accessor.get(IEventService).subscribe((event) => {
     if (event.type !== 'session.meta.updated') return;
-    const payload = event.payload as { sessionId?: unknown; patch?: { private?: unknown } } | undefined;
+    const payload = (event as { readonly payload?: unknown }).payload as { sessionId?: unknown; patch?: { private?: unknown } } | undefined;
     if (typeof payload?.sessionId === 'string' && payload.patch?.private === true) {
       void locator?.deleteSession(payload.sessionId).catch(() => undefined);
     }

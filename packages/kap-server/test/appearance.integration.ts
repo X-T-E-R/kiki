@@ -262,7 +262,7 @@ describe('remote background import policy', () => {
       });
       expect(allResult).toEqual([{ address: '93.184.216.34', family: 4 }]);
 
-      const singleResult = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+      const singleResult = await new Promise<{ address: string; family: number | undefined }>((resolve, reject) => {
         observedLookups[0]!('localhost', { family: 4 }, (err, address, family) => {
           if (err !== null) reject(err);
           else resolve({ address: String(address), family });

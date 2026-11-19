@@ -22,7 +22,7 @@ import { makeSnippet } from '../../search/snippet';
 import { searchSortedHistory, type HistorySortedCursor } from './historySortedSearch';
 import type { TranscriptService } from '../transcript/transcriptService';
 import { HistoryCanonicalReader, type CanonicalToolLookup, type CanonicalEntityLookup } from './historyCanonicalReader';
-import type { ContentSource } from '@kiki/transcript';
+import type { ContentSource, TranscriptWireRecord } from '@kiki/transcript';
 import { discoverHistoryDirectoryTail, historyDirectoryWindowGuard, historyDirectoryWindowStore,
   validateHistoryDirectoryWindow, type HistoryDirectoryWindow } from './historyDirectoryWindow';
 
@@ -565,7 +565,7 @@ export class HistoryLocatorEngine {
       return row;
     };
     let pendingBytes = 0;
-    const foldRecord = async (record: Record<string, unknown>, span: WireRecordSpan, recordDigest: string): Promise<boolean> => {
+    const foldRecord = async (record: TranscriptWireRecord, span: WireRecordSpan, recordDigest: string): Promise<boolean> => {
       const activeScanner = scanner!;
       const before = activeScanner.adapter.checkpoint();
       const projected = activeScanner.adapter.add(record);
@@ -629,7 +629,7 @@ export class HistoryLocatorEngine {
       if (pageFull || pending.length >= 128 || pendingBytes >= (1 << 20)) await flushPending();
       return !pageFull && (input.stopAt === undefined || span.endByteOffset < input.stopAt);
     };
-    const buffered: Array<{ record: Record<string, unknown>; span: WireRecordSpan; digest: string }> = [];
+    const buffered: Array<{ record: TranscriptWireRecord; span: WireRecordSpan; digest: string }> = [];
     if (stateDb === undefined) {
       if (rebuild) scanner = undefined;
       if (scanner === undefined || scanner.incarnation !== input.incarnation) {
@@ -888,7 +888,7 @@ export class HistoryLocatorEngine {
     }
     const watermark = input.stopAt ?? input.search?.asOf;
     const throughWatermark = watermark !== undefined && read.nextByteOffset >= watermark;
-    return { complete: read.complete || throughWatermark, nextByteOffset: read.nextByteOffset, ordinal: scanner.ordinal,
+    return { complete: read.complete || throughWatermark, nextByteOffset: read.nextByteOffset, ordinal: scanner!.ordinal,
       bytesRead: read.bytesRead, recordsRead: read.recordCount, incarnation: input.incarnation,
       incompleteReason: throughWatermark ? undefined : read.incompleteReason, hits: activeHits };
   }

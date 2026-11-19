@@ -30,6 +30,7 @@ export interface ActiveSpace {
 export const SPACE_STORAGE_PREFIX = 'kiki.space.';
 
 let active: ActiveSpace | null = null;
+const spaceChangeListeners = new Set<() => void>();
 
 /**
  * Point the wrapper at `space`. `null`, an empty `homeId`, and the main space
@@ -37,7 +38,18 @@ let active: ActiveSpace | null = null;
  * every key this module hands out.
  */
 export function configureSpaceStorage(space: ActiveSpace | null): void {
-  active = space !== null && space.homeId !== '' && space.isPrimary !== true ? space : null;
+  const next = space !== null && space.homeId !== '' && space.isPrimary !== true ? space : null;
+  const changed = (active?.homeId ?? null) !== (next?.homeId ?? null);
+  active = next;
+  if (changed) {
+    for (const listener of spaceChangeListeners) listener();
+  }
+}
+
+/** Subscribe to active space-storage scope changes (e.g. desktop space switch). */
+export function onDidChangeSpaceStorage(listener: () => void): () => void {
+  spaceChangeListeners.add(listener);
+  return () => { spaceChangeListeners.delete(listener); };
 }
 
 /** The configured space, or `null` while the main space (or a non-desktop host) is active. */

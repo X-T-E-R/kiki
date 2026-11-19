@@ -219,8 +219,27 @@ describe('server-v2 gui store routes', () => {
     const conflictingReset = await api.inject({ method: 'POST', url: '/api/gui/shortcuts/reset?platform=windows', payload: { platform: 'windows', action: 'find' } });
     expect(envelopeOf(conflictingReset.json()).code).toBe(40001);
     expect(envelopeOf<{ preferences: unknown }>((await read()).json()).data?.preferences).toEqual(moved);
+    await setItem(api, 'shortcuts.v1', JSON.stringify({
+      version: 1,
+      overrides: {
+        windows: {
+          switcher: [{ key: 'j', modifier: 'mod', shift: false, alt: false }],
+          removed_legacy_action: [{ key: 'k', modifier: 'mod' }],
+        },
+        legacy_os: { switcher: [] },
+      },
+    }));
+    const partial = envelopeOf<{ preferences: unknown }>((await read()).json());
+    expect(partial.code).toBe(0);
+    expect(partial.data?.preferences).toEqual({
+      version: 1,
+      overrides: { windows: { switcher: [{ key: 'j', modifier: 'mod', shift: false, alt: false }] } },
+    });
+    expect(envelopeOf((await api.inject({ method: 'POST', url: '/api/gui/shortcuts/reset?platform=windows', payload: { platform: 'windows' } })).json()).code).toBe(0);
     await setItem(api, 'shortcuts.v1', 'not-json');
-    expect(envelopeOf((await read()).json()).code).toBe(50001);
+    const corrupted = envelopeOf<{ preferences: unknown }>((await read()).json());
+    expect(corrupted.code).toBe(0);
+    expect(corrupted.data?.preferences).toEqual({ version: 1, overrides: {} });
     expect(envelopeOf((await api.inject({ method: 'POST', url: '/api/gui/shortcuts/reset?platform=windows', payload: {} })).json()).code).toBe(0);
   });
 
