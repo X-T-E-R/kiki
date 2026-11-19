@@ -27,10 +27,11 @@ import {
 } from '../../lib/skins/packsApi';
 import { useAppearancePacks, useServerEndpoint, type AppearancePackEntry } from '../../lib/skins/useAppearancePacks';
 import { useMediaThumbnail } from '../../lib/skins/useMediaThumbnail';
+import { formatBytes } from '@kiki/session-core/util';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
-import { formatBytes, useBackgroundPrefs } from './BackgroundSettings';
+import { useBackgroundPrefs } from './BackgroundSettings';
 import { useSkinPrefs } from './SkinSettings';
 
 function PackPreview({ entry }: { entry: AppearancePackEntry }) {

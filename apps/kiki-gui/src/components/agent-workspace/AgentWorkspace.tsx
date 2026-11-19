@@ -16,33 +16,24 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { ExecutorLabelProvider } from '../timeline/ExecutorNotes';
 import { useExecutorCatalog } from '../settings/profileEditor/engines';
 
-import type { PermissionMode, PromptDeliveryReason, PromptItem, PromptSkillActivation } from '@kiki/protocol';
+import type { PermissionMode, PromptSkillActivation } from '@kiki/protocol';
 import {
   beginPendingSubmissionFlight,
   buildPromptContent,
   buildSkillActivation,
   clearPendingSubmissionsForConnection,
   finishPendingSubmissionFlight,
-  flushDrafts,
-  invalidatePendingSubmissionRetry,
   isNativeExecutor,
   isPendingSubmissionInFlight,
-  readComposerState,
-  readDraft,
   readPendingSubmission,
   recoverSubmittedDraft,
   settlePendingSubmission,
-  subscribeDraftAppends,
-  subscribePendingSubmissions,
-  writeComposerState,
-  writeDraft,
   type ComposerAttachment,
   type ExecutionChoice,
-  type PendingComposerSubmission,
 } from '@kiki/session-core/composer';
 import {
   agentPath,
@@ -53,7 +44,6 @@ import {
   sessionAgentForest,
   type AgentForest,
   type AgentTreeNode,
-  type Block,
   type SessionController,
   type SessionViewState,
   type SubagentBlock,
@@ -62,19 +52,14 @@ import {
 import {
   normalizeSelectableModelAlias,
   resolveCatalogModel,
-  settingsServerSnapshot,
-  settingsSnapshot,
-  subscribeSettings,
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { projectPresentedText, type ContentRef } from '@kiki/transcript';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, isDefinitivePromptRejection } from '../../lib/client';
-import { fsSearchRequestBody, type FsSearchPageArgs } from '../../lib/fsSearchFeed';
 import { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext } from '../model-switch/ModelSwitchNotice';
-import { useModelSwitches } from '../model-switch/useModelSwitches';
 import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { usePromoteAgent, type PromoteAgentAction } from '../../lib/usePromoteAgent';
@@ -89,7 +74,8 @@ import {
 import { Composer } from '../Composer';
 import { useLastResponseAt } from '../composerWorking';
 import type { ContextMeterUsage } from '../ContextMeter';
-import { useContextMeterAutoCompact } from '../useContextMeterAutoCompact';
+import { InteractionPlacementContext } from '../Interactions';
+import { MessageViewContext } from '../message/messageViewContext';
 import { Icon } from '../icons';
 import type { ComponentType } from 'react';
 import type { MediaPreviewProvider as OwnedMediaPreviewProvider } from '../mediaPreview';
@@ -109,28 +95,34 @@ import {
 } from '../timeline/AdmissionLine';
 import { TranscriptDetailProvider, type TranscriptEntityKind } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
-import { agentContinuationAvailable, useAgentTimeline } from './useAgentTimeline';
+import { agentContinuationAvailable } from './useAgentTimeline';
 export { agentContinuationAvailable };
 import {
-  normalizeStoredAnnotations,
   restoreSentAnnotations,
   serializeSelectionCarryover,
   updateStoredAnnotations,
-  useConversationAnnotations,
   type ConversationAnnotationSurface,
 } from './useConversationAnnotations';
-import { useModelSwitchFlow } from './useModelSwitchFlow';
+import {
+  nowReceiptDecision,
+  sendNowNotice,
+  sendNowQueuedNotice,
+  trackOpenNowReceipt,
+  useAgentWorkspaceCore,
+  type AgentWorkspaceTarget,
+} from './useAgentWorkspaceCore';
+export {
+  nowReceiptDecision,
+  sendNowNotice,
+  sendNowQueuedNotice,
+  trackOpenNowReceipt,
+  type AgentWorkspaceTarget,
+};
 import { registerOverlay } from '../../lib/uiBusy';
 
 /** Inspector toggle mark, drawn from the shared icon family at header size. */
 export function PanelIcon({ className = '' }: { className?: string }) {
   return <Icon name="panel" size={16} className={className} />;
-}
-
-/** The agent identity a workspace renders; always resolved by the shell. */
-export interface AgentWorkspaceTarget {
-  readonly sessionId: string;
-  readonly agentId: string;
 }
 
 /**
@@ -153,84 +145,6 @@ export interface AgentWorkspaceNavigation {
     readonly yielded?: boolean;
     readonly ensureDockedOpen?: () => void;
   };
-}
-
-/**
- * "Send now" delivery feedback, shared by the session composer and this
- * workspace's child composer: the receipt names why a message did not join
- * the running turn, and a late durable read can still supply the reason when
- * the first acknowledgement has none. The copy follows that reason — it is
- * never inferred from a streaming or tool phase, which do not reject a steer.
- */
-type SendNowOutcome = Awaited<ReturnType<SessionController['sendPromptNow']>>['outcome'];
-
-const SEND_NOW_QUEUED_KEYS: Readonly<Record<PromptDeliveryReason, I18nKey>> = {
-  no_active_turn: 'sv.steerQueuedNoActiveTurn',
-  target_changed: 'sv.steerQueuedTargetChanged',
-  prompt_no_longer_pending: 'sv.steerQueuedNotPending',
-  steer_rejected: 'sv.steerQueuedRejected',
-  external_retry: 'sv.steerQueuedExternalUnknown',
-  executor_deferred: 'sv.steerQueuedExternal',
-  model_switch_boundary: 'sv.steerQueuedModelBoundary',
-};
-
-export function sendNowQueuedNotice(reason: PromptDeliveryReason | undefined): I18nKey {
-  return reason === undefined ? 'sv.steerQueued' : SEND_NOW_QUEUED_KEYS[reason];
-}
-
-export function sendNowNotice(
-  outcome: SendNowOutcome,
-  reason: PromptDeliveryReason | undefined,
-): { readonly tone: 'info'; readonly key: I18nKey } | undefined {
-  if (outcome === 'held') return { tone: 'info', key: reason === 'external_retry' ? 'sv.steerQueuedExternalUnknown' : 'sv.submissionRecovery.server' };
-  if (outcome === 'not_pending') return { tone: 'info', key: 'sv.steerQueuedNotPending' };
-  if (outcome === 'queued') return { tone: 'info', key: sendNowQueuedNotice(reason) };
-  return undefined;
-}
-
-/** Receipts a late durable read can still explain; bounded per mounted view. */
-const MAX_OPEN_NOW_RECEIPTS = 20;
-
-/** What a still-open "Send now" receipt should do on this snapshot. */
-type NowReceiptDecision =
-  | { readonly kind: 'drop' }
-  | { readonly kind: 'wait' }
-  | { readonly kind: 'report'; readonly reason: PromptDeliveryReason };
-
-/**
- * One rule for both composers: a canonical row owns the message first, then
- * the durable record decides while the prompt is still queued. Only an
- * admitted, queued record with a reason is final — a restoring/held record
- * that still carries an older delivery field is not. A missing record is not
- * proof of delivery either: the durable read may still be in flight.
- */
-export function nowReceiptDecision(input: {
-  readonly promptId: string;
-  readonly reported: string | null;
-  readonly ingress: readonly PromptItem[];
-  readonly settled: boolean;
-}): NowReceiptDecision {
-  if (input.settled) return { kind: 'drop' };
-  const record = input.ingress.find((item) => item.prompt_id === input.promptId);
-  if (record === undefined) return { kind: 'wait' };
-  if (record.admission === 'failed' || record.admission === 'cancelled'
-    || record.status === 'running' || record.delivery_state === 'steered' || record.delivery_state === 'accepted'
-    || record.delivery_state === 'failed' || record.delivery_state === 'cancelled') return { kind: 'drop' };
-  if (record.admission !== 'admitted' || record.delivery_state !== 'queued' || record.delivery_reason === undefined) {
-    return { kind: 'wait' };
-  }
-  if (input.reported !== null) return { kind: 'drop' };
-  return { kind: 'report', reason: record.delivery_reason };
-}
-
-/** A queued Send now that still carries an open receipt for a later reason. */
-export function trackOpenNowReceipt(receipts: Map<string, string | null>, promptId: string, reason: string | null): void {
-  receipts.set(promptId, reason);
-  while (receipts.size > MAX_OPEN_NOW_RECEIPTS) {
-    const oldest = receipts.keys().next().value;
-    if (oldest === undefined) break;
-    receipts.delete(oldest);
-  }
 }
 
 export interface AgentWorkspaceProps {
@@ -766,7 +680,6 @@ function ChildAgentWorkspace({
 }: WorkspaceCompositionProps) {
   const { t, locale } = useI18n();
   const { client, klient, scopeId } = useConnection();
-  const liveSettings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const queryClient = useQueryClient();
   const { sessionId, agentId } = target;
   const ambientMediaPreview = useMediaPreview();
@@ -783,169 +696,37 @@ function ChildAgentWorkspace({
     [ambientMediaPreview, effectivePreviewRef],
   );
   const promoteAction = usePromoteAgent(sessionId, agentId);
+  const contextSlots = useOptionalConversationShell()?.slots;
+  const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
+
   // Target identity owns both the composition and Composer's transient state.
   // A remount reads the old target back rather than discarding its unsent work.
   const draftKey = JSON.stringify([scopeId, sessionId, agentId]);
-  const [draft, setDraftState] = useState(() => readDraft(draftKey));
-  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
-    () => readComposerState(draftKey).attachments ?? [],
-  );
-  const timelineBlocksRef = useRef<readonly Block[]>([]);
-  const {
-    annotations,
-    setAnnotations,
-    onRemove: handleRemoveAnnotation,
-    onUpdate: handleUpdateAnnotation,
-    onLocate: handleLocateAnnotation,
-    surface: annotationSurface,
-  } = useConversationAnnotations({
-    storageKey: draftKey,
-    sessionId,
-    agentId,
-    blocks: () => timelineBlocksRef.current,
-  });
-  const setDraft = (text: string) => {
-    writeDraft(draftKey, text);
-    setDraftState(text);
-  };
-  useEffect(() => {
-    const chrome = readComposerState(draftKey);
-    writeComposerState(draftKey, {
-      attachments,
-      quotes: [],
-      annotations,
-      permissionMode: chrome.permissionMode,
-      planMode: chrome.planMode,
-      planGate: chrome.planGate,
-      goalObjective: chrome.goalObjective,
-      modelOverride: chrome.modelOverride,
-      effortOverride: chrome.effortOverride,
-    });
-  }, [draftKey, attachments, annotations]);
-  useEffect(() => () => { flushDrafts(); }, []);
-  const contextSlots = useOptionalConversationShell()?.slots;
-  const slots = slotsOverride ?? contextSlots ?? EMPTY_SLOTS;
-  // A key belongs to one unacknowledged submission, not to the draft text
-  // forever. Switching the connection or endpoint invalidates it even if a
-  // later render switches back to the same target and unchanged draft.
-  const sendScope = JSON.stringify([scopeId, sessionId, agentId]);
+  const sendScope = draftKey;
   const [sendNotice, setSendNotice] = useState<{ scope: string; text: string } | null>(null);
   // The sent message stays on this timeline from the keypress until the
   // projection owns a row under the same prompt id, or until the send settles
   // when the server does not use the key as the prompt id.
   const [sendEcho, setSendEcho] = useState<OptimisticSubmission & { readonly scope: string; readonly settledOnServer?: boolean }>();
   const clearSendEcho = (id: string) => { setSendEcho((current) => current?.id === id ? undefined : current); };
-  const pendingSendRef = useRef<PendingComposerSubmission | null>(
-    (() => {
-      const saved = readPendingSubmission(draftKey);
-      return saved !== undefined && saved.scope === sendScope && !saved.retryInvalidated && saved.draftText === draft ? saved : null;
-    })(),
-  );
-  const subscribeTargetSubmission = useCallback(
-    (listener: () => void) =>
-      subscribePendingSubmissions((key) => {
-        if (key === draftKey) listener();
-      }),
-    [draftKey],
-  );
-  const submissionInFlight = useSyncExternalStore(
-    subscribeTargetSubmission,
-    () => isPendingSubmissionInFlight(draftKey, sendScope),
-    () => false,
-  );
-  // "Send now" receipts still open to a late durable read: prompt id → the
-  // reason already reported (null = only the generic queued notice went out).
-  const nowReceiptsRef = useRef(new Map<string, string | null>());
-  // Re-read the ingress snapshot after a receipt registers, even when the
-  // controller had already published it before this promise settled.
-  const [nowReceiptTick, setNowReceiptTick] = useState(0);
-  const composerOwnerActive = useRef(true);
   const transcriptVisibleRef = useRef(transcriptVisible);
   transcriptVisibleRef.current = transcriptVisible;
-  useEffect(() => {
-    composerOwnerActive.current = true;
-    return () => {
-      composerOwnerActive.current = false;
-    };
-  }, []);
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
   const draftRevisionRef = useRef(0);
-  useEffect(() => subscribeDraftAppends((key) => {
-    if (key !== draftKey) return;
-    const restored = readDraft(draftKey);
-    const chrome = readComposerState(draftKey);
-    const savedPending = readPendingSubmission(draftKey);
-    draftRevisionRef.current += 1;
-    draftRef.current = restored;
-    pendingSendRef.current =
-      savedPending !== undefined && savedPending.scope === sendScope && !savedPending.retryInvalidated && savedPending.draftText === restored
-        ? savedPending
-        : null;
-    if (pendingSendRef.current === null) setSendNotice(null);
-    setDraftState(restored);
-    setAttachments(chrome.attachments ?? []);
-    setAnnotations(normalizeStoredAnnotations(chrome));
-  }), [draftKey, sendScope, setAnnotations]);
-  const handleDraftChange = (next: string) => {
-    if (next !== draftRef.current) {
-      draftRevisionRef.current += 1;
-      pendingSendRef.current = null;
-      invalidatePendingSubmissionRetry(draftKey);
-      setSendNotice(null);
-    }
-    draftRef.current = next;
-    setDraft(next);
-  };
-  const handleAttachmentsChange: typeof setAttachments = (next) => {
-    setAttachments((previous) => {
-      const updated = typeof next === 'function' ? next(previous) : next;
-      if (updated !== previous) {
-        draftRevisionRef.current += 1;
-        pendingSendRef.current = null;
-        invalidatePendingSubmissionRetry(draftKey);
-      }
-      return updated;
-    });
-    setSendNotice(null);
-  };
+  const [externalBindingSetting, setExternalBindingSetting] = useState<{ model: string; thinking?: string }>();
 
-  const {
-    state: agentTimelineState,
-    actions: timelineActions,
-    pendingInteractionCount: agentPendingInteractionCount,
-  } = useAgentTimeline(controller, agentId, {
-    visible: transcriptVisible,
-    sessionId,
-    sessionState,
-    forest,
-  });
-  const agentLiveState = agentTimelineState;
+  const selectedNode = forest.byId[agentId];
+  const selectedSubagent = sessionState.blocks.find(
+    (block): block is SubagentBlock =>
+      block.kind === 'subagent' && block.subagentId === agentId,
+  );
+  const crumbs = useMemo(() => agentPath(forest, agentId), [forest, agentId]);
+  const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
+  const isBranch = selectedNode?.isBranch === true
+    || selectedNode?.branchSealed === true
+    || selectedNode?.branchSeed !== undefined
+    || selectedNode?.toolsLocked === true;
+  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId ?? (isBranch ? 'native' : undefined);
 
-  // The model catalog backing the composer's effort ladder. Same query key as
-  // the main session and the composer itself, so one `/models` fetch feeds
-  // every surface instead of one per workspace. Defer until the first-screen
-  // transcript is ready so cold subagent/branch opens never compete in the
-  // browser's 6-connection HTTP/1.1 pool.
-  const modelsQuery = useQuery({
-    queryKey: ['models'],
-    queryFn: () => client.listModels(),
-    enabled: controller === null || agentLiveState.transcriptReady || agentLiveState.loaded,
-    staleTime: 60_000,
-  });
-  const configQuery = useQuery({
-    queryKey: ['config'],
-    queryFn: () => client.getConfig(),
-    enabled: typeof client.getConfig === 'function',
-    staleTime: 60_000,
-  });
-  const capabilitiesQuery = useQuery({
-    queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
-    queryFn: () => client.getAgentCapabilities({ session_id: sessionId, agent_id: agentId }),
-    enabled: typeof client.getAgentCapabilities === 'function' && (controller === null || agentLiveState.transcriptReady || agentLiveState.loaded),
-    staleTime: 30_000,
-  });
-  const capabilitiesProfile = capabilitiesQuery.data?.profile;
   const parentAgentId =
     (controller?.getForest() ?? sessionAgentForest(sessionState)).byId[agentId]?.parentAgentId;
   const subscribeParentAgent = useCallback(
@@ -974,26 +755,132 @@ function ChildAgentWorkspace({
     return () => { controller.releaseAgentView?.(parentViewId); };
   }, [controller, workspaceViewId, nestedParentId, transcriptVisible]);
 
-  const capturedBlocks = agentLiveState.blocks;
-  const selectedNode = forest.byId[agentId];
-  const selectedSubagent = sessionState.blocks.find(
-    (block): block is SubagentBlock =>
-      block.kind === 'subagent' && block.subagentId === agentId,
-  );
-  const crumbs = useMemo(() => agentPath(forest, agentId), [forest, agentId]);
-  const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
-  const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
-  const [externalBindingSetting, setExternalBindingSetting] = useState<{ model: string; thinking?: string }>();
-  useEffect(() => {
-    if (!headerBusy) setExternalBindingSetting(undefined);
-  }, [headerBusy]);
-  const isBranch = selectedNode?.isBranch === true
-    || selectedNode?.branchSealed === true
-    || selectedNode?.branchSeed !== undefined
-    || selectedNode?.toolsLocked === true;
   const parentModel = nestedParentId !== undefined ? parentAgentState.model : sessionState.model;
   const parentThinkingEffort = nestedParentId !== undefined ? parentAgentState.thinkingEffort : sessionState.thinkingEffort;
   const parentPermissionMode = nestedParentId !== undefined ? parentAgentState.permissionMode : sessionState.permissionMode;
+  const canSteerChildNow =
+    controller !== null && typeof controller.sendPromptNow === 'function';
+
+  const core = useAgentWorkspaceCore(target, controller, {
+    mountHost: 'dock',
+    busyPlainSendMode: 'steer',
+    interactionPlacementMode: 'inline',
+    storageKey: draftKey,
+    sendScope,
+    visible: transcriptVisible,
+    sessionState,
+    forest,
+    deferModelsQuery: true,
+    childBindings: {
+      selectedNode,
+      selectedSubagent,
+      reportedExecutorId,
+    },
+    onDraftMutated: () => {
+      draftRevisionRef.current += 1;
+      setSendNotice(null);
+    },
+    onDraftAppended: () => {
+      draftRevisionRef.current += 1;
+      if (readPendingSubmission(draftKey) === undefined) setSendNotice(null);
+    },
+    resolveExecution: ({
+      state: live,
+      models,
+      config,
+      liveSettings,
+      modelSwitches,
+      capabilitiesQuery,
+      executorBindingQuery,
+      agentKnown,
+    }) => {
+      const capabilitiesProfile = capabilitiesQuery.data?.profile;
+      const busy = selectedNode?.busy === true || live.busy;
+      const configuredDefault = normalizeSelectableModelAlias(
+        config?.default_model ?? liveSettings.defaultModel,
+      );
+      const boundModel = normalizeSelectableModelAlias(
+        live.model ?? selectedNode?.model ?? selectedSubagent?.model ?? capabilitiesProfile?.model,
+      );
+      const model =
+        boundModel ??
+        (isBranch ? (normalizeSelectableModelAlias(parentModel) ?? configuredDefault) : undefined);
+      const execId = reportedExecutorId ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
+      const isExternal = execId !== undefined && !isNativeExecutor(execId);
+      const resolvedModel = model !== undefined ? resolveCatalogModel(models ?? [], model) : undefined;
+      const canonicalModel = model === undefined
+        ? undefined
+        : isExternal ? model : resolvedModel?.id ?? model;
+      const effortSourceSwitch = modelSwitches.dependency ?? modelSwitches.switches.findLast((entry) =>
+        entry.receipt.state === 'completed' &&
+        (resolveCatalogModel(models ?? [], entry.receipt.toModel)?.id ?? entry.receipt.toModel) === canonicalModel);
+      const carriedThinking = typeof effortSourceSwitch?.input.thinking === 'string' && effortSourceSwitch.input.thinking !== ''
+        ? effortSourceSwitch.input.thinking
+        : undefined;
+      const resolvedMaxContextTokens = live.maxContextTokens === 0
+        ? undefined
+        : live.maxContextTokens
+          ?? selectedNode?.maxContextTokens
+          ?? (execId === 'native' ? resolvedModel?.max_context_size : undefined);
+      return {
+        currentModel: canonicalModel ?? model ?? '',
+        carriedThinking,
+        autoCompact: {
+          enabled: agentKnown && execId !== undefined && (controller === null || live.transcriptReady),
+          modelId: model,
+          modelLabel: resolvedModel?.display_name ?? model,
+          maxContextTokens: resolvedMaxContextTokens,
+          running: busy,
+        },
+        busy,
+        canSteerNow: canSteerChildNow,
+        externalBindingSetting: isExternal ? externalBindingSetting : undefined,
+        sendTimingDefault: isExternal ? undefined : liveSettings.defaultAppendTiming,
+        sessionRecord: sessionState.session,
+        durableIngress: sessionState.durableIngress,
+        fsSearchEnabled: agentKnown,
+      };
+    },
+  });
+
+  const {
+    liveSettings,
+    timeline: { state: agentLiveState, actions: timelineActions, pendingInteractionCount: agentPendingInteractionCount },
+    modelsQuery,
+    configQuery,
+    capabilitiesQuery,
+    executorBindingQuery,
+    agentKnown,
+    draftRef,
+    setDraft,
+    setAttachments,
+    composerOwnerActive,
+    pendingSendRef,
+    submissionInFlight,
+    timelineBlocksRef,
+    annotations: {
+      annotations,
+      setAnnotations,
+      surface: annotationSurface,
+    },
+    trackNowReceipt,
+    modelSwitches,
+    modelSwitchFlow: {
+      setDialog: setModelSwitchDialog,
+      open: openChildModelSwitch,
+      applyEffortSetting: applyChildEffortSetting,
+      noticeActions: modelSwitchActions,
+    },
+    contextAutoCompact,
+    revealOwnSend,
+  } = core;
+
+  const capabilitiesProfile = capabilitiesQuery.data?.profile;
+  const capturedBlocks = agentLiveState.blocks;
+  const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
+  useEffect(() => {
+    if (!headerBusy) setExternalBindingSetting(undefined);
+  }, [headerBusy]);
   const configuredDefaultModel = normalizeSelectableModelAlias(
     configQuery.data?.default_model ?? liveSettings.defaultModel,
   );
@@ -1036,23 +923,6 @@ function ChildAgentWorkspace({
     parentAgentId: selectedNode?.parentAgentId ?? parentAgentId,
     mainTasks: sessionState.tasks,
     parentTasks: parentAgentState.tasks,
-  });
-  // A terminal child remains wakeable, but a route alone is not permission to
-  // continue it. Old persisted bodies can establish identity after the recent
-  // roster has already dropped the row; a partial empty read cannot.
-  const agentKnown = agentContinuationAvailable({
-    controller,
-    node: selectedNode,
-    subagent: selectedSubagent,
-    state: agentLiveState,
-  });
-  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId ?? (isBranch ? 'native' : undefined);
-  const executorBindingQuery = useQuery({
-    queryKey: ['agentExecutor', scopeId, sessionId, agentId],
-    queryFn: async () => await klient.session(sessionId).getAgentExecutor(agentId) ?? null,
-    enabled: agentKnown && reportedExecutorId === undefined,
-    staleTime: 30_000,
-    retry: false,
   });
   const executorId = reportedExecutorId ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
   const confirmedNativeExecutor =
@@ -1147,18 +1017,9 @@ function ChildAgentWorkspace({
       .finally(() => {
         if (composerOwnerActive.current) setBranchFolding(false);
       });
-  }, [agentId, branchFoldPending, branchFolding, client, controller, headerBusy, locale, navigation, sessionId]);
+  }, [agentId, branchFoldPending, branchFolding, client, composerOwnerActive, controller, headerBusy, locale, navigation, sessionId]);
 
   const composerDisabled = !agentKnown || executorId === undefined || branchSealed;
-  const revealOwnSend = useCallback((joinsNow: boolean) => {
-    if (!joinsNow && headerBusy) return;
-    timelineActions.revealLatest();
-  }, [headerBusy, timelineActions.revealLatest]);
-  const handleFsSearch = useCallback(
-    (query: string, page?: FsSearchPageArgs) =>
-      client.fsSearch(sessionId, fsSearchRequestBody(query, page, { limit: 30 }), page?.signal),
-    [client, sessionId],
-  );
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
@@ -1398,9 +1259,7 @@ function ChildAgentWorkspace({
       // A queued acknowledgement already carries its final reason; only
       // restoring/held receipts are open to a later durable read.
       if (result.outcome === 'restoring' || result.outcome === 'held') {
-        // Neither carries a reason yet: leave the receipt open for the final one.
-        trackOpenNowReceipt(nowReceiptsRef.current, result.promptId, null);
-        setNowReceiptTick((tick) => tick + 1);
+        trackNowReceipt(result.promptId, null);
       }
     } catch (error) {
       const reason = error instanceof SendNowError ? error.reason : 'submit';
@@ -1423,32 +1282,10 @@ function ChildAgentWorkspace({
       });
     }
   };
-  // The first acknowledgement of a durable steer is not the last word: keep
-  // reading the receipt and explain the final reason when it lands. A prompt
-  // that started, steered or reached this agent's transcript is owned by it,
-  // so the pending explanation goes away instead of re-attaching.
   const childDurableIngress = useMemo(
     () => filterIngressForAgent(sessionState.durableIngress, agentId),
     [sessionState.durableIngress, agentId],
   );
-  useEffect(() => {
-    const tracked = nowReceiptsRef.current;
-    if (tracked.size === 0) return;
-    const ingress = sessionState.durableIngress ?? [];
-    for (const [promptId, reported] of tracked) {
-      const decision = nowReceiptDecision({
-        promptId, reported, ingress,
-        settled: agentLiveState.blocks.some((block) => block.kind === 'user' && block.promptId === promptId && block.promptStatus !== 'queued'),
-      });
-      if (decision.kind === 'wait') continue;
-      if (decision.kind === 'drop') {
-        tracked.delete(promptId);
-        continue;
-      }
-      tracked.set(promptId, decision.reason);
-      pushToast({ tone: 'info', text: t(sendNowQueuedNotice(decision.reason)) });
-    }
-  }, [agentLiveState.blocks, sessionState.durableIngress, nowReceiptTick, t]);
   // Stop is a server-side cancel that can fail; duplicate requests during the
   // round trip are guarded by a synchronous ref (a state-only guard can be
   // crossed by two events in the same batch), mirrored to state for the
@@ -1476,39 +1313,6 @@ function ChildAgentWorkspace({
       setStoppingTaskId(null);
     }
   };
-  // ---- model switching (child): the same panel and queue as main ----
-  const modelSwitches = useModelSwitches(
-    sessionId,
-    agentId,
-    agentLiveState.queuedPromptMeta,
-  );
-  const currentChildCanonicalModel = displayModel === undefined
-    ? undefined
-    : externalExecutor ? displayModel : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
-  const childEffortSourceSwitch = modelSwitches.dependency ?? modelSwitches.switches.findLast((entry) =>
-    entry.receipt.state === 'completed' &&
-    (resolveCatalogModel(modelsQuery.data?.items ?? [], entry.receipt.toModel)?.id ?? entry.receipt.toModel) === currentChildCanonicalModel);
-  const childCarriedThinking = typeof childEffortSourceSwitch?.input.thinking === 'string' && childEffortSourceSwitch.input.thinking !== ''
-    ? childEffortSourceSwitch.input.thinking
-    : undefined;
-  const {
-    dialog: modelSwitchDialog,
-    setDialog: setModelSwitchDialog,
-    dialogEffort: childDialogSwitchEffort,
-    submitting: modelSwitchSubmitting,
-    submit: submitModelSwitch,
-    open: openChildModelSwitch,
-    applyEffortSetting: applyChildEffortSetting,
-    noticeActions: modelSwitchActions,
-  } = useModelSwitchFlow({
-    client,
-    sessionId,
-    agentId,
-    catalogItems: modelsQuery.data?.items,
-    currentModel: currentChildCanonicalModel ?? displayModel ?? '',
-    carriedThinking: childCarriedThinking,
-    switches: modelSwitches,
-  });
   const handleChangeAgentModel = async (model: string | undefined) => {
     if (!agentKnown || model === undefined) return;
     const target = externalExecutor ? model : resolveCatalogModel(modelsQuery.data?.items ?? [], model)?.id ?? model;
@@ -1612,16 +1416,6 @@ function ChildAgentWorkspace({
       ?? selectedNode?.maxContextTokens
       ?? (executorId === 'native' ? resolvedDisplayModel?.max_context_size : undefined);
   const displayUsage = agentLiveState.usage ?? selectedNode?.usage;
-  // This agent's own compaction point: a child never inherits its parent's
-  // session override, so the read and write address this agent id.
-  const contextAutoCompact = useContextMeterAutoCompact({
-    sessionId: agentKnown && executorId !== undefined && (controller === null || agentLiveState.transcriptReady) ? sessionId : undefined,
-    agentId,
-    modelId: displayModel,
-    modelLabel: resolvedDisplayModel?.display_name ?? displayModel,
-    maxContextTokens: resolvedMaxContextTokens,
-    running: headerBusy,
-  });
   const displayMaxContextTokens = resolvedMaxContextTokens ?? contextAutoCompact?.status.effectiveMaxContextTokens;
   // The composer footer's context meter is the same one the main session
   // renders; its cumulative card reads THIS agent's projected lifetime totals.
@@ -1766,12 +1560,9 @@ function ChildAgentWorkspace({
     () => (composerWorking ? { lastResponseAt } : undefined),
     [composerWorking, lastResponseAt],
   );
-  // A busy child with a live controller steers on plain send unless a pending
-  // submission retry or queued model switch must hold the prompt on the queue.
-  const canSteerChildNow =
-    controller !== null && typeof controller.sendPromptNow === 'function';
-  const canSteerBusyPlain =
-    headerBusy && canSteerChildNow && modelSwitches.dependency === undefined && pendingSendRef.current === null;
+  // Difference B (`busyPlainSendMode: 'steer'`): a busy child with a live
+  // controller steers on plain send unless a pending submission retry or
+  // queued model switch holds the prompt on the queue.
   const handleComposerSendBusy: ComponentProps<typeof Composer>['onSend'] = (
     text,
     composerAttachments,
@@ -1792,6 +1583,8 @@ function ChildAgentWorkspace({
   }, [locale]);
 
   const chrome = (
+    <MessageViewContext.Provider value={core.messageViewContext}>
+    <InteractionPlacementContext.Provider value={core.interactionPlacement}>
     <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
     <AdmissionScope value={childAdmissionScope}>
     <WorkspaceSurface
@@ -1903,56 +1696,27 @@ function ChildAgentWorkspace({
           </ConversationDockColumn>
         ) : null}
         <Composer
+          {...core.composerProps}
           variant="subagent" replyingTo={isBranch ? undefined : displayName} busy={headerBusy}
           disabled={composerDisabled} sendDisabled={submissionInFlight}
           delegationPosition={isBranch ? 'main' : 'sub'}
           boundExecution={childExecution}
           engine={executorId === undefined ? { label: t('composer.unknown'), fork: false, images: false } : undefined}
           disabledPlaceholder={t('subagent.composerUnavailable')}
-          value={draft} onChange={handleDraftChange}
           model={displayModel} defaultModel={displayModel} serverDefaultModel={configuredDefaultModel ?? displayModel}
           modelSource="session" permissionMode={permissionMode}
-          pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
-            from: modelSwitches.active.receipt.fromModel,
-            to: modelSwitches.active.receipt.toModel,
-            mode: modelSwitches.active.input.mode,
-            originalThinking: modelSwitches.active.originalBinding.thinking,
-            targetThinking: modelSwitches.active.input.thinking,
-          }}
-          bindingSetting={modelSwitches.setting === undefined ? externalExecutor && externalBindingSetting !== undefined ? {
-            ...externalBindingSetting, state: 'next_message',
-          } : undefined : {
-            model: modelSwitches.setting.input.model,
-            thinking: modelSwitches.setting.input.thinking,
-            state: modelSwitches.setting.receipt.error !== undefined || modelSwitches.setting.receipt.state === 'failed' ? 'failed' : headerBusy ? 'next_step' : 'applying',
-            error: modelSwitches.setting.receipt.error?.message,
-            onRetry: modelSwitches.setting.receipt.error === undefined && modelSwitches.setting.receipt.state !== 'failed' ? undefined : () => modelSwitchActions.retry?.(modelSwitches.setting!.input.operationId),
-          }}
-          modelSwitchError={modelSwitches.error === undefined ? undefined : {
-            detail: modelSwitches.error.message,
-            onRetry: modelSwitches.refresh,
-          }}
           planMode={planMode} efforts={supportedEfforts} effort={displayEffort}
           contextUsage={displayContextTokens !== undefined && displayMaxContextTokens !== undefined
             ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
-          contextAutoCompact={contextAutoCompact}
-          sessionUsage={composerUsage} sessionId={sessionId} agentId={agentId} agentProfileCatalogMode={{ mode: 'disabled' }}
-          fsSearch={agentKnown ? handleFsSearch : undefined}
+          sessionUsage={composerUsage} agentProfileCatalogMode={{ mode: 'disabled' }}
           mentionScopeKey={`${scopeId}:${sessionId}`}
-          attachments={attachments} onChangeAttachments={handleAttachmentsChange}
-          annotations={annotations}
-          onRemoveAnnotation={handleRemoveAnnotation}
-          onUpdateAnnotation={handleUpdateAnnotation}
-          onLocateAnnotation={handleLocateAnnotation}
           onOpenImage={handleOpenImage}
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={handlePermissionChange}
           onChangePlanMode={handlePlanChange}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
-          onSend={canSteerBusyPlain ? handleComposerSendBusy : handleComposerSend}
+          onSend={core.busySendsNow ? handleComposerSendBusy : handleComposerSend}
           onActivateSkill={externalExecutor ? undefined : handleActivateSkill}
           onSendNow={canSteerChildNow ? handleComposerSendNow : undefined}
-          busySendsNow={canSteerBusyPlain}
-          sendTimingDefault={externalExecutor ? undefined : liveSettings.defaultAppendTiming}
           working={composerWorkingInfo}
           onAbort={headerBusy || runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
           abortPending={stoppingTaskId !== null}
@@ -1970,35 +1734,10 @@ function ChildAgentWorkspace({
       railOpen={railOpen} railIsOverlay={railIsOverlay} onCloseRail={onCloseRail}
     />
     </AdmissionScope>
-    <ModelSwitchDialog
-      open={modelSwitchDialog !== undefined}
-      fromModel={modelSwitchDialog?.fromModel ?? ''}
-      toModel={modelSwitchDialog?.toModel ?? ''}
-      initialMode={modelSwitchDialog?.initialMode ?? 'direct'}
-      editing={modelSwitchDialog?.editingOperationId !== undefined}
-      busy={headerBusy}
-      submitting={modelSwitchSubmitting}
-      matchedRuleId={modelSwitchDialog?.matchedRuleId}
-      efforts={childDialogSwitchEffort?.efforts}
-      initialEffort={childDialogSwitchEffort?.effort}
-      defaultEffort={childDialogSwitchEffort?.defaultEffort}
-      effortAdjustedFrom={childDialogSwitchEffort?.adjustedFrom}
-      onConfirm={(choice) => {
-        const dialog = modelSwitchDialog;
-        if (dialog === undefined) return;
-        void submitModelSwitch({
-          fromModel: dialog.fromModel,
-          toModel: dialog.toModel,
-          mode: choice.mode,
-          remember: choice.remember,
-          effort: choice.effort,
-          editingOperationId: dialog.editingOperationId,
-          editingRevision: dialog.editingRevision,
-        });
-      }}
-      onCancel={() => { setModelSwitchDialog(undefined); }}
-    />
+    <ModelSwitchDialog {...core.modelSwitchDialogProps} />
     </ModelSwitchActionsContext.Provider>
+    </InteractionPlacementContext.Provider>
+    </MessageViewContext.Provider>
   );
 
   // Embedded mode (preview tab): the ambient session-level provider already

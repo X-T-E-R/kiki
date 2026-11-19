@@ -37,6 +37,7 @@ import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui'
 import { UsageExportForm } from './UsageExportForm';
 import { HandoffSection } from './UsageExportHandoff';
 import { UsageExportPreviewBlock } from './UsageExportPreview';
+import { formatBytes } from '@kiki/session-core/util';
 import {
   USAGE_EXPORT_QUERY_KEY,
   categoryIsKnown,
@@ -45,7 +46,6 @@ import {
   downloadFileName,
   downloadJson,
   floorToHalfHour,
-  formatBytes,
   kindLabelKey,
   kindShortKey,
   needsAttention,
@@ -232,7 +232,7 @@ export function UsageExportPanel() {
             {queueLimit !== undefined ? (
               <div className="ml-auto flex flex-wrap items-center gap-x-2">
                 <span data-usage-export-capacity className={`font-mono tabular-nums ${queueUsed / queueLimit > 0.8 ? 'text-amber-ink' : 'text-ink-soft'}`}>
-                  {t('usage.export.capacity.value', { used: formatBytes(queueUsed), limit: formatBytes(queueLimit) })}
+                  {t('usage.export.capacity.value', { used: formatBytes(queueUsed, { unit: 'iec' }), limit: formatBytes(queueLimit, { unit: 'iec' }) })}
                 </span>
                 {queueUsed / queueLimit > 0.8 ? <span className="text-[11.5px] text-amber-ink">{t('usage.export.capacity.warning')}</span> : null}
                 {capacity === null ? (

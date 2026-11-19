@@ -110,10 +110,22 @@ export function SpaceFormPanel({ client: controlClient, mainPath, canOpen, mode,
 }
 
 /** §9.2 as one form: name and color, location, then what the space takes from the main space. */
-export function SpaceCreateForm({ client: controlClient, mainPath, canOpen, onClose, onDone }: {
+export function SpaceCreateForm({
+  client: controlClient,
+  mainPath,
+  canOpen,
+  layout = 'panel',
+  title,
+  onBusyChange,
+  onClose,
+  onDone,
+}: {
   client?: KikiClient;
   mainPath: string;
   canOpen: boolean;
+  layout?: 'panel' | 'dialog';
+  title?: string;
+  onBusyChange?: (busy: boolean) => void;
   onClose: () => void;
   onDone: (record: SpaceRecord, open: boolean, existing: boolean) => void;
 }) {
@@ -134,6 +146,10 @@ export function SpaceCreateForm({ client: controlClient, mainPath, canOpen, onCl
   const [issues, setIssues] = useState<{ name: string | null; path: string | null }>({ name: null, path: null });
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
 
   const suggested = suggestSpacePath(mainPath, name);
   const effectivePath = pathEdited ? path : suggested;
@@ -179,10 +195,14 @@ export function SpaceCreateForm({ client: controlClient, mainPath, canOpen, onCl
     }
   };
 
-  return (
-    <div className="flex min-h-full flex-col">
-    <form id={formId} data-space-create className="min-w-0 flex-1" onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <fieldset disabled={existingSpace} className={`grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] ${existingSpace ? 'opacity-50' : ''}`}>
+  const submitLabel = busy ? t('common.saving') : t(existingSpace
+    ? canOpen ? 'st.spaces.attachAndOpen' : 'st.spaces.attachConfirm'
+    : canOpen ? 'st.spaces.createAndOpen' : 'st.spaces.create');
+
+  const fields = (
+    <>
+      {title !== undefined ? <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2> : null}
+      <fieldset disabled={existingSpace} className={`${title !== undefined ? 'mt-4 ' : ''}grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] ${existingSpace ? 'opacity-50' : ''}`}>
           <div className="min-w-0">
             <label htmlFor={nameId} className={FORM_LABEL}>{t('st.spaces.name')}</label>
             <input id={nameId} data-autofocus data-space-name value={name} maxLength={80} autoComplete="off"
@@ -264,14 +284,29 @@ export function SpaceCreateForm({ client: controlClient, mainPath, canOpen, onCl
         </fieldset>
 
         <div className="mt-4"><FeedbackLine feedback={feedback} /></div>
+    </>
+  );
+
+  if (layout === 'dialog') {
+    return (
+      <form data-space-create onSubmit={(event) => { event.preventDefault(); submit(); }}>
+        {fields}
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
+          <button type="submit" data-space-create-submit className={PRIMARY_BUTTON} disabled={busy}>{submitLabel}</button>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <div className="flex min-h-full flex-col">
+    <form id={formId} data-space-create className="min-w-0 flex-1" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+      {fields}
     </form>
     <div className="sticky bottom-[calc(-1*var(--settings-scroll-pb,0px))] -mx-5 -mb-4 mt-4 flex justify-end gap-2 border-t border-hairline bg-panel px-5 py-3">
         <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-        <button type="submit" form={formId} data-space-create-submit className={PRIMARY_BUTTON} disabled={busy}>
-          {busy ? t('common.saving') : t(existingSpace
-            ? canOpen ? 'st.spaces.attachAndOpen' : 'st.spaces.attachConfirm'
-            : canOpen ? 'st.spaces.createAndOpen' : 'st.spaces.create')}
-        </button>
+        <button type="submit" form={formId} data-space-create-submit className={PRIMARY_BUTTON} disabled={busy}>{submitLabel}</button>
     </div>
     </div>
   );

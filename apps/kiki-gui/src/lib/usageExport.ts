@@ -172,12 +172,6 @@ export function isHalfHour(ms: number): boolean {
   return Number.isSafeInteger(ms) && ms >= 0 && ms % HALF_HOUR_MS === 0;
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MiB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KiB`;
-  return `${bytes} B`;
-}
-
 export interface PreviewQuality {
   readonly total: number;
   readonly known: number;

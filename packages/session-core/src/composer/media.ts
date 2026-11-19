@@ -740,9 +740,4 @@ export function documentPreviewFormatOf(path: string): DocumentPreviewFormat | u
   return undefined;
 }
 
-export function formatBytes(size: number): string {
-  if (!Number.isFinite(size) || size < 0) return '';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
-}
+export { formatBytes } from '../util/bytes';

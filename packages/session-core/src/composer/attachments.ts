@@ -24,6 +24,7 @@
 import type { AudioContent, FileContent, ImageContent, VideoContent, MessageContent } from '@kiki/protocol';
 
 import { LocalizedError, type ValidationIssue } from '../i18n/locale';
+import { formatBytes } from '../util/bytes';
 
 export interface FileMention {
   kind: 'file';
@@ -458,8 +459,4 @@ export function parseMentionTrigger(
   return { start: at, query };
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+export { formatBytes };

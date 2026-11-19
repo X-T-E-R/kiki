@@ -24,6 +24,7 @@ import { AgentTreeView } from '../AgentTreeView';
 import { relatedAgentNodes } from '../AgentBreadcrumb';
 import { Composer } from '../Composer';
 import { registerTimelineLocator, type TimelineTarget } from '../../lib/timelineLocate';
+import { InteractionPlacementContext, useInteractionPlacement } from '../Interactions';
 import { agentContinuationAvailable } from './AgentWorkspace';
 import { AgentWorkspace } from './OwnedAgentWorkspace';
 import { useAgentTimeline } from './useAgentTimeline';
@@ -178,11 +179,19 @@ vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: 
 // the workspace passes keep their identity.
 vi.mock('../Transcript', async () => {
   const { memo } = await import('react');
+  const { useInteractionPlacement: readPlacement } = await import('../Interactions');
+  const { useMessageViewContext: readMessageView } = await import('../message/messageViewContext');
   return { Transcript: memo(({ state, agentId, showQueuedPrompts }: { state: { blocks: readonly { id?: string; kind?: string; text?: string; optimisticStatus?: string }[]; loadError?: string; transcriptReady?: boolean }; agentId?: string; showQueuedPrompts?: boolean }) => {
     harness.transcriptRenders += 1;
+    const placement = readPlacement();
+    const messageView = readMessageView();
     return <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length}
       data-timeline-queued={showQueuedPrompts === true ? 'shown' : 'hidden'}
-      data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'}>
+      data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'}
+      data-interaction-in-tray={placement.inTray ? 'true' : 'false'}
+      data-message-view-session={messageView.sessionId ?? ''}
+      data-message-view-persona={messageView.persona?.name ?? ''}
+      data-message-view-internal={messageView.internalProse ? 'true' : 'false'}>
       {state.blocks.filter((block) => block.kind === 'user').map((block, index) =>
         <span key={index} data-timeline-user={block.text} data-timeline-optimistic={block.optimisticStatus} />)}
       {state.blocks.filter((block) => block.kind === 'assistant' && typeof block.text === 'string').map((block, index) =>
@@ -3908,4 +3917,136 @@ it('clears untrimmed trailing-whitespace drafts on send settlement and keeps a t
   await settle();
   expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
   expect(composerInput(dock).value).toBe('');
+});
+
+it('provides MessageViewContext to child workspaces and isolates InteractionPlacementContext when embedded alongside main', async () => {
+  const sessionState = {
+    ...createViewState('session'),
+    session: {
+      id: 'session',
+      title: 'Persona chat',
+      delivery: 'message',
+      agent_config: {
+        persona: { id: 'p-1', name: 'Nia' },
+      },
+      metadata: {},
+    },
+  } as unknown as ReturnType<typeof createViewState>;
+
+  const outerPlacement = { inTray: true, onReview: vi.fn(), pendingItems: [] };
+  const forest = testForest();
+  const controller = controllerStub({ forest, agentStates: {} });
+  let observedOuterInTray: boolean | undefined;
+  function OuterProbe() {
+    observedOuterInTray = useInteractionPlacement().inTray;
+    return null;
+  }
+
+  await act(async () => {
+    root.render(
+      <MemoryRouter initialEntries={['/s/session']}>
+        <QueryClientProvider client={queries}>
+          <I18nProvider>
+            <InteractionPlacementContext.Provider value={outerPlacement}>
+              <OuterProbe />
+              <AgentWorkspace
+                target={{ sessionId: 'session', agentId: 'child' }}
+                controller={controller}
+                sessionState={sessionState}
+                forest={testForest()}
+                navigation={{ openAgent: vi.fn(), openAgentRoute: vi.fn(), openSession: vi.fn() }}
+                railOpen={false}
+                railIsOverlay={false}
+                onToggleRail={vi.fn()}
+                onCloseRail={vi.fn()}
+                onCancelTask={vi.fn()}
+                onStopAgentTask={vi.fn(async () => {})}
+                inheritMediaPreview
+              />
+            </InteractionPlacementContext.Provider>
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  });
+  await settle();
+
+  expect(observedOuterInTray).toBe(true);
+  const timeline = container.querySelector<HTMLElement>('[data-timeline-agent="child"]')!;
+  expect(timeline).not.toBeNull();
+  expect(timeline.dataset['interactionInTray']).toBe('false');
+  expect(timeline.dataset['messageViewSession']).toBe('session');
+  expect(timeline.dataset['messageViewPersona']).toBe('Nia');
+  expect(timeline.dataset['messageViewInternal']).toBe('true');
+});
+
+it('wires onOpenSettings in the child ModelSwitchDialog so users can jump to model-switch defaults', async () => {
+  harness.listModels.mockResolvedValue({
+    items: [
+      { id: 'prov/m-old', remote_id: 'm-old', provider_id: 'prov', display_name: 'Model Old', support_efforts: ['low', 'high'] },
+      { id: 'prov/m-new', remote_id: 'm-new', provider_id: 'prov', display_name: 'Model New', support_efforts: ['low', 'high'] },
+    ],
+  });
+  harness.getConfig.mockResolvedValue({ model_switch: { default_mode: 'direct', rules: [] } });
+
+  const childState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: true,
+    model: 'prov/m-old',
+    blocks: [{ id: 'b-1', kind: 'assistant', text: 'Existing turn.' }] as unknown as ReturnType<typeof createViewState>['blocks'],
+  };
+  const forest = testForest();
+  const controller = controllerStub({
+    forest,
+    agentStates: { child: childState },
+  });
+  let currentPath = '';
+  function LocationProbe() {
+    const loc = useLocation();
+    currentPath = `${loc.pathname}${loc.search}${loc.hash}`;
+    return null;
+  }
+
+  await act(async () => {
+    root.render(
+      <MemoryRouter initialEntries={['/s/session/a/child']}>
+        <QueryClientProvider client={queries}>
+          <I18nProvider>
+            <LocationProbe />
+            <AgentWorkspace
+              target={{ sessionId: 'session', agentId: 'child' }}
+              controller={controller}
+              sessionState={createViewState('session')}
+              forest={testForest()}
+              navigation={{ openAgent: vi.fn(), openAgentRoute: vi.fn(), openSession: vi.fn() }}
+              railOpen={false}
+              railIsOverlay={false}
+              onToggleRail={vi.fn()}
+              onCloseRail={vi.fn()}
+              onCancelTask={vi.fn()}
+              onStopAgentTask={vi.fn(async () => {})}
+            />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  });
+  await settle();
+
+  const actionsTrigger = header.querySelector<HTMLButtonElement>('[data-agent-actions] button')!;
+  expect(actionsTrigger).not.toBeNull();
+  await act(async () => { actionsTrigger.click(); });
+  const freshContextBtn = header.querySelector<HTMLButtonElement>('[data-agent-fresh-context]')!;
+  expect(freshContextBtn).not.toBeNull();
+  await act(async () => { freshContextBtn.click(); });
+  await settle();
+
+  const settingsBtn = document.body.querySelector<HTMLButtonElement>('[data-model-switch-open-settings]');
+  expect(settingsBtn).not.toBeNull();
+  await act(async () => { settingsBtn!.click(); });
+  await settle();
+
+  expect(currentPath).toContain('/settings/ai');
+  expect(currentPath).toContain('st-card-model-switch');
 });

@@ -24,39 +24,54 @@ import type {
   CloseTerminalResponse,
   CompactSessionRequest,
   CompactSessionResponse,
-  ConfigResponse,
   CreateModelRequest,
+  CreateNamedAgentProfileRequest,
   CreateProviderRequest,
   CreateSessionBranchRequest,
   CreateSessionBranchResponse,
   CreateTerminalRequest,
+  CronRunResult,
   DiscardSessionBranchRequest,
   DiscardSessionBranchResponse,
+  ExecutorCheckResponse,
+  ExecutorDiscoveryResponse,
+  ExecutorDiscoveryStatus,
   FileMeta,
   FoldSessionBranchRequest,
   FoldSessionBranchResponse,
   FsSearchResponse,
   GetTaskQuery,
   GetTerminalResponse,
-  GoalFollowUpTiming,
   GoalSnapshot,
   GetCatalogProviderResponse,
   ListDiscoveredModelsResponse,
   ListMcpServersResponse,
   ListModelsResponse,
+  ListNamedAgentProfilesResponse,
   ListProvidersResponse,
-  ListSessionsQuery,
+  ListShippedAgentProfilesResponse,
   ListSkillsResponse,
   ListTasksResponse,
   ListTerminalsResponse,
   ListToolsResponse,
   ListWorkspacesResponse,
+  MemoryRestEntry,
+  MemoryRestJournalRecord,
   MemoryRestListQuery,
   MemoryRestListResponse,
+  MemoryRestPutBody,
+  MemoryRestPutResult,
+  MemoryRestTarget,
+  MemorySettingsResponse,
   Message,
   MessageContent,
   MetaResponse,
   ModelEntity,
+  NamedAgentModelProfile,
+  NamedAgentProfile,
+  NamedAgentRoute,
+  NamedAgentSpawnConstraints,
+  NamedAgentSubagentLease,
   PatchModelRequest,
   PatchProviderRequest,
   ProviderEntity,
@@ -72,14 +87,6 @@ import type {
   RecipeSaveLocalInput,
   RecipeSummary,
   RecipeUpdateInput,
-  CreateNamedAgentProfileRequest as ProtocolCreateNamedAgentProfileRequest,
-  ListNamedAgentProfilesResponse as ProtocolListNamedAgentProfilesResponse,
-  ListShippedAgentProfilesResponse as ProtocolListShippedAgentProfilesResponse,
-  NamedAgentModelProfile as ProtocolNamedAgentModelProfile,
-  NamedAgentProfile as ProtocolNamedAgentProfile,
-  NamedAgentRoute as ProtocolNamedAgentRoute,
-  NamedAgentSpawnConstraints as ProtocolNamedAgentSpawnConstraints,
-  NamedAgentSubagentLease as ProtocolNamedAgentSubagentLease,
   NbSearchCapabilities,
   NbSearchTestStatus,
   OAuthFlowSnapshot,
@@ -89,12 +96,8 @@ import type {
   OAuthLogoutRequest,
   OAuthLogoutResponse,
   PageResponse,
-  PatchConfigRequest,
-  PermissionMode,
   PromptAbortResponse,
   TurnAbortResponse,
-  PromptPlanGate,
-  RequestIdentityPolicyWire,
   PromptListResponse,
   PromptMoveRequest,
   PromptMoveResult,
@@ -120,12 +123,12 @@ import type {
   SetDefaultModelResponse,
   SetSessionBranchToolsLockRequest,
   SetSessionBranchToolsLockResponse,
-  ShippedAgentProfile as ProtocolShippedAgentProfile,
+  ShippedAgentProfile,
   Task,
   TaskStatus,
   Terminal,
   UndoSessionResponse,
-  UpdateNamedAgentProfileRequest as ProtocolUpdateNamedAgentProfileRequest,
+  UpdateNamedAgentProfileRequest,
   UpdateSessionProfileRequest,
   Workspace,
   PersonaAvatarDeleteResponse,
@@ -147,7 +150,27 @@ import type {
   PluginUsageTarget,
 } from '@kiki/protocol';
 
-import { RPCError, type AgentFacade, type AgentEventPayloads, type HttpRestCronTask, type HttpRestCronTaskDetail, type HttpRestCreateCronTask, type HttpRestUpdateCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
+import {
+  RPCError,
+  type AgentEventPayloads,
+  type AgentFacade,
+  type GlobalFacade,
+  type HttpRestCreateCronTask,
+  type HttpRestCronTask,
+  type HttpRestCronTaskDetail,
+  type HttpRestListSessionsQuery,
+  type HttpRestPluginMarketplaceEntry,
+  type HttpRestPluginMarketplaceResponse,
+  type HttpRestSearchMessageHit,
+  type HttpRestSearchMessagesBody,
+  type HttpRestSearchMessagesResponse,
+  type HttpRestUpdateCronTask,
+  type OAuthMethodStatus,
+  type PluginInfo as KlientPluginInfo,
+  type PluginSummary,
+  type PluginUpdateStatus,
+  type SessionViewFacade,
+} from '@kiki/klient';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import {
   fetchRemoteModels,
@@ -156,7 +179,31 @@ import {
   type ProviderModelDraft,
   type RemoteModelsProbe,
 } from '@kiki/session-core/settings';
-import { API_CODES, ApiError, isDefiniteSessionAbsenceMessage } from '@kiki/session-core/transport';
+import {
+  API_CODES,
+  ApiError,
+  isDefiniteSessionAbsenceMessage,
+  type AgentTranscriptAgent,
+  type AgentTranscriptAttachment,
+  type AgentTranscriptFrame,
+  type AgentTranscriptInteraction,
+  type AgentTranscriptMeta,
+  type AgentTranscriptPrompt,
+  type AgentTranscriptResponse,
+  type AgentTranscriptStepUsage,
+  type AgentTranscriptTask,
+  type AgentTranscriptTodo,
+  type AgentTranscriptTurn,
+  type EditMessageRequest,
+  type KikiConfigPatch as TransportKikiConfigPatch,
+  type KikiConfigResponse as TransportKikiConfigResponse,
+  type KikiForkSessionRequest,
+  type MessageRunOverrides,
+  type RegenerateMessageRequest,
+  type RuntimeConfigPatch as TransportRuntimeConfigPatch,
+  type RuntimeConfigProjection as TransportRuntimeConfigProjection,
+  type SessionCursor,
+} from '@kiki/session-core/transport';
 
 import { recordConnectionEvent } from '../state/connectionDiagnostics';
 import { anySignal } from './abortSignal';
@@ -177,183 +224,26 @@ export function isSessionNotFoundMessage(message: string): boolean {
   return isDefiniteSessionAbsenceMessage(message);
 }
 
-/**
- * Wire shapes for `POST /search` — the global cross-session message search.
- * These live in kap-server (`src/protocol/rest-search.ts`) and are not
- * re-exported by `@kiki/protocol`, so they are hand-rolled here from
- * that schema (snake_case on the wire).
- */
-export interface SearchMessagesBody {
-  query: string;
-  mode?: 'terms' | 'literal';
-  op?: 'AND' | 'OR';
-  container?: { session_id?: string; agent_id?: string };
-  workspace_id?: string;
-  role?: 'user' | 'assistant' | 'title';
-  include_tool_output?: boolean;
-  start_time?: number;
-  end_time?: number;
-  sort?: 'score' | 'time_desc' | 'time_asc';
-  page_size?: number;
-  page_token?: string;
-}
+/** Wire shapes for `POST /search`, re-exported from `@kiki/klient`. */
+export type SearchMessagesBody = HttpRestSearchMessagesBody;
+export type SearchMessageHit = HttpRestSearchMessageHit;
+export type SearchMessagesResponse = HttpRestSearchMessagesResponse;
 
-export interface SearchMessageHit {
-  session_id: string;
-  workspace_id: string;
-  session_title: string;
-  agent_id: string;
-  role: 'user' | 'assistant' | 'tool' | 'title';
-  snippet: string;
-  /** Epoch milliseconds (the index normalizes seconds vs ms server-side). */
-  time: number;
-  turn?: number;
-  step_id?: string;
-  score: number;
-}
+export type {
+  EditMessageRequest,
+  KikiForkSessionRequest,
+  MessageRunOverrides,
+  RegenerateMessageRequest,
+  SessionCursor,
+};
 
-export interface SearchMessagesResponse {
-  items: SearchMessageHit[];
-  has_more: boolean;
-  page_token?: string;
-  incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline' | 'scan_budget';
-  coverage?: {
-    domain: 'full_text';
-    complete: boolean;
-    gaps: readonly string[];
-    scanned: { readonly bytes: number; readonly records: number };
-  };
-  index_state: {
-    state: 'building' | 'ready' | 'readonly' | 'unavailable';
-    indexed_sessions: number;
-    total_sessions: number;
-    documents: number;
-    stale?: boolean;
-    degraded?: string;
-    reason?:
-      | 'disabled'
-      | 'indexer_backoff'
-      | 'memory_budget'
-      | 'wal_stuck'
-      | 'disk_low'
-      | 'corrupt_rebuilding'
-      | 'sqlite_unavailable'
-      | 'runtime_disabled';
-  };
-  source: 'live' | 'index';
-}
-
-/**
- * Optimistic-concurrency cursor for the message-closure routes
- * (`messages/{mid}:edit|regenerate`, `:fork` with a truncation point). The
- * server compares it against the session journal watermark and answers 40937
- * when the client acted on a stale view.
- */
-export interface SessionCursor {
-  readonly seq: number;
-  readonly epoch?: string;
-}
-
-/** Optional per-run execution overrides shared by :edit / :regenerate. */
-export interface MessageRunOverrides {
-  readonly model?: string;
-  readonly thinking?: string;
-  readonly permission_mode?: PermissionMode;
-  readonly plan_gate?: PromptPlanGate;
-  readonly plan_mode?: boolean;
-}
-
-/** `POST /sessions/{sid}/messages/{mid}:edit` body — full replacement semantics. */
-export interface EditMessageRequest extends MessageRunOverrides {
-  readonly operation_id?: string;
-  readonly content: MessageContent[];
-  readonly expected_cursor: SessionCursor;
-}
-
-/** `POST /sessions/{sid}/messages/{mid}:regenerate` body. */
-export interface RegenerateMessageRequest extends MessageRunOverrides {
-  readonly operation_id?: string;
-  readonly expected_cursor: SessionCursor;
-}
-
-/** `:fork` extension: truncate the forked history at a message (paired fields).
- * Fully local mirror (title/metadata echo ForkSessionRequest) so the app does
- * not depend on the in-flux protocol type. */
-export interface KikiForkSessionRequest {
-  readonly title?: string;
-  readonly metadata?: Record<string, unknown>;
-  readonly through_message_id?: string;
-  readonly expected_cursor?: SessionCursor;
-  readonly seed?: 'fresh' | 'compact' | 'verbatim';
-  readonly carry?: { readonly last: number } | { readonly fromMessageId: string };
-}
-
-export interface RuntimeConfigProjection {
-  readonly cron?: {
-    readonly debug: boolean;
-    readonly noJitter: boolean;
-    readonly noStale: boolean;
-    readonly disabled: boolean;
-    readonly manualTick: boolean;
-    readonly clock?: string;
-    readonly pollIntervalMs?: number | null;
-  };
-  readonly thread_communication?: { readonly enabled: boolean };
-  readonly token_counting?: { readonly strategy: 'measured+estimated' | 'measured' | 'estimated' };
-  readonly workspace_instance?: { readonly idleTtlMs?: number };
-  readonly image?: { readonly maxEdgePx?: number; readonly readByteBudget?: number };
-  readonly task?: {
-    readonly maxRunningTasks?: number;
-    readonly keepAliveOnExit?: boolean;
-    readonly bashAutoBackgroundOnTimeout?: boolean;
-    readonly bashTaskTimeoutS?: number;
-    readonly killGracePeriodMs?: number;
-    readonly printWaitCeilingS?: number;
-    readonly printBackgroundMode?: 'exit' | 'drain' | 'steer';
-    readonly printMaxTurns?: number;
-    readonly bashFileToolHints?: boolean;
-  };
-  readonly identity?: {
-    readonly name?: string;
-    readonly slug?: string;
-    readonly advertiseAsKimiCode?: boolean;
-  };
-  readonly extra_agent_dirs?: string[];
-  readonly skip_builtin_profile_installation?: string[];
-  readonly disabled_named_profiles?: string[];
-  readonly mcp?: { readonly startupTimeoutMs?: number; readonly toolTimeoutMs?: number };
+export type RuntimeConfigProjection = TransportRuntimeConfigProjection & {
   readonly plugins?: { readonly marketplaceUrl?: string };
-  readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
-  readonly agents?: {
-    readonly enabled?: boolean;
-    readonly notify_parent?: boolean;
-    readonly delegation?: { readonly sub?: boolean; readonly independent?: boolean };
-  };
-  readonly loop_control?: {
-    readonly maxStepsPerTurn?: number;
-    readonly maxAttemptsPerStep?: number;
-    readonly subagentContextStrategy?: 'summarize' | 'auto' | 'fresh';
-  };
-  readonly retry?: {
-    readonly maxAttempts?: number;
-    readonly retryPartialResponses?: boolean;
-    readonly policies?: ReadonlyArray<{
-      readonly match: string;
-      readonly models?: ReadonlyArray<string>;
-      readonly providers?: ReadonlyArray<string>;
-      readonly maxAttempts?: number;
-      readonly backoff?: number;
-      readonly retry?: boolean;
-    }>;
-  };
-  readonly thinking?: { readonly enabled?: boolean; readonly effort?: string; readonly keep?: string };
-}
+};
 
-export type KikiConfigResponse = Omit<ConfigResponse, 'subagent' | 'prompt'> & RuntimeConfigProjection & {
+export type KikiConfigResponse = Omit<TransportKikiConfigResponse, 'prompt'> & {
+  readonly plugins?: { readonly marketplaceUrl?: string };
   readonly prompt?: PromptConfig;
-  readonly subagent?: NonNullable<ConfigResponse['subagent']> & {
-    readonly denyModels?: string[];
-  };
   /**
    * Canonical nb_search patch object (snake_case subtree preserved verbatim
    * by kap-server's key conversion). Not in the shared protocol schema yet;
@@ -420,137 +310,40 @@ export function parseKikiConfigResponse(data: unknown): KikiConfigResponse {
   } as KikiConfigResponse;
 }
 
-export interface RuntimeConfigPatch {
-  readonly cron?: {
-    readonly debug: boolean;
-    readonly no_jitter: boolean;
-    readonly no_stale: boolean;
-    readonly disabled: boolean;
-    readonly manual_tick: boolean;
-    readonly clock?: string;
-    readonly poll_interval_ms?: number | null;
-  };
-  readonly token_counting?: { readonly strategy: 'measured+estimated' | 'measured' | 'estimated' };
-  readonly workspace_instance?: { readonly idle_ttl_ms?: number };
-  readonly image?: { readonly max_edge_px?: number; readonly read_byte_budget?: number };
-  readonly task?: {
-    readonly max_running_tasks?: number;
-    readonly keep_alive_on_exit?: boolean;
-    readonly bash_auto_background_on_timeout?: boolean;
-    readonly bash_task_timeout_s?: number;
-    readonly kill_grace_period_ms?: number;
-    readonly print_wait_ceiling_s?: number;
-    readonly print_background_mode?: 'exit' | 'drain' | 'steer';
-    readonly print_max_turns?: number;
-    readonly bash_file_tool_hints?: boolean;
-  };
-  readonly identity?: {
-    readonly name?: string;
-    readonly slug?: string;
-    readonly advertise_as_kimi_code?: boolean;
-  };
-  readonly extra_agent_dirs?: string[];
-  readonly skip_builtin_profile_installation?: string[];
-  readonly disabled_named_profiles?: string[];
-  readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
+export type RuntimeConfigPatch = TransportRuntimeConfigPatch & {
   readonly plugins?: { readonly marketplace_url?: string };
-  readonly thread_communication?: { readonly enabled: boolean | null };
-  readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
-  readonly agents?: {
-    readonly enabled?: boolean;
-    readonly notify_parent?: boolean;
-    readonly delegation?: { readonly sub?: boolean; readonly independent?: boolean };
-  };
-  readonly retry?: {
-    readonly max_attempts?: number;
-    readonly retry_partial_responses?: boolean;
-    readonly policies?: ReadonlyArray<{
-      readonly match: string;
-      readonly models?: ReadonlyArray<string>;
-      readonly providers?: ReadonlyArray<string>;
-      readonly max_attempts?: number;
-      readonly backoff?: number;
-      readonly retry?: boolean;
-    }>;
-  };
-  readonly thinking?: { readonly enabled?: boolean; readonly effort?: string; readonly keep?: string };
-}
-
-export type KikiConfigPatch = Omit<
-  PatchConfigRequest,
-  'subagent' | 'replace_domains' | 'request_identity' | 'prompt'
-> & RuntimeConfigPatch & {
-  readonly prompt?: PromptConfig;
-  readonly request_identity?: RequestIdentityPolicyWire | null;
-  /** Full-domain nb_search replace body; always paired with replace_domains. */
-  readonly nb_search?: Record<string, unknown>;
-  readonly subagent?: NonNullable<PatchConfigRequest['subagent']> & {
-    readonly deny_models?: string[];
-  };
-  readonly replace_domains?: readonly string[];
 };
 
-export type { OAuthMethodStatus };
-export type NamedAgentRoute = ProtocolNamedAgentRoute;
-export type NamedAgentModelProfile = ProtocolNamedAgentModelProfile;
-export type NamedAgentSpawnConstraints = ProtocolNamedAgentSpawnConstraints;
-export type NamedAgentSubagentLease = ProtocolNamedAgentSubagentLease;
-export type NamedAgentProfile = ProtocolNamedAgentProfile;
-export type ListNamedAgentProfilesResponse = ProtocolListNamedAgentProfilesResponse;
-export type CreateNamedAgentProfileRequest = ProtocolCreateNamedAgentProfileRequest;
-export type UpdateNamedAgentProfileRequest = ProtocolUpdateNamedAgentProfileRequest;
-export type ShippedAgentProfile = ProtocolShippedAgentProfile;
-export type ListShippedAgentProfilesResponse = ProtocolListShippedAgentProfilesResponse;
-/**
- * `POST /executors/{id}/check` result. Mirrors `executorCheckResponseSchema`
- * (the protocol exports the schema but no inferred type).
- */
-export interface ExecutorCheckResult {
-  readonly id: string;
-  readonly status: 'ready' | 'warning' | 'unavailable';
-  readonly version?: string;
-  readonly command: string;
-  readonly selected_source?: string;
-  readonly resolved_args: readonly string[];
-  readonly login_status: 'logged_in' | 'logged_out' | 'unknown';
-  /** Which credential the engine already has. Absent from servers that predate it. */
-  readonly credential_source?: import('@kiki/protocol').ExecutorCredentialSource;
-  readonly credential_detail?: string;
-  readonly diagnostics: readonly { readonly code?: string; readonly severity: 'info' | 'warning' | 'error'; readonly message: string }[];
-  /** Setup order: declared dependencies, then the launched program. Absent from servers that predate it. */
-  readonly requirements?: readonly import('@kiki/protocol').ExecutorRequirement[];
-}
+export type KikiConfigPatch = Omit<TransportKikiConfigPatch, 'prompt'> & {
+  readonly plugins?: { readonly marketplace_url?: string };
+  readonly prompt?: PromptConfig;
+  /** Full-domain nb_search replace body; always paired with replace_domains. */
+  readonly nb_search?: Record<string, unknown>;
+};
 
-export type { ExecutorDiscoveryStatus, ExecutorDiscoveryResponse } from '@kiki/protocol';
-export type ExecutorDiscoveryComponent = import('@kiki/protocol').ExecutorDiscoveryStatus['components'][number];
+export type ExecutorCheckResult = ExecutorCheckResponse;
 
-/**
- * Goal-control inputs mirrored from the engine's goal service (the klient
- * agent facade types them out of agent-core, which apps must not import).
- * `updateAgentGoal` rides `expectedRevision` for optimistic concurrency: a
- * stale revision fails with 40001 so the editor can reload and re-apply.
- */
-export interface CreateAgentGoalInput {
-  readonly objective: string;
-  readonly completionCriterion?: string;
-  readonly followUpTiming?: GoalFollowUpTiming;
-  readonly initialStatus?: 'active' | 'paused';
-  readonly replace?: boolean;
-}
+export type {
+  CreateNamedAgentProfileRequest,
+  CronRunResult,
+  ExecutorDiscoveryResponse,
+  ExecutorDiscoveryStatus,
+  ListNamedAgentProfilesResponse,
+  ListShippedAgentProfilesResponse,
+  NamedAgentModelProfile,
+  NamedAgentProfile,
+  NamedAgentRoute,
+  NamedAgentSpawnConstraints,
+  NamedAgentSubagentLease,
+  OAuthMethodStatus,
+  ShippedAgentProfile,
+  UpdateNamedAgentProfileRequest,
+};
+export type ExecutorDiscoveryComponent = ExecutorDiscoveryStatus['components'][number];
 
-export interface UpdateAgentGoalInput {
-  readonly goalId: string;
-  readonly expectedRevision?: number;
-  readonly objective?: string;
-  readonly completionCriterion?: string | null;
-  readonly followUpTiming?: GoalFollowUpTiming;
-  readonly budgetLimits?: import('@kiki/protocol').GoalBudgetPatch;
-}
-
-export interface ResumeAgentGoalInput {
-  readonly continueIfPaused?: boolean;
-  readonly continueIfBlocked?: boolean;
-}
+export type CreateAgentGoalInput = Parameters<AgentFacade['createGoal']>[0];
+export type UpdateAgentGoalInput = Parameters<AgentFacade['updateGoal']>[0];
+export type ResumeAgentGoalInput = NonNullable<Parameters<AgentFacade['resumeGoal']>[0]>;
 
 /**
  * Aggregated cron task from `GET /api/cron` (typed in klient's rest facade —
@@ -560,7 +353,6 @@ export type CronTask = HttpRestCronTask;
 export type CronTaskDetail = HttpRestCronTaskDetail;
 export type CreateCronTaskRequest = HttpRestCreateCronTask;
 export type UpdateCronTaskRequest = HttpRestUpdateCronTask;
-export type CronRunResult = import('@kiki/protocol').CronRunResult;
 
 export interface ListCronTasksResponse {
   readonly items: readonly CronTask[];
@@ -568,91 +360,30 @@ export interface ListCronTasksResponse {
   readonly next_offset?: number;
 }
 
-/**
- * Memory wire shapes (`/api/memory/*`, kap-server `routes/memory.ts`; the
- * entry and journal types mirror agent-core-v2 `app/memory/memoryStore.ts`).
- * Not part of `@kiki/protocol`, so they are hand-rolled here.
- */
-/** `persona*` scopes are one persona's own namespace (global, or inside one workspace). */
-export type MemoryScopeKind = 'global' | 'workspace' | 'persona' | 'persona_workspace';
-export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
-export type MemoryStatus = 'active' | 'pending' | 'superseded' | 'archived';
-export type MemoryWriter = 'user' | 'agent' | 'consolidator' | 'import';
-export type MemoryApproval = 'auto' | 'review' | 'off';
+/** Memory wire shapes derived from `@kiki/protocol` REST contracts. */
+export type MemoryScopeKind = MemoryRestTarget['scope'];
+export type MemoryType = MemoryRestEntry['type'];
+export type MemoryStatus = MemoryRestEntry['status'];
+export type MemoryWriter = MemoryRestEntry['source']['writer'];
+export type MemoryApproval = MemorySettingsResponse['approval'];
 
 export const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference'];
 
-/** Why the content is recorded as it is. `unknown` means unestablished, not false. */
-export type MemoryBasisKind = 'human' | 'observed' | 'derived' | 'unknown';
+export type MemoryBasis = NonNullable<MemoryRestEntry['basis']>;
+export type MemoryBasisKind = MemoryBasis['kind'];
+export type MemoryValidity = NonNullable<MemoryRestEntry['validity']>;
+export type MemoryCoveredBy = NonNullable<MemoryRestEntry['covered_by']>;
+export type MemoryWriteOutcome = MemoryRestPutResult['outcome'];
 
-/**
- * Content evidence, separate from `source`, which records who last wrote the
- * entry. A write's session and turn identify the writer, not the original
- * human instruction, so neither stands in for the other. Absent on entries
- * written before the field existed; nothing is inferred to fill it.
- */
-export interface MemoryBasis {
-  readonly kind: MemoryBasisKind;
-  readonly note: string;
-  readonly refs?: readonly string[];
-}
-
-/** What must be checked before relying on a changing fact, and its hard endpoint. */
-export interface MemoryValidity {
-  readonly check: string;
-  readonly until?: string;
-}
-
-/**
- * The active same-scope entry that took over this one's content when it was
- * retired, with the revision checked at the time. A stored entry carries
- * `revision`; a request sends the same pair as `expected_revision`.
- */
-export interface MemoryCoveredBy {
-  readonly id: string;
-  readonly revision: string;
-}
-
-/** What a write actually did. A pre-`outcome` server leaves it absent. */
-export type MemoryWriteOutcome = 'applied' | 'pending' | 'unchanged';
-
-export interface MemoryEntry {
-  readonly id: string;
-  readonly type: MemoryType;
-  readonly title: string;
-  readonly body: string;
-  readonly status: MemoryStatus;
-  readonly pinned: boolean;
-  readonly created: string;
-  readonly updated: string;
-  readonly source: { readonly writer: MemoryWriter; readonly session?: string; readonly turn?: number | string; readonly step?: string };
-  readonly reason: string;
-  readonly superseded_by?: string;
-  readonly supersedes?: string;
-  readonly supersedes_revision?: string;
-  /**
-   * Set on a pending review candidate: the action accepting it will perform on
-   * the entry it supersedes. The candidate's own id and revision are what a
-   * decision is made against; accepting an `update` keeps the original entry's
-   * id, and `archive` archives that entry rather than the candidate.
-   */
-  readonly pending_action?: 'update' | 'archive';
-  readonly basis?: MemoryBasis;
-  readonly validity?: MemoryValidity;
-  readonly covered_by?: MemoryCoveredBy;
-  readonly revision: string;
+export type MemoryEntry = Omit<MemoryRestEntry, 'source'> & {
+  readonly source: Omit<MemoryRestEntry['source'], 'turn'> & { readonly turn?: number | string };
   readonly content_complete?: boolean;
-}
+};
 
-export interface MemorySettings {
-  readonly enabled: boolean;
-  readonly approval: MemoryApproval;
-  readonly budget: number;
-  readonly workspaces: Readonly<Record<string, boolean>>;
+export type MemorySettings = Omit<MemorySettingsResponse, 'effective_enabled' | 'advisor_status'> & {
   readonly effective_enabled?: boolean;
-  /** Present once `[memory.advisor]` exists; its status is on the advisor read. */
-  readonly advisor?: import('@kiki/protocol').MemoryAdvisorConfig;
-}
+  readonly advisor_status?: MemorySettingsResponse['advisor_status'];
+};
 
 export interface MemoryWorkspaceSettings {
   readonly workspace_id: string;
@@ -661,47 +392,13 @@ export interface MemoryWorkspaceSettings {
   readonly effective_enabled: boolean;
 }
 
-export interface MemoryJournalRecord {
-  readonly operationId: string;
-  readonly action: string;
-  readonly id: string;
-  readonly at: string;
-  readonly writer: MemoryWriter;
-  readonly before: string | null;
-  readonly beforeRevision: string | null;
-  readonly afterRevision: string | null;
-}
-
-/**
- * Which store a memory call addresses: `workspaceId` is required for the two
- * workspace scopes, `personaId` for the two persona scopes.
- */
-export interface MemoryTarget {
-  readonly scope: MemoryScopeKind;
-  readonly workspaceId?: string;
-  readonly personaId?: string;
-}
-
-export interface MemoryPutBody {
-  readonly action?: 'create' | 'update' | 'supersede' | 'archive';
+export type MemoryJournalRecord = MemoryRestJournalRecord;
+export type MemoryTarget = MemoryRestTarget;
+export type MemoryPutBody = MemoryRestPutBody & {
   readonly type: MemoryType;
   readonly title: string;
   readonly body: string;
-  readonly reason: string;
-  readonly expected_revision?: string;
-  readonly pinned?: boolean;
-  /**
-   * Content metadata rides the same save, so editing here cannot silently drop
-   * what a write recorded. Both are omitted to keep what the store holds;
-   * `validity: null` clears a check deliberately, and `basis` is cleared by
-   * writing `{kind: 'unknown', note}` rather than by null.
-   */
-  readonly basis?: MemoryBasis;
-  readonly validity?: MemoryValidity | null;
-  /** Consolidation retirement: the retained same-scope entry and the revision checked against it. */
-  readonly covered_by?: { readonly id: string; readonly expected_revision: string };
-}
-
+};
 export type MemoryListQuery = MemoryRestListQuery;
 
 export interface MemoryListPage {
@@ -796,11 +493,7 @@ export interface MemoryForgetPreview {
 }
 
 /** The owner a Markdown file names, in the store's own camelCase shape. */
-export type MemoryMarkdownScope =
-  | { readonly kind: 'global' }
-  | { readonly kind: 'workspace'; readonly workspaceId: string }
-  | { readonly kind: 'persona'; readonly personaId: string }
-  | { readonly kind: 'persona_workspace'; readonly workspaceId: string; readonly personaId: string };
+export type MemoryMarkdownScope = NonNullable<MemoryRestEntry['scope']>;
 
 /**
  * One parsed `kiki-memory-v1` file. `id: 'new'` with `revision: null` creates;
@@ -837,42 +530,12 @@ export interface MemoryImportPreview {
   readonly issue?: { readonly code: string; readonly recovery: string };
 }
 
-export interface MemoryPutResult {
+export type MemoryPutResult = Omit<MemoryRestPutResult, 'entry' | 'outcome'> & {
   readonly entry: MemoryEntry;
-  readonly operationId: string | null;
   readonly outcome?: MemoryWriteOutcome;
-  readonly warnings?: readonly string[];
-}
+};
 
-export interface CapabilityStatus {
-  readonly id: 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer' | 'kiki-browser';
-  readonly pluginId?: string;
-  readonly displayName: string;
-  readonly description: string;
-  readonly supported: boolean;
-  readonly state: 'not_installed' | 'partial' | 'ready' | 'unsupported';
-  /** Installed release, when the entry reports one. */
-  readonly version?: string;
-  readonly steps: readonly {
-    readonly id: string;
-    readonly state: 'ok' | 'missing' | 'failed';
-    /**
-     * Machine-readable reason the client localizes. `detail` is the detector's
-     * own sentence and belongs in folded diagnostics, not the first screen —
-     * see the WebBridge readiness card in `PluginsSection`.
-     */
-    readonly reason?: string;
-    readonly detail?: string;
-    readonly optional?: boolean;
-  }[];
-  readonly install: { readonly running: boolean; readonly step?: string; readonly percent?: number; readonly error?: string; readonly note?: string };
-  readonly plan?: {
-    readonly artifact: { readonly version: string; readonly url: string; readonly sha256: string; readonly metadataUrl: string; readonly maxBytes: number };
-    readonly destination: string;
-    readonly browserExtensionUrl?: string;
-    readonly note: string;
-  };
-}
+export type CapabilityStatus = Awaited<ReturnType<GlobalFacade['capabilities']['get']>>;
 
 /** Agent hosts that can load a Kiki skill from their user skills folder. */
 export type HostSkillTarget = 'claude' | 'codex' | 'grok' | 'agents';
@@ -890,52 +553,7 @@ export interface HostSkillInstallPreview {
   readonly revision: string;
 }
 
-/** GitHub update status from `pluginService.checkUpdates` (GitHub installs only). */
-export interface PluginUpdateStatus {
-  readonly id: string;
-  readonly source: 'local-path' | 'zip-url' | 'github';
-  readonly current?: { readonly kind: 'branch' | 'tag' | 'sha'; readonly value: string };
-  readonly latest: { readonly kind: 'branch' | 'tag' | 'sha'; readonly value: string };
-  /** Tag, or the first 12 hex of the tracked branch's head commit. */
-  readonly displayVersion: string;
-  readonly updateAvailable: boolean;
-}
-
-/** Installed plugin summary from GET /api/plugins. */
-export interface PluginSummary {
-  readonly id: string;
-  readonly displayName: string;
-  readonly version?: string;
-  /** Manifest icon inlined as a `data:` URI (svg/png); inert in an `<img>`. */
-  readonly icon?: string;
-  readonly enabled: boolean;
-  readonly globalEnabled: boolean;
-  /** Default for workspaces without their own choice; older servers omit it. */
-  readonly defaultEnabled?: boolean;
-  readonly asrProviders?: readonly import('@kiki/protocol').AsrProviderDefinition[];
-  readonly state: 'ok' | 'error';
-  readonly skillCount: number;
-  readonly mcpServerCount: number;
-  readonly enabledMcpServerCount: number;
-  readonly hookCount: number;
-  readonly commandCount: number;
-  readonly hasErrors: boolean;
-  readonly source: 'local-path' | 'zip-url' | 'github';
-  readonly originalSource?: string;
-  readonly github?: {
-    readonly owner: string;
-    readonly repo: string;
-    readonly ref: { readonly kind: 'branch' | 'tag' | 'sha'; readonly value: string };
-    readonly installedSha?: string;
-  };
-  readonly zipSha256?: string;
-  /** The previous managed copy a rollback switches back to. */
-  readonly rollback?: {
-    readonly version?: string;
-    readonly source: 'local-path' | 'zip-url' | 'github';
-    readonly originalSource?: string;
-  };
-}
+export type { PluginSummary, PluginUpdateStatus };
 
 export interface ListPluginsResponse {
   readonly plugins: readonly PluginSummary[];
@@ -949,91 +567,28 @@ export interface PluginCommandSummary {
   readonly prompt: string;
 }
 
-export interface PluginMarketplaceEntry {
-  readonly id: string;
-  readonly tier: 'official' | 'curated' | 'third-party';
-  readonly displayName: string;
-  readonly description?: string;
-  readonly homepage?: string;
-  /** `data:` URI (local official entries, inlined by the server) or http(s) URL. */
-  readonly icon?: string;
-  readonly keywords?: readonly string[];
-  readonly relevance?: {
-    readonly cwd?: readonly string[];
-    readonly fileGlobs?: readonly string[];
-    readonly commands?: readonly string[];
-    readonly dependencies?: readonly string[];
-  };
-  readonly version?: string;
-  readonly source: string;
-  /** Digest of the archive at `source`, when the catalog publishes one. */
-  readonly sha256?: string;
-  /** Plugin engine range this build is checked against, not the product version. */
+export type PluginMarketplaceEntry = HttpRestPluginMarketplaceEntry & {
   readonly engines?: { readonly kiki?: string };
   readonly author?: string;
   readonly license?: string;
-  /** Whether this build can install the entry now; a listed entry may not be installable. */
   readonly installable?: boolean;
-  /** Catalog-declared sub-group, so a package family reads as one block. */
   readonly group?: string;
-  /**
-   * Per-language catalog text keyed by language tag, so the reader sees names
-   * and descriptions in their own language. Catalog metadata only — it never
-   * travels with the plugin itself. Every field is optional and falls back to
-   * the top-level value, so an entry with no localization simply shows its own
-   * text.
-   */
   readonly localizations?: Readonly<Record<string, {
     readonly displayName?: string;
     readonly description?: string;
     readonly keywords?: readonly string[];
   }>>;
-  readonly installed?: { readonly version?: string; readonly enabled: boolean };
-  readonly updateAvailable?: boolean;
-}
+};
 
-export interface PluginMarketplaceResponse {
-  readonly configured: boolean;
-  readonly source?: string;
+export type PluginMarketplaceResponse = Omit<HttpRestPluginMarketplaceResponse, 'entries'> & {
   readonly entries: readonly PluginMarketplaceEntry[];
-}
+};
 
-export interface PluginMcpServerInfo {
-  readonly name: string;
-  readonly runtimeName: string;
-  readonly enabled: boolean;
-  readonly transport: 'stdio' | 'http' | 'sse';
-  readonly command?: string;
-  readonly args?: readonly string[];
-  readonly cwd?: string;
-  readonly url?: string;
-  readonly envKeys?: readonly string[];
-  readonly headerKeys?: readonly string[];
-}
-
-export interface PluginDiagnostic {
-  readonly severity: 'error' | 'warn' | 'info';
-  readonly message: string;
-}
-
-export interface PluginInfo extends PluginSummary {
-  readonly root: string;
-  readonly installedAt: string;
-  readonly updatedAt?: string;
-  readonly manifestKind?: 'kimi-plugin-root' | 'kimi-plugin-dir';
-  readonly manifestPath?: string;
+export type PluginMcpServerInfo = KlientPluginInfo['mcpServers'][number];
+export type PluginDiagnostic = KlientPluginInfo['diagnostics'][number];
+export type PluginInfo = Omit<KlientPluginInfo, 'manifest'> & {
   readonly manifest?: Readonly<Record<string, unknown>>;
-  readonly prerequisites?: {
-    readonly origin: 'kiki-compatibility' | 'plugin-declared';
-    readonly items: { readonly schemaVersion: 1; readonly items: readonly {
-      readonly id: string; readonly kind: string; readonly required: boolean;
-      readonly version?: string; readonly setting?: string; readonly executionHost?: string;
-    }[] };
-  };
-  readonly mcpServers: readonly PluginMcpServerInfo[];
-  readonly shadowedManifestPath?: string;
-  readonly diagnostics: readonly PluginDiagnostic[];
-}
+};
 
 export type { PluginPanelStream } from './pluginPanelStream';
 
@@ -1068,239 +623,21 @@ export interface KikiClientOptions {
   readonly onSessionMutation?: (sessionId: string) => void;
 }
 
-export type AgentTranscriptFrame =
-  | {
-      kind: 'text';
-      frameId: string;
-      role: 'assistant' | 'user';
-      text: string;
-      /** Canonical attachment ids on this frame (assistant image/audio/resource blobs). */
-      attachmentIds?: readonly string[];
-      /** Linked task entity for user-role inputs about a task. */
-      taskId?: string;
-      /** Engine prompt origin for non-typed user inputs (e.g. {kind:'task'}). */
-      origin?: unknown;
-    }
-  | { kind: 'thinking'; frameId: string; text: string }
-  | {
-      kind: 'tool';
-      frameId: string;
-      toolCallId: string;
-      name: string;
-      state: 'running' | 'done' | 'error' | 'interrupted';
-      input?: unknown;
-      output?: unknown;
-      display?: unknown;
-      error?: string;
-      inputText?: string;
-      startedAt?: string;
-      endedAt?: string;
-      /** Canonical attachment ids on this call's output, alongside its content parts. */
-      attachmentIds?: readonly string[];
-      progress?: { text?: string };
-      /** Agents spawned by this call. */
-      agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' }[];
-    }
-  | { kind: 'notice'; frameId: string; level: 'error' | 'warning' | 'info'; message: string };
+export type {
+  AgentTranscriptAgent,
+  AgentTranscriptAttachment,
+  AgentTranscriptFrame,
+  AgentTranscriptInteraction,
+  AgentTranscriptMeta,
+  AgentTranscriptPrompt,
+  AgentTranscriptResponse,
+  AgentTranscriptStepUsage,
+  AgentTranscriptTask,
+  AgentTranscriptTodo,
+  AgentTranscriptTurn,
+};
 
-export interface AgentTranscriptTurn {
-  readonly kind: 'turn';
-  readonly turnId: string;
-  readonly prompt?: string;
-  readonly startedAt?: string;
-  readonly endedAt?: string;
-  readonly durationMs?: number;
-  /**
-   * External-executor turn metadata (`executor.turn.metadata` →
-   * `TranscriptTurn.execution`); opaque passthrough, validated in the
-   * projection (`turnExecutionFromItem`).
-   */
-  readonly execution?: unknown;
-  readonly steps: readonly {
-    stepId: string;
-    startedAt?: string;
-    endedAt?: string;
-    frames: readonly AgentTranscriptFrame[];
-  }[];
-}
-
-/**
- * Session-global interaction entity (approval/question).
- *
- * Gap: the wire entity has no origin / parent-agent field. Origin is implied
- * by the requested `agent_id` (and the unpaginated `agents` roster), not
- * shipped per interaction. Do not invent one client-side.
- */
-export interface AgentTranscriptInteraction {
-  readonly interactionId: string;
-  readonly interactionKind: 'approval' | 'question';
-  readonly toolCallId?: string;
-  readonly origin?: unknown;
-  readonly anchor?: unknown;
-  readonly state: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'answered' | 'dismissed';
-  readonly request?: unknown;
-  readonly response?: unknown;
-}
-
-/**
- * One entry of the unpaginated `agents` roster on a transcript page.
- * Local mirror of the transcript-package `AgentDescriptor` (that package is
- * not a GUI dependency).
- */
-export interface AgentTranscriptAgent {
-  readonly agentId: string;
-  readonly type?: 'main' | 'sub' | 'independent';
-  readonly parentAgentId?: string;
-  readonly delegator?:
-    | { readonly kind: 'agent'; readonly agentId: string }
-    | { readonly kind: 'external'; readonly delegationId: string };
-  readonly label?: string;
-  readonly createdAt?: string;
-  readonly disposedAt?: string;
-}
-
-/**
- * Engine `TokenUsage` wire shape (`stepUsageSchema`), copied through opaquely
- * on task and agent-status usage slices.
- */
-export interface AgentTranscriptStepUsage {
-  readonly inputOther: number;
-  readonly output: number;
-  readonly inputCacheRead: number;
-  readonly inputCacheCreation: number;
-}
-
-/** Unpaginated task entity (`tasks[]` on every transcript page). */
-export interface AgentTranscriptTask {
-  readonly taskId: string;
-  readonly kind: 'shell' | 'subagent' | 'tool' | 'other';
-  readonly state: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
-  readonly detached: boolean;
-  readonly name?: string;
-  readonly subagentName?: string;
-  readonly description?: string;
-  readonly agentId?: string;
-  readonly outputTail: string;
-  readonly startedAt?: string;
-  readonly endedAt?: string;
-  readonly resultSummary?: string;
-  readonly error?: string;
-  readonly stateReason?: string;
-  /** Token usage of the finished run (`subagent.completed`). */
-  readonly usage?: AgentTranscriptStepUsage;
-}
-
-/** Unpaginated attachment metadata (`attachments[]`; bytes never ride this API). */
-export interface AgentTranscriptAttachment {
-  readonly attachmentId: string;
-  readonly mediaType: string;
-  readonly name?: string;
-  readonly size?: number;
-  readonly source?:
-    | { readonly kind: 'url'; readonly url: string }
-    | { readonly kind: 'file'; readonly fileId: string }
-    | { readonly kind: 'session_media'; readonly fileId: string };
-  readonly placeholder?: string;
-}
-
-/** Unpaginated todo document (`todos[]`). */
-export interface AgentTranscriptTodo {
-  readonly todoId: string;
-  readonly items: readonly {
-    readonly title: string;
-    readonly status: 'pending' | 'in_progress' | 'done';
-  }[];
-  readonly updatedAt?: string;
-}
-
-/** Unpaginated prompt-queue entity (`prompts[]`). */
-export interface AgentTranscriptPrompt {
-  readonly promptId: string;
-  readonly status: 'running' | 'queued' | 'blocked' | 'completed' | 'failed' | 'aborted';
-  readonly userMessageId?: string;
-  readonly content?: unknown;
-  readonly createdAt: string;
-  readonly finishedAt?: string;
-  readonly steeredAt?: string;
-}
-
-/** Unpaginated floating meta (`meta`). */
-export interface AgentTranscriptMeta {
-  readonly goal?: {
-    readonly objective: string;
-    readonly status: 'active' | 'paused' | 'blocked' | 'complete';
-    readonly completionCriterion?: string;
-    readonly budgetUsed?: number;
-    readonly budgetLimit?: number;
-  };
-  readonly modes?: {
-    readonly plan?: { readonly reviewPath?: string; readonly version?: number };
-  };
-  readonly activity?: 'idle' | 'turn' | 'disposing' | 'unknown';
-  readonly agent?: {
-    readonly model?: string;
-    readonly thinkingEffort?: string;
-    readonly usage?: {
-      readonly byModel?: Readonly<Record<string, AgentTranscriptStepUsage>>;
-      readonly currentTurn?: AgentTranscriptStepUsage;
-      readonly total?: AgentTranscriptStepUsage;
-    };
-    readonly contextTokens?: number;
-    readonly maxContextTokens?: number;
-    readonly contextUsage?: number;
-    readonly permission?: 'manual' | 'yolo' | 'auto';
-    /**
-     * Wire-owned `agentPhaseSchema` (idle / running / streaming / tool_call /
-     * retrying / awaiting_approval / interrupted / ended). The full
-     * discriminated union lives in `@kiki/transcript`; GUI only
-     * pass-throughs it.
-     */
-    readonly phase?: { readonly kind: string; readonly [key: string]: unknown };
-  };
-}
-
-/**
- * `GET /sessions/{id}/transcript` page. `items` / `has_more` are the turn
- * window; `agents`, `tasks`, `interactions`, `attachments`, `todos`,
- * `prompts`, `meta`, and `pending_interactions` are session-global and ship
- * with every page. Newer fields stay optional so a compact legacy body still
- * type-checks.
- */
-export interface AgentTranscriptResponse {
-  readonly agent_id: string;
-  /** Complete agent-history count; absent when only a partial history is known. */
-  readonly tool_call_count?: number;
-  readonly items: readonly (
-    | AgentTranscriptTurn
-    | { kind: 'marker'; markerId: string; marker: string; at?: string }
-    | { kind: 'taskref'; refId: string; taskId: string; at?: string }
-  )[];
-  readonly has_more: boolean;
-  /** Session-global interaction entities (approval/question), shipped
-   * unpaginated with every transcript response. `request`/`response` carry
-   * the engine payloads (v2 field names: toolName/action/display/questions). */
-  readonly interactions?: readonly AgentTranscriptInteraction[];
-  readonly agents?: readonly AgentTranscriptAgent[];
-  readonly tasks?: readonly AgentTranscriptTask[];
-  readonly todos?: readonly AgentTranscriptTodo[];
-  readonly prompts?: readonly AgentTranscriptPrompt[];
-  readonly meta?: AgentTranscriptMeta;
-  readonly pending_interactions?: readonly string[];
-  /** Op-batch watermark: this state includes every batch with seq <= N. */
-  readonly seq?: number;
-  readonly attachments?: readonly AgentTranscriptAttachment[];
-  readonly origin?: unknown;
-  readonly anchor?: unknown;
-}
-
-/**
- * `GET /sessions` query widened with `workspace_id` — kap-server accepts it
- * (`sessionsListQueryCoercion`) but `@kiki/protocol`'s
- * `ListSessionsQuery` has not caught up, so the client advertises it locally.
- */
-export interface ListSessionsOptions extends ListSessionsQuery {
-  readonly workspace_id?: string;
-}
+export type ListSessionsOptions = HttpRestListSessionsQuery;
 
 /**
  * Durable-mailbox acceptance for a message sent to a persisted external agent.

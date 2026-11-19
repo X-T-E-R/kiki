@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { DESKTOP_LOG_LEVELS, writeDesktopPrefs, type DesktopLogLevel } from '@kiki/session-core/settings';
+import { formatBytes } from '@kiki/session-core/util';
 import { useHost, type DesktopLogInfo } from '../../host';
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
@@ -12,13 +13,6 @@ import { SectionCard } from './SectionCard';
 import { SettingField, SettingsBox } from './fields';
 import { SettingsSelect } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
-
-/** Human size for the rotation line: 5 MiB, 512 KiB. */
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MiB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KiB`;
-  return `${bytes} B`;
-}
 
 /**
  * About › Desktop log (desktop runtime only): where the backend writes its
@@ -91,7 +85,7 @@ export function DesktopLogCard() {
         {info !== null ? (
           <SettingField
             label={t('st.desktopLog.fileLabel')}
-            help={t('st.desktopLog.rotation', { size: formatBytes(info.maxBytes), count: info.backups })}
+            help={t('st.desktopLog.rotation', { size: formatBytes(info.maxBytes, { unit: 'iec' }), count: info.backups })}
             layout="stack"
           >
             <div data-desktop-log-path className="flex flex-wrap items-center gap-2">

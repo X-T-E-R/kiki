@@ -8,13 +8,12 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSkillActivation, PromptSubmission, Session, SessionPendingInteraction, SessionSeedMode } from '@kiki/protocol';
 import { mediaFromContentParts, mediaRefWithAttachmentDetail } from '@kiki/session-core/composer/media';
 
-import { AgentWorkspace, countPendingInteractions, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, useAgentTimeline, useModelSwitchFlow, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
+import { AgentWorkspace, countPendingInteractions, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, useAgentWorkspaceCore, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
 import { PhoneRemoteSpaceLine } from './PageChrome';
@@ -25,9 +24,7 @@ import { ContextBreakdownProvider } from './ContextMeter';
 import { useCompactionProgress } from './useCompactionProgress';
 import { useLastResponseAt } from './composerWorking';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
-import { useProfileFilePreview } from '../lib/profileFilePreview';
 import { profileThinkingDefault } from '../lib/profileThinking';
-import { useContextMeterAutoCompact } from './useContextMeterAutoCompact';
 import {
   useConversationShell,
   useRegisterSeat,
@@ -44,7 +41,6 @@ import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext } from './model-switch/ModelSwitchNotice';
-import { useModelSwitches } from './model-switch/useModelSwitches';
 import { useRailMode } from './rail-variants/shell';
 import { PromptEffectiveDrawer } from './agent-panel/PromptEffectiveDrawer';
 import { useInspectorFocusTracking } from './inspectorFocus';
@@ -53,13 +49,12 @@ import {
   restoreSentAnnotations,
   serializeSelectionCarryover,
   updateStoredAnnotations,
-  useConversationAnnotations,
 } from './agent-workspace/useConversationAnnotations';
 import { registerTurnLocateHint, useStableForest, type TranscriptRowActions } from './Transcript';
 import { mergeLoadedAttachments } from './RowActions';
 import { Icon } from './icons';
 import { useSidebarContext } from './sidebarContext';
-import { MessageViewContext, type MessageViewContextValue } from './message/messageViewContext';
+import { MessageViewContext } from './message/messageViewContext';
 import { isTimelineViewShortcut, useTimelineView, type TimelineView } from './message/messageViewMode';
 import { TimelineMenuRows, TimelineViewSwitch } from './message/TimelineViewSwitch';
 import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
@@ -101,15 +96,12 @@ import {
   retainedAttachmentsFromContent,
   fileToImageAttachment,
   buildSkillActivation,
-  flushDrafts,
   parseSelectionCarryovers,
   reconcileEditedThreadRefs,
   readComposerState,
   resolveComposerModelOverrides,
-  readDraft,
   recoverSubmittedDraft,
   restorePromptToDraft,
-  subscribeDraftAppends,
   writeComposerState,
   writeDraft,
   type ComposerAttachment,
@@ -118,7 +110,6 @@ import {
   type ComposerModelChoice,
   type ComposerModelBindingChange,
   type SelectionAnnotation,
-  boundExecutionChoice,
   sendsLegacyControl,
   namesLegacyControl,
   executionSelectionOf,
@@ -149,7 +140,7 @@ import {
   type SubagentBlock,
   type UserBlock,
 } from '@kiki/session-core/session';
-import { settingsCardRoute, shortCwd, type SessionListData } from '@kiki/session-core/sessions';
+import { shortCwd, type SessionListData } from '@kiki/session-core/sessions';
 import { errorText } from '@kiki/session-core/i18n';
 import { readFirstSessionMessage, writeFirstSessionMessage, clearFirstSessionMessage, submitFirstSessionMessage, type FirstSessionMessageRecord, type FirstSessionSubmission } from '../lib/newSessionCreation';
 import { spaceStorage } from '../lib/spaceStorage';
@@ -172,13 +163,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import {
-  agentProfileCatalogQueryKey,
-  agentProfileCatalogRefetchInterval,
-  invalidateAgentProfileCatalogs,
-  loadAgentProfileCatalog,
-  type AgentProfileCatalogMode,
-} from '../lib/agentProfileCatalog';
+import { invalidateAgentProfileCatalogs } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, isUnconfirmedTransportError, type ModelSwitchMode, type UpdateAgentGoalInput } from '../lib/client';
 import { isMediaPreviewUnavailable } from './mediaParts';
 import { invalidatePluginQueries } from '../lib/pluginFreshness';
@@ -194,8 +179,7 @@ import { InteractionPlacementContext, type InteractionPlacement } from './Intera
 import { externalClientsFacade } from '../lib/externalClients';
 import { ExternalClientMark, ExternalSessionComposer, useExternalClientMark } from './externalClients/ExternalClientSession';
 import { HarnessMark } from './harness/HarnessMark';
-import { harnessDenies, useSessionHarness, type SessionHarness } from './harness/sessionHarness';
-import { useExecutorCatalog } from './settings/profileEditor/engines';
+import { harnessDenies, type SessionHarness } from './harness/sessionHarness';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
 import { useViewedSession } from '../lib/useAwayNotifications';
@@ -2289,11 +2273,6 @@ export function SessionView({
   const initialPromptRef = useRef(createHandoff.initialPrompt);
   const initialSkillRef = useRef(createHandoff.initialSkill);
   const initialOptionsRef = useRef(createHandoff);
-  const liveSettings = useSyncExternalStore(
-    subscribeSettings,
-    settingsSnapshot,
-    settingsServerSnapshot,
-  );
   const defaults = useMemo(() => readSettings(), []);
   // Composer chrome captured the last time this session was open (memory
   // only): attachment chips and pill overrides restore instead of vanishing
@@ -2477,8 +2456,6 @@ export function SessionView({
   } | null>(null);
   const queueEditRef = useRef(queueEdit);
   queueEditRef.current = queueEdit;
-  const composerOwnerActive = useRef(true);
-  const [draft, setDraft] = useState('');
   const [pendingSubmission, setPendingSubmission] = useState<{
     id: string;
     agentId: string;
@@ -2497,12 +2474,6 @@ export function SessionView({
   const pendingRetryRef = useRef<{ readonly id: string; readonly run: () => void } | undefined>(undefined);
   const pendingRecoveryRef = useRef<{ readonly id: string; readonly restore: () => void } | undefined>(undefined);
   const pendingSendRef = useRef(false);
-  // "Send now" receipts still open to a late durable read: prompt id → the
-  // reason already reported (null = only the generic queued notice went out).
-  const nowReceiptsRef = useRef(new Map<string, string | null>());
-  // Re-read the ingress snapshot after a receipt registers, even when the
-  // controller had already published it before this promise settled.
-  const [nowReceiptTick, setNowReceiptTick] = useState(0);
   useEffect(() => {
     if (pendingSubmission === undefined || pendingSubmission.slow) return;
     const timer = setTimeout(() => {
@@ -2511,32 +2482,6 @@ export function SessionView({
     }, 10_000);
     return () => { clearTimeout(timer); };
   }, [pendingSubmission]);
-  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
-    () =>
-      initialOptionsRef.current.initialSkill?.attachments ??
-      initialOptionsRef.current.initialAttachments ??
-      restoredComposer.attachments ??
-      [],
-  );
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
-  const attachmentsRef = useRef(attachments);
-  attachmentsRef.current = attachments;
-  const mainTranscriptBlocksRef = useRef<readonly Block[]>([]);
-  const {
-    annotations,
-    setAnnotations,
-    annotationsRef: draftSelectionsRef,
-    onRemove: handleRemoveAnnotation,
-    onUpdate: handleUpdateAnnotation,
-    onLocate: handleLocateAnnotation,
-    surface: annotationSurface,
-  } = useConversationAnnotations({
-    storageKey: sessionId,
-    sessionId,
-    blocks: () => mainTranscriptBlocksRef.current,
-    isMutationLocked: () => queueEditRef.current?.loading === true,
-  });
   const focusComposer = useCallback(() => {
     // Return focus to the composer so the user can type the follow-up at once.
     document.querySelector<HTMLElement>('[data-composer]')?.focus();
@@ -2548,6 +2493,235 @@ export function SessionView({
     : knownSession === undefined ? 'unknown' : knownSession.ephemeral === true ? 'temporary' : 'saved';
   const { controller, leaseReady } = useActiveController(sessionId, selectedAgentId, persistenceHint);
   const queryClient = useQueryClient();
+
+  const initialBindingIntentRef = useRef({ model: initialOptionsRef.current.model, thinking: initialOptionsRef.current.thinking });
+  const skillBindingChangeRef = useRef<ComposerModelBindingChange | undefined>(undefined);
+  const setModelSwitchDialogState = useCallback((dialog: Omit<Extract<NonNullable<typeof switchConfirmation>, { kind: 'model' }>, 'kind'> | undefined) => {
+    setSwitchConfirmation(dialog === undefined ? undefined : { ...dialog, kind: 'model' });
+  }, []);
+  const mainTarget = useMemo(() => ({ sessionId, agentId: MAIN_AGENT_ID }), [sessionId]);
+  const initialMainAttachments = useMemo(
+    () =>
+      initialOptionsRef.current.initialSkill?.attachments ??
+      initialOptionsRef.current.initialAttachments ??
+      restoredComposer.attachments ??
+      [],
+    [restoredComposer.attachments],
+  );
+
+  // Unified workspace core: owns main's timeline, drafts/attachments/annotations,
+  // durable steer receipts, catalog/config/profile queries, model switching,
+  // auto-compact, MessageViewContext, and shared Composer/ModelSwitchDialog props.
+  // Explicit policy differences: mountHost='seat', busyPlainSendMode='queue',
+  // interactionPlacementMode='tray'.
+  const mainCore = useAgentWorkspaceCore(mainTarget, controller, {
+    mountHost: 'seat',
+    busyPlainSendMode: 'queue',
+    interactionPlacementMode: 'tray',
+    storageKey: sessionId,
+    visible: true,
+    initialAttachments: initialMainAttachments,
+    syncInitialDraft: false,
+    extraComposerState: {
+      permissionMode: permissionOverride,
+      planMode: planOverride,
+      planGate: planGateOverride,
+      goalObjective: '',
+      modelOverride,
+      effortOverride,
+      modelChoice,
+      effortChoice,
+      modelSwitchMode,
+      execution: pendingExecution,
+    },
+    isAnnotationMutationLocked: () => queueEditRef.current?.loading === true,
+    onDraftAppended: () => { focusComposer(); },
+    onBeforeFlushUnmount: () => {
+      // Restore the parked composition before flushing and releasing the hold.
+      const edit = queueEditRef.current;
+      if (edit !== null) {
+        edit.abort.abort();
+        queueEditRef.current = null;
+        const chrome = readComposerState(sessionId);
+        writeDraft(sessionId, edit.savedDraft);
+        writeComposerState(sessionId, {
+          ...chrome,
+          attachments: attachmentsRef.current,
+          annotations: edit.savedAnnotations,
+          quotes: [],
+          quote: null,
+          quoteSource: undefined,
+          permissionMode: chrome.permissionMode,
+          planMode: chrome.planMode,
+          planGate: chrome.planGate,
+          goalObjective: chrome.goalObjective,
+          modelOverride: chrome.modelOverride,
+          effortOverride: chrome.effortOverride,
+          execution: chrome.execution,
+        });
+      }
+    },
+    modelSwitchActive: selectedAgentId === undefined,
+    controlledModelSwitchDialog: modelSwitchDialog,
+    onChangeModelSwitchDialog: setModelSwitchDialogState,
+    mainProfileCatalog: { pendingProfile, pendingExecution },
+    resolveExecution: ({
+      state: live,
+      models,
+      config,
+      liveSettings: settings,
+      modelSwitches: switches,
+      agentProfileCatalogMode: profileCatalogMode,
+      agentProfilesQuery: profilesQuery,
+      fileProfilePreview: filePreview,
+      harness: activeHarness,
+      boundProfile: activeBoundProfile,
+      boundExecution: activeBoundExecution,
+      shownExecution: activeShownExecution,
+    }) => {
+      const serverDefault = config?.default_model;
+      const liveSessionModel = live.model;
+      const inherited = activeHarness === undefined ? serverDefault ?? settings.defaultModel : undefined;
+      const started = live.loaded && sessionHasStartedConversation(live.blocks);
+      const isProfilePending = pendingProfile !== undefined && pendingProfile !== activeBoundProfile;
+      const isExecutionPending = isProfilePending || executionPickIsPending(pendingExecution, activeBoundExecution, started);
+      const isInitialBindingPending = initialBindingStillPending({
+        expectedModel: initialBindingIntentRef.current.model,
+        expectedThinking: initialBindingIntentRef.current.thinking,
+        modelOverride,
+        effortOverride,
+        boundModel: liveSessionModel,
+        boundThinking: live.thinkingEffort,
+      });
+      const selection = resolveComposerModelOverrides({
+        modelOverride,
+        effortOverride,
+        modelChoice,
+        effortChoice,
+        modelSwitchMode,
+        conversationStarted: started,
+        pendingBinding: pendingProfile !== undefined || isExecutionPending || isInitialBindingPending,
+        binding: { model: liveSessionModel, thinking: live.thinkingEffort },
+        acceptedBindingChange: skillBindingChangeRef.current,
+      });
+      const resolvedEffectiveModel = resolveEffectiveModel(selection.modelOverride, liveSessionModel, inherited);
+      const resolvedCatalogItem = activeHarness === undefined && resolvedEffectiveModel !== undefined
+        ? resolveCatalogModel(models ?? [], resolvedEffectiveModel) : undefined;
+      const resolvedEfforts = resolvedCatalogItem?.support_efforts;
+      const resolvedSelectedModelId = resolvedEffectiveModel === undefined
+        ? undefined
+        : resolveCatalogModel(models ?? [], resolvedEffectiveModel)?.id ?? resolvedEffectiveModel;
+      const activeLiveModel = liveSessionModel || inherited;
+      const resolvedBoundModelId = activeLiveModel === undefined
+        ? undefined
+        : resolveCatalogModel(models ?? [], activeLiveModel)?.id ?? activeLiveModel;
+      const activeSelectedProfile = activeShownExecution.profile_file === undefined
+        ? profilesQuery.data?.items.find((profile) => profile.name === activeShownExecution.profile)
+        : filePreview.data?.profile;
+      const activeProfileEffort = activeSelectedProfile !== undefined && profileExecutor(activeSelectedProfile) === activeShownExecution.executor
+        ? profileThinkingDefault(activeSelectedProfile, resolvedEffectiveModel, models ?? []) : undefined;
+      const isSelectionChanging = isExecutionPending || resolvedSelectedModelId !== resolvedBoundModelId;
+      const activeInheritedEffort = isSelectionChanging ? activeProfileEffort : live.thinkingEffort;
+      const activeManualEffort = effortTouched && selection.effortChoice === effortChoice
+        ? selection.effortOverride : undefined;
+      const resolvedEffectiveEffort = activeManualEffort ?? (isInitialBindingPending ? selection.effortOverride : undefined)
+        ?? activeInheritedEffort ?? (activeHarness === undefined
+          ? resolveSelectedEffort(resolvedEfforts, undefined, resolvedCatalogItem?.default_effort) : live.thinkingEffort);
+      const isModelControlPending = modelTouched && selection.modelChoice === modelChoice && selection.modelOverride !== undefined
+        && (resolvedSelectedModelId !== resolvedBoundModelId || modelSwitchMode === 'fresh' || modelSwitchMode === 'compact');
+      const isEffortControlPending = effortTouched && selection.effortChoice === effortChoice && selection.effortOverride !== undefined
+        && selection.effortOverride !== (live.thinkingEffort ?? resolvedCatalogItem?.default_effort);
+      const activePendingControls = isModelControlPending || isEffortControlPending;
+
+      const canonical = (value: string | undefined): string | undefined =>
+        value === undefined ? undefined : resolveCatalogModel(models ?? [], value)?.id ?? value;
+      const effortSource = switches.dependency ?? switches.switches.findLast((entry) =>
+        entry.receipt.state === 'completed' && canonical(entry.receipt.toModel) === resolvedBoundModelId);
+      const switchEffort = activeManualEffort ?? (effortSource !== undefined
+        ? effortSource.input.thinking
+        : live.session?.agent_config.execution?.sources['thinking'] === 'session'
+          ? activeBoundExecution.overrides?.thinking
+          : undefined);
+      const carriedThinking = typeof switchEffort === 'string' && switchEffort !== '' ? switchEffort : undefined;
+      const sendReady = resolveSessionSendReady({
+        controllerAvailable: controller !== null,
+        leaseReady,
+        loaded: live.loaded,
+        loadError: live.loadError,
+        resyncing: live.resyncing,
+        resyncFailed: live.resyncFailed,
+      });
+      const { limit: ctxLimit } = resolveComposerContext(live, resolvedCatalogItem?.max_context_size);
+      const runningNow = canAbortActiveTurn(live);
+      return {
+        currentModel: resolvedBoundModelId,
+        carriedThinking,
+        profileDefaultEffort: (toModel: string) => {
+          if (models === undefined) return undefined;
+          return activeSelectedProfile !== undefined && profileExecutor(activeSelectedProfile) === activeShownExecution.executor
+            ? profileThinkingDefault(activeSelectedProfile, toModel, models)
+            : undefined;
+        },
+        autoCompact: {
+          enabled: sessionIdForSendReadyRead(sessionId, sendReady) !== undefined,
+          modelId: liveSessionModel,
+          modelLabel: resolvedCatalogItem?.display_name ?? liveSessionModel,
+          maxContextTokens: ctxLimit,
+          running: runningNow,
+          profileName: activeBoundProfile,
+          profileCatalog: profileCatalogMode,
+        },
+        busy: runningNow,
+        externalBindingSetting:
+          activeHarness !== undefined && !isExecutionPending && pendingProfile === undefined && activePendingControls && resolvedEffectiveModel !== undefined
+            ? { model: resolvedEffectiveModel, thinking: resolvedEffectiveEffort }
+            : undefined,
+        sendTimingDefault: settings.defaultAppendTiming,
+        sessionRecord: live.session,
+        durableIngress: live.durableIngress,
+      };
+    },
+  });
+
+  const {
+    liveSettings,
+    timeline: { state, actions: mainTimelineActions },
+    modelsQuery,
+    configQuery,
+    executorCatalog,
+    agentProfileCatalogMode,
+    agentProfilesQuery,
+    fileProfilePreview,
+    harness,
+    boundProfile,
+    boundExecution,
+    shownExecution,
+    draftRef,
+    setDraft,
+    updateDraft,
+    attachments,
+    attachmentsRef,
+    setAttachments,
+    updateAttachments,
+    composerOwnerActive,
+    timelineBlocksRef: mainTranscriptBlocksRef,
+    annotations: {
+      annotations,
+      setAnnotations,
+      annotationsRef: draftSelectionsRef,
+      surface: annotationSurface,
+    },
+    trackNowReceipt,
+    modelSwitches,
+    modelSwitchFlow: {
+      open: openModelSwitchFlow,
+      applyEffortSetting: applyMainEffortSetting,
+      noticeActions: modelSwitchActions,
+    },
+    contextAutoCompact,
+    messageViewContext,
+    revealOwnSend,
+  } = mainCore;
 
   // Embedded terminal panel: per-session manager (terminal list + attach
   // state) and per-session persisted panel chrome (open, height). The
@@ -2655,119 +2829,9 @@ export function SessionView({
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [overlayRailOpen, terminalOpen, previewMaximized, closeRail, toggleTerminalPanel]);
 
-  // Per-session composer drafts + chrome. Attachments and pill overrides are
-  // seeded by the initializers on first mount (the /new hand-off wins, then
-  // memory); only the draft text needs this effect because it has no
-  // initializer. The route keys this component by session id, so this runs
-  // once per session mount.
-  useEffect(() => {
-    composerOwnerActive.current = true;
-    const stored = readDraft(sessionId);
-    draftRef.current = stored;
-    setDraft(stored);
-    return () => {
-      composerOwnerActive.current = false;
-      // Restore the parked composition before flushing and releasing the hold.
-      const edit = queueEditRef.current;
-      if (edit !== null) {
-        edit.abort.abort();
-        queueEditRef.current = null;
-        const chrome = readComposerState(sessionId);
-        writeDraft(sessionId, edit.savedDraft);
-        writeComposerState(sessionId, {
-          ...chrome,
-          attachments: attachmentsRef.current,
-          annotations: edit.savedAnnotations,
-          quotes: [],
-          quote: null,
-          quoteSource: undefined,
-          permissionMode: chrome.permissionMode,
-          planMode: chrome.planMode,
-          planGate: chrome.planGate,
-          goalObjective: chrome.goalObjective,
-          modelOverride: chrome.modelOverride,
-          effortOverride: chrome.effortOverride,
-          execution: chrome.execution,
-        });
-      }
-      flushDrafts();
-    };
-  }, [sessionId]);
   useEffect(() => controller?.subscribeInterruptedPrompt((content) => {
     restorePromptToDraft(sessionId, content);
   }), [controller, sessionId]);
-
-  // Stable identity: the shell-seat memo depends on these (fresh functions per
-  // render would re-publish the composer on every keystroke's render).
-  const updateDraft = useCallback((text: string) => {
-    draftRef.current = text;
-    setDraft(text);
-    writeDraft(sessionId, text);
-  }, [sessionId]);
-  // External draft appends (「加入对话」 from the preview workspace): the
-  // draft store owns the text; this mirrors it into the mounted composer and
-  // returns focus so the follow-up can be typed at once.
-  useEffect(
-    () =>
-      subscribeDraftAppends((target, restoredAttachments) => {
-        if (target !== sessionId) return;
-        const next = readDraft(sessionId);
-        draftRef.current = next;
-        setDraft(next);
-        if (restoredAttachments !== undefined) {
-          const nextAttachments = [...attachmentsRef.current, ...restoredAttachments];
-          attachmentsRef.current = nextAttachments;
-          setAttachments(nextAttachments);
-        }
-        focusComposer();
-      }),
-    [sessionId, focusComposer],
-  );
-  const updateAttachments = useCallback((
-    next:
-      | readonly ComposerAttachment[]
-      | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[]),
-  ) => {
-    const updated = typeof next === 'function' ? next(attachmentsRef.current) : next;
-    attachmentsRef.current = updated;
-    setAttachments(updated);
-  }, []);
-
-  // Capture in-memory chrome for session switches. The storage owner mirrors
-  // only model/effort overrides to disk, never attachments, unsent annotations
-  // or run controls.
-  useEffect(() => {
-    writeComposerState(sessionId, {
-      attachments,
-      annotations,
-      quotes: [],
-      quote: null,
-      quoteSource: undefined,
-      permissionMode: permissionOverride,
-      planMode: planOverride,
-      planGate: planGateOverride,
-      goalObjective: '',
-      modelOverride,
-      effortOverride,
-      modelChoice,
-      effortChoice,
-      modelSwitchMode,
-      execution: pendingExecution,
-    });
-  }, [
-    sessionId,
-    attachments,
-    annotations,
-    permissionOverride,
-    planOverride,
-    planGateOverride,
-    modelOverride,
-    effortOverride,
-    modelChoice,
-    effortChoice,
-    modelSwitchMode,
-    pendingExecution,
-  ]);
 
   // A sidebar-initiated undo rewrites this session's history; resync the open
   // controller so the transcript matches the server.
@@ -2780,10 +2844,6 @@ export function SessionView({
     return () => { window.removeEventListener(SESSION_REWRITTEN_EVENT, onRewritten); };
   }, [controller, sessionId]);
 
-  const { state, actions: mainTimelineActions } = useAgentTimeline(controller, MAIN_AGENT_ID, {
-    visible: true,
-    sessionId,
-  });
   const [abortPending, trackAbort] = useAbortPending(state.busy);
   const sessionSendReady = resolveSessionSendReady({
     controllerAvailable: controller !== null,
@@ -2843,29 +2903,6 @@ export function SessionView({
     }
   }, [pendingSubmission?.id, pendingSubmission?.status, pendingSubmission?.retryable, state.blocks, mainDurableIngress, state.queuedPromptIds, t]);
 
-  // The first acknowledgement of a durable steer is not the last word: keep
-  // reading the receipt and explain the final reason when it lands. A prompt
-  // that started, steered or reached the transcript is owned by it, so the
-  // pending explanation goes away instead of re-attaching.
-  useEffect(() => {
-    const tracked = nowReceiptsRef.current;
-    if (tracked.size === 0) return;
-    const ingress = state.durableIngress ?? [];
-    for (const [promptId, reported] of tracked) {
-      const decision = nowReceiptDecision({
-        promptId, reported, ingress,
-        settled: state.blocks.some((block) => block.kind === 'user' && block.promptId === promptId && block.promptStatus !== 'queued'),
-      });
-      if (decision.kind === 'wait') continue;
-      if (decision.kind === 'drop') {
-        tracked.delete(promptId);
-        continue;
-      }
-      tracked.set(promptId, decision.reason);
-      pushToast({ tone: 'info', text: t(sendNowQueuedNotice(decision.reason)) });
-    }
-  }, [state.blocks, state.durableIngress, nowReceiptTick, t]);
-
   // Which projection of the timeline this session shows (remembered per
   // session; a `message` delivery opens in the message view) and the delivery
   // switch. Delivery freezes per turn on the server, so a change made mid-turn
@@ -2900,12 +2937,6 @@ export function SessionView({
         pushToast({ tone: 'error', text: t('message.deliverySwitchFailed', { detail: error instanceof Error ? error.message : String(error) }) });
       });
   }, [client, controller, sessionId, state.busy, state.session?.delivery, t]);
-  const messageViewContext = useMemo<MessageViewContextValue>(() => ({
-    persona: state.session?.agent_config.persona,
-    sessionId,
-    internalProse: state.session?.delivery === 'message',
-    onOpenSession: (target) => { void navigate(`/s/${target}`); },
-  }), [state.session?.agent_config.persona, state.session?.delivery, sessionId, navigate]);
 
   // Advance this conversation's seen-mark only while its route is visible
   // and focused. Other conversations and hidden mounted views stay unread.
@@ -2985,20 +3016,10 @@ export function SessionView({
     if (record !== undefined) controller.handleSessionRecord(record);
   }, [controller, sessions, ephemeralQuery.data]);
 
-  const configQuery = useQuery({
-    queryKey: ['config'],
-    queryFn: () => client.getConfig(),
-    staleTime: 60_000,
-  });
   const serverDefaultModel = configQuery.data?.default_model;
 
   const planGate = resolvePlanGate(planGateOverride, state.session?.agent_config?.plan_gate ?? configQuery.data?.plan?.gate);
 
-  const modelsQuery = useQuery({
-    queryKey: ['models'],
-    queryFn: () => client.listModels(),
-    staleTime: 60_000,
-  });
   // Subagent tasks register under the dispatching (parent) agent's task
   // service, so bulk/detail actions retain that owner scope.
   const stopAgentTask = useCallback(
@@ -3007,46 +3028,15 @@ export function SessionView({
     [client, sessionId],
   );
   const profileWorkspaceId = sessionAgentProfileWorkspaceId(state.session);
-  const profileCwd = state.session?.metadata.cwd;
-  const agentProfileCatalogMode = useMemo<AgentProfileCatalogMode>(
-    () => profileCwd !== undefined && profileCwd !== ''
-      ? { mode: 'cwd', cwd: profileCwd, effective: true }
-      : profileWorkspaceId === undefined
-        ? { mode: 'disabled' }
-        : { mode: 'workspace', workspaceId: profileWorkspaceId, effective: true },
-    [profileCwd, profileWorkspaceId],
-  );
-  const agentProfilesQuery = useQuery({
-    queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
-    queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
-    enabled: agentProfileCatalogMode.mode !== 'disabled',
-    staleTime: 60_000,
-    retry: false,
-    refetchInterval: agentProfileCatalogRefetchInterval,
-  });
-
-  const boundProfile = state.profile ?? DEFAULT_AGENT_PROFILE;
-  // What this session is committed to: the engine it runs, and which of that
-  // engine's profiles when one is selected. The binding's `effective` block is
-  // read for display only — a resolved value never becomes an override.
   const executionBinding = state.session?.agent_config.execution;
-  const boundExecution = useMemo(
-    () => boundExecutionChoice(executionBinding, state.session?.agent_config.profile),
-    [executionBinding, state.session],
-  );
   const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
   const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
-  const shownExecution = pendingExecution ?? (profilePending
-    ? { ...boundExecution, profile: pendingProfile, profile_file: undefined }
-    : boundExecution);
   const executionPending = profilePending || executionPickIsPending(pendingExecution, boundExecution, conversationStarted);
   // Engine names for the confirmation, from the same catalog the panel reads.
-  const executorCatalog = useExecutorCatalog();
   const executorLabels = useMemo(() => ({
     __native: t('composer.agentDefaultName'),
     ...Object.fromEntries(executorCatalog.map((item) => [item.id, item.label])),
   }), [executorCatalog, t]);
-  const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? [], state.session);
   // A session driven by a client outside Kiki carries that fact in its own
   // metadata. It changes the composer and the header, so it is read once here
   // and passed down rather than re-derived in each of them.
@@ -3065,7 +3055,6 @@ export function SessionView({
   });
   const sessionModel = state.model;
   const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
-  const initialBindingIntentRef = useRef({ model: initialOptionsRef.current.model, thinking: initialOptionsRef.current.thinking });
   const initialBindingPending = initialBindingStillPending({
     expectedModel: initialBindingIntentRef.current.model,
     expectedThinking: initialBindingIntentRef.current.thinking,
@@ -3074,7 +3063,6 @@ export function SessionView({
     boundModel: sessionModel,
     boundThinking: state.thinkingEffort,
   });
-  const skillBindingChangeRef = useRef<ComposerModelBindingChange | undefined>(undefined);
   const composerSelection = resolveComposerModelOverrides({ modelOverride, effortOverride, modelChoice, effortChoice, modelSwitchMode,
     conversationStarted, pendingBinding: pendingProfile !== undefined || executionPending || initialBindingPending,
     binding: { model: sessionModel, thinking: state.thinkingEffort }, acceptedBindingChange: skillBindingChangeRef.current });
@@ -3102,7 +3090,6 @@ export function SessionView({
   const selectedModelId = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel)?.id ?? effectiveModel;
   const liveModel = sessionModel || inheritedDefault;
   const boundModelId = liveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], liveModel)?.id ?? liveModel;
-  const fileProfilePreview = useProfileFilePreview(shownExecution.profile_file, agentProfileCatalogMode);
   const selectedProfile = shownExecution.profile_file === undefined
     ? agentProfilesQuery.data?.items.find((profile) => profile.name === shownExecution.profile)
     : fileProfilePreview.data?.profile;
@@ -3128,19 +3115,6 @@ export function SessionView({
     label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
   }, [harness]);
 
-  // ---- model switching: three-mode confirm + queued control item ----
-  // Preferences are the space's server config (the GUI only caches the query,
-  // read through `configQuery` above); the resolution snapshot is captured
-  // when a pick is accepted, never re-derived later, so a settings edit cannot
-  // change an accepted switch.
-  const modelSwitches = useModelSwitches(
-    sessionId,
-    selectedAgentId === undefined ? MAIN_AGENT_ID : undefined,
-    state.queuedPromptMeta,
-  );
-  const setModelSwitchDialogState = useCallback((dialog: Omit<Extract<NonNullable<typeof switchConfirmation>, { kind: 'model' }>, 'kind'> | undefined) => {
-    setSwitchConfirmation(dialog === undefined ? undefined : { ...dialog, kind: 'model' });
-  }, []);
   // Canonical ids on both sides: a bare alias lands on its provider row, so
   // "same model" reads as the same model and the panel names what it shows.
   const canonicalModel = useCallback(
@@ -3149,39 +3123,6 @@ export function SessionView({
     [modelsQuery.data],
   );
   const currentBoundModel = boundModelId;
-  const effortSourceSwitch = modelSwitches.dependency ?? modelSwitches.switches.findLast(entry =>
-    entry.receipt.state === 'completed' && canonicalModel(entry.receipt.toModel) === currentBoundModel);
-  const switchEffortChoice = manualEffort ?? (effortSourceSwitch !== undefined ? effortSourceSwitch.input.thinking
-    : executionBinding?.sources['thinking'] === 'session' ? boundExecution.overrides?.thinking : undefined);
-  const modelSwitchThinking = typeof switchEffortChoice === 'string' && switchEffortChoice !== '' ? switchEffortChoice : undefined;
-  const mainProfileDefaultEffort = useCallback((toModel: string) => {
-    const items = modelsQuery.data?.items;
-    if (items === undefined) return undefined;
-    return selectedProfile !== undefined && profileExecutor(selectedProfile) === shownExecution.executor
-      ? profileThinkingDefault(selectedProfile, toModel, items)
-      : undefined;
-  }, [modelsQuery.data, selectedProfile, shownExecution.executor]);
-  const {
-    dialogEffort: dialogSwitchEffort,
-    submitting: modelSwitchSubmitting,
-    submit: submitModelSwitch,
-    open: openModelSwitchFlow,
-    applyEffortSetting: applyMainEffortSetting,
-    noticeActions: modelSwitchActions,
-    setDialog: setModelSwitchDialog,
-  } = useModelSwitchFlow({
-    client,
-    sessionId,
-    agentId: MAIN_AGENT_ID,
-    catalogItems: modelsQuery.data?.items,
-    currentModel: currentBoundModel,
-    carriedThinking: modelSwitchThinking,
-    switches: modelSwitches,
-    rawConfigModelSwitch: configQuery.data?.model_switch,
-    profileDefaultEffort: mainProfileDefaultEffort,
-    dialog: modelSwitchDialog,
-    onChangeDialog: setModelSwitchDialogState,
-  });
   const openModelSwitchPanel = useCallback((toModel: string, explicitMode?: ModelSwitchMode) => {
     void openModelSwitchFlow(toModel, explicitMode);
   }, [openModelSwitchFlow]);
@@ -3678,8 +3619,7 @@ export function SessionView({
               if (result.outcome === 'restoring' || result.outcome === 'held') {
                 // Restoring/held acknowledgements carry no reason yet: leave
                 // the receipt open so the durable read can supply the final one.
-                trackOpenNowReceipt(nowReceiptsRef.current, result.promptId, null);
-                setNowReceiptTick((tick) => tick + 1);
+                trackNowReceipt(result.promptId, null);
               }
             })
             .catch((error: unknown) => {
@@ -5200,18 +5140,6 @@ boundExecution,
   const usageError = state.session?.usage_error;
   const { used: contextUsed, limit: contextLimit } = resolveComposerContext(state, catalogItem?.max_context_size);
   compactionHintShownRef.current = contextUsed !== undefined && contextLimit !== undefined;
-  // The main agent's automatic-compaction point, read from the server for the
-  // meter's adjustable track (absent on engines that do not report one).
-  const contextAutoCompact = useContextMeterAutoCompact({
-    sessionId: sessionIdForSendReadyRead(sessionId, sessionSendReady),
-    agentId: MAIN_AGENT_ID,
-    modelId: sessionModel,
-    modelLabel: catalogItem?.display_name ?? sessionModel,
-    maxContextTokens: contextLimit,
-    running: canAbortActiveTurn(state),
-    profileName: boundProfile,
-    profileCatalog: agentProfileCatalogMode,
-  });
   const effectiveContextLimit = contextLimit ?? contextAutoCompact?.status.effectiveMaxContextTokens;
 
   // ---- conversation shell seat ----
@@ -5220,22 +5148,6 @@ boundExecution,
   // survives the /new → /s/:id transition. The seat object MUST stay memoized
   // — the registration effect keys on identity — so every reactive value the
   // composer element reads is a dep below, and every handler is stabilized.
-  const handleFsSearch = useCallback(
-    (query: string, page?: FsSearchPageArgs) =>
-      client.fsSearch(sessionId, fsSearchRequestBody(query, page, { limit: 30 }), page?.signal),
-    [client, sessionId],
-  );
-  // A message the user just sent from this composer is brought into view: the
-  // timeline follows new rows only for a reader already at the end, so a
-  // reader scrolled up into history never saw it go out. Only these three
-  // composer handlers do it — the first-message hand-off, retries and queue
-  // edits go through `actions` directly — and only when the message starts or
-  // joins the turn now: one sent into a running turn waits in the queue strip
-  // above the composer, so the reader stays where they are.
-  const revealOwnSend = useCallback((joinsNow: boolean) => {
-    if (!joinsNow && controller?.getState().busy !== false) return;
-    mainTimelineActions.revealLatest();
-  }, [controller, mainTimelineActions.revealLatest]);
   const handleActivateSkill = useCallback(
     (name: string, args: string, skillAttachments: readonly ComposerAttachment[], userInput: string) => {
       revealOwnSend(false);
@@ -5671,40 +5583,19 @@ boundExecution,
       ) : (
         <ContextBreakdownProvider value={state.contextBreakdown} compaction={compactionProgress} onCompactionReceipt={seedCompactionProgress}>
           <Composer
+            {...mainCore.composerProps}
             busy={composerBusy}
             disabled={composerDisabled}
             sendDisabled={!sessionSendReady || queueEdit?.loading === true || queueEdit?.loadError === true}
             sendDisabledTitle={queueEdit?.loading ? t('preview.loading') : queueEdit?.loadError ? t('preview.failed') : state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
             disabledPlaceholder={queueEdit?.loading ? t('preview.loading') : undefined}
             busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
-            value={draft}
-            onChange={updateDraft}
             model={composerSelection.modelOverride}
             defaultModel={sessionModel}
             serverDefaultModel={inheritedDefault}
             modelSource={modelSource}
-            pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
-              from: modelSwitches.active.receipt.fromModel,
-              to: modelSwitches.active.receipt.toModel,
-              mode: modelSwitches.active.input.mode,
-              originalThinking: modelSwitches.active.originalBinding.thinking,
-              targetThinking: modelSwitches.active.input.thinking,
-            }}
-            bindingSetting={modelSwitches.setting === undefined ? harness !== undefined && !executionPending && pendingProfile === undefined && pendingRuntimeControls !== undefined && effectiveModel !== undefined ? {
-              model: effectiveModel, thinking: effectiveEffort, state: 'next_message',
-            } : undefined : {
-              model: modelSwitches.setting.input.model,
-              thinking: modelSwitches.setting.input.thinking,
-              state: modelSwitches.setting.receipt.error !== undefined || modelSwitches.setting.receipt.state === 'failed' ? 'failed' : composerBusy ? 'next_step' : 'applying',
-              error: modelSwitches.setting.receipt.error?.message,
-              onRetry: modelSwitches.setting.receipt.error === undefined && modelSwitches.setting.receipt.state !== 'failed' ? undefined : () => modelSwitchActions.retry?.(modelSwitches.setting!.input.operationId),
-            }}
             pendingRuntimeControls={pendingRuntimeControls}
             onCancelRuntimeControls={cancelPendingRuntimeControls}
-            modelSwitchError={modelSwitches.error === undefined ? undefined : {
-              detail: modelSwitches.error.message,
-              onRetry: modelSwitches.refresh,
-            }}
             agentProfile={pendingProfile ?? boundProfile}
             agentProfilePending={profilePending}
             execution={shownExecution}
@@ -5726,18 +5617,13 @@ boundExecution,
                 ? { used: contextUsed, limit: effectiveContextLimit }
                 : undefined
             }
-            contextAutoCompact={contextAutoCompact}
             sessionUsage={usage}
             sessionUsageError={usageError}
-            sessionId={sessionId}
             workspaceId={profileWorkspaceId}
             agentProfileCatalogMode={agentProfileCatalogMode}
-            fsSearch={handleFsSearch}
             attachments={queueEdit?.attachments ?? attachments}
             attachmentScopeKey={queueEdit?.owner}
             onChangeAttachments={queueEdit === null ? updateAttachments : updateQueueEditAttachments}
-            annotations={annotations}
-            onRemoveAnnotation={handleRemoveAnnotation}
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
             onSideQuestion={composerEngine?.fork === false ? undefined : startSideQuestion}
@@ -5754,7 +5640,6 @@ boundExecution,
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
             onSendNow={nativeSteeringUnavailable ? undefined : handleComposerSendNow}
-            sendTimingDefault={liveSettings.defaultAppendTiming}
             working={composerWorkingInfo}
             sessionRemainder={sessionRemainder}
             onAbort={handleComposerAbort}
@@ -5765,8 +5650,6 @@ boundExecution,
             onQueueEditRemove={handleQueueEditRemove}
             header={composerHeader}
             onOpenImage={openImageInPreview}
-            onUpdateAnnotation={handleUpdateAnnotation}
-            onLocateAnnotation={handleLocateAnnotation}
             needsYou={composerNeedsYou}
             statusNotice={composerStatusNotice}
             engine={composerEngine}
@@ -5774,8 +5657,7 @@ boundExecution,
         </ContextBreakdownProvider>
       ),
   }), [
-    handleUpdateAnnotation,
-    handleLocateAnnotation,
+    mainCore.composerProps,
     composerNeedsYou,
     composerStatusNotice,
     selectedAgentId,
@@ -5787,14 +5669,10 @@ boundExecution,
     composerBusy,
     composerWorkingInfo,
     composerDisabled,
-    draft,
-    updateDraft,
     modelOverride,
     sessionModel,
     inheritedDefault,
     modelSource,
-    modelSwitches.active,
-    modelSwitches.error,
     pendingRuntimeControls,
     cancelPendingRuntimeControls,
     pendingProfile,
@@ -5813,16 +5691,11 @@ boundExecution,
     effectiveEffort,
     contextUsed,
     effectiveContextLimit,
-    contextAutoCompact,
     compactionProgress,
-    sessionId,
     profileWorkspaceId,
     agentProfileCatalogMode,
-    handleFsSearch,
     attachments,
     updateAttachments,
-    annotations,
-    handleRemoveAnnotation,
     handleActivateSkill,
     runSessionAction,
     handleCompactContext,
@@ -5843,7 +5716,6 @@ boundExecution,
     handleAgentProfileChange,
     handleContextRebuild,
     composerEngine,
-    liveSettings.defaultAppendTiming,
     t,
   ]);
   useRegisterSeat(seat);
@@ -6038,38 +5910,7 @@ boundExecution,
           </AdmissionScope>
           </InteractionPlacementContext.Provider>
           </MessageViewContext.Provider>
-          <ModelSwitchDialog
-            open={modelSwitchDialog !== undefined}
-            fromModel={modelSwitchDialog?.fromModel ?? ''}
-            toModel={modelSwitchDialog?.toModel ?? ''}
-            initialMode={modelSwitchDialog?.initialMode ?? 'direct'}
-            editing={modelSwitchDialog?.editingOperationId !== undefined}
-            busy={state.busy}
-            submitting={modelSwitchSubmitting}
-            matchedRuleId={modelSwitchDialog?.matchedRuleId}
-            efforts={dialogSwitchEffort?.efforts}
-            initialEffort={dialogSwitchEffort?.effort}
-            defaultEffort={dialogSwitchEffort?.defaultEffort}
-            effortAdjustedFrom={dialogSwitchEffort?.adjustedFrom}
-            onConfirm={(choice) => {
-              const dialog = modelSwitchDialog;
-              if (dialog === undefined) return;
-              void submitModelSwitch({
-                fromModel: dialog.fromModel,
-                toModel: dialog.toModel,
-                mode: choice.mode,
-                remember: choice.remember,
-                effort: choice.effort,
-                editingOperationId: dialog.editingOperationId,
-                editingRevision: dialog.editingRevision,
-              });
-            }}
-            onCancel={() => { setModelSwitchDialog(undefined); }}
-            onOpenSettings={() => {
-              setModelSwitchDialog(undefined);
-              void navigate(settingsCardRoute('ai', 'st-card-model-switch', 'defaults'));
-            }}
-          />
+          <ModelSwitchDialog {...mainCore.modelSwitchDialogProps} />
           </ModelSwitchActionsContext.Provider>
         </>
       )}

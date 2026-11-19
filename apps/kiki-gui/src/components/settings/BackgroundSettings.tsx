@@ -16,6 +16,7 @@ import {
   type BackgroundScope,
   DEFAULT_BACKGROUND_LOOK,
 } from '@kiki/protocol';
+import { formatBytes } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
 import {
@@ -54,11 +55,7 @@ function useBackdropStatus() {
   return useSyncExternalStore(subscribeBackdropStatus, backdropStatus, backdropStatus);
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${bytes} B`;
-}
+export { formatBytes };
 
 function mediaIds(prefs: BackgroundPrefs): Set<string> {
   const ids = new Set<string>();
