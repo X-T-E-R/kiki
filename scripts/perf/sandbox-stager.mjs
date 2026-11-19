@@ -395,12 +395,27 @@ export function createSandboxTeardown(sandboxRoot, onAfterRemove) {
   };
 }
 
+const SAFE_AGENT_LABEL_KEYS = ['branch', 'branchSealed', 'parentAgentId', 'autonomousReceiptPolicy'];
+
+function scrubAgentLabels(rawLabels) {
+  if (!rawLabels || typeof rawLabels !== 'object' || Array.isArray(rawLabels)) return undefined;
+  const out = {};
+  for (const key of SAFE_AGENT_LABEL_KEYS) {
+    if (typeof rawLabels[key] === 'string' && rawLabels[key].length > 0) {
+      out[key] = rawLabels[key];
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function scrubAgentMeta(rawAgent, ordinal) {
   if (!rawAgent || typeof rawAgent !== 'object' || Array.isArray(rawAgent)) return {};
   const scrubbed = {
     createdAt: typeof rawAgent.createdAt === 'number' ? rawAgent.createdAt : undefined,
     type: rawAgent.type === 'main' || rawAgent.type === 'sub' || rawAgent.type === 'independent' ? rawAgent.type : undefined,
     parentAgentId: typeof rawAgent.parentAgentId === 'string' || rawAgent.parentAgentId === null ? rawAgent.parentAgentId : undefined,
+    forkedFrom: typeof rawAgent.forkedFrom === 'string' ? rawAgent.forkedFrom : undefined,
+    labels: scrubAgentLabels(rawAgent.labels),
     delegator: rawAgent.delegator && typeof rawAgent.delegator === 'object' ? rawAgent.delegator : undefined,
     displayName: rawAgent.type === 'main' ? 'Main' : `Subagent #${ordinal}`,
     model: typeof rawAgent.model === 'string' ? rawAgent.model : undefined,
@@ -489,7 +504,7 @@ export function stageCorpusSandbox({ corpusHome, samples, backgroundRecords = []
     copyDirectoryBounded(path.join(sample.sourceSessionDir, 'media'), path.join(dstSessionDir, 'media'), copyStats);
     stageSessionAgentTree(sample.sourceSessionDir, dstSessionDir, copyStats, {
       fullWires: true,
-      primaryAgentIds: ['main', sample.maxChildAgentId],
+      primaryAgentIds: ['main', sample.maxChildAgentId, sample.branchAgentId],
       tracker,
     });
   }

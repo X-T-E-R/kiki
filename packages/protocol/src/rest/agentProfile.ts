@@ -753,6 +753,8 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.when_to_use !== undefined ||
     value.main !== undefined ||
     value.executor !== undefined ||
+    value.executor_instance !== undefined ||
+    value.executor_launch !== undefined ||
     value.executor_prompt !== undefined ||
     value.allow_kiki_subagents !== undefined ||
     value.kiki_context !== undefined ||

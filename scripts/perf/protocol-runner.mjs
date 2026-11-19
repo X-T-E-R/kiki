@@ -1,4 +1,6 @@
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 import { EventLoopWindowMonitor, quantiles, roundMb, roundMs } from './metrics.mjs';
@@ -12,11 +14,130 @@ const PERF_HOST_IDENTITY = {
   platform: 'perf_local',
 };
 
-function createNoopModelCatalog() {
+const DEFAULT_PERF_MAX_CONTEXT_SIZE = 200_000;
+const SAFE_MODEL_ALIAS_RE = /^[A-Za-z0-9._:/-]+$/u;
+
+function collectStagedModelAliases(homeDir) {
+  const aliases = new Set(['mock-fast']);
+  const sessionsRoot = path.join(homeDir, 'sessions');
+  if (!fs.existsSync(sessionsRoot)) return [...aliases];
+  let wsEntries = [];
+  try {
+    wsEntries = fs.readdirSync(sessionsRoot, { withFileTypes: true });
+  } catch {
+    return [...aliases];
+  }
+  for (const wsEntry of wsEntries) {
+    if (!wsEntry.isDirectory()) continue;
+    const wsDir = path.join(sessionsRoot, wsEntry.name);
+    let sessEntries = [];
+    try {
+      sessEntries = fs.readdirSync(wsDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const sessEntry of sessEntries) {
+      if (!sessEntry.isDirectory()) continue;
+      const statePath = path.join(wsDir, sessEntry.name, 'state.json');
+      try {
+        const raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        if (!raw?.agents || typeof raw.agents !== 'object') continue;
+        for (const meta of Object.values(raw.agents)) {
+          if (
+            meta &&
+            typeof meta === 'object' &&
+            typeof meta.model === 'string' &&
+            meta.model.length > 0 &&
+            meta.model.length <= 160 &&
+            SAFE_MODEL_ALIAS_RE.test(meta.model) &&
+            (meta.executor === undefined || meta.executor === 'native')
+          ) {
+            aliases.add(meta.model);
+          }
+        }
+      } catch {
+        // Ignore unreadable state files while building read-only catalog.
+      }
+    }
+  }
+  return [...aliases].toSorted();
+}
+
+function createReadOnlyPerfModelCatalog(homeDir) {
+  const aliases = collectStagedModelAliases(homeDir);
+  const catalogItems = aliases.map((modelId) => ({
+    id: modelId,
+    provider_id: 'perf-mock',
+    enabled: true,
+    remote_id: modelId,
+    display_name: modelId,
+    max_context_size: DEFAULT_PERF_MAX_CONTEXT_SIZE,
+    capabilities: ['thinking', 'tool_use'],
+    effective_capabilities: ['thinking', 'tool_use'],
+    protocol: 'openai_responses',
+    effective_protocol: 'openai_responses',
+    protocol_source: 'model',
+    endpoint_source: 'config',
+    auth_source: 'config',
+    support_efforts: ['low', 'medium', 'high'],
+    default_effort: 'high',
+  }));
+  const modelsById = new Map(
+    aliases.map((modelId) => [
+      modelId,
+      {
+        id: modelId,
+        name: modelId,
+        aliases: [modelId],
+        protocol: 'openai_responses',
+        protocolSource: 'model',
+        baseUrl: 'https://example.test/v1',
+        headers: {},
+        capabilities: {
+          image_in: false,
+          video_in: false,
+          audio_in: false,
+          thinking: true,
+          tool_use: true,
+          dynamically_loaded_tools: false,
+        },
+        maxContextSize: DEFAULT_PERF_MAX_CONTEXT_SIZE,
+        displayName: modelId,
+        supportEfforts: ['low', 'medium', 'high'],
+        defaultEffort: 'high',
+        alwaysThinking: false,
+        providerType: 'openai_responses',
+        providerName: 'perf-mock',
+        imagePolicy: { acceptedTypes: [], convertUnsupported: false },
+        authProvider: {
+          canRefresh: false,
+          getAuth: async () => undefined,
+        },
+      },
+    ]),
+  );
+  const perfProvider = {
+    id: 'perf-mock',
+    enabled: true,
+    type: 'openai_responses',
+    service: 'chat',
+    base_url: 'https://example.test/v1',
+    effective_base_url: 'https://example.test/v1',
+    default_model: aliases[0] ?? 'mock-fast',
+    has_api_key: true,
+    status: 'ready',
+    models: aliases,
+    model_source: 'static',
+  };
+
   return {
     _serviceBrand: undefined,
-    get: () => {
-      throw new Error('modelCatalog.get disabled in read-only perf harness');
+    get: (id) => {
+      const found = modelsById.get(id);
+      if (!found) {
+        throw new Error(`read-only perf catalog model not found: ${id}`);
+      }
+      return found;
     },
     getRequester: () => {
       throw new Error('modelCatalog.getRequester disabled in read-only perf harness');
@@ -33,11 +154,12 @@ function createNoopModelCatalog() {
     ping: () => {
       throw new Error('modelCatalog.ping disabled in read-only perf harness');
     },
-    findByName: () => [],
-    listModels: async () => [],
-    listProviders: async () => [],
-    getProvider: async () => {
-      throw new Error('modelCatalog.getProvider disabled in read-only perf harness');
+    findByName: (name) => aliases.filter((alias) => alias === name || alias.endsWith(`/${name}`)),
+    listModels: async () => catalogItems,
+    listProviders: async () => [perfProvider],
+    getProvider: async (providerId) => {
+      if (providerId === perfProvider.id) return perfProvider;
+      throw new Error(`read-only perf catalog provider not found: ${providerId}`);
     },
     setDefaultModel: async () => {
       throw new Error('modelCatalog.setDefaultModel disabled in read-only perf harness');
@@ -189,7 +311,7 @@ export async function bootPerfServer(homeDir) {
     import(new URL('../../packages/kap-server/src/start.ts', import.meta.url).href),
   ]);
   const bootStarted = performance.now();
-  const seeds = [[IModelCatalog, createNoopModelCatalog()]];
+  const seeds = [[IModelCatalog, createReadOnlyPerfModelCatalog(homeDir)]];
   const server = await startServer({
     hostIdentity: PERF_HOST_IDENTITY,
     host: '127.0.0.1',
@@ -220,8 +342,10 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
   const headers = { authorization: `Bearer ${token}` };
 
   const getJson = async (urlPath) => {
+    const started = performance.now();
     const res = await countedFetch(`${endpoint}${urlPath}`, { headers });
     const text = await res.text();
+    const elapsedMs = roundMs(performance.now() - started);
     netCounter.headerBytes += Buffer.byteLength(text);
     let parsed = null;
     try {
@@ -229,7 +353,21 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
     } catch {
       parsed = null;
     }
-    return { status: res.status, bytes: Buffer.byteLength(text), body: parsed };
+    return { status: res.status, elapsedMs, bytes: Buffer.byteLength(text), body: parsed };
+  };
+
+  const timedCall = async (fn) => {
+    const started = performance.now();
+    try {
+      const value = await fn();
+      return { ok: true, elapsedMs: roundMs(performance.now() - started), value };
+    } catch (error) {
+      return {
+        ok: false,
+        elapsedMs: roundMs(performance.now() - started),
+        code: typeof error?.code === 'number' ? error.code : null,
+      };
+    }
   };
 
   try {
@@ -238,7 +376,7 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
     eld.beginWindow();
     const listStarted = performance.now();
     const [sessionsList, sessionHeads, sessionsQuery] = await Promise.all([
-      getJson('/api/sessions?limit=50'),
+      getJson('/api/sessions?page_size=50'),
       getJson('/api/personas/session-heads?per_persona_limit=5'),
       getJson('/api/sessions/query?limit=50'),
     ]);
@@ -326,16 +464,50 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
 
         const sideReadsPromise = Promise.all([
           getJson(`/api/sessions/${sample.sandboxId}`),
+          getJson(`/api/sessions/${sample.sandboxId}/status`),
           getJson(`/api/sessions/${sample.sandboxId}/agents/main/hooks?observe=true`),
           getJson(`/api/sessions/${sample.sandboxId}/skills`),
+          getJson(`/api/sessions/${sample.sandboxId}/agents/main/auto-compact?observe=true`),
+          getJson(`/api/sessions/${sample.sandboxId}/agents/main/context-strategy?observe=true`),
+          timedCall(() => klient.global.agentPanel.read({ session_id: sample.sandboxId, agent_id: 'main' })),
+          getJson(`/api/sessions/${sample.sandboxId}/goal`),
         ]);
 
-        await Promise.race([
+        const [, sideReads] = await Promise.race([
           Promise.all([openPromise, sideReadsPromise]),
           sleep(45_000).then(() => {
             throw new Error(`Cold open timed out after 45s on ${sample.label}`);
           }),
         ]);
+
+        const [
+          sessionGetRes,
+          statusRes,
+          hooksRes,
+          skillsRes,
+          autoCompactRes,
+          contextStrategyRes,
+          agentPanelRes,
+          goalRes,
+        ] = sideReads;
+        const routeTimingsMs = {
+          sessionGet: sessionGetRes.elapsedMs,
+          status: statusRes.elapsedMs,
+          hooks: hooksRes.elapsedMs,
+          skills: skillsRes.elapsedMs,
+          autoCompact: autoCompactRes.elapsedMs,
+          contextStrategy: contextStrategyRes.elapsedMs,
+          agentPanelRead: agentPanelRes.elapsedMs,
+          goal: goalRes.elapsedMs,
+        };
+        const maxColdRouteMs = roundMs(Math.max(...Object.values(routeTimingsMs)));
+        const routeCodes = {
+          status: statusRes.body?.code ?? statusRes.status,
+          autoCompact: autoCompactRes.body?.code ?? autoCompactRes.status,
+          contextStrategy: contextStrategyRes.body?.code ?? contextStrategyRes.status,
+          goal: goalRes.body?.code ?? goalRes.status,
+          agentPanelOk: agentPanelRes.ok,
+        };
 
         const coldOpenTotalMs = roundMs(performance.now() - openStarted);
         trace(`${sample.label} coldOpen=${coldOpenTotalMs}ms (reset=${mainResetMs}ms, snap=${snapshotMs}ms, ready=${readyMs}ms)`);
@@ -416,13 +588,11 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
         const scrollEld = eld.endWindow();
         const scrollHttpRequests = netCounter.requests;
 
-        let coldSubagent = null;
-        if (sample.maxChildAgentId) {
+        const probeColdAgent = async (agentId, childWireBytes) => {
           netCounter.requests = 0;
           netCounter.headerBytes = 0;
           eld.beginWindow();
           const subStart = performance.now();
-          const subId = sample.maxChildAgentId;
 
           let subResetMs = null;
           const subResetWait = new Promise((resolve) => {
@@ -442,23 +612,48 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
             }, 10);
           });
 
-          sub.setTranscriptGrades({ '*': 'turn', main: 'delta', [subId]: 'delta' });
-          const [subPageRes, subHooksRes] = await Promise.all([
-            fetchOlderPageWithSlices(view, { agentId: subId, pageSize: 20 }),
-            getJson(`/api/sessions/${sample.sandboxId}/agents/${encodeURIComponent(subId)}/hooks?observe=true`),
+          sub.setTranscriptGrades({ '*': 'turn', main: 'delta', [agentId]: 'delta' });
+          const encodedAid = encodeURIComponent(agentId);
+          const [subPageRes, subHooksRes, subAutoCompactRes, subContextStrategyRes, subAgentPanelRes] = await Promise.all([
+            fetchOlderPageWithSlices(view, { agentId, pageSize: 20 }),
+            getJson(`/api/sessions/${sample.sandboxId}/agents/${encodedAid}/hooks?observe=true`),
+            getJson(`/api/sessions/${sample.sandboxId}/agents/${encodedAid}/auto-compact?observe=true`),
+            getJson(`/api/sessions/${sample.sandboxId}/agents/${encodedAid}/context-strategy?observe=true`),
+            timedCall(() => klient.global.agentPanel.read({ session_id: sample.sandboxId, agent_id: agentId })),
           ]);
           subResetMs = roundMs(performance.now() - subStart);
           await subResetWait;
           const subEld = eld.endWindow();
-          coldSubagent = {
+          const agentRouteTimingsMs = {
+            hooks: subHooksRes.elapsedMs,
+            autoCompact: subAutoCompactRes.elapsedMs,
+            contextStrategy: subContextStrategyRes.elapsedMs,
+            agentPanelRead: subAgentPanelRes.elapsedMs,
+          };
+          return {
             ttfcMs: subResetMs,
             pageMs: subPageRes.elapsedMs,
             slices: subPageRes.slices,
             hooksStatus: subHooksRes.status,
+            autoCompactCode: subAutoCompactRes.body?.code ?? subAutoCompactRes.status,
+            contextStrategyCode: subContextStrategyRes.body?.code ?? subContextStrategyRes.status,
+            agentPanelOk: subAgentPanelRes.ok,
+            routeTimingsMs: agentRouteTimingsMs,
+            maxRouteMs: roundMs(Math.max(...Object.values(agentRouteTimingsMs))),
             httpRequests: netCounter.requests,
-            childWireMb: roundMb(sample.maxChildWireBytes),
+            childWireMb: roundMb(childWireBytes),
             ...subEld,
           };
+        };
+
+        let coldSubagent = null;
+        if (sample.maxChildAgentId) {
+          coldSubagent = await probeColdAgent(sample.maxChildAgentId, sample.maxChildWireBytes);
+        }
+
+        let coldBranch = null;
+        if (sample.branchAgentId && sample.branchAgentId !== sample.maxChildAgentId) {
+          coldBranch = await probeColdAgent(sample.branchAgentId, sample.branchWireBytes ?? 0);
         }
 
         sub.close();
@@ -470,6 +665,7 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
             mainWireMb: roundMb(sample.mainWireBytes),
             subagentCount: sample.subagentCount,
             maxChildWireMb: roundMb(sample.maxChildWireBytes),
+            hasBranch: Boolean(sample.branchAgentId),
             attachmentCount: sample.totalAttachmentCount,
           },
           coldOpen: {
@@ -481,6 +677,9 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
             payloadMb: coldOpenPayloadMb,
             initialTurnCount: resetTurns.length,
             hasStepsPartialInReset,
+            routeTimingsMs,
+            maxColdRouteMs,
+            routeCodes,
             ...coldOpenEld,
           },
           scrollOlder: {
@@ -494,6 +693,7 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
             ...scrollEld,
           },
           coldSubagent,
+          coldBranch,
         });
       } finally {
         await klient.close().catch(() => undefined);
@@ -511,12 +711,17 @@ export async function runProtocolSuite({ endpoint, token, samples, maxScrollPage
         coldSubagentTtfcMs: quantiles(
           sampleResults.filter((r) => r.coldSubagent !== null).map((r) => r.coldSubagent.ttfcMs),
         ),
+        maxColdRouteMs: roundMs(
+          Math.max(0, ...sampleResults.map((r) => r.coldOpen.maxColdRouteMs ?? 0)),
+        ),
+        coldRouteMaxQuantiles: quantiles(sampleResults.map((r) => r.coldOpen.maxColdRouteMs ?? 0)),
         maxServerEldP99Ms: roundMs(
           Math.max(
             catalogSummary.eldP99Ms,
             ...sampleResults.map((r) => r.coldOpen.eldP99Ms),
             ...sampleResults.map((r) => r.scrollOlder.eldP99Ms),
             ...sampleResults.map((r) => r.coldSubagent?.eldP99Ms ?? 0),
+            ...sampleResults.map((r) => r.coldBranch?.eldP99Ms ?? 0),
           ),
         ),
       },

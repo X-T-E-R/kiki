@@ -124,8 +124,24 @@ export function scanCorpusSessions(corpusHome, { minIdleMs = 120_000, nowMs = Da
       let subagentCount = 0;
       let maxChildWireBytes = 0;
       let maxChildAgentId = null;
+      let branchAgentId = null;
+      let branchWireBytes = 0;
       let blobCount = 0;
       let activeChildLock = false;
+
+      const branchIds = new Set();
+      try {
+        const rawState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf8'));
+        if (rawState?.agents && typeof rawState.agents === 'object' && !Array.isArray(rawState.agents)) {
+          for (const [aid, meta] of Object.entries(rawState.agents)) {
+            if (aid !== 'main' && meta && typeof meta === 'object' && meta.labels?.branch === 'true') {
+              branchIds.add(aid);
+            }
+          }
+        }
+      } catch {
+        // Ignore malformed state.json during scan.
+      }
 
       const agentsDir = path.join(sessionDir, 'agents');
       const agentDirs = safeReaddir(agentsDir).filter((e) => e.isDirectory());
@@ -152,6 +168,12 @@ export function scanCorpusSessions(corpusHome, { minIdleMs = 120_000, nowMs = Da
             maxChildWireBytes = childWireStat.size;
             maxChildAgentId = agentId;
           }
+          if (branchIds.has(agentId) && (branchAgentId === null || childWireStat.size > branchWireBytes)) {
+            branchWireBytes = childWireStat.size;
+            branchAgentId = agentId;
+          }
+        } else if (branchIds.has(agentId) && branchAgentId === null) {
+          branchAgentId = agentId;
         }
       }
 
@@ -171,6 +193,8 @@ export function scanCorpusSessions(corpusHome, { minIdleMs = 120_000, nowMs = Da
         subagentCount,
         maxChildWireBytes,
         maxChildAgentId,
+        branchAgentId,
+        branchWireBytes,
         mediaCount,
         blobCount,
         totalAttachmentCount: mediaCount + blobCount,

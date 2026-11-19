@@ -6,7 +6,18 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-import { installTimelineMonitor } from '../../apps/kiki-gui/scripts/timeline-integrity.mjs';
+import {
+  collectTimelineIntegrity,
+  inspectTranscriptVisibility,
+  installTimelineMonitor,
+  labelTimeline,
+} from '../../apps/kiki-gui/scripts/timeline-integrity.mjs';
+import {
+  attachBrowserRuntimeGuards,
+  runAppRoutesWalk,
+  verifyColdContextMeter,
+  verifyComposerFooterDrain,
+} from './browser-invariants.mjs';
 import { EventLoopWindowMonitor, quantiles, roundMs } from './metrics.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
@@ -185,6 +196,13 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
   const eld = new EventLoopWindowMonitor(20);
   const targets = selectBrowserRepresentatives(samples, maxPerStratum);
   const results = [];
+  let routesWalk = null;
+  let routesWalkGuards = null;
+
+  const deepLink = (routePath) => {
+    const sep = routePath.includes('?') ? '&' : '?';
+    return `${webUrl}${routePath}${sep}server=${encodeURIComponent(endpoint)}&token=${encodeURIComponent(token)}`;
+  };
 
   try {
     for (const sample of targets) {
@@ -205,6 +223,7 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
 
         const page = await context.newPage();
         await installTimelineMonitor(page);
+        const guards = attachBrowserRuntimeGuards(page, { endpoint, rpcSlowBudgetMs: 1_500 });
 
         let phaseApiRequests = 0;
         page.on('request', (req) => {
@@ -213,27 +232,42 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
           }
         });
 
-        const deepLink = (routePath) =>
-          `${webUrl}${routePath}?server=${encodeURIComponent(endpoint)}&token=${encodeURIComponent(token)}`;
-
         phaseApiRequests = 0;
         eld.beginWindow();
+        guards.setPhase('cold-open', { coldOpen: true });
         const openStarted = performance.now();
         await page.goto(deepLink(`/s/${sample.sandboxId}`), {
           waitUntil: 'domcontentloaded',
           timeout: 45_000,
         });
-        await page.waitForSelector('[data-session-sidebar]', { timeout: 45_000 });
-        await page
-          .waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item]', { timeout: 30_000 })
-          .catch(() => undefined);
+        await page.waitForSelector('[data-session-sidebar], main > section[role="alert"] pre', { timeout: 45_000 });
+        let transcriptMounted = true;
+        if (sample.mainWireBytes > 0) {
+          const mounted = await page
+            .waitForSelector('[data-transcript-scroll] [data-transcript-virtual-item], main > section[role="alert"] pre', {
+              timeout: 30_000,
+            })
+            .then(() => page.evaluate(() => document.querySelector('[data-transcript-scroll] [data-transcript-virtual-item]') !== null))
+            .catch(() => false);
+          transcriptMounted = mounted;
+        }
         const coldOpenMs = roundMs(performance.now() - openStarted);
         const coldOpenLongTasks = await page.evaluate(() => window.__kikiPerfProbe?.drain?.() ?? null);
         const coldOpenEld = eld.endWindow();
         const coldOpenHttpRequests = phaseApiRequests;
 
+        await guards.assertNoErrorBoundary('cold-open');
+        const footerDrain = await verifyComposerFooterDrain(page, { timeoutMs: 3_500 });
+        guards.setPhase('cold-invariants', { coldOpen: false });
+
+        const coldVisibility = await inspectTranscriptVisibility(page, 'main');
+        const contextMeter = await verifyColdContextMeter(page);
+        await guards.assertNoErrorBoundary('context-meter');
+
         phaseApiRequests = 0;
         eld.beginWindow();
+        guards.setPhase('scroll-older', { coldOpen: false });
+        await labelTimeline(page, `${sample.label}:scroll`);
         await page.evaluate(() => window.__kikiPerfProbe?.reset?.());
         const scrollStarted = performance.now();
         const scrolledSteps = await page.evaluate(async () => {
@@ -255,53 +289,88 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
         });
         const scrollWindowMs = roundMs(performance.now() - scrollStarted);
         const scrollLongTasks = await page.evaluate(() => window.__kikiPerfProbe?.drain?.() ?? null);
-        const layoutIntegrity = await page.evaluate(() => {
-          const violations = window.__kikiTimeline?.scan?.() ?? [];
-          return { violationCount: violations.length };
-        });
+        const timelineCheck = await collectTimelineIntegrity(page);
+        const scrollVisibility = await inspectTranscriptVisibility(page, 'main');
+        await guards.assertNoErrorBoundary('scroll-older');
         const scrollEld = eld.endWindow();
         const scrollHttpRequests = phaseApiRequests;
 
-        let subagentSwitch = null;
-        if (sample.maxChildAgentId) {
+        const switchToAgent = async (aid, wireBytes, phaseLabel) => {
           phaseApiRequests = 0;
           eld.beginWindow();
+          guards.setPhase(phaseLabel, { coldOpen: false });
           await page.evaluate(() => window.__kikiPerfProbe?.reset?.());
-          const subId = sample.maxChildAgentId;
           const switchStarted = performance.now();
           await page.evaluate(
-            ({ sid, aid }) => {
+            ({ sid, targetId }) => {
               const search = window.location.search;
-              window.history.pushState({}, '', `/s/${sid}/agent/${encodeURIComponent(aid)}${search}`);
+              window.history.pushState({}, '', `/s/${sid}/agent/${encodeURIComponent(targetId)}${search}`);
               window.dispatchEvent(new PopStateEvent('popstate'));
             },
-            { sid: sample.sandboxId, aid: subId },
+            { sid: sample.sandboxId, targetId: aid },
           );
-          await page
-            .waitForSelector(`[data-agent-workspace-target="${subId}"]`, { timeout: 20_000 })
-            .catch(() => undefined);
-          await page
-            .waitForSelector(`[data-agent-workspace-target="${subId}"] [data-transcript-virtual-item]`, {
-              timeout: 15_000,
+          const targetMounted = await page
+            .waitForSelector(`[data-agent-workspace-target="${aid}"], main > section[role="alert"] pre`, {
+              timeout: 20_000,
             })
-            .catch(() => undefined);
+            .then(() => page.evaluate((targetId) => document.querySelector(`[data-agent-workspace-target="${targetId}"]`) !== null, aid))
+            .catch(() => false);
+          let itemsMounted = true;
+          if (targetMounted && wireBytes > 0) {
+            itemsMounted = await page
+              .waitForSelector(
+                `[data-agent-workspace-target="${aid}"] [data-transcript-virtual-item], main > section[role="alert"] pre`,
+                { timeout: 15_000 },
+              )
+              .then(() =>
+                page.evaluate(
+                  (targetId) =>
+                    document.querySelector(`[data-agent-workspace-target="${targetId}"] [data-transcript-virtual-item]`) !== null,
+                  aid,
+                ),
+              )
+              .catch(() => false);
+          }
           const switchMs = roundMs(performance.now() - switchStarted);
           const switchLongTasks = await page.evaluate(() => window.__kikiPerfProbe?.drain?.() ?? null);
+          await guards.assertNoErrorBoundary(phaseLabel);
           const switchEld = eld.endWindow();
-          subagentSwitch = {
+          return {
             switchMs,
+            targetMounted,
+            itemsMounted,
             httpRequests: phaseApiRequests,
             ...switchLongTasks,
             ...switchEld,
           };
+        };
+
+        let subagentSwitch = null;
+        if (sample.maxChildAgentId) {
+          subagentSwitch = await switchToAgent(sample.maxChildAgentId, sample.maxChildWireBytes, 'subagent-open');
         }
+
+        let branchSwitch = null;
+        if (sample.branchAgentId && sample.branchAgentId !== sample.maxChildAgentId) {
+          branchSwitch = await switchToAgent(sample.branchAgentId, sample.branchWireBytes ?? 0, 'branch-open');
+        }
+
+        const guardSnapshot = guards.snapshot();
+        const combinedHiddenUserTurns = [
+          ...new Set([
+            ...(coldVisibility.hiddenUserTurns ?? []),
+            ...(scrollVisibility.hiddenUserTurns ?? []),
+          ]),
+        ];
 
         results.push({
           label: sample.label,
           stratum: sample.stratum,
           coldOpen: {
             ttfcMs: coldOpenMs,
+            transcriptMounted,
             httpRequests: coldOpenHttpRequests,
+            maxColdRpcMs: guardSnapshot.maxColdRpcMs,
             ...coldOpenLongTasks,
             ...coldOpenEld,
           },
@@ -309,20 +378,89 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
             scrollWindowMs,
             scrolledSteps,
             httpRequests: scrollHttpRequests,
-            layoutViolations: layoutIntegrity.violationCount,
+            layoutViolations: timelineCheck.failures.length,
+            layoutFailureSamples: timelineCheck.failures.slice(0, 4),
+            timelineFrames: timelineCheck.frames,
             ...scrollLongTasks,
             ...scrollEld,
           },
           subagentSwitch,
+          branchSwitch,
+          invariants: {
+            contextMeter,
+            footerDrain,
+            coldVisibility,
+            scrollVisibility,
+            hiddenUserTurnCount: combinedHiddenUserTurns.length,
+            pageErrors: guardSnapshot.pageErrors,
+            reactConsoleErrors: guardSnapshot.reactConsoleErrors,
+            failedApiResponses: guardSnapshot.failedApiResponses,
+            slowApiResponses: guardSnapshot.slowApiResponses,
+          },
         });
       } finally {
         await context.close().catch(() => undefined);
       }
     }
 
+    // Once-per-run multi-route walk across Settings / Usage / Capabilities
+    const walkContext = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      reducedMotion: 'reduce',
+    });
+    try {
+      await walkContext.addInitScript(() => {
+        try {
+          localStorage.setItem('kiki.locale', 'en');
+          localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+        } catch {
+          // Storage unavailable.
+        }
+      });
+      const walkPage = await walkContext.newPage();
+      const walkGuards = attachBrowserRuntimeGuards(walkPage, { endpoint, rpcSlowBudgetMs: 1_500 });
+      routesWalk = await runAppRoutesWalk(walkPage, { deepLink, guards: walkGuards });
+      routesWalkGuards = walkGuards.snapshot();
+    } finally {
+      await walkContext.close().catch(() => undefined);
+    }
+
+    const totalPageErrors =
+      results.reduce((acc, r) => acc + (r.invariants?.pageErrors?.length ?? 0), 0) +
+      (routesWalkGuards?.pageErrors?.length ?? 0);
+    const totalReactErrors =
+      results.reduce((acc, r) => acc + (r.invariants?.reactConsoleErrors?.length ?? 0), 0) +
+      (routesWalkGuards?.reactConsoleErrors?.length ?? 0);
+    const totalFailedApiResponses =
+      results.reduce((acc, r) => acc + (r.invariants?.failedApiResponses?.length ?? 0), 0) +
+      (routesWalkGuards?.failedApiResponses?.length ?? 0);
+    const totalSlowColdApiResponses = results.reduce(
+      (acc, r) => acc + (r.invariants?.slowApiResponses?.length ?? 0),
+      0,
+    );
+    const maxColdRpcMs = roundMs(Math.max(0, ...results.map((r) => r.coldOpen.maxColdRpcMs ?? 0)));
+    const contextMeterFailures = results.filter(
+      (r) => r.invariants?.contextMeter?.applicable && !r.invariants.contextMeter.ok,
+    ).length;
+    const footerDrainFailures = results.filter((r) => r.invariants?.footerDrain && !r.invariants.footerDrain.ok).length;
+    const hiddenUserTurns = results.reduce((acc, r) => acc + (r.invariants?.hiddenUserTurnCount ?? 0), 0);
+    const transcriptMountFailures = results.reduce((acc, r) => {
+      let failed = 0;
+      if (r.coldOpen.transcriptMounted === false) failed += 1;
+      if (r.subagentSwitch && (!r.subagentSwitch.targetMounted || !r.subagentSwitch.itemsMounted)) failed += 1;
+      if (r.branchSwitch && (!r.branchSwitch.targetMounted || !r.branchSwitch.itemsMounted)) failed += 1;
+      return acc + failed;
+    }, 0);
+
     return {
       guiBuild: { reusedCache: buildInfo.reusedCache, buildMs: buildInfo.buildMs },
       sampleResults: results,
+      routesWalk: {
+        visited: routesWalk,
+        pageErrors: routesWalkGuards?.pageErrors ?? [],
+        reactConsoleErrors: routesWalkGuards?.reactConsoleErrors ?? [],
+        failedApiResponses: routesWalkGuards?.failedApiResponses ?? [],
+      },
       aggregates: {
         coldOpenTtfcMs: quantiles(results.map((r) => r.coldOpen.ttfcMs)),
         scrollMaxLongTaskMs: quantiles(results.map((r) => r.scrollOlder.maxLongTaskMs ?? 0)),
@@ -330,6 +468,15 @@ export async function runBrowserSuite({ endpoint, token, samples, maxPerStratum 
           results.filter((r) => r.subagentSwitch !== null).map((r) => r.subagentSwitch.switchMs),
         ),
         totalLayoutViolations: results.reduce((acc, r) => acc + (r.scrollOlder.layoutViolations ?? 0), 0),
+        totalPageErrors,
+        totalReactErrors,
+        totalFailedApiResponses,
+        totalSlowColdApiResponses,
+        maxColdRpcMs,
+        contextMeterFailures,
+        footerDrainFailures,
+        hiddenUserTurns,
+        transcriptMountFailures,
       },
     };
   } finally {
