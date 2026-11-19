@@ -1,9 +1,10 @@
 import type { MemoryEntry } from '../../../app/memory/memoryStore.ts';
-import type { MemoryCommit, MemoryLegacyPayload } from '../../interface/memoryPersistence.ts';
+import type { MemoryCommit, MemoryLegacyPayload, MemoryReadOptions } from '../../interface/memoryPersistence.ts';
 
 export type MemoryOperation =
-  | { readonly type: 'read'; readonly scopes: readonly string[]; readonly generation?: number }
+  | { readonly type: 'read'; readonly scopes: readonly string[]; readonly generation?: number; readonly options?: MemoryReadOptions }
   | { readonly type: 'readIds'; readonly scope: string; readonly ids: readonly string[]; readonly generation?: number }
+  | { readonly type: 'scopeSummary'; readonly scope: string; readonly titleLower?: string }
   | { readonly type: 'revision'; readonly scope: string; readonly id: string; readonly revision: string }
   | { readonly type: 'commit'; readonly input: MemoryCommit }
   | { readonly type: 'receipt'; readonly operationId: string; readonly request?: string }
