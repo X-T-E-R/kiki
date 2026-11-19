@@ -846,5 +846,31 @@ describe('FileStorageService — transient access denial during acquisition', ()
       await worker.terminate();
     }
   }, 15_000);
+
+  it('acquires and enforces exclusive file locks via O_CREAT|O_EXCL when platform is android without calling hard link', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-android-wx-lock-'));
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('android');
+    const storage = new FileStorageService(directory);
+    schedule.beforeLink = () => {
+      const error = new Error('EACCES: SELinux denied link') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    };
+    try {
+      const held = await storage.acquireLock('session-locks', 'android.lock', { owner: { holder: 'a' } });
+      try {
+        await expect(
+          storage.acquireLock('session-locks', 'android.lock', { owner: { holder: 'b' }, waitForMs: 0 }),
+        ).rejects.toMatchObject({ code: 'storage.locked' });
+      } finally {
+        await held.release();
+      }
+      const reacquired = await storage.acquireLock('session-locks', 'android.lock', { owner: { holder: 'b' } });
+      await reacquired.release();
+    } finally {
+      schedule.beforeLink = undefined;
+      platformSpy.mockRestore();
+    }
+  });
 });
 

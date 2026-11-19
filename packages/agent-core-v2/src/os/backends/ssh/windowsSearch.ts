@@ -20,6 +20,7 @@ interface SearchOptions {
   globs: string[];
   paths: string[];
   pattern: string;
+  fixedStrings: boolean;
   insensitive: boolean;
   multiline: boolean;
   noIgnore: boolean;
@@ -29,9 +30,20 @@ interface SearchOptions {
   maxDepth?: number;
 }
 
+function normalizeWindowsSearchPath(value: string): string {
+  const colonDrive = /^\/([A-Za-z]):(?:[\\/](.*))?$/.exec(value);
+  if (colonDrive !== null) return `${colonDrive[1]!.toUpperCase()}:/${(colonDrive[2] ?? '').replaceAll('\\', '/')}`;
+  const cygdrive = /^\/cygdrive\/([A-Za-z])(?:\/(.*))?$/.exec(value);
+  if (cygdrive !== null) return `${cygdrive[1]!.toUpperCase()}:/${(cygdrive[2] ?? '').replaceAll('\\', '/')}`;
+  const msysDrive = /^\/([A-Za-z])(?:\/(.*))?$/.exec(value);
+  if (msysDrive !== null) return `${msysDrive[1]!.toUpperCase()}:/${(msysDrive[2] ?? '').replaceAll('\\', '/')}`;
+  return value;
+}
+
 function parseArgs(args: readonly string[], cwd: string): SearchOptions {
+  const normalizedCwd = normalizeWindowsSearchPath(cwd);
   const result: SearchOptions = { files: false, mode: 'content', globs: [], paths: [], pattern: '',
-    insensitive: false, multiline: false, noIgnore: false, lineNumbers: false, before: 0, after: 0 };
+    fixedStrings: false, insensitive: false, multiline: false, noIgnore: false, lineNumbers: false, before: 0, after: 0 };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
     const next = () => {
@@ -42,11 +54,12 @@ function parseArgs(args: readonly string[], cwd: string): SearchOptions {
     if (arg === '--files') result.files = true;
     else if (arg === '-l') result.mode = 'files_with_matches';
     else if (arg === '--count-matches') result.mode = 'count_matches';
+    else if (arg === '-F' || arg === '--fixed-strings') result.fixedStrings = true;
     else if (arg === '-i') result.insensitive = true;
     else if (arg === '-U') result.multiline = true;
     else if (arg === '--no-ignore') result.noIgnore = true;
     else if (arg === '-n') result.lineNumbers = true;
-    else if (arg === '--glob') result.globs.push(next());
+    else if (arg === '--glob' || arg === '--iglob') result.globs.push(next());
     else if (arg === '--type') {
       const type = next();
       const glob = TYPES[type];
@@ -59,13 +72,13 @@ function parseArgs(args: readonly string[], cwd: string): SearchOptions {
     else if (arg === '--max-columns' || arg === '--field-context-separator' || arg === '-j') next();
     else if (arg === '--') {
       result.pattern = next();
-      result.paths = args.slice(index + 1).map((path) => win32.resolve(cwd, path).replaceAll('\\', '/'));
+      result.paths = args.slice(index + 1).map((path) => win32.resolve(normalizedCwd, normalizeWindowsSearchPath(path)).replaceAll('\\', '/'));
       break;
-    } else if (['--hidden', '--sortr=modified', '--null', '--with-filename', '--multiline-dotall'].includes(arg)) continue;
-    else if (!arg.startsWith('-')) result.paths.push(win32.resolve(cwd, arg).replaceAll('\\', '/'));
+    } else if (['--hidden', '--sortr=modified', '--null', '--with-filename', '--multiline-dotall', '--glob-case-insensitive'].includes(arg)) continue;
+    else if (!arg.startsWith('-')) result.paths.push(win32.resolve(normalizedCwd, normalizeWindowsSearchPath(arg)).replaceAll('\\', '/'));
     else throw new Error(`Unsupported Windows search option: ${arg}`);
   }
-  if (result.paths.length === 0) result.paths.push(cwd);
+  if (result.paths.length === 0) result.paths.push(normalizedCwd);
   return result;
 }
 
@@ -83,11 +96,15 @@ function Encode([string]$value) { [Convert]::ToBase64String([Text.Encoding]::UTF
 function EmitFile($file,[string]$root) {
   $path=$file.FullName.Replace('\\','/')
   $relative=$path.Substring([Math]::Min($path.Length,$root.TrimEnd('/').Length+1))
+  $hasInclude=$false
+  $matchedInclude=$false
   foreach ($f in $filters) {
     $target=if ($f.basename) { $file.Name } else { $relative }
     $matches=$f.regex.IsMatch($target) -or $f.regex.IsMatch($path)
-    if (($f.exclude -and $matches) -or (!$f.exclude -and !$matches)) { return }
+    if ($f.exclude) { if ($matches) { return } }
+    else { $hasInclude=$true; if ($matches) { $matchedInclude=$true } }
   }
+  if ($hasInclude -and !$matchedInclude) { return }
   [Console]::WriteLine('f'+[char]9+$file.LastWriteTimeUtc.Subtract([DateTime]::new(1970,1,1)).TotalMilliseconds+[char]9+(Encode $path))
 }
 foreach ($root in $c.paths) {
@@ -177,7 +194,8 @@ $c=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${config}')) | C
 $flags=[Text.RegularExpressions.RegexOptions]::None
 if ($c.insensitive) { $flags=$flags -bor [Text.RegularExpressions.RegexOptions]::IgnoreCase }
 if ($c.multiline) { $flags=$flags -bor [Text.RegularExpressions.RegexOptions]::Singleline }
-$regex=[Text.RegularExpressions.Regex]::new($c.pattern,$flags,[TimeSpan]::FromSeconds(2))
+$pattern=if ($c.fixedStrings) { [Text.RegularExpressions.Regex]::Escape($c.pattern) } else { $c.pattern }
+$regex=[Text.RegularExpressions.Regex]::new($pattern,$flags,[TimeSpan]::FromSeconds(2))
 $matched=$false
 foreach ($path in $c.paths) {
   $stream=[IO.File]::OpenRead($path)

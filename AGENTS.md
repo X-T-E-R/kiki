@@ -15,8 +15,10 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 ## Project Map
 
 - `apps/kimi-code`: the CLI / TUI application. It consumes `@kiki/klient` / `@kiki/session-core` for client operations and `@kiki/node-sdk` for host setup and SDK utilities; it must not depend directly on `@kiki/agent-core-v2`. When writing or modifying its terminal UI, use the `write-tui` skill (`.agents/skills/write-tui/SKILL.md`).
-- `apps/kiki-gui`: the shared browser and desktop GUI. `apps/kimi-code` builds it into the CLI package and serves it from `kiki web`; for development, run `pnpm dev:server` and point the GUI Vite server at it with `KIKI_SERVER_URL`. Default visual acceptance uses the headless `scripts/visual-proof.mjs`; see `apps/kiki-gui/AGENTS.md`.
-- `apps/kiki-android`: the native Android app, organized as a four-module Gradle project; run JVM unit tests with `./gradlew testDebugUnitTest` from this directory.
+- `apps/kiki-gui`: the shared browser, desktop (Tauri `src-tauri/`), and responsive mobile GUI. `apps/kimi-code` builds it into the CLI package and serves it from `kiki web`; for development, run `pnpm dev:server` and point the GUI Vite server at it with `KIKI_SERVER_URL`. Default visual acceptance uses the headless `scripts/visual-proof.mjs`; see `apps/kiki-gui/AGENTS.md`.
+- `apps/kiki-gui/mobile`: the unified Capacitor (`@capacitor/{ios,android}`) mobile shell (`launcher/` + `mobile/ios` `SceneDelegate.swift` + `mobile/android` `KikiShellPlugin.java`) that pairs via `kiki://pair` codes and hosts a Kiki server's responsive `kiki-gui`.
+- `apps/kiki-android`: the native Android local-runtime host (four-module Gradle project embedding Bionic Node + `KikiWebActivity` hosting `kiki-gui` + phone screen tools); run JVM unit tests with `./gradlew testDebugUnitTest` from this directory.
+- `apps/vscode`: the VS Code extension client.
 - `packages/agent-core-v2`: the agent engine — the only one. (The historical v1 `packages/agent-core` was deleted; nothing in the repo may reintroduce it.) A DI × Scope design with three `LifecycleScope` tiers (`App` / `Session` / `Agent`, `src/app/scopes.ts`), the L3 unit layer (`Service`/`Fiber`, collections, Features), and App-scope `ISessionManager`. Workspace resources live in leased `WorkspaceInstance` / `Program` runtime generations, not a fourth DI scope. See `packages/agent-core-v2/AGENTS.md` and use the `agent-core-dev` skill (`.agents/skills/agent-core-dev/SKILL.md`) when developing here.
 - `packages/node-sdk`: the public TypeScript SDK and harness.
 - `packages/kaos`: the execution environment and file/process abstractions.
@@ -25,8 +27,10 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - `packages/kap-server`: the Kiki server, backed by `@kiki/agent-core-v2`; exposes sessions over REST + WebSocket (`/api` + `/api/ws`), plus the `/api/debug/*` reflection RPC surface (`--debug-endpoints`, loopback bind + bearer auth). See `packages/kap-server/AGENTS.md`.
 - `packages/klient`: the client SDK — a contract-driven facade over agent-core-v2 (`global.*` / `session(id).*` / `agent(id).*`, zod-validated); transport via subpath entry (`@kiki/klient/http|ipc|memory`, all return the same `Klient`); also hosts the e2e suites. See `packages/klient/AGENTS.md`.
 - `packages/tree-sitter-bash`: a pure-TypeScript bash parser (no runtime deps, no wasm); `parse(source, { timeoutMs, maxNodes })` runs under a deterministic budget and returns a discriminated `ParseResult` — callers must treat aborted/hasError trees as "cannot analyze" and degrade. Parser only, no safety judgments; see the package README's "Known differences" section.
-- `packages/lexical`: dependency-free ASCII/CJK tokenization and Unicode literal normalization shared by Memory, history, search and legacy MiniDb APIs.
-- `packages/minidb`: the legacy embedded document store retained during the storage migration; global search uses SQLite instead. See `packages/minidb/AGENTS.md`.
+- `packages/protocol`: shared Zod schemas, REST/WS wire contracts, pairing URI helpers, and error envelopes across server and clients.
+- `packages/session-core`: framework-shared client session controller, settings models, composer helpers, and 20-domain `i18n` dictionaries consumed by `apps/kiki-gui` and `apps/kimi-code`.
+- `packages/plugin-sdk`: public authoring types and media/panel contracts for Kiki plugins.
+- `packages/lexical`: dependency-free ASCII/CJK tokenization and Unicode literal normalization shared by Memory, history, and SQLite FTS5 search.
 
 ## Environment Requirements
 

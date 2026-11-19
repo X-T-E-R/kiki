@@ -14,9 +14,11 @@ export const sshHostSchema = z.object({
 });
 export type SshHost = z.infer<typeof sshHostSchema>;
 
+const SSH_ROOT_PATTERN = /^(?:\/|[A-Za-z]:[\\/])/;
+
 export const sshHostInputSchema = sshHostSchema.omit({ id: true, source: true }).extend({
   name: z.string().trim().min(1),
-  roots: z.array(z.string().startsWith('/')).min(1).optional(),
+  roots: z.array(z.string().regex(SSH_ROOT_PATTERN, 'SSH root must be an absolute POSIX or Windows drive path')).min(1).optional(),
 });
 export type SshHostInput = z.infer<typeof sshHostInputSchema>;
 

@@ -239,12 +239,17 @@ internal class MiniHttpServer(
     private fun write(output: OutputStream, response: HttpResponse, close: Boolean) {
         val head = StringBuilder("HTTP/1.1 ${response.status} ${REASONS[response.status] ?: "Status"}\r\n")
         response.headers.forEach { (name, value) -> head.append(name).append(": ").append(value).append("\r\n") }
-        head.append("Content-Length: ").append(response.body.size).append("\r\n")
+        val noBodyStatus = response.status in 100..199 || response.status == 204 || response.status == 304
+        if (!noBodyStatus) {
+            head.append("Content-Length: ").append(response.body.size).append("\r\n")
+        }
         head.append("Cache-Control: no-store\r\n")
         if (close) head.append("Connection: close\r\n")
         head.append("\r\n")
         output.write(head.toString().toByteArray(Charsets.ISO_8859_1))
-        output.write(response.body)
+        if (!noBodyStatus && response.body.isNotEmpty()) {
+            output.write(response.body)
+        }
         output.flush()
     }
 
@@ -252,7 +257,8 @@ internal class MiniHttpServer(
         private const val MAX_HEAD = 16 * 1024
         private const val MAX_BODY = 256 * 1024
         private val REASONS = mapOf(
-            200 to "OK", 201 to "Created", 202 to "Accepted", 400 to "Bad Request", 401 to "Unauthorized", 403 to "Forbidden",
+            200 to "OK", 201 to "Created", 202 to "Accepted", 204 to "No Content",
+            400 to "Bad Request", 401 to "Unauthorized", 403 to "Forbidden",
             404 to "Not Found", 405 to "Method Not Allowed", 406 to "Not Acceptable", 409 to "Conflict", 413 to "Payload Too Large",
             415 to "Unsupported Media Type", 429 to "Too Many Requests", 431 to "Request Header Fields Too Large",
             500 to "Internal Server Error", 503 to "Service Unavailable",

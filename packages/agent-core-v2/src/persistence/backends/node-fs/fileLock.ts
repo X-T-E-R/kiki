@@ -72,6 +72,17 @@ const LOCK_WAIT_MAX_MS = 250;
 const PENDING_UNLINK_RETRY_BASE_MS = 25;
 const PENDING_UNLINK_RETRY_MAX_MS = 100;
 const RELEASED_TOKEN_HISTORY_MAX = 4_096;
+const HARD_LINK_UNSUPPORTED_CODES = new Set(['ENOSYS', 'ENOTSUP']);
+
+function preferDirectExclusiveCreate(): boolean {
+  return process.platform === 'android';
+}
+
+function isHardLinkUnsupported(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code !== undefined && HARD_LINK_UNSUPPORTED_CODES.has(code);
+}
+
 const TRANSIENT_DENIAL_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const HELD = new Set<FileLock>();
 const READER_HELD = new Set<ReaderLeaseHandle>();
@@ -987,7 +998,16 @@ class FileLock implements IStorageLock {
     const tempPath = `${this.lockPath}.tmp-${process.pid}-${nextSidecarSequence()}`;
     try {
       await writeFile(tempPath, this.payloadText(), { mode: this.fileMode });
-      await link(tempPath, watchPath);
+      if (preferDirectExclusiveCreate()) {
+        await rename(tempPath, watchPath);
+      } else {
+        try {
+          await link(tempPath, watchPath);
+        } catch (error) {
+          if (!isHardLinkUnsupported(error)) throw error;
+          await rename(tempPath, watchPath);
+        }
+      }
       this.watchPath = watchPath;
     } finally {
       await unlink(tempPath).catch(() => undefined);
@@ -1001,6 +1021,9 @@ class FileLock implements IStorageLock {
   }
 
   private async tryCreate(): Promise<boolean> {
+    if (preferDirectExclusiveCreate()) {
+      return this.tryCreateDirect();
+    }
     const tempPath = `${this.lockPath}.tmp-${process.pid}-${nextSidecarSequence()}`;
     try {
       await writeFile(tempPath, this.payloadText(), { mode: this.fileMode });
@@ -1008,11 +1031,35 @@ class FileLock implements IStorageLock {
       this.markHeld();
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      return false;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') return false;
+      if (isHardLinkUnsupported(error)) {
+        return this.tryCreateDirect();
+      }
+      throw error;
     } finally {
       await unlink(tempPath).catch(() => undefined);
     }
+  }
+
+  private async tryCreateDirect(): Promise<boolean> {
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(this.lockPath, 'wx', this.fileMode);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
+    }
+    try {
+      await handle.writeFile(this.payloadText());
+    } catch (writeError) {
+      await handle.close().catch(() => undefined);
+      await unlink(this.lockPath).catch(() => undefined);
+      throw writeError;
+    }
+    await handle.close();
+    this.markHeld();
+    return true;
   }
 
   private async takeOver(): Promise<boolean> {

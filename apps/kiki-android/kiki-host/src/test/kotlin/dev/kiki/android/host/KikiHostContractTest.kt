@@ -448,4 +448,58 @@ class KikiHostContractTest {
         assertTrue(script.contains("http://127.0.0.1:47213"))
         assertTrue(script.contains("tok_abc"))
     }
+
+    @Test
+    fun httpServer_204_omits_content_length_and_includes_reason_phrase() {
+        val dir = Files.createTempDirectory("kiki-http-204-test-").toFile()
+        val secretToken = "sec-204-token"
+        val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+        val broker = KeystoreSecretBroker(File(dir, "secrets.bin")) { key }
+        val arbiter = ScreenArbiter(
+            selfPackage = "dev.kiki.app",
+            foregroundPackageProvider = { "dev.kiki.app" },
+            yieldSelfToBackground = { true },
+            pill = FakePill(),
+        )
+        val proxy = KikiToolProxy(
+            backend = object : McpBackendAdapter {
+                override fun listTools() = emptyList<HostMcpToolDescriptor>()
+                override fun allowWakeUnlock() = false
+                override fun isAttended() = true
+                override suspend fun callTool(name: String, argumentsJson: String, attended: Boolean) =
+                    HostMcpToolCallResult(buildJsonObject { put("ok", true) })
+            },
+            arbiter = arbiter,
+        )
+        val gateway = HostGateway(
+            secretTokenProvider = { secretToken },
+            mcpTokenProvider = { "mcp-204-token" },
+            secretBroker = broker,
+            toolProxy = proxy,
+            port = 0,
+        )
+        try {
+            val uri = java.net.URI(gateway.baseUrl)
+            java.net.Socket(uri.host, uri.port).use { sock ->
+                val body = """{"service":"kiki.test","account":"k204","value":"ok"}"""
+                val req = buildString {
+                    append("POST /v1/secret/put HTTP/1.1\r\n")
+                    append("Host: 127.0.0.1:${uri.port}\r\n")
+                    append("Authorization: Bearer $secretToken\r\n")
+                    append("Content-Type: application/json\r\n")
+                    append("Content-Length: ${body.toByteArray().size}\r\n")
+                    append("Connection: close\r\n\r\n")
+                    append(body)
+                }
+                sock.getOutputStream().write(req.toByteArray())
+                sock.getOutputStream().flush()
+                val raw = sock.getInputStream().readBytes().toString(Charsets.UTF_8)
+                assertTrue(raw.startsWith("HTTP/1.1 204 No Content\r\n"), "Expected 204 No Content status line, got: $raw")
+                assertTrue(!raw.lowercase().contains("content-length:"), "204 response must not carry Content-Length header: $raw")
+            }
+        } finally {
+            gateway.close()
+            dir.deleteRecursively()
+        }
+    }
 }

@@ -187,14 +187,41 @@ export async function atomicWrite(
 }
 
 export async function atomicCreate(filePath: string, content: string): Promise<void> {
+  if (process.platform === 'android') {
+    await createFileExclusiveDirect(filePath, content);
+    return;
+  }
   const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
   try {
     await atomicWrite(tmpPath, content);
-    await link(tmpPath, filePath);
+    try {
+      await link(tmpPath, filePath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOSYS' || code === 'ENOTSUP') {
+        await createFileExclusiveDirect(filePath, content);
+        return;
+      }
+      throw error;
+    }
     await syncDir(dirname(filePath));
   } finally {
     await removeCreateTemporary(tmpPath);
   }
+}
+
+async function createFileExclusiveDirect(filePath: string, content: string): Promise<void> {
+  const fh = await open(filePath, 'wx');
+  try {
+    await fh.writeFile(content, 'utf8');
+    await fh.sync();
+  } catch (error) {
+    await fh.close().catch(() => undefined);
+    await unlink(filePath).catch(() => undefined);
+    throw error;
+  }
+  await fh.close();
+  await syncDir(dirname(filePath));
 }
 
 async function removeCreateTemporary(tmpPath: string): Promise<void> {
