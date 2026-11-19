@@ -44,7 +44,9 @@
       "../THIRD_PARTY_NOTICES.md"
     ],
     "macOS": {
-      "minimumSystemVersion": "13.5"
+      "minimumSystemVersion": "13.5",
+      "entitlements": "entitlements.plist",
+      "hardenedRuntime": true
     },
     "linux": {
       "deb": {

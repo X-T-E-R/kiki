@@ -1,5 +1,25 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+import { assertSeaEntitlements } from './04-sign.mjs';
 import { run } from './exec.mjs';
 import { nativeBinPath, targetTriple } from './paths.mjs';
+
+const execFileAsync = promisify(execFile);
+
+async function inspectCodesign(executable) {
+  const { stdout, stderr } = await execFileAsync('codesign', ['-dv', '--verbose=2', executable], {
+    encoding: 'utf8',
+  });
+  return `${stdout}${stderr}`;
+}
+
+async function readEntitlementsXml(executable) {
+  const { stdout } = await execFileAsync('codesign', ['-d', '--entitlements', ':-', executable], {
+    encoding: 'utf8',
+  });
+  return stdout;
+}
 
 export async function runVerifyStep({ requireGatekeeper = false } = {}) {
   if (process.platform !== 'darwin') {
@@ -10,8 +30,18 @@ export async function runVerifyStep({ requireGatekeeper = false } = {}) {
   const target = targetTriple();
   const executable = nativeBinPath(target);
 
+  console.log(`==> codesign --verify --strict --verbose=2 ${executable}`);
+  await run('codesign', ['--verify', '--strict', '--verbose=2', executable]);
+
   console.log(`==> codesign -dv ${executable}`);
-  await run('codesign', ['-dv', '--verbose=2', executable]);
+  const details = await inspectCodesign(executable);
+  process.stdout.write(details);
+
+  if (/\bflags=.*\bruntime\b/.test(details)) {
+    console.log(`==> Verifying SEA Hardened Runtime entitlements on ${executable}`);
+    const entitlementsXml = await readEntitlementsXml(executable);
+    assertSeaEntitlements(entitlementsXml, executable);
+  }
 
   if (requireGatekeeper) {
     // spctl in 'install' mode simulates the Gatekeeper online check — only a

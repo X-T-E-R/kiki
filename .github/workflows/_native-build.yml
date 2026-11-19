@@ -234,10 +234,6 @@ jobs:
           notarization-key-id: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           notarization-issuer-id: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
 
-      - name: Cleanup macOS keychain
-        if: always() && runner.os == 'macOS' && inputs.sign-macos
-        uses: ./.github/actions/macos-keychain-cleanup
-
       - name: Smoke test native executable
         run: pnpm --filter @kiki/cli run test:native:smoke
 
@@ -260,6 +256,10 @@ jobs:
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/kiki-target-candidate"
+          signing_mode='unsigned'
+          if [ "$RUNNER_OS" = 'macOS' ] && [ '${{ inputs.sign-macos }}' = 'true' ]; then
+            signing_mode='apple-developer-id'
+          fi
           node apps/kimi-code/scripts/native/release-receipt.mjs stage-native \
             --output "$output" \
             --receipt "$KIKI_RELEASE_INPUT_RECEIPT" \
@@ -277,7 +277,7 @@ jobs:
             --rust-target '${{ matrix.rust-target }}' \
             --rust "$(rustc --version)" \
             --pnpm "$(pnpm --version)" \
-            --signing unsigned \
+            --signing "$signing_mode" \
             --updater-public-key "$KIKI_UPDATER_PUBLIC_KEY"
           {
             echo "KIKI_SIDECAR_SOURCE=$GITHUB_WORKSPACE/apps/kimi-code/dist-native/bin/${{ matrix.target }}/kiki${{ matrix.extension }}"
@@ -289,7 +289,7 @@ jobs:
         if: inputs.build-desktop && matrix.desktop-name != ''
         shell: bash
         run: |
-          node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs apps/kiki-gui/scripts/verify-updater-signature.test.mjs
+          node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs apps/kiki-gui/scripts/verify-updater-signature.test.mjs apps/kiki-gui/scripts/macos-sign-notarize.test.mjs
           pnpm --filter @kiki/gui run desktop:version:check
           pnpm --filter @kiki/gui run desktop:prepare:test
 
@@ -316,6 +316,9 @@ jobs:
           KIKI_TAURI_CONFIG_PATH: ${{ runner.temp }}/kiki-tauri-release-config.json
           KIKI_RUST_TARGET: ${{ matrix.rust-target }}
           KIKI_BUNDLES: ${{ matrix.bundles }}
+          APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
+          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -371,11 +374,17 @@ jobs:
               bundles=("${appimages[0]}" "${debs[0]}")
               ;;
             macOS)
+              apps=("$bundle_dir"/macos/*.app)
               bundles=("$bundle_dir"/dmg/*.dmg)
-              if [ "${#bundles[@]}" -ne 1 ]; then
-                echo 'Expected one dmg bundle.' >&2
+              if [ "${#apps[@]}" -ne 1 ] || [ "${#bundles[@]}" -ne 1 ]; then
+                echo 'Expected one macOS .app bundle and one .dmg bundle.' >&2
                 exit 1
               fi
+              sign_args=(--app "${apps[0]}" --dmg "${bundles[0]}")
+              if [ '${{ inputs.sign-macos }}' = 'true' ]; then
+                sign_args+=(--require-notarize)
+              fi
+              node apps/kiki-gui/scripts/macos-sign-notarize.mjs "${sign_args[@]}"
               ;;
           esac
           shopt -u nullglob
@@ -398,6 +407,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          signing_mode='unsigned'
+          if [ "$RUNNER_OS" = 'macOS' ] && [ '${{ inputs.sign-macos }}' = 'true' ]; then
+            signing_mode='apple-developer-id'
+          fi
           node apps/kimi-code/scripts/native/release-receipt.mjs stage-native \
             --output "$RUNNER_TEMP/kiki-target-candidate" \
             --desktop "$RUNNER_TEMP/kiki-release-candidate" \
@@ -416,8 +429,12 @@ jobs:
             --rust-target '${{ matrix.rust-target }}' \
             --rust "$(rustc --version)" \
             --pnpm "$(pnpm --version)" \
-            --signing unsigned \
+            --signing "$signing_mode" \
             --updater-public-key "${KIKI_EMBEDDED_UPDATER_PUBLIC_KEY:-}"
+
+      - name: Cleanup macOS keychain
+        if: always() && runner.os == 'macOS' && inputs.sign-macos
+        uses: ./.github/actions/macos-keychain-cleanup
 
       - name: Upload immutable target candidate
         if: inputs.prepare-artifact-id != ''

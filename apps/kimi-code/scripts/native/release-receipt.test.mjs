@@ -480,3 +480,45 @@ test('frozen updater key binds native staging, target consumption, and publisher
     rmSync(state.root, { recursive: true, force: true });
   }
 });
+
+test('darwin release candidates accept apple-developer-id signing consistently while rejecting mixed or non-darwin signed modes', () => {
+  const state = fixture();
+  try {
+    const artifacts = stageAll(state);
+    for (const target of ['darwin-x64', 'darwin-arm64']) {
+      const receiptPath = join(artifacts, `kiki-release-target-77-${target}-2`, NATIVE_RECEIPT_NAME);
+      const parsed = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      parsed.signingMode.native = 'apple-developer-id';
+      write(receiptPath, JSON.stringify(parsed));
+    }
+    const assembled = verifyCandidateSet({
+      root: state.root,
+      artifactsRoot: artifacts,
+      nativeOutput: join(state.root, 'signed-native'),
+      desktopOutput: join(state.root, 'signed-desktop'),
+      prepareReceiptPath: state.preparePath,
+      catalogPath: state.catalog,
+      prepareArtifactId: '9001',
+      expected: expected(),
+    });
+    assert.equal(assembled.get('darwin-arm64').receipt.signingMode.native, 'apple-developer-id');
+    assert.equal(assembled.get('win32-x64').receipt.signingMode.native, 'unsigned');
+
+    const intelPath = join(artifacts, 'kiki-release-target-77-darwin-x64-2', NATIVE_RECEIPT_NAME);
+    const intel = JSON.parse(readFileSync(intelPath, 'utf8'));
+    intel.signingMode.native = 'unsigned';
+    write(intelPath, JSON.stringify(intel));
+    assert.throws(() => verifyCandidateSet({
+      root: state.root,
+      artifactsRoot: artifacts,
+      nativeOutput: join(state.root, 'mixed-native'),
+      desktopOutput: join(state.root, 'mixed-desktop'),
+      prepareReceiptPath: state.preparePath,
+      catalogPath: state.catalog,
+      prepareArtifactId: '9001',
+      expected: expected(),
+    }), /macOS signing mode differs/);
+  } finally {
+    rmSync(state.root, { recursive: true, force: true });
+  }
+});

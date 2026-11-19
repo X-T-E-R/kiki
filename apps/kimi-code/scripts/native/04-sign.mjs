@@ -8,10 +8,40 @@ import { nativeBinPath, targetTriple } from './paths.mjs';
 
 const ENTITLEMENTS_PATH = resolve(import.meta.dirname, 'entitlements.plist');
 
+export const REQUIRED_SEA_ENTITLEMENTS = [
+  'com.apple.security.cs.allow-jit',
+  'com.apple.security.cs.allow-unsigned-executable-memory',
+  'com.apple.security.cs.disable-executable-page-protection',
+  'com.apple.security.cs.disable-library-validation',
+];
+
+export function parseEntitlementsXml(xml) {
+  const result = new Map();
+  if (typeof xml !== 'string' || xml.trim() === '') return result;
+  const pairPattern = /<key>\s*([^<]+?)\s*<\/key>\s*<(true|false)\s*\/>/g;
+  for (const match of xml.matchAll(pairPattern)) {
+    result.set(match[1].trim(), match[2] === 'true');
+  }
+  return result;
+}
+
+export function assertSeaEntitlements(xml, label = 'executable') {
+  const parsed = parseEntitlementsXml(xml);
+  const missing = REQUIRED_SEA_ENTITLEMENTS.filter((key) => parsed.get(key) !== true);
+  if (missing.length > 0) {
+    throw new Error(
+      `${label} is missing required Node.js SEA Hardened Runtime entitlements: ${missing.join(', ')}`,
+    );
+  }
+  return parsed;
+}
+
 export function macosSigningOptions(signMacos, env = process.env) {
+  const rawIdentity = env.APPLE_SIGNING_IDENTITY?.trim() ?? '';
+  const rawKeychain = env.APPLE_KEYCHAIN_PATH?.trim() ?? '';
   return {
-    identity: signMacos ? (env.APPLE_SIGNING_IDENTITY ?? '-') : '-',
-    keychainPath: signMacos ? (env.APPLE_KEYCHAIN_PATH ?? null) : null,
+    identity: signMacos && rawIdentity !== '' ? rawIdentity : '-',
+    keychainPath: signMacos && rawKeychain !== '' ? rawKeychain : null,
   };
 }
 
