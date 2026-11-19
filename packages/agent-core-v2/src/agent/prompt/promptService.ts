@@ -900,7 +900,7 @@ export class AgentPromptService implements IAgentPromptService {
         this.resumeRecoveredQueue();
       }
       executionWasHeld = held;
-      if (!executionControl.isHeld()) void this.startNext();
+      if (!executionControl.isHeld()) this.scheduleNext();
     });
     instantiation.onWillDispose(() => { executionSubscription.dispose(); });
     this.states.contributeState(promptLaunchingKey);
@@ -917,7 +917,7 @@ export class AgentPromptService implements IAgentPromptService {
       await next();
     });
     const taskSettlementSubscription = eventBus.subscribe(TaskSettlementReady, () => {
-      void this.startNext();
+      this.scheduleNext();
     });
     instantiation.onWillDispose(() => taskSettlementSubscription.dispose());
     toolExecutor.hooks.onDidExecuteTool.register('prompt-service-delivery', async (ctx, next) => {
@@ -1126,7 +1126,7 @@ export class AgentPromptService implements IAgentPromptService {
     const placement = input.mode === 'direct' ? entry.placement : undefined;
     await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { ...entry, input: { ...input, intent: input.mode === 'direct' ? input.intent : undefined }, placement, receipt, revision: entry.revision + 1 }, queueIndex: Math.max(0, this.queueOrder.indexOf(modelSwitchQueueId(input.operationId))) }));
     await this.wire.flush();
-    if (!this.scheduleLiveModelSwitch(input.operationId)) void this.startNext();
+    if (!this.scheduleLiveModelSwitch(input.operationId)) this.scheduleNext();
     return receipt;
   }
 
@@ -1151,7 +1151,7 @@ export class AgentPromptService implements IAgentPromptService {
     await this.wire.flush();
     this.releaseFinishedModelSwitches();
     this.syncRecoveryHold();
-    void this.startNext();
+    this.scheduleNext();
     return receipt;
   }
 
@@ -1207,7 +1207,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.immediateModelSwitchIds.add(operationId);
     });
     if (retained !== undefined) {
-      if (action === 'keep_original') void this.startNext();
+      if (action === 'keep_original') this.scheduleNext();
       return retained;
     }
     const accepted = this.pending.filter(item => item.execution?.afterModelSwitch === operationId && this.acceptedBoundaryPromptIds.has(item.id));
@@ -1275,7 +1275,7 @@ export class AgentPromptService implements IAgentPromptService {
         if (!isError2(error) || error.code !== ErrorCodes.TURN_AGENT_BUSY) throw error;
         receipt = { ...preparing, state: 'pending' };
         this.waitingForLoop = true;
-        void this.loop.settled().then(() => { this.waitingForLoop = false; void this.startNext(); });
+        void this.loop.settled().then(() => { this.waitingForLoop = false; this.scheduleNext(); });
       }
       flight.receipt = receipt;
       await this.dispatcher.dispatch(new ModelSwitchQueueStatus({ operationId, receipt }));
@@ -1291,7 +1291,7 @@ export class AgentPromptService implements IAgentPromptService {
       flight.promise = undefined;
       this.releaseFinishedModelSwitches();
       this.syncRecoveryHold();
-      if (this.switchFlight === undefined) void this.startNext();
+      if (this.switchFlight === undefined) this.scheduleNext();
     });
     flight.promise = promise;
     return summarizing === undefined ? promise : Promise.race([promise, summarizing.promise]);
@@ -1549,7 +1549,7 @@ export class AgentPromptService implements IAgentPromptService {
       void this.steer([handle.id]).catch(() => {
         if (!this.pending.some((item) => item.id === handle.id)) return;
         this.immediatePromptIds.add(handle.id);
-        void this.startNext();
+        this.scheduleNext();
       });
     }
     return this.awaitAdmission(handle);
@@ -1704,11 +1704,11 @@ export class AgentPromptService implements IAgentPromptService {
       return record.handle;
     }
     if (queued) {
-      void this.startNext();
+      this.scheduleNext();
       return record.handle;
     }
     if (input.waitForLaunch !== false) this.synchronousAdmissions.add(record.handle);
-    void this.startNext();
+    this.scheduleNext();
     return record.handle;
   }
 
@@ -1937,7 +1937,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (!held) {
       if (this.editHold?.promptId !== promptId) return;
       this.releaseEditHold();
-      void this.startNext();
+      this.scheduleNext();
       return;
     }
     if ((!this.pending.some((candidate) => candidate.id === promptId) && !this.queueOrder.includes(promptId)) ||
@@ -1948,7 +1948,7 @@ export class AgentPromptService implements IAgentPromptService {
     const timer = setTimeout(() => {
       if (this.editHold?.promptId !== promptId) return;
       this.editHold = undefined;
-      void this.startNext();
+      this.scheduleNext();
     }, PROMPT_EDIT_HOLD_TTL_MS);
     (timer as { unref?: () => void }).unref?.();
     this.editHold = { promptId, timer };
@@ -1982,7 +1982,7 @@ export class AgentPromptService implements IAgentPromptService {
         }
         this.recoveryHold = false;
         this.publishQueueHoldChanged();
-        void this.startNext();
+        this.scheduleNext();
       });
     } finally { admission.dispose(); }
   }
@@ -2233,7 +2233,7 @@ export class AgentPromptService implements IAgentPromptService {
       revision: item.revision,
       changedAt: new Date().toISOString(),
     }));
-    void this.startNext();
+    this.scheduleNext();
     return item.handle;
   }
 
@@ -2287,7 +2287,7 @@ export class AgentPromptService implements IAgentPromptService {
         const execution = this.resolveExecutionBinding(item.execution);
         if (execution !== undefined && this.hasExecutionBindingChange({ ...execution, afterModelSwitch: undefined, model: undefined, thinking: undefined, modelSwitchMode: undefined })) {
           this.immediatePromptIds.add(item.id);
-          void this.startNext();
+          this.scheduleNext();
           continue;
         }
         if (this.hasExecutionBindingChange(execution, item.id)) {
@@ -2397,7 +2397,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.syncRecoveryHold();
     } finally {
       this.steeringPromptIds.delete(item.id);
-      if (this.active === undefined) void this.startNext();
+      if (this.active === undefined) this.scheduleNext();
     }
   }
 
@@ -2438,13 +2438,13 @@ export class AgentPromptService implements IAgentPromptService {
             for (const call of scheduled.calls) call.result.reject(error);
           } finally {
             for (const id of scheduled.ids) this.steeringPromptIds.delete(id);
-            if (this.active === undefined) void this.startNext();
+            if (this.active === undefined) this.scheduleNext();
           }
         }).catch(error => {
           if (this.steerBatches.get(turnId) === scheduled) this.steerBatches.delete(turnId);
           for (const id of scheduled.ids) this.steeringPromptIds.delete(id);
           for (const call of scheduled.calls) call.result.reject(error);
-          if (this.active === undefined) void this.startNext();
+          if (this.active === undefined) this.scheduleNext();
         });
       });
     }
@@ -2482,7 +2482,7 @@ export class AgentPromptService implements IAgentPromptService {
         item.deliveryReason = 'no_active_turn';
         this.immediatePromptIds.add(item.id);
       }
-      void this.startNext();
+      this.scheduleNext();
       return selected.map((item) => item.handle);
     }
     const allSelected = [...selected];
@@ -2609,7 +2609,7 @@ export class AgentPromptService implements IAgentPromptService {
         this.steeringPromptIds.delete(item.id);
         this.steeringFlights.delete(item.id);
       }
-      if (this.active === undefined) void this.startNext();
+      if (this.active === undefined) this.scheduleNext();
     }
   }
 
@@ -2711,7 +2711,7 @@ export class AgentPromptService implements IAgentPromptService {
       throw error;
     } finally {
       for (const item of selected) this.steeringPromptIds.delete(item.id);
-      if (this.active === undefined) void this.startNext();
+      if (this.active === undefined) this.scheduleNext();
     }
   }
 
@@ -2793,7 +2793,7 @@ export class AgentPromptService implements IAgentPromptService {
     this.recoveryPendingIds.delete(item.id);
     if (this.queuedExternalSteerIds.delete(item.id)) void this.dispatcher.dispatch(new ExecutorHintDelivery({
       executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user', method: 'undelivered', status: 'undelivered',
-    }));
+    })).catch(onUnexpectedError);
     item.state = 'cancelled';
     item.launchedDeferred.resolve(undefined);
     const completion: PromptCompletion = { promptId: item.id, result: undefined, state: 'cancelled' };
@@ -3001,6 +3001,10 @@ export class AgentPromptService implements IAgentPromptService {
     await this.context.clear();
   }
 
+  private scheduleNext(): void {
+    this.startNext().catch(onUnexpectedError);
+  }
+
   private async startNext(): Promise<void> {
     if (this.executionControl.isHeld()) {
       await this.executionControl.ready();
@@ -3032,7 +3036,7 @@ export class AgentPromptService implements IAgentPromptService {
       if (this.loop.status().state !== 'idle') {
         if (!this.waitingForLoop) {
           this.waitingForLoop = true;
-          void this.loop.settled().then(() => { this.waitingForLoop = false; void this.startNext(); });
+          void this.loop.settled().then(() => { this.waitingForLoop = false; this.scheduleNext(); });
         }
         return;
       }
@@ -3053,7 +3057,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (admission === undefined) {
       if (!this.waitingForLoop) {
         this.waitingForLoop = true;
-        void this.loop.settled().then(() => { this.waitingForLoop = false; void this.startNext(); });
+        void this.loop.settled().then(() => { this.waitingForLoop = false; this.scheduleNext(); });
       }
       return;
     }
@@ -3218,7 +3222,7 @@ export class AgentPromptService implements IAgentPromptService {
     } catch (error) {
       if (this.queuedExternalSteerIds.delete(item.id)) await this.dispatcher.dispatch(new ExecutorHintDelivery({
         executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user', method: 'undelivered', status: 'undelivered',
-      }));
+      })).catch(onUnexpectedError);
       for (const candidate of selected) {
         if (candidate.state === 'cancelled') continue;
         const index = this.pending.indexOf(candidate);
@@ -3246,7 +3250,7 @@ export class AgentPromptService implements IAgentPromptService {
         this.launchingPrompt = undefined;
         this.launching = false;
         launchSettled.resolve();
-        if (this.active === undefined) void this.startNext();
+        if (this.active === undefined) this.scheduleNext();
       }
     }
   }
@@ -3288,7 +3292,7 @@ export class AgentPromptService implements IAgentPromptService {
     }
     this.steered.delete(item.id);
     if (state === 'cancelled') this.publishAborted(item, false); else this.publishCompleted(item, state);
-    void this.startNext();
+    this.scheduleNext();
   }
 
   private hasExecutionBindingChange(execution: PromptExecutionBinding | undefined, promptId?: string): boolean {
@@ -3452,7 +3456,7 @@ export class AgentPromptService implements IAgentPromptService {
   private get fullCompaction(): IAgentFullCompactionService {
     if (this.fullCompactionService === undefined) {
       this.fullCompactionService = this.instantiation.invokeFunction((a) => a.get(IAgentFullCompactionService));
-      this.fullCompactionService.onDidFinishCompaction(() => { void this.startNext(); });
+      this.fullCompactionService.onDidFinishCompaction(() => { this.scheduleNext(); });
     }
     return this.fullCompactionService;
   }

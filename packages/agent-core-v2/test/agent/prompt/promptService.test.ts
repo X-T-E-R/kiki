@@ -621,6 +621,29 @@ describe('AgentPromptService', () => {
     await queued.completion;
   });
 
+  it('fails a deferred external steer whose launch fails even when the undelivered hint cannot be recorded', async () => {
+    const { prompt, setExecutor, externalSteer, externalRun, externalTurns, dispatcher } = harness();
+    const reported = vi.fn();
+    setUnexpectedErrorHandler(reported);
+    onTestFinished(resetUnexpectedErrorHandler);
+    setExecutor('grok-acp');
+    externalSteer.mockResolvedValue(false);
+    const active = await prompt.enqueue({ id: 'active', message: message('work') });
+    const queued = await prompt.enqueue({ id: 'queued', message: message('follow up') });
+    await prompt.steer([queued.id]);
+    expect(queued.deliveryReason).toBe('executor_deferred');
+    const hintFailure = new Error('hint journal unavailable');
+    const dispatch = dispatcher.dispatch.bind(dispatcher);
+    vi.spyOn(dispatcher, 'dispatch').mockImplementation(event =>
+      event instanceof ExecutorHintDelivery && event.status === 'undelivered' ? Promise.reject(hintFailure) : dispatch(event));
+    externalRun.mockRejectedValueOnce(new Error('external launch failed'));
+    externalTurns[0]!.finish();
+    await active.completion;
+    await expect(queued.completion).resolves.toMatchObject({ promptId: queued.id, state: 'failed' });
+    await expect(queued.launched).resolves.toBeUndefined();
+    expect(reported).toHaveBeenCalledWith(hintFailure);
+  });
+
   it('shares an in-flight external attempt and retries a definite refusal on the same prompt', async () => {
     const { prompt, setExecutor, externalSteer, externalRun, externalTurns, eventBus, states } = harness();
     const deliveries: ExecutorHintDelivery[] = [];
