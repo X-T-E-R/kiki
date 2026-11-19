@@ -102,27 +102,27 @@ export async function executeCpuOperation(operation: CpuOperation, signal?: Abor
     case 'image.compress': {
       const { executeImageCompress } = await import('#/agent/media/image-compress');
       signal?.throwIfAborted();
-      return executeImageCompress(operation);
+      return executeImageCompress(operation, signal);
     }
     case 'image.crop': {
       const { executeImageCrop } = await import('#/agent/media/image-compress');
       signal?.throwIfAborted();
-      return executeImageCrop(operation);
+      return executeImageCrop(operation, signal);
     }
     case 'image.normalizeAvatar': {
       const { executeAvatarNormalize } = await import('#/agent/media/image-compress');
       signal?.throwIfAborted();
-      return executeAvatarNormalize(operation);
+      return executeAvatarNormalize(operation, signal);
     }
     case 'image.dimensions': {
       const { executeImageDimensions } = await import('#/agent/media/image-compress');
       signal?.throwIfAborted();
-      return executeImageDimensions(operation);
+      return executeImageDimensions(operation, signal);
     }
     case 'image.toPng': {
       const { executeImageToPng } = await import('#/agent/media/image-compress');
       signal?.throwIfAborted();
-      return executeImageToPng(operation);
+      return executeImageToPng(operation, signal);
     }
     case 'wire.context': return projectWireInput(operation.input, operation.scope, operation.key, operation.omitTranscript === true, signal);
     case 'checkpoint.read': return readCheckpointStatesFromFile(operation.path, operation.names, signal);

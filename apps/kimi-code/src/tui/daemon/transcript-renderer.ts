@@ -243,6 +243,10 @@ export class DaemonTranscriptRenderer {
           this.context.liveTurnId,
           { forest: this.context.forest, foldSingleProcess: true },
         );
+    const latestCardIdByAgent = new Map<string, string>();
+    for (const block of blocks) {
+      if (block.kind === 'subagent') latestCardIdByAgent.set(block.subagentId, block.id);
+    }
     const visible = new Set<string>();
     const summaries = new Set<string>();
     const appendNotes = (ids: ReadonlySet<string>) => {
@@ -272,7 +276,7 @@ export class DaemonTranscriptRenderer {
         summary = new TranscriptSummary(() => this.toggleFold(node.id));
         this.summaries.set(node.id, summary);
       }
-      summary.setSummary(summarizeNode(node, this.context.forest), expanded);
+      summary.setSummary(summarizeNode(node, this.context.forest, latestCardIdByAgent), expanded);
       components.push(summary);
     };
     const mountFoldMembers = (node: DisplayNode, forceExpandInner: boolean): void => {
@@ -302,7 +306,7 @@ export class DaemonTranscriptRenderer {
         return;
       }
       const allLeaves = collectLeafBlocks(node);
-      const surfaced = allLeaves.filter((block) => this.isSurfacedInCompact(block));
+      const surfaced = allLeaves.filter((block) => this.isSurfacedInCompact(block, latestCardIdByAgent));
       if (surfaced.length > 0 && surfaced.length === allLeaves.length) {
         for (const block of surfaced) mountLeaf(block);
         return;
@@ -376,7 +380,7 @@ export class DaemonTranscriptRenderer {
     return meta?.note !== undefined && parseToolSideChannelNote(meta.note).actionableLines.length > 0;
   }
 
-  private isSurfacedInCompact(block: Block): boolean {
+  private isSurfacedInCompact(block: Block, latestCardIdByAgent: ReadonlyMap<string, string>): boolean {
     if (block.kind === 'tool') {
       return (
         block.status === 'running' ||
@@ -389,9 +393,10 @@ export class DaemonTranscriptRenderer {
       return !block.done || block.isError === true || this.blockHasActionableNote(block);
     }
     if (block.kind === 'subagent') {
-      const status = effectiveSubagentStatus(block, this.context.forest);
+      const status = effectiveSubagentStatus(block, this.context.forest, latestCardIdByAgent);
       if (status === 'failed' || status === 'lost') return true;
-      const error = this.context.forest?.byId[block.subagentId]?.error ?? block.error;
+      const isLatestRun = latestCardIdByAgent.get(block.subagentId) === block.id;
+      const error = (isLatestRun ? this.context.forest?.byId[block.subagentId]?.error : undefined) ?? block.error;
       return error !== undefined && error !== '';
     }
     return false;
@@ -631,14 +636,20 @@ function summarizeFoldActions(fold: HistoryFold, maxTargets = 3): string | undef
   return formatted.slice(0, 3).join(' · ');
 }
 
-function summarizeSubagentGroup(node: SubagentGroup, forest?: AgentForest): SummaryDisplay {
+function summarizeSubagentGroup(
+  node: SubagentGroup,
+  forest?: AgentForest,
+  latestCardIdByAgent?: ReadonlyMap<string, string>,
+): SummaryDisplay {
   let done = 0;
   let failed = 0;
   const names: string[] = [];
   for (const member of node.members) {
-    const status = effectiveSubagentStatus(member, forest);
+    const status = effectiveSubagentStatus(member, forest, latestCardIdByAgent);
     if (!isLiveSubagentStatus(status)) done += 1;
-    const error = forest?.byId[member.subagentId]?.error ?? member.error;
+    const isLatestRun =
+      latestCardIdByAgent === undefined || latestCardIdByAgent.get(member.subagentId) === member.id;
+    const error = (isLatestRun ? forest?.byId[member.subagentId]?.error : undefined) ?? member.error;
     if (status === 'failed' || status === 'lost' || (error !== undefined && error !== '')) {
       failed += 1;
     }
@@ -670,7 +681,11 @@ function summarizeMediaRun(node: MediaRun): SummaryDisplay {
   };
 }
 
-function summarizeNode(node: DisplayNode, forest?: AgentForest): SummaryDisplay {
+function summarizeNode(
+  node: DisplayNode,
+  forest?: AgentForest,
+  latestCardIdByAgent?: ReadonlyMap<string, string>,
+): SummaryDisplay {
   if (node.kind === 'history-fold') {
     const sentCount = node.sentMessages?.reduce((sum, item) => sum + item.count, 0) ?? 0;
     if (
@@ -710,7 +725,7 @@ function summarizeNode(node: DisplayNode, forest?: AgentForest): SummaryDisplay 
       detail: objects.join(' · '),
     };
   }
-  if (node.kind === 'subagent-group') return summarizeSubagentGroup(node, forest);
+  if (node.kind === 'subagent-group') return summarizeSubagentGroup(node, forest, latestCardIdByAgent);
   if (node.kind === 'media-run') return summarizeMediaRun(node);
   if (node.kind === 'subagent-ended') {
     const isErr = node.outcome === 'failed' || node.outcome === 'timedOut';

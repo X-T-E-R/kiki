@@ -1,4 +1,5 @@
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
@@ -9,6 +10,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventBus } from '#/app/event/eventBus';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IFlagService } from '#/app/flag/flag';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
@@ -47,6 +49,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
     @IBootstrapService private readonly bootstrap?: IBootstrapService,
     @ISessionContext private readonly session?: ISessionContext,
+    @ref(ICpuWorkerService) private readonly cpuWorkerRef?: LiveRef<ICpuWorkerService>,
   ) {
     super();
     this.states.contributeState(mediaRegisteredKeyKey);
@@ -167,6 +170,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       providerType,
       imagePolicy,
       telemetry: this.telemetry,
+      cpuWorker: this.cpuWorkerRef?.current,
     });
   }
 }

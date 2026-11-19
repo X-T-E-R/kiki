@@ -17,6 +17,7 @@ import {
 } from './image-format-policy';
 import { isAnimatedWebp } from './webp-decode';
 import { decodeToJimp } from './imageDecode';
+import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { hasRegisteredCpuPool, runCpuTask } from '#/app/cpuWorker/runtime';
 
 export const MAX_IMAGE_EDGE_PX = 2000;
@@ -61,7 +62,12 @@ export const MAX_IMAGE_DECODE_BYTES = 64 * 1024 * 1024;
 
 const RECODABLE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/bmp']);
 
-export interface CompressImageOptions {
+export interface ImageWorkerOptions {
+  readonly cpuWorker?: ICpuWorkerService;
+  readonly signal?: AbortSignal;
+}
+
+export interface CompressImageOptions extends ImageWorkerOptions {
   readonly maxEdge?: number;
   readonly byteBudget?: number;
   readonly maxDecodeBytes?: number;
@@ -69,7 +75,6 @@ export interface CompressImageOptions {
   readonly providerType?: string;
   readonly acceptedMimes?: ReadonlySet<string>;
   readonly outputMimes?: ReadonlySet<string>;
-  readonly signal?: AbortSignal;
 }
 
 export interface ImageCompressionTelemetryClient {
@@ -165,43 +170,49 @@ export async function compressImageForModel(
   if (bytes.length > maxDecodeBytes) return finish('passthrough_guard', passthrough());
 
   try {
+    options.signal?.throwIfAborted();
     const outputMimeList = [...outputMimes];
-    const useWorker =
-      hasRegisteredCpuPool() &&
-      (bytes.byteLength > 65_536 || (dims !== null && dims.width * dims.height > 262_144));
+    const useWorker = options.cpuWorker !== undefined || hasRegisteredCpuPool();
     let encodedResult: ImageCompressWorkerOutput;
     if (useWorker) {
       const ownedBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      try {
-        encodedResult = await runCpuTask<ImageCompressWorkerOutput>(
+      const workerCall = dispatchCpuImageTask<ImageCompressWorkerOutput>(
+        {
+          type: 'image.compress',
+          bytes: ownedBytes,
+          normalizedMime,
+          maxEdge,
+          byteBudget,
+          outputMimes: outputMimeList,
+        },
+        ownedBytes,
+        options,
+      );
+      if (workerCall !== undefined) {
+        encodedResult = await workerCall;
+      } else {
+        encodedResult = await executeImageCompress(
           {
-            type: 'image.compress',
             bytes: ownedBytes,
             normalizedMime,
             maxEdge,
             byteBudget,
             outputMimes: outputMimeList,
           },
-          { signal: options.signal, transferList: [ownedBytes], bytes: ownedBytes.byteLength },
+          options.signal,
         );
-      } catch {
-        if (options.signal?.aborted) return finish('passthrough_error', passthrough());
-        encodedResult = await executeImageCompress({
+      }
+    } else {
+      encodedResult = await executeImageCompress(
+        {
           bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
           normalizedMime,
           maxEdge,
           byteBudget,
           outputMimes: outputMimeList,
-        });
-      }
-    } else {
-      encodedResult = await executeImageCompress({
-        bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-        normalizedMime,
-        maxEdge,
-        byteBudget,
-        outputMimes: outputMimeList,
-      });
+        },
+        options.signal,
+      );
     }
     if (encodedResult.kind === 'unsupported') return finish('passthrough_unsupported', passthrough());
     if (encodedResult.kind === 'error') return finish('passthrough_error', passthrough());
@@ -575,48 +586,39 @@ export async function cropImageForModel(
   }
 
   try {
+    options.signal?.throwIfAborted();
     const outputMimeList = [...(options.outputMimes ?? options.acceptedMimes ?? new Set(['image/png', 'image/jpeg']))];
     let cropped: ImageCropWorkerOutput;
-    if (hasRegisteredCpuPool()) {
-      const ownedBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      try {
-        cropped = await runCpuTask<ImageCropWorkerOutput>(
-          {
-            type: 'image.crop',
-            bytes: ownedBytes,
-            normalizedMime,
-            region,
-            maxEdge,
-            byteBudget,
-            skipResize: options.skipResize === true,
-            outputMimes: outputMimeList,
-          },
-          { signal: options.signal, transferList: [ownedBytes], bytes: ownedBytes.byteLength },
-        );
-      } catch {
-        if (options.signal?.aborted) {
-          return fail('decode_failed', 'Failed to decode the image for cropping: aborted');
-        }
-        cropped = await executeImageCrop({
-          bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-          normalizedMime,
-          region,
-          maxEdge,
-          byteBudget,
-          skipResize: options.skipResize === true,
-          outputMimes: outputMimeList,
-        });
-      }
-    } else {
-      cropped = await executeImageCrop({
-        bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    const ownedBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    const workerCall = dispatchCpuImageTask<ImageCropWorkerOutput>(
+      {
+        type: 'image.crop',
+        bytes: ownedBytes,
         normalizedMime,
         region,
         maxEdge,
         byteBudget,
         skipResize: options.skipResize === true,
         outputMimes: outputMimeList,
-      });
+      },
+      ownedBytes,
+      options,
+    );
+    if (workerCall !== undefined) {
+      cropped = await workerCall;
+    } else {
+      cropped = await executeImageCrop(
+        {
+          bytes: ownedBytes,
+          normalizedMime,
+          region,
+          maxEdge,
+          byteBudget,
+          skipResize: options.skipResize === true,
+          outputMimes: outputMimeList,
+        },
+        options.signal,
+      );
     }
 
     if (cropped.kind === 'out_of_bounds') {
@@ -747,6 +749,7 @@ interface EncodeOptions {
 async function encodeWithinBudget(
   image: JimpImage,
   opts: EncodeOptions,
+  signal?: AbortSignal,
 ): Promise<EncodedImage | null> {
   const { preferLossless, byteBudget, fallbackEdges, outputMimes } = opts;
   const allowPng = outputMimes.has('image/png');
@@ -763,14 +766,18 @@ async function encodeWithinBudget(
 
   const pngCandidate = async (): Promise<EncodedImage | null> => {
     if (!allowPng) return null;
+    signal?.throwIfAborted();
     const png = await image.getBuffer('image/png', { deflateLevel: 6 });
+    signal?.throwIfAborted();
     return consider(png, 'image/png');
   };
 
   const jpegLadder = async (): Promise<EncodedImage | null> => {
     if (!allowJpeg) return null;
     for (const quality of JPEG_QUALITY_STEPS) {
+      signal?.throwIfAborted();
       const jpeg = await image.getBuffer('image/jpeg', { quality });
+      signal?.throwIfAborted();
       if (jpeg.length <= byteBudget) return consider(jpeg, 'image/jpeg');
       consider(jpeg, 'image/jpeg');
     }
@@ -782,13 +789,16 @@ async function encodeWithinBudget(
     if (png !== null && png.data.length <= byteBudget) return png;
     for (const edge of fallbackEdges) {
       if (edge < PNG_RESCALE_FLOOR_PX) break;
+      signal?.throwIfAborted();
       if (!fitWithinEdge(image, edge)) continue;
       const smallerPng = await pngCandidate();
       if (smallerPng !== null && smallerPng.data.length <= byteBudget) return smallerPng;
     }
     if (!allowJpeg) {
       for (const edge of fallbackEdges) {
-        if (edge >= PNG_RESCALE_FLOOR_PX || !fitWithinEdge(image, edge)) continue;
+        if (edge >= PNG_RESCALE_FLOOR_PX) continue;
+        signal?.throwIfAborted();
+        if (!fitWithinEdge(image, edge)) continue;
         const smallerPng = await pngCandidate();
         if (smallerPng !== null && smallerPng.data.length <= byteBudget) return smallerPng;
       }
@@ -799,6 +809,7 @@ async function encodeWithinBudget(
   const atFitted = await jpegLadder();
   if (atFitted !== null) return atFitted;
   for (const edge of fallbackEdges) {
+    signal?.throwIfAborted();
     if (!fitWithinEdge(image, edge)) continue;
     const atEdge = await jpegLadder();
     if (atEdge !== null) return atEdge;
@@ -819,12 +830,13 @@ function fitWithinEdge(image: JimpImage, edge: number): boolean {
   return true;
 }
 
-function predecimateForEdge(image: JimpImage, targetEdge: number): void {
+function predecimateForEdge(image: JimpImage, targetEdge: number, signal?: AbortSignal): void {
   let width = image.bitmap.width;
   let height = image.bitmap.height;
   let src: Buffer | Uint8Array = image.bitmap.data;
   let decimated = false;
   while (Math.max(width, height) > targetEdge * 2 && width >= 4 && height >= 4) {
+    signal?.throwIfAborted();
     const nextW = width >> 1;
     const nextH = height >> 1;
     const dst = Buffer.allocUnsafe(nextW * nextH * 4);
@@ -855,6 +867,28 @@ function predecimateForEdge(image: JimpImage, targetEdge: number): void {
   }
 }
 
+function dispatchCpuImageTask<T>(
+  operation: unknown,
+  transfer: ArrayBuffer,
+  options?: ImageWorkerOptions,
+): Promise<T> | undefined {
+  if (options?.cpuWorker !== undefined) {
+    return options.cpuWorker.request<T>(operation, {
+      signal: options.signal,
+      transferList: [transfer],
+      bytes: transfer.byteLength,
+    });
+  }
+  if (hasRegisteredCpuPool()) {
+    return runCpuTask<T>(operation, {
+      signal: options?.signal,
+      transferList: [transfer],
+      bytes: transfer.byteLength,
+    });
+  }
+  return undefined;
+}
+
 export interface ImageCompressWorkerInput {
   readonly bytes: ArrayBuffer;
   readonly normalizedMime: string;
@@ -878,19 +912,27 @@ export type ImageCompressWorkerOutput =
 
 export async function executeImageCompress(
   input: ImageCompressWorkerInput,
+  signal?: AbortSignal,
 ): Promise<ImageCompressWorkerOutput> {
   try {
+    signal?.throwIfAborted();
     const image = await decodeToJimp(new Uint8Array(input.bytes), input.normalizedMime);
+    signal?.throwIfAborted();
     const originalWidth = image.width;
     const originalHeight = image.height;
-    predecimateForEdge(image, input.maxEdge);
+    predecimateForEdge(image, input.maxEdge, signal);
+    signal?.throwIfAborted();
     fitWithinEdge(image, input.maxEdge);
-    const encoded = await encodeWithinBudget(image, {
-      preferLossless: input.normalizedMime !== 'image/jpeg',
-      byteBudget: input.byteBudget,
-      fallbackEdges: FALLBACK_EDGES_PX,
-      outputMimes: new Set(input.outputMimes),
-    });
+    const encoded = await encodeWithinBudget(
+      image,
+      {
+        preferLossless: input.normalizedMime !== 'image/jpeg',
+        byteBudget: input.byteBudget,
+        fallbackEdges: FALLBACK_EDGES_PX,
+        outputMimes: new Set(input.outputMimes),
+      },
+      signal,
+    );
     if (encoded === null) return { kind: 'unsupported' };
     const outBuffer = encoded.data.buffer.slice(
       encoded.data.byteOffset,
@@ -905,7 +947,8 @@ export async function executeImageCompress(
       originalWidth,
       originalHeight,
     };
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     return { kind: 'error' };
   }
 }
@@ -939,9 +982,12 @@ export type ImageCropWorkerOutput =
 
 export async function executeImageCrop(
   input: ImageCropWorkerInput,
+  signal?: AbortSignal,
 ): Promise<ImageCropWorkerOutput> {
   try {
+    signal?.throwIfAborted();
     const image = await decodeToJimp(new Uint8Array(input.bytes), input.normalizedMime);
+    signal?.throwIfAborted();
     const originalWidth = image.width;
     const originalHeight = image.height;
 
@@ -961,12 +1007,14 @@ export async function executeImageCrop(
     const h = Math.min(Math.floor(input.region.height), originalHeight - y);
     const applied: ImageCropRegion = { x, y, width: w, height: h };
     image.crop({ x, y, w, h });
+    signal?.throwIfAborted();
     const preferLossless = input.normalizedMime !== 'image/jpeg';
 
     if (input.skipResize) {
       const buffer = preferLossless
         ? await image.getBuffer('image/png', { deflateLevel: 9 })
         : await image.getBuffer('image/jpeg', { quality: 90 });
+      signal?.throwIfAborted();
       if (buffer.length > input.byteBudget) {
         return { kind: 'budget', byteLength: buffer.length };
       }
@@ -985,12 +1033,16 @@ export async function executeImageCrop(
     }
 
     fitWithinEdge(image, input.maxEdge);
-    const encoded = await encodeWithinBudget(image, {
-      preferLossless,
-      byteBudget: input.byteBudget,
-      fallbackEdges: FALLBACK_EDGES_PX,
-      outputMimes: new Set(input.outputMimes),
-    });
+    const encoded = await encodeWithinBudget(
+      image,
+      {
+        preferLossless,
+        byteBudget: input.byteBudget,
+        fallbackEdges: FALLBACK_EDGES_PX,
+        outputMimes: new Set(input.outputMimes),
+      },
+      signal,
+    );
     if (encoded === null) return { kind: 'unsupported' };
     const outBuffer = encoded.data.buffer.slice(
       encoded.data.byteOffset,
@@ -1008,6 +1060,7 @@ export async function executeImageCrop(
       resized: encoded.width !== w || encoded.height !== h,
     };
   } catch (error) {
+    if (signal?.aborted) throw error;
     return {
       kind: 'decode_failed',
       message: error instanceof Error ? error.message : String(error),
@@ -1042,9 +1095,12 @@ export interface ImageToPngWorkerInput {
 
 export async function executeAvatarNormalize(
   input: AvatarNormalizeWorkerInput,
+  signal?: AbortSignal,
 ): Promise<AvatarNormalizeWorkerOutput> {
+  signal?.throwIfAborted();
   const bytes = new Uint8Array(input.bytes);
   const image = await decodeToJimp(bytes, input.mimeType);
+  signal?.throwIfAborted();
   const width = image.width;
   const height = image.height;
   const longest = Math.max(width, height);
@@ -1055,10 +1111,12 @@ export async function executeAvatarNormalize(
       const factor = 256 / longest;
       image.resize({ w: Math.max(1, Math.round(width * factor)), h: Math.max(1, Math.round(height * factor)) });
     }
+    signal?.throwIfAborted();
     if (input.mimeType === 'image/webp') outputMime = 'image/png';
     output = outputMime === 'image/jpeg'
       ? await image.getBuffer('image/jpeg', { quality: 90 })
       : await image.getBuffer('image/png', { deflateLevel: 9 });
+    signal?.throwIfAborted();
   }
   const extension = outputMime === 'image/jpeg' ? 'jpg' : outputMime === 'image/webp' ? 'webp' : 'png';
   const outBuffer = output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
@@ -1067,55 +1125,76 @@ export async function executeAvatarNormalize(
 
 export async function executeImageDimensions(
   input: ImageDimensionsWorkerInput,
+  signal?: AbortSignal,
 ): Promise<{ readonly width: number; readonly height: number }> {
+  signal?.throwIfAborted();
   const image = await decodeToJimp(new Uint8Array(input.bytes), input.mimeType);
+  signal?.throwIfAborted();
   return { width: image.width, height: image.height };
 }
 
-export async function executeImageToPng(input: ImageToPngWorkerInput): Promise<ArrayBuffer> {
+export async function executeImageToPng(
+  input: ImageToPngWorkerInput,
+  signal?: AbortSignal,
+): Promise<ArrayBuffer> {
+  signal?.throwIfAborted();
   const image = await decodeToJimp(new Uint8Array(input.bytes), input.mimeType);
+  signal?.throwIfAborted();
   const buffer = await image.getBuffer('image/png');
+  signal?.throwIfAborted();
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
 }
 
 export async function normalizeAvatarImage(
   data: Uint8Array,
   mimeType: AvatarImageMime,
+  options?: ImageWorkerOptions,
 ): Promise<{ readonly data: Uint8Array; readonly mimeType: AvatarImageMime; readonly extension: 'png' | 'jpg' | 'webp'; readonly width: number; readonly height: number }> {
+  options?.signal?.throwIfAborted();
   const owned = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  const result = hasRegisteredCpuPool()
-    ? await runCpuTask<AvatarNormalizeWorkerOutput>(
-        { type: 'image.normalizeAvatar', bytes: owned, mimeType },
-        { transferList: [owned], bytes: owned.byteLength },
-      )
-    : await executeAvatarNormalize({ bytes: owned, mimeType });
+  const workerCall = dispatchCpuImageTask<AvatarNormalizeWorkerOutput>(
+    { type: 'image.normalizeAvatar', bytes: owned, mimeType },
+    owned,
+    options,
+  );
+  const result = workerCall !== undefined
+    ? await workerCall
+    : await executeAvatarNormalize({ bytes: owned, mimeType }, options?.signal);
   return { ...result, data: new Uint8Array(result.data) };
 }
 
 export async function readAvatarDimensions(
   data: Uint8Array,
   mimeType: AvatarImageMime,
+  options?: ImageWorkerOptions,
 ): Promise<{ readonly width: number; readonly height: number }> {
+  options?.signal?.throwIfAborted();
   const owned = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  return hasRegisteredCpuPool()
-    ? runCpuTask<{ readonly width: number; readonly height: number }>(
-        { type: 'image.dimensions', bytes: owned, mimeType },
-        { transferList: [owned], bytes: owned.byteLength },
-      )
-    : executeImageDimensions({ bytes: owned, mimeType });
+  const workerCall = dispatchCpuImageTask<{ readonly width: number; readonly height: number }>(
+    { type: 'image.dimensions', bytes: owned, mimeType },
+    owned,
+    options,
+  );
+  return workerCall !== undefined
+    ? workerCall
+    : executeImageDimensions({ bytes: owned, mimeType }, options?.signal);
 }
 
 export async function encodeImageAsPng(
   data: Uint8Array,
   mimeType: AvatarImageMime,
+  options?: ImageWorkerOptions,
 ): Promise<Uint8Array> {
+  options?.signal?.throwIfAborted();
   const owned = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  const out = hasRegisteredCpuPool()
-    ? await runCpuTask<ArrayBuffer>(
-        { type: 'image.toPng', bytes: owned, mimeType },
-        { transferList: [owned], bytes: owned.byteLength },
-      )
-    : await executeImageToPng({ bytes: owned, mimeType });
+  const workerCall = dispatchCpuImageTask<ArrayBuffer>(
+    { type: 'image.toPng', bytes: owned, mimeType },
+    owned,
+    options,
+  );
+  const out = workerCall !== undefined
+    ? await workerCall
+    : await executeImageToPng({ bytes: owned, mimeType }, options?.signal);
   return new Uint8Array(out);
 }
 

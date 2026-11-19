@@ -7,7 +7,18 @@ import { createRequire } from 'node:module';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { AgyBridge, consumeAccountEnvironment, launchArgs, promptText } from './agy-cli-acp.mjs';
+import {
+  AgyBridge,
+  consumeAccountEnvironment,
+  createNdjsonLineTransform,
+  encodeNativeMessage,
+  launchArgs,
+  nativeBytesAt,
+  nativeStringsAt,
+  NdjsonFrameDecoder,
+  promptText,
+  readNdjsonLines,
+} from './agy-cli-acp.mjs';
 
 const cwd = fileURLToPath(new URL('.', import.meta.url));
 function bridge(model) {
@@ -3186,5 +3197,92 @@ void test('projects native subagent step_type metadata onto ACP tool_call and to
     s.active = undefined;
     await b.close();
   }
+});
+
+void test('@bufbuild/protobuf/wire helper decodes nested, repeated, and skipped wire fields and enforces strict bounds', () => {
+  const payload = encodeNativeMessage([
+    { fieldNo: 1, kind: 'varint', value: 150 },
+    { fieldNo: 2, kind: 'fixed32', value: 0xdeadbeef },
+    { fieldNo: 3, kind: 'fixed64', value: 0x123456789abcdef0n },
+    { fieldNo: 6, kind: 'string', value: 'conv-uuid-中文-123' },
+    { fieldNo: 7, kind: 'string', value: 'file:///workspace/a' },
+    { fieldNo: 7, kind: 'string', value: 'file:///workspace/b' },
+    {
+      fieldNo: 24,
+      kind: 'message',
+      fields: [
+        {
+          fieldNo: 3,
+          kind: 'message',
+          fields: [
+            { fieldNo: 1, kind: 'string', value: 'summary-error' },
+            { fieldNo: 2, kind: 'string', value: 'detail-error' },
+          ],
+        },
+      ],
+    },
+  ]);
+
+  assert.equal(nativeBytesAt(payload, [6]), 'conv-uuid-中文-123');
+  assert.deepEqual(nativeStringsAt(payload, [7]), ['file:///workspace/a', 'file:///workspace/b']);
+  assert.equal(nativeBytesAt(payload, [24, 3, 1], true), 'summary-error');
+  assert.equal(nativeBytesAt(payload, [24, 3, 2], true), 'detail-error');
+  assert.equal(nativeBytesAt(payload, [24, 3, 9], true), undefined);
+  assert.deepEqual(nativeStringsAt(payload, [99], true), []);
+
+  assert.throws(() => nativeBytesAt(payload, [99]), /Unconfirmed AGY native metadata binding/);
+  assert.throws(() => nativeBytesAt(payload, [7]), /Ambiguous AGY native metadata binding/);
+  assert.throws(() => nativeBytesAt(Uint8Array.from([0x32, 0x05, 0x61, 0x62]), [6]), /Truncated AGY native metadata/);
+  assert.throws(() => nativeBytesAt(Uint8Array.from([(1 << 3) | 3]), [1]), /Unsupported AGY native metadata wire type/);
+  assert.throws(() => nativeBytesAt(Uint8Array.from([0x00, 0x01]), [1]), /Unsupported AGY native metadata field/);
+});
+
+void test('typed NDJSON stream framing handles split multi-byte UTF-8, CRLF, abort cancellation, and frame limits', async () => {
+  const { PassThrough } = await import('node:stream');
+  const stream = new PassThrough();
+  const abort = new AbortController();
+  const lines = [];
+  const reader = (async () => {
+    for await (const line of readNdjsonLines(stream, { maxFrameBytes: 64, signal: abort.signal })) {
+      lines.push(line);
+      if (lines.length === 2) abort.abort();
+    }
+  })();
+
+  const cjk = Buffer.from('{"text":"你好世界"}\r\n', 'utf8');
+  stream.write(cjk.subarray(0, 11));
+  stream.write(cjk.subarray(11));
+  stream.write('{"ok":true}\n');
+  await reader;
+  assert.deepEqual(lines, ['{"text":"你好世界"}', '{"ok":true}']);
+  stream.destroy();
+
+  const webFrames = [];
+  const transform = createNdjsonLineTransform({ maxFrameBytes: 32 });
+  const writer = transform.writable.getWriter();
+  const webReader = transform.readable.getReader();
+  const readAll = (async () => {
+    while (true) {
+      const { value, done } = await webReader.read();
+      if (done) break;
+      webFrames.push(value);
+    }
+  })();
+  await writer.write(Buffer.from('{"a":1}\n{"b":2}'));
+  await writer.close();
+  await readAll;
+  assert.deepEqual(webFrames, ['{"a":1}', '{"b":2}']);
+
+  const decoded = [];
+  const errors = [];
+  const frameDecoder = new NdjsonFrameDecoder({
+    maxFrameBytes: 16,
+    onFrame: frame => decoded.push(frame),
+    onError: error => errors.push(error.message),
+  });
+  frameDecoder.push(Buffer.from('{"x":1}\n'));
+  frameDecoder.push(Buffer.from('{"toolong":"0123456789abcdef"}\n'));
+  assert.deepEqual(decoded, [{ x: 1 }]);
+  assert.deepEqual(errors, ['AGY stdout frame exceeds 1 MiB']);
 });
 

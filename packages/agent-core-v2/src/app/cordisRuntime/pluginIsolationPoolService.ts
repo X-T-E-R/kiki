@@ -4,6 +4,7 @@ import { deserialize, serialize } from 'node:v8';
 import { Worker } from 'node:worker_threads';
 
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import type {
   IPluginIsolationPoolService, IsolatedPluginInvocation, IsolatedPluginResult, PluginIsolationBudget,
 } from './cordisRuntime';
@@ -60,9 +61,15 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
   private nextId = 0;
   private closing?: Promise<void>;
 
-  constructor(budget: Partial<PluginIsolationBudget> = {}, private readonly entry = workerAsset ?? new URL(
-    import.meta.url.endsWith('.ts') ? './isolationWorkerEntry.ts' : './plugin-isolation-worker.mjs', import.meta.url,
-  )) {
+  constructor(
+    budget: Partial<PluginIsolationBudget> = {},
+    private readonly entry = workerAsset ?? resolveWorkerEntry(
+      import.meta.url,
+      './isolationWorkerEntry.ts',
+      'plugin-isolation-worker.mjs',
+      { unavailableMessage: 'Plugin isolation worker asset is unavailable' },
+    ),
+  ) {
     const maxWorkers = Math.max(1, Math.min(availableParallelism() - 1, budget.maxWorkers ?? RESOURCE_DEFAULTS.cpuWorkers));
     this.budget = Object.freeze({
       maxWorkers,
@@ -124,7 +131,7 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
 
   private canStart(registration: Registration, allowEviction = false): boolean {
     if (this.slots.filter((slot) => slot.active).length >= this.budget.maxActiveRequests) return false;
-    if (this.slots.some((slot) => slot.registration?.pluginId === registration.pluginId && (slot.active || slot.retiring))) return false;
+    if (this.slots.some((slot) => slot.registration?.pluginId === registration.pluginId && (Boolean(slot.active) || Boolean(slot.retiring)))) return false;
     return this.slots.length < this.budget.maxWorkers || this.slots.some((slot) =>
       !slot.active && !slot.retiring && (allowEviction || !slot.worker || slot.registration === registration));
   }
@@ -139,7 +146,7 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
       if (!slot && this.slots.length < this.budget.maxWorkers) { slot = {}; this.slots.push(slot); }
       if (!slot) {
         const idle = this.slots.find(candidate => !candidate.active && !candidate.retiring)!;
-        this.retire(idle);
+        void this.retire(idle);
         index += 1;
         continue;
       }
@@ -154,7 +161,7 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
       } catch (error) {
         slot.active = undefined;
         this.settle(pending, error);
-        this.retire(slot);
+        void this.retire(slot);
       }
     }
   }
@@ -176,13 +183,13 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
       } catch (error) {
         slot.active = undefined;
         this.settle(pending, error);
-        this.retire(slot);
+        void this.retire(slot);
         return;
       }
       slot.active = undefined;
       if (this.registrations.get(registration.pluginId) !== registration || !matchesInvocation(response, pending.request)) {
         this.settle(pending, new PluginIsolationError('stale_result', 'Plugin returned an obsolete or invalid invocation identity'));
-        this.retire(slot);
+        void this.retire(slot);
         return;
       }
       if (response.ok) this.settle(pending, undefined, { ...response, value: response.value });
@@ -194,7 +201,7 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
       if (slot.worker !== worker || slot.retiring) return;
       if (slot.active) this.settle(slot.active, error);
       slot.active = undefined;
-      this.retire(slot);
+      void this.retire(slot);
     };
     worker.on('error', (error) => fail(error));
     worker.on('exit', (code) => fail(new PluginIsolationError('worker_exit', `Plugin worker exited (${code}); outcome is unknown`)));
@@ -213,7 +220,7 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
     if (!slot) return;
     slot.active = undefined;
     this.settle(pending, reason);
-    this.retire(slot);
+    void this.retire(slot);
   }
 
   private settle(pending: Pending, error?: unknown, result?: IsolatedPluginResult): void {
@@ -239,7 +246,7 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
     const registration = this.registrations.get(pluginId);
     this.registrations.delete(pluginId);
     const error = new PluginIsolationError('revoked', reason);
-    for (const pending of [...this.queue]) if (pending.registration === registration) this.cancel(pending, error);
+    for (const pending of Array.from(this.queue)) if (pending.registration === registration) this.cancel(pending, error);
     for (const slot of this.slots) {
       if (slot.registration !== registration || !registration) continue;
       if (slot.active) this.settle(slot.active, error);
@@ -251,7 +258,7 @@ export class PluginIsolationPoolService implements IPluginIsolationPoolService {
 
   dispose(): Promise<void> {
     return this.closing ??= Promise.resolve().then(async () => {
-      for (const pluginId of [...this.registrations.keys()]) await this.terminatePlugin(pluginId, 'Plugin pool is closed');
+      for (const pluginId of Array.from(this.registrations.keys())) await this.terminatePlugin(pluginId, 'Plugin pool is closed');
       for (const slot of this.slots) await this.retire(slot);
     });
   }

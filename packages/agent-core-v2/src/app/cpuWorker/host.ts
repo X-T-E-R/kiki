@@ -46,7 +46,17 @@ interface Pending {
 
 interface DrainingCancel {
   readonly id: number;
-  readonly timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
+  readonly hardTimeout: boolean;
+  waitingForDetachSlot: boolean;
+}
+
+interface DetachedDraining {
+  readonly worker: Worker;
+  readonly id: number;
+  readonly exited: Promise<void>;
+  closeTimer?: ReturnType<typeof setTimeout>;
+  retiring?: Promise<number>;
 }
 
 interface Slot {
@@ -61,9 +71,12 @@ interface Slot {
 export class CpuWorkerPool {
   readonly size: number;
   private readonly slots: Slot[] = [];
+  private readonly detachedDraining: DetachedDraining[] = [];
+  private readonly retiringExits = new Set<Promise<void>>();
   private readonly waiting: Pending[] = [];
   private readonly maxQueue: number;
   private readonly maxQueuedBytes: number;
+  private readonly maxDetachedDraining: number;
   private readonly timeoutMs: number;
   private readonly idleTimeoutMs: number;
   private readonly cancelGraceMs: number;
@@ -76,6 +89,7 @@ export class CpuWorkerPool {
     this.size = Math.max(1, Math.min(availableParallelism() - 1, cap));
     this.maxQueue = positiveInteger(options.maxQueue ?? RESOURCE_DEFAULTS.cpuQueue, 'maxQueue');
     this.maxQueuedBytes = positiveInteger(options.maxQueuedBytes ?? RESOURCE_DEFAULTS.cpuQueuedBytes, 'maxQueuedBytes');
+    this.maxDetachedDraining = Math.max(2, this.size * 2);
     this.timeoutMs = positiveInteger(options.timeoutMs ?? 30_000, 'timeoutMs');
     this.idleTimeoutMs = positiveInteger(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, 'idleTimeoutMs');
     this.cancelGraceMs = positiveInteger(options.cancelGraceMs ?? HARD_TERMINATE_GRACE_MS, 'cancelGraceMs');
@@ -102,9 +116,9 @@ export class CpuWorkerPool {
     const cancelFlag = new Int32Array(cancellation);
     return new Promise<T>((resolve, reject) => {
       const pending: Pending = { id: ++this.serial, operation, options, bytes, cancellation, cancelFlag, resolve: (value) => { resolve(value as T); }, reject };
-      pending.abort = () => { this.cancel(pending, options.signal!.reason); };
+      pending.abort = () => { this.cancel(pending, options.signal!.reason, false); };
       options.signal?.addEventListener('abort', pending.abort, { once: true });
-      pending.timer = setTimeout(() => { this.cancel(pending, new CpuWorkerError('CPU_TIMEOUT', 'CPU worker request timed out')); }, timeoutMs);
+      pending.timer = setTimeout(() => { this.cancel(pending, new CpuWorkerError('CPU_TIMEOUT', 'CPU worker request timed out'), true); }, timeoutMs);
       this.waiting.push(pending);
       this.queuedBytes += bytes;
       this.pump();
@@ -147,23 +161,83 @@ export class CpuWorkerPool {
 
   private clearDrainingCancel(slot: Slot): void {
     if (slot.drainingCancel !== undefined) {
-      clearTimeout(slot.drainingCancel.timer);
+      if (slot.drainingCancel.timer !== undefined) {
+        clearTimeout(slot.drainingCancel.timer);
+      }
       slot.drainingCancel = undefined;
     }
   }
 
-  private beginDrainingCancel(slot: Slot, id: number): void {
+  private clearDetachedCloseTimer(detached: DetachedDraining): void {
+    if (detached.closeTimer !== undefined) {
+      clearTimeout(detached.closeTimer);
+      detached.closeTimer = undefined;
+    }
+  }
+
+  private trackRetiringExit(exited: Promise<void> | undefined): void {
+    if (exited === undefined) return;
+    this.retiringExits.add(exited);
+    void exited.finally(() => {
+      this.retiringExits.delete(exited);
+    });
+  }
+
+  private beginDrainingCancel(slot: Slot, id: number, hardTimeout: boolean): void {
     this.clearIdleTimer(slot);
     this.clearDrainingCancel(slot);
     if (slot.worker === undefined || slot.retiring !== undefined) return;
     const timer = setTimeout(() => {
-      if (slot.drainingCancel?.id !== id) return;
-      slot.drainingCancel = undefined;
-      void this.retire(slot);
+      const draining = slot.drainingCancel;
+      if (draining?.id !== id) return;
+      draining.timer = undefined;
+      if (hardTimeout || this.closing !== undefined) {
+        slot.drainingCancel = undefined;
+        void this.retire(slot);
+      } else if (this.detachedDraining.length < this.maxDetachedDraining) {
+        this.detachDrainingSlot(slot, id);
+      } else {
+        draining.waitingForDetachSlot = true;
+      }
       this.reconcileIdleTimers();
     }, this.cancelGraceMs);
     timer.unref?.();
-    slot.drainingCancel = { id, timer };
+    slot.drainingCancel = { id, timer, hardTimeout, waitingForDetachSlot: false };
+  }
+
+  private detachDrainingSlot(slot: Slot, id: number): void {
+    const worker = slot.worker;
+    const exited = slot.exited;
+    if (worker === undefined || exited === undefined) return;
+    this.clearIdleTimer(slot);
+    this.clearDrainingCancel(slot);
+    const index = this.slots.indexOf(slot);
+    if (index >= 0) this.slots.splice(index, 1);
+    slot.worker = undefined;
+    slot.exited = undefined;
+    worker.unref();
+    const detached: DetachedDraining = { worker, id, exited };
+    this.detachedDraining.push(detached);
+    this.pump();
+  }
+
+  private promoteWaitingDetaches(): void {
+    if (this.closing !== undefined) return;
+    while (this.detachedDraining.length < this.maxDetachedDraining) {
+      const candidate = this.slots.find(
+        (slot) => slot.drainingCancel?.waitingForDetachSlot === true && slot.worker !== undefined && slot.retiring === undefined,
+      );
+      if (candidate === undefined) break;
+      this.detachDrainingSlot(candidate, candidate.drainingCancel!.id);
+    }
+  }
+
+  private retireDetached(detached: DetachedDraining): void {
+    this.clearDetachedCloseTimer(detached);
+    if (detached.retiring !== undefined) return;
+    this.trackRetiringExit(detached.exited);
+    detached.retiring = detached.worker.terminate();
+    void detached.retiring.catch(() => {});
   }
 
   private reconcileIdleTimers(): void {
@@ -223,6 +297,15 @@ export class CpuWorkerPool {
       worker.once('exit', () => { resolve(); });
     });
     worker.on('message', (response: CpuResponse) => {
+      const detachedIndex = this.detachedDraining.findIndex((entry) => entry.worker === worker);
+      if (detachedIndex >= 0) {
+        const detached = this.detachedDraining[detachedIndex]!;
+        if (response.id !== detached.id) return;
+        this.detachedDraining.splice(detachedIndex, 1);
+        this.retireDetached(detached);
+        this.promoteWaitingDetaches();
+        return;
+      }
       if (slot.worker !== worker || slot.retiring !== undefined) return;
       const draining = slot.drainingCancel;
       if (draining !== undefined && response.id === draining.id) {
@@ -247,6 +330,13 @@ export class CpuWorkerPool {
       this.pump();
     });
     worker.on('error', (cause) => {
+      const detachedIndex = this.detachedDraining.findIndex((entry) => entry.worker === worker);
+      if (detachedIndex >= 0) {
+        const [detached] = this.detachedDraining.splice(detachedIndex, 1);
+        this.retireDetached(detached!);
+        this.promoteWaitingDetaches();
+        return;
+      }
       if (slot.worker !== worker) return;
       this.clearDrainingCancel(slot);
       if (slot.active !== undefined) this.settle(slot.active, new CpuWorkerError('CPU_WORKER_EXIT', 'CPU worker failed', { cause }));
@@ -255,6 +345,13 @@ export class CpuWorkerPool {
       this.reconcileIdleTimers();
     });
     worker.on('exit', (code) => {
+      const detachedIndex = this.detachedDraining.findIndex((entry) => entry.worker === worker);
+      if (detachedIndex >= 0) {
+        const [detached] = this.detachedDraining.splice(detachedIndex, 1);
+        this.clearDetachedCloseTimer(detached!);
+        this.promoteWaitingDetaches();
+        return;
+      }
       if (slot.worker !== worker) return;
       this.clearIdleTimer(slot);
       this.clearDrainingCancel(slot);
@@ -270,7 +367,7 @@ export class CpuWorkerPool {
     return worker;
   }
 
-  private cancel(pending: Pending, error: unknown): void {
+  private cancel(pending: Pending, error: unknown, hardTimeout: boolean): void {
     Atomics.store(pending.cancelFlag, 0, 1);
     const index = this.waiting.indexOf(pending);
     if (index >= 0) {
@@ -283,7 +380,7 @@ export class CpuWorkerPool {
     if (slot === undefined) return;
     slot.active = undefined;
     this.settle(pending, error);
-    this.beginDrainingCancel(slot, pending.id);
+    this.beginDrainingCancel(slot, pending.id, hardTimeout);
     this.reconcileIdleTimers();
   }
 
@@ -291,6 +388,7 @@ export class CpuWorkerPool {
     this.clearIdleTimer(slot);
     this.clearDrainingCancel(slot);
     if (slot.worker === undefined || slot.retiring !== undefined) return slot.retiring;
+    this.trackRetiringExit(slot.exited);
     slot.retiring = slot.worker.terminate();
     void slot.retiring.catch(() => {});
     return slot.retiring;
@@ -312,8 +410,20 @@ export class CpuWorkerPool {
       this.settle(pending, error);
     }
     this.queuedBytes = 0;
-    const exits: Promise<void>[] = [];
-    for (const slot of [...this.slots]) {
+    const exits: Promise<void>[] = [...this.retiringExits];
+    for (const detached of Array.from(this.detachedDraining)) {
+      exits.push(detached.exited);
+      if (detached.retiring === undefined && detached.closeTimer === undefined) {
+        detached.closeTimer = setTimeout(() => {
+          detached.closeTimer = undefined;
+          const idx = this.detachedDraining.indexOf(detached);
+          if (idx >= 0) this.detachedDraining.splice(idx, 1);
+          this.retireDetached(detached);
+        }, this.cancelGraceMs);
+        detached.closeTimer.unref?.();
+      }
+    }
+    for (const slot of Array.from(this.slots)) {
       this.clearIdleTimer(slot);
       if (slot.worker === undefined) continue;
       if (slot.exited !== undefined) exits.push(slot.exited);
@@ -322,9 +432,11 @@ export class CpuWorkerPool {
         slot.active = undefined;
         Atomics.store(pending.cancelFlag, 0, 1);
         this.settle(pending, error);
-        this.beginDrainingCancel(slot, pending.id);
+        this.beginDrainingCancel(slot, pending.id, true);
       } else if (slot.drainingCancel === undefined) {
         void this.retire(slot);
+      } else if (slot.drainingCancel.timer === undefined) {
+        this.beginDrainingCancel(slot, slot.drainingCancel.id, true);
       }
     }
     this.closing = Promise.all(exits).then(() => {});

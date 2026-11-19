@@ -1,7 +1,6 @@
-import { statSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
+import { resolveWorkerEntry } from '@kiki/agent-core-v2/_base/node/workerEntry';
 import type { UsageWireState } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import { usageWorkerEntry } from './runtime';
 import { USAGE_CHUNK_BYTES, type UsageWorkerMetrics, type UsageWorkerRequest, type UsageWorkerResponse } from './protocol';
@@ -39,7 +38,10 @@ export class UsageParserWorker {
   constructor(signal: AbortSignal, entry?: URL) {
     signal.throwIfAborted();
     this.signal = signal;
-    const source = entry ?? resolveEntry();
+    const source = entry ?? resolveWorkerEntry(import.meta.url, './entry.ts', 'usage-parser-worker.mjs', {
+      configuredEntry: usageWorkerEntry(),
+      unavailableMessage: 'Usage parser worker entry is unavailable',
+    });
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.worker = new Worker(source, { name: 'kiki-usage-parser', execArgv: source.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [], resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb } });
     this.openingTimer = setTimeout(() => { this.fail(new Error('Usage parser worker did not become ready')); }, 5000);
@@ -112,14 +114,4 @@ export class UsageParserWorker {
     this.pending = undefined;
     void this.close();
   }
-}
-
-function resolveEntry(): URL {
-  const configured = usageWorkerEntry();
-  if (configured !== undefined) return pathToFileURL(configured);
-  for (const path of ['./entry.ts', './usage-parser-worker.mjs']) {
-    const url = new URL(path, import.meta.url);
-    try { if (statSync(url).isFile()) return url; } catch {}
-  }
-  throw new Error('Usage parser worker entry is unavailable');
 }

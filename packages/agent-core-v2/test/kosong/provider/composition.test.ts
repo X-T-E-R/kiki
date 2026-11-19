@@ -48,7 +48,10 @@ import {
   AnthropicChatProvider,
   resolveDefaultMaxTokens,
 } from '#/kosong/provider/bases/anthropic/anthropic';
-import { hashThreadMessages } from '#/kosong/provider/bases/anthropic/anthropic-threads';
+import {
+  bindThreadMessageDigestKey,
+  hashThreadMessages,
+} from '#/kosong/provider/bases/anthropic/anthropic-threads';
 import '#/kosong/provider/bases/google-genai/index';
 import { GoogleGenAIChatProvider, GoogleGenAIStreamedMessage } from '#/kosong/provider/bases/google-genai/google-genai';
 import '#/kosong/provider/bases/openai/index';
@@ -5074,6 +5077,19 @@ describe('Anthropic Message Threads (message-threads-2026-08-12)', () => {
     const secondHash = hashThreadMessages([userMessage]);
     expect(firstHash).toBe(secondHash);
     expect(mediaReads).toBe(1);
+
+    const stableSourceKey = {};
+    const convertedTurn1 = bindThreadMessageDigestKey(
+      { role: 'user', content: [mediaBlock] },
+      stableSourceKey,
+    );
+    const convertedTurn2 = bindThreadMessageDigestKey(
+      { role: 'user', content: [mediaBlock] },
+      stableSourceKey,
+    );
+    expect(hashThreadMessages([convertedTurn1])).toBe(firstHash);
+    expect(hashThreadMessages([convertedTurn2])).toBe(firstHash);
+    expect(mediaReads).toBe(2);
 
     const stringContentHash = hashThreadMessages([{ role: 'user', content: 'hello' }]);
     const blockContentHash = hashThreadMessages([

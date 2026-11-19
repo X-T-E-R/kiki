@@ -77,6 +77,13 @@ export class SqliteSearchHost {
   private revision = 0;
   private inventoryToSend = false;
   private inventoryInFlight = false;
+  private inventoryBatch?: {
+    readonly revision: number;
+    readonly sessions: readonly SqliteSessionInput[];
+    offset: number;
+    draining: boolean;
+  };
+  private targetedDraining = false;
   private readonly known = new Map<string, SqliteSessionInput>();
   private reindexRequest?: { id: number; resolve: (value: { sessions: number; documents: number }) => void;
     reject: (error: Error) => void; timer: NodeJS.Timeout };
@@ -218,6 +225,7 @@ export class SqliteSearchHost {
     const id = ++this.id;
     this.rebuilding = true;
     this.setInventory(sessions);
+    this.inventoryBatch = undefined;
     this.inventoryToSend = false;
     const revision = this.inventoryRevision;
     return new Promise((resolve, reject) => {
@@ -366,6 +374,7 @@ export class SqliteSearchHost {
       } else if (message.type === 'heartbeat') this.lastPong = Date.now();
       else if (message.type === 'release_reader') {
         this.reason = 'corrupt_rebuilding';
+        this.inventoryBatch = undefined;
         this.inventoryToSend = this.inventoryRevision > 0;
         this.inventoryInFlight = this.inventoryToSend;
         for (const [id, session] of this.known) this.pending.set(id, session);
@@ -429,6 +438,8 @@ export class SqliteSearchHost {
         }
       }
       this.inflight = undefined;
+      this.inventoryBatch = undefined;
+      this.targetedDraining = false;
       for (const work of this.targeted.values()) work.sent = false;
       this.ready = false;
       if (this.reason === 'sqlite_unavailable' || this.reason === 'disk_low') {
@@ -476,42 +487,123 @@ export class SqliteSearchHost {
     this.timer.unref();
   }
 
-  private safeSend(child: ChildProcess, request: IndexerRequest): boolean {
-    if (!child.connected) return false;
+  private safeSend(
+    child: ChildProcess,
+    request: IndexerRequest,
+    callbacks?: { readonly onDrained?: () => void; readonly onError?: () => void },
+  ): 'sent' | 'backpressure' | 'failed' {
+    if (!child.connected) return 'failed';
+    let callbackSettled = false;
+    let callbackErrored = false;
     try {
-      return child.send(request, () => {});
+      const flushed = child.send(request, (error) => {
+        callbackSettled = true;
+        if (error !== null && error !== undefined) {
+          callbackErrored = true;
+          callbacks?.onError?.();
+          return;
+        }
+        callbacks?.onDrained?.();
+      });
+      if (callbackErrored) return 'failed';
+      return flushed || callbackSettled ? 'sent' : 'backpressure';
     } catch {
-      return false;
+      return 'failed';
     }
   }
 
   private flushPending(): void {
-    if (!this.ready || this.readonlyWriter || !this.child || !this.child.connected || this.rebuilding || !this.inventoryToSend) return;
-    this.inventoryToSend = false;
-    const sessions = [...this.known.values()];
-    for (let i = 0; i < Math.max(1, sessions.length); i += 1000) {
-      if (!this.safeSend(this.child, {
-        type: 'sync',
+    if (!this.ready || this.readonlyWriter || !this.child || !this.child.connected || this.rebuilding) return;
+    if (this.inventoryBatch === undefined) {
+      if (!this.inventoryToSend) return;
+      this.inventoryToSend = false;
+      this.inventoryBatch = {
         revision: this.inventoryRevision,
-        first: i === 0,
-        last: i + 1000 >= sessions.length,
-        sessions: sessions.slice(i, i + 1000),
-      })) {
+        sessions: [...this.known.values()],
+        offset: 0,
+        draining: false,
+      };
+    } else if (this.inventoryBatch.draining) {
+      return;
+    } else if (this.inventoryToSend && this.inventoryBatch.revision !== this.inventoryRevision) {
+      this.inventoryToSend = false;
+      this.inventoryBatch = {
+        revision: this.inventoryRevision,
+        sessions: [...this.known.values()],
+        offset: 0,
+        draining: false,
+      };
+    }
+
+    const batch = this.inventoryBatch;
+    const child = this.child;
+    const total = Math.max(1, batch.sessions.length);
+    while (batch.offset < total) {
+      const i = batch.offset;
+      const status = this.safeSend(
+        child,
+        {
+          type: 'sync',
+          revision: batch.revision,
+          first: i === 0,
+          last: i + 1000 >= batch.sessions.length,
+          sessions: batch.sessions.slice(i, i + 1000),
+        },
+        {
+          onDrained: () => {
+            if (this.child !== child || this.inventoryBatch !== batch) return;
+            if (!batch.draining) return;
+            batch.draining = false;
+            this.flushPending();
+          },
+          onError: () => {
+            if (this.child !== child) return;
+            if (this.inventoryBatch === batch) this.inventoryBatch = undefined;
+            this.inventoryToSend = true;
+          },
+        },
+      );
+      if (status === 'failed') {
+        this.inventoryBatch = undefined;
         this.inventoryToSend = true;
         return;
       }
+      batch.offset += 1000;
+      if (status === 'backpressure' && batch.offset < total) {
+        batch.draining = true;
+        return;
+      }
     }
+    this.inventoryBatch = undefined;
+    if (this.inventoryToSend) this.flushPending();
   }
 
   private flushTargeted(): void {
-    if (!this.ready || this.readonlyWriter || !this.child || !this.child.connected || this.rebuilding) return;
+    if (!this.ready || this.readonlyWriter || !this.child || !this.child.connected || this.rebuilding || this.targetedDraining) return;
+    const child = this.child;
     for (const [sessionId, work] of this.targeted) {
       if (work.sent) continue;
       const request: IndexerRequest = work.session === undefined
         ? { type: 'retire_session', revision: work.revision, sessionId }
         : { type: 'sync_session', revision: work.revision, session: work.session };
-      if (this.safeSend(this.child, request)) work.sent = true;
-      else return;
+      const status = this.safeSend(child, request, {
+        onDrained: () => {
+          if (this.child !== child || !this.targetedDraining) return;
+          this.targetedDraining = false;
+          this.flushTargeted();
+        },
+        onError: () => {
+          if (this.child !== child) return;
+          if (this.targeted.get(sessionId) === work) work.sent = false;
+          this.targetedDraining = false;
+        },
+      });
+      if (status === 'failed') return;
+      work.sent = true;
+      if (status === 'backpressure') {
+        this.targetedDraining = true;
+        return;
+      }
     }
   }
 

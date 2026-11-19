@@ -3,6 +3,7 @@ import type { ModelRequester } from '#/kosong/model/modelRequester';
 import type { ResolvedImagePolicy } from '#/kosong/provider/providerImagePolicy';
 import type { VideoUploadEvent } from '#/app/telemetry/events';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
+import type { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import type { WorkspaceConfig } from '#/tool/path-access';
@@ -20,6 +21,7 @@ export interface RegisterMediaToolsDeps {
   readonly inlineVideoSupported?: boolean;
   readonly providerType?: string;
   readonly imagePolicy?: ResolvedImagePolicy;
+  readonly cpuWorker?: ICpuWorkerService;
 }
 
 export function registerMediaTools(
@@ -42,6 +44,7 @@ export function registerMediaTools(
       deps.inlineVideoSupported,
       deps.providerType,
       deps.imagePolicy,
+      deps.cpuWorker,
     ),
   );
 }

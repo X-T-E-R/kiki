@@ -41,8 +41,8 @@ async function sendClickOnText(vt, needle) {
   await vt.waitForRender();
 }
 
-async function run() {
-  const tempHome = mkdtempSync(join(tmpdir(), 'kiki-tui-smoke-'));
+async function runMode(screenMode) {
+  const tempHome = mkdtempSync(join(tmpdir(), `kiki-tui-smoke-${screenMode}-`));
   const workDir = join(tempHome, 'workspace');
   mkdirSync(workDir, { recursive: true });
   writeFileSync(join(tempHome, 'config.toml'), '[search]\nenabled = false\n', 'utf8');
@@ -52,7 +52,8 @@ async function run() {
   const prevFs = process.env['KIKI_TUI_FULL_SCREEN'];
   process.env['KIKI_HOME'] = tempHome;
   process.env['KIKI_SEARCH_DISABLED'] = '1';
-  process.env['KIKI_TUI_FULL_SCREEN'] = '1';
+  if (screenMode === 'alt') process.env['KIKI_TUI_FULL_SCREEN'] = '1';
+  else delete process.env['KIKI_TUI_FULL_SCREEN'];
 
   let server;
   let tui;
@@ -79,7 +80,7 @@ async function run() {
           agentFiles: [],
           skillsDirs: [],
         },
-        tuiConfig: { ...DEFAULT_TUI_CONFIG, screenMode: 'alt' },
+        tuiConfig: { ...DEFAULT_TUI_CONFIG, screenMode },
         version: '0.5.1-smoke',
       },
       vt,
@@ -119,7 +120,6 @@ async function run() {
       { kind: 'assistant', id: 'a3', turnId: 't3', text: 'missing.txt is absent.', streaming: false, createdAt: undefined },
     ];
 
-    // Project fixture blocks through DaemonTUI's real refreshFocusedTranscript / renderTranscript path
     const controller = tui['controller'];
     const baseGetState = controller.getState.bind(controller);
     controller.getState = () => ({ ...baseGetState(), blocks: fixtureBlocks });
@@ -128,68 +128,63 @@ async function run() {
 
     const readScreen = () => vt.getViewport().map((l) => stripAnsi(l).trimEnd()).join('\n');
     const compactScreen = readScreen();
-    assertNoCorruptAnsi(vt.getViewport(), 100, 'compact-100x32');
-    assert(compactScreen.includes('▸ Thought'), 'Expected single settled thinking to fold to ▸ Thought');
-    assert(!compactScreen.includes('Private thought turn 1'), 'Completed thinking leaked in compact mode');
-    assert(compactScreen.includes('▸ Worked · 1 step · read alpha.txt'), 'Expected single settled tool to fold to 1 summary line');
-    assert(compactScreen.includes('▸ Worked · 3 steps · 1 thought · 1 failed'), 'Expected mixed turn summary with error badge');
-    assert(compactScreen.includes('missing.txt does not exist'), 'Expected failed tool error to surface visibly in compact mode');
-    assert(!compactScreen.includes('Private thought turn 3'), 'Completed thinking leaked beside failed tool');
+    assertNoCorruptAnsi(vt.getViewport(), 100, `${screenMode}:compact-100x32`);
+    assert(compactScreen.includes('▸ Thought'), `[${screenMode}] Expected single settled thinking to fold to ▸ Thought`);
+    assert(!compactScreen.includes('Private thought turn 1'), `[${screenMode}] Completed thinking leaked in compact mode`);
+    assert(compactScreen.includes('▸ Worked · 1 step · read alpha.txt'), `[${screenMode}] Expected single settled tool to fold to 1 summary line`);
+    assert(compactScreen.includes('▸ Worked · 3 steps · 1 thought · 1 failed'), `[${screenMode}] Expected mixed turn summary with error badge`);
+    assert(compactScreen.includes('missing.txt does not exist'), `[${screenMode}] Expected failed tool error to surface visibly in compact mode`);
+    assert(!compactScreen.includes('Private thought turn 3'), `[${screenMode}] Completed thinking leaked beside failed tool`);
 
-    // Individual fold toggle via real SGR mouse click on ▸ Thought
-    await sendClickOnText(vt, '▸ Thought');
-    const afterClick = readScreen();
-    assert(afterClick.includes('▾ Thought'), 'Expected clicked fold chevron to flip to ▾ Thought');
-    assert(afterClick.includes('Private thought turn 1'), 'Expected clicked thinking fold to reveal thought body');
-    assert(!afterClick.includes('Private thought turn 3'), 'Unclicked turn 3 thinking must remain collapsed');
+    if (screenMode === 'alt') {
+      await sendClickOnText(vt, '▸ Thought');
+      const afterClick = readScreen();
+      assert(afterClick.includes('▾ Thought'), `[${screenMode}] Expected clicked fold chevron to flip to ▾ Thought`);
+      assert(afterClick.includes('Private thought turn 1'), `[${screenMode}] Expected clicked thinking fold to reveal thought body`);
+      assert(!afterClick.includes('Private thought turn 3'), `[${screenMode}] Unclicked turn 3 thinking must remain collapsed`);
 
-    await sendClickOnText(vt, '▾ Thought');
-    const afterReclick = readScreen();
-    assert(afterReclick.includes('▸ Thought'), 'Expected second click to collapse back to ▸ Thought');
-    assert(!afterReclick.includes('Private thought turn 1'), 'Expected thought body hidden after re-collapse');
+      await sendClickOnText(vt, '▾ Thought');
+      const afterReclick = readScreen();
+      assert(afterReclick.includes('▸ Thought'), `[${screenMode}] Expected second click to collapse back to ▸ Thought`);
+      assert(!afterReclick.includes('Private thought turn 1'), `[${screenMode}] Expected thought body hidden after re-collapse`);
+    }
 
-    // Global Ctrl+O expand and collapse round-trip
     vt.sendInput('\x0f');
     await vt.waitForRender();
     const expandedTranscript = stripAnsi(tui.state.transcriptContainer.render(100).join('\n'));
-    assert(expandedTranscript.includes('Private thought turn 1'), 'Expected Ctrl+O to reveal turn 1 thinking');
-    assert(expandedTranscript.includes('Private thought turn 3'), 'Expected Ctrl+O to reveal turn 3 thinking');
-    assert(expandedTranscript.includes('body-of-alpha.txt'), 'Expected Ctrl+O to reveal full tool output');
+    assert(expandedTranscript.includes('Private thought turn 1'), `[${screenMode}] Expected Ctrl+O to reveal turn 1 thinking`);
+    assert(expandedTranscript.includes('Private thought turn 3'), `[${screenMode}] Expected Ctrl+O to reveal turn 3 thinking`);
+    assert(expandedTranscript.includes('body-of-alpha.txt'), `[${screenMode}] Expected Ctrl+O to reveal full tool output`);
 
     vt.sendInput('\x0f');
     await vt.waitForRender();
-    assert(readScreen().includes('▸ Worked · 3 steps · 1 thought · 1 failed'), 'Expected second Ctrl+O to restore compact folds');
+    assert(readScreen().includes('▸ Worked · 3 steps · 1 thought · 1 failed'), `[${screenMode}] Expected second Ctrl+O to restore compact folds`);
 
-    // Slash autocomplete check
     vt.sendInput('/mo');
     await vt.waitForRender();
-    assert(readScreen().includes('/model'), 'Expected /mo slash autocomplete to surface /model');
+    assert(readScreen().includes('/model'), `[${screenMode}] Expected /mo slash autocomplete to surface /model`);
     vt.sendInput('\x1b');
     await vt.waitForRender();
     vt.sendInput('\x15');
     await vt.waitForRender();
 
-    // /help dialog open & Esc dismiss
     vt.sendInput('/help');
     await vt.waitForRender();
     vt.sendInput('\r');
     await vt.waitForRender();
     const helpScreen = readScreen();
-    assertNoCorruptAnsi(vt.getViewport(), 100, 'help-100x32');
+    assertNoCorruptAnsi(vt.getViewport(), 100, `${screenMode}:help-100x32`);
     assert(
       helpScreen.includes('Slash commands') && helpScreen.includes('Esc / Enter / q cancel'),
-      `Expected /help panel to render commands and dismiss hint:\n${helpScreen}`,
+      `[${screenMode}] Expected /help panel to render commands and dismiss hint:\n${helpScreen}`,
     );
     vt.sendInput('\x1b');
     await vt.waitForRender();
 
-    // Resize to 120x40 and verify invariants
     vt.resize(120, 40);
     await vt.waitForRender();
-    assertNoCorruptAnsi(vt.getViewport(), 120, 'compact-120x40');
-    assert(readScreen().includes('▸ Worked · 3 steps · 1 thought · 1 failed'), 'Expected compact folds preserved at 120x40');
-
-    console.log('TUI E2E smoke passed (100x32 & 120x40: auto-fold, error surfacing, mouse click toggle, Ctrl+O, autocomplete, /help).');
+    assertNoCorruptAnsi(vt.getViewport(), 120, `${screenMode}:compact-120x40`);
+    assert(readScreen().includes('▸ Worked · 3 steps · 1 thought · 1 failed'), `[${screenMode}] Expected compact folds preserved at 120x40`);
   } finally {
     await tui?.close().catch(() => {});
     await server?.close().catch(() => {});
@@ -205,6 +200,13 @@ async function run() {
       // Best-effort cleanup on Windows when SQLite handles close asynchronously.
     }
   }
+}
+
+async function run() {
+  for (const screenMode of ['main', 'alt']) {
+    await runMode(screenMode);
+  }
+  console.log('TUI E2E smoke passed (main + alt, 100x32 & 120x40: auto-fold, error surfacing, mouse click toggle, Ctrl+O, autocomplete, /help).');
 }
 
 run().catch((error) => {

@@ -12,12 +12,17 @@ export type WorkspaceTrigramOperation =
 function openStore(path: string): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path);
-  db.exec(`PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-4096;
-    CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
-    CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, mtime REAL NOT NULL,
-      ctime REAL NOT NULL, size INTEGER NOT NULL, ino REAL NOT NULL, epoch TEXT NOT NULL, unindexed INTEGER NOT NULL, non_ascii INTEGER NOT NULL) STRICT;
-    CREATE VIRTUAL TABLE IF NOT EXISTS content USING fts5(body, tokenize='trigram', detail='none');`);
-  return db;
+  try {
+    db.exec(`PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-4096;
+      CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, mtime REAL NOT NULL,
+        ctime REAL NOT NULL, size INTEGER NOT NULL, ino REAL NOT NULL, epoch TEXT NOT NULL, unindexed INTEGER NOT NULL, non_ascii INTEGER NOT NULL) STRICT;
+      CREATE VIRTUAL TABLE IF NOT EXISTS content USING fts5(body, tokenize='trigram', detail='none');`);
+    return db;
+  } catch (error) {
+    try { db.close(); } catch {}
+    throw error;
+  }
 }
 
 export function executeWorkspaceTrigram(operation: WorkspaceTrigramOperation, signal?: AbortSignal): boolean | readonly string[] | undefined {

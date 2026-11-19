@@ -1,7 +1,6 @@
-import { statSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { resolveWorkerEntry } from '#/_base/node/workerEntry';
 import { queryStoreWorkerEntry, type StoreOperation, type StoreRequest, type StoreResponse } from './protocol';
 import { QueryStoreBusyError } from '#/persistence/interface/queryStore';
 
@@ -33,8 +32,10 @@ export class QueryStoreWorker {
   private readonly exited: Promise<void>;
 
   constructor(database: string) {
-    const configured = queryStoreWorkerEntry();
-    const entry = configured === undefined ? resolveEntry() : pathToFileURL(configured);
+    const entry = resolveWorkerEntry(import.meta.url, './entry.ts', 'query-store-worker.mjs', {
+      configuredEntry: queryStoreWorkerEntry(),
+      unavailableMessage: 'Query-store SQLite worker asset is unavailable',
+    });
     this.worker = new Worker(entry, {
       name: 'kiki-query-store', workerData: { database },
       execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [],
@@ -119,12 +120,4 @@ export class QueryStoreWorker {
     this.waiting.length = 0;
     void this.worker.terminate();
   }
-}
-
-function resolveEntry(): URL {
-  for (const relative of ['./entry.ts', './query-store-worker.mjs']) {
-    const entry = new URL(relative, import.meta.url);
-    try { if (statSync(entry).isFile()) return entry; } catch {}
-  }
-  throw new Error('Query-store SQLite worker asset is unavailable');
 }

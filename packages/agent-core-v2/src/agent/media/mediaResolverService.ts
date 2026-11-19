@@ -10,6 +10,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IFileService } from '#/app/file/fileService';
 import { LifecycleScope } from '#/app/scopes';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { ICpuWorkerService } from '#/app/cpuWorker/cpuWorkerService';
 import { IFlagService } from '#/app/flag/flag';
 import type { ContentPart, Message } from '#/kosong/contract/message';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
@@ -98,6 +99,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     @ISessionMediaStore private readonly mediaStore: ISessionMediaStore,
     @IFlagService private readonly flags: IFlagService = FLAGS_ENABLED,
     @ref(IAgentScopeContext) private readonly agentScope?: LiveRef<IAgentScopeContext>,
+    @ref(ICpuWorkerService) private readonly cpuWorkerRef?: LiveRef<ICpuWorkerService>,
   ) {
     this.states.contributeState(mediaResolvedKey);
   }
@@ -288,6 +290,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       policy,
       requester.model.providerType,
       signal,
+      this.cpuWorkerRef?.current,
     );
     if (resolved === undefined) return degradedImage(path);
     if (uploader !== undefined) {
@@ -383,6 +386,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       policy,
       requester.model.providerType,
       signal,
+      this.cpuWorkerRef?.current,
     );
     if (resolved === undefined) {
       return {
@@ -642,6 +646,7 @@ async function prepareImageBytes(
   policy: ResolvedImagePolicy,
   providerType: string | undefined,
   signal: AbortSignal | undefined,
+  cpuWorker: ICpuWorkerService | undefined,
 ): Promise<{ readonly bytes: Buffer; readonly mimeType: string } | undefined> {
   if (isModelAcceptedImageMime(mimeType, providerType, policy.acceptedTypes)) {
     return { bytes, mimeType };
@@ -652,6 +657,8 @@ async function prepareImageBytes(
     acceptedMimes: policy.acceptedTypes,
     outputMimes: conversionOutputs(policy),
     byteBudget: IMAGE_BYTE_BUDGET,
+    cpuWorker,
+    signal,
   });
   signal?.throwIfAborted();
   if (

@@ -4,6 +4,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IBlobStore } from '#/persistence/interface/blobStore';
+import { StorageError, StorageErrors } from '#/persistence/interface/storage';
 import {
   BLOBREF_PROTOCOL,
   CheckpointBlobMissingError,
@@ -186,7 +187,14 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
     const payload = value.slice(match[0].length);
     if (payload.length < this.threshold) return value;
 
-    return this.writeBlob(mimeType, payload);
+    try {
+      return await this.writeBlob(mimeType, payload);
+    } catch (error) {
+      if (isDiskFullError(error)) {
+        return value;
+      }
+      throw error;
+    }
   }
 
   private async writeBlob(mimeType: string, base64Payload: string): Promise<string> {
@@ -199,6 +207,18 @@ export class AgentBlobServiceImpl implements IAgentBlobService {
     }
     return formatBlobRef(mimeType, hash);
   }
+}
+
+function isDiskFullError(error: unknown): boolean {
+  if (error instanceof StorageError && error.code === StorageErrors.codes.STORAGE_DISK_FULL) {
+    return true;
+  }
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ENOSPC'
+  );
 }
 
 function formatBlobRef(mimeType: string, hash: string): string {
