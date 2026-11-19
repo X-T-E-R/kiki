@@ -15,7 +15,8 @@
  * that dirty set); closing the last tab is what unmounts the workspace.
  */
 
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { UNSAFE_LocationContext } from 'react-router-dom';
 import type { HostSaveSink } from '../host/host';
 import { createPortal } from 'react-dom';
 
@@ -77,19 +78,19 @@ import {
   useMediaPreview,
   type MediaPreviewApi,
 } from './mediaPreviewContext';
+import { DEFAULT_PREVIEW_WIDTH } from './preview/shared';
 
 export { useMediaPreview } from './mediaPreviewContext';
 
 const WIDTH_STORAGE_KEY = 'kiki.previewPanelWidth';
-const DEFAULT_WIDTH = 420;
 
 function readStoredWidth(): number {
   try {
     const raw = localStorage.getItem(WIDTH_STORAGE_KEY);
     const value = raw === null ? Number.NaN : Number(raw);
-    return Number.isFinite(value) && value >= 320 ? value : DEFAULT_WIDTH;
+    return Number.isFinite(value) && value >= 320 ? value : DEFAULT_PREVIEW_WIDTH;
   } catch {
-    return DEFAULT_WIDTH;
+    return DEFAULT_PREVIEW_WIDTH;
   }
 }
 
@@ -165,12 +166,13 @@ export function MediaPreviewProvider({
   const connection = useOptionalConnection();
   const clientIdentity = connection?.client;
   const localKikiComputer = isOnKikiComputer(connection);
+  const locationContext = useContext(UNSAFE_LocationContext);
   const activeDraftKey = resolveActiveDraftKey(
     connection?.scopeId,
     sessionId,
     snapshotAgentId !== 'main'
       ? snapshotAgentId
-      : (typeof window !== 'undefined' ? window.location.pathname : undefined),
+      : (locationContext?.location.pathname ?? (typeof window !== 'undefined' ? window.location.pathname : undefined)),
   );
   const [lightboxAnnotations, setLightboxAnnotations] = useState<Record<string, AnnotationRecord>>({});
   const [image, setImage] = useState<{ src: string; name?: string; sourcePath?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);

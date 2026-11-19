@@ -109,7 +109,7 @@ export function Toggle({
         }}
         onCheckedChange={(next) => { onChange(next); }}
         {...(dataAttr === undefined ? {} : { [dataAttr]: dataAttrValue ?? '' })}
-        className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:cursor-not-allowed ${
+        className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink data-[disabled]:cursor-not-allowed ${
           checked ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
         }`}
       >

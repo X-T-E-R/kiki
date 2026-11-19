@@ -4085,7 +4085,7 @@ export function Composer({
                     id={sendTimingMenuId}
                     aria-label={t('composer.sendTimingAria')}
                     data-send-timing-menu
-                    className={`anim-enter absolute right-0 bottom-full z-40 mb-1.5 w-60 p-1 ${POPOVER_SURFACE_CLASS}`}
+                    className={`anim-enter absolute right-0 bottom-full z-40 mb-1.5 max-h-[min(var(--cp-max-h,22rem),calc(100dvh-120px))] w-60 overflow-y-auto overscroll-contain p-1 ${POPOVER_SURFACE_CLASS}`}
                   >
                     <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
                     <SendTimingRows

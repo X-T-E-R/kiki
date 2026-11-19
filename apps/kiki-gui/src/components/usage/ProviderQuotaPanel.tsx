@@ -9,6 +9,7 @@ import { useConnection } from '../../state/connection';
 import { DisclosureChevron, Icon } from '../icons';
 import { FeedbackLine, Toggle, type Feedback } from '../controls';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
+import { AnchoredPopover, usePopover } from '../overlays/AnchoredPopover';
 import { OAuthDeviceCard } from '../OAuthDeviceCard';
 import { SearchableSelect } from '../SearchableSelect';
 import { useOAuthFlow } from '../useOAuthFlow';
@@ -1499,7 +1500,7 @@ function MatrixColumnHeader({
   readonly showModelDisclosure: boolean;
 }) {
   const { t } = useI18n();
-  const [modelsOpen, setModelsOpen] = useState(false);
+  const modelsPopover = usePopover();
   const models = reading.modelIds ?? [];
   const poolLabel = resolveReadingPoolLabel(reading, t(q('usage.quota.engines.defaultPool')));
   const foldModels = showModelDisclosure && models.length > 2;
@@ -1515,30 +1516,35 @@ function MatrixColumnHeader({
           <button
             type="button"
             data-reading-models-toggle
-            aria-expanded={modelsOpen}
-            onClick={() => { setModelsOpen((prev) => !prev); }}
+            {...modelsPopover.triggerProps}
             className="inline-flex shrink-0 items-center gap-0.5 rounded bg-ink/[0.04] px-1.5 py-px font-mono text-[10px] text-ink-faint transition-colors hover:bg-ink/[0.08] hover:text-ink"
           >
-            <DisclosureChevron open={modelsOpen} />
+            <DisclosureChevron open={modelsPopover.open} />
             <span>{t(q('usage.quota.engines.modelsCount'), { count: models.length })}</span>
           </button>
         ) : null}
       </div>
-      {foldModels && modelsOpen ? (
-        <div
-          className="absolute top-full left-0 z-20 mt-1.5 flex max-h-40 w-64 max-w-[min(18rem,calc(100vw-3rem))] flex-col gap-1 overflow-y-auto rounded-lg border border-hairline-strong bg-panel p-2 shadow-[var(--kiki-sheet-shadow)]"
-          data-reading-models-list
+      {foldModels ? (
+        <AnchoredPopover
+          {...modelsPopover.popoverProps}
+          label={poolLabel}
+          align="end"
+          widthClassName="w-64"
+          className="max-h-40 !p-2"
+          data={{ 'data-reading-models-list': '' }}
         >
-          {models.map((modelId) => (
-            <span
-              key={modelId}
-              title={modelId}
-              className="block max-w-full truncate rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
-            >
-              {modelId}
-            </span>
-          ))}
-        </div>
+          <div className="flex flex-col gap-1">
+            {models.map((modelId) => (
+              <span
+                key={modelId}
+                title={modelId}
+                className="block max-w-full truncate rounded border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
+              >
+                {modelId}
+              </span>
+            ))}
+          </div>
+        </AnchoredPopover>
       ) : null}
     </div>
   );

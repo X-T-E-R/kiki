@@ -6771,6 +6771,7 @@ export const Transcript = memo(function Transcript({
           landAtEnd(virtualizer);
           return;
         }
+        setFollowingTranscriptEnd(virtualizer, false);
         const hit = anchor.key === undefined ? undefined : resolveAnchorRow(anchor.key);
         if (hit === undefined) return;
         if (hit.foldId !== undefined) {
@@ -6787,7 +6788,13 @@ export const Transcript = memo(function Transcript({
         if (offset !== undefined) virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
         await settleRestoredAnchor(scrollRef.current, resolve, anchor.offset, cancelled, virtualizer);
       },
-      beginRestore: () => { navRestorePendingRef.current = true; },
+      beginRestore: () => {
+        navRestorePendingRef.current = true;
+        if (initialScrollFrameRef.current !== null) {
+          cancelAnimationFrame(initialScrollFrameRef.current);
+          initialScrollFrameRef.current = null;
+        }
+      },
       endRestore: (outcome) => {
         if (restoreSignal.aborted || (outcome.status !== 'found' && intent === readingIntentRef.current)) return;
         navRestorePendingRef.current = false;
@@ -6838,6 +6845,14 @@ export const Transcript = memo(function Transcript({
     onRestoreError: () => { setReadingRestoreFailed((previous) => previous ?? t('locate.failedLoad')); },
   });
   const fallbackRestoredRef = useRef<string | null>(null);
+  const pendingFallbackRestore = useMemo(() => {
+    if (reading.hasSnapshot || sessionIdForLocate === undefined) return false;
+    const scopeKey = `${sessionIdForLocate}\0${agentId}`;
+    const restoreKey = `${reading.visitId ?? 'none'}\0${scopeKey}`;
+    if (fallbackRestoredRef.current === restoreKey) return false;
+    const saved = lastReadingSnapshotByScope.get(scopeKey);
+    return saved !== undefined && !saved.anchor.atEnd;
+  }, [reading.hasSnapshot, reading.visitId, sessionIdForLocate, agentId]);
   useEffect(() => {
     if (!loaded || loadError !== undefined || !visible || sessionIdForLocate === undefined) return;
     if (reading.hasSnapshot) return;
@@ -6853,7 +6868,9 @@ export const Transcript = memo(function Transcript({
     return () => { ac.abort(); };
   }, [loaded, loadError, visible, sessionIdForLocate, agentId, reading.hasSnapshot, reading.visitId, restoreReading]);
   navVisitRef.current = reading.visitId;
-  navRestorePendingRef.current = reading.hasSnapshot && navRestoredVisitRef.current !== reading.visitId;
+  navRestorePendingRef.current =
+    (reading.hasSnapshot && navRestoredVisitRef.current !== reading.visitId) ||
+    pendingFallbackRestore;
   // Freeze source geometry before the virtualizer's layout cleanup detaches
   // its scroll element and publishes a temporary end anchor.
   useInsertionEffect(() => () => {

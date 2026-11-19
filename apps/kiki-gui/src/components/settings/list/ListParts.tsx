@@ -296,7 +296,7 @@ function WindowedRows<T>({ items, keyOf, density, renderRow }: {
           key={row.key}
           data-index={row.index}
           ref={virtualizer.measureElement}
-          className="absolute inset-x-0 border-b border-hairline last:border-b-0"
+          className={`absolute inset-x-0 ${row.index < items.length - 1 ? 'border-b border-hairline' : ''}`}
           style={{ top: row.start - offset, minHeight: rowHeight }}
         >
           {renderRow(items[row.index]!)}

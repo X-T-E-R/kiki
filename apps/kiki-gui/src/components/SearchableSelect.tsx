@@ -839,7 +839,26 @@ export function SearchableSelect(props: SearchableSelectProps) {
           )
           : ownsPanel
             ? (
-              <Popover.Root open modal={false}>
+              <Popover.Root
+                open
+                modal={false}
+                onOpenChange={(nextOpen, eventDetails) => {
+                  if (nextOpen) return;
+                  if (eventDetails.reason === 'escape-key') {
+                    if (
+                      (eventDetails.event instanceof KeyboardEvent && isImeKeyEvent(eventDetails.event)) ||
+                      hasOpenOwnedFloatingPortal(surfaceOwnerId)
+                    ) {
+                      eventDetails.cancel();
+                      return;
+                    }
+                    close();
+                    triggerRef.current?.focus();
+                    return;
+                  }
+                  eventDetails.cancel();
+                }}
+              >
                 <Popover.Portal>
                   <Popover.Positioner
                     anchor={triggerRef}
@@ -851,8 +870,15 @@ export function SearchableSelect(props: SearchableSelectProps) {
                     style={{ zIndex: panelZIndex ?? MODAL_BASE_Z_INDEX }}
                   >
                     <Popover.Popup
-                      ref={panelRef}
-                      initialFocus={!showFilter && (!isCoarsePointer() || asSheet) ? listRef : false}
+                      ref={(node) => {
+                        panelRef.current = node;
+                        if (node !== null && !showFilter && (!isCoarsePointer() || asSheet)) {
+                          const list = listRef.current ?? node.querySelector<HTMLElement>('[role="listbox"]');
+                          if (list !== null && document.activeElement !== list) list.focus();
+                        }
+                      }}
+                      role="presentation"
+                      initialFocus={() => (!showFilter && (!isCoarsePointer() || asSheet) ? (listRef.current ?? false) : false)}
                       finalFocus={false}
                       data-select-panel
                       {...panelData}

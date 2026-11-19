@@ -92,11 +92,27 @@ export function InstalledList({
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const invalidate = useInvalidatePlugins();
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busyCounts, setBusyCounts] = useState<Readonly<Record<string, number>>>({});
+  const toggleSeqRef = useRef<Record<string, number>>({});
   const [optimisticEnabled, setOptimisticEnabled] = useState<Readonly<Record<string, boolean>>>({});
   const [failure, setFailure] = useState<unknown>(null);
   const [removing, setRemoving] = useState<PluginSummary | null>(null);
   const canReload = typeof client.reloadPlugin === 'function';
+
+  const isPluginBusy = (id: string) => (busyCounts[id] ?? 0) > 0;
+  const beginBusy = (id: string) => {
+    setBusyCounts((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+  };
+  const endBusy = (id: string) => {
+    setBusyCounts((prev) => {
+      const count = (prev[id] ?? 0) - 1;
+      if (count > 0) return { ...prev, [id]: count };
+      if (!Object.hasOwn(prev, id)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
 
   const displayPlugins = useMemo(
     () => plugins.map((plugin) => (
@@ -108,7 +124,7 @@ export function InstalledList({
   );
 
   const act = async (id: string, action: () => Promise<unknown>) => {
-    setBusy(id);
+    beginBusy(id);
     setFailure(null);
     try {
       await action();
@@ -116,13 +132,15 @@ export function InstalledList({
     } catch (actionError) {
       setFailure(actionError);
     } finally {
-      setBusy(null);
+      endBusy(id);
     }
   };
 
   const togglePluginEnabled = async (id: string, enabled: boolean) => {
+    const seq = (toggleSeqRef.current[id] ?? 0) + 1;
+    toggleSeqRef.current[id] = seq;
     setOptimisticEnabled((prev) => ({ ...prev, [id]: enabled }));
-    setBusy(id);
+    beginBusy(id);
     setFailure(null);
     try {
       await client.setPluginEnabled(id, enabled);
@@ -130,13 +148,15 @@ export function InstalledList({
     } catch (actionError) {
       setFailure(actionError);
     } finally {
-      setOptimisticEnabled((prev) => {
-        if (!Object.hasOwn(prev, id)) return prev;
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
-      setBusy(null);
+      if (toggleSeqRef.current[id] === seq) {
+        setOptimisticEnabled((prev) => {
+          if (!Object.hasOwn(prev, id)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }
+      endBusy(id);
     }
   };
 
@@ -242,7 +262,7 @@ export function InstalledList({
               origin={pluginOrigin(plugin, entries)}
               entry={entries.find((entry) => entry.id === plugin.id)}
               update={updates.get(plugin.id)}
-              busy={busy === plugin.id}
+              busy={isPluginBusy(plugin.id)}
               onOpen={() => { onOpen(plugin.id); }}
               onOpenSettings={onOpenSettings === undefined ? undefined : () => { onOpenSettings(plugin.id); }}
               onReload={canReload ? () => {
@@ -280,7 +300,7 @@ export function InstalledList({
                   origin={pluginOrigin(plugin, entries)}
                   entry={entries.find((entry) => entry.id === plugin.id)}
                   update={updates.get(plugin.id)}
-                  busy={busy === plugin.id}
+                  busy={isPluginBusy(plugin.id)}
                   onOpen={() => { onOpen(plugin.id); }}
                   onOpenSettings={onOpenSettings === undefined ? undefined : () => { onOpenSettings(plugin.id); }}
                   onReload={canReload ? () => {
@@ -307,7 +327,7 @@ export function InstalledList({
         body={t('cap.remove.body')}
         confirmLabel={t('cap.action.remove')}
         tone="danger"
-        busy={removing !== null && busy === removing.id}
+        busy={removing !== null && isPluginBusy(removing.id)}
         onCancel={() => { setRemoving(null); }}
         onConfirm={() => {
           const target = removing;

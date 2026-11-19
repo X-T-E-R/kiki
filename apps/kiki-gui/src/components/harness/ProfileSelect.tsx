@@ -639,8 +639,8 @@ export function ProfileSelect({
                 }
               : undefined)}
             className={portalInModal
-              ? 'anim-enter fixed w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg'
-              : `anim-enter absolute left-0 z-50 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
+              ? 'anim-enter fixed flex max-h-[calc(100dvh-120px)] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg'
+              : `anim-enter absolute left-0 z-50 flex max-h-[min(var(--cp-max-h,calc(100dvh-120px)),calc(100dvh-120px))] w-[min(360px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[var(--radius-card)] border border-hairline bg-paper text-ink shadow-lg ${openDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'}`}
             style={portalInModal
               ? {
                   backgroundColor: 'var(--color-paper)',
@@ -652,8 +652,8 @@ export function ProfileSelect({
               : { backgroundColor: 'var(--color-paper)' }}
           >
           {fileForm.open ? (
-            <div data-execution-file-form className="flex flex-col">
-              <div className="flex items-center gap-1.5 border-b border-hairline px-2.5 py-1.5">
+            <div data-execution-file-form className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex shrink-0 items-center gap-1.5 border-b border-hairline px-2.5 py-1.5">
                 <button
                   type="button"
                   data-execution-file-back
@@ -672,7 +672,7 @@ export function ProfileSelect({
                 <span className="min-w-0 truncate text-[12px] font-medium text-ink">{t('composer.execution.fileGroupAria')}</span>
               </div>
               <form
-                className="flex flex-col gap-2 p-2.5"
+                className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain p-2.5"
                 onSubmit={(event) => { event.preventDefault(); void runCheck(fileForm.path.trim()); }}
               >
                 <input
@@ -751,7 +751,7 @@ export function ProfileSelect({
             </div>
           ) : (
             <>
-              <div className="border-b border-hairline p-2">
+              <div className="shrink-0 border-b border-hairline p-2">
                 <input
                   ref={searchInputRef}
                   type="text"
@@ -784,7 +784,7 @@ export function ProfileSelect({
                 />
               </div>
 
-              <div className="flex-1 overflow-y-auto overscroll-contain p-1 max-h-[min(var(--cp-max-h,24rem),24rem,calc(100dvh-120px))] space-y-2">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1 max-h-[min(var(--cp-max-h,24rem),24rem,calc(100dvh-160px))] space-y-2">
                 {retainedUnavailableExternal ? (
                   <div data-execution-restore={choice.executor} className="mx-1 my-1 space-y-1 px-2.5 py-1.5 rounded border border-hairline bg-surface/40">
                     <p className="text-[11.5px] leading-snug text-ink-faint">

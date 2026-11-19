@@ -165,10 +165,19 @@ describe('SearchableSelect', () => {
   it('supports keyboard navigation on short lists without a search input', async () => {
     const { container, onChange } = await renderSelect({ options: SHORT_OPTIONS });
     await act(async () => { trigger(container).click(); });
-    const listbox = openPanel().querySelector<HTMLElement>('[role="listbox"]')!;
+    const panel = openPanel();
+    expect(panel.getAttribute('role')).toBe('presentation');
+    const listbox = panel.querySelector<HTMLElement>('[role="listbox"]')!;
     expect(document.activeElement).toBe(listbox);
-    await press(listbox, 'ArrowDown');
-    await press(listbox, 'Enter');
+    await press(document.activeElement!, 'Escape');
+    expect(document.querySelector('[data-select-panel]')).toBeNull();
+    expect(document.activeElement).toBe(trigger(container));
+
+    await act(async () => { trigger(container).click(); });
+    const reopenedListbox = openPanel().querySelector<HTMLElement>('[role="listbox"]')!;
+    expect(document.activeElement).toBe(reopenedListbox);
+    await press(reopenedListbox, 'ArrowDown');
+    await press(reopenedListbox, 'Enter');
     expect(onChange).toHaveBeenCalledWith('c');
     expect(document.querySelector('[data-select-panel]')).toBeNull();
   });

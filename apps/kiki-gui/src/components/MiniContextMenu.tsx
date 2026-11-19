@@ -143,7 +143,7 @@ function PointerMenu({
   useEffect(() => {
     const unregister = registerOverlay(overlayId);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
       event.preventDefault();
       // Hand focus back only when the menu still owns it; focus that the user
       // moved elsewhere (a Tab out of this transient layer) is left alone.
@@ -173,8 +173,22 @@ function PointerMenu({
   // Portal via Base UI Popover Positioner with virtual pointer anchor: escapes
   // overflow clipping, flips/shifts inside the viewport, and caps height via
   // `--available-height`.
+  const zIndex = floatingSurfaceZIndex(null);
   return (
-    <Popover.Root open modal={false}>
+    <Popover.Root
+      open
+      modal={false}
+      onOpenChange={(nextOpen, eventDetails) => {
+        if (nextOpen) return;
+        if (eventDetails.reason === 'escape-key') {
+          const owned = menuRef.current?.contains(document.activeElement) === true;
+          closeRef.current();
+          if (owned) restoreTriggerFocus();
+          return;
+        }
+        eventDetails.cancel();
+      }}
+    >
       <Popover.Portal>
         <Popover.Positioner
           anchor={virtualAnchor}
@@ -183,7 +197,7 @@ function PointerMenu({
           sideOffset={0}
           collisionPadding={8}
           positionMethod="fixed"
-          style={{ zIndex: floatingSurfaceZIndex(null) }}
+          style={{ zIndex }}
         >
           <Popover.Popup
             ref={(node) => {
@@ -194,6 +208,7 @@ function PointerMenu({
             }}
             initialFocus={autofocus}
             finalFocus={false}
+            style={{ zIndex }}
             {...containerProps}
             data-modal-escape={effectiveModalOwner}
             role="menu"

@@ -240,6 +240,15 @@ describe('MiniContextMenu focus', () => {
     // No focus call onto the detached node and nothing forced onto a stranger.
     expect(document.activeElement).not.toBe(gone);
   });
+
+  it('closes and restores focus when Escape is dispatched on the active menuitem', async () => {
+    await render(<Harness />);
+    await openFromTrigger();
+    expect(document.activeElement).toBe(items()[0]);
+    await keydown(document.activeElement!, 'Escape');
+    expect(menu()).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
 });
 
 describe('MiniContextMenu on a coarse pointer', () => {

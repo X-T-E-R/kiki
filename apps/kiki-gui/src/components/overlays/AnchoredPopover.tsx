@@ -90,21 +90,30 @@ export function AnchoredPopover({
   // A menu restores focus to whatever opened it (captured on open); a form
   // popover restores to its anchor button.
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const focusedForOpenRef = useRef(false);
+  if (!open) focusedForOpenRef.current = false;
   const restoreTriggerFocus = useCallback(() => {
     const trigger = returnFocusRef.current;
     if (trigger === null || trigger === document.body || !trigger.isConnected) return;
     trigger.focus();
   }, []);
+  const resolveInitialFocus = useCallback((surface: HTMLElement | null): HTMLElement | null => {
+    if (surface === null) return null;
+    return (initialFocusSelector === undefined ? null : surface.querySelector<HTMLElement>(initialFocusSelector))
+      ?? surface.querySelector<HTMLElement>('[data-autofocus]:not([disabled])')
+      ?? surface.querySelector<HTMLElement>(FOCUSABLE)
+      ?? surface;
+  }, [initialFocusSelector]);
 
   useEffect(() => {
     if (!open) return;
     const unregister = registerOverlay(`popover:${id}`);
     returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const surface = surfaceRef.current;
-    const first = (initialFocusSelector === undefined ? null : surface?.querySelector<HTMLElement>(initialFocusSelector))
-      ?? surface?.querySelector<HTMLElement>('[data-autofocus]:not([disabled])')
-      ?? surface?.querySelector<HTMLElement>(FOCUSABLE) ?? surface;
-    first?.focus();
+    if (surface !== null && !focusedForOpenRef.current) {
+      focusedForOpenRef.current = true;
+      resolveInitialFocus(surface)?.focus();
+    }
     const onPointerDown = (event: PointerEvent) => {
       const inside = pointerInside.current
         || anchorRef.current?.contains(event.target as Node) === true
@@ -135,7 +144,7 @@ export function AnchoredPopover({
         else anchorRef.current?.focus();
       }
     };
-  }, [open, id, surfaceOwnerId, anchorRef, close, initialFocusSelector, role, restoreTriggerFocus]);
+  }, [open, id, surfaceOwnerId, anchorRef, close, resolveInitialFocus, role, restoreTriggerFocus]);
 
   if (!open) return null;
   const portalAttributes: Record<string, string | undefined> = {
@@ -144,7 +153,23 @@ export function AnchoredPopover({
     [MODAL_ESCAPE_ATTRIBUTE]: owner,
   };
   return (
-    <Popover.Root open={open} modal={false}>
+    <Popover.Root
+      open={open}
+      modal={false}
+      onOpenChange={(nextOpen, eventDetails) => {
+        if (nextOpen) return;
+        if (eventDetails.reason === 'escape-key') {
+          if (hasOpenOwnedFloatingPortal(surfaceOwnerId)) {
+            eventDetails.cancel();
+            return;
+          }
+          if (role === 'menu') { closeRef.current(); restoreTriggerFocus(); }
+          else close(true);
+          return;
+        }
+        eventDetails.cancel();
+      }}
+    >
       <Popover.Portal>
         <Popover.Positioner
           anchor={anchorRef}
@@ -156,11 +181,17 @@ export function AnchoredPopover({
           style={{ zIndex }}
         >
           <Popover.Popup
-            ref={surfaceRef}
+            ref={(node) => {
+              surfaceRef.current = node;
+              if (node !== null && !focusedForOpenRef.current) {
+                focusedForOpenRef.current = true;
+                resolveInitialFocus(node)?.focus();
+              }
+            }}
             id={id}
             role={role}
             aria-label={label}
-            initialFocus={false}
+            initialFocus={() => resolveInitialFocus(surfaceRef.current) ?? false}
             finalFocus={false}
             tabIndex={-1}
             data-anchored-popover=""

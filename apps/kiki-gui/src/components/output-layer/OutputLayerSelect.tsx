@@ -112,11 +112,11 @@ export function OutputLayerSelect({
         {open ? (
           <div
             data-output-layer-panel
-            className={`anim-enter ${COMPOSER_PANEL_END} w-80 p-1.5 ${POPOVER_SURFACE_CLASS}`}
+            className={`anim-enter ${COMPOSER_PANEL_END} flex max-h-[min(var(--cp-max-h,420px),calc(100dvh-120px))] w-80 flex-col overflow-hidden p-1.5 ${POPOVER_SURFACE_CLASS}`}
           >
             {/* View Mode Switcher Header */}
             {isEnabled ? (
-              <div className="mb-2 flex items-center justify-between rounded-md bg-paper p-1 border border-hairline">
+              <div className="mb-2 flex shrink-0 items-center justify-between rounded-md bg-paper p-1 border border-hairline">
                 <span className="px-2 text-[11px] font-medium text-ink-soft">显示版本</span>
                 <div className="flex items-center gap-1">
                   <button
@@ -145,9 +145,9 @@ export function OutputLayerSelect({
               </div>
             ) : null}
 
-            <p className={POPOVER_LABEL_CLASS}>输出预设</p>
+            <p className={`shrink-0 ${POPOVER_LABEL_CLASS}`}>输出预设</p>
 
-            <div role="listbox" aria-label="输出层预设" className="space-y-0.5">
+            <div role="listbox" aria-label="输出层预设" className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain">
               {/* Option: Off / None */}
               <button
                 type="button"
