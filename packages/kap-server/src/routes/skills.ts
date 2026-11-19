@@ -38,7 +38,11 @@ import { KIKI_AS_SUBAGENT_SKILL } from '@kiki/agent-core-v2/app/skillCatalog/bui
 import { KIKI_OPS_SKILL } from '@kiki/agent-core-v2/app/skillCatalog/builtin/kiki-ops';
 import { InMemorySkillCatalog } from '@kiki/agent-core-v2/app/skillCatalog/registry';
 import { configuredRoots } from '@kiki/agent-core-v2/app/skillCatalog/skillRoots';
-import { EXTRA_SKILL_DIRS_SECTION, type ExtraSkillDirsConfig } from '@kiki/agent-core-v2/app/skillCatalog/configSection';
+import {
+  disabledSkillNames,
+  EXTRA_SKILL_DIRS_SECTION,
+  type ExtraSkillDirsConfig,
+} from '@kiki/agent-core-v2/app/skillCatalog/configSection';
 import { RuntimeSkillDiscovery } from '@kiki/agent-core-v2/workspace/workspaceSkillCatalog/runtimeSkillDiscovery';
 import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
 import { createHash } from 'node:crypto';
@@ -445,7 +449,16 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
         );
         return;
       }
-      const skills = (await listWorkspaceSkillsForRoot(core, ws.id, ws.root)).map(toProtocolSkill);
+      const config = core.accessor.get(IConfigService);
+      await config.ready;
+      const disabled = disabledSkillNames(config);
+      const skills = (await listWorkspaceAllSkillsForRoot(core, ws.id, ws.root)).map((skill) =>
+        toProtocolSkill(
+          skill,
+          disabled.has(normalizeSkillName(skill.name))
+            || (skill.metadata.name !== undefined && disabled.has(normalizeSkillName(skill.metadata.name))),
+        ),
+      );
       reply.send(okEnvelope({ skills }, req.id));
     },
   );
@@ -616,6 +629,7 @@ async function listGlobalSkills(core: Scope): Promise<readonly SkillDefinition[]
     configuredRoots(config.get<ExtraSkillDirsConfig>(EXTRA_SKILL_DIRS_SECTION) ?? [], bootstrap.cwd, bootstrap.osHomeDir, 'extra').then((roots) => discovery.discover(roots)),
   ]);
   const catalog = new InMemorySkillCatalog();
+  catalog.setDisabledSkills(disabledSkillNames(config));
   for (const contribution of [builtin, extra, user, explicit]) {
     for (const skill of contribution.skills) catalog.register(skill, { replace: true });
   }
@@ -688,14 +702,31 @@ async function listWorkspaceSkillsForRoot(
   }
 }
 
+async function listWorkspaceAllSkillsForRoot(
+  core: Scope,
+  workspaceId: string,
+  workDir: string,
+): Promise<readonly SkillDefinition[]> {
+  const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), workDir, workspaceId);
+  try {
+    await preview.skills!.ready;
+    const catalog = preview.skills!.catalog;
+    return catalog.listAllSkills !== undefined ? catalog.listAllSkills() : catalog.listSkills();
+  } finally {
+    await preview.dispose();
+  }
+}
+
 type SkillElement = ReturnType<ISessionSkillCatalog['catalog']['listSkills']>[number];
 
-function toProtocolSkill(skill: SkillElement): SkillDescriptor {
+function toProtocolSkill(skill: SkillElement, disabled = false): SkillDescriptor {
   return {
     name: skill.name,
     description: skill.description,
     path: skill.path,
     source: skill.source,
+    plugin_id: skill.plugin?.id,
+    enabled: disabled ? false : undefined,
     type: skill.metadata.type,
     disable_model_invocation: skill.metadata.disableModelInvocation,
     prompt_command: skill.metadata.promptCommand,

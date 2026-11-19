@@ -2,6 +2,15 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
 import type { PluginSummary } from '../../../lib/client';
+import type { PluginOrigin } from '../../../lib/pluginCatalog';
+
+export const ORIGIN_KEYS = {
+  official: 'cap.origin.official',
+  catalog: 'cap.origin.catalog',
+  local: 'cap.origin.local',
+  git: 'cap.origin.git',
+  zip: 'cap.origin.zip',
+} as const satisfies Record<PluginOrigin, string>;
 
 /**
  * A plugin has two independent switches, the same pair every optional system

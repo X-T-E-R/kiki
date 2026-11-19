@@ -1,25 +1,25 @@
 /**
- * Installed — every plugin on this server as one management list, on the
- * shared settings list pattern: the toolbar carries search, state chips and
- * density; rows group into needs attention / updates available / on / off
- * (each shown only when non-empty, each foldable). A row is icon, name, where
- * it came from (official, catalog, a local folder, git, a ZIP), version, an
- * update hint when the catalog or GitHub has a newer one, the enable switch,
- * and a ⋯ menu (details, turn off, remove, homepage).
+ * Installed — every plugin on this server as one direct management list:
+ * instant search, state filter chips, health indicator dot, inline Settings &
+ * Reload actions, update CTA, enable/disable Toggle, and confirmed Remove.
  */
 
-import { useRef, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { errorText } from '@kiki/session-core/i18n';
 
 import { copyTextToClipboard } from '../../lib/clipboard';
 import type { PluginMarketplaceEntry, PluginSummary } from '../../lib/client';
 import { pluginOrigin, type PluginOrigin, type PluginUpdateView } from '../../lib/pluginCatalog';
+import { pushToast } from '../../lib/toasts';
 import { openExternalUrl } from '../../host/external';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { InlineError, Toggle } from '../controls';
+import { Icon } from '../icons';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
+import { SettingsLoadFailure } from '../settings/SettingsPrimitives';
 import {
   groupItems,
   LIST_ROW_HEIGHT,
@@ -43,35 +43,59 @@ const ORIGIN_KEYS = {
   zip: 'cap.origin.zip',
 } as const satisfies Record<PluginOrigin, string>;
 
+const ZOD_ISSUE_SHAPE = /"code"\s*:\s*"(invalid_type|too_small|too_big|invalid_enum_value|unrecognized_keys?)"/;
+
+function parseFailureDetail(error: unknown): string | undefined {
+  if (typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'ZodError' && Array.isArray((error as { issues?: unknown }).issues)) {
+    const first = ((error as { issues: readonly { path?: readonly unknown[]; message?: string }[] }).issues)[0];
+    const path = first?.path !== undefined && first.path.length > 0 ? first.path.map(String).join('.') : undefined;
+    if (path !== undefined && first?.message !== undefined) return `${path}: ${first.message}`;
+    return first?.message ?? path ?? 'ZodError';
+  }
+  if (error instanceof SyntaxError) return error.message || 'SyntaxError';
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (ZOD_ISSUE_SHAPE.test(raw)) return raw.slice(0, 140);
+  return undefined;
+}
+
 export function InstalledList({
   plugins,
   entries,
   loading,
+  retrying = false,
   error,
+  onRetry,
   updates,
   updateCheck,
   onOpen,
+  onOpenSettings,
   onUpdate,
   onAdd,
+  inSettings = false,
 }: {
   readonly plugins: readonly PluginSummary[];
   readonly entries: readonly PluginMarketplaceEntry[];
   readonly loading: boolean;
+  readonly retrying?: boolean;
   readonly error?: unknown;
+  readonly onRetry?: () => void;
   /** Available update per plugin id, from the catalog or GitHub. */
   readonly updates: ReadonlyMap<string, PluginUpdateView>;
   /** The GitHub check line under the list; absent without GitHub installs. */
   readonly updateCheck?: ReactNode;
   readonly onOpen: (id: string) => void;
+  readonly onOpenSettings?: (id: string) => void;
   readonly onUpdate: (plugin: PluginSummary, update: PluginUpdateView) => void;
   readonly onAdd: () => void;
+  readonly inSettings?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { client } = useConnection();
   const invalidate = useInvalidatePlugins();
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<unknown>(null);
   const [removing, setRemoving] = useState<PluginSummary | null>(null);
+  const canReload = typeof client.reloadPlugin === 'function';
 
   const act = async (id: string, action: () => Promise<unknown>) => {
     setBusy(id);
@@ -79,8 +103,8 @@ export function InstalledList({
     try {
       await action();
       await invalidate();
-    } catch (caught) {
-      setFailure(caught);
+    } catch (actionError) {
+      setFailure(actionError);
     } finally {
       setBusy(null);
     }
@@ -92,20 +116,58 @@ export function InstalledList({
 
   const keyOf = (plugin: PluginSummary) => plugin.id;
   const textOf = (plugin: PluginSummary) => [plugin.displayName, plugin.id, plugin.originalSource];
-  const filters: readonly ListFilterSpec<PluginSummary>[] = [
-    { id: 'attention', label: t('cap.installed.group.attention'), tone: 'attention', test: (plugin) => groupOf(plugin) === 'attention' },
-    { id: 'updates', label: t('cap.installed.group.updates'), test: (plugin) => groupOf(plugin) === 'updates' },
+  const filters = useMemo<readonly ListFilterSpec<PluginSummary>[]>(() => [
+    { id: 'attention', label: t('cap.installed.group.attention'), tone: 'attention', test: (plugin) => broken(plugin) },
+    { id: 'updates', label: t('cap.installed.group.updates'), test: (plugin) => !broken(plugin) && updates.has(plugin.id) },
     { id: 'on', label: t('cap.installed.group.on'), test: (plugin) => plugin.enabled },
     { id: 'off', label: t('cap.installed.group.off'), test: (plugin) => !plugin.enabled },
-  ];
+  ], [t, updates]);
+
   const view = useListView({ listId: 'cap-plugins-installed', items: plugins, keyOf, textOf, filters });
-  const groups = groupItems(plugins, view.visible, (plugin) => {
-    const id = groupOf(plugin);
-    return [{ key: id, label: t(GROUP_KEYS[id]) }];
-  }, GROUP_ORDER);
+  const toolbarView = useMemo(() => {
+    const activeFilterIds = filters
+      .filter((spec) => {
+        const matched = plugins.filter(spec.test).length;
+        return matched > 0 && matched < plugins.length;
+      })
+      .map((spec) => spec.id);
+    return {
+      ...view,
+      tools: {
+        ...view.tools,
+        search: plugins.length > 0,
+        filters: activeFilterIds.length > 0,
+        filterIds: activeFilterIds,
+      },
+    };
+  }, [filters, plugins, view]);
+
+  const groups = useMemo(
+    () => groupItems(plugins, view.visible, (plugin) => {
+      const id = groupOf(plugin);
+      return [{ key: id, label: t(GROUP_KEYS[id]) }];
+    }, GROUP_ORDER),
+    [plugins, t, updates, view.visible],
+  );
 
   if (loading) return <p className="py-3 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>;
-  if (error !== undefined) return <InlineError error={error} />;
+  if (error !== undefined) {
+    const parseDetail = parseFailureDetail(error);
+    if (onRetry !== undefined) {
+      return (
+        <div data-plugins-installed-error>
+          <SettingsLoadFailure
+            message={parseDetail !== undefined
+              ? t('st.plugins.loadInvalid', { detail: parseDetail })
+              : t('st.plugins.loadFailed', { detail: errorText(locale, error) })}
+            retrying={retrying}
+            onRetry={onRetry}
+          />
+        </div>
+      );
+    }
+    return <InlineError error={error} />;
+  }
   if (plugins.length === 0) {
     return (
       <ListEmpty
@@ -118,18 +180,42 @@ export function InstalledList({
   }
 
   return (
-    <div className="min-w-0 space-y-3 [&_[data-list-toolbar]]:-top-4 min-[720px]:[&_[data-list-toolbar]]:-top-8" data-installed-list>
-      <ListToolbar view={view} total={plugins.length} filters={filters}
-        searchLabel={t('cap.plugins.searchInstalled')} searchPlaceholder={t('cap.plugins.searchInstalled')} />
+    <div
+      className={`min-w-0 space-y-3 ${
+        inSettings ? '' : '[&_[data-list-toolbar]]:-top-4 min-[720px]:[&_[data-list-toolbar]]:-top-8'
+      }`}
+      data-installed-list
+    >
+      <ListToolbar
+        view={toolbarView}
+        total={plugins.length}
+        filters={filters}
+        searchLabel={t('cap.plugins.searchInstalled')}
+        searchPlaceholder={t('cap.plugins.searchInstalled')}
+      />
       {view.visible.length === 0 ? (
-        <ListEmpty kind="no-match" title={t('cap.plugins.noMatchTitle')}
+        <ListEmpty
+          kind="no-match"
+          title={t('cap.plugins.noMatchTitle')}
           body={view.query.trim() !== '' ? t('cap.plugins.noMatch', { query: view.query.trim() }) : undefined}
-          onClear={view.clear} />
+          onClear={view.clear}
+        />
       ) : (
         groups.map((group) => (
-          <ListGroup key={group.key} groupKey={group.key} label={group.label} count={group.items.length} total={group.total}
-            folded={view.isFolded(group.key)} onToggle={() => { view.toggleFold(group.key); }}>
-            <ListBody items={group.items} keyOf={keyOf} density={view.density} label={group.label}
+          <ListGroup
+            key={group.key}
+            groupKey={group.key}
+            label={group.label}
+            count={group.items.length}
+            total={group.total}
+            folded={view.isFolded(group.key)}
+            onToggle={() => { view.toggleFold(group.key); }}
+          >
+            <ListBody
+              items={group.items}
+              keyOf={keyOf}
+              density={view.density}
+              label={group.label}
               renderRow={(plugin) => (
                 <InstalledRow
                   plugin={plugin}
@@ -139,11 +225,19 @@ export function InstalledList({
                   update={updates.get(plugin.id)}
                   busy={busy === plugin.id}
                   onOpen={() => { onOpen(plugin.id); }}
+                  onOpenSettings={onOpenSettings === undefined ? undefined : () => { onOpenSettings(plugin.id); }}
+                  onReload={canReload ? () => {
+                    void act(plugin.id, async () => {
+                      await client.reloadPlugin(plugin.id);
+                      pushToast({ tone: 'info', text: t('cap.plugins.reloaded', { name: plugin.displayName }) });
+                    });
+                  } : undefined}
                   onToggle={(enabled) => { void act(plugin.id, () => client.setPluginEnabled(plugin.id, enabled)); }}
                   onUpdate={(update) => { onUpdate(plugin, update); }}
                   onRemove={() => { setRemoving(plugin); }}
                 />
-              )} />
+              )}
+            />
           </ListGroup>
         ))
       )}
@@ -177,6 +271,9 @@ const GROUP_KEYS = {
   off: 'cap.installed.group.off',
 } as const satisfies Record<InstalledGroup, string>;
 
+const QUICK_ICON_BTN =
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.07] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-45';
+
 function InstalledRow({
   plugin,
   origin,
@@ -185,6 +282,8 @@ function InstalledRow({
   busy,
   density,
   onOpen,
+  onOpenSettings,
+  onReload,
   onToggle,
   onUpdate,
   onRemove,
@@ -196,6 +295,8 @@ function InstalledRow({
   readonly busy: boolean;
   readonly density: ListDensity;
   readonly onOpen: () => void;
+  readonly onOpenSettings?: () => void;
+  readonly onReload?: () => void;
   readonly onToggle: (enabled: boolean) => void;
   readonly onUpdate: (update: PluginUpdateView) => void;
   readonly onRemove: () => void;
@@ -205,17 +306,21 @@ function InstalledRow({
   const anchor = useRef<HTMLSpanElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const broken = plugin.state === 'error' || plugin.hasErrors;
+  const healthTone = broken ? 'bg-danger' : plugin.enabled ? 'bg-success' : 'bg-ink-faint/50';
+  const healthLabel = broken ? t('cap.state.error') : plugin.enabled ? t('cap.plugins.healthy') : t('cap.plugins.disabledState');
   const homepage = entry?.homepage;
   const source = plugin.originalSource;
+
   const entries: MiniMenuEntry[] = [
     { key: 'details', label: t('cap.plugins.menuDetails'), run: onOpen },
-    { key: 'toggle', label: plugin.enabled ? t('cap.plugins.menuDisable') : t('cap.plugins.menuEnable'), run: () => { onToggle(!plugin.enabled); } },
   ];
+  if (onOpenSettings !== undefined) entries.push({ key: 'settings', label: t('cap.plugins.settings'), run: onOpenSettings });
+  if (onReload !== undefined) entries.push({ key: 'reload', label: t('cap.plugins.reload'), run: onReload });
+  entries.push({ key: 'toggle', label: plugin.enabled ? t('cap.plugins.menuDisable') : t('cap.plugins.menuEnable'), run: () => { onToggle(!plugin.enabled); } });
   if (homepage !== undefined) entries.push({ key: 'homepage', label: t('cap.plugins.menuHomepage'), run: () => openExternalUrl(host, homepage, t('common.popupBlocked')) });
   if (source !== undefined) entries.push({ key: 'copy', label: t('cap.plugins.menuCopySource'), run: () => copyTextToClipboard(source) });
   entries.push({ separator: true }, { key: 'remove', label: t('cap.action.remove'), danger: true, run: onRemove });
 
-  // Local and git plugins read their source as the fact; catalog plugins their version.
   const fact = [
     plugin.version !== undefined ? `v${plugin.version}` : undefined,
     origin === 'local' || origin === 'git' || origin === 'zip' ? source : undefined,
@@ -223,11 +328,12 @@ function InstalledRow({
 
   return (
     <div
-      className="group flex min-w-0 items-center gap-3 px-3 py-1.5 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.03]"
+      className="group flex min-w-0 items-center gap-2.5 px-3 py-1.5 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.03] focus-within:bg-ink/[0.03]"
       style={{ minHeight: LIST_ROW_HEIGHT[density] }}
       data-plugin-row={plugin.id}
       data-plugin-origin={origin}
       data-plugin-enabled={plugin.enabled ? 'true' : 'false'}
+      data-plugin-health={broken ? 'error' : plugin.enabled ? 'ok' : 'off'}
     >
       <button
         type="button"
@@ -238,7 +344,14 @@ function InstalledRow({
         <span className={plugin.enabled ? '' : 'opacity-60 grayscale'}><CapabilityIcon icon={plugin.icon} /></span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-2">
-            <span className={`min-w-0 truncate text-[13px] font-medium ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>{plugin.displayName}</span>
+            <span
+              aria-hidden
+              title={healthLabel}
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${healthTone}`}
+            />
+            <span className={`min-w-0 truncate text-[13px] font-medium ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>
+              {plugin.displayName}
+            </span>
             <span className="shrink-0"><Tag>{t(ORIGIN_KEYS[origin])}</Tag></span>
             {broken ? <span className="shrink-0"><Tag tone="danger">{t('cap.state.error')}</Tag></span> : null}
             {density === 'compact' && fact !== '' ? (
@@ -246,31 +359,63 @@ function InstalledRow({
             ) : null}
           </span>
           {density === 'compact' ? null : (
-            <span className="mt-0.5 flex min-w-0 items-center gap-2">
+            <span className="mt-0.5 flex min-w-0 items-center gap-2 pl-3.5">
               <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-ink-faint" title={source}>{fact}</span>
             </span>
           )}
         </span>
       </button>
+
       {update !== undefined ? (
         <button
           type="button"
           onClick={() => { onUpdate(update); }}
           data-plugin-update={plugin.id}
-          className="hidden min-h-8 shrink-0 items-center rounded-md px-3 text-[12px] font-medium text-selected-ink transition-colors hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
+          className="hidden min-h-8 shrink-0 items-center rounded-md px-2.5 text-[12px] font-medium text-selected-ink transition-colors hover:bg-selected focus-visible:outline-2 focus-visible:outline-selected-ink min-[480px]:inline-flex"
         >
           {update.version !== undefined ? t('cap.plugins.updateTo', { version: update.version }) : t('cap.action.update')}
         </button>
       ) : null}
-      {/* The word beside the switch drops on narrow widths; the switch keeps it as its name. */}
+
+      {(onOpenSettings !== undefined || onReload !== undefined) ? (
+        <span className="hidden items-center gap-0.5 opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] min-[640px]:flex group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+          {onOpenSettings !== undefined ? (
+            <button
+              type="button"
+              data-plugin-settings-action={plugin.id}
+              aria-label={`${plugin.displayName} · ${t('cap.plugins.settings')}`}
+              title={t('cap.plugins.settings')}
+              onClick={onOpenSettings}
+              className={QUICK_ICON_BTN}
+            >
+              <Icon name="settings" size={14} />
+            </button>
+          ) : null}
+          {onReload !== undefined ? (
+            <button
+              type="button"
+              data-plugin-reload={plugin.id}
+              disabled={busy}
+              aria-label={`${plugin.displayName} · ${t('cap.plugins.reload')}`}
+              title={t('cap.plugins.reload')}
+              onClick={onReload}
+              className={QUICK_ICON_BTN}
+            >
+              <Icon name="refresh" size={14} />
+            </button>
+          ) : null}
+        </span>
+      ) : null}
+
       <span className="shrink-0 [&_label>span:last-child]:max-[479px]:sr-only">
-      <Toggle
-        label={plugin.enabled ? t('cap.state.on') : t('cap.state.off')}
-        checked={plugin.enabled}
-        disabled={busy}
-        onChange={onToggle}
-      />
+        <Toggle
+          label={plugin.enabled ? t('cap.state.on') : t('cap.state.off')}
+          checked={plugin.enabled}
+          disabled={busy}
+          onChange={onToggle}
+        />
       </span>
+
       <span ref={anchor} className="flex">
         <IconButton
           icon="more"
@@ -283,6 +428,7 @@ function InstalledRow({
           }}
         />
       </span>
+
       {menu !== null ? (
         <MiniContextMenu
           x={menu.x}

@@ -33,6 +33,7 @@ import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import {
+  DISABLED_SKILLS_SECTION,
   EXTRA_SKILL_DIRS_SECTION,
   MERGE_ALL_AVAILABLE_SKILLS_SECTION,
 } from '#/app/skillCatalog/configSection';
@@ -67,9 +68,11 @@ const bootstrapStub = stubBootstrap('/home');
 function configStub(): IConfigService & {
   setExtraSkillDirs(dirs: readonly string[]): void;
   setMergeAllAvailableSkills(value: boolean): void;
+  setDisabledSkills(names: readonly string[]): void;
   fireSectionChange(domain: string): void;
 } {
   let extraSkillDirs: readonly string[] = [];
+  let disabledSkills: readonly string[] = [];
   let mergeAllAvailableSkills = true;
   const sectionChangeListeners: Array<(event: unknown) => void> = [];
   return {
@@ -82,6 +85,7 @@ function configStub(): IConfigService & {
     },
     get: (domain: string) => {
       if (domain === EXTRA_SKILL_DIRS_SECTION) return [...extraSkillDirs];
+      if (domain === DISABLED_SKILLS_SECTION) return [...disabledSkills];
       if (domain === MERGE_ALL_AVAILABLE_SKILLS_SECTION) return mergeAllAvailableSkills;
       return undefined;
     },
@@ -94,6 +98,9 @@ function configStub(): IConfigService & {
     setExtraSkillDirs: (dirs: readonly string[]) => {
       extraSkillDirs = [...dirs];
     },
+    setDisabledSkills: (names: readonly string[]) => {
+      disabledSkills = [...names];
+    },
     setMergeAllAvailableSkills: (value: boolean) => {
       mergeAllAvailableSkills = value;
     },
@@ -105,6 +112,7 @@ function configStub(): IConfigService & {
   } as unknown as IConfigService & {
     setExtraSkillDirs(dirs: readonly string[]): void;
     setMergeAllAvailableSkills(value: boolean): void;
+    setDisabledSkills(names: readonly string[]): void;
     fireSectionChange(domain: string): void;
   };
 }
@@ -1160,4 +1168,30 @@ describe('WorkspaceSkillCatalogService', () => {
       await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
+
+  it('excludes disabledSkills from active catalog and prompt listing while retaining them in listAllSkills', async () => {
+    const store = new InMemorySkillDiscovery();
+    store.setUserSkills([stubSkill('alpha-skill'), stubSkill('beta-skill')]);
+    const ws = workspaceContextStub('/work');
+    const { host, workspace, config } = makeHost(store, ws);
+    config.setDisabledSkills(['Alpha-Skill']);
+
+    try {
+      const catalog = workspace.accessor.get(IWorkspaceSkillCatalog);
+      await catalog.load();
+      expect(catalog.catalog.getSkill('alpha-skill')).toBeUndefined();
+      expect(catalog.catalog.getSkill('beta-skill')).toBeDefined();
+      expect(catalog.catalog.listSkills().map((s) => s.name)).toContain('beta-skill');
+      expect(catalog.catalog.listSkills().map((s) => s.name)).not.toContain('alpha-skill');
+      expect(catalog.catalog.getModelSkillListing()).not.toContain('alpha-skill');
+      expect(catalog.catalog.listAllSkills?.().map((s) => s.name)).toContain('alpha-skill');
+
+      config.setDisabledSkills([]);
+      config.fireSectionChange(DISABLED_SKILLS_SECTION);
+      expect(catalog.catalog.getSkill('alpha-skill')).toBeDefined();
+      expect(catalog.catalog.listSkills().map((s) => s.name)).toContain('alpha-skill');
+    } finally {
+      await host.dispose();
+    }
+  });
 });

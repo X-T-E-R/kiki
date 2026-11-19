@@ -1431,9 +1431,9 @@ describe('Sidebar semantic structure', () => {
 
     const sessionList = container.querySelector<HTMLElement>('[data-session-list]')!;
     expect([...sessionList.querySelectorAll<HTMLElement>('[role="group"][aria-label]')].map((node) => node.getAttribute('aria-label')))
-      .toEqual(['Today']);
-    // Not inside the session list region.
-    expect(sessionList.querySelector('[data-sidebar-personas]')).toBeNull();
+      .toEqual(['Personas', 'Today']);
+    // Unified scroll: Personas sit inside the scrollable session list region above conversation groups.
+    expect(sessionList.querySelector('[data-sidebar-personas]')).not.toBeNull();
   });
 
   it('replaces the list with a labelled listbox the search box drives with ↑↓ / Enter', async () => {

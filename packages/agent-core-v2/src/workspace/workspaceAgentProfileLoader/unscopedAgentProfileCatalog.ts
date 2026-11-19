@@ -100,7 +100,9 @@ export function createUnscopedAgentProfileCatalog(
       loaders.push(resources.add(container.createInstance<WorkspaceAgentProfileLoaderService>(new SyncDescriptor(WorkspaceAgentProfileLoaderService))));
     }
     resources.add(registry.registerSourceReadiness('preview', workspaceKey, Promise.all(loaders.map((loader) => loader.ready)).then(() => {})));
-    const skills = cwd === undefined || !includeSkills ? undefined : resources.add(container.createInstance(WorkspaceSkillCatalogService));
+    const skills = cwd === undefined || !includeSkills
+      ? undefined
+      : resources.add(container.createInstance<WorkspaceSkillCatalogService>(new SyncDescriptor(WorkspaceSkillCatalogService)));
     const catalog = resources.add(container.createInstance(SessionAgentProfileCatalogService));
     return { registry, catalog, skills, workspaceId: workspaceKey, dispose: () => resources.dispose() };
   } catch (error) {

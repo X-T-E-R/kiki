@@ -856,6 +856,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/plugins/${encodeURIComponent(id)}:rollback`,
         { method: 'POST', body: {} },
       ),
+      reload: (id: string) => transport.json(
+        `/plugins/${encodeURIComponent(id)}:reload`,
+        { method: 'POST', body: {} },
+      ),
       installPrerequisite: (id: string, input) => transport.json(
         `/plugins/${encodeURIComponent(id)}:install-prerequisite`,
         { method: 'POST', body: input, timeoutMs: 0 },

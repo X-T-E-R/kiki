@@ -813,6 +813,7 @@ export interface HttpRestFacade {
     setEnabled(id: string, enabled: boolean, options?: { readonly defaultEnabled?: boolean }): Promise<{ readonly ok: true }>;
     remove(id: string, options?: { readonly deleteData?: boolean }): Promise<{ readonly ok: true }>;
     rollback(id: string): Promise<{ readonly ok: true }>;
+    reload(id: string): Promise<{ readonly ok: true }>;
     installPrerequisite(id: string, input: import('@kiki/protocol').PluginPrerequisiteInstall): Promise<{ readonly ok: true }>;
     panels(target?: import('@kiki/protocol').PluginUsageTarget): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }>;
     panelDocument(id: string, panelId: string, target?: import('@kiki/protocol').PluginUsageTarget): Promise<import('@kiki/protocol').PluginPanelDocument>;
