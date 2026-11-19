@@ -68,6 +68,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
   private readonly profileHost: { readonly accessor: ServicesAccessor };
   private readonly foldTails = new Map<string, Promise<unknown>>();
   private readonly sealingBranches = new Set<string>();
+  private readonly lifetime = new AbortController();
 
   constructor(
     @IInstantiationService instantiation: IInstantiationService,
@@ -79,6 +80,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
   ) {
     super();
     this.profileHost = { accessor: { get: (id) => instantiation.invokeFunction((accessor) => accessor.get(id)) } };
+    this._register({ dispose: () => { this.lifetime.abort(new Error('Session branch service disposed')); } });
   }
 
   isBranch(agentId: string): boolean {
@@ -158,13 +160,34 @@ export class SessionBranchService extends Service implements ISessionBranchServi
 
   async createBranch(input: CreateSessionBranchInput = {}): Promise<CreateSessionBranchResult> {
     const parentAgentId = input.parentAgentId ?? MAIN_AGENT_ID;
+    const parentClosed = new AbortController();
+    const onParentClosed = (agentId: string): void => {
+      if (agentId === parentAgentId) parentClosed.abort(new Error(`Parent agent "${parentAgentId}" closed`));
+    };
+    const listeners = [this.lifecycle.onDidDispose(onParentClosed), this.lifecycle.onWillRemove?.(onParentClosed)];
+    try {
+      const signals = [this.lifetime.signal, parentClosed.signal];
+      if (input.signal !== undefined) signals.push(input.signal);
+      return await this.createBranchWithin(input, parentAgentId, AbortSignal.any(signals));
+    } finally {
+      for (const listener of listeners) listener?.dispose();
+    }
+  }
+
+  private async createBranchWithin(
+    input: CreateSessionBranchInput,
+    parentAgentId: string,
+    signal: AbortSignal,
+  ): Promise<CreateSessionBranchResult> {
     const initiator = input.initiator ?? 'user';
     const toolsLocked = input.toolsLocked === true;
     const seedMode = input.seed ?? (toolsLocked ? 'verbatim' : 'fresh');
 
+    signal.throwIfAborted();
     this.assertBranchAllowed(initiator, toolsLocked, parentAgentId);
 
     const parent = await this.ensureLiveAgent(parentAgentId);
+    signal.throwIfAborted();
     const parentData = parent.accessor.get(IAgentProfileService).data();
     const parentHistory = parent.accessor.get(IAgentContextMemoryService).get();
     const parentState = parent.accessor.get(IAgentStateService);
@@ -187,7 +210,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
         ? async (settled, compactCount) => {
             const slice = settled.slice(0, compactCount);
             const compactor = parent.accessor.get(IAgentFullCompactionService);
-            return compactor.prepareModelSwitchSummary(slice, new AbortController().signal);
+            return compactor.prepareModelSwitchSummary(slice, signal);
           }
         : undefined,
     });
@@ -239,6 +262,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
           thinking: input.thinking === undefined ? undefined : input.thinking ?? undefined,
         };
 
+    signal.throwIfAborted();
     const child = await this.lifecycle.fork(parentAgentId, {
       binding: overrideBinding,
       labels,
@@ -249,6 +273,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
     });
 
     try {
+      signal.throwIfAborted();
       const childDispatcher = child.accessor.get(IEventDispatcher);
       const childContext = child.accessor.get(IAgentContextMemoryService);
       if (builtSeed.messages.length > 0) {
@@ -293,6 +318,7 @@ export class SessionBranchService extends Service implements ISessionBranchServi
         },
       }));
 
+      signal.throwIfAborted();
       this.lifecycle.commitCreate(child.id);
     } catch (error) {
       await this.lifecycle.discard(child.id).catch(() => {});

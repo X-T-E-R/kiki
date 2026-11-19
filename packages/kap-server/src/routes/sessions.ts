@@ -1478,7 +1478,8 @@ export function registerSessionsRoutes(
 
         if (parsed.action === 'branch') {
           const body = createSessionBranchRequestSchema.parse(req.body);
-          await withSessionOperation(core, parsed.id, async (session) => {
+          await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => withSessionOperation(core, parsed.id, async (session) => {
+            signal.throwIfAborted();
             if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
             const parent = await ensureSessionAgent(core, session, body.parent_agent_id ?? MAIN_AGENT_ID);
             if (body.executor === undefined || body.executor === 'native') {
@@ -1500,6 +1501,7 @@ export function registerSessionsRoutes(
               executor: body.executor,
               cwd: body.cwd,
               toolsLocked: body.tools_locked,
+              signal,
             });
             reply.send(okEnvelope({
               agent_id: created.branchId,
@@ -1509,7 +1511,7 @@ export function registerSessionsRoutes(
               title: created.title,
               started: created.started,
             }, req.id));
-          });
+          }, signal), req);
           return;
         }
 
