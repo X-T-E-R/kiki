@@ -32,7 +32,7 @@ import { imageDownloadFailureText, imageDownloadSink, imageDownloadStep, saveMed
 import { safeImagePreviewName } from '../imagePreviewName';
 import { ImageViewport } from '../ImageViewport';
 import { Markdown } from '../Markdown';
-import { MediaLoadFailure, useSessionMedia } from '../mediaParts';
+import { MediaLoadFailure, useActiveDraftKey, useSessionMedia } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
@@ -92,6 +92,7 @@ export function PreviewAttachmentView({
     source.kind === 'session-copy' && source.sessionId !== ''
       ? source.sessionId
       : fallbackSessionId;
+  const activeDraftKey = useActiveDraftKey(sessionId);
   const environment = usePreviewEnvironment(sessionId);
   const remotePlaybackScope = !environment.isKikiComputer;
   const fallbackName = resource.type === 'image' ? t('media.image') : t('media.attachment');
@@ -438,11 +439,12 @@ export function PreviewAttachmentView({
             setSearchNonce((n) => n + 1);
           },
         });
-      } else if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
+      } else if (action.id === 'add-to-chat' && (activeDraftKey ?? sessionId) !== undefined && trustedPath !== undefined) {
+        const targetDraftKey = activeDraftKey ?? sessionId!;
         list.push({
           key: 'add-to-chat',
           label: t('preview.addToChat'),
-          run: () => { appendToDraft(sessionId, mentionTokenFor(trustedPath, workspaceRoot)); },
+          run: () => { appendToDraft(targetDraftKey, mentionTokenFor(trustedPath, workspaceRoot)); },
         });
       } else if (action.id === 'copy-content' && decodedText !== undefined) {
         list.push({
@@ -484,7 +486,7 @@ export function PreviewAttachmentView({
       }
     }
     return list;
-  }, [actions, sessionId, trustedPath, workspaceRoot, decodedText, host, isCopy, t, phoneForm, onOpenCurrentFile, hasRenderedToggle, mode, textPreview, markdown]);
+  }, [actions, activeDraftKey, sessionId, trustedPath, workspaceRoot, decodedText, host, isCopy, t, phoneForm, onOpenCurrentFile, hasRenderedToggle, mode, textPreview, markdown]);
 
   const sizeBytes = load.status === 'ready' ? load.bytes.byteLength : size;
   const canOpenCurrent = actionIds.has('open-current-file') && trustedPath !== undefined && onOpenCurrentFile !== undefined;
@@ -722,7 +724,7 @@ export function PreviewAttachmentView({
                 {playback.mime.startsWith('video/') ? (
                   <video src={playback.url} controls playsInline onError={playback.fail} data-preview-video className="max-h-full max-w-full" />
                 ) : (
-                  <audio src={playback.url} controls onError={playback.fail} data-preview-audio className="w-full max-w-2xl" />
+                  <audio src={playback.url} controls preload="metadata" onError={playback.fail} data-preview-audio className="w-full max-w-2xl" />
                 )}
               </div>
             ) : playback.status === 'failed' ? (
@@ -783,7 +785,7 @@ export function PreviewAttachmentView({
               </div>
             ) : load.mime.startsWith('audio/') || effectiveResource.type === 'audio' ? (
               <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
-                <audio src={load.url} controls data-preview-audio className="w-full max-w-2xl" />
+                <audio src={load.url} controls preload="metadata" data-preview-audio className="w-full max-w-2xl" />
               </div>
             ) : textPreview || html || effectiveResource.type === 'text' || effectiveResource.type === 'markdown' ? (
               (() => {

@@ -28,7 +28,7 @@ export function useSessionMediaPlayback(
   attempt: number,
 ): PlaybackLoad {
   const eligible = item.path === undefined && item.fileId !== undefined && sessionId !== undefined
-    && (item.kind === 'video' || /^(?:video|audio)\//i.test(item.mime ?? ''));
+    && (item.kind === 'video' || item.kind === 'audio' || /^(?:video|audio)\//i.test(item.mime ?? ''));
   const source = useMemo(() => ({ client, sessionId, fileId: item.fileId, eligible, remote, attempt }),
     [client, sessionId, item.fileId, eligible, remote, attempt]);
   const initial: PlaybackLoad = !eligible || remote ? { status: 'fallback' } : { status: 'loading' };
@@ -56,7 +56,12 @@ export function useSessionMediaPlayback(
       setLoaded({ source, load: { status: 'failed' } });
     };
     setLoaded({ source, load: { status: 'loading' } });
-    void sessions.openMediaPlayback(sessionId!, item.fileId!, { signal: controller.signal, timeoutMs: 15_000 }).then((grant) => {
+    const pending = sessions.openMediaPlayback(sessionId!, item.fileId!, { signal: controller.signal, timeoutMs: 15_000 });
+    if (pending === undefined || typeof pending.then !== 'function') {
+      setLoaded({ source, load: { status: 'fallback' } });
+      return;
+    }
+    void pending.then((grant) => {
       previewId = grant.preview_id;
       if (!active) { release(); return; }
       const remaining = grant.expires_at - Date.now();

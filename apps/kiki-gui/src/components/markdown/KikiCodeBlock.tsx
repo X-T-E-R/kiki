@@ -32,7 +32,15 @@ const BODY_PADDING_PX = 20;
 
 function codeText(node: ReactNode): string {
   if (Array.isArray(node)) return node.map(codeText).join('');
-  if (node !== null && typeof node === 'object' && 'props' in node) return codeText((node as ReactElement<{ children?: ReactNode }>).props.children);
+  if (node !== null && typeof node === 'object' && 'props' in node) {
+    const props = (node as ReactElement<{
+      children?: ReactNode;
+      'data-annotation-bubble'?: string;
+      'data-source-ignore'?: string;
+    }>).props;
+    if (props['data-annotation-bubble'] !== undefined || props['data-source-ignore'] === 'true') return '';
+    return codeText(props.children);
+  }
   return typeof node === 'string' || typeof node === 'number' ? String(node) : '';
 }
 

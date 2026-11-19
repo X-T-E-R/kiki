@@ -20,7 +20,17 @@ import type { HostSaveSink } from '../host/host';
 import { createPortal } from 'react-dom';
 
 import { useI18n } from '../i18n';
-import { basenameOf, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
+import {
+  appendAttachmentToDraft,
+  fileToImageAttachment,
+  MAX_ATTACHMENTS,
+  MAX_TOTAL_IMAGE_BYTES,
+  resolveActiveDraftKey,
+  revokeAttachmentPreviewUrl,
+} from '@kiki/session-core/composer';
+import { basenameOf, formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
+import { pushToast } from '../lib/toasts';
+import type { AnnotationRecord } from './MediaLightbox';
 import { useOptionalConnection } from '../state/connection';
 import type { PreviewResource } from '../state/previewResource';
 import {
@@ -50,7 +60,7 @@ import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { httpImageLink, isOnKikiComputer, mediaOutcomeKey, resolveImageMime } from './imageActions';
 import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
-import { attachmentName, useSessionMedia } from './mediaParts';
+import { ActiveDraftKeyProvider, attachmentName, useSessionMedia } from './mediaParts';
 import { remoteImageUrl } from './RemoteImageGate';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
 import {
@@ -151,10 +161,18 @@ export function MediaPreviewProvider({
   registerSessionOpener?: boolean;
   children: ReactNode;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const connection = useOptionalConnection();
   const clientIdentity = connection?.client;
   const localKikiComputer = isOnKikiComputer(connection);
+  const activeDraftKey = resolveActiveDraftKey(
+    connection?.scopeId,
+    sessionId,
+    snapshotAgentId !== 'main'
+      ? snapshotAgentId
+      : (typeof window !== 'undefined' ? window.location.pathname : undefined),
+  );
+  const [lightboxAnnotations, setLightboxAnnotations] = useState<Record<string, AnnotationRecord>>({});
   const [image, setImage] = useState<{ src: string; name?: string; sourcePath?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
   const [gallery, setGallery] = useState<{ images: readonly GalleryImage[]; selected: number; client: unknown; sessionId?: string; scopeAgentId: string; seededId?: string; seededSrc?: string } | null>(null);
   const registeredImages = useRef<{ client: unknown; sessionId?: string; agentId: string; images: Map<string, GalleryImage> }>({ client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() });
@@ -188,7 +206,32 @@ export function MediaPreviewProvider({
     setImage(null);
     setGallery({ images, selected: index, client: clientIdentity, sessionId, scopeAgentId: snapshotAgentId, seededId: initialSrc === undefined ? undefined : id, seededSrc: initialSrc });
   }, [clientIdentity, imagesFor, sessionId, snapshotAgentId]);
-  useEffect(() => { setImage(null); setGallery(null); }, [clientIdentity, sessionId, snapshotAgentId]);
+  useEffect(() => { setImage(null); setGallery(null); setLightboxAnnotations({}); }, [clientIdentity, sessionId, snapshotAgentId]);
+
+  const onAttachAnnotatedImage = useMemo(() => {
+    if (activeDraftKey === undefined) return undefined;
+    return async (blob: Blob, filename: string): Promise<boolean> => {
+      const file = new File([blob], filename, { type: blob.type || 'image/png' });
+      const attachment = await fileToImageAttachment(file);
+      const result = appendAttachmentToDraft(activeDraftKey, attachment);
+      if (!result.added) {
+        revokeAttachmentPreviewUrl(attachment);
+        pushToast({
+          tone: 'error',
+          text:
+            result.reason === 'total_too_large'
+              ? t('attach.totalTooLarge', { max: formatBytes(MAX_TOTAL_IMAGE_BYTES) })
+              : t('attach.tooMany', { max: MAX_ATTACHMENTS }),
+        });
+        return false;
+      }
+      pushToast({
+        tone: 'success',
+        text: locale === 'zh' ? '已将标注图片加入对话' : 'Annotated image added to chat',
+      });
+      return true;
+    };
+  }, [activeDraftKey, locale, t]);
   const previewKey = sessionId === undefined ? 'preview:unsessioned' : previewSnapshotKey(sessionId, snapshotAgentId);
   const visitId = useNavVisitId();
   const initialSnapshot = useMemo(
@@ -628,71 +671,79 @@ export function MediaPreviewProvider({
   ) : null;
 
   return (
-    <MediaPreviewContext.Provider value={api}>
-      {children}
-      {panel !== null && shell?.slots.preview !== null && shell?.slots.preview !== undefined
-        ? createPortal(panel, shell.slots.preview)
-        : panel}
-      {confirmClose !== null ? (
-        <ConfirmDialog
-          open
-          overlayId="preview-close-dirty"
-          title={t('preview.discardTitle')}
-          body={
-            confirmClose.dirty.length === 1
-              ? t('preview.discardBody', { name: basenameOf(confirmClose.dirty[0] ?? '') })
-              : t('preview.discardBodyMany', { count: confirmClose.dirty.length })
-          }
-          confirmLabel={t('preview.discard')}
-          tone="danger"
-          onConfirm={confirmCloseRun}
-          onCancel={() => { setConfirmClose(null); }}
-        />
-      ) : null}
-      {gallery !== null && gallery.client === clientIdentity && gallery.sessionId === sessionId && gallery.scopeAgentId === snapshotAgentId && gallery.images[gallery.selected] !== undefined ? (
-        <GalleryLightbox
-          image={gallery.images[gallery.selected]!}
-          sessionId={sessionId}
-          localKikiComputer={localKikiComputer}
-          seededSrc={gallery.seededId === gallery.images[gallery.selected]!.id ? gallery.seededSrc : undefined}
-          index={gallery.selected}
-          count={gallery.images.length}
-          onSelect={(selected) => { setGallery((current) => current === null ? null : { ...current, selected }); }}
-          onClose={() => { setGallery(null); }}
-        />
-      ) : null}
-      {image !== null && image.client === clientIdentity && image.sessionId === sessionId && image.agentId === snapshotAgentId ? (
-        <PreviewLoadBoundary
-          resetKey={image.src}
-          renderFailure={(error) => (
-            <LightboxLoadFailure
-              error={error}
-              label={imagePreviewLabel({ name: image.name }, t('media.image'))}
-              onClose={() => { setImage(null); }}
-            />
-          )}
-        >
-          <Suspense
-            fallback={
-              <LightboxLoadingShell
+    <ActiveDraftKeyProvider sessionId={sessionId} draftKey={activeDraftKey}>
+      <MediaPreviewContext.Provider value={api}>
+        {children}
+        {panel !== null && shell?.slots.preview !== null && shell?.slots.preview !== undefined
+          ? createPortal(panel, shell.slots.preview)
+          : panel}
+        {confirmClose !== null ? (
+          <ConfirmDialog
+            open
+            overlayId="preview-close-dirty"
+            title={t('preview.discardTitle')}
+            body={
+              confirmClose.dirty.length === 1
+                ? t('preview.discardBody', { name: basenameOf(confirmClose.dirty[0] ?? '') })
+                : t('preview.discardBodyMany', { count: confirmClose.dirty.length })
+            }
+            confirmLabel={t('preview.discard')}
+            tone="danger"
+            onConfirm={confirmCloseRun}
+            onCancel={() => { setConfirmClose(null); }}
+          />
+        ) : null}
+        {gallery !== null && gallery.client === clientIdentity && gallery.sessionId === sessionId && gallery.scopeAgentId === snapshotAgentId && gallery.images[gallery.selected] !== undefined ? (
+          <GalleryLightbox
+            image={gallery.images[gallery.selected]!}
+            sessionId={sessionId}
+            localKikiComputer={localKikiComputer}
+            seededSrc={gallery.seededId === gallery.images[gallery.selected]!.id ? gallery.seededSrc : undefined}
+            index={gallery.selected}
+            count={gallery.images.length}
+            savedAnnotations={lightboxAnnotations}
+            onAnnotationsChange={setLightboxAnnotations}
+            onAttachAnnotatedImage={onAttachAnnotatedImage}
+            onSelect={(selected) => { setGallery((current) => current === null ? null : { ...current, selected }); }}
+            onClose={() => { setGallery(null); }}
+          />
+        ) : null}
+        {image !== null && image.client === clientIdentity && image.sessionId === sessionId && image.agentId === snapshotAgentId ? (
+          <PreviewLoadBoundary
+            resetKey={image.src}
+            renderFailure={(error) => (
+              <LightboxLoadFailure
+                error={error}
                 label={imagePreviewLabel({ name: image.name }, t('media.image'))}
                 onClose={() => { setImage(null); }}
               />
-            }
+            )}
           >
-            <LazyMediaLightbox
-              src={image.src}
-              name={image.name}
-              sourcePath={image.sourcePath}
-              linkUrl={httpImageLink(image.src)}
-              outcomeKey={mediaOutcomeKey({ url: image.src })}
-              localKikiComputer={localKikiComputer}
-              onClose={() => { setImage(null); }}
-            />
-          </Suspense>
-        </PreviewLoadBoundary>
-      ) : null}
-    </MediaPreviewContext.Provider>
+            <Suspense
+              fallback={
+                <LightboxLoadingShell
+                  label={imagePreviewLabel({ name: image.name }, t('media.image'))}
+                  onClose={() => { setImage(null); }}
+                />
+              }
+            >
+              <LazyMediaLightbox
+                src={image.src}
+                name={image.name}
+                sourcePath={image.sourcePath}
+                linkUrl={httpImageLink(image.src)}
+                outcomeKey={mediaOutcomeKey({ url: image.src })}
+                localKikiComputer={localKikiComputer}
+                savedAnnotations={lightboxAnnotations}
+                onAnnotationsChange={setLightboxAnnotations}
+                onAttachAnnotatedImage={onAttachAnnotatedImage}
+                onClose={() => { setImage(null); }}
+              />
+            </Suspense>
+          </PreviewLoadBoundary>
+        ) : null}
+      </MediaPreviewContext.Provider>
+    </ActiveDraftKeyProvider>
   );
 }
 
@@ -722,7 +773,7 @@ function useTypedImageUrl(bytes: Uint8Array | undefined, declared: string | unde
   return typed?.url;
 }
 
-function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSrc, index, count, onSelect, onClose }: { image: GalleryImage; sessionId?: string; localKikiComputer?: boolean; seededSrc?: string; index: number; count: number; onSelect: (index: number) => void; onClose: () => void }) {
+function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSrc, index, count, savedAnnotations, onAnnotationsChange, onAttachAnnotatedImage, onSelect, onClose }: { image: GalleryImage; sessionId?: string; localKikiComputer?: boolean; seededSrc?: string; index: number; count: number; savedAnnotations?: Readonly<Record<string, AnnotationRecord>>; onAnnotationsChange?: (updater: (previous: Record<string, AnnotationRecord>) => Record<string, AnnotationRecord>) => void; onAttachAnnotatedImage?: (blob: Blob, filename: string) => Promise<boolean> | boolean; onSelect: (index: number) => void; onClose: () => void }) {
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
@@ -740,7 +791,7 @@ function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSr
   const externalSeedSrc = hasCanonicalSource && seededSrc?.startsWith('blob:') === true ? undefined : seededSrc;
   const previewFallbackSrc = load.status === 'failed'
     ? undefined
-    : (seededSrc ?? (load.status !== 'ready' ? load.thumbnailUrl : undefined));
+    : (externalSeedSrc ?? (load.status !== 'ready' ? load.thumbnailUrl : undefined));
   const fullSrc = hasCanonicalSource
     ? (load.status === 'ready' ? (typedSrc ?? load.url) : undefined)
     : (externalSeedSrc ?? image.item.url);
@@ -789,6 +840,9 @@ function GalleryLightbox({ image, sessionId, localKikiComputer = false, seededSr
           failed={isFailed}
           onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
           onSaveOriginal={onSaveOriginal}
+          savedAnnotations={savedAnnotations}
+          onAnnotationsChange={onAnnotationsChange}
+          onAttachAnnotatedImage={onAttachAnnotatedImage}
           index={index}
           count={count}
           onSelect={onSelect}

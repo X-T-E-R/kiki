@@ -26,11 +26,11 @@ import type { AgentWorkspaceNavigation } from '../agent-workspace/AgentWorkspace
 import { Icon } from '../icons';
 import { saveMediaToDisk } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
+import { useActiveDraftKey } from '../mediaParts';
 import { MiniContextMenu, type MiniMenuEntry } from '../MiniContextMenu';
 import {
   downloadHostFile,
   HEADER_ACTION_CLASS,
-  isLocalKikiComputer,
   mentionTokenFor,
   relativeToCwd,
   useFileOpeners,
@@ -80,6 +80,7 @@ export function TabContextMenu({
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const activeDraftKey = useActiveDraftKey(sessionId);
   const environment = usePreviewEnvironment(sessionId);
   const tab = menu.tab;
   const entries: MiniMenuEntry[] = [
@@ -147,11 +148,12 @@ export function TabContextMenu({
             },
           });
         }
-      } else if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
+      } else if (action.id === 'add-to-chat' && (activeDraftKey ?? sessionId) !== undefined && trustedPath !== undefined) {
+        const targetDraftKey = activeDraftKey ?? sessionId!;
         actionEntries.push({
           key: 'add-to-chat',
           label: t('preview.addToChat'),
-          run: () => { appendToDraft(sessionId, mentionTokenFor(trustedPath, cwd)); },
+          run: () => { appendToDraft(targetDraftKey, mentionTokenFor(trustedPath, cwd)); },
         });
       } else if (action.id === 'copy-path' && trustedPath !== undefined) {
         const relativePath = relativeToCwd(trustedPath, cwd);
@@ -268,6 +270,7 @@ export function HeaderFileActions({
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const activeDraftKey = useActiveDraftKey(sessionId);
   const environment = usePreviewEnvironment(sessionId);
   const localKikiComputer = environment.isKikiComputer;
   const phoneForm = environment.phoneForm === true;
@@ -320,11 +323,12 @@ export function HeaderFileActions({
           label: t('preview.findInFile'),
           run: onFindInFile,
         });
-      } else if (action.id === 'add-to-chat' && sessionId !== undefined) {
+      } else if (action.id === 'add-to-chat' && (activeDraftKey ?? sessionId) !== undefined) {
+        const targetDraftKey = activeDraftKey ?? sessionId!;
         list.push({
           key: 'add-to-chat',
           label: t('preview.addToChat'),
-          run: () => { appendToDraft(sessionId, mentionTokenFor(trustedPath, workspaceRoot)); },
+          run: () => { appendToDraft(targetDraftKey, mentionTokenFor(trustedPath, workspaceRoot)); },
         });
       } else if (action.id === 'copy-content' && contentText !== undefined) {
         list.push({
@@ -368,6 +372,7 @@ export function HeaderFileActions({
     }
     return list;
   }, [
+    activeDraftKey,
     contentText,
     environment,
     host.openPath,

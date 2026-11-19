@@ -15,7 +15,7 @@
  *     while the comment input keeps the default mousedown so the caret works.
  */
 
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 
 import {
   isCoarsePointer,
@@ -29,12 +29,56 @@ import { unzoomedRect, unzoomedViewport } from '../lib/uiZoom';
 import { Icon } from './icons';
 
 const PILL_HEIGHT = 32;
-const VIEWPORT_MARGIN = 8;
 const PILL_WIDTH = 112;
-const INPUT_WIDTH = 320;
+const INPUT_WIDTH = 288;
+const INPUT_HEIGHT = 104;
+const GAP = 6;
+const VIEWPORT_MARGIN = 8;
+const MAX_TEXTAREA_HEIGHT = 120;
 
-type Target = { text: string; source: SelectionSourceAnchor | null; top: number; left: number };
+interface AnchorRect {
+  readonly top: number;
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+}
+
+type Target = {
+  readonly text: string;
+  readonly source: SelectionSourceAnchor | null;
+  readonly anchor: AnchorRect;
+  readonly top: number;
+  readonly left: number;
+};
 type Mode = 'actions' | 'annotate';
+
+function clampPopoverPosition(
+  anchor: AnchorRect,
+  boxWidth: number,
+  boxHeight: number,
+  viewport: { readonly width: number; readonly height: number },
+): { readonly top: number; readonly left: number } {
+  const maxAvailableWidth = Math.max(0, viewport.width - VIEWPORT_MARGIN * 2);
+  const effectiveWidth = Math.min(boxWidth, maxAvailableWidth);
+  const maxLeft = Math.max(VIEWPORT_MARGIN, viewport.width - effectiveWidth - VIEWPORT_MARGIN);
+  const left = Math.min(Math.max(anchor.left, VIEWPORT_MARGIN), maxLeft);
+
+  const maxTop = Math.max(VIEWPORT_MARGIN, viewport.height - boxHeight - VIEWPORT_MARGIN);
+  const aboveTop = anchor.top - boxHeight - GAP;
+  const belowTop = anchor.bottom + GAP;
+  let top: number;
+  if (aboveTop >= VIEWPORT_MARGIN) {
+    top = aboveTop;
+  } else if (belowTop + boxHeight <= viewport.height - VIEWPORT_MARGIN) {
+    top = belowTop;
+  } else {
+    const roomAbove = anchor.top - VIEWPORT_MARGIN;
+    const roomBelow = viewport.height - VIEWPORT_MARGIN - anchor.bottom;
+    top = roomBelow >= roomAbove ? belowTop : aboveTop;
+  }
+  top = Math.min(Math.max(top, VIEWPORT_MARGIN), maxTop);
+  return { top, left };
+}
 
 export function SelectionQuoteButton({
   containerRef,
@@ -59,8 +103,9 @@ export function SelectionQuoteButton({
   modeRef.current = mode;
   const composingRef = useRef(false);
   const annotationIdRef = useRef<string | null>(null);
+  const anchorRangeRef = useRef<Range | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const close = () => {
     setVisible(false);
@@ -68,6 +113,7 @@ export function SelectionQuoteButton({
     setMode('actions');
     setComment('');
     annotationIdRef.current = null;
+    anchorRangeRef.current = null;
     composingRef.current = false;
   };
   const closeRef = useRef(close);
@@ -86,14 +132,59 @@ export function SelectionQuoteButton({
         return;
       }
       const rect = unzoomedRect(rawRect);
+      const anchor: AnchorRect = {
+        top: rect.top,
+        bottom: rect.bottom,
+        left: rect.left,
+        right: rect.right,
+      };
       const viewport = unzoomedViewport();
+      const pos = clampPopoverPosition(anchor, PILL_WIDTH, PILL_HEIGHT, viewport);
+      anchorRangeRef.current = selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
       setTarget({
         text,
         source: selectionSourceAnchor(selection),
-        top: Math.max(rect.top - PILL_HEIGHT - 6, VIEWPORT_MARGIN),
-        left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), viewport.width - PILL_WIDTH),
+        anchor,
+        top: pos.top,
+        left: pos.left,
       });
       setVisible(true);
+    };
+    const repositionAnnotate = () => {
+      const current = targetRef.current;
+      if (current === null) return;
+      const viewport = unzoomedViewport();
+      let anchor = current.anchor;
+      const range = anchorRangeRef.current;
+      if (range !== null && range.startContainer.isConnected && typeof range.getBoundingClientRect === 'function') {
+        const rawRect = range.getBoundingClientRect();
+        if (rawRect.width > 0 || rawRect.height > 0) {
+          const rect = unzoomedRect(rawRect);
+          if (rect.bottom < 0 || rect.top > viewport.height) {
+            closeRef.current();
+            return;
+          }
+          anchor = { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+        }
+      }
+      const box = popoverRef.current?.getBoundingClientRect();
+      const width = box !== undefined && box.width > 0 ? unzoomedRect(box).width : INPUT_WIDTH;
+      const height = box !== undefined && box.height > 0 ? unzoomedRect(box).height : INPUT_HEIGHT;
+      const pos = clampPopoverPosition(anchor, width, height, viewport);
+      setTarget((previous) => {
+        if (previous === null) return null;
+        if (
+          previous.top === pos.top &&
+          previous.left === pos.left &&
+          previous.anchor.top === anchor.top &&
+          previous.anchor.bottom === anchor.bottom &&
+          previous.anchor.left === anchor.left &&
+          previous.anchor.right === anchor.right
+        ) {
+          return previous;
+        }
+        return { ...previous, anchor, top: pos.top, left: pos.left };
+      });
     };
     const onMouseUp = () => { evaluate(); };
     const onSelectionChange = () => {
@@ -111,26 +202,59 @@ export function SelectionQuoteButton({
       event.stopPropagation();
       closeRef.current();
     };
-    const onScroll = () => {
-      if (modeRef.current !== 'annotate') closeRef.current();
+    const onScroll = (event: Event) => {
+      const popover = popoverRef.current;
+      if (popover !== null && event.target instanceof Node && popover.contains(event.target)) return;
+      if (modeRef.current !== 'annotate') {
+        closeRef.current();
+        return;
+      }
+      repositionAnnotate();
+    };
+    const onResize = () => {
+      if (modeRef.current === 'annotate') repositionAnnotate();
+      else if (targetRef.current !== null) closeRef.current();
     };
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('selectionchange', onSelectionChange);
     document.addEventListener('mousedown', onMouseDown);
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
     return () => {
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('selectionchange', onSelectionChange);
       document.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
     };
   }, [coarse, containerRef]);
 
   useEffect(() => {
     if (mode === 'annotate' && visible) inputRef.current?.focus();
   }, [mode, visible]);
+
+  useLayoutEffect(() => {
+    if (mode !== 'annotate' || !visible) return;
+    const area = inputRef.current;
+    if (area !== null) {
+      area.style.height = 'auto';
+      if (area.scrollHeight > 0) {
+        area.style.height = `${Math.min(area.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+      }
+    }
+    const popover = popoverRef.current;
+    const current = targetRef.current;
+    if (popover === null || current === null) return;
+    const rawBox = popover.getBoundingClientRect();
+    if (rawBox.width <= 0 || rawBox.height <= 0) return;
+    const box = unzoomedRect(rawBox);
+    const pos = clampPopoverPosition(current.anchor, box.width, box.height, unzoomedViewport());
+    if (pos.top !== current.top || pos.left !== current.left) {
+      setTarget((previous) => (previous === null ? null : { ...previous, top: pos.top, left: pos.left }));
+    }
+  }, [mode, visible, comment]);
 
   if (target === null || !visible) return null;
 
@@ -149,10 +273,10 @@ export function SelectionQuoteButton({
         <p className="mb-1.5 max-h-8 overflow-hidden border-l-2 border-accent/60 pl-1.5 text-[11px] leading-snug whitespace-pre-wrap text-ink-soft">
           {target.text}
         </p>
-        <input
+        <textarea
           ref={inputRef}
+          rows={1}
           data-selection-annotate-input
-          type="text"
           value={comment}
           placeholder={t('composer.annotationPlaceholder')}
           aria-label={t('composer.annotateSelection')}
@@ -169,13 +293,14 @@ export function SelectionQuoteButton({
             const nativeEvent = event.nativeEvent;
             const imeActive = composingRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229;
             if ((event.key === 'Enter' || event.key === 'Escape') && imeActive) return;
+            if (event.key === 'Enter' && event.shiftKey) return;
             if (event.key === 'Enter' || event.key === 'Escape') {
               event.preventDefault();
               window.getSelection()?.removeAllRanges();
               close();
             }
           }}
-          className="min-h-9 w-full rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
+          className="min-h-9 max-h-[120px] w-full resize-none overflow-y-auto rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] leading-snug text-ink outline-none placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
         />
       </div>
     );
@@ -197,10 +322,11 @@ export function SelectionQuoteButton({
           const id = onAnnotate(target.text, '', target.source);
           annotationIdRef.current = id;
           setComment('');
+          const pos = clampPopoverPosition(target.anchor, INPUT_WIDTH, INPUT_HEIGHT, unzoomedViewport());
           setTarget({
             ...target,
-            top: Math.max(target.top - 58, VIEWPORT_MARGIN),
-            left: Math.min(target.left, unzoomedViewport().width - INPUT_WIDTH),
+            top: pos.top,
+            left: pos.left,
           });
           setMode('annotate');
           window.getSelection()?.removeAllRanges();

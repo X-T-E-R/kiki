@@ -612,6 +612,9 @@ describe('file citation entrances', () => {
     ['See `C:/Example/a b.md:3`', 'C:/Example/a b.md', 3, undefined],
     ['See `src/a%3A%23.ts:12`', 'C:/work/src/a%3A%23.ts', 12, undefined],
     ['See src/a%20b.ts:12', 'C:/work/src/a%20b.ts', 12, undefined],
+    ['See ~/.kiki/config.toml:42', '~/.kiki/config.toml', 42, undefined],
+    ['See `~/.kiki/AGENTS.md:10`', '~/.kiki/AGENTS.md', 10, undefined],
+    ['See [config](~/.kiki/config.toml:1)', '~/.kiki/config.toml', 1, undefined],
   ])('renders and opens %s as a path and position', async (text, path, line, column) => {
     const preview = api();
     const probe = makeRoot();

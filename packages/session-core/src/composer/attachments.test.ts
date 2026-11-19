@@ -309,6 +309,14 @@ describe('buildPromptContent with uploads', () => {
     expect(content?.map((part) => part.type)).toEqual(['text', 'image', 'file']);
     expect(content?.[0]).toEqual({ type: 'text', text: '@src/server.ts\n\nsee' });
   });
+
+  it('emits audio content parts for uploaded audio files', () => {
+    const content = buildPromptContent('transcribe', [upload('voice.ogg', 1200, 'f_aud', 'audio/ogg; codecs=opus')]);
+    expect(content).toEqual([
+      { type: 'text', text: 'transcribe' },
+      { type: 'audio', source: { kind: 'file', file_id: 'f_aud' }, name: 'voice.ogg' },
+    ]);
+  });
 });
 
 describe('buildSkillActivation with uploads', () => {

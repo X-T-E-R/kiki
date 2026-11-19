@@ -34,9 +34,10 @@ import { streamingMessageText } from '../../lib/partialJson';
 import { useOptionalConnection } from '../../state/connection';
 import { Markdown } from '../Markdown';
 import { ContentContinuation, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, MESSAGE_TEXT_ROOTS } from '../ContentContinuation';
-import { isRemoteConnection } from '../imageActions';
+import { isOnKikiComputer, isRemoteConnection } from '../imageActions';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { MediaPart, useSessionMedia, useVisibleOnce } from '../mediaParts';
+import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
 import { PersonaAvatar, type PersonaAvatarData } from '../persona/PersonaAvatar';
 import { RelativeTime } from '../RelativeTime';
 import { DisclosureChevron, Icon, type IconName } from '../icons';
@@ -384,25 +385,44 @@ function VisualAttachment({ attachment, kind }: { readonly attachment: MessageAt
 function AudioAttachment({ attachment, voice }: { readonly attachment: MessageAttachment; readonly voice: boolean }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const remotePlayback = client === undefined || !isOnKikiComputer(connection);
   const item = useMemo<MediaRef>(
     () => messageMediaRef(attachment, 'audio', undefined, trustedAttachmentOrigin(attachment)),
     [attachment],
   );
   const [slot, visible] = useVisibleOnce();
-  const load = useSessionMedia(item, preview?.sessionId, visible, false);
+  const [attempt, setAttempt] = useState(0);
+  const playback = useSessionMediaPlayback(item, visible ? preview?.sessionId : undefined, client, remotePlayback, attempt);
+  const load = useSessionMedia(item, preview?.sessionId, visible && playback.status === 'fallback', false, attempt);
   const caption = [t(voice ? 'message.media.voice' : 'message.media.audio'), attachmentDisplayName(attachment),
     attachment.size === undefined ? undefined : formatBytes(attachment.size)]
     .filter((part): part is string => part !== undefined && part !== '').join(' · ');
   let body: ReactNode;
-  if (load.status === 'ready') {
-    body = <audio controls preload="none" src={load.url} aria-label={caption} className="h-10 w-full max-w-[320px]" />;
-  } else if (load.status === 'failed') {
+  if (playback.status === 'ready') {
+    body = (
+      <audio
+        controls
+        preload="metadata"
+        src={playback.url}
+        onError={playback.fail}
+        aria-label={caption}
+        className="h-10 w-full max-w-[320px]"
+      />
+    );
+  } else if (load.status === 'ready') {
+    body = <audio controls preload="metadata" src={load.url} aria-label={caption} className="h-10 w-full max-w-[320px]" />;
+  } else if (playback.status === 'failed' || load.status === 'failed') {
     body = (
       <button
         type="button"
         data-message-media-failed
-        onClick={() => { preview?.openAttachment(item); }}
-        disabled={preview === null}
+        onClick={() => {
+          if (playback.status === 'failed') setAttempt((value) => value + 1);
+          else preview?.openAttachment(item);
+        }}
+        disabled={playback.status !== 'failed' && preview === null}
         className="flex h-10 min-w-0 max-w-[320px] items-center gap-2 rounded-lg bg-panel px-3 text-left ring-1 ring-hairline transition-colors hover:ring-hairline-strong focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
       >
         <Icon name="file" size={14} className="shrink-0 text-ink-faint" />

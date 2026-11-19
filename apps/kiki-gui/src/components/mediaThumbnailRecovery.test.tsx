@@ -150,4 +150,51 @@ describe('thumbnail recovery', () => {
     expect(container.querySelector('img[alt="broken.png"]')).not.toBeNull();
     expect(container.querySelector('img[alt="kept.png"]')).toBe(kept);
   });
+
+  it('retries transient 503 SESSION_BUSY preview failures automatically with backoff', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    fixture.preview.mockImplementation(async () => {
+      calls += 1;
+      if (calls < 3) throw new ApiError({ code: 40901, msg: 'SESSION_BUSY', data: null });
+      return { bytes: Uint8Array.from([1, 2, 3]), mime: 'image/png', name: 'busy.png' };
+    });
+    try {
+      await act(async () => {
+        root.render(
+          <I18nProvider>
+            <MediaPreviewProvider sessionId="session">
+              <MediaPartList media={[{ kind: 'image', fileId: 'busy', name: 'busy.png', mime: 'image/png' }]} />
+            </MediaPreviewProvider>
+          </I18nProvider>,
+        );
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(calls).toBe(2);
+      expect(container.querySelector('[data-media-broken]')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(750); });
+      expect(calls).toBe(3);
+      expect(container.querySelector('img[alt="busy.png"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renders a playable video placeholder instead of a broken icon when video poster returns 415', async () => {
+    fixture.preview.mockRejectedValue(new ApiError({ code: 40001, msg: 'HTTP 415 unsupported video poster', data: null }));
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <MediaPreviewProvider sessionId="session">
+            <MediaPartList media={[{ kind: 'video', fileId: 'clip', name: 'clip.mp4', mime: 'video/mp4' }]} />
+          </MediaPreviewProvider>
+        </I18nProvider>,
+      );
+    });
+    await flush();
+    expect(container.querySelector('[data-media-broken]')).toBeNull();
+    const placeholder = container.querySelector<HTMLButtonElement>('[data-media-video-placeholder]');
+    expect(placeholder).not.toBeNull();
+    expect(placeholder?.textContent).toContain('clip.mp4');
+  });
 });

@@ -343,6 +343,28 @@ describe('toolResultMedia', () => {
     expect(toolResultMedia([file, first, second], [file, visible], 'agent-a', true, true)).toEqual([file, first, second]);
   });
 
+  it('pairs detail-only attachment placeholders in boundedPrefix with visible loadable parts', () => {
+    const firstDetail = { kind: 'image' as const, detail: { agentId: 'agent-a', attachmentId: 'att1' }, name: 'a.png' };
+    const omittedDetail = { kind: 'file' as const, detail: { agentId: 'agent-a', attachmentId: 'att2' } };
+    const tailDetail = { kind: 'image' as const, detail: { agentId: 'agent-a', attachmentId: 'att3' }, name: 'c.png' };
+    const visibleOne = { kind: 'image' as const, fileId: `inline-content:agent-a:eyJzb3VyY2UifQ:${hash}` };
+    const visibleTwo = { kind: 'image' as const, fileId: `inline-content:agent-a:eyJzb3VyY2UyIn0:${'b'.repeat(64)}` };
+    expect(toolResultMedia([firstDetail, omittedDetail, tailDetail], [visibleOne, visibleTwo], 'agent-a', true, true)).toEqual([
+      { kind: 'image', fileId: visibleOne.fileId, name: 'a.png', detail: undefined },
+      { kind: 'image', fileId: visibleTwo.fileId, detail: undefined },
+      tailDetail,
+    ]);
+    expect(
+      toolResultMedia(
+        [{ kind: 'image', detail: { agentId: 'agent-b', attachmentId: 'att1' } }, tailDetail],
+        [visibleOne],
+        'agent-a',
+        true,
+        true,
+      ),
+    ).toHaveLength(3);
+  });
+
   it('does not guess identity from paths, names or unscoped attachment ids', () => {
     const pathOnly = { kind: 'image' as const, path: part.path, name: 'saved.png' };
     expect(toolResultMedia([pathOnly], [pathOnly], 'agent-a')).toHaveLength(2);
@@ -598,4 +620,24 @@ it('clamps relative traversal at Windows drive and UNC roots', () => {
   expect(joinPath('//server/share/folder', '../../..')).toBe('//server/share');
   expect(joinPath('/work', '../..')).toBe('/');
   expect(joinPath('work', '../..')).toBe('..');
+});
+
+it('treats ~/ and ~\\ paths as home-rooted host paths without joining onto cwd', () => {
+  expect(resolveHostPath('~/.kiki/config.toml', 'C:/work/repo')).toBe('~/.kiki/config.toml');
+  expect(resolveHostPath('~\\.kiki\\AGENTS.md', 'C:/work/repo')).toBe('~\\.kiki\\AGENTS.md');
+  expect(resolveFileReference('~/.kiki/config.toml:42', 'C:/work/repo')).toEqual({
+    path: '~/.kiki/config.toml',
+    line: 42,
+    column: undefined,
+  });
+  expect(resolveFileReference('~/.kiki/AGENTS.md:10:3', undefined)).toEqual({
+    path: '~/.kiki/AGENTS.md',
+    line: 10,
+    column: 3,
+  });
+  expect(wrapFileLinkTarget('~/.kiki/config.toml:42')).toBeDefined();
+  expect(wrapFileLinkTarget('~\\.kiki\\config.toml')).toBeDefined();
+  expect(findFileReferences('See ~/.kiki/config.toml:42 for details.')).toEqual([
+    { start: 4, end: 26, target: '~/.kiki/config.toml:42' },
+  ]);
 });

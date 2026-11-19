@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { appendToDraft, mentionToken, resolveActiveDraftKey } from '@kiki/session-core/composer';
 import { basenameOf, formatBytes, resolveHostPath, type FileReference, type MediaRef } from '@kiki/session-core/composer/media';
 import { openExternalUrl, useHost } from '../host';
 import { useI18n } from '../i18n';
@@ -17,6 +17,37 @@ import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
 import { canonicalGalleryItem, galleryImageId, galleryOccurrenceId } from './mediaGallery';
 import { RemoteImageGate } from './RemoteImageGate';
+import { useSessionMediaPlayback } from './useSessionMediaPlayback';
+import { useTranscriptDetail } from './transcriptDetail';
+
+const ActiveDraftKeyContext = createContext<{
+  readonly sessionId: string | undefined;
+  readonly draftKey: string | undefined;
+} | null>(null);
+
+export function ActiveDraftKeyProvider({
+  sessionId,
+  draftKey,
+  children,
+}: {
+  readonly sessionId: string | undefined;
+  readonly draftKey: string | undefined;
+  readonly children: ReactNode;
+}) {
+  const value = useMemo(() => ({ sessionId, draftKey }), [sessionId, draftKey]);
+  return <ActiveDraftKeyContext.Provider value={value}>{children}</ActiveDraftKeyContext.Provider>;
+}
+
+export function useActiveDraftKey(sessionId?: string): string | undefined {
+  const context = useContext(ActiveDraftKeyContext);
+  const connection = useOptionalConnection();
+  const effectiveSessionId = sessionId ?? context?.sessionId;
+  if (context?.draftKey !== undefined && context.sessionId === effectiveSessionId) {
+    return context.draftKey;
+  }
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : undefined;
+  return resolveActiveDraftKey(connection?.scopeId, effectiveSessionId, pathname);
+}
 
 export function useGalleryImage(item: MediaRef, attachmentIndex = 0, agentId?: string, markdownOffset?: number) {
   const preview = useMediaPreview();
@@ -40,11 +71,10 @@ export function useGalleryImage(item: MediaRef, attachmentIndex = 0, agentId?: s
     }
   };
 }
-import { useTranscriptDetail } from './transcriptDetail';
 
 type SessionMediaLoad =
   | { readonly status: 'loading'; readonly thumbnailUrl?: string }
-  | { readonly status: 'failed'; readonly thumbnailUrl?: string }
+  | { readonly status: 'failed'; readonly thumbnailUrl?: string; readonly previewUnavailable?: boolean }
   | {
       readonly status: 'ready';
       readonly bytes: Uint8Array;
@@ -215,9 +245,18 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
+const TRANSIENT_MEDIA_RETRY_DELAYS_MS = [250, 750, 1750] as const;
+
+export function isTransientMediaBusyError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.code === API_CODES.SESSION_BUSY || error.code === 503 || error.code === 40923;
+  }
+  return error instanceof Error && /\b(?:SESSION_BUSY|HTTP 503|history_canonical_preparing)\b/i.test(error.message);
+}
+
 export function isMediaPreviewUnavailable(error: unknown): boolean {
-  return error instanceof ApiError && (error.code === API_CODES.REQUEST_INVALID || error.code === 413 || error.reason === 'preview_budget_exceeded') ||
-    error instanceof Error && /exceeds its byte budget|preview_budget_exceeded|HTTP 413/i.test(error.message);
+  return error instanceof ApiError && (error.code === API_CODES.REQUEST_INVALID || error.code === 413 || error.code === 415 || error.reason === 'preview_budget_exceeded') ||
+    error instanceof Error && /exceeds its byte budget|preview_budget_exceeded|HTTP 413|HTTP 415/i.test(error.message);
 }
 
 export function useSessionMedia(
@@ -309,44 +348,63 @@ export function useSessionMedia(
         return client.readHostFileBytes(hostPath!, cached?.etag === undefined ? options : { ...options, ifNoneMatch: cached.etag });
       });
     };
-    const resolved = hasSessionMedia ? readSession() : readHost();
-    resolved.then((result) => {
-      if (controller.signal.aborted) return;
-      if (result.notModified === true && cached !== undefined && objectUrl !== undefined) {
-        return;
-      }
-      const { bytes, mime, name, etag } = result;
-      if (bytes.byteLength === 0) {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let transientRetry = 0;
+    const runRead = () => {
+      const resolved = hasSessionMedia ? readSession() : readHost();
+      resolved.then((result) => {
+        if (controller.signal.aborted) return;
+        if (result.notModified === true && cached !== undefined && objectUrl !== undefined) {
+          return;
+        }
+        const { bytes, mime, name, etag } = result;
+        if (bytes.byteLength === 0) {
+          if (objectUrl !== undefined) {
+            URL.revokeObjectURL(objectUrl);
+            objectUrl = undefined;
+          }
+          setLoad(thumbnailUrl === undefined ? { status: 'failed' } : { status: 'failed', thumbnailUrl });
+          return;
+        }
+        const mediaType = effectiveMediaMime(bytes, mime, item.mime, item.kind);
+        storeMediaCache(client, providerOwner, cacheKey, { bytes, mime: mediaType, name, etag }, storedByClientPreviewCache && etag !== undefined);
+        if (
+          cached !== undefined &&
+          objectUrl !== undefined &&
+          ((cached.etag !== undefined && etag === cached.etag) ||
+            (etag === undefined && mediaType === cached.mime && sameBytes(bytes, cached.bytes)))
+        ) {
+          return;
+        }
+        if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
+        setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl });
+      }, (error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (isTransientMediaBusyError(error) && transientRetry < TRANSIENT_MEDIA_RETRY_DELAYS_MS.length) {
+          const delay = TRANSIENT_MEDIA_RETRY_DELAYS_MS[transientRetry]!;
+          transientRetry += 1;
+          retryTimer = setTimeout(() => {
+            retryTimer = undefined;
+            if (!controller.signal.aborted) runRead();
+          }, delay);
+          return;
+        }
         if (objectUrl !== undefined) {
           URL.revokeObjectURL(objectUrl);
           objectUrl = undefined;
         }
-        setLoad(thumbnailUrl === undefined ? { status: 'failed' } : { status: 'failed', thumbnailUrl });
-        return;
-      }
-      const mediaType = effectiveMediaMime(bytes, mime, item.mime, item.kind);
-      storeMediaCache(client, providerOwner, cacheKey, { bytes, mime: mediaType, name, etag }, storedByClientPreviewCache && etag !== undefined);
-      if (
-        cached !== undefined &&
-        objectUrl !== undefined &&
-        ((cached.etag !== undefined && etag === cached.etag) ||
-          (etag === undefined && mediaType === cached.mime && sameBytes(bytes, cached.bytes)))
-      ) {
-        return;
-      }
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
-      objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
-      setLoad({ status: 'ready', bytes, mime: mediaType, name, url: objectUrl });
-    }, () => {
-      if (!controller.signal.aborted) {
-        if (objectUrl !== undefined) {
-          URL.revokeObjectURL(objectUrl);
-          objectUrl = undefined;
-        }
-        setLoad(thumbnailUrl === undefined ? { status: 'failed' } : { status: 'failed', thumbnailUrl });
-      }
-    });
+        const previewUnavailable = previewOnly && item.kind === 'video' && isMediaPreviewUnavailable(error);
+        setLoad(
+          thumbnailUrl === undefined
+            ? { status: 'failed', previewUnavailable }
+            : { status: 'failed', thumbnailUrl, previewUnavailable },
+        );
+      });
+    };
+    runRead();
     return () => {
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
       controller.abort();
       if (thumbnailUrl !== undefined) URL.revokeObjectURL(thumbnailUrl);
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
@@ -472,11 +530,30 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
   const readyUrl = load.status === 'ready' && failedUrl !== load.url ? load.url : undefined;
   const imageMenu = useMessageImageMenu(item, readyUrl, name);
   let body: ReactNode;
-  if (load.status === 'failed' || load.status === 'ready' && failedUrl === load.url) {
+  if (item.kind === 'video' && load.status === 'failed' && load.previewUnavailable === true) {
+    body = (
+      <button
+        type="button"
+        data-media-video-placeholder
+        title={name}
+        aria-label={name}
+        onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }}
+        className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-1.5 ${THUMB_SIZE[size].frame} border border-hairline bg-panel px-2 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
+      >
+        <span aria-hidden className={`flex items-center justify-center rounded-full bg-ink/10 ${size === 'strip' ? 'h-5 w-5' : 'h-8 w-8'}`}>
+          <span className={`ml-0.5 h-0 w-0 border-y-transparent border-l-ink ${size === 'strip' ? 'border-y-[3.5px] border-l-[6px]' : 'border-y-[5px] border-l-[8px]'}`} />
+        </span>
+        {size === 'strip' ? null : <span className="max-w-full truncate font-mono text-[11px]">{name}</span>}
+      </button>
+    );
+  } else if (load.status === 'failed' || load.status === 'ready' && failedUrl === load.url) {
     body = <MediaLoadFailure name={name} decode={load.status === 'ready'} size={size} onRetry={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }} />;
   } else if (load.status === 'loading') {
     body = (
-      <span aria-busy="true" className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} text-[11px] text-ink-faint`}>
+      <span
+        aria-busy="true"
+        className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} ${size === 'strip' ? 'animate-pulse bg-ink/[0.06] motion-reduce:animate-none' : 'text-[11px] text-ink-faint'}`}
+      >
         {size === 'strip' ? null : t('preview.loading')}
       </span>
     );
@@ -503,20 +580,108 @@ export function MediaLoadFailure({ name, decode, size = 'default', onRetry }: { 
   return (
     <button type="button" data-media-broken={decode ? 'decode' : 'read'} onClick={onRetry} title={safeName} aria-label={`${label} · ${t('transcript.detail.retry')}`}
       className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-1 ${THUMB_SIZE[size].frame} border border-dashed border-hairline-strong bg-panel p-2 text-[11px] text-ink-faint hover:border-accent focus-visible:outline-2 focus-visible:outline-selected-ink`}>
-      <Icon name="file" size={size === 'strip' ? 12 : 16} />
+      <Icon name={size === 'strip' ? 'warning' : 'file'} size={size === 'strip' ? 12 : 16} className={size === 'strip' ? 'text-danger/80' : undefined} />
       {size === 'strip' ? null : <>{decode ? null : <span className="max-w-full truncate">{safeName}</span>}<span>{label}</span><span className="text-accent">{t('transcript.detail.retry')}</span></>}
     </button>
   );
 }
 
 function AudioPart({ item }: { item: MediaRef }) {
+  const { t } = useI18n();
   const preview = useMediaPreview();
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const localKikiComputer = isOnKikiComputer(connection);
   const [hostRef, visible] = useVisibleOnce();
-  const load = useSessionMedia(item, preview?.sessionId, visible && item.url === undefined, false);
-  const src = item.url ?? (load.status === 'ready' ? load.url : undefined);
-  return <span ref={hostRef} className="inline-flex max-w-full">{src === undefined
-    ? <FileChip item={item} />
-    : <audio controls src={src} preload="none" className="h-10 max-w-full" />}</span>;
+  const [attempt, setAttempt] = useState(0);
+  const hostPath = item.path === undefined ? undefined : resolveHostPath(item.path, preview?.cwd);
+  const [hostPreview, setHostPreview] = useState<{
+    readonly status: 'idle' | 'loading' | 'ready' | 'fallback';
+    readonly url?: string;
+  }>({ status: 'idle' });
+  const canHostPreview =
+    visible &&
+    item.url === undefined &&
+    item.fileId === undefined &&
+    hostPath !== undefined &&
+    localKikiComputer &&
+    client !== undefined &&
+    typeof client.openHostMediaPreview === 'function';
+  useEffect(() => {
+    if (!canHostPreview || client === undefined || hostPath === undefined) {
+      setHostPreview({ status: 'fallback' });
+      return;
+    }
+    let active = true;
+    let previewId: string | undefined;
+    const controller = new AbortController();
+    setHostPreview({ status: 'loading' });
+    void client.openHostMediaPreview({ path: hostPath }, { signal: controller.signal }).then((opened) => {
+      previewId = opened.preview_id;
+      if (!active) {
+        void client.closeHostMediaPreview(opened.preview_id).catch(() => {});
+        return;
+      }
+      setHostPreview({ status: 'ready', url: opened.url });
+    }).catch(() => {
+      if (active) setHostPreview({ status: 'fallback' });
+    });
+    return () => {
+      active = false;
+      controller.abort();
+      if (previewId !== undefined) void client.closeHostMediaPreview(previewId).catch(() => {});
+    };
+  }, [canHostPreview, client, hostPath, attempt]);
+
+  const playbackSessionId = visible && item.url === undefined ? preview?.sessionId : undefined;
+  const remotePlayback = client === undefined || !localKikiComputer;
+  const playback = useSessionMediaPlayback(item, playbackSessionId, client, remotePlayback, attempt);
+  const needBlobFallback =
+    visible &&
+    item.url === undefined &&
+    playback.status === 'fallback' &&
+    (!canHostPreview || hostPreview.status === 'fallback');
+  const load = useSessionMedia(item, preview?.sessionId, needBlobFallback, false, attempt);
+  const src =
+    item.url ??
+    (playback.status === 'ready'
+      ? playback.url
+      : hostPreview.status === 'ready'
+        ? hostPreview.url
+        : load.status === 'ready'
+          ? load.url
+          : undefined);
+  const failed = src === undefined && (playback.status === 'failed' || (needBlobFallback && load.status === 'failed'));
+  const label = attachmentName(item, undefined, t('media.attachment'));
+  return (
+    <span ref={hostRef} className="inline-flex max-w-full">
+      {src !== undefined ? (
+        <audio
+          controls
+          src={src}
+          preload="metadata"
+          onError={playback.status === 'ready' ? playback.fail : undefined}
+          className="h-10 max-w-full"
+        />
+      ) : failed ? (
+        <button
+          type="button"
+          data-media-broken="read"
+          onClick={() => { setAttempt((value) => value + 1); }}
+          title={label}
+          className="inline-flex h-10 max-w-full items-center gap-2 rounded-lg border border-dashed border-hairline-strong bg-panel px-3 text-[12px] text-ink-soft transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+        >
+          <Icon name="warning" size={14} className="shrink-0 text-danger/80" />
+          <span className="min-w-0 truncate font-mono">{label}</span>
+          <span className="shrink-0 text-accent">{t('transcript.detail.retry')}</span>
+        </button>
+      ) : !visible || playback.status === 'loading' || hostPreview.status === 'loading' || (needBlobFallback && load.status === 'loading') ? (
+        <span aria-busy="true" className="block h-10 w-[220px] max-w-full animate-pulse rounded-lg bg-ink/[0.06] motion-reduce:animate-none" />
+      ) : (
+        <FileChip item={item} />
+      )}
+    </span>
+  );
 }
 
 function relativePathForMention(path: string, cwd: string | undefined): string {
@@ -535,6 +700,7 @@ export function buildResourceMenuEntries({
   rawPath,
   cwd,
   sessionId,
+  draftKey,
   localKikiComputer,
   host,
   client,
@@ -546,6 +712,7 @@ export function buildResourceMenuEntries({
   readonly rawPath?: string;
   readonly cwd?: string;
   readonly sessionId?: string;
+  readonly draftKey?: string;
   readonly localKikiComputer: boolean;
   readonly host: ReturnType<typeof useHost>;
   readonly client?: unknown;
@@ -615,13 +782,14 @@ export function buildResourceMenuEntries({
           }
         },
       });
-    } else if (action.id === 'add-to-chat' && sessionId !== undefined && trustedPath !== undefined) {
+    } else if (action.id === 'add-to-chat' && (draftKey ?? sessionId) !== undefined && trustedPath !== undefined) {
+      const targetDraftKey = draftKey ?? sessionId!;
       entries.push({
         key: 'add-to-chat',
         label: t('preview.addToChat'),
         run: () => {
           appendToDraft(
-            sessionId,
+            targetDraftKey,
             mentionToken({
               kind: 'file',
               path: relativePathForMention(trustedPath, cwd),
@@ -681,6 +849,7 @@ export function useMediaRefMenu(item: MediaRef, label: string, sessionIdOverride
   const localKikiComputer = isOnKikiComputer(connection);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const sessionId = sessionIdOverride ?? preview?.sessionId;
+  const draftKey = useActiveDraftKey(sessionId);
   const resource = useMemo(
     () =>
       mediaRefResource(item, {
@@ -705,6 +874,7 @@ export function useMediaRefMenu(item: MediaRef, label: string, sessionIdOverride
         rawPath: item.path,
         cwd: preview?.cwd,
         sessionId,
+        draftKey,
         localKikiComputer,
         host,
         client: connection?.client,
@@ -712,7 +882,7 @@ export function useMediaRefMenu(item: MediaRef, label: string, sessionIdOverride
         onOpenPreview: canOpen ? openItem : undefined,
         onOpenCurrentFile: preview === null ? undefined : (targetPath) => { preview.openFile(targetPath); },
       }),
-    [resource, item.path, preview, sessionId, localKikiComputer, host, connection?.client, t, canOpen, openItem],
+    [resource, item.path, preview, sessionId, draftKey, localKikiComputer, host, connection?.client, t, canOpen, openItem],
   );
   const openMenu = useCallback(
     (event: React.MouseEvent) => {
@@ -836,27 +1006,34 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
   const status = detail.status?.status;
   const isOmittedPlaceholder = item.kind === 'file' && item.mime === undefined && item.size === undefined &&
     (item.name === undefined || item.origin !== undefined);
+  const autoHydrate = item.kind === 'image' || item.kind === 'video' || item.kind === 'audio' || isOmittedPlaceholder;
   useEffect(() => {
-    if (!visible || !(item.kind === 'image' || item.kind === 'video' || item.kind === 'audio' || isOmittedPlaceholder) || detail.request === undefined || attempted.current === target || status === 'error') return;
+    if (!visible || !autoHydrate || detail.request === undefined || attempted.current === target || status === 'error') return;
     attempted.current = target;
     detail.request();
-  }, [visible, item.kind, isOmittedPlaceholder, detail.request, target, status]);
+  }, [visible, autoHydrate, detail.request, target, status]);
   if (detail.request === undefined) return <FileChip item={item} />;
   const label = status === 'loading' ? t('media.detail.loading', { name }) : status === 'error' ? t('media.detail.failed', { name }) : t('media.detail.open', { name });
   const meta = item.size !== undefined ? formatBytes(item.size) : item.mime;
   if (size === 'strip') {
+    const hydrating = status === 'loading' || (status === undefined && autoHydrate);
     return (
       <button
         type="button"
         ref={hostRef}
         data-media-deferred={status ?? 'idle'}
+        aria-busy={hydrating || undefined}
         onClick={detail.request}
         disabled={status === 'loading'}
         aria-label={label}
         title={label}
-        className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-dashed ${status === 'error' ? 'border-danger/60 text-danger' : 'border-hairline-strong text-ink-faint'} bg-panel transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
+        className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} ${
+          hydrating
+            ? 'animate-pulse bg-ink/[0.06] text-ink-faint motion-reduce:animate-none'
+            : `border border-dashed ${status === 'error' ? 'border-danger/60 text-danger' : 'border-hairline-strong text-ink-faint'} bg-panel`
+        } transition-colors hover:border-accent hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
-        <Icon name="file" size={12} />
+        {hydrating ? null : <Icon name={status === 'error' ? 'warning' : 'file'} size={12} />}
       </button>
     );
   }
@@ -923,8 +1100,7 @@ function LoadedMediaPart({ item, agentId, size = 'default', galleryIndex = 0 }: 
   if (item.kind === 'video') {
     if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
     if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} />;
-    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'video', path: item.path }} />;
-    if (item.fileId !== undefined) return <SessionMediaThumb item={item} />;
+    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'video', path: item.path }} size={size} />;
     return <FileChip item={item} />;
   }
   return <FileChip item={item} />;
@@ -965,6 +1141,7 @@ export function FilePathLink({
   const preview = useMediaPreview();
   const connection = useOptionalConnection();
   const localKikiComputer = isOnKikiComputer(connection);
+  const draftKey = useActiveDraftKey(preview?.sessionId);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   if (preview === null) return <span className={className}>{children ?? path}</span>;
   const filePath = resolveHostPath(path, preview.cwd);
@@ -981,6 +1158,7 @@ export function FilePathLink({
     rawPath: path,
     cwd: preview.cwd,
     sessionId: preview.sessionId,
+    draftKey,
     localKikiComputer,
     host,
     client: connection?.client,

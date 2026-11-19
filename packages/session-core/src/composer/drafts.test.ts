@@ -9,6 +9,7 @@ import { preserveSubmission, readUnconfirmedSubmissions, forgetUnconfirmedSubmis
 import { configureSpaceStorage } from '../storage/spaceStorage';
 import { addAnnotation, removeAnnotation } from './selectionQuote';
 import {
+  appendAttachmentToDraft,
   appendToDraft,
   beginPendingSubmissionFlight,
   clearComposerState,
@@ -29,6 +30,7 @@ import {
   resetComposerMemoryForTests,
   resetDraftMemoryForTests,
   resetInputHistoryForTests,
+  resolveActiveDraftKey,
   restorePromptToDraft,
   resolveComposerModelOverrides,
   settlePendingSubmission,
@@ -674,5 +676,55 @@ describe('unacknowledged submissions', () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it('resolves active draft keys for main, branch, and subagent targets and appends attachments', () => {
+    expect(resolveActiveDraftKey('local', 'sess-1')).toBe('sess-1');
+    expect(resolveActiveDraftKey('local', 'sess-1', 'main')).toBe('sess-1');
+    expect(resolveActiveDraftKey('local', 'sess-1', 'branch-1')).toBe(JSON.stringify(['local', 'sess-1', 'branch-1']));
+    expect(resolveActiveDraftKey('local', 'sess-1', '/s/sess-1/agent/sub-2')).toBe(
+      JSON.stringify(['local', 'sess-1', 'sub-2']),
+    );
+    expect(resolveActiveDraftKey('local', 'sess-1', '/s/other-sess/agent/sub-2')).toBe('sess-1');
+
+    const childKey = resolveActiveDraftKey('local', 'sess-1', 'sub-2')!;
+    const received: Array<{ key: string; attachments?: readonly ComposerAttachment[] }> = [];
+    const unsubscribe = subscribeDraftAppends((key, attachments) => {
+      received.push({ key, attachments });
+    });
+    try {
+      const img: ComposerAttachment = {
+        kind: 'image',
+        name: 'shot-annotated.png',
+        mediaType: 'image/png',
+        data: 'AAAA',
+        size: 3,
+        previewUrl: 'data:image/png;base64,AAAA',
+      };
+      expect(appendAttachmentToDraft(childKey, img)).toEqual({ added: true });
+      expect(readComposerState(childKey).attachments).toEqual([img]);
+      expect(received).toEqual([{ key: childKey, attachments: [img] }]);
+    } finally {
+      unsubscribe();
+      clearComposerState(childKey);
+    }
+  });
+
+  it('preserves audio content parts when restoring interrupted prompts to draft', () => {
+    resetDraftMemoryForTests();
+    resetComposerMemoryForTests();
+    restorePromptToDraft('sess-audio', [
+      { type: 'text', text: 'listen to this' },
+      { type: 'audio', source: { kind: 'file', file_id: 'aud_1' }, name: 'voice.ogg' },
+    ]);
+    expect(readDraft('sess-audio')).toBe('listen to this');
+    expect(readComposerState('sess-audio').attachments).toEqual([
+      {
+        kind: 'retained',
+        name: 'voice.ogg',
+        content: { type: 'audio', source: { kind: 'file', file_id: 'aud_1' }, name: 'voice.ogg' },
+      },
+    ]);
+    clearComposerState('sess-audio');
   });
 });

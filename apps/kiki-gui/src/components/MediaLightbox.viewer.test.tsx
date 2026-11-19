@@ -16,7 +16,7 @@ let container: HTMLDivElement;
 
 function renderLightbox(props: Partial<Parameters<typeof MediaLightbox>[0]> & { src?: string }) {
   act(() => {
-    root.render(<I18nProvider><MediaLightbox src={props.src ?? 'data:image/png;base64,AAAA'} name={props.name} identity={props.identity} loading={props.loading} failed={props.failed} onRetry={props.onRetry} index={props.index} count={props.count} onSelect={props.onSelect} onClose={props.onClose ?? (() => {})} mime={props.mime} size={props.size} sourcePath={props.sourcePath} linkUrl={props.linkUrl} localKikiComputer={props.localKikiComputer ?? (props.remote === undefined ? true : !props.remote)} remote={props.remote} /></I18nProvider>);
+    root.render(<I18nProvider><MediaLightbox src={props.src ?? 'data:image/png;base64,AAAA'} name={props.name} identity={props.identity} loading={props.loading} failed={props.failed} onRetry={props.onRetry} index={props.index} count={props.count} onSelect={props.onSelect} onClose={props.onClose ?? (() => {})} mime={props.mime} size={props.size} sourcePath={props.sourcePath} linkUrl={props.linkUrl} localKikiComputer={props.localKikiComputer ?? (props.remote === undefined ? true : !props.remote)} remote={props.remote} savedAnnotations={props.savedAnnotations} onAnnotationsChange={props.onAnnotationsChange} onAttachAnnotatedImage={props.onAttachAnnotatedImage} /></I18nProvider>);
   });
 }
 
@@ -559,5 +559,57 @@ describe('annotated export', () => {
     expect([image.rgba[scaledEdge], image.rgba[scaledEdge + 1], image.rgba[scaledEdge + 2]]).toEqual([239, 68, 68]);
     const unscaledInterior = (16 * 160 + 24) * 4;
     expect([image.rgba[unscaledInterior], image.rgba[unscaledInterior + 1], image.rgba[unscaledInterior + 2]]).toEqual([20, 40, 80]);
+  });
+
+  it('attaches annotated image to chat, copies annotated bitmap when marks exist, and supports Ctrl+Wheel zoom', async () => {
+    installRasterCanvas();
+    const OriginalImage = globalThis.Image;
+    vi.stubGlobal('Image', class {
+      crossOrigin: string | null = null;
+      src = '';
+      get naturalWidth() { return 160; }
+      get naturalHeight() { return 40; }
+      decode() { return Promise.resolve(); }
+    });
+    const onClose = vi.fn();
+    const onAttach = vi.fn(async () => true);
+    try {
+      renderLightbox({ name: 'shot.png', onClose, onAttachAnnotatedImage: onAttach });
+      loadImage(160, 40);
+
+      // Ctrl+Wheel zooms in smoothly
+      const scroller = document.querySelector<HTMLDivElement>('[data-lightbox-viewport]')!;
+      const beforeZoom = document.querySelector('[data-lightbox-zoom]')!.textContent;
+      act(() => {
+        scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, ctrlKey: true, bubbles: true, cancelable: true }));
+      });
+      expect(document.querySelector('[data-lightbox-zoom]')!.textContent).not.toBe(beforeZoom);
+
+      // Draw an annotation and click Add to chat
+      act(() => { [...document.querySelectorAll('button')].find((b) => b.textContent === 'Annotate image')!.click(); });
+      act(() => { [...document.querySelectorAll('button')].find((b) => b.textContent === 'Rectangle')!.click(); });
+      const svg = document.querySelector<SVGSVGElement>('[data-image-annotations]')!;
+      svg.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 160, bottom: 40, width: 160, height: 40, toJSON() { return {}; } });
+      const point = (type: string, x: number, y: number) => svg.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: 1 }));
+      act(() => { point('pointerdown', 8, 6); point('pointermove', 40, 28); point('pointerup', 40, 28); });
+
+      const attachBtn = document.querySelector<HTMLButtonElement>('[data-lightbox-attach-annotated]')!;
+      expect(attachBtn).not.toBeNull();
+      expect(attachBtn.disabled).toBe(false);
+      await act(async () => {
+        attachBtn.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(onAttach).toHaveBeenCalledTimes(1);
+      const [attachedBlob, attachedFilename] = onAttach.mock.calls[0] as unknown as [Blob, string];
+      expect(attachedFilename).toBe('shot-annotated.png');
+      const attachedPng = decodePng(await blobBytes(attachedBlob));
+      const edge = (6 * 160 + 8) * 4;
+      expect([attachedPng.rgba[edge], attachedPng.rgba[edge + 1], attachedPng.rgba[edge + 2]]).toEqual([239, 68, 68]);
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally {
+      vi.stubGlobal('Image', OriginalImage);
+    }
   });
 });
