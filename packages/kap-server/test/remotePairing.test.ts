@@ -52,32 +52,32 @@ describe('direct endpoints', () => {
 
   it('filters out Clash TUN, APIPA, loopback, and WSL/Hyper-V/Docker virtual switches while ranking LAN and Tailscale ahead of 172.16/12', () => {
     const windowsInterfaces = {
-      'vEthernet (WSL (Hyper-V firewall))': [{ address: '172.22.96.1', netmask: '255.255.240.0', family: 'IPv4' as const, mac: '00:15:5d:00:ee:d9', internal: false, cidr: '172.22.96.1/20' }],
-      'vEthernet (Default Switch)': [{ address: '172.25.224.1', netmask: '255.255.240.0', family: 'IPv4' as const, mac: '00:15:5d:f0:14:e6', internal: false, cidr: '172.25.224.1/20' }],
+      'vEthernet (WSL (Hyper-V firewall))': [{ address: '172.22.96.1', netmask: '255.255.240.0', family: 'IPv4' as const, mac: '00:15:5d:00:00:01', internal: false, cidr: '172.22.96.1/20' }],
+      'vEthernet (Default Switch)': [{ address: '172.25.224.1', netmask: '255.255.240.0', family: 'IPv4' as const, mac: '00:15:5d:00:00:02', internal: false, cidr: '172.25.224.1/20' }],
       Meta: [{ address: '198.18.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '198.18.0.1/16' }],
       docker0: [{ address: '172.17.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '02:42:ac:11:00:01', internal: false, cidr: '172.17.0.1/16' }],
       'Ethernet 3': [{ address: '169.254.12.34', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:03', internal: false, cidr: '169.254.12.34/16' }],
-      Tailscale: [{ address: '100.71.207.100', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.71.207.100/32' }],
+      Tailscale: [{ address: '100.64.0.10', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.64.0.10/32' }],
       'Corp LAN': [{ address: '172.20.10.5', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:04', internal: false, cidr: '172.20.10.5/24' }],
-      '以太网 2': [{ address: '192.168.31.221', netmask: '255.255.255.0', family: 'IPv4' as const, mac: 'ec:d6:8a:fb:6a:18', internal: false, cidr: '192.168.31.221/24' }],
+      '以太网 2': [{ address: '192.168.10.20', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '02:00:00:00:00:01', internal: false, cidr: '192.168.10.20/24' }],
     };
     expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, ['http://198.18.0.1:58627', 'http://169.254.1.2:58627', 'https://box.example.test'], windowsInterfaces)).toEqual([
-      'http://192.168.31.221:58627',
-      'http://100.71.207.100:58627',
+      'http://192.168.10.20:58627',
+      'http://100.64.0.10:58627',
       'http://172.20.10.5:58627',
       'https://box.example.test',
     ]);
 
     const macInterfaces = {
       utun3: [{ address: '198.18.0.1', netmask: '255.255.0.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '198.18.0.1/16' }],
-      utun4: [{ address: '100.69.108.120', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.69.108.120/32' }],
+      utun4: [{ address: '100.64.0.42', netmask: '255.255.255.255', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '100.64.0.42/32' }],
       utun5: [{ address: '172.19.0.1', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal: false, cidr: '172.19.0.1/24' }],
       bridge0: [{ address: '192.168.64.1', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:05', internal: false, cidr: '192.168.64.1/24' }],
-      en0: [{ address: '192.168.31.63', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:06', internal: false, cidr: '192.168.31.63/24' }],
+      en0: [{ address: '192.168.10.30', netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:06', internal: false, cidr: '192.168.10.30/24' }],
     };
     expect(directEndpoints({ host: '0.0.0.0', port: 58627 }, [], macInterfaces)).toEqual([
-      'http://192.168.31.63:58627',
-      'http://100.69.108.120:58627',
+      'http://192.168.10.30:58627',
+      'http://100.64.0.42:58627',
       'http://172.19.0.1:58627',
     ]);
   });
