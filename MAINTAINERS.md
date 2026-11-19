@@ -11,10 +11,14 @@ instructions. This page is a router: it holds no package contracts.
 | kap-server REST, WebSocket, and debug surfaces | [`packages/kap-server/AGENTS.md`](packages/kap-server/AGENTS.md) | [`packages/kap-server/README.md`](packages/kap-server/README.md), [`docs/en/server/rest-api.md`](docs/en/server/rest-api.md) |
 | Klient contracts and transports | [`packages/klient/AGENTS.md`](packages/klient/AGENTS.md) | [`packages/klient/README.md`](packages/klient/README.md) |
 | Transcript contract and projections | [`packages/transcript/AGENTS.md`](packages/transcript/AGENTS.md) | [`docs/en/guides/sessions.md`](docs/en/guides/sessions.md) |
+| Engine-to-transcript live bindings | [`packages/transcript-live/AGENTS.md`](packages/transcript-live/AGENTS.md) | [`packages/transcript/AGENTS.md`](packages/transcript/AGENTS.md) |
+| Shared framework-free client session state | [`packages/session-core/AGENTS.md`](packages/session-core/AGENTS.md) | [`docs/en/guides/settings.md`](docs/en/guides/settings.md) |
+| Vendored terminal rendering library | [`packages/pi-tui/AGENTS.md`](packages/pi-tui/AGENTS.md) | [`packages/pi-tui/README.md`](packages/pi-tui/README.md) |
 | CLI and terminal UI | [`apps/kimi-code/AGENTS.md`](apps/kimi-code/AGENTS.md) | [`apps/kimi-code/README.md`](apps/kimi-code/README.md), [`docs/en/reference/command.md`](docs/en/reference/command.md) |
-| Kiki GUI runtime client | `apps/kiki-gui/package.json` and adjacent source/tests | [`docs/en/server/local-server.md`](docs/en/server/local-server.md) |
-| Embedded persistence | [`packages/minidb/AGENTS.md`](packages/minidb/AGENTS.md) | [`packages/minidb/README.md`](packages/minidb/README.md) |
-| Android APK builds and signing | `apps/kiki-gui/mobile/scripts/` and [product workflow](.github/workflows/kiki-desktop-release.yml) | [Build and verify APKs](docs/maintainer/android-release.md), [install Android](docs/en/getting-started/installation.md#install-the-android-app) |
+| Kiki GUI (Web, Desktop, Mobile remote shell) | [`apps/kiki-gui/AGENTS.md`](apps/kiki-gui/AGENTS.md) | [`docs/en/server/local-server.md`](docs/en/server/local-server.md) |
+| Android APK builds, signing, and local host | `apps/kiki-android` and `apps/kiki-gui/mobile/scripts/` ([release workflow](.github/workflows/kiki-desktop-release.yml)) | [Build and verify APKs](docs/maintainer/android-release.md), [install Android](docs/en/getting-started/installation.md#install-the-android-app) |
+| Documentation site and catch-up lifecycle | [`docs/AGENTS.md`](docs/AGENTS.md) | [`docs/en/index.md`](docs/en/index.md) |
+| Upstream synchronization policy | [`docs/maintainer/upstream-sync.md`](docs/maintainer/upstream-sync.md) | [`docs/maintainer/upstream-merge-log.md`](docs/maintainer/upstream-merge-log.md) |
 | Cloud CI runners | [`.github/workflows/kiki-cloud-ci.yml`](.github/workflows/kiki-cloud-ci.yml) | [`docs/maintainer/cloud-ci.md`](docs/maintainer/cloud-ci.md) |
 
 Adding a new area? Add its row here and point at the new owner rather than
@@ -38,14 +42,15 @@ source boundary belong there.
 
 [`pnpm-workspace.yaml`](pnpm-workspace.yaml) decides workspace membership, but
 [`flake.nix`](flake.nix) repeats it as hardcoded `workspacePaths` and
-`workspaceNames` lists that nothing generates. When you add or remove a
-workspace package, edit both files by hand, then run
-`node scripts/check-nix-workspace.mjs` to catch missing and stale entries. The
-check reports; it does not generate or repair `flake.nix`.
+`workspaceNames` lists and [`AGENTS.md`](AGENTS.md) maintains `## Workspace Map`.
+When you add or remove a workspace package, update all three, then run
+`pnpm run check:meta` (`scripts/check-repo-meta.mjs` includes
+`scripts/check-nix-workspace.mjs`).
 
-## Documentation checks
+## Governance checks
 
-`node scripts/check-docs-governance.mjs` verifies that `docs/en/` and `docs/zh/`
-agree in structure and that links resolve. It cannot tell whether the prose is
-accurate — that comes from the source and tests behind the change, plus
-reviewing how a reader would act on the page.
+`pnpm run check:meta` runs `node scripts/check-repo-meta.mjs` (workspace parity,
+package dependency boundaries, meta-doc links, retired scopes, word budgets, and
+scratch hygiene) and `node scripts/check-docs-governance.mjs` (`docs/en/` and
+`docs/zh/` structural parity and link resolution). Neither check assesses prose
+accuracy — verify behavior from source and tests.

@@ -1,6 +1,6 @@
 # agent-core-v2 Agent Guide
 
-> The sole agent engine, built on DI scopes and explicit runtime ownership. The historical `packages/agent-core` engine has been removed.
+> The sole agent engine, built on DI scopes and explicit runtime ownership.
 
 ## Scopes
 
@@ -54,12 +54,6 @@ The four contribution seams (token → fold): config sections — `ConfigSection
 - `src/_base/lifecycle/` — the Ledger (L0): ordered, dual-track (sync / async disposable) effect bookkeeping with strict reverse-order serial teardown and reason passthrough (`'scope-close' | 'cascade' | 'unload'`). Scopes, containers, and units all anchor side effects here; `Disposable` / `DisposableStore` (`_base/di/lifecycle.ts`) delegate to it. `IInstantiationService.onWillDispose` fires synchronously after resolution is disabled but before teardown; external event bridges must stop there rather than wait behind asynchronous service disposal.
 - `cascadeEngine.ts` — one engine per scope container with tree-wide orchestration (L2): `provide` / `unprovide` / `update` run as transactions (contagion set from the persistent dependency graph — instance edges may point child → parent across scopes → abort hook → global reverse-topo teardown → apply → waiting-area recheck to a fixpoint → history ring). Units are five-state (`Pending / Activating / Active / Unloading / Failed`): construction failure is sticky `Failed` (no auto-retry; `update()` reloads; resolving a Failed unit rethrows its error); units with unsatisfiable declared dependencies park in the waiting area and auto-activate when the deps arrive, across scopes. An `ondemand` unit counts as available — consumers pull it transitively at materialization.
 - Static and dynamic share one provide path: scope creation (`createScopedChildHandle` / `Scope.createApp` / `Scope.createChild`) submits the kind's whole `registerScopedService` batch as ONE cascade transaction via `provideAll` — every token registers before the activation wave, so registration order never matters (untracked transitive `createInstance` resolutions succeed inside the batch). The static registry is unique per (scope, token): `registerScopedService` throws a `BugIndicatingError` on a duplicate registration at import time — token identity is the decorator object, so an aliased second registration blows up the same way — and intentional replacement goes through `overrideScopedService`, which throws when no registration exists. A seed occupying a token overrides the static registration. `activateScopeServices` is gone — eager activation failure is a sticky `Failed` unit, not a scope-creation error.
-
-## Examples
-
-> The runnable examples have moved to the standalone `kimi-code-mini-bench` package at `../kimi-code-mini-bench`. They are wired to `agent-core-v2` through a pnpm `link:` dependency and run as a separate Vitest project.
-
-Domain-slice scenarios that used to live in `examples/<name>.example.ts` are now maintained there. Each `*.example.ts` exercises one subset of domains end-to-end, builds its own container, runs its slice's services for real, and stubs collaborators outside the slice. See `../kimi-code-mini-bench/README.md` for how to run them.
 
 ## Comment conventions
 

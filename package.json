@@ -16,8 +16,9 @@
     "build:plugin-marketplace": "pnpm -C apps/kimi-code run build:plugin-marketplace",
     "dev:docs": "pnpm -C docs install --ignore-workspace && pnpm -C docs run dev",
     "docs:check-governance": "node scripts/check-docs-governance.mjs",
+    "check:meta": "node scripts/check-repo-meta.mjs && node scripts/check-docs-governance.mjs",
     "typecheck": "pnpm run build:packages && pnpm -r --filter \"./packages/*\" --fail-if-no-match run typecheck && pnpm --filter @kiki/cli run typecheck && pnpm --filter @kiki/gui run typecheck && pnpm --filter kiki run typecheck",
-    "lint": "node scripts/check-no-comments.mjs && oxlint --type-aware",
+    "lint": "node scripts/check-no-comments.mjs && node scripts/check-repo-meta.mjs && oxlint --type-aware",
     "lint:fix": "pnpm run lint --fix",
     "lint:pkg": "pnpm --filter @kiki/cli exec publint && npm_config_cache=${TMPDIR:-/tmp}/kimi-code-npm-cache pnpm --filter @kiki/cli exec attw --pack . --profile node16",
     "sherif": "sherif -i @agentclientprotocol/sdk",
@@ -63,6 +64,7 @@
     "vitest": "4.1.4"
   },
   "simple-git-hooks": {
+    "pre-commit": "npx lint-staged && node scripts/check-repo-meta.mjs"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}": [

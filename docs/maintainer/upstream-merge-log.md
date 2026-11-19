@@ -1,6 +1,6 @@
 # Upstream Synchronization Log (`kimi-code` → `kiki`)
 
-Rule owner: root [`AGENTS.md`](../../AGENTS.md#upstream-synchronization). Review cadence: every upstream release tag or every four weeks, whichever comes first, plus immediate review for security/CVE fixes, provider protocol mismatches, and wire or persistence data-corruption fixes.
+Rule owner: [`docs/maintainer/upstream-sync.md`](./upstream-sync.md). Review cadence: every upstream release tag or every four weeks, whichever comes first, plus immediate review for security/CVE fixes, provider protocol mismatches, and wire or persistence data-corruption fixes.
 
 Record every accepted, adapted, deferred, rejected, or already-covered upstream commit using the date / upstream commit / disposition / local HEAD / notes format below.
 

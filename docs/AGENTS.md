@@ -150,8 +150,8 @@ Rules:
 - **Spacing around mixed content**: Add a space between Chinese characters and English words, numbers, inline code, or links. Exception: no space before full-width punctuation.
   - ✓ 在 TypeScript 中使用 `class` 关键字
   - ✗ 在TypeScript中使用`class`关键字
-  - ✓ 详见 [配置文件](./config.md)。
-  - ✗ 详见[配置文件](./config.md)。
+  - ✓ `详见 [配置文件](./config.md)。`
+  - ✗ `详见[配置文件](./config.md)。`
 - **Full-width punctuation**: Use full-width punctuation in Chinese text: `，。；：？！（）` not `, . ; : ? ! ( )`.
 - **Keyboard shortcuts**: Use hyphen between modifier and key (`Ctrl-C`, `Ctrl-D`, `Shift-Tab`, `Alt-V`), not plus sign. Exception: literal application output (e.g., the `Press Ctrl+C again to exit` hint produced by the product itself) keeps its exact rendering.
 - **Code block language**: Always specify language for fenced code blocks (e.g., ` ```sh `, ` ```toml `, ` ```json `, ` ```ts `). Exception: natural language examples (user prompts) may omit the language.

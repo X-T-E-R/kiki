@@ -2,100 +2,69 @@
 
 Reply in the same language as the user.
 
-This is a TypeScript monorepo built for agent-assisted development. Keep the root `AGENTS.md` limited to hot-path rules: the project map, hard constraints, and workflow requirements — things every task needs to know.
+> **Source of truth:** Code and passing tests override prose. When any `AGENTS.md`, `MAINTAINERS.md`, or doc disagrees with existing code, follow the existing code (unless your task explicitly changes that contract) and report every doc-vs-code inconsistency in your final reply.
+>
+> **Reuse before creating:** Before creating any app, module, UI view, or helper, inspect `apps/*`, `packages/*`, and `## Workspace Map` below to reuse an existing surface or single-source package rather than duplicating logic.
 
-## Working Principles
+Keep this root guide limited to hot-path rules. Follow the nearest subtree `AGENTS.md`, keep changes focused, and never add co-author lines or agent identity to commits, PRs, or public prose.
 
-- Think from first principles. Start from real requirements, code facts, and verification results; if the goal is unclear, discuss it with the user first.
-- Treat code, not documentation, as the source of truth for behavior. Implement and test functionality before catching prose up; early coding does not wait for documentation. Outside an explicit documentation task or catch-up stage, do not read ordinary Markdown just to understand the implementation. At a coherent candidate, classify the documentation impact and satisfy the applicable handoff or release boundary in [`docs/AGENTS.md`](docs/AGENTS.md#documentation-lifecycle).
-- Before making code changes, read the relevant code and the most recent constraints, and follow the nearest `AGENTS.md` in the directory tree.
-- Keep changes focused. Do not slip in unrelated refactors along the way.
-- When committing, do not add any co-author attribution, and do not reveal the identity of the agent in commit messages, PR descriptions, or any explanatory text.
+## Workspace Map
 
-## Project Map
+Kiki maintains **two UI codebases** across all client surfaces:
+- **GUI base (`apps/kiki-gui`)**: shared React 19 UI serving Web (`kiki web`), Tauri Desktop (`apps/kiki-gui/src-tauri`), VS Code thin Webview bridge (`apps/vscode`), Capacitor Mobile remote shells (`apps/kiki-gui/mobile`), and the Android local host (`apps/kiki-android` via `KikiWebActivity`). Do not create parallel graphical frontends.
+- **CLI/TUI base (`apps/kimi-code`)**: CLI, `DaemonTUI` (`@kiki/pi-tui`), and SEA binary consuming `@kiki/session-core` and `@kiki/klient`.
 
-- `apps/kimi-code`: the CLI / TUI application. It consumes `@kiki/klient` / `@kiki/session-core` for client operations and `@kiki/node-sdk` for host setup and SDK utilities; it must not depend directly on `@kiki/agent-core-v2`. When writing or modifying its terminal UI, use the `write-tui` skill (`.agents/skills/write-tui/SKILL.md`).
-- `apps/kiki-gui`: the shared browser, desktop (Tauri `src-tauri/`), and responsive mobile GUI. `apps/kimi-code` builds it into the CLI package and serves it from `kiki web`; for development, run `pnpm dev:server` and point the GUI Vite server at it with `KIKI_SERVER_URL`. Default visual acceptance uses the headless `scripts/visual-proof.mjs`; see `apps/kiki-gui/AGENTS.md`.
-- `apps/kiki-gui/mobile`: the unified Capacitor (`@capacitor/{ios,android}`) mobile shell (`launcher/` + `mobile/ios` `SceneDelegate.swift` + `mobile/android` `KikiShellPlugin.java`) that pairs via `kiki://pair` codes and hosts a Kiki server's responsive `kiki-gui`.
-- `apps/kiki-android`: the native Android local-runtime host (four-module Gradle project embedding Bionic Node + `KikiWebActivity` hosting `kiki-gui` + phone screen tools); run JVM unit tests with `./gradlew testDebugUnitTest` from this directory.
-- `apps/vscode`: the VS Code extension client.
-- `packages/agent-core-v2`: the agent engine — the only one. (The historical v1 `packages/agent-core` was deleted; nothing in the repo may reintroduce it.) A DI × Scope design with three `LifecycleScope` tiers (`App` / `Session` / `Agent`, `src/app/scopes.ts`), the L3 unit layer (`Service`/`Fiber`, collections, Features), and App-scope `ISessionManager`. Workspace resources live in leased `WorkspaceInstance` / `Program` runtime generations, not a fourth DI scope. See `packages/agent-core-v2/AGENTS.md` and use the `agent-core-dev` skill (`.agents/skills/agent-core-dev/SKILL.md`) when developing here.
-- `packages/node-sdk`: the public TypeScript SDK and harness.
-- `packages/kaos`: the execution environment and file/process abstractions.
-- `packages/oauth`: Kimi OAuth and managed auth utilities.
-- `packages/transcript`: the isomorphic transcript rendering data layer — L1 agent-granular store, L2 idempotent operations, L3 `off/turn/block/delta` subscription granularity, L4 framework-free view registry, plus turn-cursor pagination. Pure TypeScript (browser-safe, no engine imports); the sole owner of the transcript contract types (`src/contract/`) and the op-batch sequencing contract. See `packages/transcript/AGENTS.md`.
-- `packages/kap-server`: the Kiki server, backed by `@kiki/agent-core-v2`; exposes sessions over REST + WebSocket (`/api` + `/api/ws`), plus the `/api/debug/*` reflection RPC surface (`--debug-endpoints`, loopback bind + bearer auth). See `packages/kap-server/AGENTS.md`.
-- `packages/klient`: the client SDK — a contract-driven facade over agent-core-v2 (`global.*` / `session(id).*` / `agent(id).*`, zod-validated); transport via subpath entry (`@kiki/klient/http|ipc|memory`, all return the same `Klient`); also hosts the e2e suites. See `packages/klient/AGENTS.md`.
-- `packages/tree-sitter-bash`: a pure-TypeScript bash parser (no runtime deps, no wasm); `parse(source, { timeoutMs, maxNodes })` runs under a deterministic budget and returns a discriminated `ParseResult` — callers must treat aborted/hasError trees as "cannot analyze" and degrade. Parser only, no safety judgments; see the package README's "Known differences" section.
-- `packages/protocol`: shared Zod schemas, REST/WS wire contracts, pairing URI helpers, and error envelopes across server and clients.
-- `packages/session-core`: framework-shared client session controller, settings models, composer helpers, and 20-domain `i18n` dictionaries consumed by `apps/kiki-gui` and `apps/kimi-code`.
-- `packages/plugin-sdk`: public authoring types and media/panel contracts for Kiki plugins.
-- `packages/lexical`: dependency-free ASCII/CJK tokenization and Unicode literal normalization shared by Memory, history, and SQLite FTS5 search.
+### Apps, Surfaces & Docs
 
-## Environment Requirements
+| Path | Role & Key Entrypoints |
+| --- | --- |
+| `apps/kimi-code` | CLI, `DaemonTUI`, and SEA entrypoint (`@kiki/cli`); uses `@kiki/klient`, `@kiki/session-core`, `@kiki/node-sdk`; TUI work uses `.agents/skills/write-tui/SKILL.md` and `apps/kimi-code/AGENTS.md`. |
+| `apps/kiki-gui` | Shared browser, desktop, and responsive mobile React UI (`@kiki/gui`); visual acceptance uses `apps/kiki-gui/scripts/visual-proof.mjs`; see `apps/kiki-gui/AGENTS.md`. |
+| `apps/kiki-gui/src-tauri` | Tauri v2 desktop shell wrapping `apps/kiki-gui` and the local SEA sidecar. |
+| `apps/kiki-gui/mobile` | Unified Capacitor (`@capacitor/{ios,android}`) remote pairing shell (`launcher/`, iOS `SceneDelegate.swift`, Android `KikiShellPlugin.java`). |
+| `apps/kiki-android` | Independent 4-module Gradle Android local host embedding Bionic Node and rendering `apps/kiki-gui` in `KikiWebActivity` (`./gradlew testDebugUnitTest`). |
+| `apps/vscode` | Thin VS Code Webview bridge (`kiki`) hosting packaged `apps/kiki-gui` assets; see `apps/vscode/README.md`. |
+| `docs` | Bilingual VitePress documentation site (`@kiki/docs`, `docs/en/` & `docs/zh/`); see `docs/AGENTS.md`. |
 
-- **Node.js**: `>=24.22.1 <25 || >=26.12.1` (from the root `package.json` `engines`). `.nvmrc` is `24.22.1`, the 24 LTS pin used by nvm / fnm / mise and CI. Node.js 26 is accepted from `26.12.1`. Node.js 25 and Node.js 26 releases before `26.12.1` are rejected.
-- **pnpm**: `10.33.0` (from the root `package.json` `packageManager`).
-- `pnpm install` will fail when the Node version is not satisfied, because `.npmrc` sets `engine-strict=true`.
+### Packages
 
-## Monorepo Workspace Maintenance
+| Path | Package | Role |
+| --- | --- | --- |
+| `packages/acp-client` | `@kiki/acp-client` | Outbound Agent Client Protocol process and session engine; see `packages/acp-client/README.md`. |
+| `packages/acp-server` | `@kiki/acp-server` | Inbound ACP host backed by `@kiki/agent-core-v2` and `@kiki/klient`. |
+| `packages/agent-core-v2` | `@kiki/agent-core-v2` | Sole agent engine (DI × Scope: `App`/`Session`/`Agent` in `packages/agent-core-v2/src/app/scopes.ts`, leased `WorkspaceInstance`/`Program`, L3 units/Features); see `packages/agent-core-v2/AGENTS.md` and `.agents/skills/agent-core-dev/SKILL.md`. |
+| `packages/agent-profiles` | `@kiki/agent-profiles` | Agent profile parsing, discovery, and catalog projection; see `packages/agent-profiles/README.md`. |
+| `packages/auth-native` | `@kiki/auth-native` | Native age passphrase encryption and advisory auth locks (Rust N-API). |
+| `packages/codex-client` | `@kiki/codex-client` | Outbound Codex app-server process and turn client. |
+| `packages/cordis-runtime` | `@kiki/cordis-runtime` | Hardened Cordis plugin runtime plane and singleton scope routing. |
+| `packages/kaos` | `@kiki/kaos` | Execution environment, shell, and filesystem/process abstractions; see `packages/kaos/README.md`. |
+| `packages/kap-server` | `@kiki/kap-server` | Kiki REST + WebSocket server (`/api`, `/api/ws`, `--debug-endpoints`); see `packages/kap-server/AGENTS.md`. |
+| `packages/klient` | `@kiki/klient` | Contract-driven client SDK facade (`@kiki/klient/http\|ipc\|memory`) and e2e suites; see `packages/klient/AGENTS.md`. |
+| `packages/lexical` | `@kiki/lexical` | Dependency-free ASCII/CJK tokenization and Unicode normalization for Memory, history, and SQLite FTS5. |
+| `packages/node-sdk` | `@kiki/node-sdk` | Public TypeScript SDK, CLI print harness, and worker-heap policy; see `packages/node-sdk/README.md`. |
+| `packages/oauth` | `@kiki/oauth` | OAuth toolkit for managed Kimi Code authentication; see `packages/oauth/README.md`. |
+| `packages/pi-tui` | `@kiki/pi-tui` | Vendored differential-rendering terminal UI library (runs on `node --test`); see `packages/pi-tui/AGENTS.md`. |
+| `packages/plugin-sdk` | `@kiki/plugin-sdk` | Public authoring contracts and media/panel schemas for Kiki plugins. |
+| `packages/protocol` | `@kiki/protocol` | Shared browser-safe Zod wire schemas, REST/WS contracts, pairing helpers, and error envelopes. |
+| `packages/session-core` | `@kiki/session-core` | Framework-free client session controller, settings models (`packages/session-core/src/settings/settings.test.ts`), composer helpers, and i18n; see `packages/session-core/AGENTS.md`. |
+| `packages/transcript` | `@kiki/transcript` | Pure-TS isomorphic transcript data layer (L1–L4) and op-batch sequencing contract; see `packages/transcript/AGENTS.md`. |
+| `packages/transcript-live` | `@kiki/transcript-live` | Engine-event bindings producing canonical transcript operations; see `packages/transcript-live/AGENTS.md`. |
+| `packages/tree-sitter-bash` | `@kiki/tree-sitter-bash` | Pure-TS budgeted bash parser (parser only, no safety judgments); see `packages/tree-sitter-bash/README.md`. |
 
-- `pnpm-workspace.yaml` is the source of truth for workspace membership, but `flake.nix` also contains **hardcoded** `workspacePaths` and `workspaceNames` lists.
-- **Whenever you add or remove a workspace package, you MUST update both `pnpm-workspace.yaml` and `flake.nix` — for every package, including leaf / test / e2e packages that nothing depends on.**
-  - `pnpm-workspace.yaml` uses globs (`packages/*`, `apps/*`), so most packages land there automatically; `flake.nix` is fully manual and is where omissions happen.
-  - Missing a path in `flake.nix`'s `workspacePaths` will silently drop files from the Nix build's `src` fileset.
-  - Missing a name in `flake.nix`'s `workspaceNames` will break `pnpmConfigHook` because dependencies for that workspace will not be fetched.
-- The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) verifies the full workspace in both directions: every package selected by `pnpm-workspace.yaml` must appear in both flake.nix lists, and stale flake entries with no workspace package fail the check. Run `node scripts/check-nix-workspace.mjs` locally whenever you add or remove a package and update both files by hand in the same change.
+## Environment & Workspace Sync
 
-## Upstream Synchronization
+- **Toolchain**: Node `>=24.22.1 <25 || >=26.12.1` (`.nvmrc` = `24.22.1`), `pnpm@10.33.0` (`engine-strict=true` in `.npmrc`).
+- **Workspace parity**: Whenever adding or removing a workspace package, update `pnpm-workspace.yaml`, `flake.nix` (`workspacePaths` and `workspaceNames`), and `## Workspace Map` above in the same change, then run `pnpm run check:meta` (`scripts/check-repo-meta.mjs` enforces workspace parity, `scripts/check-nix-workspace.mjs`, dependency boundaries, links, and doc budgets).
 
-- Never merge upstream into `apps/*` or `packages/*`; receive selected upstream changes only through isolated cherry-picks or semantic ports.
-- Review upstream at every release tag or every four weeks, whichever comes first. Filter candidates by commit title and touched paths before reading full diffs.
-- Review security/CVE fixes, provider protocol mismatches, and wire or persistence data-corruption fixes as soon as they appear rather than waiting for the regular review.
-- Exclude UI changes, cloud features, secondary-model work, and runtime-to-DI/actor migrations in the first filter unless a separate Kiki decision explicitly reopens that area.
-- Record every accepted, adapted, deferred, rejected, or already-covered upstream commit in `docs/maintainer/upstream-merge-log.md` using its date / upstream commit / disposition / local HEAD / notes table format.
+## Coding, Testing & Flags
 
-## General Coding Rules
+- **Comment-free zones**: `packages/agent-core-v2`, `packages/kap-server`, and `packages/transcript` forbid comments except exported-symbol JSDoc and `oxlint-disable`/`eslint-disable` (`scripts/check-no-comments.mjs` in `pnpm lint`).
+- **TypeScript conventions**: pass `{ user }` instead of conditional spread for optional properties; omit redundant `| undefined` on optional property types; do not wrap single-parameter internal methods in options objects; prefer `import ... from '#/...'`; non-package-root `index.ts` files prefer `export * from './module';`.
+- **Anti-test-bloat**: Add permanent tests only for durable contracts, wire/protocol boundaries, security invariants, and real regressions—never for trivial copy, type-guaranteed invariants, or mock-call mirrors. Prefer extending existing test files. Put throwaway repro scripts in `.tmp/` and delete them before committing. When user changes invalidate a test, fix the test unless the implementation has a bug.
+- **Experimental flags**: Ship product features enabled by default; gate only real rollout/rollback boundaries using distributed `registerFlagDefinition` + `IFlagService.enabled(id)` (see `packages/agent-core-v2/docs/flag.md`) and keep `packages/session-core/src/settings/settings.test.ts` green.
 
-- `packages/agent-core-v2`, `packages/kap-server`, and `packages/transcript` are comment-free zones: no line/block comments; the exceptions are JSDoc attached to exported symbols and load-bearing lint-suppression directives (`oxlint-disable` / `eslint-disable`), while other tooling directives (`@ts-expect-error`, …) stay banned. Enforced by `scripts/check-no-comments.mjs`, which runs as part of `pnpm lint`.
-- For optional object properties, pass `undefined` directly instead of using conditional spread.
-  - YES: `{ user }`
-  - NO: `{ ...(user ? { user } : undefined) }`
-- Optional object properties do not need to additionally allow `undefined` in the type.
-  - YES: `interface Options { user?: User }`
-  - NO: `interface Options { user?: User | undefined }`
-- Internal methods with only a single parameter should not be turned into options objects just for stylistic uniformity.
-- Except for a package's `index.ts`, other `index.ts` files should prefer `export * from './module';`.
-- Do not add too many new test files. Prefer adding tests to the existing test file of the corresponding component or module.
-- When a test fails because of a user modification, default to fixing the test first; do not change the implementation to satisfy an old test unless the implementation truly has a bug.
-- Do not sacrifice code quality for external compatibility unless the user explicitly asks for it. Breaking changes go through changesets and a `major` bump, gated by the rule below.
+## Workflow & Pointers
 
-## Experimental Features
-
-- Product features are available by default, including new features. Use an experimental flag only for a real rollout or rollback boundary; do not add another master gate to an ordinary feature that already has its own configuration. A `default: false` needs an explicit human requirement and its source, not a precaution about possible defects. Smoke-test and repair defects instead.
-- Availability does not authorize new external connections, plugin installation, or script execution. Preserve explicit user off choices, per-destination consent, and permission rules. Flag precedence remains per-flag env > `[experimental]` config > truthy master env > registry default; a falsy master env is unset, not a global off command.
-- Flag definitions remain distributed: declare them in the owning domain through `registerFlagDefinition` at import time, then use `IFlagService.enabled(id)` (see `packages/agent-core-v2/docs/flag.md`). Every built-in id also needs a Settings home, accurate application timing, and English/Chinese name and description in `packages/session-core`; the distributed-registration regression in `src/settings/settings.test.ts` must stay green. Unknown-server fallback is for extensions, not missing built-in copy.
-
-## Where to Update Instructions
-
-- Hard rules that affect almost every task: update the root `AGENTS.md`.
-- Rules that only affect a specific directory: update the nearest sub-directory `AGENTS.md`.
-- Project-map entries stay at 1–2 sentences; deep package docs live in the package's own `AGENTS.md`.
-- Keep instruction updates focused and supported by code facts.
-
-## Workflow Requirements
-
-- Prefer `rg` / `rg --files` when reading code.
-- When designing changes, follow existing boundaries and local patterns first.
-- In public text and test data, replace real internal identifiers with neutral placeholders such as `example.com`, `example.test`, and `YOUR_API_KEY`. Before opening a PR, ask a read-only agent to audit the diff for context-specific internal identifiers.
-- When creating a PR, the PR title must follow Conventional Commit style, e.g. `chore: remove legacy format commands`.
-- When an AI agent opens or updates a PR, fill in `.github/pull_request_template.md` — link the related issue or explain the problem, then describe what changed. Do not leave placeholder text or submit a generic summary of the diff.
-- Do not submit vague AI-generated PR text. The human author must understand the change well enough to explain the code, edge cases, and why the approach fits this repository.
-- Before opening a PR or finalizing a user-facing change, evaluate changeset impact with the `gen-changesets` skill (see `.agents/skills/gen-changesets/SKILL.md`): generate a changeset under `.changeset/` only when the change is user-perceivable, and skip internal, test-only, or docs-only changes that users cannot perceive.
-- Changesets must strictly follow `.agents/skills/gen-changesets/SKILL.md`: write one short user-facing sentence that states only what changed.
-- When generating a changeset, **never** decide on a `major` bump on your own — stop, explain, and get explicit user confirmation first; use `patch` for fixes and small additions or `minor` for new user-facing capabilities. See `.agents/skills/gen-changesets/SKILL.md`.
-- Prefer importing via `import ... from '#/...'`, which serves the same purpose as `import ... from '@/...'`.
-- Do not commit throwaway scratch or exploratory files. Never stage:
-  - Agent working notes or handoff/summary documents (e.g. `HANDOVER-*.md`, `HANDOFF-*.md`, `handoff.md`).
-  - Throwaway UI/UX prototypes or design mockups (e.g. `*-designs.html`, `*-mockup.html`, `*-demo(s).html`) at the repo root or under a `design/` folder. Tracked `.html` files are limited to real Vite/launcher entrypoints (`apps/kiki-gui/index.html`, `apps/kiki-gui/mobile/launcher/index.html`), GUI proof harness mounts (`apps/kiki-gui/proof/*-mount.html`), and dedicated test fixtures.
-  Before committing or opening a PR, run `git status` and `git diff --staged --stat` and remove anything matching these patterns. Put scratch work under `.tmp/` (gitignored) instead of the repo root or the source tree.
+- **Discovery & hygiene**: Prefer `rg` / `rg --files`. Replace real internal identifiers in public text and fixtures with neutral placeholders (`example.com`, `example.test`, `YOUR_API_KEY`). Never commit scratch handoffs (`HANDOVER-*.md`, `HANDOFF-*.md`, `handoff.md`) or throwaway mockups (`*-mockup.html`, `*-demo.html`, `*-designs.html`); keep scratch files under `.tmp/`.
+- **PRs & changesets**: Use Conventional Commit PR titles, fill `.github/pull_request_template.md`, and evaluate user-perceivable changesets per `.agents/skills/gen-changesets/SKILL.md` (never choose a `major` bump without explicit user approval).
+- **References**: Maintainer router [`MAINTAINERS.md`](MAINTAINERS.md) · Docs lifecycle [`docs/AGENTS.md`](docs/AGENTS.md#documentation-lifecycle) · Upstream sync [`docs/maintainer/upstream-sync.md`](docs/maintainer/upstream-sync.md).
