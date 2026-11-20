@@ -129,6 +129,7 @@ $fixtureSource = @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -136,6 +137,20 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
+
+internal sealed class HiddenFixtureForm : Form
+{
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            CreateParams cp = base.CreateParams;
+            cp.ExStyle |= 0x00000080 | 0x08000000;
+            return cp;
+        }
+    }
+}
 
 internal static class Program
 {
@@ -206,7 +221,7 @@ internal static class Program
         string explicitExitPath = Path.Combine(launcherHome, "server", "explicit-exit.json");
         bool launcherClosing = false;
         Process backend = null;
-        using (Form window = new Form { Text = "Kiki hot switch fixture", Width = 300, Height = 120 })
+        using (Form window = new HiddenFixtureForm { Text = "Kiki hot switch fixture", Width = 1, Height = 1, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), FormBorderStyle = FormBorderStyle.None, Opacity = 0 })
         {
             window.FormClosing += delegate(object sender, FormClosingEventArgs args)
             {
@@ -642,7 +657,7 @@ function Compile-Fixture([string]$BuildId, [bool]$FailLaunch, [string]$OutputPat
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $compilerOutput = (& $cscPath /nologo /target:winexe /reference:System.Windows.Forms.dll /optimize+ /out:$OutputPath $fixtureSourcePath 2>&1 | Out-String)
+        $compilerOutput = (& $cscPath /nologo /target:winexe /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /optimize+ /out:$OutputPath $fixtureSourcePath 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
     }
     finally {
@@ -869,7 +884,7 @@ public sealed class DesktopHotSwitchTestWebResponse : WebResponse
     [IO.Directory]::CreateDirectory($otherHome) | Out-Null
     [IO.File]::WriteAllText((Join-Path $otherHome 'server.local-owner'), $fixtureToken)
     $env:KIKI_HOME = $otherHome
-    try { $unrelated = Start-Process -FilePath (Join-Path $oldCandidate 'kiki-server.exe') -ArgumentList 'serve' -PassThru }
+    try { $unrelated = Start-Process -FilePath (Join-Path $oldCandidate 'kiki-server.exe') -ArgumentList 'serve' -WindowStyle Hidden -PassThru }
     finally { $env:KIKI_HOME = $homePath }
 
     Invoke-Script $controller @(
