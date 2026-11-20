@@ -249,6 +249,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     await waitForSignal(this.flushLog(scope, key), options?.signal);
     const onTruncate = options?.onTruncate;
     const lineFilter = options?.lineFilter;
+    const rawSubstrings = options?.rawSubstrings;
     let pendingChunks: Uint8Array[] = [];
     let pendingBytes = 0;
     let lineNumber = 0;
@@ -264,6 +265,32 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       chunkBytes: options?.chunkBytes,
     })) {
       let cursor = 0;
+      if (pendingBytes === 0 && rawSubstrings !== undefined && rawSubstrings.length > 0) {
+        const lastNewline = chunk.lastIndexOf(0x0a);
+        if (lastNewline !== -1) {
+          const headBuf = Buffer.from(chunk.buffer, chunk.byteOffset, lastNewline + 1);
+          let matched = false;
+          for (let i = 0; i < rawSubstrings.length; i++) {
+            if (headBuf.includes(rawSubstrings[i]!)) {
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            let skippedLines = 0;
+            let nl = headBuf.indexOf(0x0a, 0);
+            while (nl !== -1) {
+              skippedLines++;
+              nl = headBuf.indexOf(0x0a, nl + 1);
+            }
+            lineNumber += skippedLines;
+            position += lastNewline + 1;
+            options?.onPosition?.(position);
+            options?.signal?.throwIfAborted();
+            cursor = lastNewline + 1;
+          }
+        }
+      }
       let newlineIndex = chunk.indexOf(0x0a, cursor);
       while (newlineIndex !== -1) {
         let lineBytes: number;

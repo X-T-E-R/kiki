@@ -7280,16 +7280,24 @@ export const Transcript = memo(function Transcript({
 
   const emptyAutoLoadKey = `${state.sessionId}:${agentId}:${state.transcriptResetVersion}`;
   const [emptyAutoLoadDoneKey, setEmptyAutoLoadDoneKey] = useState<string | null>(null);
-  const emptyAutoLoadAttemptedRef = useRef<string | null>(null);
+  const emptyAutoLoadRoundsRef = useRef<{ key: string; rounds: number }>({ key: '', rounds: 0 });
   const [blankRetrying, setBlankRetrying] = useState(false);
 
   useEffect(() => {
     if (!loaded || loadError !== undefined || !visible || readingRestoreFailed !== null) return;
-    if (timelineBlocks.length > 0 || !state.hasMoreHistory || state.loadingOlder || state.olderError !== undefined) return;
-    if (emptyAutoLoadAttemptedRef.current === emptyAutoLoadKey) return;
-    emptyAutoLoadAttemptedRef.current = emptyAutoLoadKey;
+    if (timelineBlocks.length > 0 || !state.hasMoreHistory || state.loadingOlder || state.olderError !== undefined || olderBatchActive) return;
+    if (emptyAutoLoadRoundsRef.current.key !== emptyAutoLoadKey) {
+      emptyAutoLoadRoundsRef.current = { key: emptyAutoLoadKey, rounds: 0 };
+    }
+    if (emptyAutoLoadRoundsRef.current.rounds >= 8) {
+      if (emptyAutoLoadDoneKey !== emptyAutoLoadKey) setEmptyAutoLoadDoneKey(emptyAutoLoadKey);
+      return;
+    }
+    emptyAutoLoadRoundsRef.current.rounds += 1;
     void requestOlderAtReadingAnchor(true).finally(() => {
-      setEmptyAutoLoadDoneKey(emptyAutoLoadKey);
+      if (stateRef.current.blocks.length > 0 || !stateRef.current.hasMoreHistory || stateRef.current.olderError !== undefined || emptyAutoLoadRoundsRef.current.rounds >= 8) {
+        setEmptyAutoLoadDoneKey(emptyAutoLoadKey);
+      }
     });
   }, [
     loaded,
@@ -7300,7 +7308,9 @@ export const Transcript = memo(function Transcript({
     state.hasMoreHistory,
     state.loadingOlder,
     state.olderError,
+    olderBatchActive,
     emptyAutoLoadKey,
+    emptyAutoLoadDoneKey,
     requestOlderAtReadingAnchor,
   ]);
 

@@ -31,12 +31,34 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 
 const registeredContracts = [];
 
+const TRIVIAL_INVARIANT_RE = /^\s*(?:tests?|checks?|verifies?)\s+(?:that\s+)?(?:internal\s+)?(?:helper|function|method)\b[\s\S]*\breturns?\b/iu;
+const COVERS_REPO_FILE_RE = /^(?:packages|apps|scripts)\/[^\s:]+\.[cm]?[jt]sx?$/u;
+
 export function defineTestContract(spec) {
   if (!spec || typeof spec !== 'object') {
     throw new Error('defineTestContract requires a specification object');
   }
-  if (typeof spec.invariant !== 'string' || spec.invariant.trim().length < 8) {
-    throw new Error('defineTestContract requires a non-empty invariant description (>= 8 chars)');
+  if (typeof spec.invariant !== 'string' || spec.invariant.trim().length < 12) {
+    throw new Error('defineTestContract requires a non-empty @invariant description (>= 12 chars)');
+  }
+  if (TRIVIAL_INVARIANT_RE.test(spec.invariant)) {
+    throw new Error('defineTestContract @invariant must state a user-perceivable invariant or physical boundary, not an internal helper return value');
+  }
+  if (typeof spec.mechanism !== 'string' || spec.mechanism.trim().length < 12) {
+    throw new Error('defineTestContract requires a non-empty @mechanism description (>= 12 chars)');
+  }
+  const rawCovers = Array.isArray(spec.covers)
+    ? spec.covers
+    : typeof spec.covers === 'string'
+      ? [spec.covers]
+      : [];
+  const covers = rawCovers.map((entry) => (typeof entry === 'string' ? entry.trim() : '')).filter(Boolean);
+  if (covers.length === 0) {
+    throw new Error('defineTestContract requires @covers binding to at least one public route or entrypoint path');
+  }
+  const sunsetWhen = typeof spec.sunset_when === 'string' ? spec.sunset_when.trim() : '';
+  if (sunsetWhen.length < 12) {
+    throw new Error('defineTestContract requires a non-empty @sunset_when physical deletion condition (>= 12 chars)');
   }
   const sunset = spec.sunset;
   if (!sunset || typeof sunset !== 'object' || typeof sunset.kind !== 'string') {
@@ -74,6 +96,9 @@ export function defineTestContract(spec) {
 
   const normalized = Object.freeze({
     invariant: spec.invariant.trim(),
+    mechanism: spec.mechanism.trim(),
+    covers: Object.freeze(covers),
+    sunset_when: sunsetWhen,
     sunset: Object.freeze({ ...sunset }),
     tags: Object.freeze(Array.isArray(spec.tags) ? [...spec.tags] : []),
   });
@@ -204,30 +229,69 @@ export function validateSunsetTrigger(trigger, { repoRoot = DEFAULT_ROOT, nowDat
   }
 }
 
-function extractInlineContracts(filePath, content) {
+export function extractInlineContracts(filePath, content) {
   const found = [];
-  const callRe = /defineTestContract\s*\(\s*(\{[\s\S]*?\})\s*\)/gu;
+  const headRe = /(?:^|\n)[ \t]*defineTestContract\s*\(\s*\{/gu;
   let match;
-  while ((match = callRe.exec(content)) !== null) {
-    const snippet = match[1];
+  while ((match = headRe.exec(content)) !== null) {
+    const braceStart = content.indexOf('{', match.index);
+    let depth = 0;
+    let inQuote = null;
+    let end = -1;
+    for (let i = braceStart; i < content.length; i += 1) {
+      const ch = content[i];
+      if (inQuote) {
+        if (ch === '\\') {
+          i += 1;
+          continue;
+        }
+        if (ch === inQuote) inQuote = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        inQuote = ch;
+        continue;
+      }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    if (end === -1) continue;
+    const snippet = content.slice(braceStart, end);
     const line = content.slice(0, match.index).split('\n').length;
-    const kindMatch = /\bkind\s*:\s*['"]([a-zA-Z]+)['"]/u.exec(snippet);
-    if (!kindMatch) continue;
-    const kind = kindMatch[1];
-    const trigger = { kind };
-    if (kind === 'flagRemoved') {
+    const invariant = /\binvariant\s*:\s*['"`]([^'"`]+)['"`]/u.exec(snippet)?.[1]?.trim() ?? '';
+    const mechanism = /\bmechanism\s*:\s*['"`]([^'"`]+)['"`]/u.exec(snippet)?.[1]?.trim() ?? '';
+    const sunsetWhen = /\bsunset_when\s*:\s*['"`]([^'"`]+)['"`]/u.exec(snippet)?.[1]?.trim() ?? '';
+    const covers = [];
+    const coversArrMatch = /\bcovers\s*:\s*\[([\s\S]*?)\]/u.exec(snippet);
+    if (coversArrMatch) {
+      for (const item of coversArrMatch[1].matchAll(/['"`]([^'"`]+)['"`]/gu)) {
+        if (item[1].trim()) covers.push(item[1].trim());
+      }
+    } else {
+      const singleCover = /\bcovers\s*:\s*['"`]([^'"`]+)['"`]/u.exec(snippet)?.[1]?.trim();
+      if (singleCover) covers.push(singleCover);
+    }
+    const kind = /\bkind\s*:\s*['"]([a-zA-Z]+)['"]/u.exec(snippet)?.[1] ?? '';
+    const trigger = kind ? { kind } : null;
+    if (trigger && kind === 'flagRemoved') {
       trigger.flag = /\bflag\s*:\s*['"]([^'"]+)['"]/u.exec(snippet)?.[1] ?? '';
-    } else if (kind === 'symbolRemoved') {
+    } else if (trigger && kind === 'symbolRemoved') {
       trigger.file = /\bfile\s*:\s*['"]([^'"]+)['"]/u.exec(snippet)?.[1] ?? '';
       trigger.symbol = /\bsymbol\s*:\s*['"]([^'"]+)['"]/u.exec(snippet)?.[1] ?? '';
-    } else if (kind === 'routeRemoved') {
+    } else if (trigger && kind === 'routeRemoved') {
       trigger.method = /\bmethod\s*:\s*['"]([^'"]+)['"]/u.exec(snippet)?.[1] ?? '';
       trigger.path = /\bpath\s*:\s*['"]([^'"]+)['"]/u.exec(snippet)?.[1] ?? '';
-    } else if (kind === 'expires') {
+    } else if (trigger && kind === 'expires') {
       trigger.date = /\bdate\s*:\s*['"]([^'"]+)['"]/u.exec(snippet)?.[1] ?? '';
       trigger.ticket = /\bticket\s*:\s*['"]([^'"]+)['"]/u.exec(snippet)?.[1] ?? '';
     }
-    found.push({ file: filePath, line, trigger });
+    found.push({ file: filePath, line, invariant, mechanism, covers, sunsetWhen, trigger });
   }
   return found;
 }
@@ -330,13 +394,39 @@ export function runTestHygieneCheck({ repoRoot = DEFAULT_ROOT, baseRef, diffText
       if (!content.includes('defineTestContract')) continue;
       for (const entry of extractInlineContracts(rel, content)) {
         contractsChecked += 1;
+        const missing = [];
+        if (entry.invariant.length < 12) missing.push('@invariant (>=12 chars)');
+        else if (TRIVIAL_INVARIANT_RE.test(entry.invariant)) missing.push('@invariant (must state user-visible invariant, not internal helper return)');
+        if (entry.mechanism.length < 12) missing.push('@mechanism (>=12 chars)');
+        if (entry.covers.length === 0) missing.push('@covers (public route or entrypoint)');
+        if (entry.sunsetWhen.length < 12) missing.push('@sunset_when (>=12 chars deletion rule)');
+        if (!entry.trigger) missing.push('sunset trigger');
+        if (missing.length > 0) {
+          contractFailures.push({
+            file: entry.file,
+            line: entry.line,
+            trigger: entry.trigger,
+            reason: `Incomplete defineTestContract — missing/invalid ${missing.join(', ')}`,
+          });
+          continue;
+        }
+        for (const coverTarget of entry.covers) {
+          if (COVERS_REPO_FILE_RE.test(coverTarget) && !fs.existsSync(path.resolve(repoRoot, coverTarget))) {
+            contractFailures.push({
+              file: entry.file,
+              line: entry.line,
+              trigger: entry.trigger,
+              reason: `@covers target "${coverTarget}" was removed — @sunset_when: ${entry.sunsetWhen} (physically delete obsolete test instead of shimming)`,
+            });
+          }
+        }
         const result = validateSunsetTrigger(entry.trigger, { repoRoot, nowDate, flagIds, routes });
         if (!result.valid) {
           contractFailures.push({
             file: entry.file,
             line: entry.line,
             trigger: entry.trigger,
-            reason: result.reason,
+            reason: `${result.reason} — @sunset_when: ${entry.sunsetWhen}`,
           });
         }
       }

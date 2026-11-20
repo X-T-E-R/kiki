@@ -20,6 +20,7 @@ import {
   getWorkspaceGlobs,
   normalizeWorkspaceDir,
 } from './check-nix-workspace.mjs';
+import { runTestHygieneCheck } from './ccp-chaos/check-test-hygiene.mjs';
 
 const DEFAULT_ROOT = resolve(import.meta.dirname, '..');
 const READ_CONCURRENCY = 64;
@@ -1043,6 +1044,33 @@ export async function checkRepoMeta(root = DEFAULT_ROOT, options = {}) {
   checkDocWordBudgets(repoRoot, budgets, inventory, errors);
   await checkPkgBoundaryGraph(repoRoot, boundaries, inventory, errors);
   checkWorkspaceSyncAndHygiene(repoRoot, boundaries, inventory, errors);
+  if (
+    options.boundaries === undefined &&
+    options.trackedFiles === undefined &&
+    existsSync(join(repoRoot, 'scripts', 'ccp-chaos', 'check-test-hygiene.mjs'))
+  ) {
+    const hygiene = runTestHygieneCheck({ repoRoot, diffText: '' });
+    for (const failure of hygiene.contractFailures) {
+      addViolation(
+        errors,
+        'test-contract-hygiene',
+        failure.file,
+        failure.line,
+        failure.reason,
+        'Complete all 4 defineTestContract fields (@invariant, @mechanism, @covers, @sunset_when + sunset) or physically delete tests whose @covers/@sunset target was removed',
+      );
+    }
+    for (const disabled of hygiene.disabledTests.violations) {
+      addViolation(
+        errors,
+        'test-contract-hygiene',
+        disabled.file,
+        disabled.line,
+        `Unexempted disabled test (${disabled.text}) violates Zero-Skip Gate`,
+        'Enable the test in a self-contained harness or physically delete obsolete tests',
+      );
+    }
+  }
 
   return errors;
 }
@@ -1055,7 +1083,7 @@ export async function main() {
   const elapsedMs = Math.round(performance.now() - start);
 
   if (errors.length === 0) {
-    console.log(`check-repo-meta: OK (8 checks passed in ${elapsedMs}ms)`);
+    console.log(`check-repo-meta: OK (9 checks passed in ${elapsedMs}ms)`);
     return;
   }
 

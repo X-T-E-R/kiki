@@ -41,6 +41,8 @@ export interface AppendLogReadOptions {
   readonly onRecordBytes?: (byteLength: number) => void;
   /** Optional raw-line prefilter on complete newline-terminated lines; returning false skips JSON.parse while advancing byte position. */
   readonly lineFilter?: (line: string) => boolean;
+  /** Optional raw UTF-8 byte substrings; complete chunk prefixes containing none of them skip per-line UTF-8 decoding while advancing byte position. */
+  readonly rawSubstrings?: readonly Uint8Array[];
 }
 
 export interface AppendLogWrite {

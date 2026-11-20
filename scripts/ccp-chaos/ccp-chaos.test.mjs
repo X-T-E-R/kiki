@@ -10,6 +10,7 @@ import {
   collectRegisteredFlagIds,
   collectRegisteredRoutes,
   defineTestContract,
+  extractInlineContracts,
   runTestHygieneCheck,
   validateSunsetTrigger,
 } from './check-test-hygiene.mjs';
@@ -20,12 +21,18 @@ const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 
 defineTestContract({
   invariant: 'Contract-Verifying Twin rejects wire schema/cache_control/thread/tool-pairing/post-413 violations and serves HTTP/1.1 + HTTP/2 TLS',
+  mechanism: 'Prevents blind mock-upstream pass-through regressions under 128-way concurrent SSE streaming, 413 body stripping, and midstream barriers',
+  covers: ['POST /v1/messages', 'scripts/ccp-chaos/contract-twin-server.mjs'],
+  sunset_when: 'Physically delete this test suite if Anthropic Messages v1 wire transport or Contract-Verifying Twin is retired; never add compatibility shims',
   sunset: { kind: 'symbolRemoved', file: 'scripts/ccp-chaos/contract-twin-server.mjs', symbol: 'createContractTwinServer' },
   tags: ['chaos', 'contract'],
 });
 
 defineTestContract({
-  invariant: 'Anti-zombie hygiene checker verifies real registered flags and routes without comment headers',
+  invariant: 'Anti-zombie hygiene checker enforces 4-element test contracts and verifies real registered flags and routes',
+  mechanism: 'Detects orphaned feature-flag/route/symbol tests, newly added intra-monorepo vi.mock calls, and unexempted .skip zombies in PR diffs',
+  covers: ['scripts/ccp-chaos/check-test-hygiene.mjs', 'scripts/check-repo-meta.mjs'],
+  sunset_when: 'Physically delete flag-specific sunset assertions when persistence_minidb_readmodel graduates and is removed from registerFlagDefinition',
   sunset: { kind: 'flagRemoved', flag: 'persistence_minidb_readmodel' },
   tags: ['hygiene'],
 });
@@ -410,9 +417,22 @@ describe('Anti-Zombie Test Hygiene Gate (check-test-hygiene.mjs)', () => {
     assert.equal(ratchet.disabledAddedViolations.length, 1);
   });
 
-  it('passes cleanly on the current workspace repository scan', () => {
+  it('passes cleanly on the current workspace repository scan and rejects incomplete 4-element contracts', () => {
     const report = runTestHygieneCheck({ repoRoot: REPO_ROOT, diffText: '' });
     assert.equal(report.ok, true, `Unexpected hygiene failure: ${JSON.stringify(report)}`);
     assert.equal(report.disabledTests.violations.length, 0);
+    assert.equal(report.contractsChecked >= 2, true);
+
+    assert.throws(
+      () => defineTestContract({ invariant: 'Test helper returns true', mechanism: 'valid mechanism text', covers: ['POST /v1/messages'], sunset_when: 'Delete when removed from server', sunset: { kind: 'permanent' } }),
+      /user-perceivable invariant/u,
+    );
+    assert.throws(
+      () => defineTestContract({ invariant: 'Valid user-visible invariant text', sunset: { kind: 'permanent' } }),
+      /@mechanism/u,
+    );
+    const parsed = extractInlineContracts('packages/foo/bar.test.ts', "defineTestContract({ invariant: 'short', sunset: { kind: 'permanent' } })");
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].mechanism, '');
   });
 });

@@ -447,6 +447,8 @@ body {
   position: relative;
   display: flex;
   height: 100%;
+  max-height: 100%;
+  min-height: 0;
   width: var(--kiki-sidebar-width, 264px);
   flex-shrink: 0;
   flex-direction: column;
@@ -469,10 +471,13 @@ body {
  * the stage collapses to an edge-to-edge single sheet. */
 .app-stage {
   display: flex;
+  height: 100%;
+  max-height: 100%;
   min-width: 0;
   min-height: 0;
   flex: 1;
   flex-direction: column;
+  overflow: hidden;
   gap: 6px;
   padding: var(--kiki-stage-gap) var(--kiki-stage-gap) var(--kiki-stage-gap) 0;
 }
@@ -620,6 +625,8 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   position: relative;
   flex-shrink: 0;
   height: 100%;
+  max-height: 100%;
+  min-height: 0;
   display: flex;
 }
 
@@ -627,6 +634,8 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   position: relative;
   display: flex;
   height: 100%;
+  max-height: 100%;
+  min-height: 0;
   width: var(--kiki-rail-width, 300px);
   flex-shrink: 0;
   flex-direction: column;
@@ -917,6 +926,7 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   flex: 1;
   flex-direction: column;
   height: 100%;
+  max-height: 100%;
   min-width: 0;
   min-height: 0;
   background: var(--color-paper);
@@ -925,6 +935,8 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
 .conversation-row {
   display: flex;
   flex: 1;
+  height: 100%;
+  max-height: 100%;
   min-height: 0;
 }
 
@@ -933,6 +945,8 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   display: flex;
   flex: 1;
   flex-direction: column;
+  height: 100%;
+  max-height: 100%;
   min-width: 0;
   min-height: 0;
 }
@@ -1004,6 +1018,14 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   }
 }
 
+.conversation-rail-slot:not(:empty):not(:has([data-rail-backdrop])) {
+  display: flex;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  flex-shrink: 0;
+}
+
 .conversation-rail-slot:has([data-rail-backdrop]) {
   display: contents;
 }
@@ -1021,6 +1043,8 @@ body[data-pane-resizing='true'] [data-terminal-panel] {
   position: relative;
   display: flex;
   height: 100%;
+  max-height: 100%;
+  min-height: 0;
   flex-shrink: 0;
   flex-direction: column;
   background-color: var(--color-panel);

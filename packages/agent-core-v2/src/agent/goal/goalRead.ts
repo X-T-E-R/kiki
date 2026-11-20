@@ -23,6 +23,7 @@ interface GoalReadState {
 
 const READ_BYTES = 8 * 1024 * 1024;
 const READ_RECORDS = 50_000;
+const GOAL_RAW_SUBSTRINGS: readonly Uint8Array[] = [Buffer.from('"goal.'), Buffer.from('"forked"')];
 const silent = { silent: true, checkpoint() {}, clearCheckpoints() {}, undoToCheckpoint() {}, emit() {} };
 
 export class PersistedGoalReader {
@@ -96,28 +97,29 @@ export class PersistedGoalReader {
     let deadline = performance.now() + 4;
     if (state.offset < state.size) {
       let exhausted = true;
-      let lastFilteredOut = false;
+      let pendingYield = false;
       const sliceAbort = new AbortController();
       try {
         for await (const record of this.logs.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
           startOffset: state.offset,
           endOffset: state.size,
           signal: sliceAbort.signal,
+          rawSubstrings: GOAL_RAW_SUBSTRINGS,
           lineFilter: (line) => {
             const keep = line.includes('"goal.') || line.includes('"forked"');
-            lastFilteredOut = !keep;
+            pendingYield = keep;
             return keep;
           },
           onPosition: (offset) => {
             state.offset = offset;
-            if (lastFilteredOut) {
-              lastFilteredOut = false;
+            if (!pendingYield) {
               records++;
               if (offset - start >= READ_BYTES || records >= READ_RECORDS) {
                 exhausted = false;
                 sliceAbort.abort();
               }
             }
+            pendingYield = false;
           },
         })) {
           const entry = this.folds.get(record.type);

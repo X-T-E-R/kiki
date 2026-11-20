@@ -41,6 +41,7 @@ const CORPUS_TOOL_ROTATION = [
 
 function buildTurnWireLines(turnId, baseTime, outputPayload) {
   const ts = baseTime + turnId * 1000;
+  const turnKey = String(turnId);
   const stepUuid = `step-${turnId}-1`;
   const callId = `call-${turnId}-1`;
   const toolDef = CORPUS_TOOL_ROTATION[turnId % CORPUS_TOOL_ROTATION.length];
@@ -54,19 +55,30 @@ function buildTurnWireLines(turnId, baseTime, outputPayload) {
       time: ts,
     }),
     JSON.stringify({
+      type: 'context.append_message',
+      message: {
+        id: `msg-user-${turnId}`,
+        role: 'user',
+        content: [{ type: 'text', text: `Synthetic chaos benchmark turn ${turnId} invoking ${toolDef.name}` }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      time: ts + 2,
+    }),
+    JSON.stringify({
       type: 'context.append_loop_event',
-      event: { type: 'step.begin', turnId, step: 1, uuid: stepUuid },
+      event: { type: 'step.begin', turnId: turnKey, step: 1, uuid: stepUuid },
       time: ts + 5,
     }),
     JSON.stringify({
       type: 'context.append_loop_event',
       event: {
         type: 'tool.call',
-        turnId,
+        turnId: turnKey,
         stepUuid,
         toolCallId: callId,
         name: toolDef.name,
-        args: toolDef.args(turnId),
+        args: JSON.stringify(toolDef.args(turnId)),
       },
       time: ts + 10,
     }),
@@ -82,21 +94,25 @@ function buildTurnWireLines(turnId, baseTime, outputPayload) {
     JSON.stringify({
       type: 'context.append_loop_event',
       event: {
-        type: 'text',
-        turnId,
+        type: 'content.part',
+        turnId: turnKey,
         stepUuid,
-        text: `Synthetic assistant summary for turn ${turnId} after ${toolDef.name} verifying zero-PII corpus layout.`,
+        part: {
+          type: 'text',
+          text: `Synthetic assistant summary for turn ${turnId} after ${toolDef.name} verifying zero-PII corpus layout.`,
+        },
       },
       time: ts + 30,
     }),
     JSON.stringify({
       type: 'context.append_loop_event',
-      event: { type: 'step.end', turnId, step: 1, uuid: stepUuid },
+      event: { type: 'step.end', turnId: turnKey, step: 1, uuid: stepUuid },
       time: ts + 40,
     }),
     JSON.stringify({
       type: 'turn.ended',
       turnId,
+      durationMs: 50,
       reason: 'completed',
       time: ts + 50,
     }),
