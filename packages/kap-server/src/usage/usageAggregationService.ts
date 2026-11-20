@@ -37,6 +37,15 @@ const SOURCE_RECHECK_MS = 10 * 60_000;
 
 const DEFAULT_PAGE_SIZE = 50;
 const INDEX_PAGE_SIZE = 100;
+const DEFAULT_CATALOG_BATCH_SOURCES = 2048;
+const CATALOG_BATCH_SOURCES_ENV = 'KIKI_USAGE_CATALOG_BATCH_SOURCES';
+
+function resolveCatalogBatchSources(): number {
+  const raw = process.env[CATALOG_BATCH_SOURCES_ENV]?.trim();
+  if (raw === undefined || raw.length === 0) return DEFAULT_CATALOG_BATCH_SOURCES;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CATALOG_BATCH_SOURCES;
+}
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PERSISTENCE_SCOPE = 'cache/usage-aggregation-v1';
 const BOUNDARY_BYTES = 4 * 1024;
@@ -137,6 +146,7 @@ interface UsageInventory {
   readonly startAt: number;
   readonly summaries: Map<string, SessionSummary>;
   readonly sources: Map<string, { source: string; workspaceId: string; sessionId: string }>;
+  readonly sourcesBySession: Map<string, Set<string>>;
   readonly dirtyKeys: readonly string[];
   readonly prepared: Map<string, { agents: readonly string[]; version?: number }>;
   readonly heads: Map<string, Awaited<ReturnType<IUsageReadModel['source']>>>;
@@ -267,6 +277,7 @@ export class UsageAggregationService {
         this.inventoryRevision++;
         this.agentInventories.clear();
         this.sourceMetadata.clear();
+        this.sourceKeysBySession.clear();
         this.progressFullGeneration++;
         this.progressDirtySessions.clear();
       } else if (typeof key === 'string') {
@@ -274,10 +285,15 @@ export class UsageAggregationService {
         this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
         this.agentInventories.delete(key);
         if (typeof change === 'object' && change.kind === 'agent') {
-          this.sourceMetadata.delete(`sessions/${key.replace('\0', '/')}/agents/${change.agentId}`);
+          const sourceKey = `sessions/${key.replace('\0', '/')}/agents/${change.agentId}`;
+          this.sourceMetadata.delete(sourceKey);
+          this.sourceKeysBySession.get(key)?.delete(sourceKey);
         } else {
-          const prefix = `sessions/${key.replace('\0', '/')}/agents/`;
-          for (const source of this.sourceMetadata.keys()) if (source.startsWith(prefix)) this.sourceMetadata.delete(source);
+          const tracked = this.sourceKeysBySession.get(key);
+          if (tracked !== undefined) {
+            for (const source of tracked) this.sourceMetadata.delete(source);
+            this.sourceKeysBySession.delete(key);
+          }
         }
         this.progressDirtySessions.add(key);
       }
@@ -499,8 +515,10 @@ export class UsageAggregationService {
     const model = this.core.accessor.get(IUsageReadModel);
     const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
     const signal = options.factSignal ?? this.modelController.signal;
-    const ordered = [...new Set(agentIds)].toSorted((left, right) => Number(right === 'main') - Number(left === 'main'));
-    for (const id of ordered) {
+    const ordered = prioritizeMainAgentIds(agentIds);
+    for (let index = 0; index < ordered.length; index += 1) {
+      if (index > 0 && index % 32 === 0) await yieldToEventLoop(undefined, { signal });
+      const id = ordered[index]!;
       signal.throwIfAborted();
       if (this.now() >= (options.deadlineAt ?? Infinity)) break;
       const source = agentScopeOf(sessionScope, id);
@@ -790,9 +808,11 @@ export class UsageAggregationService {
   private readonly dirtySessions = new Map<string, number>();
   private knownSessions = new Map<string, SessionSummary>();
   private knownSources = new Map<string, { source: string; workspaceId: string; sessionId: string }>();
+  private knownSourcesBySession = new Map<string, Set<string>>();
 
   private readonly agentInventories = new Map<string, Promise<readonly string[]>>();
   private readonly sourceMetadata = new Map<string, Promise<UsageSourceMetadata>>();
+  private readonly sourceKeysBySession = new Map<string, Set<string>>();
   private readonly verifiedSources = new Map<string, string>();
   private readonly canonicalProgress = new Map<string, { identity: string; startOffset: number; readBytes: number; totalBytes: number }>();
   private progressInventory?: Promise<void>;
@@ -816,13 +836,27 @@ export class UsageAggregationService {
     return read;
   }
 
-  private metadataOf(source: string, agentId: string): Promise<UsageSourceMetadata> {
+  private metadataOf(source: string, agentId: string, ownerSessionKey?: string): Promise<UsageSourceMetadata> {
     let read = this.sourceMetadata.get(source);
     if (read === undefined) {
       const storage = this.core.accessor.get(IFileSystemStorageService), logs = this.core.accessor.get(IAppendLogStore);
       read = Promise.all([logs.generation(source, AGENT_WIRE_RECORD_KEY), storage.size(source, AGENT_WIRE_RECORD_KEY), storage.mtime(source, AGENT_WIRE_RECORD_KEY)]).then(([generation, size, mtimeMs]) => ({ source, agentId, generation, size: size ?? 0, mtimeMs: mtimeMs ?? 0 }));
       this.sourceMetadata.set(source, read);
-      void read.catch(() => { if (this.sourceMetadata.get(source) === read) this.sourceMetadata.delete(source); });
+      const sessionOwner = ownerSessionKey ?? sessionKeyFromAgentSource(source);
+      if (sessionOwner !== undefined) {
+        let bucket = this.sourceKeysBySession.get(sessionOwner);
+        if (bucket === undefined) {
+          bucket = new Set();
+          this.sourceKeysBySession.set(sessionOwner, bucket);
+        }
+        bucket.add(source);
+      }
+      void read.catch(() => {
+        if (this.sourceMetadata.get(source) === read) {
+          this.sourceMetadata.delete(source);
+          if (sessionOwner !== undefined) this.sourceKeysBySession.get(sessionOwner)?.delete(source);
+        }
+      });
     }
     return read;
   }
@@ -839,13 +873,14 @@ export class UsageAggregationService {
       const index = this.core.accessor.get(ISessionIndex), model = this.core.accessor.get(IUsageReadModel), facts = this.core.accessor.get(IUsageFactStore);
       const collectSessionRows = async (summary: SessionSummary): Promise<{ summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[]> => {
         if (summary.private === true) return [];
+        const key = sessionKey(summary);
         const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
         const agents = await waitForSource(this.agentsOf(summary), signal);
         const sessionRows: { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[] = [];
         for (let offset = 0; offset < agents.length; offset += 32) {
           sessionRows.push(...await Promise.all(agents.slice(offset, offset + 32).map(async (agentId) => {
             const source = agentScopeOf(session, agentId);
-            const [metadata, journalSize] = await Promise.all([this.metadataOf(source, agentId), facts.journalSize(source, signal)]);
+            const [metadata, journalSize] = await Promise.all([this.metadataOf(source, agentId, key), facts.journalSize(source, signal)]);
             return { summary, metadata, journalSize };
           })));
           await yieldToEventLoop(undefined, { signal });
@@ -855,17 +890,22 @@ export class UsageAggregationService {
       if (fullScan) {
         const bySession = new Map<string, readonly { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[]>();
         let before: string | undefined;
+        let visitedSessions = 0;
         do {
           const page = await waitForSource(index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before }), signal);
           for (const summary of page.items) {
             const key = sessionKey(summary);
             bySession.set(key, unchanged(key) ? await collectSessionRows(summary) : []);
+            visitedSessions += 1;
+            if (visitedSessions % 32 === 0) await yieldToEventLoop(undefined, { signal });
           }
           before = page.nextCursor;
         } while (before !== undefined);
         this.retainedProgress = await this.core.accessor.get(IRetainedUsageService).readModelImportProgress?.(signal) ?? [];
         const heads = await model.sources(signal);
-        for (const { source, head } of heads) {
+        for (let index = 0; index < heads.length; index += 1) {
+          if (index > 0 && index % 256 === 0) await yieldToEventLoop(undefined, { signal });
+          const { source, head } = heads[index]!;
           const metadata = await this.sourceMetadata.get(source);
           const checkpoint = head.checkpoint;
           if (metadata !== undefined && checkpoint?.valid && head.pendingCheckpoint === undefined && checkpoint.generation === metadata.generation && checkpoint.offset === metadata.size && checkpoint.size === metadata.size && checkpoint.mtimeMs === metadata.mtimeMs) this.verifiedSources.set(source, sourceIdentity(metadata));
@@ -881,7 +921,7 @@ export class UsageAggregationService {
           }
           this.progressRowsBySession = bySession;
           this.progressCompletedGeneration = generation;
-          this.progressRows = [...bySession.values()].flat();
+          this.progressRows = flattenProgressRows(bySession);
           this.progressInventoryReady = this.progressDirtySessions.size === 0;
         }
         return;
@@ -919,7 +959,7 @@ export class UsageAggregationService {
           }
         }
         this.progressRowsBySession = nextBySession;
-        this.progressRows = [...nextBySession.values()].flat();
+        this.progressRows = flattenProgressRows(nextBySession);
         this.progressInventoryReady = this.progressDirtySessions.size === 0;
       }
     })().finally(() => { if (this.progressInventory === work) this.progressInventory = undefined; });
@@ -929,15 +969,18 @@ export class UsageAggregationService {
 
   private importProgress(query: NormalizedQuery): UsageResponse['reliability']['import_progress'] {
     if (!this.progressInventoryReady && this.progressRows.length === 0) return undefined;
+    const workspaceFilter = query.workspaceIds.length > 0 ? new Set(query.workspaceIds) : undefined;
+    const startAt = query.range.startAt ?? -Infinity;
     let verified_sources = 0, total_sources = 0, read_bytes = 0, total_bytes = 0;
     for (const { summary, metadata, journalSize } of this.progressRows) {
-      if (!query.includeArchived && summary.archived || query.workspaceIds.length > 0 && !query.workspaceIds.includes(summary.workspaceId) || metadata.mtimeMs >= 1_000_000_000_000 && metadata.mtimeMs < (query.range.startAt ?? -Infinity)) continue;
+      if (!query.includeArchived && summary.archived || workspaceFilter !== undefined && !workspaceFilter.has(summary.workspaceId) || metadata.mtimeMs >= 1_000_000_000_000 && metadata.mtimeMs < startAt) continue;
       total_sources++;
       const identity = sourceIdentity(metadata);
-      if (this.verifiedSources.get(metadata.source) === identity) verified_sources++;
+      const verified = this.verifiedSources.get(metadata.source) === identity;
+      if (verified) verified_sources++;
       const canonical = this.canonicalProgress.get(metadata.source);
       if (canonical?.identity === identity) { total_bytes += canonical.totalBytes; read_bytes += canonical.readBytes; }
-      else if (journalSize === 0 && this.verifiedSources.get(metadata.source) !== identity) total_bytes += metadata.size;
+      else if (journalSize === 0 && !verified) total_bytes += metadata.size;
     }
     for (const retained of this.retainedProgress) { total_sources++; if (retained.complete) verified_sources++; total_bytes += retained.size; read_bytes += retained.readBytes; }
     return { verified_sources, total_sources, read_bytes, total_bytes };
@@ -965,11 +1008,24 @@ export class UsageAggregationService {
         const verifyAll = full || this.verifiedInventoryRevision !== this.inventoryRevision || !this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS || rangeStart < this.modelRangeStart;
         const heads = new Map(verifyAll ? (await waitForSource(model.sources(signal), signal)).map((row) => [row.source, row.head]) : []);
         if (verifyAll) {
-          if (full || this.verifiedInventoryRevision >= 0 && (!this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS)) { this.agentInventories.clear(); this.sourceMetadata.clear(); this.progressFullGeneration++; this.progressDirtySessions.clear(); this.progressInventoryReady = false; }
+          if (full || this.verifiedInventoryRevision >= 0 && (!this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS)) { this.agentInventories.clear(); this.sourceMetadata.clear(); this.sourceKeysBySession.clear(); this.progressFullGeneration++; this.progressDirtySessions.clear(); this.progressInventoryReady = false; }
           this.modelExcludedSources.clear();
           this.modelRangeStart = rangeStart;
         }
-        this.inventory = { full: verifyAll, revision: this.inventoryRevision, startAt: this.modelRangeStart, summaries: verifyAll ? new Map() : new Map(this.knownSessions), sources: verifyAll ? new Map() : new Map(this.knownSources), dirtyKeys: [...this.dirtySessions.keys()], prepared: new Map(), heads, page: [], nextSession: 0, exhausted: false };
+        this.inventory = {
+          full: verifyAll,
+          revision: this.inventoryRevision,
+          startAt: this.modelRangeStart,
+          summaries: verifyAll ? new Map() : new Map(this.knownSessions),
+          sources: verifyAll ? new Map() : new Map(this.knownSources),
+          sourcesBySession: verifyAll ? new Map() : cloneSessionSourceIndex(this.knownSourcesBySession),
+          dirtyKeys: [...this.dirtySessions.keys()],
+          prepared: new Map(),
+          heads,
+          page: [],
+          nextSession: 0,
+          exhausted: false,
+        };
       }
       const inventory = this.inventory;
       if (inventory.current !== undefined && inventory.current.version !== this.dirtySessions.get(sessionKey(inventory.current.summary))) {
@@ -993,18 +1049,49 @@ export class UsageAggregationService {
           if (!full && scannedSessions >= this.limits.sessionScanLimit) { this.modelIncompleteReason = 'session_cap'; return; }
           if (inventory.full && inventory.nextSession >= inventory.page.length) {
             const page = await waitForSource(index.listRecent({ includeArchived: true, limit: Math.min(INDEX_PAGE_SIZE, full ? INDEX_PAGE_SIZE : this.limits.sessionScanLimit), before: inventory.before }), signal);
-            const prepared = await waitForSource(Promise.all(page.items.map(async (summary) => {
-              const key = sessionKey(summary);
-              const version = this.dirtySessions.get(key);
-              const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-              const agents = summary.private === true ? [] : await this.agentsOf(summary);
-              return { key, summary, agents, version, sources: agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id })) };
-            })), signal);
-            await model.catalog(page.items.map((summary) => ({ ...summary, deleted: false })), prepared.flatMap((item) => item.sources));
+            const catalogBatchLimit = resolveCatalogBatchSources();
+            const prepared: Array<{
+              readonly key: string;
+              readonly summary: SessionSummary;
+              readonly agents: readonly string[];
+              readonly version: number | undefined;
+              readonly sources: { source: string; workspaceId: string; sessionId: string }[];
+            }> = [];
+            let batchSourceCount = 0;
+            for (let offset = 0; offset < page.items.length; offset += 32) {
+              const slice = page.items.slice(offset, offset + 32);
+              const chunk = await waitForSource(Promise.all(slice.map(async (summary) => {
+                const key = sessionKey(summary);
+                const version = this.dirtySessions.get(key);
+                const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
+                const agents = summary.private === true ? [] : await this.agentsOf(summary);
+                return { key, summary, agents, version, sources: agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id })) };
+              })), signal);
+              for (const item of chunk) {
+                prepared.push(item);
+                batchSourceCount += item.sources.length;
+                if (batchSourceCount >= catalogBatchLimit) break;
+              }
+              if (batchSourceCount >= catalogBatchLimit) break;
+              if (batchSourceCount >= 512 && offset + 32 < page.items.length) await yieldToEventLoop(undefined, { signal });
+            }
+            const catalogSessions = prepared.map((item) => ({ ...item.summary, deleted: false }));
+            const catalogSources = prepared.flatMap((item) => item.sources);
+            if (catalogSources.length <= catalogBatchLimit) {
+              await waitForSource(model.catalog(catalogSessions, catalogSources), signal);
+            } else {
+              for (let start = 0; start < catalogSources.length; start += catalogBatchLimit) {
+                if (start > 0) await yieldToEventLoop(undefined, { signal });
+                await waitForSource(
+                  model.catalog(start === 0 ? catalogSessions : [], catalogSources.slice(start, start + catalogBatchLimit)),
+                  signal,
+                );
+              }
+            }
             for (const item of prepared) {
               inventory.prepared.set(item.key, { agents: item.agents, version: item.version });
               inventory.summaries.set(item.key, item.summary);
-              for (const source of item.sources) inventory.sources.set(source.source, source);
+              replaceSessionInventorySources(inventory, item.key, item.sources);
             }
             inventory.page = page.items;
             inventory.nextSession = 0;
@@ -1018,7 +1105,7 @@ export class UsageAggregationService {
           const summary = inventory.full ? inventory.page[inventory.nextSession] : await waitForSource(index.get(dirtyKey!.split('\0')[1]!), signal);
           if (summary === undefined) {
             inventory.summaries.delete(dirtyKey!);
-            for (const [key, value] of inventory.sources) if (`${value.workspaceId}\0${value.sessionId}` === dirtyKey) inventory.sources.delete(key);
+            deleteSessionInventorySources(inventory, dirtyKey!);
             if (this.dirtySessions.get(dirtyKey!) === version) this.dirtySessions.delete(dirtyKey!);
             inventory.nextSession++;
             scannedSessions++;
@@ -1030,21 +1117,36 @@ export class UsageAggregationService {
           const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
           const agents = summary.private === true ? [] : prepared?.agents ?? await waitForSource(this.agentsOf(summary), signal);
           const accountedAgents = this.sessionAccounting.get(key)?.agents;
-          if (accountedAgents !== undefined && (accountedAgents.length !== agents.length || accountedAgents.some((agent) => !agents.includes(agent)))) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
+          if (accountedAgents !== undefined && !sameAgentList(accountedAgents, agents)) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
           const sources = agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id }));
           inventory.current = { summary, version: observedVersion, agents, sources, nextAgent: 0 };
           inventory.summaries.set(key, summary);
-          for (const [source, value] of inventory.sources) if (value.workspaceId === summary.workspaceId && value.sessionId === summary.id) inventory.sources.delete(source);
-          for (const source of sources) inventory.sources.set(source.source, source);
-          if (prepared === undefined) await model.catalog([{ ...summary, deleted: false }], sources);
+          replaceSessionInventorySources(inventory, key, sources);
+          if (prepared === undefined) {
+            const catalogBatchLimit = resolveCatalogBatchSources();
+            if (sources.length <= catalogBatchLimit) {
+              await waitForSource(model.catalog([{ ...summary, deleted: false }], sources), signal);
+            } else {
+              for (let start = 0; start < sources.length; start += catalogBatchLimit) {
+                if (start > 0) await yieldToEventLoop(undefined, { signal });
+                await waitForSource(
+                  model.catalog(start === 0 ? [{ ...summary, deleted: false }] : [], sources.slice(start, start + catalogBatchLimit)),
+                  signal,
+                );
+              }
+            }
+          }
         }
         const current = inventory.current;
+        const currentKey = sessionKey(current.summary);
+        let batchProcessed = 0;
         while (current.nextAgent < current.agents.length) {
           if (stop()) return;
           if (current.pending === undefined || current.pending.length === 0) {
+            if (batchProcessed > 0) await yieldToEventLoop(undefined, { signal });
             const count = full ? 32 : Math.min(32, this.limits.sourceScanLimit - recoverySources);
             current.pending = await waitForSource(Promise.all(current.sources.slice(current.nextAgent, current.nextAgent + count).map(async ({ source }, offset) => {
-              const [metadata, head] = await Promise.all([this.metadataOf(source, current.agents[current.nextAgent + offset]!), inventory.full ? inventory.heads.get(source) : model.source(source, signal)]);
+              const [metadata, head] = await Promise.all([this.metadataOf(source, current.agents[current.nextAgent + offset]!, currentKey), inventory.full ? inventory.heads.get(source) : model.source(source, signal)]);
               const checkpoint = head?.checkpoint;
               return { ...metadata, aligned: !full && head?.pendingCheckpoint === undefined && checkpoint?.generation === metadata.generation && checkpoint.offset === metadata.size && checkpoint.size === metadata.size && checkpoint.mtimeMs === metadata.mtimeMs };
             })), signal);
@@ -1053,8 +1155,7 @@ export class UsageAggregationService {
           const excluded = !full && source.mtimeMs >= 1_000_000_000_000 && source.mtimeMs < inventory.startAt;
           if (!source.aligned && excluded) this.modelExcludedSources.add(source.source);
           else {
-            const key = sessionKey(current.summary);
-            if (!source.aligned && this.sessionAccounting.has(key)) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
+            if (!source.aligned && this.sessionAccounting.has(currentKey)) this.sessionVersions.set(currentKey, (this.sessionVersions.get(currentKey) ?? 0) + 1);
             this.modelExcludedSources.delete(source.source);
             if (!source.aligned) {
               this.markPreparationRecovery();
@@ -1062,15 +1163,16 @@ export class UsageAggregationService {
               if (!await this.synchronizeSource(source, signal, { factBudget, recoveryBudget, deadlineAt, background: true, onScannedRecord: full ? () => { this.rescan = { ...this.rescan, scanned_records: this.rescan.scanned_records + 1 }; } : undefined })) { this.modelIncompleteReason = this.now() >= deadlineAt ? 'deadline' : 'record_budget'; return; }
             }
             if (full && (await model.source(source.source, signal))?.checkpoint?.valid !== true) {
-              fullScannedSessions.add(sessionKey(current.summary));
+              fullScannedSessions.add(currentKey);
               this.rescan = { ...this.rescan, scanned_sessions: fullScannedSessions.size };
               throw new Error(`Usage checkpoint is incomplete for session ${current.summary.id}`);
             }
           }
           current.pending.shift();
           current.nextAgent++;
+          batchProcessed++;
         }
-        const key = sessionKey(current.summary);
+        const key = currentKey;
         if (this.dirtySessions.get(key) === current.version) this.dirtySessions.delete(key);
         inventory.current = undefined;
         inventory.nextSession++;
@@ -1081,6 +1183,7 @@ export class UsageAggregationService {
       await model.catalog([...inventory.summaries.values()].map((summary) => ({ ...summary, deleted: false })), [...inventory.sources.values()], true);
       this.knownSessions = inventory.summaries;
       this.knownSources = inventory.sources;
+      this.knownSourcesBySession = inventory.sourcesBySession;
       const retained = this.core.accessor.get(IRetainedUsageService);
       let retainedRevision = this.retainedRevision;
       if (retained.prepareReadModel !== undefined) {
@@ -1307,6 +1410,78 @@ function sourceIdentity(source: UsageSourceMetadata): string {
 
 function sessionKey(summary: Pick<SessionSummary, 'id' | 'workspaceId'>): string {
   return `${summary.workspaceId}\0${summary.id}`;
+}
+
+function sessionKeyFromAgentSource(source: string): string | undefined {
+  if (!source.startsWith('sessions/')) return undefined;
+  const agentsMarker = '/agents/';
+  const agentsIndex = source.indexOf(agentsMarker, 'sessions/'.length);
+  if (agentsIndex < 0) return undefined;
+  const body = source.slice('sessions/'.length, agentsIndex);
+  const slash = body.indexOf('/');
+  if (slash <= 0 || slash >= body.length - 1) return undefined;
+  return `${body.slice(0, slash)}\0${body.slice(slash + 1)}`;
+}
+
+function prioritizeMainAgentIds(agentIds: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const rest: string[] = [];
+  let hasMain = false;
+  for (const id of agentIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (id === 'main') hasMain = true;
+    else rest.push(id);
+  }
+  return hasMain ? ['main', ...rest] : rest;
+}
+
+function sameAgentList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  if (left.length === 0) return true;
+  const rightSet = new Set(right);
+  for (const id of left) {
+    if (!rightSet.has(id)) return false;
+  }
+  return true;
+}
+
+function cloneSessionSourceIndex(
+  index: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, Set<string>> {
+  const cloned = new Map<string, Set<string>>();
+  for (const [key, value] of index) cloned.set(key, new Set(value));
+  return cloned;
+}
+
+function deleteSessionInventorySources(inventory: UsageInventory, key: string): void {
+  const existing = inventory.sourcesBySession.get(key);
+  if (existing === undefined) return;
+  for (const source of existing) inventory.sources.delete(source);
+  inventory.sourcesBySession.delete(key);
+}
+
+function replaceSessionInventorySources(
+  inventory: UsageInventory,
+  key: string,
+  sources: readonly { source: string; workspaceId: string; sessionId: string }[],
+): void {
+  deleteSessionInventorySources(inventory, key);
+  if (sources.length === 0) return;
+  const bucket = new Set<string>();
+  for (const entry of sources) {
+    inventory.sources.set(entry.source, entry);
+    bucket.add(entry.source);
+  }
+  inventory.sourcesBySession.set(key, bucket);
+}
+
+function flattenProgressRows<T>(bySession: ReadonlyMap<string, readonly T[]>): T[] {
+  const rows: T[] = [];
+  for (const entries of bySession.values()) {
+    for (const entry of entries) rows.push(entry);
+  }
+  return rows;
 }
 
 function emptyUsage(): TokenUsage {

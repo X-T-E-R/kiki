@@ -19,13 +19,35 @@ export class SkillNotFoundError extends Error {
   }
 }
 
+export const MODEL_SKILL_LISTING_LIMIT_ENV = 'KIKI_MODEL_SKILL_LISTING_LIMIT';
+export const DEFAULT_MODEL_SKILL_LISTING_LIMIT = 128;
+export const MODEL_SKILL_LISTING_MAX_CHARS_ENV = 'KIKI_MODEL_SKILL_LISTING_MAX_CHARS';
+export const DEFAULT_MODEL_SKILL_LISTING_MAX_CHARS = 32_768;
+
+function resolvePositiveLimit(envName: string, fallback: number): number {
+  const raw = process.env[envName]?.trim();
+  if (raw === undefined || raw.length === 0) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export class InMemorySkillCatalog implements SkillCatalog {
   private readonly byName = new Map<string, SkillDefinition>();
   private readonly commands = new Map<string, SkillDefinition>();
   private readonly byPluginAndName = new Map<string, SkillDefinition>();
   private readonly disabledNames = new Set<string>();
   private readonly roots: string[] = [];
+  private readonly rootSet = new Set<string>();
   private readonly skipped: SkippedSkill[] = [];
+  private cachedCommands: { readonly list: readonly SkillDefinition[]; readonly byName: ReadonlyMap<string, SkillDefinition> } | undefined;
+  private cachedAllSkills: readonly SkillDefinition[] | undefined;
+  private cachedEnabledSkills: readonly SkillDefinition[] | undefined;
+
+  private invalidateDerivedCaches(): void {
+    this.cachedCommands = undefined;
+    this.cachedAllSkills = undefined;
+    this.cachedEnabledSkills = undefined;
+  }
 
   setDisabledSkills(names: Iterable<string>): void {
     this.disabledNames.clear();
@@ -33,6 +55,7 @@ export class InMemorySkillCatalog implements SkillCatalog {
       const trimmed = name.trim();
       if (trimmed !== '') this.disabledNames.add(normalizeSkillName(trimmed));
     }
+    this.cachedEnabledSkills = undefined;
   }
 
   isSkillDisabled(name: string): boolean {
@@ -56,6 +79,7 @@ export class InMemorySkillCatalog implements SkillCatalog {
     const target = command ? this.commands : this.byName;
     if (options.replace === true || !target.has(key)) {
       target.set(key, name === skill.name ? skill : { ...skill, name });
+      this.invalidateDerivedCaches();
     }
     this.indexPluginSkill(skill, options);
   }
@@ -66,13 +90,16 @@ export class InMemorySkillCatalog implements SkillCatalog {
 
   addRoots(roots: readonly string[]): void {
     for (const root of roots) {
-      if (!this.roots.includes(root)) this.roots.push(root);
+      if (!this.rootSet.has(root)) {
+        this.rootSet.add(root);
+        this.roots.push(root);
+      }
     }
   }
 
   getSkill(name: string): SkillDefinition | undefined {
     const key = normalizeSkillName(name);
-    const found = this.byName.get(key) ?? this.commandEntries().find((skill) => normalizeSkillName(skill.name) === key);
+    const found = this.byName.get(key) ?? this.resolvedCommands().byName.get(key);
     return found !== undefined && !this.isDisabledDefinition(found) ? found : undefined;
   }
 
@@ -104,23 +131,50 @@ export class InMemorySkillCatalog implements SkillCatalog {
   }
 
   listAllSkills(): readonly SkillDefinition[] {
-    return [...this.byName.values(), ...this.commandEntries()].toSorted((a, b) => a.name.localeCompare(b.name));
+    if (this.cachedAllSkills !== undefined) return this.cachedAllSkills;
+    const combined = [...this.byName.values(), ...this.resolvedCommands().list];
+    combined.sort((a, b) => a.name.localeCompare(b.name));
+    this.cachedAllSkills = combined;
+    return combined;
   }
 
   listSkills(): readonly SkillDefinition[] {
-    return this.listAllSkills().filter((skill) => !this.isDisabledDefinition(skill));
+    if (this.cachedEnabledSkills !== undefined) return this.cachedEnabledSkills;
+    const all = this.listAllSkills();
+    this.cachedEnabledSkills =
+      this.disabledNames.size === 0
+        ? all
+        : all.filter((skill) => !this.isDisabledDefinition(skill));
+    return this.cachedEnabledSkills;
   }
 
-  private commandEntries(): SkillDefinition[] {
+  private resolvedCommands(): {
+    readonly list: readonly SkillDefinition[];
+    readonly byName: ReadonlyMap<string, SkillDefinition>;
+  } {
+    if (this.cachedCommands !== undefined) return this.cachedCommands;
+    if (this.commands.size === 0) {
+      this.cachedCommands = { list: [], byName: new Map() };
+      return this.cachedCommands;
+    }
     const occupied = new Set([...this.byName.keys(), ...this.commands.keys()]);
-    return [...this.commands.values()].map((skill) => {
+    const list: SkillDefinition[] = [];
+    const byName = new Map<string, SkillDefinition>();
+    for (const skill of this.commands.values()) {
       let name = skill.name;
       if (this.byName.has(normalizeSkillName(name))) {
         do { name = `command:${name}`; } while (occupied.has(normalizeSkillName(name)));
         occupied.add(normalizeSkillName(name));
       }
-      return name === skill.name ? skill : { ...skill, name, metadata: { ...skill.metadata, name: skill.name } };
-    });
+      const entry =
+        name === skill.name
+          ? skill
+          : { ...skill, name, metadata: { ...skill.metadata, name: skill.name } };
+      list.push(entry);
+      byName.set(normalizeSkillName(entry.name), entry);
+    }
+    this.cachedCommands = { list, byName };
+    return this.cachedCommands;
   }
 
   listInvocableSkills(): readonly SkillDefinition[] {
@@ -144,15 +198,24 @@ export class InMemorySkillCatalog implements SkillCatalog {
   }
 
   getModelSkillListing(): string {
-    const lines = ['Current available skills replace earlier listings. Invoke Skill by the listed name; its result supplies the resolved source path and full instructions.'];
-    const listing = renderGroupedSkills(
-      this.listInvocableSkills().filter((skill) => skill.metadata.isSubSkill !== true),
-      formatModelSkill,
+    const header = 'Current available skills replace earlier listings. Invoke Skill by the listed name; its result supplies the resolved source path and full instructions.';
+    const eligible = this.listInvocableSkills().filter((skill) => skill.metadata.isSubSkill !== true);
+    if (eligible.length === 0) return '';
+    const maxSkills = resolvePositiveLimit(
+      MODEL_SKILL_LISTING_LIMIT_ENV,
+      DEFAULT_MODEL_SKILL_LISTING_LIMIT,
     );
-    if (listing.length > 0) {
-      lines.push(listing);
+    const maxChars = resolvePositiveLimit(
+      MODEL_SKILL_LISTING_MAX_CHARS_ENV,
+      DEFAULT_MODEL_SKILL_LISTING_MAX_CHARS,
+    );
+    const rendered = renderBoundedGroupedSkills(eligible, formatModelSkill, maxSkills, maxChars, header.length + 1);
+    if (rendered.text.length === 0) return '';
+    const lines = [header, rendered.text];
+    if (rendered.omitted > 0) {
+      lines.push(`... and ${rendered.omitted} more available skills omitted; invoke any known skill by its exact name via Skill.`);
     }
-    return lines.length === 1 ? '' : lines.join('\n');
+    return lines.join('\n');
   }
 
   private indexPluginSkill(
@@ -222,20 +285,80 @@ const SOURCE_GROUPS: ReadonlyArray<{ readonly source: SkillSource; readonly labe
   { source: 'builtin', label: 'Built-in' },
 ];
 
+function groupSkillsBySource(
+  skills: readonly SkillDefinition[],
+): ReadonlyMap<SkillSource, SkillDefinition[]> {
+  const bySource = new Map<SkillSource, SkillDefinition[]>();
+  for (const skill of skills) {
+    let list = bySource.get(skill.source);
+    if (list === undefined) {
+      list = [];
+      bySource.set(skill.source, list);
+    }
+    list.push(skill);
+  }
+  return bySource;
+}
+
 function renderGroupedSkills(
   skills: readonly SkillDefinition[],
   format: (skill: SkillDefinition) => readonly string[],
 ): string {
+  const bySource = groupSkillsBySource(skills);
   const lines: string[] = [];
   for (const group of SOURCE_GROUPS) {
-    const groupSkills = skills.filter((skill) => skill.source === group.source);
-    if (groupSkills.length === 0) continue;
+    const groupSkills = bySource.get(group.source);
+    if (groupSkills === undefined || groupSkills.length === 0) continue;
     lines.push(`### ${group.label}`);
     for (const skill of groupSkills) {
       lines.push(...format(skill));
     }
   }
   return lines.join('\n');
+}
+
+function renderBoundedGroupedSkills(
+  skills: readonly SkillDefinition[],
+  format: (skill: SkillDefinition) => readonly string[],
+  maxSkills: number,
+  maxChars: number,
+  baseChars: number,
+): { readonly text: string; readonly omitted: number } {
+  const bySource = groupSkillsBySource(skills);
+  const lines: string[] = [];
+  let included = 0;
+  let totalChars = baseChars;
+  let totalEligible = 0;
+  for (const group of SOURCE_GROUPS) {
+    const groupSkills = bySource.get(group.source);
+    if (groupSkills === undefined || groupSkills.length === 0) continue;
+    totalEligible += groupSkills.length;
+  }
+  for (const group of SOURCE_GROUPS) {
+    if (included >= maxSkills) break;
+    const groupSkills = bySource.get(group.source);
+    if (groupSkills === undefined || groupSkills.length === 0) continue;
+    const heading = `### ${group.label}`;
+    let headingEmitted = false;
+    for (const skill of groupSkills) {
+      if (included >= maxSkills) break;
+      const entryLines = format(skill);
+      const entryChars = entryLines.reduce((sum, line) => sum + line.length + 1, 0);
+      const headingChars = headingEmitted ? 0 : heading.length + 1;
+      if (included > 0 && totalChars + headingChars + entryChars > maxChars) {
+        return { text: lines.join('\n'), omitted: totalEligible - included };
+      }
+      if (!headingEmitted) {
+        lines.push(heading);
+        totalChars += heading.length + 1;
+        headingEmitted = true;
+      }
+      lines.push(...entryLines);
+      totalChars += entryChars;
+      included += 1;
+    }
+  }
+  return { text: lines.join('\n'), omitted: Math.max(0, totalEligible - included) };
 }
 
 function formatFullSkill(skill: SkillDefinition): readonly string[] {

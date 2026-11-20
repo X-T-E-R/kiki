@@ -2462,4 +2462,90 @@ describe('provider model_hint_header', () => {
       }),
     ).toThrow(/valid HTTP header name/);
   });
+
+  it('lists 10,000 configured models in under 50 ms cold and 2 ms warm with revision-safe caching', async () => {
+    const providerIds = ['openrouter', 'litellm', 'openai-gw', 'anthropic-gw', 'google-gw'] as const;
+    const providersConfig: Record<string, ProviderConfig> = {
+      openrouter: { type: 'openai', apiKey: 'sk-or', baseUrl: 'https://openrouter.example.test/v1' },
+      litellm: { type: 'openai', apiKeyEnv: 'SCALE_LITELLM_KEY', baseUrl: 'https://litellm.example.test/v1' },
+      'openai-gw': { type: 'openai_responses', apiKey: 'sk-oai', baseUrl: 'https://oai.example.test/v1' },
+      'anthropic-gw': { type: 'anthropic', apiKey: 'sk-ant', baseUrl: 'https://ant.example.test/v1' },
+      'google-gw': { type: 'google-genai', apiKey: 'sk-gem', baseUrl: 'https://gem.example.test/v1' },
+    };
+    const modelsConfig: Record<string, ModelRecord> = {};
+    for (let i = 0; i < 10_000; i += 1) {
+      const provider = providerIds[i % providerIds.length]!;
+      const id = `${provider}/model-${String(i).padStart(5, '0')}`;
+      modelsConfig[id] = {
+        provider,
+        model: `remote-model-${i}`,
+        maxContextSize: 128_000,
+        aliases: i === 9999 ? ['tail-alias'] : undefined,
+      };
+    }
+
+    const { host, catalog, models } = createHost({
+      providers: providersConfig,
+      models: modelsConfig,
+      defaultModel: 'openrouter/model-00000',
+    });
+    try {
+      const coldStart = performance.now();
+      const first = await catalog.listModels();
+      const coldMs = performance.now() - coldStart;
+
+      const warmStart = performance.now();
+      const second = await catalog.listModels();
+      const warmMs = performance.now() - warmStart;
+
+      const providersStart = performance.now();
+      const providerItems = await catalog.listProviders();
+      const providersMs = performance.now() - providersStart;
+
+      process.stdout.write(
+        `${JSON.stringify({ stage: 'scale-10k-models', count: first.length, coldMs, warmMs, providersMs })}\n`,
+      );
+
+      expect(first).toHaveLength(10_000);
+      expect(second).toBe(first);
+      expect(coldMs).toBeLessThan(50);
+      expect(warmMs).toBeLessThan(2);
+      expect(providerItems).toHaveLength(5);
+      expect(providerItems.every((item) => item.models?.length === 2000)).toBe(true);
+
+      for (const sampleId of [
+        'openrouter/model-00000',
+        'litellm/model-00001',
+        'openai-gw/model-00002',
+        'anthropic-gw/model-00003',
+        'google-gw/model-00004',
+      ]) {
+        const fastItem = first.find((item) => item.id === sampleId);
+        const fullModel = catalog.get(sampleId);
+        const record = models.get(sampleId)!;
+        const provider = providersConfig[record.provider!];
+        expect(fastItem).toEqual(toProtocolModel(fullModel, record, provider?.type, provider));
+      }
+
+      expect(models.resolveId('tail-alias')).toBe('google-gw/model-09999');
+      expect(models.resolveId('remote-model-9999')).toBe('google-gw/model-09999');
+      expect(catalog.findByName('remote-model-9999')).toEqual(['google-gw/model-09999']);
+
+      vi.stubEnv('SCALE_LITELLM_KEY', 'sk-from-env');
+      const afterEnv = await catalog.listModels();
+      expect(afterEnv).not.toBe(first);
+      expect(afterEnv.find((item) => item.id === 'litellm/model-00001')?.auth_source).toBe('env');
+
+      await models.set('openrouter/model-00000', {
+        ...modelsConfig['openrouter/model-00000']!,
+        maxContextSize: 256_000,
+      });
+      const afterMutation = await catalog.listModels();
+      expect(afterMutation).not.toBe(afterEnv);
+      expect(afterMutation.find((item) => item.id === 'openrouter/model-00000')?.max_context_size).toBe(256_000);
+    } finally {
+      vi.unstubAllEnvs();
+      await host.dispose();
+    }
+  });
 });

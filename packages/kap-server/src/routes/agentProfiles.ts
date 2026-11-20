@@ -1042,6 +1042,51 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   );
 }
 
+function indexRegistrationsByProfileName(
+  entries: readonly AgentProfileRegistration[],
+): ReadonlyMap<string, readonly { readonly registration: AgentProfileRegistration; readonly profile: AgentProfile }[]> {
+  const byName = new Map<string, { readonly registration: AgentProfileRegistration; readonly profile: AgentProfile }[]>();
+  for (const registration of entries) {
+    for (const profile of registration.contribution.profiles) {
+      let bucket = byName.get(profile.name);
+      if (bucket === undefined) {
+        bucket = [];
+        byName.set(profile.name, bucket);
+      }
+      bucket.push({ registration, profile });
+    }
+  }
+  return byName;
+}
+
+const registrationRoutesCache = new WeakMap<
+  AgentProfileRegistration,
+  ReadonlyMap<string, readonly AgentProfileRouteDefinition[]>
+>();
+
+function routesForRegistrationProfile(
+  registration: AgentProfileRegistration,
+  profileName: string,
+): readonly AgentProfileRouteDefinition[] {
+  const rawRoutes = registration.contribution.routes;
+  if (rawRoutes === undefined || rawRoutes.length === 0) return [];
+  let byProfile = registrationRoutesCache.get(registration);
+  if (byProfile === undefined) {
+    const grouped = new Map<string, AgentProfileRouteDefinition[]>();
+    for (const route of rawRoutes) {
+      let list = grouped.get(route.profile);
+      if (list === undefined) {
+        list = [];
+        grouped.set(route.profile, list);
+      }
+      list.push(route);
+    }
+    byProfile = grouped;
+    registrationRoutesCache.set(registration, byProfile);
+  }
+  return byProfile.get(profileName) ?? [];
+}
+
 function projectEffectiveNamedAgentProfiles(
   core: Scope,
   entries: readonly AgentProfileRegistration[],
@@ -1054,12 +1099,14 @@ function projectEffectiveNamedAgentProfiles(
   const profiles = new Map(catalog.list().map((profile) => [profile.name, profile]));
   const defaultProfile = snapshot.defaultProfile;
   if (defaultProfile?.main === true) profiles.set(defaultProfile.name, defaultProfile);
+  const registrationsByName = indexRegistrationsByProfileName(entries);
   return [...profiles.values()].map((profile) => {
     const inspection = catalog.inspect(profile.name);
-    const registration = entries.find((entry) =>
+    const candidates = registrationsByName.get(profile.name) ?? [];
+    const registration = candidates.find(({ registration: entry, profile: candidate }) =>
       (inspection === undefined || entry.sourceId === inspection.sourceId && entry.priority === inspection.priority)
-      && entry.contribution.profiles.some((candidate) => sameProfileDefinition(candidate, profile))
-    );
+      && sameProfileDefinition(candidate, profile)
+    )?.registration;
     const item = toNamedAgentProfile(core, registration ?? {
       sourceId: inspection?.sourceId ?? BUILTIN_AGENT_PROFILE_SOURCE_ID,
       priority: inspection?.priority ?? 0,
@@ -1298,8 +1345,7 @@ function toNamedAgentProfile(
     }),
     disabled: disabledNamed.has(profile.name),
     executor_fields: executorFields(executorId, executor),
-    routes: (registration.contribution.routes ?? [])
-      .filter((candidate) => candidate.profile === profile.name)
+    routes: routesForRegistrationProfile(registration, profile.name)
       .map(toNamedAgentRoute)
       .toSorted((a, b) => a.id.localeCompare(b.id)),
   };

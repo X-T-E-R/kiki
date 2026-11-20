@@ -110,15 +110,16 @@ export function effectiveModelConfig(
   return withAnthropicProfile(clamped, providerType);
 }
 
+const ANTHROPIC_PROFILE_HINT_RE = /claude|opus|sonnet|haiku|fable|mythos/i;
+
 function withAnthropicProfile(model: ModelRecord, providerType?: string): ModelRecord {
   const wireName = model.name ?? model.model;
+  if (wireName === undefined || !ANTHROPIC_PROFILE_HINT_RE.test(wireName)) return model;
   const protocol = model.protocol ?? providerType;
   const profile =
-    wireName === undefined
-      ? undefined
-      : providerType !== undefined && !drivesThinkingThroughTraits(providerType) && protocol === 'anthropic'
-        ? (matchKnownAnthropicModelProfile(wireName) ?? matchUnknownClaudeProfile(wireName))
-        : matchKnownAnthropicModelProfile(wireName);
+    providerType !== undefined && !drivesThinkingThroughTraits(providerType) && protocol === 'anthropic'
+      ? (matchKnownAnthropicModelProfile(wireName) ?? matchUnknownClaudeProfile(wireName))
+      : matchKnownAnthropicModelProfile(wireName);
   if (profile === undefined) return model;
   const capability = profile.canDisableThinking ? 'thinking' : 'always_thinking';
   const capabilities = model.capabilities ?? [];

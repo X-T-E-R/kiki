@@ -24,6 +24,7 @@ import {
   collectLoadedDynamicToolNames,
   foldAnnouncedToolNames,
   renderLoadableToolsAnnouncement,
+  selectBoundedDeferredTools,
   shapeDynamicToolContext,
   shapeToolHistory,
 } from './dynamicTools';
@@ -125,22 +126,35 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 
   isLoadable(name: string): boolean {
-    return this.enabled() && this.loadableToolNames().includes(name) &&
-      this.shapeTools(this.toolRegistry.list()).some((entry) => entry.name === SELECT_TOOLS_TOOL_NAME);
+    if (!this.enabled()) return false;
+    const entries = this.toolRegistry.list();
+    let target: ToolInfo | undefined;
+    for (const entry of entries) {
+      if (entry.name === name) {
+        target = entry;
+        break;
+      }
+    }
+    if (target === undefined || !this.isDynamicallyLoadable(target) || !this.toolPolicy.isToolActive(target.name, target.source)) {
+      return false;
+    }
+    return this.shapeTools(entries).some((entry) => entry.name === SELECT_TOOLS_TOOL_NAME);
   }
 
   loadableNames(): ReadonlySet<string> {
     if (!this.enabled()) return new Set();
-    if (!this.shapeTools(this.toolRegistry.list()).some((entry) => entry.name === SELECT_TOOLS_TOOL_NAME)) return new Set();
-    return new Set(this.loadableToolNames());
+    const entries = this.toolRegistry.list();
+    if (!this.shapeTools(entries).some((entry) => entry.name === SELECT_TOOLS_TOOL_NAME)) return new Set();
+    return new Set(this.loadableToolsFrom(entries).map((info) => info.name));
   }
 
   shapeHistory(messages: readonly ContextMessage[]): ShapedToolHistory {
     if (!this.enabled()) return shapeDynamicToolContext(messages);
+    const infoByName = indexToolInfos(this.toolRegistry.list());
     return shapeToolHistory(messages, (message) => {
       const tools = message.tools;
-      if (tools === undefined || !tools.some((tool) => this.isHistoricallyDisabled(tool.name))) return message;
-      const kept = tools.filter((tool) => !this.isHistoricallyDisabled(tool.name));
+      if (tools === undefined || !tools.some((tool) => this.isHistoricallyDisabled(tool.name, infoByName))) return message;
+      const kept = tools.filter((tool) => !this.isHistoricallyDisabled(tool.name, infoByName));
       if (kept.length > 0) return { ...message, tools: kept };
       if (message.content.length === 0 && message.toolCalls.length === 0) return undefined;
       const { tools: _tools, ...rest } = message;
@@ -148,18 +162,25 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     });
   }
 
-  private isHistoricallyDisabled(name: string): boolean {
-    const info = this.toolRegistry.list().find((entry) => entry.name === name);
+  private isHistoricallyDisabled(name: string, infoByName: ReadonlyMap<string, ToolInfo>): boolean {
+    const info = infoByName.get(name);
     if (info !== undefined) return !this.toolPolicy.isToolActive(name, info.source);
     return name.startsWith('plugin__') || name.startsWith('browser__') || isMcpToolName(name);
   }
 
   load(names: readonly string[]): LoadToolsResult {
-    const loadable = new Set(this.loadableToolNames());
-    const loaded = this.activeLoadedToolNames();
-    const resident = new Set(this.toolRegistry.list()
-      .filter((info) => !this.isDynamicallyLoadable(info) && this.toolPolicy.isToolActive(info.name, info.source))
-      .map((info) => info.name));
+    const entries = this.toolRegistry.list();
+    const infoByName = indexToolInfos(entries);
+    const loadable = new Set<string>();
+    const resident = new Set<string>();
+    withToolPolicySnapshot(this.toolPolicy, () => {
+      for (const info of entries) {
+        if (!this.toolPolicy.isToolActive(info.name, info.source)) continue;
+        if (this.isDynamicallyLoadable(info)) loadable.add(info.name);
+        else resident.add(info.name);
+      }
+    });
+    const loaded = this.activeLoadedToolNames(infoByName);
     const toLoad: string[] = [];
     const alreadyAvailable: string[] = [];
     const unknown: string[] = [];
@@ -188,8 +209,13 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     }
     if (input === null || typeof input !== 'object' || Array.isArray(input)) return call;
     const { name, arguments: args } = input as { name?: unknown; arguments?: unknown };
-    if (typeof name !== 'string' || args === null || typeof args !== 'object' || Array.isArray(args) ||
-      (!this.activeLoadedToolNames().has(name) && !this.residentToolNames().has(name)) || this.toolRegistry.resolve(name) === undefined) return call;
+    if (typeof name !== 'string' || args === null || typeof args !== 'object' || Array.isArray(args)) return call;
+    const entries = this.toolRegistry.list();
+    const infoByName = indexToolInfos(entries);
+    if (
+      (!this.activeLoadedToolNames(infoByName).has(name) && !this.residentToolNamesFrom(entries).has(name)) ||
+      this.toolRegistry.resolve(name) === undefined
+    ) return call;
     return { ...call, name, arguments: JSON.stringify(args) };
   }
 
@@ -200,7 +226,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   describeCallToolTarget(name: string): string {
     const unavailable = this.describeUnavailableTool(name) ?? this.describeMissingTool(name);
     if (unavailable !== undefined) return unavailable;
-    if (this.residentToolNames().has(name) && this.toolRegistry.resolve(name) !== undefined) {
+    if (this.residentToolNamesFrom(this.toolRegistry.list()).has(name) && this.toolRegistry.resolve(name) !== undefined) {
       return `Tool "${name}" is an ordinary tool, not a loaded one. Call it directly by its name instead of through ${CALL_TOOL_NAME}.`;
     }
     return (
@@ -211,10 +237,11 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
 
   drainPendingToolSchemas(): readonly Tool[] | undefined {
     if (!this.enabled() || this.pendingLoaded.size === 0) return undefined;
+    const infoByName = indexToolInfos(this.toolRegistry.list());
     const names = [...this.pendingLoaded].toSorted((a, b) => a.localeCompare(b));
     const tools: Tool[] = [];
     for (const name of names) {
-      const tool = this.schemaOf(name);
+      const tool = this.schemaOf(name, infoByName);
       if (tool === undefined) continue;
       this.pendingLoaded.delete(name);
       this.awaitingSchema.delete(name);
@@ -225,10 +252,12 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
 
   loadableToolsAnnouncement(): string | undefined {
     if (!this.enabled()) return undefined;
-    const loadable = this.loadableTools();
-    const loadableNames = loadable.map((info) => info.name);
-    const loadableSet = new Set(loadableNames);
+    const entries = this.toolRegistry.list();
+    const infoByName = indexToolInfos(entries);
+    const allLoadable = this.loadableToolsFrom(entries);
     const announced = foldAnnouncedToolNames(this.context.get());
+    const { selected: loadable, omitted } = selectBoundedDeferredTools(allLoadable, announced);
+    const loadableSet = new Set(loadable.map((info) => info.name));
     const added = loadable.filter((info) => !announced.has(info.name));
     const addedNames = new Set(added.map((info) => info.name));
     const latestSchemas = new Map<string, Tool>();
@@ -239,34 +268,38 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
       const name = info.name;
       if (this.pendingLoaded.has(name) || !announced.has(name) || addedNames.has(name)) continue;
       const previous = latestSchemas.get(name);
-      const current = this.schemaOf(name);
-      if (previous === undefined || current === undefined ||
-        JSON.stringify(previous) === JSON.stringify(current)) continue;
+      if (previous === undefined) continue;
+      const current = this.schemaOf(name, infoByName);
+      if (current === undefined || JSON.stringify(previous) === JSON.stringify(current)) continue;
       this.pendingLoaded.add(name);
       added.push(info);
       addedNames.add(name);
     }
-    const residents = this.residentToolNames();
+    const residents = this.residentToolNamesFrom(entries);
+    const allLoadableSet = omitted === 0 ? loadableSet : new Set(allLoadable.map((info) => info.name));
     const removed = [...announced]
-      .filter((name) => !loadableSet.has(name) && !residents.has(name))
+      .filter((name) => !allLoadableSet.has(name) && !residents.has(name))
       .toSorted((a, b) => a.localeCompare(b));
     if (added.length === 0 && removed.length === 0) return undefined;
-    return renderLoadableToolsAnnouncement(added, removed);
+    return renderLoadableToolsAnnouncement(added, removed, omitted);
   }
 
   private shouldIntercept(name: string): boolean {
     if (!this.enabled()) return false;
-    const info = this.toolRegistry.list().find((entry) => entry.name === name);
+    const entries = this.toolRegistry.list();
+    const infoByName = indexToolInfos(entries);
+    const info = infoByName.get(name);
     if (info === undefined || !this.isDynamicallyLoadable(info)) return false;
-    if (!this.loadableToolNames().includes(name)) return false;
-    return !this.activeLoadedToolNames().has(name);
+    if (!this.toolPolicy.isToolActive(info.name, info.source)) return false;
+    return !this.activeLoadedToolNames(infoByName).has(name);
   }
 
   private describeUnavailableTool(name: string): string | undefined {
-    if (this.isInactiveLoadedTool(name)) return inactiveLoadedToolOutput(name);
+    const infoByName = indexToolInfos(this.toolRegistry.list());
+    if (this.isInactiveLoadedTool(name, infoByName)) return inactiveLoadedToolOutput(name);
     const awaiting = this.awaitingSchema.has(name) && this.pendingLoaded.has(name);
     if (!awaiting && !this.shouldIntercept(name)) return undefined;
-    const schema = this.schemaOf(name);
+    const schema = this.schemaOf(name, infoByName);
     if (schema === undefined) return undefined;
     this.pendingLoaded.add(name);
     this.awaitingSchema.add(name);
@@ -289,28 +322,24 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     );
   }
 
-  private loadableToolNames(): string[] {
-    return this.loadableTools().map((info) => info.name);
-  }
-
-  private loadableTools(): ToolInfo[] {
-    return this.toolRegistry
-      .list()
-      .filter(
-        (info) =>
-          this.isDynamicallyLoadable(info) &&
-          this.toolPolicy.isToolActive(info.name, info.source),
-      )
-      .toSorted((a, b) => a.name.localeCompare(b.name));
-  }
-
-  private residentToolNames(): Set<string> {
-    return new Set(
-      this.toolRegistry
-        .list()
-        .filter((info) => !this.isDynamicallyLoadable(info))
-        .map((info) => info.name),
+  private loadableToolsFrom(entries: readonly ToolInfo[]): ToolInfo[] {
+    return withToolPolicySnapshot(this.toolPolicy, () =>
+      entries
+        .filter(
+          (info) =>
+            this.isDynamicallyLoadable(info) &&
+            this.toolPolicy.isToolActive(info.name, info.source),
+        )
+        .toSorted((a, b) => a.name.localeCompare(b.name)),
     );
+  }
+
+  private residentToolNamesFrom(entries: readonly ToolInfo[]): Set<string> {
+    const names = new Set<string>();
+    for (const info of entries) {
+      if (!this.isDynamicallyLoadable(info)) names.add(info.name);
+    }
+    return names;
   }
 
   private loadedToolNames(): Set<string> {
@@ -319,21 +348,21 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     return names;
   }
 
-  private activeLoadedToolNames(): Set<string> {
+  private activeLoadedToolNames(infoByName: ReadonlyMap<string, ToolInfo>): Set<string> {
     const names = this.loadedToolNames();
     for (const name of names) {
-      if (!this.isLoadedToolActive(name)) names.delete(name);
+      if (!this.isLoadedToolActive(name, infoByName)) names.delete(name);
     }
     return names;
   }
 
-  private isInactiveLoadedTool(name: string): boolean {
+  private isInactiveLoadedTool(name: string, infoByName: ReadonlyMap<string, ToolInfo>): boolean {
     if (!this.enabled()) return false;
-    return this.loadedToolNames().has(name) && !this.isLoadedToolActive(name);
+    return this.loadedToolNames().has(name) && !this.isLoadedToolActive(name, infoByName);
   }
 
-  private isLoadedToolActive(name: string): boolean {
-    const info = this.toolRegistry.list().find((entry) => entry.name === name);
+  private isLoadedToolActive(name: string, infoByName: ReadonlyMap<string, ToolInfo>): boolean {
+    const info = infoByName.get(name);
     if (info !== undefined) {
       return (
         this.isDynamicallyLoadable(info) &&
@@ -348,8 +377,8 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     return info.source === 'builtin' && info.disclosure === 'deferred' && isBrowserOperationToolName(info.name);
   }
 
-  private schemaOf(name: string): Tool | undefined {
-    const info = this.toolRegistry.list().find((entry) => entry.name === name);
+  private schemaOf(name: string, infoByName: ReadonlyMap<string, ToolInfo>): Tool | undefined {
+    const info = infoByName.get(name);
     const tool = this.toolRegistry.resolve(name);
     if (tool === undefined || info === undefined || !this.toolPolicy.isToolActive(name, info.source)) return undefined;
     return {
@@ -382,6 +411,14 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     }
     return filtered ?? entries;
   }
+}
+
+function indexToolInfos(entries: readonly ToolInfo[]): ReadonlyMap<string, ToolInfo> {
+  const byName = new Map<string, ToolInfo>();
+  for (const entry of entries) {
+    if (!byName.has(entry.name)) byName.set(entry.name, entry);
+  }
+  return byName;
 }
 
 function notLoadedToolOutput(name: string, parameters: Record<string, unknown> | undefined, viaCallTool: boolean): string {

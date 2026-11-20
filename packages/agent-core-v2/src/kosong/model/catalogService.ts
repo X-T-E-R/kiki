@@ -1,5 +1,9 @@
 import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
-import { decisionProtocolForProviderType, type DecisionProtocol } from '@kiki/protocol';
+import {
+  decisionProtocolForProviderType,
+  modelBehaviorToWire,
+  type DecisionProtocol,
+} from '@kiki/protocol';
 
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
@@ -9,7 +13,7 @@ import type { ProviderAdapterDefinition } from '#/kosong/protocol/extensionRegis
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
-import type { ModelCapability } from '#/kosong/contract/capability';
+import { UNKNOWN_CAPABILITY, type ModelCapability } from '#/kosong/contract/capability';
 import type { ProviderRequestAuth } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import {
@@ -17,6 +21,7 @@ import {
   type Protocol,
   type ProtocolProviderOptions,
 } from '#/kosong/protocol/protocol';
+import { getProtocolBase } from '#/kosong/protocol/protocolBase';
 
 import { APIStatusError, CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import {
@@ -43,9 +48,11 @@ import {
 import {
   type AuthProvider,
   type ConnectionEndpoint,
+  groupModelIdsByProvider,
   IModelCatalog,
   type Model,
   type ModelCatalogItem,
+  modelBindingOriginFields,
   type ModelPingResult,
   type ProviderCatalogItem,
   type ProviderCredentialState,
@@ -78,7 +85,8 @@ import { IModelOAuthTokens, oauthRequestAuth } from './modelOAuth';
 import type { ResolvedModelAuthMaterial } from './model.types';
 import type { ModelRequester } from './modelRequester';
 import { ModelRequesterImpl } from './modelRequesterImpl';
-import { isApiDefault, resolveGenerationParameters, resolveModelUsage } from './parameters';
+import { isApiDefault, parametersToWire, resolveGenerationParameters, resolveModelUsage } from './parameters';
+import { requestIdentityToWire } from '../requestIdentity/requestIdentityPolicy';
 import { drivesThinkingThroughTraits } from './thinking';
 
 type MutableProtocolProviderOptions = {
@@ -93,15 +101,57 @@ interface CatalogEntry {
   readonly trace: ResolutionTraceCollector;
 }
 
+const DEFAULT_CATALOG_ENTRY_CACHE_MAX = 256;
+const CATALOG_ENTRY_CACHE_MAX_ENV = 'KIKI_MODEL_CATALOG_CACHE_MAX';
+
+function resolveCatalogEntryCacheMax(): number {
+  const raw = process.env[CATALOG_ENTRY_CACHE_MAX_ENV]?.trim();
+  if (raw === undefined || raw.length === 0) return DEFAULT_CATALOG_ENTRY_CACHE_MAX;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CATALOG_ENTRY_CACHE_MAX;
+}
+
 interface CatalogModelOption {
   readonly item: ModelCatalogItem;
-  readonly model: Model;
+  readonly model: Pick<Model, 'id' | 'name' | 'protocol' | 'baseUrl' | 'providerName'>;
 }
+
+interface ListModelsCacheEntry {
+  readonly revision: number;
+  readonly modelsRef: Readonly<Record<string, ModelRecord>>;
+  readonly providersRef: Readonly<Record<string, ProviderConfig>>;
+  readonly defaultProvider: string | undefined;
+  readonly defaultModel: string | undefined;
+  readonly adapterFingerprint: string;
+  readonly envKeys: readonly string[];
+  readonly envFingerprint: string;
+  readonly items: readonly ModelCatalogItem[];
+}
+
+interface ProviderListProjection {
+  readonly providerConfig: ProviderConfig;
+  readonly adapter: ProviderAdapterDefinition | undefined;
+  readonly providerType: string | undefined;
+  readonly isDecision: boolean;
+  readonly isManaged: boolean;
+  readonly explainedProtocol: ExplainedModelProtocol | undefined;
+  readonly protocolSource: ModelCatalogItem['protocol_source'];
+  readonly bindingOrigins: Pick<ModelCatalogItem, 'endpoint_source' | 'endpoint_env' | 'auth_source' | 'auth_env'>;
+  readonly baseUrl: string | undefined;
+  readonly authConflict: boolean;
+  readonly resolveCapability: ((wireName: string) => ModelCapability) | undefined;
+}
+
+const ANTHROPIC_PROFILE_HINT_RE = /claude|opus|sonnet|haiku|fable|mythos/i;
 
 export class ModelCatalog extends Disposable implements IModelCatalog {
   declare readonly _serviceBrand: undefined;
 
   private readonly cache = new Map<string, CatalogEntry>();
+  private catalogRevision = 0;
+  private listModelsCache: ListModelsCacheEntry | undefined;
+  private nameIndexModelsRef: Readonly<Record<string, ModelRecord>> | undefined;
+  private nameIndex: Map<string, string[]> | undefined;
 
   constructor(
     @IProviderService private readonly providers: IProviderService,
@@ -114,13 +164,18 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   ) {
     super();
     this._register(this.models.onDidChangeModels(() => this.notifyConfigChanged()));
+    this._register(this.models.onDidChangeDefaultModel(() => this.notifyConfigChanged()));
     this._register(this.providers.onDidChangeProviders(() => this.notifyConfigChanged()));
     this._register(this.providers.onDidChangeDefaultProvider(() => { this.notifyConfigChanged(); }));
     this._register(this.providers.onDidChangeTransportDefaults(() => this.notifyConfigChanged()));
   }
 
   notifyConfigChanged(): void {
+    this.catalogRevision += 1;
     this.cache.clear();
+    this.listModelsCache = undefined;
+    this.nameIndexModelsRef = undefined;
+    this.nameIndex = undefined;
   }
 
   get(id: string, recipeSettings?: Record<string, unknown>): Model {
@@ -170,12 +225,33 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   findByName(name: string): readonly string[] {
-    const out: string[] = [];
-    for (const [id, m] of Object.entries(this.models.list())) {
-      const alias = m.name === name || m.model === name || (m.aliases ?? []).includes(name);
-      if (alias) out.push(id);
+    const models = this.models.list();
+    if (this.nameIndex === undefined || this.nameIndexModelsRef !== models) {
+      const index = new Map<string, string[]>();
+      const seen = new Set<string>();
+      const addKey = (key: string | undefined, id: string): void => {
+        if (key === undefined || seen.has(key)) return;
+        seen.add(key);
+        let list = index.get(key);
+        if (list === undefined) {
+          list = [];
+          index.set(key, list);
+        }
+        list.push(id);
+      };
+      for (const [id, m] of Object.entries(models)) {
+        seen.clear();
+        addKey(m.name, id);
+        addKey(m.model, id);
+        if (m.aliases !== undefined) {
+          for (const alias of m.aliases) addKey(alias, id);
+        }
+      }
+      this.nameIndex = index;
+      this.nameIndexModelsRef = models;
     }
-    return out;
+    const matches = this.nameIndex.get(name);
+    return matches === undefined ? [] : [...matches];
   }
 
   private entry(id: string, recipeSettings?: Record<string, unknown>): CatalogEntry {
@@ -192,7 +268,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       requester: new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission),
       trace,
     };
-    if (this.cache.size >= 256) this.cache.delete(this.cache.keys().next().value!);
+    const cacheMax = resolveCatalogEntryCacheMax();
+    if (this.cache.size >= cacheMax) this.cache.delete(this.cache.keys().next().value!);
     this.cache.set(key, entry);
     return entry;
   }
@@ -264,46 +341,457 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   async listModels(): Promise<readonly ModelCatalogItem[]> {
     await Promise.all([this.models.ready, this.providers.ready]);
     const models = this.models.list();
+    const providers = this.providers.list();
+    const defaultProvider = this.providers.getDefaultProvider();
+    const defaultModel = this.models.getDefaultModel();
+    const adapterFingerprint = this.computeAdapterFingerprint(providers);
+    const cached = this.listModelsCache;
+    if (
+      cached !== undefined &&
+      cached.revision === this.catalogRevision &&
+      cached.modelsRef === models &&
+      cached.providersRef === providers &&
+      cached.defaultProvider === defaultProvider &&
+      cached.defaultModel === defaultModel &&
+      cached.adapterFingerprint === adapterFingerprint &&
+      cached.envFingerprint === computeEnvFingerprint(cached.envKeys)
+    ) {
+      return cached.items;
+    }
+
+    const envKeys = new Set<string>();
+    const capabilityResolvers = new Map<string, (wireName: string) => ModelCapability>();
+    const providerProjections = this.buildProviderListProjections(providers, envKeys, capabilityResolvers);
     const items: ModelCatalogItem[] = [];
     const managedOptions = new Map<
       string,
       { readonly index: number; readonly option: CatalogModelOption }
     >();
-    for (const [modelId, record] of Object.entries(models)) {
-      const providerType = this.providerTypeOf(record);
-      if (decisionProtocolForProviderType(providerType) !== undefined) continue;
+
+    for (const modelId in models) {
+      if (!Object.hasOwn(models, modelId)) continue;
+      const record = models[modelId]!;
+      const providerId = record.providerId ?? record.provider ?? defaultProvider;
+      const projection = providerId === undefined ? undefined : providerProjections.get(providerId);
+      const providerConfig = projection?.providerConfig;
+      const providerType = providerConfig?.type ?? record.protocol;
+      if (projection?.isDecision === true || (projection === undefined && decisionProtocolForProviderType(providerType) !== undefined)) {
+        continue;
+      }
       try {
-        const model = this.get(modelId);
-        const option = { item: toProtocolModel(model, record, providerType, this.providerConfigOf(record)), model };
-        const identity = this.managedCatalogIdentity(model);
-        if (identity === undefined) {
-          items.push(option.item);
+        const result = this.projectCatalogModelItem(
+          modelId,
+          record,
+          providerId,
+          projection,
+          capabilityResolvers,
+        );
+        if (result.managed === undefined) {
+          items.push(result.item);
           continue;
         }
+        const identity = this.managedCatalogIdentity(result.managed);
+        if (identity === undefined) {
+          items.push(result.item);
+          continue;
+        }
+        const option: CatalogModelOption = { item: result.item, model: result.managed };
         const existing = managedOptions.get(identity);
         if (existing === undefined) {
           managedOptions.set(identity, { index: items.length, option });
           items.push(option.item);
           continue;
         }
-        if (this.compareManagedCatalogOptions(option, existing.option) < 0) {
+        if (this.compareManagedCatalogOptions(option, existing.option, defaultModel) < 0) {
           managedOptions.set(identity, { index: existing.index, option });
           items[existing.index] = option.item;
         }
       } catch {
-        items.push(toProtocolModelFallback(modelId, record, providerType, this.providerConfigOf(record)));
+        items.push(toProtocolModelFallback(modelId, record, providerType, providerConfig));
       }
     }
+
+    const trackedEnvKeys = [...envKeys];
+    this.listModelsCache = {
+      revision: this.catalogRevision,
+      modelsRef: models,
+      providersRef: providers,
+      defaultProvider,
+      defaultModel,
+      adapterFingerprint,
+      envKeys: trackedEnvKeys,
+      envFingerprint: computeEnvFingerprint(trackedEnvKeys),
+      items,
+    };
     return items;
   }
 
-  private managedCatalogIdentity(model: Model): string | undefined {
+  private computeAdapterFingerprint(providers: Readonly<Record<string, ProviderConfig>>): string {
+    if (this.protocolRegistry.adapterCacheKey === undefined) return '';
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const provider of Object.values(providers)) {
+      const type = provider.type;
+      if (type === undefined || seen.has(type)) continue;
+      seen.add(type);
+      const key = this.protocolRegistry.adapterCacheKey('openai', type);
+      if (key !== undefined) parts.push(`${type}=${key}`);
+    }
+    return parts.join('\u0000');
+  }
+
+  private getCapabilityResolver(
+    protocol: Protocol,
+    effectiveProviderType: string,
+    cache: Map<string, (wireName: string) => ModelCapability>,
+  ): (wireName: string) => ModelCapability {
+    const resolverKey = `${protocol}\u0000${effectiveProviderType}`;
+    let resolveCapability = cache.get(resolverKey);
+    if (resolveCapability !== undefined) return resolveCapability;
+    const identity = this.protocolRegistry.resolveAdapterIdentity(protocol, effectiveProviderType);
+    const base = getProtocolBase(identity.baseId);
+    if (base === undefined) {
+      resolveCapability = (name) => this.protocolRegistry.resolveCapability(protocol, name, effectiveProviderType);
+    } else {
+      const capTraits = identity.traits.filter(({ trait }) => trait.capability !== undefined);
+      const baseCap = base.capability;
+      if (capTraits.length === 0) {
+        resolveCapability = baseCap === undefined
+          ? () => UNKNOWN_CAPABILITY
+          : (name) => baseCap(name) ?? UNKNOWN_CAPABILITY;
+      } else {
+        resolveCapability = (name) => {
+          let traitCapability: ModelCapability | undefined;
+          for (const { trait, context } of capTraits) {
+            traitCapability = trait.capability!(name, context) ?? traitCapability;
+          }
+          return traitCapability ?? baseCap?.(name) ?? UNKNOWN_CAPABILITY;
+        };
+      }
+    }
+    cache.set(resolverKey, resolveCapability);
+    return resolveCapability;
+  }
+
+  private buildProviderListProjections(
+    providers: Readonly<Record<string, ProviderConfig>>,
+    envKeys: Set<string>,
+    capabilityResolvers: Map<string, (wireName: string) => ModelCapability>,
+  ): Map<string, ProviderListProjection> {
+    const out = new Map<string, ProviderListProjection>();
+    for (const [providerId, providerConfig] of Object.entries(providers)) {
+      const providerType = providerConfig.type;
+      if (providerConfig.apiKeyEnv !== undefined && providerConfig.apiKeyEnv.trim().length > 0) {
+        envKeys.add(providerConfig.apiKeyEnv.trim());
+      }
+      if (providerType === 'system_one') envKeys.add('TYPESAFE_API_KEY');
+      const isDecision = decisionProtocolForProviderType(providerType) !== undefined;
+      if (isDecision) {
+        out.set(providerId, {
+          providerConfig,
+          adapter: undefined,
+          providerType,
+          isDecision: true,
+          isManaged: false,
+          explainedProtocol: undefined,
+          protocolSource: undefined,
+          bindingOrigins: { endpoint_source: 'none', auth_source: 'none' },
+          baseUrl: undefined,
+          authConflict: false,
+          resolveCapability: undefined,
+        });
+        continue;
+      }
+      const adapter = providerType === undefined ? undefined : this.protocolRegistry.providerDefinition?.(providerType);
+      const explainedProtocol = explainModelProtocol({}, providerConfig, undefined, adapter);
+      const protocolSource = providerType === undefined
+        ? undefined
+        : explainModelProtocol({}, { type: providerType })?.source;
+      const bindingOrigins = modelBindingOriginFields({}, providerConfig);
+      if (bindingOrigins.auth_env !== undefined) envKeys.add(bindingOrigins.auth_env);
+      if (bindingOrigins.endpoint_env !== undefined) envKeys.add(bindingOrigins.endpoint_env);
+      const baseUrl = resolveConfiguredModelBaseUrl({}, providerConfig, adapter);
+      const providerKey = resolveProviderApiKey({ ...providerConfig, type: providerType }, adapter);
+      const authConflict = providerKey.apiKey !== undefined && providerConfig.oauth !== undefined;
+      const resolveCapability =
+        explainedProtocol === undefined
+          ? undefined
+          : this.getCapabilityResolver(
+              explainedProtocol.protocol,
+              providerType ?? explainedProtocol.protocol,
+              capabilityResolvers,
+            );
+      out.set(providerId, {
+        providerConfig,
+        adapter,
+        providerType,
+        isDecision: false,
+        isManaged: providerId.startsWith('managed:'),
+        explainedProtocol,
+        protocolSource,
+        bindingOrigins,
+        baseUrl,
+        authConflict,
+        resolveCapability,
+      });
+    }
+    return out;
+  }
+
+  private projectCatalogModelItem(
+    id: string,
+    record: ModelRecord,
+    providerId: string | undefined,
+    projection: ProviderListProjection | undefined,
+    capabilityResolvers: Map<string, (wireName: string) => ModelCapability>,
+  ): { readonly item: ModelCatalogItem; readonly managed?: CatalogModelOption['model'] } {
+    const providerConfig = projection?.providerConfig;
+    const routingModel = record.overrides === undefined && record.maxInputSize === undefined
+      ? record
+      : effectiveModelConfig(record);
+
+    let providerName: string;
+    let rawBaseUrl: string | undefined;
+    let adapter: ProviderAdapterDefinition | undefined;
+
+    if (providerId !== undefined) {
+      if (providerConfig === undefined) {
+        throw new Error2(
+          CONFIG_INVALID_ERROR_CODE,
+          `Provider "${providerId}" referenced by model "${id}" is not configured.`,
+        );
+      }
+      providerName = providerId;
+      adapter =
+        routingModel.protocol === undefined
+          ? projection!.adapter
+          : providerConfig.type === undefined
+            ? undefined
+            : this.protocolRegistry.providerDefinition?.(providerConfig.type, routingModel.protocol);
+      rawBaseUrl =
+        routingModel.baseUrl === undefined && routingModel.protocol === undefined
+          ? projection!.baseUrl
+          : resolveConfiguredModelBaseUrl(routingModel, providerConfig, adapter);
+    } else {
+      const modelBaseUrl = nonEmpty(routingModel.baseUrl);
+      if (modelBaseUrl === undefined) {
+        throw new Error2(
+          CONFIG_INVALID_ERROR_CODE,
+          `Model "${id}" must set either providerId or baseUrl in config.toml.`,
+        );
+      }
+      providerName = deriveProviderId(modelBaseUrl);
+      rawBaseUrl = modelBaseUrl;
+    }
+
+    const resolvedProtocol =
+      routingModel.protocol === undefined && projection !== undefined
+        ? projection.explainedProtocol
+        : explainModelProtocol(routingModel, providerConfig, undefined, adapter);
+    if (resolvedProtocol === undefined) {
+      throw new Error2(
+        CONFIG_INVALID_ERROR_CODE,
+        `Model "${id}" must declare a wire protocol (config: models.<id>.protocol).`,
+      );
+    }
+    const protocol = resolvedProtocol.protocol;
+    const providerType = providerConfig?.type ?? record.protocol;
+    const rawWireName = record.name ?? record.model;
+    const effective =
+      record.overrides === undefined &&
+      record.maxInputSize === undefined &&
+      (rawWireName === undefined || !ANTHROPIC_PROFILE_HINT_RE.test(rawWireName))
+        ? record
+        : effectiveModelConfig(record, providerType);
+    const effectiveProviderType = providerConfig?.type ?? protocol;
+    const wireName = effective.name ?? effective.model;
+    if (wireName === undefined) {
+      throw new Error2(
+        CONFIG_INVALID_ERROR_CODE,
+        `Model "${id}" must define a wire-facing name in config.toml.`,
+      );
+    }
+    if (effective.maxContextSize === undefined) {
+      throw new Error2(
+        CONFIG_INVALID_ERROR_CODE,
+        `Model "${id}" must define a positive max_context_size in config.toml.`,
+      );
+    }
+
+    const modelApiKey = effective.apiKey === undefined ? undefined : nonEmpty(effective.apiKey);
+    if (modelApiKey !== undefined && effective.oauth !== undefined) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${id}" has both apiKey and oauth set in config.toml - they are mutually exclusive. Remove one.`);
+    }
+    if (modelApiKey === undefined && effective.oauth === undefined && providerConfig !== undefined) {
+      const hasConflict =
+        effective.protocol === undefined && projection !== undefined
+          ? projection.authConflict
+          : resolveProviderApiKey({ ...providerConfig, type: providerConfig.type ?? effective.protocol }, adapter).apiKey !== undefined &&
+            providerConfig.oauth !== undefined;
+      if (hasConflict) {
+        throw new Error2(CONFIG_INVALID_ERROR_CODE, `Provider "${providerName}" has both apiKey and oauth set in config.toml - they are mutually exclusive. Remove one.`);
+      }
+    }
+
+    const generation = resolveGenerationParameters(providerConfig, record);
+    const declaredCapabilities = effective.capabilities;
+    let alwaysThinking = false;
+    let declaredSet: Set<string> | undefined;
+    if (declaredCapabilities !== undefined && declaredCapabilities.length > 0) {
+      declaredSet = new Set<string>();
+      for (const capability of declaredCapabilities) {
+        declaredSet.add(capability.trim().toLowerCase());
+      }
+      alwaysThinking = declaredSet.has('always_thinking');
+    }
+    const selectedEffort = generation.values.thinkingEffort?.trim().toLowerCase();
+    if (selectedEffort === 'off' && alwaysThinking) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${id}" requires thinking; thinking_effort=off is unavailable`);
+    }
+    if (
+      selectedEffort !== undefined &&
+      selectedEffort !== 'on' &&
+      selectedEffort !== 'off' &&
+      effective.supportEfforts !== undefined &&
+      effective.supportEfforts.length > 0 &&
+      !effective.supportEfforts.includes(selectedEffort)
+    ) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Model "${id}" does not support thinking effort "${selectedEffort}"`);
+    }
+
+    const resolveCapability =
+      record.protocol === undefined && projection?.resolveCapability !== undefined
+        ? projection.resolveCapability
+        : this.getCapabilityResolver(protocol, effectiveProviderType, capabilityResolvers);
+    const detected = resolveCapability(wireName);
+
+    let effectiveCapabilities: string[] | undefined;
+    if (declaredSet === undefined) {
+      if (
+        detected.image_in ||
+        detected.video_in ||
+        detected.audio_in ||
+        detected.thinking ||
+        detected.tool_use ||
+        detected.dynamically_loaded_tools === true
+      ) {
+        effectiveCapabilities = [];
+        if (detected.image_in) effectiveCapabilities.push('image_in');
+        if (detected.video_in) effectiveCapabilities.push('video_in');
+        if (detected.audio_in) effectiveCapabilities.push('audio_in');
+        if (detected.thinking) effectiveCapabilities.push('thinking');
+        if (detected.tool_use) effectiveCapabilities.push('tool_use');
+        if (detected.dynamically_loaded_tools === true) effectiveCapabilities.push('dynamically_loaded_tools');
+      } else if (declaredCapabilities !== undefined) {
+        effectiveCapabilities = [];
+      }
+    } else {
+      effectiveCapabilities = [];
+      if (declaredSet.has('image_in') || detected.image_in) effectiveCapabilities.push('image_in');
+      if (declaredSet.has('video_in') || detected.video_in) effectiveCapabilities.push('video_in');
+      if (declaredSet.has('audio_in') || detected.audio_in) effectiveCapabilities.push('audio_in');
+      if (declaredSet.has('thinking') || alwaysThinking || detected.thinking) effectiveCapabilities.push('thinking');
+      if (declaredSet.has('tool_use') || detected.tool_use) effectiveCapabilities.push('tool_use');
+      if (declaredSet.has('dynamically_loaded_tools') || detected.dynamically_loaded_tools === true) {
+        effectiveCapabilities.push('dynamically_loaded_tools');
+      }
+      if (alwaysThinking) effectiveCapabilities.push('always_thinking');
+    }
+
+    const protocolSource =
+      record.protocol !== undefined
+        ? 'model'
+        : projection !== undefined
+          ? projection.protocolSource
+          : explainModelProtocol(record, effectiveProviderType === undefined ? undefined : { type: effectiveProviderType })?.source;
+
+    const bindingOrigins =
+      projection !== undefined &&
+      record.baseUrl === undefined &&
+      record.protocol === undefined &&
+      record.apiKey === undefined &&
+      record.oauth === undefined
+        ? projection.bindingOrigins
+        : modelBindingOriginFields(record, providerConfig ?? (effectiveProviderType === undefined ? undefined : { type: effectiveProviderType }));
+
+    const preferredThinkingEffort =
+      generation.sources.thinkingEffort?.detail === '[models.*] legacy generation fields'
+        ? undefined
+        : generation.values.thinkingEffort;
+    const serviceTier = isApiDefault(generation.values.serviceTier)
+      ? undefined
+      : generation.values.serviceTier;
+    const rawRecipe = record.recipe?.trim();
+    const recipe = rawRecipe === undefined || rawRecipe === '' || rawRecipe === 'off' ? undefined : rawRecipe;
+
+    const item: ModelCatalogItem = {
+      id,
+      protocol: record.protocol,
+      effective_protocol: protocol,
+      protocol_source: protocolSource,
+      endpoint_source: bindingOrigins.endpoint_source,
+      auth_source: bindingOrigins.auth_source,
+      provider_id: providerName,
+      remote_id: wireName,
+      display_name: effective.displayName ?? wireName,
+      max_context_size: effective.maxContextSize,
+      auto_compact: effective.autoCompact,
+      context_strategy: effective.contextStrategy,
+      capabilities: effective.capabilities,
+      effective_capabilities: effectiveCapabilities,
+      support_efforts: effective.supportEfforts === undefined ? undefined : [...effective.supportEfforts],
+      default_effort: preferredThinkingEffort ?? record.overrides?.defaultEffort ?? effective.defaultEffort,
+      service_tier: serviceTier,
+      pricing_model: record.pricingModel,
+      parameters: record.parameters === undefined ? undefined : parametersToWire(record.parameters),
+      behavior: record.behavior === undefined ? undefined : modelBehaviorToWire(record.behavior),
+      request_identity: record.requestIdentity === undefined ? undefined : requestIdentityToWire(record.requestIdentity),
+      images: record.images === undefined
+        ? undefined
+        : {
+            accepted_types: record.images.acceptedTypes === undefined ? undefined : [...record.images.acceptedTypes],
+            convert_unsupported: record.images.convertUnsupported,
+          },
+      recipe,
+      recipe_options: recipe === undefined ? undefined : record.recipeOptions,
+    };
+    if (bindingOrigins.endpoint_env !== undefined) {
+      item.endpoint_env = bindingOrigins.endpoint_env;
+    }
+    if (bindingOrigins.auth_env !== undefined) {
+      item.auth_env = bindingOrigins.auth_env;
+    }
+
+    if (projection?.isManaged === true || (projection === undefined && providerName.startsWith('managed:'))) {
+      const resolvedBaseUrl =
+        protocol === 'anthropic' && rawBaseUrl !== undefined
+          ? stripTrailingV1(rawBaseUrl)
+          : rawBaseUrl;
+      return {
+        item,
+        managed: {
+          id,
+          name: wireName,
+          protocol,
+          baseUrl: resolvedBaseUrl,
+          providerName,
+        },
+      };
+    }
+
+    return { item };
+  }
+
+  private managedCatalogIdentity(model: Pick<Model, 'providerName' | 'protocol' | 'baseUrl' | 'name'>): string | undefined {
     if (!model.providerName.startsWith('managed:')) return undefined;
     return [model.providerName, model.protocol, model.baseUrl ?? '', model.name].join('\u0000');
   }
 
-  private compareManagedCatalogOptions(a: CatalogModelOption, b: CatalogModelOption): number {
-    const defaultModel = this.models.getDefaultModel();
+  private compareManagedCatalogOptions(
+    a: CatalogModelOption,
+    b: CatalogModelOption,
+    defaultModel: string | undefined = this.models.getDefaultModel(),
+  ): number {
     const rank = (option: CatalogModelOption): number => {
       if (option.model.id === defaultModel) return 0;
       const providerPrefix = option.model.providerName.slice('managed:'.length);
@@ -318,9 +806,10 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     await Promise.all([this.models.ready, this.providers.ready]);
     const providers = this.providers.list();
     const models = this.models.list();
+    const modelsByProvider = groupModelIdsByProvider(models);
     const globalDefaultModel = this.models.getDefaultModel();
     return Promise.all(Object.entries(providers).map(([providerId, provider]) =>
-      this.toCatalogProvider(providerId, provider, models, globalDefaultModel)));
+      this.toCatalogProvider(providerId, provider, models, globalDefaultModel, modelsByProvider.get(providerId) ?? [])));
   }
 
   async getProvider(providerId: string): Promise<ProviderCatalogItem> {
@@ -364,10 +853,11 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     provider: ProviderConfig,
     models: Readonly<Record<string, ModelRecord>>,
     globalDefaultModel: string | undefined,
+    precomputedModels?: string[],
   ): Promise<ProviderCatalogItem> {
     const adapter = provider.type === undefined ? undefined : this.protocolRegistry.providerDefinition?.(provider.type);
     const credential = await resolveProviderCredentialState(providerId, provider, this.oauth, adapter);
-    return toProtocolProvider(providerId, provider, models, globalDefaultModel, credential);
+    return toProtocolProvider(providerId, provider, models, globalDefaultModel, credential, precomputedModels);
   }
 
   private providerTypeOf(record: ModelRecord): string | undefined {
@@ -845,6 +1335,16 @@ function locationFromVertexAIBaseUrl(baseUrl: string | undefined): string | unde
   } catch {
     return undefined;
   }
+}
+
+function computeEnvFingerprint(envKeys: readonly string[]): string {
+  if (envKeys.length === 0) return '';
+  const parts: string[] = [];
+  for (const key of envKeys) {
+    const value = process.env[key];
+    parts.push(`${key}=${value === undefined ? '\u0001' : value}`);
+  }
+  return parts.join('\u0000');
 }
 
 function probeCredentials(auth: ResolvedModelAuthMaterial): string[] {

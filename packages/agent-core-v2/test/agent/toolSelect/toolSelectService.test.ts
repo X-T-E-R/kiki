@@ -1489,4 +1489,30 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
     registerMcp(h, new StubMcpTool(MCP_ALPHA));
     expect(await announce(h)).toBeUndefined();
   });
+
+  it('bounds <tools_added> for 2,000 MCP tools without turn-to-turn churn while keeping every tool loadable', async () => {
+    const h = createHarness();
+    for (let i = 0; i < 2000; i += 1) {
+      registerMcp(h, new StubMcpTool(`mcp__hub__tool_${String(i).padStart(4, '0')}`));
+    }
+
+    const started = performance.now();
+    const first = await announce(h);
+    const elapsedMs = performance.now() - started;
+
+    expect(first).toBeDefined();
+    expect(Buffer.byteLength(first!, 'utf8')).toBeLessThanOrEqual(36 * 1024);
+    expect(first).toContain('additional deferred tools omitted due to prompt size cap');
+    expect(elapsedMs).toBeLessThan(250);
+
+    const second = await announce(h, 2);
+    expect(second).toBeUndefined();
+
+    const loaded = h.sut.load(['mcp__hub__tool_1999']);
+    expect(loaded).toEqual({
+      toLoad: ['mcp__hub__tool_1999'],
+      alreadyAvailable: [],
+      unknown: [],
+    });
+  });
 });

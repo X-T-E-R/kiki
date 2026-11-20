@@ -12,7 +12,12 @@ import {
   type ModelsChangedEvent,
   type ModelsSection,
 } from './model';
-import { resolveModelId } from './resolveModelId';
+import {
+  buildModelIdLookupIndex,
+  resolveModelId,
+  resolveModelIdWithIndex,
+  type ModelIdLookupIndex,
+} from './resolveModelId';
 
 export { resolveModelId };
 
@@ -25,6 +30,8 @@ export class ModelService extends Disposable implements IModelService {
   private models: Readonly<Record<string, ModelRecord>> = {};
   private defaultModel: string | undefined;
   private hydrated = false;
+  private cachedModelsRef: Readonly<Record<string, ModelRecord>> | undefined;
+  private lookupIndex: ModelIdLookupIndex | undefined;
   private readonly resolutionCache = new Map<string, string | undefined>();
   private resolveReady!: () => void;
   readonly ready: Promise<void> = new Promise<void>((resolve) => {
@@ -43,12 +50,27 @@ export class ModelService extends Disposable implements IModelService {
     this._onDidChangeDefaultModel.event;
 
   resolveId(id: string): string | undefined {
+    if (this.cachedModelsRef !== this.models) {
+      this.resolutionCache.clear();
+      this.lookupIndex = undefined;
+      this.cachedModelsRef = this.models;
+    }
     if (this.resolutionCache.has(id)) return this.resolutionCache.get(id);
-    const resolved = resolveModelId(this.models, id, ({ candidates, resolved: winner }) => {
-      console.warn(
-        `[model] ambiguous model id "${id}" resolves to "${winner}" (first configured of ${candidates.map((candidate) => `"${candidate}"`).join(', ')}); use a full model id to pin another`,
-      );
-    });
+    if (Object.hasOwn(this.models, id) && this.models[id] !== undefined) {
+      this.resolutionCache.set(id, id);
+      return id;
+    }
+    this.lookupIndex ??= buildModelIdLookupIndex(this.models);
+    const resolved = resolveModelIdWithIndex(
+      this.models,
+      this.lookupIndex,
+      id,
+      ({ candidates, resolved: winner }) => {
+        console.warn(
+          `[model] ambiguous model id "${id}" resolves to "${winner}" (first configured of ${candidates.map((candidate) => `"${candidate}"`).join(', ')}); use a full model id to pin another`,
+        );
+      },
+    );
     this.resolutionCache.set(id, resolved);
     return resolved;
   }
@@ -101,6 +123,8 @@ export class ModelService extends Disposable implements IModelService {
     const diff = diffRecords(this.models, next);
     if (isEmptyDiff(diff)) return;
     this.models = { ...next };
+    this.cachedModelsRef = this.models;
+    this.lookupIndex = undefined;
     this.resolutionCache.clear();
     await this._onDidChangeModels.fireAsync(diff, NO_ABORT);
   }

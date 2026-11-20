@@ -12,6 +12,13 @@ export interface ExplainedModelProtocol {
   readonly source: ModelProtocolSource;
 }
 
+const VALID_PROTOCOLS: ReadonlySet<string> = new Set(ProtocolSchema.options);
+
+function parseProtocolFast(value: string): Protocol {
+  if (VALID_PROTOCOLS.has(value)) return value as Protocol;
+  return ProtocolSchema.parse(value);
+}
+
 export function explainModelProtocol(
   model: Pick<ModelRecord, 'protocol'>,
   provider?: Pick<ProviderConfig, 'type'>,
@@ -20,14 +27,13 @@ export function explainModelProtocol(
 ): ExplainedModelProtocol | undefined {
   if (model.protocol !== undefined) {
     trace?.record('resolved.protocol', { kind: 'config', detail: 'model.protocol' });
-    return { protocol: ProtocolSchema.parse(model.protocol), source: 'model' };
+    return { protocol: parseProtocolFast(model.protocol), source: 'model' };
   }
   const providerType = provider?.type;
   if (providerType === undefined) return undefined;
-  const parsed = ProtocolSchema.safeParse(providerType);
-  if (parsed.success) {
+  if (VALID_PROTOCOLS.has(providerType)) {
     trace?.record('resolved.protocol', { kind: 'config', detail: `provider type '${providerType}' is itself a wire protocol` });
-    return { protocol: parsed.data, source: 'provider' };
+    return { protocol: providerType as Protocol, source: 'provider' };
   }
   const definition = adapter ?? getProviderDefinition(providerType);
   if (definition === undefined) return undefined;

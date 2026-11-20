@@ -1,15 +1,20 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISubagentTool } from '#/agent/tools/agent/agent';
+import { AGENT_RUN_ADVERTISED_MODELS_LIMIT_ENV } from '#/agent/tools/agent/subagentDescription';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { IModelService } from '#/kosong/model/model';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { configServices, createTestAgent, sessionService, type TestAgentContext } from '../harness';
 
 describe('AgentRun dispatch recommendations', () => {
   let ctx: TestAgentContext | undefined;
-  afterEach(async () => { await ctx?.dispose(); });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await ctx?.dispose();
+  });
 
   function agentRun(allowedSubagents?: readonly string[]) {
     const preferred = normalizeAgentProfile({
@@ -68,5 +73,107 @@ describe('AgentRun dispatch recommendations', () => {
     expect(tool.description).not.toContain('- agent: Main agent profile');
     expect(tool.description).not.toContain('Main agent profile');
     expect([...tool.visibleProfileDescriptions().keys()]).toEqual(['explore', 'worker']);
+  });
+
+  it('keeps AgentRun description under 8 KiB with 10,000 configured models while prioritizing profile and default aliases', async () => {
+    const models: Record<string, { provider: string; model: string; maxContextSize: number }> = {};
+    for (let i = 0; i < 10_000; i += 1) {
+      models[`gw/model-${String(i).padStart(5, '0')}`] = {
+        provider: 'gw',
+        model: `remote-${i}`,
+        maxContextSize: 128_000,
+      };
+    }
+    const preferred = normalizeAgentProfile({
+      name: 'explore',
+      description: 'Preferred explorer',
+      modelAlias: 'gw/model-09999',
+      modelProfiles: [{ alias: 'gw/model-09998', when: 'fast pass' }],
+      systemPrompt: () => '',
+    });
+    const other = normalizeAgentProfile({
+      name: 'worker',
+      description: 'Other worker',
+      modelAlias: 'gw/model-09997',
+      systemPrompt: () => '',
+    });
+    const parent = normalizeAgentProfile({
+      name: 'agent',
+      description: 'Main agent profile',
+      main: true,
+      systemPrompt: () => '',
+    });
+    const catalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name: string) => [parent, preferred, other].find((profile) => profile.name === name),
+      getDefault: () => parent,
+      list: () => [parent, preferred, other],
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    } as unknown as ISessionAgentProfileCatalog;
+
+    ctx = createTestAgent(
+      {
+        initialConfig: {
+          providers: { gw: { type: 'openai', apiKey: 'sk-test', baseUrl: 'https://gw.example.test/v1' } },
+          models,
+          defaultModel: 'gw/model-08888',
+        },
+      },
+      sessionService(ISessionAgentProfileCatalog, catalog),
+    );
+    await ctx.get(IModelService).setDefaultModel('gw/model-08888');
+    ctx.get(IAgentProfileService).applyBindingSnapshot({
+      profileName: 'agent',
+      thinkingLevel: 'off',
+      systemPrompt: 'parent',
+      preferredSubagents: ['explore'],
+    });
+
+    const started = performance.now();
+    const desc = ctx.get(ISubagentTool).description;
+    const elapsedMs = performance.now() - started;
+    const bytes = Buffer.byteLength(desc, 'utf8');
+    process.stdout.write(
+      `${JSON.stringify({ stage: 'scale-10k-agent-run-description', bytes, elapsedMs })}\n`,
+    );
+
+    expect(bytes).toBeLessThan(8 * 1024);
+    expect(desc).toContain('Model aliases available across the targets above:');
+    expect(desc).toContain('gw/model-08888');
+    expect(desc).toContain('gw/model-09999');
+    expect(desc).toContain('gw/model-09998');
+    expect(desc).toContain('gw/model-09997');
+    expect(desc).toMatch(/\.\.\. and \d+ more configured models/);
+
+    vi.stubEnv(AGENT_RUN_ADVERTISED_MODELS_LIMIT_ENV, '6');
+    const compactCtx = createTestAgent(
+      {
+        initialConfig: {
+          providers: { gw: { type: 'openai', apiKey: 'sk-test', baseUrl: 'https://gw.example.test/v1' } },
+          models,
+        },
+      },
+      sessionService(ISessionAgentProfileCatalog, catalog),
+    );
+    try {
+      await compactCtx.get(IModelService).setDefaultModel('gw/model-08888');
+      compactCtx.get(IAgentProfileService).applyBindingSnapshot({
+        profileName: 'agent',
+        thinkingLevel: 'off',
+        systemPrompt: 'parent',
+        preferredSubagents: ['explore'],
+      });
+      const compactDesc = compactCtx.get(ISubagentTool).description;
+      const aliasLine = compactDesc.split('\n').find((line) => line.startsWith('Model aliases available across the targets above:'))!;
+      expect(aliasLine).toContain('gw/model-08888');
+      expect(aliasLine).toContain('gw/model-09999');
+      expect(aliasLine).toContain('... and 9995 more configured models');
+    } finally {
+      await compactCtx.dispose();
+    }
   });
 });
